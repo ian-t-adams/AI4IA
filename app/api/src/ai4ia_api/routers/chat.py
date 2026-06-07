@@ -18,7 +18,8 @@ from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..logging_setup import get_correlation_id
 from ..sessions.models import Message, MessageRole, MessageStatus
 from ..sessions.repository import SessionNotFoundError, SessionRepository
-
+from ..agents.command_service import execute_command
+from ..agents.commands import parse_input
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -37,7 +38,11 @@ def _history(messages: list[Message], system_prompt: str | None) -> list[dict]:
     out: list[dict] = []
     if system_prompt:
         out.append({"role": "system", "content": system_prompt})
-    out.extend({"role": m.role.value, "content": m.content} for m in messages)
+    out.extend(
+        {"role": m.role.value, "content": m.content}
+        for m in messages
+        if not m.fromCommand
+    )
     return out
 
 
@@ -55,6 +60,24 @@ async def chat(
         session = await repo.get_session(user.internal_user_id, body.sessionId)
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    # Slash commands (/help, /clear, /system, /model, ...) are handled locally
+    # and never reach a model. Reply uniformly so the frontend's SSE parser
+    # works unchanged: one content delta, then [DONE].
+    parsed = parse_input(body.content)
+    if parsed.is_command:
+        assistant = await execute_command(
+            parsed=parsed, session=session, user=user, repo=repo, catalog=catalog
+        )
+        if not body.stream:
+            return {"sessionId": body.sessionId, "message": assistant}
+
+        async def command_stream():
+            chunk = {"choices": [{"delta": {"content": assistant.content}}]}
+            yield f"data: {json.dumps(chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(command_stream(), media_type="text/event-stream")
 
     model_id = body.model or session.model
     if not model_id:
@@ -80,9 +103,10 @@ async def chat(
     ]
     correlation_id = get_correlation_id()
 
-    # Keep the session fresh + auto-title from the first user turn.
+    # Keep the session fresh + auto-title from the first real (non-command) turn.
+    has_prior_chat = any(not m.fromCommand for m in prior)
     session.updatedAt = datetime.now(timezone.utc)
-    if session.title == "New chat" and not prior:
+    if session.title == "New chat" and not has_prior_chat:
         session.title = body.content[:60]
     session.model = model_id
     await repo.update_session(session)

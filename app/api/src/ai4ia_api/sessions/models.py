@@ -43,6 +43,10 @@ class Message(BaseModel):
     content: str = ""
     status: MessageStatus = MessageStatus.complete
     model: str | None = None
+    # True for the local transcript of a slash command (the echoed command and
+    # its reply). These are shown in the UI but excluded from model context and
+    # from first-turn auto-titling.
+    fromCommand: bool = False
     createdAt: datetime = Field(default_factory=_now)
 
 

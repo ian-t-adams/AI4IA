@@ -92,3 +92,12 @@ class CosmosSessionRepository:
             Message.model_validate(doc)
             async for doc in self._messages.query_items(query=query, parameters=params)
         ]
+
+    async def clear_messages(self, user_id: str, session_id: str) -> None:
+        await self._owned_session(user_id, session_id)
+        query = "SELECT c.id FROM c WHERE c.sessionId = @sid"
+        params = [{"name": "@sid", "value": session_id}]
+        async for doc in self._messages.query_items(
+            query=query, parameters=params, partition_key=session_id
+        ):
+            await self._messages.delete_item(item=doc["id"], partition_key=session_id)

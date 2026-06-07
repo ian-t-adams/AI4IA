@@ -181,6 +181,7 @@ export function ChatApp() {
       };
       setMessages((prev) => [...prev, optimisticUser]);
 
+      const isCommand = content.trimStart().startsWith("/");
       const finalize = async () => {
         streamingRef.current = false;
         setStreaming(false);
@@ -191,7 +192,23 @@ export function ChatApp() {
           /* keep optimistic view */
         }
         setStreamingText("");
-        void refreshSessions();
+        // A slash command can change the session's model or system prompt on the
+        // server; re-sync the controls so the change holds for the next turn.
+        if (isCommand) {
+          try {
+            const all = await api.listSessions();
+            setSessions(all);
+            const s = all.find((x) => x.id === sessionId);
+            if (s) {
+              if (s.model) setSelectedModel(s.model);
+              setSystemPrompt(s.systemPrompt ?? "");
+            }
+          } catch {
+            /* non-fatal */
+          }
+        } else {
+          void refreshSessions();
+        }
       };
 
       abortRef.current = api.streamChat(

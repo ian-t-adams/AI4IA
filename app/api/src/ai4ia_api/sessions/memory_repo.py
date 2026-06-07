@@ -70,3 +70,8 @@ class InMemorySessionRepository:
     async def list_messages(self, user_id: str, session_id: str) -> list[Message]:
         await self._owned_session(user_id, session_id)
         return list(self._messages.get(session_id, []))
+
+    async def clear_messages(self, user_id: str, session_id: str) -> None:
+        async with self._lock:
+            await self._owned_session(user_id, session_id)
+            self._messages[session_id] = []
