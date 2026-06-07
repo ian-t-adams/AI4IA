@@ -18,6 +18,9 @@ dependencies = [
     "python-jose[cryptography]>=3.3",
     "azure-identity>=1.17",
     "azure-cosmos>=4.7",
+    # Async azure SDKs (azure.cosmos.aio + azure.identity.aio) require an async
+    # HTTP transport at runtime; azure-core selects aiohttp by default.
+    "aiohttp>=3.10",
 ]
 
 [project.optional-dependencies]
