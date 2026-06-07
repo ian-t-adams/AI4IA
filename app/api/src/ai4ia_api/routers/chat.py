@@ -29,6 +29,9 @@ from ..sessions.repository import SessionNotFoundError, SessionRepository
 from ..agents.agent_catalog import AgentCatalog, AgentSpec
 from ..agents.command_service import execute_command
 from ..agents.commands import parse_input
+from ..agents.runtime import run_agent_turn
+from ..agents.tool_exec import ToolContext, ToolExecutor
+from ..agents.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -126,6 +129,8 @@ async def chat(
     catalog: ModelCatalog = request.app.state.catalog
     gateway: ModelGatewayClient = request.app.state.gateway
     agents: AgentCatalog = request.app.state.agents
+    registry: ToolRegistry = request.app.state.tool_registry
+    executor: ToolExecutor = request.app.state.tool_executor
 
     try:
         session = await repo.get_session(user.internal_user_id, body.sessionId)
@@ -236,6 +241,36 @@ async def chat(
     if not model_from_agent_default:
         session.model = model_id
     await repo.update_session(session)
+
+    # Tool-enabled agent turn: run the gateway-native tool-calling loop governed
+    # by the tool-safety registry. The model picks/sequences tools; we authorize
+    # and execute each call. This path is non-streaming internally; the resolved
+    # final answer is returned via the standard reply shape (a single SSE delta
+    # when streaming). Agents without tools fall through to the direct model path
+    # below, which keeps true token streaming.
+    if agent is not None and agent.tools:
+        ctx = ToolContext(correlation_id=correlation_id)
+        run = await run_agent_turn(
+            deployment=deployment.deploymentName,
+            messages=payload_messages,
+            tool_names=agent.tools,
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ctx,
+            params=body.params,
+        )
+        assistant = Message(
+            sessionId=body.sessionId,
+            userId=user.internal_user_id,
+            role=MessageRole.assistant,
+            content=run.text,
+            status=MessageStatus.complete,
+            model=deployment.deploymentName,
+            agent=agent_name,
+        )
+        await repo.add_message(user.internal_user_id, assistant)
+        return _local_reply_response(body.sessionId, assistant, body.stream)
 
     if not body.stream:
         try:

@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from .auth.factory import build_auth_provider
 from .agents.agent_catalog import load_agent_catalog
+from .agents.tool_exec import build_tools
 from .catalog import load_catalog
 from .config import Settings, get_settings
 from .gateway.client import ModelGatewayClient
@@ -43,6 +44,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.gateway = ModelGatewayClient(settings, http_client=http)
         app.state.catalog = load_catalog(settings.model_catalog_path)
         app.state.agents = load_agent_catalog(settings.agent_catalog_path)
+        # Tool-safety registry (governs) + executor (runs). Separate objects,
+        # seeded together so a tool's safety contract and handler never drift.
+        registry, executor = build_tools()
+        app.state.tool_registry = registry
+        app.state.tool_executor = executor
         try:
             yield
         finally:
