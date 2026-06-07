@@ -40,7 +40,15 @@ export interface Message {
   content: string;
   status: MessageStatus;
   model: string | null;
+  agent: string | null;
   createdAt: string;
+}
+
+export interface AgentSummary {
+  name: string;
+  displayName: string;
+  description: string;
+  enabled: boolean;
 }
 
 export interface ChatParams {

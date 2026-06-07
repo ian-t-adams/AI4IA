@@ -1,6 +1,7 @@
 // Browser-side API client. All calls are same-origin to the Next.js proxy
 // (src/app/api/[...path]/route.ts), which forwards to the backend API.
 import type {
+  AgentSummary,
   ChatParams,
   Message,
   ModelCatalog,
@@ -23,6 +24,13 @@ async function jsonOrThrow<T>(resp: Response): Promise<T> {
 
 export async function listModels(): Promise<ModelCatalog> {
   return jsonOrThrow(await fetch("/api/models", { cache: "no-store" }));
+}
+
+export async function listAgents(): Promise<AgentSummary[]> {
+  const data = await jsonOrThrow<{ agents: AgentSummary[] }>(
+    await fetch("/api/agents", { cache: "no-store" }),
+  );
+  return data.agents;
 }
 
 export async function listSessions(): Promise<Session[]> {

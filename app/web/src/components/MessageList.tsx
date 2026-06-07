@@ -7,6 +7,7 @@ interface DisplayMessage {
   id: string;
   role: Message["role"];
   content: string;
+  agent?: string | null;
   pending?: boolean;
 }
 
@@ -14,6 +15,7 @@ function Bubble({ msg }: { msg: DisplayMessage }) {
   const isUser = msg.role === "user";
   const isSystem = msg.role === "system";
   if (isSystem) return null;
+  const label = isUser ? "You" : "Assistant";
   return (
     <div
       style={{
@@ -41,9 +43,28 @@ function Bubble({ msg }: { msg: DisplayMessage }) {
             letterSpacing: 0.6,
             opacity: 0.7,
             marginBottom: 4,
+            display: "flex",
+            gap: 6,
+            alignItems: "center",
+            justifyContent: isUser ? "flex-end" : "flex-start",
           }}
         >
-          {isUser ? "You" : "Assistant"}
+          <span>{label}</span>
+          {msg.agent && (
+            <span
+              style={{
+                textTransform: "none",
+                letterSpacing: 0,
+                padding: "1px 6px",
+                borderRadius: 999,
+                background: "var(--accent)",
+                color: "var(--accent-fg)",
+                fontWeight: 600,
+              }}
+            >
+              @{msg.agent}
+            </span>
+          )}
         </div>
         {msg.content}
         {msg.pending && (

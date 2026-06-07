@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
-import type { ChatParams, Message, ModelEntry, Session } from "@/lib/types";
+import type { AgentSummary, ChatParams, Message, ModelEntry, Session } from "@/lib/types";
 import { Sidebar } from "./Sidebar";
 import { ModelPicker } from "./ModelPicker";
 import { ParamControls } from "./ParamControls";
@@ -17,6 +17,7 @@ function pickDefaultModel(models: ModelEntry[]): string | null {
 
 export function ChatApp() {
   const [models, setModels] = useState<ModelEntry[]>([]);
+  const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -51,6 +52,12 @@ export function ChatApp() {
         setSessions(sess);
       } catch (e) {
         setError((e as Error).message);
+      }
+      // Agents are an optional enhancement (the @-menu); never block chat on them.
+      try {
+        setAgents(await api.listAgents());
+      } catch {
+        /* non-fatal: no @-mention menu */
       }
     })();
   }, []);
@@ -177,6 +184,7 @@ export function ChatApp() {
         content,
         status: "complete",
         model: selectedModel,
+        agent: null,
         createdAt: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, optimisticUser]);
@@ -235,16 +243,16 @@ export function ChatApp() {
   }, []);
 
   const displayMessages: DisplayMessage[] = useMemo(() => {
-    const base = messages
+    const base: DisplayMessage[] = messages
       .filter((m) => m.role !== "system")
-      .map((m) => ({ id: m.id, role: m.role, content: m.content }));
+      .map((m) => ({ id: m.id, role: m.role, content: m.content, agent: m.agent }));
     if (streaming) {
       base.push({
         id: "streaming",
         role: "assistant",
         content: streamingText,
         pending: true,
-      } as DisplayMessage);
+      });
     }
     return base;
   }, [messages, streaming, streamingText]);
@@ -305,6 +313,7 @@ export function ChatApp() {
         <Composer
           disabled={streaming || !selectedModel}
           streaming={streaming}
+          agents={agents}
           onSend={send}
           onStop={stop}
         />
