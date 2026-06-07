@@ -52,6 +52,9 @@ param entraTenantId string = ''
 @description('Entra audience / API app ID URI (required when apiAuthProvider == entra).')
 param entraAudience string = ''
 
+@description('Dev user the web proxy injects as X-Dev-User (dev/demo only; ignored in prod).')
+param webDevUser string = 'dev@ai4ia.local'
+
 @description('Inbound auth mode the api uses when calling the model gateway (none|api_key|bearer). Must not be none in prod.')
 @allowed([
   'none'
@@ -130,6 +133,8 @@ var dataPlanePrincipalIds = map(filter(identity.outputs.identities, x => x.servi
 var apiIdentity = filter(identity.outputs.identities, x => x.service == 'api')[0]
 // The proxy identity runs the SimpleL7Proxy gateway container.
 var proxyIdentity = filter(identity.outputs.identities, x => x.service == 'proxy')[0]
+// The web identity runs the Next.js frontend container (ACR pull only).
+var webIdentity = filter(identity.outputs.identities, x => x.service == 'web')[0]
 
 module keyvault 'modules/keyvault.bicep' = {
   name: 'keyvault'
@@ -243,6 +248,24 @@ module api 'modules/api.bicep' = {
   }
 }
 
+// --- Phase 3: frontend web (Next.js) Container App ---
+module web 'modules/web.bicep' = {
+  name: 'web'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    environmentName: environmentName
+    containerEnvId: platform.outputs.containerEnvId
+    webIdentityResourceId: webIdentity.resourceId
+    acrLoginServer: platform.outputs.acrLoginServer
+    apiBaseUrl: api.outputs.apiUrl
+    appEnvironment: appEnvironment
+    // Dev user only matters while the api runs the dev auth provider.
+    devUser: appEnvironment == 'prod' ? '' : webDevUser
+  }
+}
+
 // --- Foundry accounts + projects per region ---
 // Account/project names are environment-scoped so parallel-RG validation (Phase 0b)
 // and multi-env deploys don't collide on the globally-unique Cognitive Services subdomain.
@@ -296,6 +319,8 @@ output AZURE_APIM_GATEWAY_URL string = gateway.outputs.apimGatewayUrl
 output AZURE_PROXY_URL string = gateway.outputs.proxyUrl
 output AZURE_API_URL string = api.outputs.apiUrl
 output AZURE_API_APP_NAME string = api.outputs.apiAppName
+output AZURE_WEB_URL string = web.outputs.webUrl
+output AZURE_WEB_APP_NAME string = web.outputs.webAppName
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
 output AZURE_FOUNDRY_ENDPOINTS array = [for (r, i) in regionList: {
   region: r.name
