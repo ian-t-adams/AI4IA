@@ -55,18 +55,6 @@ param entraAudience string = ''
 @description('Dev user the web proxy injects as X-Dev-User (dev/demo only; ignored in prod).')
 param webDevUser string = 'dev@ai4ia.local'
 
-@description('Inbound auth mode the api uses when calling the model gateway (none|api_key|bearer). Must not be none in prod.')
-@allowed([
-  'none'
-  'api_key'
-  'bearer'
-])
-param modelGatewayAuthMode string = 'none'
-
-@description('Model gateway API key (only used when modelGatewayAuthMode == api_key).')
-@secure()
-param modelGatewayApiKey string = ''
-
 @description('Deploy the Postgres Flexible Server (pgvector home for mem0). Derived from postgresLocation: empty location => skip. Disable where the subscription is offer-restricted for Postgres; mem0/pgvector is a Phase 5 dependency the MVP api/web do not consume.')
 param postgresLocation string = ''
 
@@ -213,6 +201,14 @@ module cost 'modules/cost.bicep' = {
 }
 
 // --- Phase 1.5: minimal model gateway (SimpleL7Proxy + APIM front door) ---
+// APIM routes the model data plane straight to the primary Foundry account (the
+// one co-located with the shared resources / `location`) until SimpleL7Proxy is
+// vendored in Phase 6. The index is start-computable from the catalog; the
+// Foundry outputs are referenced inline in the module params (deferred), exactly
+// like `foundryEndpoints` below, so no new dependency cycle is introduced.
+var regionNames = map(regionList, r => r.name)
+var primaryFoundryIndex = filter(range(0, length(regionList)), i => regionNames[i] == location)[0]
+
 module gateway 'modules/gateway.bicep' = {
   name: 'gateway'
   scope: rg
@@ -225,6 +221,8 @@ module gateway 'modules/gateway.bicep' = {
     proxyIdentityResourceId: proxyIdentity.resourceId
     acrLoginServer: platform.outputs.acrLoginServer
     foundryEndpoints: [for (r, i) in regionList: foundry[i].outputs.endpoint]
+    primaryFoundryEndpoint: foundry[primaryFoundryIndex].outputs.endpoint
+    primaryFoundryAccountName: foundry[primaryFoundryIndex].outputs.accountName
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     apimPublisherEmail: apimPublisherEmail
   }
@@ -243,8 +241,8 @@ module api 'modules/api.bicep' = {
     apiIdentityClientId: apiIdentity.clientId
     acrLoginServer: platform.outputs.acrLoginServer
     modelGatewayUrl: gateway.outputs.modelGatewayUrl
-    modelGatewayAuthMode: modelGatewayAuthMode
-    modelGatewayApiKey: modelGatewayApiKey
+    modelGatewayAuthMode: 'api_key'
+    modelGatewayApiKey: gateway.outputs.gatewaySubscriptionKey
     cosmosEndpoint: data.outputs.cosmosEndpoint
     cosmosDatabase: data.outputs.cosmosDatabaseName
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
