@@ -20,6 +20,12 @@ param owner string = 'ian-t-adams'
 @description('Cost center tag value.')
 param costCenter string = 'genai-demo'
 
+@description('Monthly cost budget (billing currency) for the resource group.')
+param budgetAmount int = 1500
+
+@description('Emails notified on budget thresholds (empty = tracking only).')
+param budgetAlertEmails array = []
+
 var tags = {
   workload: workload
   env: environmentName
@@ -126,6 +132,32 @@ module platform 'modules/containerapps.bicep' = {
   }
 }
 
+module eventhubs 'modules/eventhubs.bicep' = {
+  name: 'eventhubs'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    workload: workload
+    environmentName: environmentName
+    uniqueSuffix: uniqueSuffix
+    senderPrincipalIds: dataPlanePrincipalIds
+    receiverPrincipalIds: [
+      apiIdentity.principalId
+    ]
+  }
+}
+
+module cost 'modules/cost.bicep' = {
+  name: 'cost'
+  scope: rg
+  params: {
+    name: 'budget-${workload}-${environmentName}'
+    amount: budgetAmount
+    alertEmails: budgetAlertEmails
+  }
+}
+
 // --- Foundry accounts + projects per region ---
 // Account/project names are environment-scoped so parallel-RG validation (Phase 0b)
 // and multi-env deploys don't collide on the globally-unique Cognitive Services subdomain.
@@ -177,6 +209,8 @@ output AZURE_CONTAINER_REGISTRY_ENDPOINT string = platform.outputs.acrLoginServe
 output AZURE_CONTAINER_REGISTRY_NAME string = platform.outputs.acrName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = platform.outputs.containerEnvName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = platform.outputs.containerEnvId
+output AZURE_EVENTHUBS_NAMESPACE_FQDN string = eventhubs.outputs.namespaceFqdn
+output AZURE_EVENTHUBS_TELEMETRY_HUB string = eventhubs.outputs.telemetryHubName
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
 output AZURE_FOUNDRY_ENDPOINTS array = [for (r, i) in regionList: {
   region: r.name
