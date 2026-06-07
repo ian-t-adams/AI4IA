@@ -258,11 +258,6 @@
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 10
-        },
-        {
-          "region": "westus3",
-          "sku": "GlobalStandard",
-          "capacity": 10
         }
       ]
     },
@@ -278,11 +273,6 @@
         },
         {
           "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 10
-        },
-        {
-          "region": "westus3",
           "sku": "GlobalStandard",
           "capacity": 10
         }
@@ -448,11 +438,6 @@
       "deployments": [
         {
           "region": "swedencentral",
-          "sku": "Standard",
-          "capacity": 3
-        },
-        {
-          "region": "westus3",
           "sku": "Standard",
           "capacity": 3
         }

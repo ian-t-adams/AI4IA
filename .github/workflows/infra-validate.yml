@@ -31,5 +31,8 @@ jobs:
           python -m pip install --quiet check-jsonschema
           check-jsonschema --schemafile infra/models.schema.json infra/models.json
 
+      - name: Validate catalog consistency (regions / SKUs / names)
+        run: python scripts/validate-catalog.py
+
       - name: Bicep build (lint)
         run: bicep build infra/main.bicep --stdout > /dev/null
