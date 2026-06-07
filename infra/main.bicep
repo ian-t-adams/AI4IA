@@ -29,6 +29,41 @@ param budgetAlertEmails array = []
 @description('APIM publisher email for the model gateway front door.')
 param apimPublisherEmail string = 'admin@nomad-analytics.com'
 
+@description('Application runtime environment for the api (maps to AI4IA_ENV).')
+@allowed([
+  'dev'
+  'prod'
+])
+param appEnvironment string = 'dev'
+
+@description('Auth provider the api enforces (dev|entra).')
+@allowed([
+  'dev'
+  'entra'
+])
+param apiAuthProvider string = 'dev'
+
+@description('Permit dev auth outside local (non-prod demos without Entra). Forced false in prod.')
+param apiAllowDevAuth bool = true
+
+@description('Entra tenant ID (required when apiAuthProvider == entra).')
+param entraTenantId string = ''
+
+@description('Entra audience / API app ID URI (required when apiAuthProvider == entra).')
+param entraAudience string = ''
+
+@description('Inbound auth mode the api uses when calling the model gateway (none|api_key|bearer). Must not be none in prod.')
+@allowed([
+  'none'
+  'api_key'
+  'bearer'
+])
+param modelGatewayAuthMode string = 'none'
+
+@description('Model gateway API key (only used when modelGatewayAuthMode == api_key).')
+@secure()
+param modelGatewayApiKey string = ''
+
 var tags = {
   workload: workload
   env: environmentName
@@ -181,6 +216,33 @@ module gateway 'modules/gateway.bicep' = {
   }
 }
 
+// --- Phase 2: backend API (FastAPI) Container App ---
+module api 'modules/api.bicep' = {
+  name: 'api'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    environmentName: environmentName
+    containerEnvId: platform.outputs.containerEnvId
+    apiIdentityResourceId: apiIdentity.resourceId
+    apiIdentityClientId: apiIdentity.clientId
+    acrLoginServer: platform.outputs.acrLoginServer
+    modelGatewayUrl: gateway.outputs.modelGatewayUrl
+    modelGatewayAuthMode: modelGatewayAuthMode
+    modelGatewayApiKey: modelGatewayApiKey
+    cosmosEndpoint: data.outputs.cosmosEndpoint
+    cosmosDatabase: data.outputs.cosmosDatabaseName
+    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
+    appEnvironment: appEnvironment
+    authProvider: apiAuthProvider
+    // Never allow dev auth in prod regardless of the supplied flag.
+    allowDevAuth: appEnvironment == 'prod' ? false : apiAllowDevAuth
+    entraTenantId: entraTenantId
+    entraAudience: entraAudience
+  }
+}
+
 // --- Foundry accounts + projects per region ---
 // Account/project names are environment-scoped so parallel-RG validation (Phase 0b)
 // and multi-env deploys don't collide on the globally-unique Cognitive Services subdomain.
@@ -213,11 +275,6 @@ module modelDeployments 'modules/models.bicep' = [for (r, i) in regionList: {
   }
 }]
 
-// --- Phase 1 (cont.) + Phase 1.5 placeholders, added incrementally ---
-// module data    'modules/data.bicep'         = { ... }   // cosmos + postgres
-// module apps    'modules/containerapps.bicep' = { ... }   // ACR + Container Apps env
-// module gateway 'modules/gateway.bicep'      = { ... }   // SimpleL7Proxy + APIM
-
 output AZURE_RESOURCE_GROUP string = rg.name
 output AZURE_LOCATION string = location
 output AZURE_TAGS object = tags
@@ -237,6 +294,8 @@ output AZURE_EVENTHUBS_TELEMETRY_HUB string = eventhubs.outputs.telemetryHubName
 output AZURE_MODEL_GATEWAY_URL string = gateway.outputs.modelGatewayUrl
 output AZURE_APIM_GATEWAY_URL string = gateway.outputs.apimGatewayUrl
 output AZURE_PROXY_URL string = gateway.outputs.proxyUrl
+output AZURE_API_URL string = api.outputs.apiUrl
+output AZURE_API_APP_NAME string = api.outputs.apiAppName
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
 output AZURE_FOUNDRY_ENDPOINTS array = [for (r, i) in regionList: {
   region: r.name

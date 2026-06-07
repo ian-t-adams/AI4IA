@@ -1,0 +1,201 @@
+// Phase 2: the FastAPI backend (app/api) running on Container Apps.
+// azd builds app/api/Dockerfile, pushes to ACR, and deploys into this app
+// (matched by the `azd-service-name: api` tag).
+@description('Location for the api container app.')
+param location string
+
+@description('Tags applied to all resources.')
+param tags object
+
+@description('Environment name (e.g. ai4ia-dev).')
+param environmentName string
+
+@description('Container Apps managed environment resource ID.')
+param containerEnvId string
+
+@description('Resource ID of the api user-assigned identity.')
+param apiIdentityResourceId string
+
+@description('Client ID of the api user-assigned identity (for AZURE_CLIENT_ID / Managed Identity auth).')
+param apiIdentityClientId string
+
+@description('ACR login server the api image is pulled from.')
+param acrLoginServer string
+
+@description('Container image for the api (placeholder until azd deploys app/api).')
+param apiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
+
+@description('Model gateway base URL (APIM front door + /openai).')
+param modelGatewayUrl string
+
+@description('Inbound auth mode the api uses when calling the model gateway (none|api_key|bearer). Must not be none in prod.')
+@allowed([
+  'none'
+  'api_key'
+  'bearer'
+])
+param modelGatewayAuthMode string = 'none'
+
+@description('Model gateway API key (only used when modelGatewayAuthMode == api_key). Stored as a Container App secret.')
+@secure()
+param modelGatewayApiKey string = ''
+
+@description('Cosmos DB account endpoint for the canonical session store.')
+param cosmosEndpoint string
+
+@description('Cosmos DB database name.')
+param cosmosDatabase string
+
+@description('Application Insights connection string for api telemetry.')
+param appInsightsConnectionString string
+
+@description('Application runtime environment (maps to AI4IA_ENV). One of local|dev|prod.')
+@allowed([
+  'dev'
+  'prod'
+])
+param appEnvironment string = 'dev'
+
+@description('Auth provider the api enforces (dev|entra).')
+@allowed([
+  'dev'
+  'entra'
+])
+param authProvider string = 'dev'
+
+@description('Permit the dev auth provider outside local (set true only for non-prod demos without Entra).')
+param allowDevAuth bool = true
+
+@description('Entra tenant ID (required when authProvider == entra).')
+param entraTenantId string = ''
+
+@description('Entra audience / API app ID URI (required when authProvider == entra).')
+param entraAudience string = ''
+
+var entraEnv = authProvider == 'entra' ? [
+  {
+    name: 'AI4IA_ENTRA_TENANT_ID'
+    value: entraTenantId
+  }
+  {
+    name: 'AI4IA_ENTRA_AUDIENCE'
+    value: entraAudience
+  }
+] : []
+
+// Gateway API key is held as a Container App secret and referenced by env when present.
+var hasGatewayKey = !empty(modelGatewayApiKey)
+var gatewaySecrets = hasGatewayKey ? [
+  {
+    name: 'model-gateway-api-key'
+    value: modelGatewayApiKey
+  }
+] : []
+var gatewayKeyEnv = hasGatewayKey ? [
+  {
+    name: 'AI4IA_MODEL_GATEWAY_API_KEY'
+    secretRef: 'model-gateway-api-key'
+  }
+] : []
+
+var apiEnv = concat([
+  {
+    name: 'PORT'
+    value: '8080'
+  }
+  {
+    name: 'AI4IA_ENV'
+    value: appEnvironment
+  }
+  {
+    name: 'AI4IA_AUTH_PROVIDER'
+    value: authProvider
+  }
+  {
+    name: 'AI4IA_ALLOW_DEV_AUTH'
+    value: string(allowDevAuth)
+  }
+  {
+    name: 'AI4IA_MODEL_GATEWAY_URL'
+    value: modelGatewayUrl
+  }
+  {
+    name: 'AI4IA_MODEL_GATEWAY_AUTH_MODE'
+    value: modelGatewayAuthMode
+  }
+  {
+    name: 'AI4IA_SESSION_STORE'
+    value: 'cosmos'
+  }
+  {
+    name: 'AI4IA_COSMOS_ENDPOINT'
+    value: cosmosEndpoint
+  }
+  {
+    name: 'AI4IA_COSMOS_DATABASE'
+    value: cosmosDatabase
+  }
+  {
+    name: 'AZURE_CLIENT_ID'
+    value: apiIdentityClientId
+  }
+  {
+    name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+    value: appInsightsConnectionString
+  }
+], gatewayKeyEnv, entraEnv)
+
+resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
+  name: 'ca-api-${environmentName}'
+  location: location
+  tags: union(tags, {
+    'azd-service-name': 'api'
+  })
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${apiIdentityResourceId}': {}
+    }
+  }
+  properties: {
+    managedEnvironmentId: containerEnvId
+    configuration: {
+      activeRevisionsMode: 'Single'
+      secrets: gatewaySecrets
+      ingress: {
+        // External for v1 so the api is directly testable before the web app
+        // exists. Flip to internal once web is the only public frontend.
+        external: true
+        targetPort: 8080
+        transport: 'auto'
+        allowInsecure: false
+      }
+      registries: [
+        {
+          server: acrLoginServer
+          identity: apiIdentityResourceId
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'api'
+          image: apiImage
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+          env: apiEnv
+        }
+      ]
+      scale: {
+        minReplicas: 1
+        maxReplicas: 3
+      }
+    }
+  }
+}
+
+output apiAppName string = apiApp.name
+output apiUrl string = 'https://${apiApp.properties.configuration.ingress.fqdn}'
