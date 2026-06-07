@@ -1,0 +1,491 @@
+{
+  "$schema": "./models.schema.json",
+  "_comment": "Generated from live az cognitiveservices model list. Tune capacities/SKUs as needed.",
+  "naming": {
+    "pattern": "{model}-slurmfactory-{region}-{skuShort}",
+    "skuShort": {
+      "GlobalStandard": "glbl",
+      "DataZoneStandard": "dz",
+      "Standard": "std"
+    }
+  },
+  "regions": {
+    "eastus2": {
+      "dataZone": "US",
+      "primary": true,
+      "roles": [
+        "chat",
+        "voice",
+        "image",
+        "video"
+      ]
+    },
+    "swedencentral": {
+      "dataZone": "EU",
+      "primary": true,
+      "roles": [
+        "chat",
+        "voice",
+        "image",
+        "video"
+      ]
+    },
+    "westus": {
+      "dataZone": "US",
+      "primary": false,
+      "roles": [
+        "image",
+        "research"
+      ]
+    }
+  },
+  "catalog": [
+    {
+      "name": "gpt-5.2",
+      "format": "OpenAI",
+      "category": "chat",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        }
+      ]
+    },
+    {
+      "name": "gpt-5.1",
+      "format": "OpenAI",
+      "category": "chat",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        }
+      ]
+    },
+    {
+      "name": "gpt-5",
+      "format": "OpenAI",
+      "category": "chat",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        }
+      ]
+    },
+    {
+      "name": "gpt-5-mini",
+      "format": "OpenAI",
+      "category": "chat-fast",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 100
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 100
+        }
+      ]
+    },
+    {
+      "name": "gpt-4.1-mini",
+      "format": "OpenAI",
+      "category": "chat-fast",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 100
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 100
+        }
+      ]
+    },
+    {
+      "name": "gpt-4.1-nano",
+      "format": "OpenAI",
+      "category": "chat-fast",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 100
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 100
+        }
+      ]
+    },
+    {
+      "name": "model-router",
+      "format": "OpenAI",
+      "category": "router",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        }
+      ]
+    },
+    {
+      "name": "o4-mini",
+      "format": "OpenAI",
+      "category": "reasoning",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        }
+      ]
+    },
+    {
+      "name": "gpt-oss-120b",
+      "format": "OpenAI",
+      "category": "reasoning-oss",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 30
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 30
+        }
+      ]
+    },
+    {
+      "name": "MAI-DS-R1",
+      "format": "Microsoft",
+      "category": "reasoning-oss",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 30
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 30
+        }
+      ]
+    },
+    {
+      "name": "DeepSeek-V3.2",
+      "format": "DeepSeek",
+      "category": "reasoning-oss",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 30
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 30
+        }
+      ]
+    },
+    {
+      "name": "grok-4-fast-reasoning",
+      "format": "xAI",
+      "category": "reasoning",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 30
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 30
+        }
+      ]
+    },
+    {
+      "name": "gpt-image-1.5",
+      "format": "OpenAI",
+      "category": "image",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        },
+        {
+          "region": "westus3",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        }
+      ]
+    },
+    {
+      "name": "gpt-image-2",
+      "format": "OpenAI",
+      "category": "image",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        },
+        {
+          "region": "westus3",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        }
+      ]
+    },
+    {
+      "name": "MAI-Image-2.5",
+      "format": "Microsoft",
+      "category": "image",
+      "deployments": [
+        {
+          "region": "westus",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        }
+      ]
+    },
+    {
+      "name": "FLUX.2-pro",
+      "format": "BlackForestLabs",
+      "category": "image",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        }
+      ]
+    },
+    {
+      "name": "text-embedding-3-large",
+      "format": "OpenAI",
+      "category": "embedding",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 120
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 120
+        }
+      ]
+    },
+    {
+      "name": "embed-v-4-0",
+      "format": "Cohere",
+      "category": "embedding",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        }
+      ]
+    },
+    {
+      "name": "Cohere-rerank-v4.0-pro",
+      "format": "Cohere",
+      "category": "rerank",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50
+        }
+      ]
+    },
+    {
+      "name": "gpt-realtime",
+      "format": "OpenAI",
+      "category": "realtime",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        }
+      ]
+    },
+    {
+      "name": "gpt-realtime-mini",
+      "format": "OpenAI",
+      "category": "realtime",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        }
+      ]
+    },
+    {
+      "name": "gpt-audio",
+      "format": "OpenAI",
+      "category": "audio",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 10
+        }
+      ]
+    },
+    {
+      "name": "whisper",
+      "format": "OpenAI",
+      "category": "transcription",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "Standard",
+          "capacity": 3
+        },
+        {
+          "region": "swedencentral",
+          "sku": "Standard",
+          "capacity": 3
+        }
+      ]
+    },
+    {
+      "name": "tts-hd",
+      "format": "OpenAI",
+      "category": "tts",
+      "deployments": [
+        {
+          "region": "swedencentral",
+          "sku": "Standard",
+          "capacity": 3
+        },
+        {
+          "region": "westus3",
+          "sku": "Standard",
+          "capacity": 3
+        }
+      ]
+    },
+    {
+      "name": "sora-2",
+      "format": "OpenAI",
+      "category": "video",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 5
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 5
+        }
+      ]
+    },
+    {
+      "name": "o3-deep-research",
+      "format": "OpenAI",
+      "category": "research",
+      "deployments": [
+        {
+          "region": "westus",
+          "sku": "GlobalStandard",
+          "capacity": 5
+        }
+      ]
+    }
+  ]
+}
