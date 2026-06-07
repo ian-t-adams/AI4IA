@@ -26,6 +26,9 @@ param budgetAmount int = 1500
 @description('Emails notified on budget thresholds (empty = tracking only).')
 param budgetAlertEmails array = []
 
+@description('APIM publisher email for the model gateway front door.')
+param apimPublisherEmail string = 'admin@nomad-analytics.com'
+
 var tags = {
   workload: workload
   env: environmentName
@@ -90,6 +93,8 @@ var dataPlanePrincipalIds = map(filter(identity.outputs.identities, x => x.servi
 
 // The api identity owns the canonical data stores (Cosmos + Postgres).
 var apiIdentity = filter(identity.outputs.identities, x => x.service == 'api')[0]
+// The proxy identity runs the SimpleL7Proxy gateway container.
+var proxyIdentity = filter(identity.outputs.identities, x => x.service == 'proxy')[0]
 
 module keyvault 'modules/keyvault.bicep' = {
   name: 'keyvault'
@@ -158,6 +163,24 @@ module cost 'modules/cost.bicep' = {
   }
 }
 
+// --- Phase 1.5: minimal model gateway (SimpleL7Proxy + APIM front door) ---
+module gateway 'modules/gateway.bicep' = {
+  name: 'gateway'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    workload: workload
+    environmentName: environmentName
+    containerEnvId: platform.outputs.containerEnvId
+    proxyIdentityResourceId: proxyIdentity.resourceId
+    acrLoginServer: platform.outputs.acrLoginServer
+    foundryEndpoints: [for (r, i) in regionList: foundry[i].outputs.endpoint]
+    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
+    apimPublisherEmail: apimPublisherEmail
+  }
+}
+
 // --- Foundry accounts + projects per region ---
 // Account/project names are environment-scoped so parallel-RG validation (Phase 0b)
 // and multi-env deploys don't collide on the globally-unique Cognitive Services subdomain.
@@ -211,6 +234,9 @@ output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = platform.outputs.container
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = platform.outputs.containerEnvId
 output AZURE_EVENTHUBS_NAMESPACE_FQDN string = eventhubs.outputs.namespaceFqdn
 output AZURE_EVENTHUBS_TELEMETRY_HUB string = eventhubs.outputs.telemetryHubName
+output AZURE_MODEL_GATEWAY_URL string = gateway.outputs.modelGatewayUrl
+output AZURE_APIM_GATEWAY_URL string = gateway.outputs.apimGatewayUrl
+output AZURE_PROXY_URL string = gateway.outputs.proxyUrl
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
 output AZURE_FOUNDRY_ENDPOINTS array = [for (r, i) in regionList: {
   region: r.name
