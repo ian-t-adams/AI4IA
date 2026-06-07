@@ -1,6 +1,7 @@
 """Unit tests for the slash-command execution service."""
 from __future__ import annotations
 
+from ai4ia_api.agents.agent_catalog import load_agent_catalog
 from ai4ia_api.agents.command_service import HELP_TEXT, execute_command
 from ai4ia_api.agents.commands import parse_input
 from ai4ia_api.auth.base import AuthenticatedUser
@@ -27,7 +28,12 @@ async def _run(repo, user, session, content: str) -> Message:
     parsed = parse_input(content)
     assert parsed.is_command, content
     return await execute_command(
-        parsed=parsed, session=session, user=user, repo=repo, catalog=load_catalog()
+        parsed=parsed,
+        session=session,
+        user=user,
+        repo=repo,
+        catalog=load_catalog(),
+        agents=load_agent_catalog(),
     )
 
 

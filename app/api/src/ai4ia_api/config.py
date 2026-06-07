@@ -96,6 +96,8 @@ class Settings(BaseSettings):
 
     # Optional path override for the bundled model catalog (tests/dev).
     model_catalog_path: str | None = None
+    # Optional path override for the bundled agent catalog (tests/dev).
+    agent_catalog_path: str | None = None
 
     @property
     def allowed_tenants(self) -> list[str]:

@@ -43,6 +43,9 @@ class Message(BaseModel):
     content: str = ""
     status: MessageStatus = MessageStatus.complete
     model: str | None = None
+    # Name of the agent this turn was routed to via an ``@mention`` (set on both
+    # the routed user message and the assistant reply). ``None`` for plain turns.
+    agent: str | None = None
     # True for the local transcript of a slash command (the echoed command and
     # its reply). These are shown in the UI but excluded from model context and
     # from first-turn auto-titling.

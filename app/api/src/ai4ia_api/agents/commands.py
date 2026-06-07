@@ -23,6 +23,7 @@ class CommandKind(str, Enum):
     clear = "clear"
     system = "system"
     model = "model"
+    agents = "agents"
     summarize = "summarize"
     forget = "forget"
     # Anything that looks like a command but isn't known.

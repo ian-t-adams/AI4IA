@@ -1,5 +1,13 @@
 """Chat endpoint: resolves a deployment from the catalog, calls the model
-gateway, and persists messages with cancellation-safe streaming semantics."""
+gateway, and persists messages with cancellation-safe streaming semantics.
+
+Turns may be routed to an agent via a leading ``@mention``. Agent routing is
+*per-turn*: the agent's system prompt replaces the session prompt for that turn
+only (it does not mutate ``session.systemPrompt``), the ``@mention`` is stripped
+from the text the model sees (and from what is stored, so it never replays into
+later context), and the agent name is recorded on both the user and assistant
+messages for attribution and future tracing.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -16,10 +24,12 @@ from ..auth.dependencies import get_current_user
 from ..catalog import ModelCatalog
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..logging_setup import get_correlation_id
-from ..sessions.models import Message, MessageRole, MessageStatus
+from ..sessions.models import Message, MessageRole, MessageStatus, Session
 from ..sessions.repository import SessionNotFoundError, SessionRepository
+from ..agents.agent_catalog import AgentCatalog, AgentSpec
 from ..agents.command_service import execute_command
 from ..agents.commands import parse_input
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -46,6 +56,66 @@ def _history(messages: list[Message], system_prompt: str | None) -> list[dict]:
     return out
 
 
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _local_reply_response(session_id: str, assistant: Message, stream: bool):
+    """Uniform response for a locally-produced reply (command / agent notice).
+
+    Mirrors the model SSE shape so the frontend parser is unchanged: one content
+    delta, then ``[DONE]``.
+    """
+    if not stream:
+        return {"sessionId": session_id, "message": assistant}
+
+    async def gen():
+        chunk = {"choices": [{"delta": {"content": assistant.content}}]}
+        yield f"data: {json.dumps(chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+async def _persist_local_reply(
+    *,
+    repo: SessionRepository,
+    session: Session,
+    user: AuthenticatedUser,
+    user_content: str,
+    reply: str,
+    agent: str | None = None,
+) -> Message:
+    """Persist a user echo + a local assistant reply (both excluded from model
+    context via ``fromCommand``) and return the assistant message."""
+    uid = user.internal_user_id
+    await repo.add_message(
+        uid,
+        Message(
+            sessionId=session.id,
+            userId=uid,
+            role=MessageRole.user,
+            content=user_content,
+            status=MessageStatus.complete,
+            fromCommand=True,
+            agent=agent,
+        ),
+    )
+    assistant = Message(
+        sessionId=session.id,
+        userId=uid,
+        role=MessageRole.assistant,
+        content=reply,
+        status=MessageStatus.complete,
+        fromCommand=True,
+        agent=agent,
+    )
+    await repo.add_message(uid, assistant)
+    session.updatedAt = _now()
+    await repo.update_session(session)
+    return assistant
+
+
 @router.post("/chat")
 async def chat(
     body: ChatRequest,
@@ -55,31 +125,83 @@ async def chat(
     repo: SessionRepository = request.app.state.session_repo
     catalog: ModelCatalog = request.app.state.catalog
     gateway: ModelGatewayClient = request.app.state.gateway
+    agents: AgentCatalog = request.app.state.agents
 
     try:
         session = await repo.get_session(user.internal_user_id, body.sessionId)
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
-    # Slash commands (/help, /clear, /system, /model, ...) are handled locally
-    # and never reach a model. Reply uniformly so the frontend's SSE parser
-    # works unchanged: one content delta, then [DONE].
     parsed = parse_input(body.content)
+
+    # Resolve an @mention to an agent BEFORE handling commands or the model, so
+    # an invalid mention can never fall through to either. Disabled agents are
+    # treated as unavailable.
+    agent: AgentSpec | None = None
+    if parsed.agent is not None:
+        agent = agents.get(parsed.agent)
+        if agent is None or not agent.enabled:
+            assistant = await _persist_local_reply(
+                repo=repo,
+                session=session,
+                user=user,
+                user_content=parsed.raw,
+                reply=(
+                    f"Unknown agent: @{parsed.agent}. "
+                    "Type /agents to see the agents you can mention."
+                ),
+            )
+            return _local_reply_response(body.sessionId, assistant, body.stream)
+
+    # Slash commands (/help, /clear, /system, /model, /agents, ...) are handled
+    # locally and never reach a model. A command takes precedence over an agent
+    # mention (e.g. "@coder /help" runs /help); the mention was already
+    # validated above.
     if parsed.is_command:
         assistant = await execute_command(
-            parsed=parsed, session=session, user=user, repo=repo, catalog=catalog
+            parsed=parsed,
+            session=session,
+            user=user,
+            repo=repo,
+            catalog=catalog,
+            agents=agents,
         )
-        if not body.stream:
-            return {"sessionId": body.sessionId, "message": assistant}
+        return _local_reply_response(body.sessionId, assistant, body.stream)
 
-        async def command_stream():
-            chunk = {"choices": [{"delta": {"content": assistant.content}}]}
-            yield f"data: {json.dumps(chunk)}\n\n"
-            yield "data: [DONE]\n\n"
+    # Determine the system prompt, model, and the content the model actually
+    # sees. For an agent turn the persona prompt replaces the session prompt
+    # (this turn only) and the mention is stripped from the text.
+    if agent is not None:
+        content_for_model = parsed.text
+        if not content_for_model:
+            assistant = await _persist_local_reply(
+                repo=repo,
+                session=session,
+                user=user,
+                user_content=parsed.raw,
+                reply=(
+                    f"You mentioned @{agent.name} but didn't include a message. "
+                    "What would you like to ask?"
+                ),
+                agent=agent.name,
+            )
+            return _local_reply_response(body.sessionId, assistant, body.stream)
+        system_prompt = agent.systemPrompt
+        # Precedence: explicit body model > session's standing model > agent's
+        # preferred model. The agent default is a per-turn fallback only and is
+        # never written back to the session.
+        model_id = body.model or session.model or agent.defaultModel
+        model_from_agent_default = (
+            not body.model and not session.model and agent.defaultModel is not None
+        )
+        agent_name: str | None = agent.name
+    else:
+        content_for_model = body.content
+        system_prompt = session.systemPrompt
+        model_id = body.model or session.model
+        model_from_agent_default = False
+        agent_name = None
 
-        return StreamingResponse(command_stream(), media_type="text/event-stream")
-
-    model_id = body.model or session.model
     if not model_id:
         raise HTTPException(status_code=400, detail="No model selected for this chat")
     deployment = catalog.resolve_deployment(
@@ -93,13 +215,14 @@ async def chat(
         sessionId=body.sessionId,
         userId=user.internal_user_id,
         role=MessageRole.user,
-        content=body.content,
+        content=content_for_model,
         status=MessageStatus.complete,
+        agent=agent_name,
     )
     await repo.add_message(user.internal_user_id, user_msg)
 
-    payload_messages = _history(prior, session.systemPrompt) + [
-        {"role": "user", "content": body.content}
+    payload_messages = _history(prior, system_prompt) + [
+        {"role": "user", "content": content_for_model}
     ]
     correlation_id = get_correlation_id()
 
@@ -107,8 +230,11 @@ async def chat(
     has_prior_chat = any(not m.fromCommand for m in prior)
     session.updatedAt = datetime.now(timezone.utc)
     if session.title == "New chat" and not has_prior_chat:
-        session.title = body.content[:60]
-    session.model = model_id
+        session.title = content_for_model[:60]
+    # Persist the model choice to the session unless it came purely from the
+    # agent's per-turn default (which must not silently rebind the session).
+    if not model_from_agent_default:
+        session.model = model_id
     await repo.update_session(session)
 
     if not body.stream:
@@ -129,12 +255,15 @@ async def chat(
             content=text,
             status=MessageStatus.complete,
             model=deployment.deploymentName,
+            agent=agent_name,
         )
         await repo.add_message(user.internal_user_id, assistant)
         return {"sessionId": body.sessionId, "message": assistant}
 
     # Streaming path: persist a placeholder so a record always exists, then
     # assemble server-side and upsert the final status (best-effort, shielded).
+    # The agent attribution is set on the placeholder so a cancelled/errored
+    # turn keeps it.
     assistant = Message(
         sessionId=body.sessionId,
         userId=user.internal_user_id,
@@ -142,6 +271,7 @@ async def chat(
         content="",
         status=MessageStatus.streaming,
         model=deployment.deploymentName,
+        agent=agent_name,
     )
     await repo.add_message(user.internal_user_id, assistant)
 

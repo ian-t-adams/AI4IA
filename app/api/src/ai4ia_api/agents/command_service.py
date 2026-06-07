@@ -17,6 +17,7 @@ from ..auth.base import AuthenticatedUser
 from ..catalog import ModelCatalog
 from ..sessions.models import Message, MessageRole, MessageStatus, Session
 from ..sessions.repository import SessionRepository
+from .agent_catalog import AgentCatalog
 from .commands import CommandKind, ParsedInput
 
 HELP_TEXT = (
@@ -25,9 +26,11 @@ HELP_TEXT = (
     "/clear — clear this conversation's history\n"
     "/system <prompt> — set the system prompt (no args shows the current one)\n"
     "/model <model-id> — switch the model for this conversation\n"
+    "/agents — list the agents you can mention\n"
     "/summarize — summarize the conversation (coming with memory)\n"
     "/forget — erase stored memories (coming with memory)\n"
-    "Mention @agent at the start of a turn to route it to an agent (coming soon)."
+    "Mention @agent at the start of a turn to route it to that agent "
+    "(e.g. @coder review this function). Use /agents to see who's available."
 )
 
 
@@ -42,6 +45,7 @@ async def execute_command(
     user: AuthenticatedUser,
     repo: SessionRepository,
     catalog: ModelCatalog,
+    agents: AgentCatalog,
 ) -> Message:
     """Run the parsed command, persist its effects, and return the reply message."""
     command = parsed.command
@@ -65,7 +69,9 @@ async def execute_command(
                 fromCommand=True,
             ),
         )
-        reply = await _reply_for(command.kind, command.name, command.args, session, catalog)
+        reply = await _reply_for(
+            command.kind, command.name, command.args, session, catalog, agents
+        )
 
     # Persist any session mutation (systemPrompt/model) BEFORE recording the
     # success reply, so a failed update can't leave a misleading transcript.
@@ -90,9 +96,13 @@ async def _reply_for(
     args: str,
     session: Session,
     catalog: ModelCatalog,
+    agents: AgentCatalog,
 ) -> str:
     if kind is CommandKind.help:
         return HELP_TEXT
+
+    if kind is CommandKind.agents:
+        return _agents_text(agents)
 
     if kind is CommandKind.system:
         if not args:
@@ -114,3 +124,13 @@ async def _reply_for(
 
     # Unknown command.
     return f"Unknown command: /{name}. Type /help to see what's available."
+
+
+def _agents_text(agents: AgentCatalog) -> str:
+    """Render the list of mentionable agents for the /agents command."""
+    available = agents.public_list()
+    if not available:
+        return "No agents are available yet."
+    lines = ["Available agents (mention one at the start of a turn):"]
+    lines.extend(f"@{a.name} — {a.displayName}: {a.description}" for a in available)
+    return "\n".join(lines)

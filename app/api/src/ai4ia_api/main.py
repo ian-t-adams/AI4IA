@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .auth.factory import build_auth_provider
+from .agents.agent_catalog import load_agent_catalog
 from .catalog import load_catalog
 from .config import Settings, get_settings
 from .gateway.client import ModelGatewayClient
@@ -17,6 +18,7 @@ from .logging_setup import (
     new_correlation_id,
     set_correlation_id,
 )
+from .routers import agents as agents_router
 from .routers import catalog as catalog_router
 from .routers import chat as chat_router
 from .routers import health as health_router
@@ -40,6 +42,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.session_repo = build_session_repository(settings)
         app.state.gateway = ModelGatewayClient(settings, http_client=http)
         app.state.catalog = load_catalog(settings.model_catalog_path)
+        app.state.agents = load_agent_catalog(settings.agent_catalog_path)
         try:
             yield
         finally:
@@ -65,6 +68,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health_router.router)
     app.include_router(catalog_router.router)
+    app.include_router(agents_router.router)
     app.include_router(sessions_router.router)
     app.include_router(chat_router.router)
     return app
