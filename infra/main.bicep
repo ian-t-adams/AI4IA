@@ -24,10 +24,10 @@ param costCenter string = 'genai-demo'
 param budgetAmount int = 1500
 
 @description('Emails notified on budget thresholds (empty = tracking only).')
-param budgetAlertEmails array = []
+param budgetAlertEmails array = ['ianadams@microsoft.com']
 
 @description('APIM publisher email for the model gateway front door.')
-param apimPublisherEmail string = 'admin@nomad-analytics.com'
+param apimPublisherEmail string = 'ianadams@microsoft.com'
 
 @description('Application runtime environment for the api (maps to AI4IA_ENV).')
 @allowed([
