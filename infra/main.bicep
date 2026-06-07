@@ -67,6 +67,9 @@ param modelGatewayAuthMode string = 'none'
 @secure()
 param modelGatewayApiKey string = ''
 
+@description('Deploy the Postgres Flexible Server (pgvector home for mem0). Derived from postgresLocation: empty location => skip. Disable where the subscription is offer-restricted for Postgres; mem0/pgvector is a Phase 5 dependency the MVP api/web do not consume.')
+param postgresLocation string = ''
+
 var tags = {
   workload: workload
   env: environmentName
@@ -95,6 +98,10 @@ var regionList = map(items(models.regions), r => {
 })
 
 var uniqueSuffix = uniqueString(subscription().id, environmentName)
+
+// Postgres (mem0/pgvector) is opt-in via a non-empty postgresLocation, since several
+// subscriptions are offer-restricted for Postgres Flexible Server in some regions.
+var postgresEnabled = !empty(postgresLocation)
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
@@ -160,6 +167,8 @@ module data 'modules/data.bicep' = {
     uniqueSuffix: uniqueSuffix
     apiPrincipalId: apiIdentity.principalId
     apiPrincipalName: apiIdentity.name
+    deployPostgres: postgresEnabled
+    postgresLocation: empty(postgresLocation) ? location : postgresLocation
   }
 }
 
@@ -292,6 +301,7 @@ module modelDeployments 'modules/models.bicep' = [for (r, i) in regionList: {
       deploymentName: '${m.name}-${subscriptionToken}-${r.name}-${skuShort[d.sku]}'
       modelName: m.name
       format: m.format
+      version: d.version
       sku: d.sku
       capacity: d.capacity
     })))

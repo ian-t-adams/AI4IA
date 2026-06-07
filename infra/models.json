@@ -1,6 +1,6 @@
 {
   "$schema": "./models.schema.json",
-  "_comment": "Generated from live az cognitiveservices model list. Tune capacities/SKUs as needed.",
+  "_comment": "Generated from live az cognitiveservices model list, reconciled to live catalog + quota (gen_catalog_v2). Each deployment pins an explicit model version.",
   "naming": {
     "pattern": "{model}-slurmfactory-{region}-{skuShort}",
     "skuShort": {
@@ -48,12 +48,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 50
+          "capacity": 50,
+          "version": "2025-12-11"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 50
+          "capacity": 50,
+          "version": "2025-12-11"
         }
       ]
     },
@@ -65,12 +67,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 50
+          "capacity": 50,
+          "version": "2025-11-13"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 50
+          "capacity": 50,
+          "version": "2025-11-13"
         }
       ]
     },
@@ -82,12 +86,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 50
+          "capacity": 50,
+          "version": "2025-08-07"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 50
+          "capacity": 50,
+          "version": "2025-08-07"
         }
       ]
     },
@@ -99,12 +105,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 100
+          "capacity": 100,
+          "version": "2025-08-07"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 100
+          "capacity": 100,
+          "version": "2025-08-07"
         }
       ]
     },
@@ -116,12 +124,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 100
+          "capacity": 100,
+          "version": "2025-04-14"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 100
+          "capacity": 100,
+          "version": "2025-04-14"
         }
       ]
     },
@@ -133,12 +143,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 100
+          "capacity": 100,
+          "version": "2025-04-14"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 100
+          "capacity": 100,
+          "version": "2025-04-14"
         }
       ]
     },
@@ -150,12 +162,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 50
+          "capacity": 50,
+          "version": "2025-11-18"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 50
+          "capacity": 50,
+          "version": "2025-11-18"
         }
       ]
     },
@@ -167,46 +181,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 50
+          "capacity": 50,
+          "version": "2025-04-16"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 50
-        }
-      ]
-    },
-    {
-      "name": "gpt-oss-120b",
-      "format": "OpenAI",
-      "category": "reasoning-oss",
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 30
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 30
-        }
-      ]
-    },
-    {
-      "name": "MAI-DS-R1",
-      "format": "Microsoft",
-      "category": "reasoning-oss",
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 30
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 30
+          "capacity": 50,
+          "version": "2025-04-16"
         }
       ]
     },
@@ -218,29 +200,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 30
+          "capacity": 30,
+          "version": "1"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 30
-        }
-      ]
-    },
-    {
-      "name": "grok-4-fast-reasoning",
-      "format": "xAI",
-      "category": "reasoning",
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 30
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 30
+          "capacity": 30,
+          "version": "1"
         }
       ]
     },
@@ -252,12 +219,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 10
+          "capacity": 9,
+          "version": "2025-12-16"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 10
+          "capacity": 9,
+          "version": "2025-12-16"
         }
       ]
     },
@@ -269,12 +238,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 10
+          "capacity": 2,
+          "version": "2026-04-21"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 10
+          "capacity": 2,
+          "version": "2026-04-21"
         }
       ]
     },
@@ -286,29 +257,8 @@
         {
           "region": "westus",
           "sku": "GlobalStandard",
-          "capacity": 10
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 10
-        }
-      ]
-    },
-    {
-      "name": "FLUX.2-pro",
-      "format": "BlackForestLabs",
-      "category": "image",
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 10
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 10
+          "capacity": 2,
+          "version": "2026-06-02"
         }
       ]
     },
@@ -320,12 +270,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 120
+          "capacity": 120,
+          "version": "1"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 120
+          "capacity": 120,
+          "version": "1"
         }
       ]
     },
@@ -337,12 +289,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 50
+          "capacity": 50,
+          "version": "1"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 50
+          "capacity": 50,
+          "version": "1"
         }
       ]
     },
@@ -354,12 +308,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 50
+          "capacity": 50,
+          "version": "1"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 50
+          "capacity": 50,
+          "version": "1"
         }
       ]
     },
@@ -371,12 +327,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 10
+          "capacity": 10,
+          "version": "2025-08-28"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 10
+          "capacity": 10,
+          "version": "2025-08-28"
         }
       ]
     },
@@ -388,12 +346,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 10
+          "capacity": 10,
+          "version": "2025-12-15"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 10
+          "capacity": 10,
+          "version": "2025-12-15"
         }
       ]
     },
@@ -405,12 +365,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 10
+          "capacity": 10,
+          "version": "2025-08-28"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 10
+          "capacity": 10,
+          "version": "2025-08-28"
         }
       ]
     },
@@ -422,12 +384,14 @@
         {
           "region": "eastus2",
           "sku": "Standard",
-          "capacity": 3
+          "capacity": 3,
+          "version": "001"
         },
         {
           "region": "swedencentral",
           "sku": "Standard",
-          "capacity": 3
+          "capacity": 3,
+          "version": "001"
         }
       ]
     },
@@ -439,7 +403,8 @@
         {
           "region": "swedencentral",
           "sku": "Standard",
-          "capacity": 3
+          "capacity": 3,
+          "version": "001"
         }
       ]
     },
@@ -451,12 +416,14 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
-          "capacity": 5
+          "capacity": 5,
+          "version": "2025-10-06"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
-          "capacity": 5
+          "capacity": 5,
+          "version": "2025-10-06"
         }
       ]
     },
@@ -468,7 +435,8 @@
         {
           "region": "westus",
           "sku": "GlobalStandard",
-          "capacity": 5
+          "capacity": 5,
+          "version": "2025-06-26"
         }
       ]
     }

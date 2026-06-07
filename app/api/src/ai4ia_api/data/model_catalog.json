@@ -193,46 +193,6 @@
       ]
     },
     {
-      "id": "gpt-oss-120b",
-      "displayName": "gpt-oss-120b",
-      "category": "reasoning-oss",
-      "format": "OpenAI",
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "deploymentName": "gpt-oss-120b-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "deploymentName": "gpt-oss-120b-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
-      "id": "MAI-DS-R1",
-      "displayName": "MAI-DS-R1",
-      "category": "reasoning-oss",
-      "format": "Microsoft",
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "deploymentName": "MAI-DS-R1-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "deploymentName": "MAI-DS-R1-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
       "id": "DeepSeek-V3.2",
       "displayName": "DeepSeek-V3.2",
       "category": "reasoning-oss",
@@ -249,26 +209,6 @@
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "DeepSeek-V3.2-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
-      "id": "grok-4-fast-reasoning",
-      "displayName": "grok-4-fast-reasoning",
-      "category": "reasoning",
-      "format": "xAI",
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "deploymentName": "grok-4-fast-reasoning-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "deploymentName": "grok-4-fast-reasoning-slurmfactory-swedencentral-glbl"
         }
       ]
     },
@@ -323,32 +263,6 @@
           "dataZone": "US",
           "sku": "GlobalStandard",
           "deploymentName": "MAI-Image-2.5-slurmfactory-westus-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "deploymentName": "MAI-Image-2.5-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
-      "id": "FLUX.2-pro",
-      "displayName": "FLUX.2-pro",
-      "category": "image",
-      "format": "BlackForestLabs",
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "deploymentName": "FLUX.2-pro-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "deploymentName": "FLUX.2-pro-slurmfactory-swedencentral-glbl"
         }
       ]
     },

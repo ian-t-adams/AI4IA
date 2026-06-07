@@ -24,6 +24,12 @@ param apiPrincipalName string
 @description('Tenant ID for Entra auth on Postgres.')
 param tenantId string = subscription().tenantId
 
+@description('Deploy the Postgres Flexible Server (pgvector home for mem0). Disable where the subscription is offer-restricted for Postgres.')
+param deployPostgres bool = true
+
+@description('Location for the Postgres Flexible Server (may differ from `location` due to subscription offer restrictions).')
+param postgresLocation string = location
+
 // ---------------- Cosmos DB (NoSQL) ----------------
 var cosmosAccountName = take('cosmos-${workload}-${environmentName}-${uniqueSuffix}', 44)
 
@@ -120,11 +126,14 @@ resource cosmosDataRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignment
 }
 
 // ---------------- Postgres Flexible Server (pgvector) ----------------
-var postgresName = take('psql-${workload}-${environmentName}-${uniqueSuffix}', 60)
+// Name includes the location so a region change yields a fresh resourceId (ARM
+// enforces location-immutability per resourceId; a prior eastus2 attempt otherwise
+// blocks re-creation in another region).
+var postgresName = take('psql-${workload}-${environmentName}-${postgresLocation}-${uniqueSuffix}', 60)
 
-resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
+resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = if (deployPostgres) {
   name: postgresName
-  location: location
+  location: postgresLocation
   tags: tags
   sku: {
     name: 'Standard_B2s'
@@ -152,7 +161,7 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
 }
 
 // Entra admin = api managed identity (no SQL passwords).
-resource postgresAdmin 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024-08-01' = {
+resource postgresAdmin 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024-08-01' = if (deployPostgres) {
   parent: postgres
   name: apiPrincipalId
   properties: {
@@ -163,7 +172,7 @@ resource postgresAdmin 'Microsoft.DBforPostgreSQL/flexibleServers/administrators
 }
 
 // Allowlist the pgvector extension (app runs CREATE EXTENSION vector at init).
-resource postgresExtensions 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2024-08-01' = {
+resource postgresExtensions 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2024-08-01' = if (deployPostgres) {
   parent: postgres
   name: 'azure.extensions'
   properties: {
@@ -175,7 +184,7 @@ resource postgresExtensions 'Microsoft.DBforPostgreSQL/flexibleServers/configura
   ]
 }
 
-resource memoryDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = {
+resource memoryDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = if (deployPostgres) {
   parent: postgres
   name: 'mem0'
   properties: {
@@ -187,6 +196,6 @@ resource memoryDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-0
 output cosmosAccountName string = cosmos.name
 output cosmosEndpoint string = cosmos.properties.documentEndpoint
 output cosmosDatabaseName string = cosmosDb.name
-output postgresName string = postgres.name
-output postgresFqdn string = postgres.properties.fullyQualifiedDomainName
-output postgresDatabaseName string = memoryDb.name
+output postgresName string = deployPostgres ? postgres.name : ''
+output postgresFqdn string = postgres.?properties.fullyQualifiedDomainName ?? ''
+output postgresDatabaseName string = deployPostgres ? memoryDb.name : ''

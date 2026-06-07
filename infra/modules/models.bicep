@@ -5,7 +5,7 @@
 param accountName string
 
 @description('''Flat list of deployments for this account. Each item:
-{ deploymentName: string, modelName: string, format: string, sku: string, capacity: int }''')
+{ deploymentName: string, modelName: string, format: string, version: string, sku: string, capacity: int }''')
 param deployments array
 
 resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = {
@@ -24,6 +24,7 @@ resource modelDeployments 'Microsoft.CognitiveServices/accounts/deployments@2024
     model: {
       format: d.format
       name: d.modelName
+      version: d.version
     }
     versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
   }

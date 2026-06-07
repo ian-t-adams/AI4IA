@@ -41,14 +41,15 @@
             "minItems": 1,
             "items": {
               "type": "object",
-              "required": ["region", "sku", "capacity"],
+              "required": ["region", "sku", "capacity", "version"],
               "properties": {
                 "region": { "type": "string" },
                 "sku": {
                   "type": "string",
                   "enum": ["GlobalStandard", "DataZoneStandard", "Standard", "GlobalBatch", "DataZoneBatch"]
                 },
-                "capacity": { "type": "integer", "minimum": 1 }
+                "capacity": { "type": "integer", "minimum": 1 },
+                "version": { "type": "string" }
               }
             }
           }
