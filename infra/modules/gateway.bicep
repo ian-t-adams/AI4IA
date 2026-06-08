@@ -19,6 +19,9 @@ param containerEnvId string
 @description('Resource ID of the proxy user-assigned identity.')
 param proxyIdentityResourceId string
 
+@description('Client ID of the proxy user-assigned identity (selects the MI for DefaultAzureCredential token requests).')
+param proxyIdentityClientId string
+
 @description('ACR login server the proxy image is pulled from.')
 param acrLoginServer string
 
@@ -61,6 +64,13 @@ var staticEnv = [
   {
     name: 'AppInsightsConnectionString'
     value: appInsightsConnectionString
+  }
+  {
+    // SimpleL7Proxy uses DefaultAzureCredential; with a user-assigned identity
+    // it must be told which client ID to use, or token requests fail with
+    // "Unable to load the proper Managed Identity".
+    name: 'AZURE_CLIENT_ID'
+    value: proxyIdentityClientId
   }
 ]
 

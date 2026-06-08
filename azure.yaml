@@ -31,7 +31,7 @@ services:
   # the real image here, replacing the placeholder set by Bicep.
   proxy:
     project: ./proxy
-    language: dotnet
+    language: docker
     host: containerapp
     docker:
       path: Dockerfile

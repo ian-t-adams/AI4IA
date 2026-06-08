@@ -219,6 +219,7 @@ module gateway 'modules/gateway.bicep' = {
     environmentName: environmentName
     containerEnvId: platform.outputs.containerEnvId
     proxyIdentityResourceId: proxyIdentity.resourceId
+    proxyIdentityClientId: proxyIdentity.clientId
     acrLoginServer: platform.outputs.acrLoginServer
     foundryEndpoints: [for (r, i) in regionList: foundry[i].outputs.endpoint]
     primaryFoundryEndpoint: foundry[primaryFoundryIndex].outputs.endpoint
