@@ -407,6 +407,20 @@
       ]
     },
     {
+      "id": "gpt-4o-mini-tts",
+      "displayName": "gpt-4o-mini-tts",
+      "category": "tts",
+      "format": "OpenAI",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-4o-mini-tts-slurmfactory-eastus2-glbl"
+        }
+      ]
+    },
+    {
       "id": "tts-hd",
       "displayName": "tts-hd",
       "category": "tts",

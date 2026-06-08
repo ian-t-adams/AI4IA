@@ -32,6 +32,7 @@ from .routers import health as health_router
 from .routers import images as images_router
 from .routers import sessions as sessions_router
 from .routers import usage as usage_router
+from .routers import voice as voice_router
 from .sessions.factory import build_session_repository
 from .sessions.repository import SessionNotFoundError
 from .usage.factory import build_usage_repository
@@ -144,6 +145,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(sessions_router.router)
     app.include_router(chat_router.router)
     app.include_router(images_router.router)
+    app.include_router(voice_router.router)
     app.include_router(usage_router.router)
     app.include_router(entitlements_router.self_router)
     app.include_router(entitlements_router.admin_router)

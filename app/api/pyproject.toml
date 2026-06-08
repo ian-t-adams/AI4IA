@@ -24,6 +24,9 @@ dependencies = [
     # Async Postgres driver for the pgvector memory store (Phase 5 increment B).
     # Imported lazily so the app/tests run without a live database.
     "asyncpg>=0.29",
+    # Multipart form parser: required by FastAPI for the voice transcription
+    # endpoint's audio file upload (Phase 7B).
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

@@ -64,6 +64,18 @@ def _default_images_path(style: GatewayProviderStyle) -> str:
     return "/images/generations"
 
 
+def _default_speech_path(style: GatewayProviderStyle) -> str:
+    if style == GatewayProviderStyle.azure_openai_native:
+        return "/deployments/{deployment}/audio/speech"
+    return "/audio/speech"
+
+
+def _default_transcription_path(style: GatewayProviderStyle) -> str:
+    if style == GatewayProviderStyle.azure_openai_native:
+        return "/deployments/{deployment}/audio/transcriptions"
+    return "/audio/transcriptions"
+
+
 class ModelGatewayClient:
     def __init__(self, settings: Settings, http_client: httpx.AsyncClient | None = None) -> None:
         self._base = settings.model_gateway_url.rstrip("/")
@@ -75,13 +87,30 @@ class ModelGatewayClient:
         self._chat_path = settings.gateway_chat_path or _default_chat_path(self._style)
         self._embeddings_path = _default_embeddings_path(self._style)
         self._images_path = _default_images_path(self._style)
+        self._speech_path = _default_speech_path(self._style)
+        self._transcription_path = _default_transcription_path(self._style)
         self._stream_include_usage = settings.gateway_stream_include_usage
         self._image_api_version = settings.gateway_image_api_version
         self._image_timeout = settings.gateway_image_timeout_seconds
+        self._audio_api_version = settings.gateway_audio_api_version
+        self._audio_timeout = settings.gateway_audio_timeout_seconds
         self._http = http_client
 
     def _auth_headers(self, correlation_id: str | None) -> dict[str, str]:
         headers: dict[str, str] = {"Content-Type": "application/json"}
+        if correlation_id:
+            headers["x-correlation-id"] = correlation_id
+        if self._auth_mode == GatewayAuthMode.api_key and self._api_key:
+            headers["Ocp-Apim-Subscription-Key"] = self._api_key
+        elif self._auth_mode == GatewayAuthMode.bearer and self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
+
+    def _auth_headers_multipart(self, correlation_id: str | None) -> dict[str, str]:
+        """Auth headers WITHOUT a Content-Type: httpx sets the multipart/form-data
+        boundary itself for file uploads (transcription). Forcing application/json
+        here would corrupt the multipart body."""
+        headers: dict[str, str] = {}
         if correlation_id:
             headers["x-correlation-id"] = correlation_id
         if self._auth_mode == GatewayAuthMode.api_key and self._api_key:
@@ -199,6 +228,125 @@ class ModelGatewayClient:
             if resp.status_code >= 400:
                 raise ModelGatewayError(resp.status_code, resp.text)
             return resp.json()
+        finally:
+            if owned:
+                await client.aclose()
+
+    def build_speech_request(
+        self,
+        *,
+        deployment: str,
+        text: str,
+        voice: str,
+        response_format: str,
+        extra: dict[str, Any] | None = None,
+        correlation_id: str | None = None,
+    ) -> GatewayRequest:
+        """Build a text-to-speech request. JSON body ``{input, voice,
+        response_format, model}``; uses the audio api-version. The deployment is
+        carried in the path for Azure-native style, but the ``model`` field is
+        ALSO required in the body: gpt-4o-mini-tts speech (on the 2025 audio
+        api-version) rejects the request with ``missing_required_parameter``
+        otherwise. openai-compatible style relies on ``model`` in the body."""
+        path = self._speech_path.format(deployment=deployment)
+        url = f"{self._base}{path if path.startswith('/') else '/' + path}"
+        body: dict[str, Any] = {
+            "input": text,
+            "voice": voice,
+            "response_format": response_format,
+            "model": deployment,
+            **(extra or {}),
+        }
+        if self._style == GatewayProviderStyle.azure_openai_native:
+            url = f"{url}?api-version={self._audio_api_version}"
+        return GatewayRequest(url=url, headers=self._auth_headers(correlation_id), json=body)
+
+    async def synthesize_speech(
+        self,
+        *,
+        deployment: str,
+        text: str,
+        voice: str,
+        response_format: str,
+        extra: dict[str, Any] | None = None,
+        correlation_id: str | None = None,
+    ) -> bytes:
+        """Synthesize speech; returns the raw audio bytes (mp3/wav/...). Uses the
+        audio timeout (synthesis can take longer than a chat turn)."""
+        req = self.build_speech_request(
+            deployment=deployment,
+            text=text,
+            voice=voice,
+            response_format=response_format,
+            extra=extra,
+            correlation_id=correlation_id,
+        )
+        if self._http is not None:
+            client, owned = self._http, False
+        else:
+            client, owned = httpx.AsyncClient(timeout=self._audio_timeout), True
+        try:
+            resp = await client.post(
+                req.url, headers=req.headers, json=req.json, timeout=self._audio_timeout
+            )
+            if resp.status_code >= 400:
+                raise ModelGatewayError(resp.status_code, resp.text)
+            return resp.content
+        finally:
+            if owned:
+                await client.aclose()
+
+    def transcription_url(self, deployment: str) -> str:
+        """The transcription endpoint URL (path + audio api-version for native)."""
+        path = self._transcription_path.format(deployment=deployment)
+        url = f"{self._base}{path if path.startswith('/') else '/' + path}"
+        if self._style == GatewayProviderStyle.azure_openai_native:
+            url = f"{url}?api-version={self._audio_api_version}"
+        return url
+
+    async def transcribe(
+        self,
+        *,
+        deployment: str,
+        audio: bytes,
+        filename: str,
+        content_type: str,
+        language: str | None = None,
+        response_format: str = "json",
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Transcribe audio (speech-to-text). Sends multipart/form-data with the
+        audio ``file`` part; returns the parsed provider JSON (``{text: ...}``).
+        Openai-compatible style adds ``model`` as a form field."""
+        url = self.transcription_url(deployment)
+        data: dict[str, str] = {"response_format": response_format}
+        if language:
+            data["language"] = language
+        if self._style != GatewayProviderStyle.azure_openai_native:
+            data["model"] = deployment
+        files = {"file": (filename, audio, content_type)}
+        headers = self._auth_headers_multipart(correlation_id)
+        if self._http is not None:
+            client, owned = self._http, False
+        else:
+            client, owned = httpx.AsyncClient(timeout=self._audio_timeout), True
+        try:
+            resp = await client.post(
+                url, headers=headers, data=data, files=files, timeout=self._audio_timeout
+            )
+            if resp.status_code >= 400:
+                raise ModelGatewayError(resp.status_code, resp.text)
+            # response_format=json -> JSON object. A non-JSON 200 means an upstream
+            # misroute (e.g. an HTML error page); only trust plain text when text
+            # was explicitly requested, otherwise treat it as a gateway failure.
+            try:
+                return resp.json()
+            except ValueError:
+                if response_format == "text":
+                    return {"text": resp.text}
+                raise ModelGatewayError(
+                    502, "Unexpected non-JSON transcription response"
+                ) from None
         finally:
             if owned:
                 await client.aclose()

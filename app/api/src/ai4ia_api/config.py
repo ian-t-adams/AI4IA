@@ -92,6 +92,14 @@ class Settings(BaseSettings):
     # against the deployed gpt-image-2 deployment.
     gateway_image_api_version: str = "2024-10-21"
     gateway_image_timeout_seconds: float = 180.0
+    # Voice (Phase 7B) — speech-to-text (whisper) and text-to-speech
+    # (gpt-4o-mini-tts / tts-hd) ride the same gateway/auth path as chat. They
+    # track their own api-version and a generous timeout (audio synthesis /
+    # transcription can exceed a chat turn). gpt-4o-mini-tts speech is only
+    # served on a 2025 api-version (2024-10-21 GA returns 404 for it), and that
+    # api-version also serves whisper transcription, so both share one version.
+    gateway_audio_api_version: str = "2025-03-01-preview"
+    gateway_audio_timeout_seconds: float = 120.0
     # Override the chat-completions path template (placeholders: {deployment}).
     # When unset, a sensible default is derived from the provider style.
     gateway_chat_path: str | None = None

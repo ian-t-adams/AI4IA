@@ -396,6 +396,19 @@
       ]
     },
     {
+      "name": "gpt-4o-mini-tts",
+      "format": "OpenAI",
+      "category": "tts",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10,
+          "version": "2025-03-20"
+        }
+      ]
+    },
+    {
       "name": "tts-hd",
       "format": "OpenAI",
       "category": "tts",
