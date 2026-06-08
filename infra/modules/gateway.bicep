@@ -46,6 +46,15 @@ param apimPublisherEmail string
 @description('APIM publisher org name.')
 param apimPublisherName string = 'AI4IA'
 
+@description('Custom domain bound to the proxy ingress (empty disables custom-domain binding).')
+param customDomain string = ''
+
+@description('Existing Azure-managed certificate name to adopt (empty derives a stable name).')
+param managedCertificateName string = ''
+
+@description('Container Apps managed environment name (parent of the managed certificate).')
+param containerEnvName string
+
 // SimpleL7Proxy HostN connection strings (managed-identity auth to Cognitive Services).
 var hostEnv = [for (e, i) in foundryEndpoints: {
   name: 'Host${i + 1}'
@@ -74,6 +83,31 @@ var staticEnv = [
   }
 ]
 
+// Custom-domain binding (durable in IaC; see web.bicep for rationale).
+var proxyManagedCertName = !empty(managedCertificateName) ? managedCertificateName : 'mc-${replace(customDomain, '.', '-')}'
+
+resource managedEnv 'Microsoft.App/managedEnvironments@2024-10-02-preview' existing = {
+  name: containerEnvName
+}
+
+resource proxyCert 'Microsoft.App/managedEnvironments/managedCertificates@2024-10-02-preview' = if (!empty(customDomain)) {
+  parent: managedEnv
+  name: proxyManagedCertName
+  location: location
+  properties: {
+    subjectName: customDomain
+    domainControlValidation: 'CNAME'
+  }
+}
+
+var proxyCustomDomains = empty(customDomain) ? [] : [
+  {
+    name: customDomain
+    bindingType: 'SniEnabled'
+    certificateId: proxyCert.id
+  }
+]
+
 resource proxyApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: 'ca-proxy-${environmentName}'
   location: location
@@ -95,6 +129,7 @@ resource proxyApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
         targetPort: 8080
         transport: 'auto'
         allowInsecure: false
+        customDomains: proxyCustomDomains
       }
       registries: [
         {

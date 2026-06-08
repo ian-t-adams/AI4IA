@@ -25,6 +25,18 @@
     },
     "adminApiSecret": {
       "value": "${AI4IA_ADMIN_API_SECRET=}"
+    },
+    "webCustomDomain": {
+      "value": "${AI4IA_WEB_CUSTOM_DOMAIN=}"
+    },
+    "webManagedCertName": {
+      "value": "${AI4IA_WEB_MANAGED_CERT_NAME=}"
+    },
+    "proxyCustomDomain": {
+      "value": "${AI4IA_PROXY_CUSTOM_DOMAIN=}"
+    },
+    "proxyManagedCertName": {
+      "value": "${AI4IA_PROXY_MANAGED_CERT_NAME=}"
     }
   }
 }

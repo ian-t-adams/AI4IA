@@ -62,6 +62,18 @@ param adminApiSecret string = ''
 @description('Dev user the web proxy injects as X-Dev-User (dev/demo only; ignored in prod).')
 param webDevUser string = 'dev@ai4ia.local'
 
+@description('Custom domain bound to the web app ingress (empty disables the binding).')
+param webCustomDomain string = ''
+
+@description('Existing Azure-managed cert name the web app adopts (empty derives a stable name).')
+param webManagedCertName string = ''
+
+@description('Custom domain bound to the proxy ingress (empty disables the binding).')
+param proxyCustomDomain string = ''
+
+@description('Existing Azure-managed cert name the proxy adopts (empty derives a stable name).')
+param proxyManagedCertName string = ''
+
 @description('Deploy the Postgres Flexible Server (pgvector home for mem0). Derived from postgresLocation: empty location => skip. Disable where the subscription is offer-restricted for Postgres; mem0/pgvector is a Phase 5 dependency the MVP api/web do not consume.')
 param postgresLocation string = ''
 
@@ -233,6 +245,9 @@ module gateway 'modules/gateway.bicep' = {
     primaryFoundryAccountName: foundry[primaryFoundryIndex].outputs.accountName
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     apimPublisherEmail: apimPublisherEmail
+    customDomain: proxyCustomDomain
+    managedCertificateName: proxyManagedCertName
+    containerEnvName: platform.outputs.containerEnvName
   }
 }
 
@@ -285,6 +300,9 @@ module web 'modules/web.bicep' = {
     appEnvironment: appEnvironment
     // Dev user only matters while the api runs the dev auth provider.
     devUser: appEnvironment == 'prod' ? '' : webDevUser
+    customDomain: webCustomDomain
+    managedCertificateName: webManagedCertName
+    containerEnvName: platform.outputs.containerEnvName
   }
 }
 

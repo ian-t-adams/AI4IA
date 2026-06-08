@@ -37,6 +37,15 @@ param appEnvironment string = 'dev'
 @description('Dev user identity the web proxy injects as X-Dev-User (dev/demo only; ignored in prod).')
 param devUser string = ''
 
+@description('Custom domain bound to the web ingress (empty disables custom-domain binding).')
+param customDomain string = ''
+
+@description('Existing Azure-managed certificate name to adopt (empty derives a stable name).')
+param managedCertificateName string = ''
+
+@description('Container Apps managed environment name (parent of the managed certificate).')
+param containerEnvName string
+
 // In dev/demo (no Entra) the web proxy stamps a fixed user so the dev-auth api
 // has a stable identity. Never inject a dev user in prod.
 var injectDevUser = appEnvironment != 'prod' && !empty(devUser)
@@ -62,6 +71,35 @@ var webEnv = concat([
   }
 ], devUserEnv)
 
+// Custom-domain binding. The Azure-managed cert lives at the environment scope and
+// is referenced from the app ingress so `azd provision` keeps the binding durable
+// instead of wiping an imperatively-added hostname on every deploy. The cert name is
+// parameterized so the current environment adopts its existing managed cert (no
+// re-issue / duplicate subject) while greenfield derives a stable name.
+var webManagedCertName = !empty(managedCertificateName) ? managedCertificateName : 'mc-${replace(customDomain, '.', '-')}'
+
+resource managedEnv 'Microsoft.App/managedEnvironments@2024-10-02-preview' existing = {
+  name: containerEnvName
+}
+
+resource webCert 'Microsoft.App/managedEnvironments/managedCertificates@2024-10-02-preview' = if (!empty(customDomain)) {
+  parent: managedEnv
+  name: webManagedCertName
+  location: location
+  properties: {
+    subjectName: customDomain
+    domainControlValidation: 'CNAME'
+  }
+}
+
+var webCustomDomains = empty(customDomain) ? [] : [
+  {
+    name: customDomain
+    bindingType: 'SniEnabled'
+    certificateId: webCert.id
+  }
+]
+
 resource webApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: 'ca-web-${environmentName}'
   location: location
@@ -84,6 +122,7 @@ resource webApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
         targetPort: 8080
         transport: 'auto'
         allowInsecure: false
+        customDomains: webCustomDomains
       }
       registries: [
         {

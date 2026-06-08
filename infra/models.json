@@ -41,6 +41,25 @@
   },
   "catalog": [
     {
+      "name": "gpt-5.4",
+      "format": "OpenAI",
+      "category": "chat",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-03-05"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-03-05"
+        }
+      ]
+    },
+    {
       "name": "gpt-5.2",
       "format": "OpenAI",
       "category": "chat",
@@ -94,6 +113,25 @@
           "sku": "GlobalStandard",
           "capacity": 50,
           "version": "2025-08-07"
+        }
+      ]
+    },
+    {
+      "name": "gpt-5.4-mini",
+      "format": "OpenAI",
+      "category": "chat-fast",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 100,
+          "version": "2026-03-17"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 100,
+          "version": "2026-03-17"
         }
       ]
     },

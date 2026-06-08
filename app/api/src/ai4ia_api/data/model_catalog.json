@@ -33,6 +33,26 @@
   },
   "models": [
     {
+      "id": "gpt-5.4",
+      "displayName": "gpt-5.4",
+      "category": "chat",
+      "format": "OpenAI",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.4-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.4-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
       "id": "gpt-5.2",
       "displayName": "gpt-5.2",
       "category": "chat",
@@ -89,6 +109,26 @@
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-5-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "displayName": "gpt-5.4-mini",
+      "category": "chat-fast",
+      "format": "OpenAI",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.4-mini-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.4-mini-slurmfactory-swedencentral-glbl"
         }
       ]
     },

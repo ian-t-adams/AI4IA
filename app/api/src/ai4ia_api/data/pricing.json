@@ -3,6 +3,8 @@
   "version": "2026-06-08",
   "currency": "USD",
   "models": {
+    "gpt-5.4": { "inputPer1M": 1.25, "outputPer1M": 10.0 },
+    "gpt-5.4-mini": { "inputPer1M": 0.25, "outputPer1M": 2.0 },
     "gpt-5.2": { "inputPer1M": 1.25, "outputPer1M": 10.0 },
     "gpt-5.1": { "inputPer1M": 1.25, "outputPer1M": 10.0 },
     "gpt-5": { "inputPer1M": 1.25, "outputPer1M": 10.0 },
