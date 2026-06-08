@@ -25,18 +25,16 @@ services:
     host: containerapp
     docker:
       path: Dockerfile
-  # proxy (SimpleL7Proxy) is provisioned by Bicep (ca-proxy-*) with a placeholder
-  # image. It is intentionally NOT an azd deploy target yet: the upstream
-  # https://github.com/microsoft/SimpleL7Proxy source still needs to be vendored
-  # into ./proxy with a Dockerfile. azd validates every service's project at
-  # provision time, so an un-vendored proxy here blocks `azd provision`.
-  # Re-enable this block once ./proxy contains the .NET project + Dockerfile.
-  # proxy:
-  #   project: ./proxy
-  #   language: dotnet
-  #   host: containerapp
-  #   docker:
-  #     path: Dockerfile
+  # proxy (SimpleL7Proxy) is provisioned by Bicep (ca-proxy-*). The upstream
+  # https://github.com/microsoft/SimpleL7Proxy source is vendored into ./proxy
+  # (Shared, Shared-parser, SimpleL7Proxy + Dockerfile); azd builds and pushes
+  # the real image here, replacing the placeholder set by Bicep.
+  proxy:
+    project: ./proxy
+    language: dotnet
+    host: containerapp
+    docker:
+      path: Dockerfile
 
 # Lifecycle hooks (optional). The teardown helper handles soft-delete purge,
 # which `azd down` does not do for Cognitive/Key Vault resources.

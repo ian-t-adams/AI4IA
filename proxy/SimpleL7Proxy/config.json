@@ -1,0 +1,26 @@
+[
+    {
+        "userId": "123456",
+        "S7PPriorityKey": "12345",
+        "Header1": "Value1",
+        "Header2": "Value2",
+        "fofo": "fofo",
+        "internal-fofo2": "fofo2",
+        "AllowedPaths": "/api*, /*",  
+        "async-config": "enabled=true, containername=user123456, topic=status-123456"
+    },
+    {
+        "userId": "123455",
+        "S7PPriorityKey": "12345",
+        "Header1": "Value1",
+        "Header2": "Value2",
+        "async-config": "enabled=true, containername=user123455, topic=status-12355"
+    },
+    {
+        "userId": "1234567",
+        "Header1": "Value1",
+        "Header2": "Value2",
+        "async-config": "enabled=false",
+        "AllowedPaths": "/echo*, /file/*"
+    }
+]
