@@ -17,6 +17,7 @@ import type {
   WorkflowRunResult,
   WorkflowUpdate,
 } from "./types";
+import { apiFetch } from "./auth";
 
 async function jsonOrThrow<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -33,7 +34,7 @@ async function jsonOrThrow<T>(resp: Response): Promise<T> {
 }
 
 export async function listModels(): Promise<ModelCatalog> {
-  return jsonOrThrow(await fetch("/api/models", { cache: "no-store" }));
+  return jsonOrThrow(await apiFetch("/api/models", { cache: "no-store" }));
 }
 
 // Generates an image through the backend gateway (gpt-image-2 etc.). Returns
@@ -42,7 +43,7 @@ export async function generateImage(
   input: ImageRequest,
 ): Promise<ImageResponse> {
   return jsonOrThrow(
-    await fetch("/api/images/generations", {
+    await apiFetch("/api/images/generations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -52,7 +53,7 @@ export async function generateImage(
 
 export async function listAgents(): Promise<AgentSummary[]> {
   const data = await jsonOrThrow<{ agents: AgentSummary[] }>(
-    await fetch("/api/agents", { cache: "no-store" }),
+    await apiFetch("/api/agents", { cache: "no-store" }),
   );
   return data.agents;
 }
@@ -61,14 +62,14 @@ export async function listAgents(): Promise<AgentSummary[]> {
 
 export async function listMyAgents(): Promise<UserAgent[]> {
   const data = await jsonOrThrow<{ agents: UserAgent[] }>(
-    await fetch("/api/agents/mine", { cache: "no-store" }),
+    await apiFetch("/api/agents/mine", { cache: "no-store" }),
   );
   return data.agents;
 }
 
 export async function createAgent(input: UserAgentCreate): Promise<UserAgent> {
   return jsonOrThrow(
-    await fetch("/api/agents", {
+    await apiFetch("/api/agents", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -81,7 +82,7 @@ export async function updateAgent(
   patch: UserAgentUpdate,
 ): Promise<UserAgent> {
   return jsonOrThrow(
-    await fetch(`/api/agents/${encodeURIComponent(name)}`, {
+    await apiFetch(`/api/agents/${encodeURIComponent(name)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -90,7 +91,7 @@ export async function updateAgent(
 }
 
 export async function deleteAgent(name: string): Promise<void> {
-  const resp = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
+  const resp = await apiFetch(`/api/agents/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
   if (!resp.ok && resp.status !== 204) {
@@ -100,14 +101,14 @@ export async function deleteAgent(name: string): Promise<void> {
 
 export async function listWorkflows(): Promise<Workflow[]> {
   const data = await jsonOrThrow<{ workflows: Workflow[] }>(
-    await fetch("/api/workflows", { cache: "no-store" }),
+    await apiFetch("/api/workflows", { cache: "no-store" }),
   );
   return data.workflows;
 }
 
 export async function createWorkflow(input: WorkflowCreate): Promise<Workflow> {
   return jsonOrThrow(
-    await fetch("/api/workflows", {
+    await apiFetch("/api/workflows", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -120,7 +121,7 @@ export async function updateWorkflow(
   patch: WorkflowUpdate,
 ): Promise<Workflow> {
   return jsonOrThrow(
-    await fetch(`/api/workflows/${encodeURIComponent(name)}`, {
+    await apiFetch(`/api/workflows/${encodeURIComponent(name)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -129,7 +130,7 @@ export async function updateWorkflow(
 }
 
 export async function deleteWorkflow(name: string): Promise<void> {
-  const resp = await fetch(`/api/workflows/${encodeURIComponent(name)}`, {
+  const resp = await apiFetch(`/api/workflows/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
   if (!resp.ok && resp.status !== 204) {
@@ -144,7 +145,7 @@ export async function runWorkflow(
   input: { sessionId: string; input: string; model?: string | null },
 ): Promise<WorkflowRunResult> {
   return jsonOrThrow(
-    await fetch(`/api/workflows/${encodeURIComponent(name)}/run`, {
+    await apiFetch(`/api/workflows/${encodeURIComponent(name)}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -171,7 +172,7 @@ export async function transcribeAudio(
   if (opts?.model) form.append("model", opts.model);
   if (opts?.language) form.append("language", opts.language);
   return jsonOrThrow(
-    await fetch("/api/voice/transcriptions", { method: "POST", body: form }),
+    await apiFetch("/api/voice/transcriptions", { method: "POST", body: form }),
   );
 }
 
@@ -181,7 +182,7 @@ export async function synthesizeSpeech(
   text: string,
   opts?: { model?: string; voice?: string; format?: string },
 ): Promise<Blob> {
-  const resp = await fetch("/api/voice/speech", {
+  const resp = await apiFetch("/api/voice/speech", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ input: text, ...opts }),
@@ -200,7 +201,7 @@ export async function synthesizeSpeech(
 }
 
 export async function listSessions(): Promise<Session[]> {
-  return jsonOrThrow(await fetch("/api/sessions", { cache: "no-store" }));
+  return jsonOrThrow(await apiFetch("/api/sessions", { cache: "no-store" }));
 }
 
 export async function createSession(input: {
@@ -209,7 +210,7 @@ export async function createSession(input: {
   systemPrompt?: string | null;
 }): Promise<Session> {
   return jsonOrThrow(
-    await fetch("/api/sessions", {
+    await apiFetch("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -222,7 +223,7 @@ export async function updateSession(
   patch: { title?: string; model?: string | null; systemPrompt?: string | null },
 ): Promise<Session> {
   return jsonOrThrow(
-    await fetch(`/api/sessions/${id}`, {
+    await apiFetch(`/api/sessions/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -231,7 +232,7 @@ export async function updateSession(
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  const resp = await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+  const resp = await apiFetch(`/api/sessions/${id}`, { method: "DELETE" });
   if (!resp.ok && resp.status !== 204) {
     throw new Error(`${resp.status}: failed to delete session`);
   }
@@ -239,7 +240,7 @@ export async function deleteSession(id: string): Promise<void> {
 
 export async function listMessages(sessionId: string): Promise<Message[]> {
   return jsonOrThrow(
-    await fetch(`/api/sessions/${sessionId}/messages`, { cache: "no-store" }),
+    await apiFetch(`/api/sessions/${sessionId}/messages`, { cache: "no-store" }),
   );
 }
 
@@ -256,7 +257,7 @@ export async function uploadDocument(
   const form = new FormData();
   form.append("file", file, file.name);
   return jsonOrThrow(
-    await fetch(`/api/sessions/${sessionId}/documents`, {
+    await apiFetch(`/api/sessions/${sessionId}/documents`, {
       method: "POST",
       body: form,
     }),
@@ -267,7 +268,7 @@ export async function listDocuments(
   sessionId: string,
 ): Promise<DocumentSummary[]> {
   return jsonOrThrow(
-    await fetch(`/api/sessions/${sessionId}/documents`, { cache: "no-store" }),
+    await apiFetch(`/api/sessions/${sessionId}/documents`, { cache: "no-store" }),
   );
 }
 
@@ -311,7 +312,7 @@ export function streamChat(
   (async () => {
     let sawDone = false;
     try {
-      const resp = await fetch("/api/chat", {
+      const resp = await apiFetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...input, stream: true }),

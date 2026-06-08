@@ -52,6 +52,12 @@ param entraTenantId string = ''
 @description('Entra audience / API app ID URI (required when apiAuthProvider == entra).')
 param entraAudience string = ''
 
+@description('Entra SPA app registration client ID for the web frontend (required to enable browser sign-in).')
+param entraWebClientId string = ''
+
+@description('API scope the web SPA requests (empty derives <entraAudience>/.default when an audience is set).')
+param entraApiScope string = ''
+
 @description('Comma-separated admin subjects for the entitlement-management API.')
 param adminSubjects string = ''
 
@@ -305,6 +311,12 @@ module web 'modules/web.bicep' = {
     customDomain: webCustomDomain
     managedCertificateName: webManagedCertName
     containerEnvName: platform.outputs.containerEnvName
+    // Browser sign-in mirrors the api: only enabled when the api enforces entra
+    // and a web client id is supplied. Scope defaults to <audience>/.default.
+    authProvider: apiAuthProvider
+    entraClientId: entraWebClientId
+    entraTenantId: entraTenantId
+    entraApiScope: !empty(entraApiScope) ? entraApiScope : (empty(entraAudience) ? '' : '${entraAudience}/.default')
   }
 }
 

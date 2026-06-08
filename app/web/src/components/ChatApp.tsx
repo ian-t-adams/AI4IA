@@ -11,6 +11,7 @@ import { SettingsPanel } from "./SettingsPanel";
 import { StudioPanel } from "./StudioPanel";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import { Composer } from "./Composer";
+import { UserMenu } from "./UserMenu";
 
 function pickDefaultModel(models: ModelEntry[]): string | null {
   return models.find((m) => m.category === "chat")?.id ?? models[0]?.id ?? null;
@@ -371,6 +372,7 @@ export function ChatApp() {
           <div style={{ marginLeft: "auto", fontSize: "0.8em", color: "var(--fg-muted)" }}>
             {streaming ? "Generating…" : "Ready"}
           </div>
+          <UserMenu />
         </header>
 
         {error && (

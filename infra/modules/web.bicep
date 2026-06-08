@@ -46,9 +46,48 @@ param managedCertificateName string = ''
 @description('Container Apps managed environment name (parent of the managed certificate).')
 param containerEnvName string
 
+@description('Frontend auth provider (dev|entra). entra turns on MSAL sign-in in the browser.')
+@allowed([
+  'dev'
+  'entra'
+])
+param authProvider string = 'dev'
+
+@description('Entra SPA app registration client ID (required when authProvider == entra).')
+param entraClientId string = ''
+
+@description('Entra tenant ID for the SPA authority (required when authProvider == entra).')
+param entraTenantId string = ''
+
+@description('API scope the SPA requests (e.g. api://<api-app-id>/.default; required when authProvider == entra).')
+param entraApiScope string = ''
+
+// Entra sign-in is only wired when the provider is entra AND all three values are
+// present; otherwise the web stays in dev mode (matching the frontend's fail-open
+// default), so a partial config can never half-enable the sign-in gate.
+var entraReady = authProvider == 'entra' && !empty(entraClientId) && !empty(entraTenantId) && !empty(entraApiScope)
+var entraEnv = entraReady ? [
+  {
+    name: 'WEB_AUTH_PROVIDER'
+    value: 'entra'
+  }
+  {
+    name: 'ENTRA_CLIENT_ID'
+    value: entraClientId
+  }
+  {
+    name: 'ENTRA_TENANT_ID'
+    value: entraTenantId
+  }
+  {
+    name: 'ENTRA_API_SCOPE'
+    value: entraApiScope
+  }
+] : []
+
 // In dev/demo (no Entra) the web proxy stamps a fixed user so the dev-auth api
-// has a stable identity. Never inject a dev user in prod.
-var injectDevUser = appEnvironment != 'prod' && !empty(devUser)
+// has a stable identity. Never inject a dev user in prod or once Entra is on.
+var injectDevUser = appEnvironment != 'prod' && !empty(devUser) && !entraReady
 var devUserEnv = injectDevUser ? [
   {
     name: 'DEV_USER'
@@ -69,7 +108,7 @@ var webEnv = concat([
     name: 'API_BASE_URL'
     value: apiBaseUrl
   }
-], devUserEnv)
+], entraEnv, devUserEnv)
 
 // Custom-domain binding. The Azure-managed cert lives at the environment scope and
 // is referenced from the app ingress so `azd provision` keeps the binding durable
