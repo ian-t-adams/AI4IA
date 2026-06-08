@@ -113,6 +113,86 @@
       ]
     },
     {
+      "id": "gpt-5-nano",
+      "displayName": "gpt-5-nano",
+      "category": "chat-fast",
+      "format": "OpenAI",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5-nano-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5-nano-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "o3",
+      "displayName": "o3",
+      "category": "reasoning",
+      "format": "OpenAI",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "o3-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "o3-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "grok-4-1-fast-reasoning",
+      "displayName": "grok-4-1-fast-reasoning",
+      "category": "reasoning",
+      "format": "xAI",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "grok-4-1-fast-reasoning-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "grok-4-1-fast-reasoning-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "Mistral-Large-3",
+      "displayName": "Mistral-Large-3",
+      "category": "chat",
+      "format": "Mistral AI",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "Mistral-Large-3-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "Mistral-Large-3-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
       "id": "gpt-5.4-mini",
       "displayName": "gpt-5.4-mini",
       "category": "chat-fast",

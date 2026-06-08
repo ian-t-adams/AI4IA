@@ -117,6 +117,82 @@
       ]
     },
     {
+      "name": "gpt-5-nano",
+      "format": "OpenAI",
+      "category": "chat-fast",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 100,
+          "version": "2025-08-07"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 100,
+          "version": "2025-08-07"
+        }
+      ]
+    },
+    {
+      "name": "o3",
+      "format": "OpenAI",
+      "category": "reasoning",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2025-04-16"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2025-04-16"
+        }
+      ]
+    },
+    {
+      "name": "grok-4-1-fast-reasoning",
+      "format": "xAI",
+      "category": "reasoning",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "1"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "1"
+        }
+      ]
+    },
+    {
+      "name": "Mistral-Large-3",
+      "format": "Mistral AI",
+      "category": "chat",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "1"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "1"
+        }
+      ]
+    },
+    {
       "name": "gpt-5.4-mini",
       "format": "OpenAI",
       "category": "chat-fast",

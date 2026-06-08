@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     model_gateway_auth_mode: GatewayAuthMode = GatewayAuthMode.none
     model_gateway_api_key: str | None = None
     gateway_provider_style: GatewayProviderStyle = GatewayProviderStyle.azure_openai_native
-    gateway_api_version: str = "2024-10-21"
+    gateway_api_version: str = "2025-04-01-preview"
     gateway_timeout_seconds: float = 120.0
     # Image generation (Phase 7A) has its own api-version + timeout: image models
     # (gpt-image-2 etc.) can take much longer than a chat turn and may track a
