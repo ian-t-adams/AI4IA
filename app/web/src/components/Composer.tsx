@@ -7,8 +7,22 @@ import {
   useRef,
   useState,
 } from "react";
-import type { AgentSummary } from "@/lib/types";
+import type { AgentSummary, DocumentSummary } from "@/lib/types";
 import { useVoiceRecorder } from "@/lib/voice";
+
+// Mirrors the backend cap (routers/documents.py MAX_DOCS_PER_SESSION).
+const MAX_DOCS = 8;
+// Hint shown next to the file control; mirrors the chat-context budget.
+const DOC_BUDGET_HINT = "up to ~12K chars/turn";
+// Hint for the file picker; the backend accepts the text family + pdf/docx/pptx.
+const FILE_ACCEPT =
+  ".txt,.md,.markdown,.csv,.tsv,.json,.log,.xml,.yaml,.yml,.html,.htm,.pdf,.docx,.pptx,text/plain,application/pdf";
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 // An active mention being typed at the START of the message (ignoring leading
 // whitespace), since the backend only routes a mention at the start of a turn.
@@ -32,15 +46,23 @@ export function Composer({
   disabled,
   streaming,
   agents,
+  documents,
+  uploading,
   onSend,
   onStop,
+  onUpload,
+  onRemoveDocument,
   onError,
 }: {
   disabled: boolean;
   streaming: boolean;
   agents: AgentSummary[];
+  documents: DocumentSummary[];
+  uploading: boolean;
   onSend: (text: string) => void;
   onStop: () => void;
+  onUpload: (file: File) => void;
+  onRemoveDocument: (id: string) => void;
   onError?: (message: string) => void;
 }) {
   const [text, setText] = useState("");
@@ -50,8 +72,26 @@ export function Composer({
   const [suppressed, setSuppressed] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Hidden file input driven by the attach button.
+  const fileInputRef = useRef<HTMLInputElement>(null);
   // Caret position to restore after a programmatic value change (insertion).
   const pendingCaret = useRef<number | null>(null);
+
+  const atDocLimit = documents.length >= MAX_DOCS;
+
+  const onPickFiles = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    // Upload sequentially (the parent dedupes the lazy session creation); the
+    // backend enforces the real per-session cap and rejects extras.
+    const remaining = MAX_DOCS - documents.length;
+    if (remaining <= 0) {
+      onError?.(`You can upload at most ${MAX_DOCS} documents per chat.`);
+      return;
+    }
+    Array.from(files)
+      .slice(0, remaining)
+      .forEach((f) => onUpload(f));
+  };
 
   // Latest text, so the async voice callback appends to the current value
   // without capturing a stale closure.
@@ -183,6 +223,83 @@ export function Composer({
         background: "var(--bg-elevated)",
       }}
     >
+      {documents.length > 0 && (
+        <ul
+          aria-label="Attached documents"
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 8,
+            margin: "0 0 8px",
+            padding: 0,
+            listStyle: "none",
+          }}
+        >
+          {documents.map((d) => (
+            <li
+              key={d.id}
+              title={`${d.filename} · ${formatBytes(d.size)} · ${d.charCount.toLocaleString()} chars${d.truncated ? " (truncated)" : ""}`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                maxWidth: 280,
+                padding: "5px 6px 5px 10px",
+                borderRadius: 999,
+                border: "1px solid var(--border)",
+                background: "var(--bg)",
+                fontSize: "0.8em",
+              }}
+            >
+              <span aria-hidden="true">📄</span>
+              <span
+                style={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {d.filename}
+              </span>
+              <span style={{ color: "var(--fg-muted)", flexShrink: 0 }}>
+                {formatBytes(d.size)}
+                {d.truncated ? " ·✂" : ""}
+              </span>
+              <button
+                type="button"
+                onClick={() => onRemoveDocument(d.id)}
+                aria-label={`Remove ${d.filename}`}
+                title="Remove document"
+                style={{
+                  flexShrink: 0,
+                  width: 20,
+                  height: 20,
+                  display: "grid",
+                  placeItems: "center",
+                  borderRadius: "50%",
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--fg-muted)",
+                  cursor: "pointer",
+                  lineHeight: 1,
+                }}
+              >
+                ✕
+              </button>
+            </li>
+          ))}
+          <li
+            style={{
+              alignSelf: "center",
+              fontSize: "0.72em",
+              color: "var(--fg-muted)",
+            }}
+          >
+            {documents.length}/{MAX_DOCS} · {DOC_BUDGET_HINT}
+          </li>
+        </ul>
+      )}
+
       <div
         style={{
           display: "flex",
@@ -249,6 +366,56 @@ export function Composer({
             ))}
           </ul>
         )}
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={FILE_ACCEPT}
+          className="visually-hidden"
+          aria-hidden="true"
+          tabIndex={-1}
+          onChange={(e) => {
+            onPickFiles(e.target.files);
+            // Reset so re-selecting the same file fires onChange again.
+            e.target.value = "";
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading || atDocLimit}
+          aria-busy={uploading}
+          aria-label={
+            atDocLimit
+              ? `Document limit reached (${MAX_DOCS})`
+              : uploading
+                ? "Uploading document"
+                : "Attach a document"
+          }
+          title={
+            atDocLimit
+              ? `You can upload at most ${MAX_DOCS} documents per chat`
+              : uploading
+                ? "Uploading…"
+                : `Attach a document (${DOC_BUDGET_HINT})`
+          }
+          style={{
+            alignSelf: "stretch",
+            minHeight: 46,
+            padding: "0 14px",
+            borderRadius: 10,
+            border: "1px solid var(--border)",
+            background: "var(--bg)",
+            color: "var(--fg)",
+            fontSize: "1.15em",
+            lineHeight: 1,
+            cursor: uploading || atDocLimit ? "not-allowed" : "pointer",
+            opacity: uploading || atDocLimit ? 0.45 : 1,
+          }}
+        >
+          {uploading ? "…" : "📎"}
+        </button>
 
         <button
           type="button"

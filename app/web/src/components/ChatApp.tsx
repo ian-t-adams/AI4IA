@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
-import type { AgentSummary, ChatParams, Message, ModelEntry, Session } from "@/lib/types";
+import type { AgentSummary, ChatParams, DocumentSummary, Message, ModelEntry, Session } from "@/lib/types";
 import { Sidebar } from "./Sidebar";
 import { ModelPicker } from "./ModelPicker";
 import { ParamControls } from "./ParamControls";
@@ -21,6 +21,8 @@ export function ChatApp() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [documents, setDocuments] = useState<DocumentSummary[]>([]);
+  const [uploading, setUploading] = useState(false);
 
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [params, setParams] = useState<ChatParams>({
@@ -38,6 +40,16 @@ export function ChatApp() {
   const abortRef = useRef<(() => void) | null>(null);
   // Synchronous in-flight flag so guards work before React state settles.
   const streamingRef = useRef(false);
+  // Holds an in-flight lazy session-creation promise so a rapid send + upload
+  // (or two uploads) share a single session instead of racing to create two.
+  const creatingRef = useRef<Promise<string> | null>(null);
+  // Synchronous mirror of activeId so ensureSession sees a just-created session
+  // immediately (before the setActiveId state flush), preventing a double create
+  // when an upload is quickly followed by a send.
+  const sessionIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    sessionIdRef.current = activeId;
+  }, [activeId]);
 
   // --- initial load ---
   useEffect(() => {
@@ -76,11 +88,13 @@ export function ChatApp() {
       setActiveId(id);
       setError(null);
       try {
-        const [msgs, all] = await Promise.all([
+        const [msgs, all, docs] = await Promise.all([
           api.listMessages(id),
           api.listSessions(),
+          api.listDocuments(id).catch(() => [] as DocumentSummary[]),
         ]);
         setMessages(msgs);
+        setDocuments(docs);
         const s = all.find((x) => x.id === id);
         if (s) {
           if (s.model) setSelectedModel(s.model);
@@ -97,6 +111,7 @@ export function ChatApp() {
     if (streamingRef.current) return;
     setActiveId(null);
     setMessages([]);
+    setDocuments([]);
     setStreamingText("");
     setError(null);
   }, []);
@@ -143,6 +158,64 @@ export function ChatApp() {
     [activeId],
   );
 
+  // Lazily create (or reuse) the active session. Shared by send + document
+  // upload so they never race to create two sessions; concurrent callers await
+  // the same in-flight creation promise.
+  const ensureSession = useCallback(async (): Promise<string> => {
+    if (sessionIdRef.current) return sessionIdRef.current;
+    if (creatingRef.current) return creatingRef.current;
+    const p = (async () => {
+      const created = await api.createSession({
+        model: selectedModel,
+        systemPrompt: systemPrompt || null,
+      });
+      sessionIdRef.current = created.id;
+      setActiveId(created.id);
+      setSessions((prev) => [created, ...prev]);
+      return created.id;
+    })();
+    creatingRef.current = p;
+    try {
+      return await p;
+    } finally {
+      creatingRef.current = null;
+    }
+  }, [selectedModel, systemPrompt]);
+
+  const uploadDocument = useCallback(
+    async (file: File) => {
+      setError(null);
+      setUploading(true);
+      try {
+        const sid = await ensureSession();
+        const doc = await api.uploadDocument(sid, file);
+        // Replace any same-id entry (defensive) and append.
+        setDocuments((prev) => [...prev.filter((d) => d.id !== doc.id), doc]);
+      } catch (e) {
+        setError((e as Error).message);
+      } finally {
+        setUploading(false);
+      }
+    },
+    [ensureSession],
+  );
+
+  const removeDocument = useCallback(
+    async (documentId: string) => {
+      if (!activeId) return;
+      const prev = documents;
+      // Optimistic removal; restore on failure.
+      setDocuments((cur) => cur.filter((d) => d.id !== documentId));
+      try {
+        await api.deleteDocument(activeId, documentId);
+      } catch (e) {
+        setDocuments(prev);
+        setError((e as Error).message);
+      }
+    },
+    [activeId, documents],
+  );
+
   const send = useCallback(
     async (content: string) => {
       if (streamingRef.current) return;
@@ -158,16 +231,10 @@ export function ChatApp() {
       setStreamingText("");
       let sessionId = activeId;
 
-      // Lazily create a session on the first message.
+      // Lazily create a session on the first message (shared with uploads).
       if (!sessionId) {
         try {
-          const created = await api.createSession({
-            model: selectedModel,
-            systemPrompt: systemPrompt || null,
-          });
-          sessionId = created.id;
-          setActiveId(created.id);
-          setSessions((prev) => [created, ...prev]);
+          sessionId = await ensureSession();
         } catch (e) {
           setError((e as Error).message);
           streamingRef.current = false;
@@ -233,7 +300,7 @@ export function ChatApp() {
         },
       );
     },
-    [activeId, selectedModel, systemPrompt, params, refreshSessions],
+    [activeId, selectedModel, params, refreshSessions, ensureSession],
   );
 
   const stop = useCallback(() => {
@@ -314,8 +381,12 @@ export function ChatApp() {
           disabled={streaming || !selectedModel}
           streaming={streaming}
           agents={agents}
+          documents={documents}
+          uploading={uploading}
           onSend={send}
           onStop={stop}
+          onUpload={uploadDocument}
+          onRemoveDocument={removeDocument}
           onError={setError}
         />
       </main>

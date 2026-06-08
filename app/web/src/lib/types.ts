@@ -84,3 +84,18 @@ export interface ImageResponse {
 export type BackgroundConfig =
   | { kind: "preset"; id: string }
   | { kind: "generated"; dataUrl: string };
+
+// --- Document upload (Phase 7C) ---
+
+// Summary of an uploaded document (never carries the full extracted text).
+export interface DocumentSummary {
+  id: string;
+  sessionId: string;
+  filename: string;
+  contentType: string;
+  size: number;
+  charCount: number;
+  truncated: boolean;
+  preview: string;
+  createdAt: string;
+}

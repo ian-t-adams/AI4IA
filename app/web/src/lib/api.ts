@@ -3,6 +3,7 @@
 import type {
   AgentSummary,
   ChatParams,
+  DocumentSummary,
   ImageRequest,
   ImageResponse,
   Message,
@@ -138,6 +139,47 @@ export async function listMessages(sessionId: string): Promise<Message[]> {
   return jsonOrThrow(
     await fetch(`/api/sessions/${sessionId}/messages`, { cache: "no-store" }),
   );
+}
+
+// --- Documents (Phase 7C) ---
+
+// Uploads a file to a session. The browser sets the multipart boundary, so we
+// never set Content-Type ourselves. The backend extracts plain text locally and
+// returns a summary (no full text). Large/binary/empty files are rejected
+// (4xx with a `detail` message surfaced by jsonOrThrow).
+export async function uploadDocument(
+  sessionId: string,
+  file: File,
+): Promise<DocumentSummary> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  return jsonOrThrow(
+    await fetch(`/api/sessions/${sessionId}/documents`, {
+      method: "POST",
+      body: form,
+    }),
+  );
+}
+
+export async function listDocuments(
+  sessionId: string,
+): Promise<DocumentSummary[]> {
+  return jsonOrThrow(
+    await fetch(`/api/sessions/${sessionId}/documents`, { cache: "no-store" }),
+  );
+}
+
+export async function deleteDocument(
+  sessionId: string,
+  documentId: string,
+): Promise<void> {
+  const resp = await fetch(
+    `/api/sessions/${sessionId}/documents/${documentId}`,
+    { method: "DELETE" },
+  );
+  if (!resp.ok && resp.status !== 204) {
+    throw new Error(`${resp.status}: failed to delete document`);
+  }
 }
 
 export interface StreamHandlers {
