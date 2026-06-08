@@ -268,8 +268,10 @@ module api 'modules/api.bicep' = {
     modelGatewayApiKey: gateway.outputs.gatewaySubscriptionKey
     cosmosEndpoint: data.outputs.cosmosEndpoint
     cosmosDatabase: data.outputs.cosmosDatabaseName
-    // Per-user memory: pgvector when Postgres is deployed, else disabled.
-    memoryStore: postgresEnabled ? 'pgvector' : 'disabled'
+    // Per-user memory: real mem0 (LLM extraction + pgvector) when Postgres is
+    // deployed, else disabled. The legacy custom 'pgvector' store remains
+    // available as a one-value revert (its table is untouched and coexists).
+    memoryStore: postgresEnabled ? 'mem0' : 'disabled'
     postgresHost: data.outputs.postgresFqdn
     postgresDatabase: data.outputs.postgresDatabaseName
     postgresUser: apiIdentity.name

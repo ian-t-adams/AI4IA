@@ -46,11 +46,12 @@ param cosmosEndpoint string
 @description('Cosmos DB database name.')
 param cosmosDatabase string
 
-@description('Memory store backend the api uses (disabled|in_memory|pgvector).')
+@description('Memory store backend the api uses (disabled|in_memory|pgvector|mem0).')
 @allowed([
   'disabled'
   'in_memory'
   'pgvector'
+  'mem0'
 ])
 param memoryStore string = 'disabled'
 
@@ -146,8 +147,9 @@ var adminEnv = concat(
   ] : []
 )
 
-// Postgres connection is only meaningful for the pgvector memory backend.
-var pgEnv = memoryStore == 'pgvector' ? [
+// Postgres connection is required for the durable memory backends (the custom
+// pgvector store and the real-mem0 store both persist vectors in Postgres).
+var pgEnv = (memoryStore == 'pgvector' || memoryStore == 'mem0') ? [
   {
     name: 'AI4IA_POSTGRES_HOST'
     value: postgresHost
@@ -161,12 +163,20 @@ var pgEnv = memoryStore == 'pgvector' ? [
     value: postgresUser
   }
 ] : []
+// mem0-specific: disable the library's PostHog telemetry at the process level
+// (belt-and-suspenders; the code also setdefault()s this before importing mem0).
+var mem0Env = memoryStore == 'mem0' ? [
+  {
+    name: 'MEM0_TELEMETRY'
+    value: 'false'
+  }
+] : []
 var memoryEnv = concat([
   {
     name: 'AI4IA_MEMORY_STORE'
     value: memoryStore
   }
-], pgEnv)
+], pgEnv, mem0Env)
 
 var apiEnv = concat([
   {

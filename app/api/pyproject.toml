@@ -30,6 +30,17 @@ dependencies = [
     # PDF text extraction for the document-upload feature (Phase 7C). docx/pptx
     # are parsed with the stdlib (zipfile + ElementTree); only PDF needs a dep.
     "pypdf>=4.0",
+    # Real mem0 OSS memory backend (memory_store=mem0): LLM fact-extraction +
+    # consolidation over Postgres+pgvector. Pinned exactly because our integration
+    # (Mem0MemoryService) depends on verified 2.0.4 internals — config keys,
+    # azure_openai default_headers, the pgvector connection_pool injection point,
+    # and add/search/get_all/delete_all signatures. Bump deliberately with tests.
+    "mem0ai==2.0.4",
+    # mem0's pgvector store uses psycopg3 + its pool. We inject our own AAD-token
+    # ConnectionPool (no SQL password), so both are required at runtime. Imported
+    # lazily (only when memory_store=mem0) so the app/tests run without them wired.
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
 ]
 
 [project.optional-dependencies]

@@ -48,12 +48,16 @@ class SessionStoreKind(str, Enum):
 class MemoryStoreKind(str, Enum):
     # Per-user semantic memory is off entirely.
     disabled = "disabled"
-    # In-process cosine store: the default until pgvector is validated live
-    # (good for local/dev/tests; not durable across restarts or replicas).
+    # In-process cosine store: good for local/dev/tests; not durable across
+    # restarts or replicas.
     in_memory = "in_memory"
-    # Postgres + pgvector. Reserved for the next increment; selecting it now
-    # fails closed at startup (the store is not yet implemented/connected).
+    # Our custom embed+store backend on Postgres + pgvector (gateway embeddings,
+    # exact cosine scan). Durable, AAD-auth, no LLM extraction.
     pgvector = "pgvector"
+    # The real mem0 OSS library (LLM fact-extraction + consolidation) over the
+    # same Postgres + pgvector, calling our model gateway for its LLM/embeddings.
+    # Selecting it requires postgres_host + postgres_user (see validate_runtime).
+    mem0 = "mem0"
 
 
 class Settings(BaseSettings):
@@ -164,6 +168,30 @@ class Settings(BaseSettings):
     memory_max_total_chars: int = 2000
     # Don't store trivially short user utterances ("ok", "thanks").
     memory_min_chars_to_store: int = 12
+    # --- Real mem0 backend (memory_store=mem0) ---
+    # mem0 runs an LLM "fact-extraction" pass on each remembered utterance, then
+    # consolidates. This model must be NON-reasoning (mem0 sends temperature +
+    # max_tokens + response_format=json_object, which GPT-5/o-series reject).
+    memory_extraction_model: str = "gpt-4.1-mini"
+    # pgvector table mem0 owns. Distinct from the custom store's "memories" table
+    # so the two backends coexist in the same DB and the flip stays reversible.
+    mem0_collection_name: str = "mem0_memories"
+    # Short-term message-history cache (SQLite). Ephemeral + per-replica in
+    # Container Apps (the durable memories live in pgvector), so a writable
+    # scratch path is fine and avoids any home-dir permission surprise.
+    mem0_history_db_path: str = "/tmp/mem0_history.db"  # noqa: S108 - intended scratch
+    # remember() runs an inline LLM extraction call; bound it so a slow gateway
+    # can't stall the (best-effort) chat path. recall/forget get a tighter bound.
+    mem0_add_timeout_s: float = 20.0
+    mem0_op_timeout_s: float = 12.0
+    # Minimum hybrid-relevance score for a recalled memory. mem0's scoring blends
+    # semantic + BM25 + entity boosts and is NOT the cosine scale memory_min_score
+    # uses, so it gets its own knob; mem0's own default is 0.1.
+    mem0_search_threshold: float = 0.1
+    # Serialize concurrent mem0 calls a little: its sync providers + the ephemeral
+    # SQLite history run in worker threads, where unbounded concurrency can cause
+    # "database is locked". Cheap insurance; raise if throughput ever needs it.
+    mem0_max_concurrency: int = 4
     # Postgres connection (pgvector backend). host/user are required when
     # memory_store=pgvector (enforced in validate_runtime). user is the AAD
     # principal name the api managed identity was registered under as a Postgres
@@ -234,10 +262,18 @@ class Settings(BaseSettings):
             raise RuntimeError("AI4IA_MODEL_GATEWAY_API_KEY is required for api_key auth mode.")
         if self.session_store == SessionStoreKind.cosmos and not self.cosmos_endpoint:
             raise RuntimeError("AI4IA_COSMOS_ENDPOINT is required for the cosmos session store.")
-        if self.memory_store == MemoryStoreKind.pgvector and not self.postgres_host:
-            raise RuntimeError("AI4IA_POSTGRES_HOST is required for the pgvector memory store.")
-        if self.memory_store == MemoryStoreKind.pgvector and not self.postgres_user:
-            raise RuntimeError("AI4IA_POSTGRES_USER is required for the pgvector memory store.")
+        if self.memory_store in (MemoryStoreKind.pgvector, MemoryStoreKind.mem0) and (
+            not self.postgres_host
+        ):
+            raise RuntimeError(
+                f"AI4IA_POSTGRES_HOST is required for the {self.memory_store.value} memory store."
+            )
+        if self.memory_store in (MemoryStoreKind.pgvector, MemoryStoreKind.mem0) and (
+            not self.postgres_user
+        ):
+            raise RuntimeError(
+                f"AI4IA_POSTGRES_USER is required for the {self.memory_store.value} memory store."
+            )
         if self.entitlements_enabled and not self.usage_metering_enabled:
             # Budgets/rate limits accrue from the usage ledger; with metering off
             # every positive limit silently never trips (only disabled and
