@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { AuthProvider } from "@/components/AuthProvider";
+import { getAuthConfig } from "@/lib/authConfig";
 
 export const metadata: Metadata = {
   title: "AI4IA — Agentic Chat",
@@ -13,13 +15,16 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const authConfig = getAuthConfig();
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
         <a href="#main" className="visually-hidden">
           Skip to main content
         </a>
-        <ThemeProvider>{children}</ThemeProvider>
+        <ThemeProvider>
+          <AuthProvider config={authConfig}>{children}</AuthProvider>
+        </ThemeProvider>
       </body>
     </html>
   );
