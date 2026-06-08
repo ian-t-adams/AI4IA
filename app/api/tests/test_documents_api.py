@@ -133,7 +133,7 @@ def test_disabled_user_cannot_upload(client):
     assert resp.status_code == 403
 
 
-def test_document_text_injected_into_user_turn(client):
+def test_document_text_injected_as_system_context(client):
     gw = client.app.state.gateway
     sid = _new_session(client)
     _upload(client, sid, name="brief.txt", data=b"Project Zephyr ships in March.")
@@ -144,13 +144,20 @@ def test_document_text_injected_into_user_turn(client):
     )
     assert resp.status_code == 200, resp.text
 
+    # Documents are injected as a SYSTEM block (not the user turn) so the
+    # anti-injection framing never trips a provider jailbreak/prompt shield.
+    system_turns = [m for m in gw.last_messages if m["role"] == "system"]
+    doc_system = "\n".join(m["content"] for m in system_turns)
+    assert "BEGIN DOCUMENT" in doc_system
+    assert "Project Zephyr ships in March." in doc_system
+    # The untrusted framing (randomized fence) must be present.
+    assert "randomized per message" in doc_system
+
+    # The user turn carries only the user's own words — no document dump.
     user_turns = [m for m in gw.last_messages if m["role"] == "user"]
     final_user = user_turns[-1]["content"]
-    assert "BEGIN DOCUMENT" in final_user
-    assert "Project Zephyr ships in March." in final_user
-    assert "When does the project ship?" in final_user
-    # The untrusted framing (randomized fence) must be present.
-    assert "randomized per message" in final_user
+    assert final_user == "When does the project ship?"
+    assert "BEGIN DOCUMENT" not in final_user
 
     # The STORED user message must stay clean (no document dump).
     stored = client.get(f"/api/sessions/{sid}/messages").json()

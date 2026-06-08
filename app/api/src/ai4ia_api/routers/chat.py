@@ -318,19 +318,23 @@ async def chat(
     # store, not the recall index, so it can't recall itself).
     recalled = await memory.recall(user.internal_user_id, content_for_model)
     memory_block = memory.format_context(recalled)
-    if memory_block:
-        insert_at = 1 if (payload_messages and payload_messages[0]["role"] == "system") else 0
-        payload_messages.insert(insert_at, {"role": "system", "content": memory_block})
 
-    # Per-session uploaded-document context (best-effort). Combined into the final
-    # USER turn (not a system message) so the documents read as the user's own
-    # reference material and a store failure can never break the chat. The STORED
-    # user message stays clean (content_for_model) — docs are re-supplied per turn.
+    # Per-session uploaded-document context (best-effort). Injected as a SYSTEM
+    # block (NOT the user turn) for two reasons: (1) putting anti-injection
+    # framing in the user turn trips Azure's jailbreak/prompt-shield, and (2) a
+    # store failure can never break the chat. The STORED user message stays clean
+    # (content_for_model); docs are re-supplied per turn.
     doc_block = await _document_context(repo, user.internal_user_id, body.sessionId)
-    final_user_content = (
-        f"{doc_block}\n\n{content_for_model}" if doc_block else content_for_model
-    )
-    payload_messages.append({"role": "user", "content": final_user_content})
+
+    # Insert context system blocks after the main system prompt, memory first,
+    # then documents, so session/agent instructions retain top authority.
+    insert_at = 1 if (payload_messages and payload_messages[0]["role"] == "system") else 0
+    for block in (memory_block, doc_block):
+        if block:
+            payload_messages.insert(insert_at, {"role": "system", "content": block})
+            insert_at += 1
+
+    payload_messages.append({"role": "user", "content": content_for_model})
 
     # Keep the session fresh + auto-title from the first real (non-command) turn.
     has_prior_chat = any(not m.fromCommand for m in prior)
