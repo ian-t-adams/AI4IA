@@ -49,6 +49,53 @@ export async function listAgents(): Promise<AgentSummary[]> {
   return data.agents;
 }
 
+// --- Voice (Phase 7B) ---
+
+export interface TranscriptionResult {
+  text: string;
+  model: string;
+  deployment: string;
+}
+
+// Transcribes a recorded audio blob (speech-to-text via whisper). The browser
+// sets the multipart boundary, so we never set Content-Type ourselves.
+export async function transcribeAudio(
+  audio: Blob,
+  opts?: { model?: string; language?: string; filename?: string },
+): Promise<TranscriptionResult> {
+  const form = new FormData();
+  form.append("file", audio, opts?.filename ?? "recording.webm");
+  if (opts?.model) form.append("model", opts.model);
+  if (opts?.language) form.append("language", opts.language);
+  return jsonOrThrow(
+    await fetch("/api/voice/transcriptions", { method: "POST", body: form }),
+  );
+}
+
+// Synthesizes speech (text-to-speech via gpt-4o-mini-tts). Returns the raw audio
+// blob; callers wrap it in an object URL for playback.
+export async function synthesizeSpeech(
+  text: string,
+  opts?: { model?: string; voice?: string; format?: string },
+): Promise<Blob> {
+  const resp = await fetch("/api/voice/speech", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ input: text, ...opts }),
+  });
+  if (!resp.ok) {
+    let detail = resp.statusText;
+    try {
+      const body = await resp.json();
+      detail = body?.detail ?? detail;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new Error(`${resp.status}: ${detail}`);
+  }
+  return await resp.blob();
+}
+
 export async function listSessions(): Promise<Session[]> {
   return jsonOrThrow(await fetch("/api/sessions", { cache: "no-store" }));
 }

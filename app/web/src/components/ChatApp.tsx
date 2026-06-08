@@ -309,13 +309,14 @@ export function ChatApp() {
           </div>
         )}
 
-        <MessageList messages={displayMessages} />
+        <MessageList messages={displayMessages} onError={setError} />
         <Composer
           disabled={streaming || !selectedModel}
           streaming={streaming}
           agents={agents}
           onSend={send}
           onStop={stop}
+          onError={setError}
         />
       </main>
 

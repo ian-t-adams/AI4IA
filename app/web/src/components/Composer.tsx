@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import type { AgentSummary } from "@/lib/types";
+import { useVoiceRecorder } from "@/lib/voice";
 
 // An active mention being typed at the START of the message (ignoring leading
 // whitespace), since the backend only routes a mention at the start of a turn.
@@ -33,12 +34,14 @@ export function Composer({
   agents,
   onSend,
   onStop,
+  onError,
 }: {
   disabled: boolean;
   streaming: boolean;
   agents: AgentSummary[];
   onSend: (text: string) => void;
   onStop: () => void;
+  onError?: (message: string) => void;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -49,6 +52,26 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Caret position to restore after a programmatic value change (insertion).
   const pendingCaret = useRef<number | null>(null);
+
+  // Latest text, so the async voice callback appends to the current value
+  // without capturing a stale closure.
+  const textRef = useRef(text);
+  useEffect(() => {
+    textRef.current = text;
+  }, [text]);
+
+  // Append a dictated transcript at the end of the message (a space-separated
+  // continuation), then place the caret at the end.
+  const appendTranscript = (transcript: string) => {
+    const prev = textRef.current;
+    const sep = prev && !/\s$/.test(prev) ? " " : "";
+    const next = prev + sep + transcript;
+    pendingCaret.current = next.length;
+    setText(next);
+    setSuppressed(false);
+  };
+
+  const voice = useVoiceRecorder(appendTranscript, (msg) => onError?.(msg));
 
   const enabledAgents = useMemo(
     () => agents.filter((a) => a.enabled),
@@ -227,6 +250,48 @@ export function Composer({
           </ul>
         )}
 
+        <button
+          type="button"
+          onClick={voice.toggle}
+          disabled={!voice.supported || voice.transcribing}
+          aria-pressed={voice.recording}
+          aria-busy={voice.transcribing}
+          aria-label={
+            voice.transcribing
+              ? "Transcribing audio"
+              : voice.recording
+                ? "Stop recording"
+                : "Record a voice message"
+          }
+          title={
+            !voice.supported
+              ? "Voice input isn't supported in this browser"
+              : voice.transcribing
+                ? "Transcribing…"
+                : voice.recording
+                  ? "Stop recording"
+                  : "Record a voice message"
+          }
+          style={{
+            alignSelf: "stretch",
+            minHeight: 46,
+            padding: "0 14px",
+            borderRadius: 10,
+            border: "1px solid var(--border)",
+            background: voice.recording ? "var(--danger)" : "var(--bg)",
+            color: voice.recording ? "#fff" : "var(--fg)",
+            fontSize: "1.15em",
+            lineHeight: 1,
+            cursor:
+              !voice.supported || voice.transcribing
+                ? "not-allowed"
+                : "pointer",
+            opacity: voice.supported ? 1 : 0.45,
+          }}
+        >
+          {voice.transcribing ? "…" : voice.recording ? "■" : "🎙"}
+        </button>
+
         <label htmlFor="composer" className="visually-hidden">
           Message
         </label>
@@ -288,6 +353,22 @@ export function Composer({
             Send
           </button>
         )}
+      </div>
+
+      <div
+        aria-live="polite"
+        style={{
+          minHeight: 16,
+          marginTop: 6,
+          fontSize: "0.75em",
+          color: voice.recording ? "var(--danger)" : "var(--fg-muted)",
+        }}
+      >
+        {voice.recording
+          ? "● Recording… click the mic again to stop."
+          : voice.transcribing
+            ? "Transcribing your audio…"
+            : ""}
       </div>
     </div>
   );

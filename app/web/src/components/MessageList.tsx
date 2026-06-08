@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import type { Message } from "@/lib/types";
+import { useSpeechPlayback, type SpeechState } from "@/lib/voice";
 
 interface DisplayMessage {
   id: string;
@@ -11,11 +12,20 @@ interface DisplayMessage {
   pending?: boolean;
 }
 
-function Bubble({ msg }: { msg: DisplayMessage }) {
+function Bubble({
+  msg,
+  speechState,
+  onToggleSpeak,
+}: {
+  msg: DisplayMessage;
+  speechState: SpeechState;
+  onToggleSpeak: (id: string, text: string) => void;
+}) {
   const isUser = msg.role === "user";
   const isSystem = msg.role === "system";
   if (isSystem) return null;
   const label = isUser ? "You" : "Assistant";
+  const speakable = !isUser && !msg.pending && msg.content.trim().length > 0;
   return (
     <div
       style={{
@@ -72,13 +82,66 @@ function Bubble({ msg }: { msg: DisplayMessage }) {
             ▍
           </span>
         )}
+        {speakable && (
+          <div style={{ marginTop: 8 }}>
+            <button
+              type="button"
+              onClick={() => onToggleSpeak(msg.id, msg.content)}
+              aria-pressed={speechState === "playing"}
+              aria-busy={speechState === "busy"}
+              aria-label={
+                speechState === "playing"
+                  ? "Stop reading message aloud"
+                  : speechState === "busy"
+                    ? "Preparing audio"
+                    : "Read message aloud"
+              }
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "4px 10px",
+                borderRadius: 999,
+                border: "1px solid var(--border)",
+                background:
+                  speechState === "playing" ? "var(--accent)" : "transparent",
+                color:
+                  speechState === "playing"
+                    ? "var(--accent-fg)"
+                    : "var(--fg-muted)",
+                fontSize: "0.78em",
+                cursor: speechState === "busy" ? "wait" : "pointer",
+              }}
+            >
+              <span aria-hidden="true">
+                {speechState === "playing"
+                  ? "■"
+                  : speechState === "busy"
+                    ? "…"
+                    : "▶"}
+              </span>
+              {speechState === "playing"
+                ? "Stop"
+                : speechState === "busy"
+                  ? "Loading…"
+                  : "Speak"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-export function MessageList({ messages }: { messages: DisplayMessage[] }) {
+export function MessageList({
+  messages,
+  onError,
+}: {
+  messages: DisplayMessage[];
+  onError?: (message: string) => void;
+}) {
   const endRef = useRef<HTMLDivElement>(null);
+  const playback = useSpeechPlayback((msg) => onError?.(msg));
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -113,7 +176,20 @@ export function MessageList({ messages }: { messages: DisplayMessage[] }) {
           </div>
         </div>
       ) : (
-        messages.map((m) => <Bubble key={m.id} msg={m} />)
+        messages.map((m) => (
+          <Bubble
+            key={m.id}
+            msg={m}
+            speechState={
+              playback.activeId === m.id
+                ? "playing"
+                : playback.busyId === m.id
+                  ? "busy"
+                  : "idle"
+            }
+            onToggleSpeak={playback.toggle}
+          />
+        ))
       )}
       <div ref={endRef} />
     </div>
