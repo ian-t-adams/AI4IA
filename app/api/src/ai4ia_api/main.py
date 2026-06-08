@@ -41,6 +41,9 @@ from .sessions.repository import SessionNotFoundError
 from .usage.factory import build_usage_repository
 from .usage.pricing import load_pricing
 from .usage.service import UsageService
+from .workflows.factory import build_workflow_store
+from .workflows.service import WorkflowService
+from .routers import workflows as workflows_router
 
 _CORRELATION_HEADER = "x-correlation-id"
 
@@ -80,6 +83,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             catalog=app.state.catalog,
             attachable_tools=attachable_tool_names(registry, executor),
         )
+        # User-defined workflows (Phase 8 inc 3): saved, ordered pipelines of agent
+        # steps. Own Cosmos container ("workflows", PK /userId) + own invocation
+        # surface, so a workflow and an agent may share a name. Not on the chat hot
+        # path, so reads do NOT fail open — a store error surfaces to the caller.
+        app.state.workflow_service = WorkflowService(build_workflow_store(settings))
         # Per-user memory (Phase 5). Disabled by default -> NoopMemoryService, so
         # the chat path can call it unconditionally with no behavior change.
         app.state.memory = build_memory_service(
@@ -134,6 +142,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.agent_service.close()
             except Exception:  # noqa: BLE001
                 logger.warning("agent service close failed", exc_info=True)
+            try:
+                await app.state.workflow_service.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("workflow service close failed", exc_info=True)
             repo = app.state.session_repo
             close = getattr(repo, "close", None)
             if close is not None:
@@ -159,6 +171,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router.router)
     app.include_router(catalog_router.router)
     app.include_router(agents_router.router)
+    app.include_router(workflows_router.router)
     app.include_router(sessions_router.router)
     app.include_router(chat_router.router)
     app.include_router(documents_router.router)
