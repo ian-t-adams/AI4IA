@@ -201,3 +201,107 @@ async def test_embed_empty_inputs_short_circuits():
 
     client = _client(transport=httpx.MockTransport(handler))
     assert await client.embed(deployment="dep-1", inputs=[]) == []
+
+
+# --- Reasoning-model parameter normalization -------------------------------
+# GPT-5 family + o-series reject `max_tokens` (require `max_completion_tokens`)
+# and the standard sampling params on the Chat Completions API.
+
+_GPT5 = "gpt-5.2-slurmfactory-eastus2-glbl"
+_O4 = "o4-mini-slurmfactory-eastus2-glbl"
+_GPT41 = "gpt-4.1-mini-slurmfactory-eastus2-glbl"
+_ROUTER = "model-router-slurmfactory-eastus2-glbl"
+_DEEPSEEK = "DeepSeek-V3.2-slurmfactory-eastus2-glbl"
+
+
+@pytest.mark.parametrize("deployment", [_GPT5, _O4])
+def test_reasoning_maps_max_tokens_and_strips_sampling(deployment):
+    client = _client()
+    params = {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "presence_penalty": 0.5,
+        "frequency_penalty": 0.5,
+        "logprobs": True,
+        "top_logprobs": 3,
+        "logit_bias": {"1": 1},
+        "max_tokens": 1024,
+    }
+    body = client.build_request(deployment=deployment, messages=[], params=params).json
+    assert body["max_completion_tokens"] == 1024
+    assert "max_tokens" not in body
+    for key in (
+        "temperature",
+        "top_p",
+        "presence_penalty",
+        "frequency_penalty",
+        "logprobs",
+        "top_logprobs",
+        "logit_bias",
+    ):
+        assert key not in body
+
+
+def test_reasoning_keeps_existing_max_completion_tokens():
+    client = _client()
+    params = {"max_tokens": 1024, "max_completion_tokens": 2048}
+    body = client.build_request(deployment=_GPT5, messages=[], params=params).json
+    assert body["max_completion_tokens"] == 2048
+    assert "max_tokens" not in body
+
+
+def test_reasoning_drops_none_max_tokens_without_setting_completion():
+    client = _client()
+    body = client.build_request(
+        deployment=_GPT5, messages=[], params={"max_tokens": None}
+    ).json
+    assert "max_tokens" not in body
+    assert "max_completion_tokens" not in body
+
+
+def test_reasoning_normalization_applies_when_streaming():
+    client = _client()
+    body = client.build_request(
+        deployment=_GPT5,
+        messages=[],
+        params={"max_tokens": 256, "temperature": 0.2},
+        stream=True,
+    ).json
+    assert body["stream"] is True
+    assert body["max_completion_tokens"] == 256
+    assert "max_tokens" not in body
+    assert "temperature" not in body
+
+
+@pytest.mark.parametrize("deployment", [_GPT41, _DEEPSEEK])
+def test_non_reasoning_params_untouched(deployment):
+    client = _client()
+    params = {"temperature": 0.7, "top_p": 1, "max_tokens": 1024}
+    body = client.build_request(deployment=deployment, messages=[], params=params).json
+    assert body["max_tokens"] == 1024
+    assert body["temperature"] == 0.7
+    assert body["top_p"] == 1
+    assert "max_completion_tokens" not in body
+
+
+def test_model_router_is_not_pre_transformed():
+    # model-router accepts the standard param set and drops unsupported params
+    # itself when routing to an o-series model, so we must not pre-transform it.
+    client = _client()
+    params = {"temperature": 0.7, "max_tokens": 1024}
+    body = client.build_request(deployment=_ROUTER, messages=[], params=params).json
+    assert body["max_tokens"] == 1024
+    assert body["temperature"] == 0.7
+    assert "max_completion_tokens" not in body
+
+
+def test_reasoning_prefix_does_not_overmatch():
+    # A hypothetical "gpt-50" style id must not be treated as gpt-5.
+    client = _client()
+    body = client.build_request(
+        deployment="gpt-50x-slurmfactory-eastus2-glbl",
+        messages=[],
+        params={"max_tokens": 10, "temperature": 0.3},
+    ).json
+    assert body["max_tokens"] == 10
+    assert body["temperature"] == 0.3

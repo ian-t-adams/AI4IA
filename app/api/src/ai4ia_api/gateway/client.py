@@ -9,6 +9,7 @@ be fixed at integration time without code changes.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +17,50 @@ from typing import Any
 import httpx
 
 from ..config import GatewayAuthMode, GatewayProviderStyle, Settings
+
+# Azure OpenAI reasoning models (the GPT-5 family and the o-series) reject the
+# classic Chat Completions sampling/limit parameters: they require
+# ``max_completion_tokens`` instead of ``max_tokens`` and 400 on non-default
+# ``temperature``/``top_p``/penalties/logprobs. A deployment name always begins
+# with the catalog model id (e.g. ``gpt-5.2-slurmfactory-eastus2-glbl``), so a
+# leading-id match is a reliable signal. ``model-router`` is deliberately
+# EXCLUDED: it accepts the standard parameter set and drops the unsupported ones
+# itself when it routes to an o-series model (per Microsoft Learn), so we must
+# not pre-transform it.
+_REASONING_DEPLOYMENT = re.compile(r"^(gpt-5|o1|o3|o4)\b", re.IGNORECASE)
+
+# Sampling parameters the Chat Completions API rejects for reasoning models.
+_REASONING_UNSUPPORTED_PARAMS = (
+    "temperature",
+    "top_p",
+    "presence_penalty",
+    "frequency_penalty",
+    "logprobs",
+    "top_logprobs",
+    "logit_bias",
+)
+
+
+def _is_reasoning_deployment(deployment: str) -> bool:
+    return bool(_REASONING_DEPLOYMENT.match(deployment))
+
+
+def _normalize_params_for_deployment(body: dict[str, Any], deployment: str) -> None:
+    """In place: adapt chat params to a reasoning model's constraints.
+
+    Translates ``max_tokens`` -> ``max_completion_tokens`` (preserving any
+    caller-supplied ``max_completion_tokens``) and strips the sampling
+    parameters that reasoning models reject. No-op for non-reasoning models, so
+    gpt-4.1/4o and non-OpenAI deployments (e.g. DeepSeek) keep ``max_tokens``.
+    """
+    if not _is_reasoning_deployment(deployment):
+        return
+    if "max_tokens" in body:
+        value = body.pop("max_tokens")
+        if value is not None:
+            body.setdefault("max_completion_tokens", value)
+    for key in _REASONING_UNSUPPORTED_PARAMS:
+        body.pop(key, None)
 
 
 class ModelGatewayError(Exception):
@@ -133,6 +178,7 @@ class ModelGatewayClient:
         url = f"{self._base}{path if path.startswith('/') else '/' + path}"
 
         body: dict[str, Any] = {"messages": list(messages), **(params or {})}
+        _normalize_params_for_deployment(body, deployment)
         if stream:
             body["stream"] = True
             # Set after merging caller params so it can't be accidentally
