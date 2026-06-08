@@ -193,6 +193,19 @@ resource memoryDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-0
   }
 }
 
+// Allow Azure-internal traffic (the special 0.0.0.0 rule) so the api Container
+// App — Consumption plan, public egress, no VNet integration — can reach the
+// server. DB auth is still AAD-only; this only opens the network firewall to
+// Azure-origin sources. Tighten to a VNet/private endpoint in a later hardening pass.
+resource postgresAllowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2024-08-01' = if (deployPostgres) {
+  parent: postgres
+  name: 'AllowAllAzureServicesAndResourcesWithinAzureIps'
+  properties: {
+    startIpAddress: '0.0.0.0'
+    endIpAddress: '0.0.0.0'
+  }
+}
+
 output cosmosAccountName string = cosmos.name
 output cosmosEndpoint string = cosmos.properties.documentEndpoint
 output cosmosDatabaseName string = cosmosDb.name

@@ -1,8 +1,10 @@
 """Build the configured memory service.
 
 Returns a :class:`NoopMemoryService` unless a real store is selected and an
-embedding deployment resolves. The pgvector backend is reserved for the next
-increment and fails closed here (so selecting it can't silently no-op).
+embedding deployment resolves. Both real backends (in-memory and pgvector) share
+the same embedder + service wiring; only the store differs. The pgvector store
+connects lazily, so the factory stays synchronous (called from the FastAPI
+lifespan) and never touches the database during construction.
 """
 from __future__ import annotations
 
@@ -11,8 +13,10 @@ import logging
 from ..catalog import ModelCatalog
 from ..config import MemoryStoreKind, Settings
 from ..gateway.client import ModelGatewayClient
+from .base import MemoryStore
 from .embedder import GatewayEmbedder
 from .in_memory import InMemoryVectorStore
+from .pgvector_store import PgVectorStore
 from .service import MemoryService, MemoryServiceProtocol, NoopMemoryService
 
 logger = logging.getLogger(__name__)
@@ -28,14 +32,6 @@ def build_memory_service(
     if kind == MemoryStoreKind.disabled:
         return NoopMemoryService()
 
-    if kind == MemoryStoreKind.pgvector:
-        # Defined as a config target, but the asyncpg/pgvector backend (and its
-        # Postgres connectivity + AAD auth) lands in the next increment.
-        raise NotImplementedError(
-            "memory_store=pgvector is not implemented in this build; "
-            "use 'in_memory' or 'disabled'."
-        )
-
     deployment = catalog.resolve_deployment(settings.memory_embedding_model)
     if deployment is None:
         logger.warning(
@@ -44,8 +40,11 @@ def build_memory_service(
         )
         return NoopMemoryService()
 
+    store = _build_store(kind, settings)
+    if store is None:
+        return NoopMemoryService()
+
     embedder = GatewayEmbedder(gateway, deployment.deploymentName)
-    store = InMemoryVectorStore(expected_dim=settings.memory_embedding_dimensions)
     return MemoryService(
         store=store,
         embedder=embedder,
@@ -56,3 +55,21 @@ def build_memory_service(
         max_total_chars=settings.memory_max_total_chars,
         min_chars_to_store=settings.memory_min_chars_to_store,
     )
+
+
+def _build_store(kind: MemoryStoreKind, settings: Settings) -> MemoryStore | None:
+    """Construct the selected backing store, or ``None`` to disable memory."""
+    if kind == MemoryStoreKind.pgvector:
+        if not settings.postgres_host or not settings.postgres_user:
+            # validate_runtime already enforces this; guard here too so a
+            # misconfig fails closed (Noop) rather than building a broken store.
+            logger.warning("memory disabled: pgvector requires postgres_host + postgres_user")
+            return None
+        return PgVectorStore(
+            host=settings.postgres_host,
+            database=settings.postgres_database,
+            user=settings.postgres_user,
+            port=settings.postgres_port,
+            expected_dim=settings.memory_embedding_dimensions,
+        )
+    return InMemoryVectorStore(expected_dim=settings.memory_embedding_dimensions)

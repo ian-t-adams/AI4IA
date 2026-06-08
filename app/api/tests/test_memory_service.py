@@ -120,3 +120,34 @@ async def test_noop_service_is_inert():
     assert await svc.remember("u1", "s1", "x" * 100) is None
     assert await svc.forget_user("u1") == 0
     assert svc.format_context([MemoryRecord(user_id="u1", text="x")]) is None
+    # Lifecycle hooks are safe no-ops.
+    assert await svc.warmup() is None
+    assert await svc.close() is None
+
+
+async def test_warmup_and_close_delegate_to_store_when_supported():
+    class LifecycleStore(InMemoryVectorStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ready = 0
+            self.closed = 0
+
+        async def ensure_ready(self) -> None:
+            self.ready += 1
+
+        async def close(self) -> None:
+            self.closed += 1
+
+    store = LifecycleStore()
+    svc = MemoryService(store=store, embedder=FakeEmbedder({}))
+    await svc.warmup()
+    await svc.close()
+    assert store.ready == 1
+    assert store.closed == 1
+
+
+async def test_warmup_and_close_are_noops_for_plain_store():
+    # The in-memory store has no ensure_ready/close; the service must not error.
+    svc = _service(FakeEmbedder({}))
+    assert await svc.warmup() is None
+    assert await svc.close() is None

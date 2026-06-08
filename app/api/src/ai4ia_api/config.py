@@ -116,9 +116,14 @@ class Settings(BaseSettings):
     memory_max_total_chars: int = 2000
     # Don't store trivially short user utterances ("ok", "thanks").
     memory_min_chars_to_store: int = 12
-    # Postgres connection (pgvector backend; unused until the next increment).
+    # Postgres connection (pgvector backend). host/user are required when
+    # memory_store=pgvector (enforced in validate_runtime). user is the AAD
+    # principal name the api managed identity was registered under as a Postgres
+    # role (no SQL passwords — auth is an AAD token, see PgVectorStore).
     postgres_host: str | None = None
     postgres_database: str = "mem0"
+    postgres_user: str | None = None
+    postgres_port: int = 5432
 
     # --- Observability ---
     log_level: str = "INFO"
@@ -173,6 +178,8 @@ class Settings(BaseSettings):
             raise RuntimeError("AI4IA_COSMOS_ENDPOINT is required for the cosmos session store.")
         if self.memory_store == MemoryStoreKind.pgvector and not self.postgres_host:
             raise RuntimeError("AI4IA_POSTGRES_HOST is required for the pgvector memory store.")
+        if self.memory_store == MemoryStoreKind.pgvector and not self.postgres_user:
+            raise RuntimeError("AI4IA_POSTGRES_USER is required for the pgvector memory store.")
 
 
 @lru_cache

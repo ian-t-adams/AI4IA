@@ -245,6 +245,11 @@ module api 'modules/api.bicep' = {
     modelGatewayApiKey: gateway.outputs.gatewaySubscriptionKey
     cosmosEndpoint: data.outputs.cosmosEndpoint
     cosmosDatabase: data.outputs.cosmosDatabaseName
+    // Per-user memory: pgvector when Postgres is deployed, else disabled.
+    memoryStore: postgresEnabled ? 'pgvector' : 'disabled'
+    postgresHost: data.outputs.postgresFqdn
+    postgresDatabase: data.outputs.postgresDatabaseName
+    postgresUser: apiIdentity.name
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     appEnvironment: appEnvironment
     authProvider: apiAuthProvider

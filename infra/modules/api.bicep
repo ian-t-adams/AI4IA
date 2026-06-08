@@ -46,6 +46,23 @@ param cosmosEndpoint string
 @description('Cosmos DB database name.')
 param cosmosDatabase string
 
+@description('Memory store backend the api uses (disabled|in_memory|pgvector).')
+@allowed([
+  'disabled'
+  'in_memory'
+  'pgvector'
+])
+param memoryStore string = 'disabled'
+
+@description('Postgres Flexible Server FQDN for the pgvector memory store (empty when memory is not pgvector).')
+param postgresHost string = ''
+
+@description('Postgres database name for the pgvector memory store.')
+param postgresDatabase string = 'mem0'
+
+@description('Postgres AAD role name the api identity connects as (its identity resource name).')
+param postgresUser string = ''
+
 @description('Application Insights connection string for api telemetry.')
 param appInsightsConnectionString string
 
@@ -98,6 +115,28 @@ var gatewayKeyEnv = hasGatewayKey ? [
   }
 ] : []
 
+// Postgres connection is only meaningful for the pgvector memory backend.
+var pgEnv = memoryStore == 'pgvector' ? [
+  {
+    name: 'AI4IA_POSTGRES_HOST'
+    value: postgresHost
+  }
+  {
+    name: 'AI4IA_POSTGRES_DATABASE'
+    value: postgresDatabase
+  }
+  {
+    name: 'AI4IA_POSTGRES_USER'
+    value: postgresUser
+  }
+] : []
+var memoryEnv = concat([
+  {
+    name: 'AI4IA_MEMORY_STORE'
+    value: memoryStore
+  }
+], pgEnv)
+
 var apiEnv = concat([
   {
     name: 'PORT'
@@ -143,7 +182,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: 'ca-api-${environmentName}'

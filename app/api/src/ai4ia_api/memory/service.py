@@ -48,6 +48,10 @@ class MemoryServiceProtocol(Protocol):
 
     def format_context(self, records: list[MemoryRecord]) -> str | None: ...
 
+    async def warmup(self) -> None: ...
+
+    async def close(self) -> None: ...
+
 
 class NoopMemoryService:
     """Disabled memory: every operation is a safe no-op."""
@@ -67,6 +71,12 @@ class NoopMemoryService:
         return 0
 
     def format_context(self, records: list[MemoryRecord]) -> str | None:
+        return None
+
+    async def warmup(self) -> None:
+        return None
+
+    async def close(self) -> None:
         return None
 
 
@@ -160,3 +170,20 @@ class MemoryService:
             return None
         lines.append("</memories>")
         return "\n".join(lines)
+
+    async def warmup(self) -> None:
+        """Eagerly initialize the store (e.g. open the pool + create schema).
+
+        Best-effort: a store without an ``ensure_ready`` hook (the in-memory
+        store) is a no-op. Errors propagate so the caller can decide whether to
+        log-and-continue; the durable store also self-heals by retrying lazily.
+        """
+        ensure = getattr(self._store, "ensure_ready", None)
+        if ensure is not None:
+            await ensure()
+
+    async def close(self) -> None:
+        """Release store resources (connection pool, credential) on shutdown."""
+        close = getattr(self._store, "close", None)
+        if close is not None:
+            await close()

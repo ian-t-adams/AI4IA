@@ -1,6 +1,8 @@
 """FastAPI application factory for the AI4IA backend."""
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 import httpx
@@ -30,6 +32,12 @@ from .sessions.repository import SessionNotFoundError
 
 _CORRELATION_HEADER = "x-correlation-id"
 
+logger = logging.getLogger(__name__)
+
+# Cap the startup memory warmup so an unreachable database can't stall the app:
+# warmup is purely diagnostic (the store self-heals by retrying lazily).
+_MEMORY_WARMUP_TIMEOUT_S = 10.0
+
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
@@ -55,14 +63,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.memory = build_memory_service(
             settings, gateway=app.state.gateway, catalog=app.state.catalog
         )
+        # Surface store init problems (auth/network/DDL) loudly at startup, but
+        # never fail startup over them: the store retries lazily on first use.
+        try:
+            await asyncio.wait_for(
+                app.state.memory.warmup(), timeout=_MEMORY_WARMUP_TIMEOUT_S
+            )
+        except Exception:  # noqa: BLE001 - warmup is best-effort/diagnostic
+            logger.warning("memory warmup failed; will initialize lazily", exc_info=True)
         try:
             yield
         finally:
             await http.aclose()
+            # Close each resource independently so one failure can't skip others.
+            try:
+                await app.state.memory.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("memory close failed", exc_info=True)
             repo = app.state.session_repo
             close = getattr(repo, "close", None)
             if close is not None:
-                await close()
+                try:
+                    await close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("session repo close failed", exc_info=True)
 
     app = FastAPI(title="AI4IA API", version="0.1.0", lifespan=lifespan)
 
