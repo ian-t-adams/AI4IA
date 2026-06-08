@@ -149,3 +149,45 @@ def test_other_user_cannot_mention_my_agent(client):
     )
     assert resp.status_code == 200
     assert "Unknown agent" in resp.json()["message"]["content"]
+
+
+# --- Agent links / delegation validation (Phase 8 inc 2) ---------------------
+
+
+def test_create_accepts_links_roundtrip(client):
+    resp = _create(client, name="boss", links=["helper", "analyst"])
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["links"] == ["helper", "analyst"]
+    # Links survive a round-trip through /mine.
+    mine = {a["name"]: a for a in client.get("/api/agents/mine").json()["agents"]}
+    assert mine["boss"]["links"] == ["helper", "analyst"]
+
+
+def test_links_are_lowercased(client):
+    resp = _create(client, name="boss", links=["Helper"])
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["links"] == ["helper"]
+
+
+def test_create_allows_unknown_link_no_existence_check(client):
+    # Existence is resolved at runtime (unknown target -> structured tool error),
+    # so an unknown link name must not block the save.
+    resp = _create(client, name="boss", links=["does-not-exist"])
+    assert resp.status_code == 201, resp.text
+
+
+def test_create_rejects_self_link(client):
+    assert _create(client, name="boss", links=["boss"]).status_code == 422
+
+
+def test_create_rejects_too_many_links(client):
+    links = [f"a{i}" for i in range(6)]  # MAX_LINKS == 5
+    assert _create(client, name="boss", links=links).status_code == 422
+
+
+def test_create_rejects_invalid_link_name(client):
+    assert _create(client, name="boss", links=["Bad Name"]).status_code == 422
+
+
+def test_create_rejects_duplicate_links(client):
+    assert _create(client, name="boss", links=["helper", "helper"]).status_code == 422

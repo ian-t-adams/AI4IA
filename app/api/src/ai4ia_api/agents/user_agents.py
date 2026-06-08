@@ -34,6 +34,7 @@ MAX_DISPLAY_NAME_LEN = 80
 MAX_DESCRIPTION_LEN = 280
 MAX_SYSTEM_PROMPT_LEN = 8000
 MAX_TOOLS = 8
+MAX_LINKS = 5
 
 
 class UserAgentError(Exception):
@@ -71,6 +72,7 @@ class UserAgent(BaseModel):
     systemPrompt: str
     defaultModel: str | None = None
     tools: list[str] = Field(default_factory=list)
+    links: list[str] = Field(default_factory=list)
     enabled: bool = True
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
@@ -85,6 +87,7 @@ class UserAgent(BaseModel):
             systemPrompt=self.systemPrompt,
             defaultModel=self.defaultModel,
             tools=list(self.tools),
+            links=list(self.links),
             enabled=self.enabled,
         )
 
@@ -99,6 +102,7 @@ class UserAgentCreate(BaseModel):
     systemPrompt: str
     defaultModel: str | None = None
     tools: list[str] = Field(default_factory=list)
+    links: list[str] = Field(default_factory=list)
     enabled: bool = True
 
 
@@ -110,4 +114,5 @@ class UserAgentUpdate(BaseModel):
     systemPrompt: str
     defaultModel: str | None = None
     tools: list[str] = Field(default_factory=list)
+    links: list[str] = Field(default_factory=list)
     enabled: bool = True

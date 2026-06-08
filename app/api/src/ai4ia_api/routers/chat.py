@@ -31,6 +31,7 @@ from ..agents.agent_catalog import AgentCatalog, AgentSpec
 from ..agents.command_service import execute_command
 from ..agents.commands import CommandKind, parse_input
 from ..agents.runtime import run_agent_turn
+from ..agents.orchestration import build_delegate_capability
 from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
 from ..entitlements.service import EntitlementService
@@ -299,18 +300,20 @@ async def chat(
     entry = catalog.get(model_id)
     api = entry.api if entry is not None else "chat"
 
-    # Tool-calling agents run the chat-completions function-calling loop, which
-    # has no Responses-API equivalent here yet. Refuse the unsupported combo with
-    # a clear 422 BEFORE persisting the user message or rebinding session.model,
-    # so a refused turn leaves no dangling message and no session stuck on a model
-    # it can't use for this agent.
-    if agent is not None and agent.tools and api == "responses":
+    # Tool-calling agents (and multi-agent orchestrators, which delegate via a
+    # synthetic tool) run the chat-completions function-calling loop, which has no
+    # Responses-API equivalent here yet. Refuse the unsupported combo with a clear
+    # 422 BEFORE persisting the user message or rebinding session.model, so a
+    # refused turn leaves no dangling message and no session stuck on a model it
+    # can't use for this agent.
+    if agent is not None and (agent.tools or agent.links) and api == "responses":
         raise HTTPException(
             status_code=422,
             detail=(
-                f"Agent @{agent.name} uses tools, but model '{model_id}' is served "
-                "through the Responses API, which AI4IA does not yet support for "
-                "tool-calling. Choose a chat-completions model for this agent."
+                f"Agent @{agent.name} uses tools or agent links, but model "
+                f"'{model_id}' is served through the Responses API, which AI4IA "
+                "does not yet support for tool-calling. Choose a chat-completions "
+                "model for this agent."
             ),
         )
 
@@ -381,14 +384,25 @@ async def chat(
         session.model = model_id
     await repo.update_session(session)
 
-    # Tool-enabled agent turn: run the gateway-native tool-calling loop governed
-    # by the tool-safety registry. The model picks/sequences tools; we authorize
-    # and execute each call. This path is non-streaming internally; the resolved
+    # Tool-enabled / orchestrator agent turn: run the gateway-native tool-calling
+    # loop governed by the tool-safety registry. The model picks/sequences tools;
+    # we authorize and execute each call. Orchestrators (agents with ``links``)
+    # additionally get a synthetic ``delegate_to_agent`` capability that runs a
+    # linked agent as a sub-turn on THIS supervisor's deployment (so all usage
+    # meters to one model). This path is non-streaming internally; the resolved
     # final answer is returned via the standard reply shape (a single SSE delta
-    # when streaming). Agents without tools fall through to the direct model path
-    # below, which keeps true token streaming.
-    if agent is not None and agent.tools:
+    # when streaming). Plain agents (no tools, no links) fall through to the direct
+    # model path below, which keeps true token streaming.
+    if agent is not None and (agent.tools or agent.links):
         ctx = ToolContext(correlation_id=correlation_id)
+        extra_tools, extra_handlers, usage_sink = build_delegate_capability(
+            orchestrator=agent,
+            composed=agents,
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            deployment=deployment.deploymentName,
+        )
         run = await run_agent_turn(
             deployment=deployment.deploymentName,
             messages=payload_messages,
@@ -398,7 +412,15 @@ async def chat(
             executor=executor,
             ctx=ctx,
             params=body.params,
+            extra_tools=extra_tools or None,
+            extra_handlers=extra_handlers or None,
         )
+        # Meter the whole turn (supervisor calls + every delegated sub-turn) to the
+        # supervisor's single deployment. Sub-turns ran on the same deployment, so
+        # this is a faithful per-model total.
+        total_usage = run.usage
+        for sub_usage in usage_sink:
+            total_usage = total_usage.add(sub_usage)
         assistant = Message(
             sessionId=body.sessionId,
             userId=user.internal_user_id,
@@ -415,7 +437,7 @@ async def chat(
             session_id=body.sessionId,
             model_id=model_id,
             deployment=deployment,
-            usage=run.usage,
+            usage=total_usage,
             status="complete",
             agent=agent_name,
             correlation_id=correlation_id,

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -47,7 +47,7 @@ _RESERVED_PARAMS = ("tools", "tool_choice", "parallel_tool_calls")
 class AgentStep:
     """One redacted entry in the agent's execution trace."""
 
-    kind: str  # tool_result | tool_denied | tool_error | final
+    kind: str  # tool_result | tool_denied | tool_error | delegate | final
     tool: str | None = None
     arguments: Any = None
     result: Any = None
@@ -92,10 +92,35 @@ async def run_agent_turn(
     ctx: ToolContext,
     params: dict[str, Any] | None = None,
     max_iters: int = _DEFAULT_MAX_ITERS,
+    extra_tools: Sequence[dict[str, Any]] | None = None,
+    extra_handlers: Mapping[str, Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]]
+    | None = None,
 ) -> AgentRunResult:
-    """Run a single agent turn with tool calling and return the final answer."""
+    """Run a single agent turn with tool calling and return the final answer.
+
+    ``extra_tools``/``extra_handlers`` inject *synthetic* capabilities (e.g. the
+    ``delegate_to_agent`` orchestration tool) on top of the registry-backed tools.
+    Each synthetic tool is an OpenAI function schema in ``extra_tools`` plus an
+    async handler in ``extra_handlers`` keyed by the function name. Synthetic
+    names MUST be disjoint from the real executor tool names (asserted below, fail
+    closed) so a synthetic capability can never shadow a governed tool. Synthetic
+    handlers bypass the registry authorize/execute path but are still counted
+    against the per-turn tool-call budget and are wrapped so an exception becomes
+    a structured tool result rather than crashing the turn.
+    """
     convo: list[dict[str, Any]] = [dict(m) for m in messages]
-    schema = executor.schema_for(tool_names, registry=registry, ctx=ctx)
+    real_schema = executor.schema_for(tool_names, registry=registry, ctx=ctx)
+    handlers: dict[str, Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]] = (
+        dict(extra_handlers) if extra_handlers else {}
+    )
+    if handlers:
+        real_names = {t.get("function", {}).get("name") for t in real_schema}
+        collisions = real_names & set(handlers)
+        if collisions:
+            raise ValueError(
+                f"extra_handlers collide with executor tool names: {sorted(collisions)}"
+            )
+    schema = [*real_schema, *(extra_tools or [])]
     steps: list[AgentStep] = []
     denied_once: set[str] = set()
     tool_calls_used = 0
@@ -173,6 +198,48 @@ async def run_agent_turn(
                     )
                 )
                 steps.append(AgentStep(kind="tool_error", tool=name, detail="invalid_arguments"))
+                continue
+
+            # Synthetic capabilities (e.g. delegate_to_agent) are dispatched here,
+            # before the registry path. They are disjoint from real tool names
+            # (asserted at setup), count against the shared tool-call budget, and
+            # are wrapped so a handler error becomes a structured tool result.
+            if name in handlers:
+                try:
+                    raw_result = await handlers[name](parsed, ctx)
+                except Exception as exc:  # noqa: BLE001 - never crash the turn
+                    convo.append(
+                        _tool_message(
+                            call_id,
+                            {"error": {"type": "execution_error", "message": redact(str(exc))}},
+                        )
+                    )
+                    steps.append(
+                        AgentStep(
+                            kind="tool_error",
+                            tool=name,
+                            arguments=redact_obj(parsed),
+                            detail="execution_error",
+                        )
+                    )
+                    logger.warning("agent delegate error: tool=%s", name)
+                    continue
+                convo.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": _truncate(json.dumps(raw_result, default=str)),
+                    }
+                )
+                steps.append(
+                    AgentStep(
+                        kind="delegate",
+                        tool=name,
+                        arguments=redact_obj(parsed),
+                        result=redact_obj(raw_result),
+                    )
+                )
+                logger.info("agent delegated: tool=%s args=%s", name, redact_obj(parsed))
                 continue
 
             decision = registry.authorize(

@@ -35,6 +35,9 @@ class AgentSpec(BaseModel):
     systemPrompt: str
     defaultModel: str | None = None
     tools: list[str] = []
+    # Names of other agents this agent may delegate sub-tasks to at runtime
+    # (supervisor / agent-as-tool pattern, Phase 8 inc 2). Empty for a leaf agent.
+    links: list[str] = []
     enabled: bool = True
 
     def summary(self) -> AgentSummary:

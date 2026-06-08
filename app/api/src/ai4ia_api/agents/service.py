@@ -26,6 +26,7 @@ from .user_agents import (
     MAX_AGENTS_PER_USER,
     MAX_DESCRIPTION_LEN,
     MAX_DISPLAY_NAME_LEN,
+    MAX_LINKS,
     MAX_SYSTEM_PROMPT_LEN,
     MAX_TOOLS,
     NAME_RE,
@@ -120,6 +121,7 @@ class AgentService:
             system_prompt=req.systemPrompt,
             default_model=req.defaultModel,
             tools=req.tools,
+            links=req.links,
             enabled=req.enabled,
         )
         await self._store.put(agent)
@@ -140,6 +142,7 @@ class AgentService:
             system_prompt=req.systemPrompt,
             default_model=req.defaultModel,
             tools=req.tools,
+            links=req.links,
             enabled=req.enabled,
             created_at=current.createdAt,
         )
@@ -172,6 +175,7 @@ class AgentService:
         system_prompt: str,
         default_model: str | None,
         tools: list[str],
+        links: list[str],
         enabled: bool,
         created_at=None,
     ) -> UserAgent:
@@ -198,6 +202,7 @@ class AgentService:
         if model is not None and self._catalog.get(model) is None:
             raise AgentValidationError(f"Unknown model: {model}.")
         clean_tools = self._validate_tools(tools)
+        clean_links = self._validate_links(name, links)
 
         now = _now()
         return UserAgent(
@@ -209,6 +214,7 @@ class AgentService:
             systemPrompt=prompt,
             defaultModel=model,
             tools=clean_tools,
+            links=clean_links,
             enabled=bool(enabled),
             createdAt=created_at or now,
             updatedAt=now,
@@ -232,4 +238,40 @@ class AgentService:
                 )
             seen.add(tool)
             clean.append(tool)
+        return clean
+
+    def _validate_links(self, own_name: str, links: list[str]) -> list[str]:
+        """Validate the delegation targets of a user agent.
+
+        Links are normalized to lowercase and must each look like a valid agent
+        name (the ``@mention`` grammar). We dedupe, reject self-links, and cap the
+        count. We deliberately do **not** check that a target exists here: the
+        composed catalog is per-user and dynamic (a referenced agent may be
+        created later, or be curated), so existence is resolved at *runtime* — an
+        unknown or disabled target surfaces as a structured tool error during the
+        turn rather than blocking a save.
+        """
+        if not links:
+            return []
+        if len(links) > MAX_LINKS:
+            raise AgentValidationError(
+                f"An agent may link to at most {MAX_LINKS} other agents."
+            )
+        self_name = (own_name or "").strip().lower()
+        seen: set[str] = set()
+        clean: list[str] = []
+        for raw in links:
+            link = (raw or "").strip().lower()
+            if not link:
+                raise AgentValidationError("Linked agent name must not be empty.")
+            if not NAME_RE.match(link):
+                raise AgentValidationError(
+                    f"Linked agent name '{link}' is not a valid @mentionable name."
+                )
+            if link == self_name:
+                raise AgentValidationError("An agent cannot link to itself.")
+            if link in seen:
+                raise AgentValidationError(f"Duplicate linked agent: {link}.")
+            seen.add(link)
+            clean.append(link)
         return clean
