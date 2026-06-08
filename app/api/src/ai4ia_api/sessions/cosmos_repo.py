@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import Message, Session
+from .models import Document, Message, Session
 from .repository import SessionNotFoundError
 
 
@@ -24,13 +24,14 @@ class CosmosSessionRepository:
         db = self._client.get_database_client(database)
         self._sessions = db.get_container_client("sessions")
         self._messages = db.get_container_client("messages")
+        self._documents = db.get_container_client("documents")
 
     async def close(self) -> None:
         await self._client.close()
         await self._credential.close()
 
     @staticmethod
-    def _to_doc(model: Session | Message) -> dict[str, Any]:
+    def _to_doc(model: Session | Message | Document) -> dict[str, Any]:
         return model.model_dump(mode="json")
 
     async def _owned_session(self, user_id: str, session_id: str) -> Session:
@@ -68,8 +69,15 @@ class CosmosSessionRepository:
         # Delete child messages first (partition = sessionId).
         query = "SELECT c.id FROM c WHERE c.sessionId = @sid"
         params = [{"name": "@sid", "value": session_id}]
-        async for doc in self._messages.query_items(query=query, parameters=params):
+        async for doc in self._messages.query_items(
+            query=query, parameters=params, partition_key=session_id
+        ):
             await self._messages.delete_item(item=doc["id"], partition_key=session_id)
+        # Cascade-delete uploaded documents (also partitioned by sessionId).
+        async for doc in self._documents.query_items(
+            query=query, parameters=params, partition_key=session_id
+        ):
+            await self._documents.delete_item(item=doc["id"], partition_key=session_id)
         await self._sessions.delete_item(item=session_id, partition_key=user_id)
 
     async def add_message(self, user_id: str, message: Message) -> Message:
@@ -101,3 +109,52 @@ class CosmosSessionRepository:
             query=query, parameters=params, partition_key=session_id
         ):
             await self._messages.delete_item(item=doc["id"], partition_key=session_id)
+
+    async def add_document(self, user_id: str, document: Document) -> Document:
+        await self._owned_session(user_id, document.sessionId)
+        document.userId = user_id
+        await self._documents.create_item(self._to_doc(document))
+        return document
+
+    async def list_documents(self, user_id: str, session_id: str) -> list[Document]:
+        await self._owned_session(user_id, session_id)
+        query = "SELECT * FROM c WHERE c.sessionId = @sid ORDER BY c.createdAt ASC"
+        params = [{"name": "@sid", "value": session_id}]
+        return [
+            Document.model_validate(doc)
+            async for doc in self._documents.query_items(
+                query=query, parameters=params, partition_key=session_id
+            )
+        ]
+
+    async def get_document(
+        self, user_id: str, session_id: str, document_id: str
+    ) -> Document | None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        await self._owned_session(user_id, session_id)
+        try:
+            doc = await self._documents.read_item(
+                item=document_id, partition_key=session_id
+            )
+        except CosmosResourceNotFoundError:
+            return None
+        document = Document.model_validate(doc)
+        # Defense in depth: the partition already scopes to the owned session,
+        # but never return a doc whose denormalized owner doesn't match.
+        if document.userId != user_id:
+            return None
+        return document
+
+    async def delete_document(
+        self, user_id: str, session_id: str, document_id: str
+    ) -> None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        await self._owned_session(user_id, session_id)
+        try:
+            await self._documents.delete_item(
+                item=document_id, partition_key=session_id
+            )
+        except CosmosResourceNotFoundError:
+            return

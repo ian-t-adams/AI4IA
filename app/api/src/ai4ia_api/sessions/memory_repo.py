@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 
-from .models import Message, Session
+from .models import Document, Message, Session
 from .repository import SessionNotFoundError
 
 
@@ -15,6 +15,7 @@ class InMemorySessionRepository:
     def __init__(self) -> None:
         self._sessions: dict[str, Session] = {}
         self._messages: dict[str, list[Message]] = {}
+        self._documents: dict[str, list[Document]] = {}
         self._lock = asyncio.Lock()
 
     async def _owned_session(self, user_id: str, session_id: str) -> Session:
@@ -47,6 +48,7 @@ class InMemorySessionRepository:
             await self._owned_session(user_id, session_id)
             self._sessions.pop(session_id, None)
             self._messages.pop(session_id, None)
+            self._documents.pop(session_id, None)
 
     async def add_message(self, user_id: str, message: Message) -> Message:
         async with self._lock:
@@ -75,3 +77,32 @@ class InMemorySessionRepository:
         async with self._lock:
             await self._owned_session(user_id, session_id)
             self._messages[session_id] = []
+
+    async def add_document(self, user_id: str, document: Document) -> Document:
+        async with self._lock:
+            await self._owned_session(user_id, document.sessionId)
+            document.userId = user_id
+            self._documents.setdefault(document.sessionId, []).append(document)
+            return document
+
+    async def list_documents(self, user_id: str, session_id: str) -> list[Document]:
+        await self._owned_session(user_id, session_id)
+        docs = list(self._documents.get(session_id, []))
+        return sorted(docs, key=lambda d: d.createdAt)
+
+    async def get_document(
+        self, user_id: str, session_id: str, document_id: str
+    ) -> Document | None:
+        await self._owned_session(user_id, session_id)
+        for doc in self._documents.get(session_id, []):
+            if doc.id == document_id:
+                return doc
+        return None
+
+    async def delete_document(
+        self, user_id: str, session_id: str, document_id: str
+    ) -> None:
+        async with self._lock:
+            await self._owned_session(user_id, session_id)
+            bucket = self._documents.get(session_id, [])
+            self._documents[session_id] = [d for d in bucket if d.id != document_id]

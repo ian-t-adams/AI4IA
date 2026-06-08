@@ -61,3 +61,27 @@ class Session(BaseModel):
     systemPrompt: str | None = None
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
+
+
+class Document(BaseModel):
+    """A user-uploaded reference file whose extracted plain text is injected
+    (capped) into chat turns as untrusted context.
+
+    Stored in its own Cosmos container (PK ``/sessionId``) rather than embedded
+    on the session so large text never bloats the session list. ``userId`` is
+    denormalized + ownership-checked on every access, mirroring ``Message``.
+    """
+
+    id: str = Field(default_factory=_new_id)
+    sessionId: str
+    userId: str
+    filename: str
+    contentType: str = ""
+    # Size of the original uploaded bytes (not the extracted text).
+    size: int = 0
+    # Length of the stored (post-cap) extracted text.
+    charCount: int = 0
+    # True when the original text exceeded the per-document storage cap.
+    truncated: bool = False
+    text: str = ""
+    createdAt: datetime = Field(default_factory=_now)

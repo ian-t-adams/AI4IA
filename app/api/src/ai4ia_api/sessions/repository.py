@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from .models import Message, Session
+from .models import Document, Message, Session
 
 
 class SessionNotFoundError(Exception):
@@ -34,3 +34,15 @@ class SessionRepository(Protocol):
     async def list_messages(self, user_id: str, session_id: str) -> list[Message]: ...
 
     async def clear_messages(self, user_id: str, session_id: str) -> None: ...
+
+    async def add_document(self, user_id: str, document: Document) -> Document: ...
+
+    async def list_documents(self, user_id: str, session_id: str) -> list[Document]: ...
+
+    async def get_document(
+        self, user_id: str, session_id: str, document_id: str
+    ) -> Document | None: ...
+
+    async def delete_document(
+        self, user_id: str, session_id: str, document_id: str
+    ) -> None: ...

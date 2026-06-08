@@ -27,6 +27,9 @@ dependencies = [
     # Multipart form parser: required by FastAPI for the voice transcription
     # endpoint's audio file upload (Phase 7B).
     "python-multipart>=0.0.9",
+    # PDF text extraction for the document-upload feature (Phase 7C). docx/pptx
+    # are parsed with the stdlib (zipfile + ElementTree); only PDF needs a dep.
+    "pypdf>=4.0",
 ]
 
 [project.optional-dependencies]
