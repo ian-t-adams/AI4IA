@@ -337,7 +337,9 @@ export function ChatApp() {
         <SystemPromptEditor value={systemPrompt} onSave={saveSystemPrompt} />
       </aside>
 
-      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsPanel models={models} onClose={() => setSettingsOpen(false)} />
+      )}
     </div>
   );
 }

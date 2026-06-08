@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     gateway_provider_style: GatewayProviderStyle = GatewayProviderStyle.azure_openai_native
     gateway_api_version: str = "2024-10-21"
     gateway_timeout_seconds: float = 120.0
+    # Image generation (Phase 7A) has its own api-version + timeout: image models
+    # (gpt-image-2 etc.) can take much longer than a chat turn and may track a
+    # different supported api-version than chat. 2024-10-21 (GA) is verified
+    # against the deployed gpt-image-2 deployment.
+    gateway_image_api_version: str = "2024-10-21"
+    gateway_image_timeout_seconds: float = 180.0
     # Override the chat-completions path template (placeholders: {deployment}).
     # When unset, a sensible default is derived from the provider style.
     gateway_chat_path: str | None = None

@@ -29,6 +29,7 @@ from .routers import catalog as catalog_router
 from .routers import chat as chat_router
 from .routers import entitlements as entitlements_router
 from .routers import health as health_router
+from .routers import images as images_router
 from .routers import sessions as sessions_router
 from .routers import usage as usage_router
 from .sessions.factory import build_session_repository
@@ -142,6 +143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(agents_router.router)
     app.include_router(sessions_router.router)
     app.include_router(chat_router.router)
+    app.include_router(images_router.router)
     app.include_router(usage_router.router)
     app.include_router(entitlements_router.self_router)
     app.include_router(entitlements_router.admin_router)

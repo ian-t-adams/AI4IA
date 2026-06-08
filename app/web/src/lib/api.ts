@@ -3,6 +3,8 @@
 import type {
   AgentSummary,
   ChatParams,
+  ImageRequest,
+  ImageResponse,
   Message,
   ModelCatalog,
   Session,
@@ -24,6 +26,20 @@ async function jsonOrThrow<T>(resp: Response): Promise<T> {
 
 export async function listModels(): Promise<ModelCatalog> {
   return jsonOrThrow(await fetch("/api/models", { cache: "no-store" }));
+}
+
+// Generates an image through the backend gateway (gpt-image-2 etc.). Returns
+// base64 image data (no data-URL prefix); callers wrap it as needed.
+export async function generateImage(
+  input: ImageRequest,
+): Promise<ImageResponse> {
+  return jsonOrThrow(
+    await fetch("/api/images/generations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
 }
 
 export async function listAgents(): Promise<AgentSummary[]> {

@@ -56,3 +56,31 @@ export interface ChatParams {
   top_p?: number;
   max_tokens?: number;
 }
+
+// --- Image generation (Phase 7A) ---
+
+export interface ImageRequest {
+  prompt: string;
+  model?: string | null;
+  size?: string | null;
+  n?: number;
+  region?: string | null;
+  dataZone?: string | null;
+}
+
+export interface GeneratedImageData {
+  b64: string;
+}
+
+export interface ImageResponse {
+  model: string;
+  deployment: string;
+  size: string;
+  images: GeneratedImageData[];
+}
+
+// Persisted custom-background selection. A preset references a named gradient;
+// a generated background carries a full data URL produced by image generation.
+export type BackgroundConfig =
+  | { kind: "preset"; id: string }
+  | { kind: "generated"; dataUrl: string };

@@ -1,5 +1,7 @@
 "use client";
 
+import type { ModelEntry } from "@/lib/types";
+import { ImageryPanel } from "./ImageryPanel";
 import { ThemeName, useTheme } from "./ThemeProvider";
 
 const THEMES: { id: ThemeName; label: string }[] = [
@@ -8,9 +10,15 @@ const THEMES: { id: ThemeName; label: string }[] = [
   { id: "contrast", label: "High contrast" },
 ];
 
-const ACCENTS = ["#4f46e5", "#0e7490", "#b91c1c", "#15803d", "#a21caf", "#b45309"];
+const ACCENTS = ["#f97316", "#4f46e5", "#0e7490", "#b91c1c", "#15803d", "#a21caf"];
 
-export function SettingsPanel({ onClose }: { onClose: () => void }) {
+export function SettingsPanel({
+  models,
+  onClose,
+}: {
+  models: ModelEntry[];
+  onClose: () => void;
+}) {
   const { theme, setTheme, fontScale, setFontScale, accent, setAccent } =
     useTheme();
 
@@ -42,6 +50,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           display: "flex",
           flexDirection: "column",
           gap: 20,
+          maxHeight: "90vh",
+          overflowY: "auto",
         }}
       >
         <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -123,6 +133,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             ))}
           </div>
         </fieldset>
+
+        <ImageryPanel models={models} />
       </div>
     </div>
   );

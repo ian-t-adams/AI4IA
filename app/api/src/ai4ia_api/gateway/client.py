@@ -58,6 +58,12 @@ def _default_embeddings_path(style: GatewayProviderStyle) -> str:
     return "/embeddings"
 
 
+def _default_images_path(style: GatewayProviderStyle) -> str:
+    if style == GatewayProviderStyle.azure_openai_native:
+        return "/deployments/{deployment}/images/generations"
+    return "/images/generations"
+
+
 class ModelGatewayClient:
     def __init__(self, settings: Settings, http_client: httpx.AsyncClient | None = None) -> None:
         self._base = settings.model_gateway_url.rstrip("/")
@@ -68,7 +74,10 @@ class ModelGatewayClient:
         self._timeout = settings.gateway_timeout_seconds
         self._chat_path = settings.gateway_chat_path or _default_chat_path(self._style)
         self._embeddings_path = _default_embeddings_path(self._style)
+        self._images_path = _default_images_path(self._style)
         self._stream_include_usage = settings.gateway_stream_include_usage
+        self._image_api_version = settings.gateway_image_api_version
+        self._image_timeout = settings.gateway_image_timeout_seconds
         self._http = http_client
 
     def _auth_headers(self, correlation_id: str | None) -> dict[str, str]:
@@ -129,6 +138,70 @@ class ModelGatewayClient:
         else:
             body["model"] = deployment
         return GatewayRequest(url=url, headers=self._auth_headers(correlation_id), json=body)
+
+    def build_image_request(
+        self,
+        *,
+        deployment: str,
+        prompt: str,
+        size: str | None = None,
+        n: int = 1,
+        extra: dict[str, Any] | None = None,
+        correlation_id: str | None = None,
+    ) -> GatewayRequest:
+        """Build an image-generation request. Uses the image-specific api-version
+        (image models may track a different supported version than chat) and the
+        same gateway/auth path the chat + embeddings calls use.
+
+        ``extra`` is for trusted, internally-constructed parameters only; the
+        public router builds it from an explicit allowlist and never forwards
+        arbitrary client keys.
+        """
+        path = self._images_path.format(deployment=deployment)
+        url = f"{self._base}{path if path.startswith('/') else '/' + path}"
+        body: dict[str, Any] = {"prompt": prompt, "n": n, **(extra or {})}
+        if size:
+            body["size"] = size
+        if self._style == GatewayProviderStyle.azure_openai_native:
+            url = f"{url}?api-version={self._image_api_version}"
+        else:
+            body["model"] = deployment
+        return GatewayRequest(url=url, headers=self._auth_headers(correlation_id), json=body)
+
+    async def generate_image(
+        self,
+        *,
+        deployment: str,
+        prompt: str,
+        size: str | None = None,
+        n: int = 1,
+        extra: dict[str, Any] | None = None,
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Generate one or more images; returns the parsed provider JSON
+        (``{data: [{b64_json}], usage, ...}``). Uses the longer image timeout."""
+        req = self.build_image_request(
+            deployment=deployment,
+            prompt=prompt,
+            size=size,
+            n=n,
+            extra=extra,
+            correlation_id=correlation_id,
+        )
+        if self._http is not None:
+            client, owned = self._http, False
+        else:
+            client, owned = httpx.AsyncClient(timeout=self._image_timeout), True
+        try:
+            resp = await client.post(
+                req.url, headers=req.headers, json=req.json, timeout=self._image_timeout
+            )
+            if resp.status_code >= 400:
+                raise ModelGatewayError(resp.status_code, resp.text)
+            return resp.json()
+        finally:
+            if owned:
+                await client.aclose()
 
     def _client(self) -> tuple[httpx.AsyncClient, bool]:
         if self._http is not None:
