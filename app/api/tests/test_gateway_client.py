@@ -87,3 +87,53 @@ async def test_complete_raises_on_error_status():
     with pytest.raises(ModelGatewayError) as exc:
         await client.complete(deployment="dep-1", messages=[])
     assert exc.value.status_code == 429
+
+
+def test_embed_request_native_url_path_and_body():
+    client = _client(
+        gateway_provider_style="azure_openai_native", gateway_api_version="2024-10-21"
+    )
+    req = client.build_embed_request(
+        deployment="text-embedding-3-large-slurmfactory-eastus2-glbl",
+        inputs=["a", "b"],
+    )
+    assert req.url == (
+        "http://gw.test/openai/deployments/"
+        "text-embedding-3-large-slurmfactory-eastus2-glbl/embeddings"
+        "?api-version=2024-10-21"
+    )
+    assert req.json["input"] == ["a", "b"]
+    assert "model" not in req.json
+
+
+def test_embed_request_openai_compatible_sets_model():
+    client = _client(gateway_provider_style="openai_compatible")
+    req = client.build_embed_request(deployment="dep-1", inputs=["x"])
+    assert req.url == "http://gw.test/openai/embeddings"
+    assert req.json["model"] == "dep-1"
+
+
+async def test_embed_parses_and_orders_vectors():
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Return out of order to prove the client sorts by index.
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": 1, "embedding": [0.3, 0.4]},
+                    {"index": 0, "embedding": [0.1, 0.2]},
+                ]
+            },
+        )
+
+    client = _client(transport=httpx.MockTransport(handler))
+    vectors = await client.embed(deployment="dep-1", inputs=["first", "second"])
+    assert vectors == [[0.1, 0.2], [0.3, 0.4]]
+
+
+async def test_embed_empty_inputs_short_circuits():
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("embed must not call the gateway for empty inputs")
+
+    client = _client(transport=httpx.MockTransport(handler))
+    assert await client.embed(deployment="dep-1", inputs=[]) == []

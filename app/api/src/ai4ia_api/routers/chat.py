@@ -32,6 +32,7 @@ from ..agents.commands import parse_input
 from ..agents.runtime import run_agent_turn
 from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
+from ..memory.service import MemoryServiceProtocol
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -131,6 +132,7 @@ async def chat(
     agents: AgentCatalog = request.app.state.agents
     registry: ToolRegistry = request.app.state.tool_registry
     executor: ToolExecutor = request.app.state.tool_executor
+    memory: MemoryServiceProtocol = request.app.state.memory
 
     try:
         session = await repo.get_session(user.internal_user_id, body.sessionId)
@@ -170,6 +172,7 @@ async def chat(
             repo=repo,
             catalog=catalog,
             agents=agents,
+            memory=memory,
         )
         return _local_reply_response(body.sessionId, assistant, body.stream)
 
@@ -231,6 +234,17 @@ async def chat(
     ]
     correlation_id = get_correlation_id()
 
+    # Per-user memory recall (best-effort, feature-flagged). Injected as a clearly
+    # delimited, explicitly-untrusted context block placed AFTER the main system
+    # prompt so the agent/session instructions keep top authority. ``recall`` runs
+    # on the prior-history snapshot (the current user message was added to the
+    # store, not the recall index, so it can't recall itself).
+    recalled = await memory.recall(user.internal_user_id, content_for_model)
+    memory_block = memory.format_context(recalled)
+    if memory_block:
+        insert_at = 1 if (payload_messages and payload_messages[0]["role"] == "system") else 0
+        payload_messages.insert(insert_at, {"role": "system", "content": memory_block})
+
     # Keep the session fresh + auto-title from the first real (non-command) turn.
     has_prior_chat = any(not m.fromCommand for m in prior)
     session.updatedAt = datetime.now(timezone.utc)
@@ -270,6 +284,7 @@ async def chat(
             agent=agent_name,
         )
         await repo.add_message(user.internal_user_id, assistant)
+        await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
         return _local_reply_response(body.sessionId, assistant, body.stream)
 
     if not body.stream:
@@ -293,6 +308,7 @@ async def chat(
             agent=agent_name,
         )
         await repo.add_message(user.internal_user_id, assistant)
+        await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
         return {"sessionId": body.sessionId, "message": assistant}
 
     # Streaming path: persist a placeholder so a record always exists, then
@@ -313,6 +329,7 @@ async def chat(
     async def event_stream():
         parts: list[str] = []
         final = MessageStatus.complete
+        saw_done = False
         try:
             async for chunk in gateway.stream(
                 deployment=deployment.deploymentName,
@@ -323,6 +340,7 @@ async def chat(
                 if chunk.delta:
                     parts.append(chunk.delta)
                 if chunk.done:
+                    saw_done = True
                     yield "data: [DONE]\n\n"
                     break
                 if chunk.raw:
@@ -342,6 +360,16 @@ async def chat(
                 )
             except Exception:  # noqa: BLE001 - best-effort durability
                 logger.exception("Failed to persist assistant message %s", assistant.id)
+            # Remember the user's turn only when the model stream completed
+            # cleanly (a clean end-of-stream marker), so a truncated or errored
+            # turn doesn't seed memory. Best-effort: remember() swallows its own
+            # failures. (A durable store will move this off the response path.)
+            if final == MessageStatus.complete and saw_done:
+                await asyncio.shield(
+                    memory.remember(
+                        user.internal_user_id, body.sessionId, content_for_model
+                    )
+                )
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

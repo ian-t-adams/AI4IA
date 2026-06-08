@@ -45,6 +45,17 @@ class SessionStoreKind(str, Enum):
     cosmos = "cosmos"
 
 
+class MemoryStoreKind(str, Enum):
+    # Per-user semantic memory is off entirely.
+    disabled = "disabled"
+    # In-process cosine store: the default until pgvector is validated live
+    # (good for local/dev/tests; not durable across restarts or replicas).
+    in_memory = "in_memory"
+    # Postgres + pgvector. Reserved for the next increment; selecting it now
+    # fails closed at startup (the store is not yet implemented/connected).
+    pgvector = "pgvector"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="AI4IA_",
@@ -83,6 +94,31 @@ class Settings(BaseSettings):
     session_store: SessionStoreKind = SessionStoreKind.memory
     cosmos_endpoint: str | None = None
     cosmos_database: str = "ai4ia"
+
+    # --- Memory (Phase 5): per-user semantic recall ---
+    # Single source of truth: the store kind both selects the backend AND gates
+    # the feature (``disabled`` == off). No separate enable flag, so the two can
+    # never disagree.
+    memory_store: MemoryStoreKind = MemoryStoreKind.disabled
+    # Catalog model id used to embed memories + queries (resolved to a deployment
+    # through the same model gateway). Its native dimension must match
+    # ``memory_embedding_dimensions`` (encoded now so the pgvector schema in the
+    # next increment is not a breaking migration).
+    memory_embedding_model: str = "text-embedding-3-large"
+    memory_embedding_dimensions: int = 3072
+    # Retrieval shaping.
+    memory_top_k: int = 5
+    memory_min_score: float = 0.25
+    # Injection caps (defense against memory-poisoning / context bloat): how many
+    # recalled snippets to inject, max chars per snippet, and max total chars.
+    memory_max_injected: int = 5
+    memory_max_chars_per_item: int = 500
+    memory_max_total_chars: int = 2000
+    # Don't store trivially short user utterances ("ok", "thanks").
+    memory_min_chars_to_store: int = 12
+    # Postgres connection (pgvector backend; unused until the next increment).
+    postgres_host: str | None = None
+    postgres_database: str = "mem0"
 
     # --- Observability ---
     log_level: str = "INFO"
@@ -135,6 +171,8 @@ class Settings(BaseSettings):
             raise RuntimeError("AI4IA_MODEL_GATEWAY_API_KEY is required for api_key auth mode.")
         if self.session_store == SessionStoreKind.cosmos and not self.cosmos_endpoint:
             raise RuntimeError("AI4IA_COSMOS_ENDPOINT is required for the cosmos session store.")
+        if self.memory_store == MemoryStoreKind.pgvector and not self.postgres_host:
+            raise RuntimeError("AI4IA_POSTGRES_HOST is required for the pgvector memory store.")
 
 
 @lru_cache

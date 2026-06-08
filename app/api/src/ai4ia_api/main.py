@@ -13,6 +13,7 @@ from .agents.tool_exec import build_tools
 from .catalog import load_catalog
 from .config import Settings, get_settings
 from .gateway.client import ModelGatewayClient
+from .memory.factory import build_memory_service
 from .logging_setup import (
     configure_logging,
     get_correlation_id,
@@ -49,6 +50,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         registry, executor = build_tools()
         app.state.tool_registry = registry
         app.state.tool_executor = executor
+        # Per-user memory (Phase 5). Disabled by default -> NoopMemoryService, so
+        # the chat path can call it unconditionally with no behavior change.
+        app.state.memory = build_memory_service(
+            settings, gateway=app.state.gateway, catalog=app.state.catalog
+        )
         try:
             yield
         finally:

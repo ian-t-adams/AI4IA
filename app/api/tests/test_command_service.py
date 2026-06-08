@@ -106,12 +106,52 @@ async def test_model_no_args_shows_usage():
     assert msg.content == "Usage: /model <model-id>"
 
 
-async def test_summarize_and_forget_report_not_available():
+async def test_summarize_reports_not_available():
     repo, user, session = await _setup()
     summarize = await _run(repo, user, session, "/summarize")
     assert "isn't available yet" in summarize.content
+
+
+async def test_forget_without_memory_reports_nothing_stored():
+    repo, user, session = await _setup()
     forget = await _run(repo, user, session, "/forget")
-    assert "isn't available yet" in forget.content
+    assert "no stored memories" in forget.content
+
+
+async def test_forget_me_and_session_with_memory_service():
+    from ai4ia_api.memory.in_memory import InMemoryVectorStore
+    from ai4ia_api.memory.service import MemoryService
+
+    class _Embedder:
+        async def embed(self, inputs):
+            return [[1.0, 0.0] for _ in inputs]
+
+        async def embed_one(self, text):
+            return [1.0, 0.0]
+
+    repo, user, session = await _setup()
+    memory = MemoryService(
+        store=InMemoryVectorStore(), embedder=_Embedder(), min_chars_to_store=4
+    )
+    await memory.remember(user.internal_user_id, session.id, "a durable memory line")
+
+    parsed = parse_input("/forget me")
+    reply = await execute_command(
+        parsed=parsed,
+        session=session,
+        user=user,
+        repo=repo,
+        catalog=load_catalog(),
+        agents=load_agent_catalog(),
+        memory=memory,
+    )
+    assert "Forgot all 1" in reply.content
+
+
+async def test_forget_rejects_unknown_scope():
+    repo, user, session = await _setup()
+    forget = await _run(repo, user, session, "/forget everywhere")
+    assert "Usage: /forget" in forget.content
 
 
 async def test_unknown_command_points_to_help():

@@ -49,6 +49,12 @@ def _default_chat_path(style: GatewayProviderStyle) -> str:
     return "/chat/completions"
 
 
+def _default_embeddings_path(style: GatewayProviderStyle) -> str:
+    if style == GatewayProviderStyle.azure_openai_native:
+        return "/deployments/{deployment}/embeddings"
+    return "/embeddings"
+
+
 class ModelGatewayClient:
     def __init__(self, settings: Settings, http_client: httpx.AsyncClient | None = None) -> None:
         self._base = settings.model_gateway_url.rstrip("/")
@@ -58,7 +64,18 @@ class ModelGatewayClient:
         self._api_key = settings.model_gateway_api_key
         self._timeout = settings.gateway_timeout_seconds
         self._chat_path = settings.gateway_chat_path or _default_chat_path(self._style)
+        self._embeddings_path = _default_embeddings_path(self._style)
         self._http = http_client
+
+    def _auth_headers(self, correlation_id: str | None) -> dict[str, str]:
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if correlation_id:
+            headers["x-correlation-id"] = correlation_id
+        if self._auth_mode == GatewayAuthMode.api_key and self._api_key:
+            headers["Ocp-Apim-Subscription-Key"] = self._api_key
+        elif self._auth_mode == GatewayAuthMode.bearer and self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
 
     def build_request(
         self,
@@ -80,15 +97,27 @@ class ModelGatewayClient:
         else:
             body["model"] = deployment
 
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if correlation_id:
-            headers["x-correlation-id"] = correlation_id
-        if self._auth_mode == GatewayAuthMode.api_key and self._api_key:
-            headers["Ocp-Apim-Subscription-Key"] = self._api_key
-        elif self._auth_mode == GatewayAuthMode.bearer and self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
+        headers = self._auth_headers(correlation_id)
 
         return GatewayRequest(url=url, headers=headers, json=body)
+
+    def build_embed_request(
+        self,
+        *,
+        deployment: str,
+        inputs: Sequence[str],
+        correlation_id: str | None = None,
+    ) -> GatewayRequest:
+        """Build the embeddings request, routed through the same gateway/auth as
+        chat (APIM forwards any path to the Foundry data plane)."""
+        path = self._embeddings_path.format(deployment=deployment)
+        url = f"{self._base}{path if path.startswith('/') else '/' + path}"
+        body: dict[str, Any] = {"input": list(inputs)}
+        if self._style == GatewayProviderStyle.azure_openai_native:
+            url = f"{url}?api-version={self._api_version}"
+        else:
+            body["model"] = deployment
+        return GatewayRequest(url=url, headers=self._auth_headers(correlation_id), json=body)
 
     def _client(self) -> tuple[httpx.AsyncClient, bool]:
         if self._http is not None:
@@ -116,6 +145,32 @@ class ModelGatewayClient:
             if resp.status_code >= 400:
                 raise ModelGatewayError(resp.status_code, resp.text)
             return resp.json()
+        finally:
+            if owned:
+                await client.aclose()
+
+    async def embed(
+        self,
+        *,
+        deployment: str,
+        inputs: Sequence[str],
+        correlation_id: str | None = None,
+    ) -> list[list[float]]:
+        """Return one embedding vector per input, order-aligned to ``inputs``."""
+        if not inputs:
+            return []
+        req = self.build_embed_request(
+            deployment=deployment, inputs=inputs, correlation_id=correlation_id
+        )
+        client, owned = self._client()
+        try:
+            resp = await client.post(req.url, headers=req.headers, json=req.json)
+            if resp.status_code >= 400:
+                raise ModelGatewayError(resp.status_code, resp.text)
+            data = resp.json().get("data") or []
+            # The API may not guarantee order; sort by the declared index.
+            ordered = sorted(data, key=lambda item: item.get("index", 0))
+            return [item.get("embedding") or [] for item in ordered]
         finally:
             if owned:
                 await client.aclose()
