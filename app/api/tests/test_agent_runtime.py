@@ -38,6 +38,10 @@ def _assistant_text(text: str) -> dict:
     return {"choices": [{"message": {"role": "assistant", "content": text}}]}
 
 
+def _usage(p: int, c: int) -> dict:
+    return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
+
+
 class ScriptedGateway:
     """Returns queued responses in order; records each call's messages + params."""
 
@@ -282,3 +286,71 @@ async def test_max_iters_forces_final_call_without_tools():
     # The final (3rd) call must NOT advertise tools.
     assert "tools" not in gateway.calls[-1]["params"]
     assert result.text == "forced final"
+
+
+async def test_usage_summed_across_calls_complete_when_all_report():
+    registry, executor = build_tools()
+    tool_call = _assistant_tool_call("c1", "calculator", json.dumps({"expression": "6*7"}))
+    tool_call["usage"] = _usage(100, 20)
+    final = _assistant_text("The answer is 42.")
+    final["usage"] = _usage(50, 10)
+    gateway = ScriptedGateway([tool_call, final])
+    result = await run_agent_turn(
+        deployment="dep",
+        messages=_messages(),
+        tool_names=["calculator"],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+    )
+    assert result.usage.known is True
+    assert result.usage.complete is True
+    assert result.usage.calls == 2
+    assert result.usage.prompt == 150
+    assert result.usage.completion == 30
+    assert result.usage.total == 180
+
+
+async def test_usage_incomplete_when_one_call_omits_usage():
+    registry, executor = build_tools()
+    tool_call = _assistant_tool_call("c1", "calculator", json.dumps({"expression": "6*7"}))
+    tool_call["usage"] = _usage(100, 20)
+    final = _assistant_text("The answer is 42.")  # no usage on the final call
+    gateway = ScriptedGateway([tool_call, final])
+    result = await run_agent_turn(
+        deployment="dep",
+        messages=_messages(),
+        tool_names=["calculator"],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+    )
+    assert result.usage.known is True  # the first call reported
+    assert result.usage.complete is False  # but the final call did not
+    assert result.usage.calls == 2
+    assert result.usage.total == 120  # only the known call's tokens
+
+
+async def test_usage_summed_on_max_iters_final_call():
+    registry, executor = build_tools()
+    loop = _assistant_tool_call("c", "calculator", json.dumps({"expression": "1+1"}))
+    loop["usage"] = _usage(10, 5)
+    forced = _assistant_text("forced final")
+    forced["usage"] = _usage(7, 3)
+    gateway = ScriptedGateway([loop, loop, forced])
+    result = await run_agent_turn(
+        deployment="dep",
+        messages=_messages(),
+        tool_names=["calculator"],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+        max_iters=2,
+    )
+    # 2 loop calls + 1 forced final call all contribute.
+    assert result.usage.calls == 3
+    assert result.usage.complete is True
+    assert result.usage.total == (15 + 15 + 10)

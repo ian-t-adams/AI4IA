@@ -40,6 +40,7 @@ packages = ["src/ai4ia_api"]
 [tool.hatch.build.targets.wheel.force-include]
 "src/ai4ia_api/data/model_catalog.json" = "ai4ia_api/data/model_catalog.json"
 "src/ai4ia_api/data/agents.json" = "ai4ia_api/data/agents.json"
+"src/ai4ia_api/data/pricing.json" = "ai4ia_api/data/pricing.json"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

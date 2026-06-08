@@ -1,0 +1,19 @@
+{
+  "_comment": "Best-effort per-1M-token USD price estimates for cost tracking ONLY. NOT authoritative billing. Update from the Azure AI Foundry / Azure OpenAI pricing pages. Models absent here (image/audio/realtime/tts/video/rerank/transcription) record cost as unknown rather than zero. inputPer1M/outputPer1M are USD per 1,000,000 tokens.",
+  "version": "2026-06-08",
+  "currency": "USD",
+  "models": {
+    "gpt-5.2": { "inputPer1M": 1.25, "outputPer1M": 10.0 },
+    "gpt-5.1": { "inputPer1M": 1.25, "outputPer1M": 10.0 },
+    "gpt-5": { "inputPer1M": 1.25, "outputPer1M": 10.0 },
+    "gpt-5-mini": { "inputPer1M": 0.25, "outputPer1M": 2.0 },
+    "gpt-4.1-mini": { "inputPer1M": 0.4, "outputPer1M": 1.6 },
+    "gpt-4.1-nano": { "inputPer1M": 0.1, "outputPer1M": 0.4 },
+    "model-router": { "inputPer1M": 1.25, "outputPer1M": 10.0 },
+    "o4-mini": { "inputPer1M": 1.1, "outputPer1M": 4.4 },
+    "DeepSeek-V3.2": { "inputPer1M": 0.28, "outputPer1M": 0.42 },
+    "text-embedding-3-large": { "inputPer1M": 0.13, "outputPer1M": 0.0 },
+    "embed-v-4-0": { "inputPer1M": 0.12, "outputPer1M": 0.0 },
+    "o3-deep-research": { "inputPer1M": 10.0, "outputPer1M": 40.0 }
+  }
+}

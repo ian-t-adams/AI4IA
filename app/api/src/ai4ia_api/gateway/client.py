@@ -36,11 +36,14 @@ class GatewayRequest:
 class ChatChunk:
     """A single streamed SSE event: ``delta`` is the assistant text increment;
     ``raw`` is the original ``data:`` payload for passthrough; ``done`` marks the
-    terminal ``[DONE]`` sentinel."""
+    terminal ``[DONE]`` sentinel; ``usage`` carries the token-usage object when a
+    chunk reports it (the final, empty-``choices`` usage chunk emitted when
+    ``stream_options.include_usage`` is set)."""
 
     delta: str = ""
     raw: str = ""
     done: bool = False
+    usage: dict[str, Any] | None = None
 
 
 def _default_chat_path(style: GatewayProviderStyle) -> str:
@@ -65,6 +68,7 @@ class ModelGatewayClient:
         self._timeout = settings.gateway_timeout_seconds
         self._chat_path = settings.gateway_chat_path or _default_chat_path(self._style)
         self._embeddings_path = _default_embeddings_path(self._style)
+        self._stream_include_usage = settings.gateway_stream_include_usage
         self._http = http_client
 
     def _auth_headers(self, correlation_id: str | None) -> dict[str, str]:
@@ -84,6 +88,7 @@ class ModelGatewayClient:
         messages: Sequence[dict[str, Any]],
         params: dict[str, Any] | None = None,
         stream: bool = False,
+        include_usage: bool = False,
         correlation_id: str | None = None,
     ) -> GatewayRequest:
         path = self._chat_path.format(deployment=deployment)
@@ -92,6 +97,12 @@ class ModelGatewayClient:
         body: dict[str, Any] = {"messages": list(messages), **(params or {})}
         if stream:
             body["stream"] = True
+            # Set after merging caller params so it can't be accidentally
+            # overridden; only requested when streaming + enabled.
+            if include_usage:
+                body["stream_options"] = {"include_usage": True}
+            else:
+                body.pop("stream_options", None)
         if self._style == GatewayProviderStyle.azure_openai_native:
             url = f"{url}?api-version={self._api_version}"
         else:
@@ -183,27 +194,41 @@ class ModelGatewayClient:
         params: dict[str, Any] | None = None,
         correlation_id: str | None = None,
     ) -> AsyncIterator[ChatChunk]:
-        req = self.build_request(
-            deployment=deployment,
-            messages=messages,
-            params=params,
-            stream=True,
-            correlation_id=correlation_id,
-        )
         client, owned = self._client()
         try:
-            async with client.stream(
-                "POST", req.url, headers=req.headers, json=req.json
-            ) as resp:
-                if resp.status_code >= 400:
-                    body = await resp.aread()
-                    raise ModelGatewayError(resp.status_code, body.decode("utf-8", "replace"))
-                async for line in resp.aiter_lines():
-                    chunk = parse_sse_line(line)
-                    if chunk is not None:
-                        yield chunk
-                        if chunk.done:
-                            break
+            # Request token usage in the stream when enabled, but never let an
+            # unsupported ``stream_options`` break streaming: if the FIRST attempt
+            # is rejected with 400 (before any bytes are yielded), retry once
+            # without it. 400 is the unsupported-parameter signal; other statuses
+            # (401/403/429/5xx) are not param-related and propagate immediately.
+            attempts = [True, False] if self._stream_include_usage else [False]
+            for attempt_idx, include_usage in enumerate(attempts):
+                req = self.build_request(
+                    deployment=deployment,
+                    messages=messages,
+                    params=params,
+                    stream=True,
+                    include_usage=include_usage,
+                    correlation_id=correlation_id,
+                )
+                is_last = attempt_idx == len(attempts) - 1
+                async with client.stream(
+                    "POST", req.url, headers=req.headers, json=req.json
+                ) as resp:
+                    if resp.status_code >= 400:
+                        body = await resp.aread()
+                        detail = body.decode("utf-8", "replace")
+                        if include_usage and not is_last and resp.status_code == 400:
+                            # Likely stream_options unsupported; fall back cleanly.
+                            continue
+                        raise ModelGatewayError(resp.status_code, detail)
+                    async for line in resp.aiter_lines():
+                        chunk = parse_sse_line(line)
+                        if chunk is not None:
+                            yield chunk
+                            if chunk.done:
+                                return
+                    return
         finally:
             if owned:
                 await client.aclose()
@@ -227,4 +252,6 @@ def parse_sse_line(line: str) -> ChatChunk | None:
         piece = (choice.get("delta") or {}).get("content")
         if piece:
             delta += piece
-    return ChatChunk(delta=delta, raw=payload)
+    # The final usage chunk (when include_usage is set) has empty ``choices`` and
+    # a populated ``usage`` object; surface it so the caller can meter the turn.
+    return ChatChunk(delta=delta, raw=payload, usage=obj.get("usage"))

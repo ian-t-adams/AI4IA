@@ -1,4 +1,5 @@
 import httpx
+import json
 import pytest
 
 from ai4ia_api.gateway.client import ModelGatewayClient, ModelGatewayError, parse_sse_line
@@ -45,6 +46,69 @@ def test_stream_flag_added_only_when_streaming():
     client = _client()
     assert "stream" not in client.build_request(deployment="d", messages=[]).json
     assert client.build_request(deployment="d", messages=[], stream=True).json["stream"] is True
+
+
+def test_include_usage_sets_stream_options_only_when_streaming():
+    client = _client()
+    # Non-streaming never sets stream_options even if include_usage is passed.
+    plain = client.build_request(deployment="d", messages=[], include_usage=True)
+    assert "stream_options" not in plain.json
+    # Streaming + include_usage opts in.
+    streamed = client.build_request(
+        deployment="d", messages=[], stream=True, include_usage=True
+    )
+    assert streamed.json["stream_options"] == {"include_usage": True}
+    # Streaming without include_usage must not carry it.
+    off = client.build_request(deployment="d", messages=[], stream=True, include_usage=False)
+    assert "stream_options" not in off.json
+
+
+def test_parse_sse_line_captures_usage_chunk():
+    # The final usage chunk has empty choices and a populated usage object.
+    line = 'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}'
+    chunk = parse_sse_line(line)
+    assert chunk is not None
+    assert chunk.delta == ""
+    assert chunk.usage == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+
+
+async def test_stream_retries_without_stream_options_on_400():
+    attempts: list[bool] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        had_options = "stream_options" in body
+        attempts.append(had_options)
+        if had_options:
+            # Simulate a deployment that rejects stream_options with a 400.
+            return httpx.Response(400, text="unknown parameter: stream_options")
+        sse = (
+            'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, text=sse)
+
+    client = _client(transport=httpx.MockTransport(handler), gateway_stream_include_usage=True)
+    chunks = [c async for c in client.stream(deployment="dep-1", messages=[])]
+    # First attempt (with options) 400s, second (without) succeeds.
+    assert attempts == [True, False]
+    assert any(c.delta == "hi" for c in chunks)
+    assert chunks[-1].done is True
+
+
+async def test_stream_does_not_retry_on_non_400():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429, text="rate limited")
+
+    client = _client(transport=httpx.MockTransport(handler), gateway_stream_include_usage=True)
+    with pytest.raises(ModelGatewayError) as exc:
+        [c async for c in client.stream(deployment="dep-1", messages=[])]
+    assert exc.value.status_code == 429
+    # 429 is not a parameter problem: must fail immediately, no fallback attempt.
+    assert calls["n"] == 1
 
 
 @pytest.mark.parametrize(

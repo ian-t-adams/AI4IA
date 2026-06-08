@@ -89,6 +89,15 @@ class Settings(BaseSettings):
     # Override the chat-completions path template (placeholders: {deployment}).
     # When unset, a sensible default is derived from the provider style.
     gateway_chat_path: str | None = None
+    # Request token usage in streamed responses via stream_options.include_usage.
+    # Defensive: if a deployment rejects it (HTTP 400), the client retries the
+    # stream once without it, so this can stay on safely.
+    gateway_stream_include_usage: bool = True
+
+    # --- Usage metering (Phase 6): observational cost/traffic ledger ---
+    # When true, each completed chat turn is metered and written to a per-user
+    # ledger. Best-effort: a ledger write failure never breaks a chat response.
+    usage_metering_enabled: bool = True
 
     # --- Sessions store ---
     session_store: SessionStoreKind = SessionStoreKind.memory

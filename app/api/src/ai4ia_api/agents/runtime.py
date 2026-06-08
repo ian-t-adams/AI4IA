@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..gateway.client import ModelGatewayClient
+from ..usage.models import TokenUsage
 from .tool_exec import ToolContext, ToolExecutor, ToolValidationError
 from .tools import ToolRegistry, redact, redact_obj
 
@@ -59,6 +60,9 @@ class AgentRunResult:
     model: str
     steps: list[AgentStep] = field(default_factory=list)
     iterations: int = 0
+    # Token usage summed across every model call in the turn. ``usage.complete``
+    # is False if any call did not report usage, so cost is never overstated.
+    usage: TokenUsage = field(default_factory=TokenUsage.empty)
 
 
 def _tool_message(call_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
@@ -100,6 +104,7 @@ async def run_agent_turn(
     for key in _RESERVED_PARAMS:
         base_params.pop(key, None)
 
+    usage_agg = TokenUsage.empty()
     iterations = 0
     while iterations < max_iters:
         iterations += 1
@@ -113,6 +118,7 @@ async def run_agent_turn(
             params=req_params,
             correlation_id=ctx.correlation_id,
         )
+        usage_agg = usage_agg.add(TokenUsage.parse(result.get("usage")))
         message = (result.get("choices") or [{}])[0].get("message") or {}
         tool_calls = message.get("tool_calls") or []
 
@@ -123,6 +129,7 @@ async def run_agent_turn(
                 model=deployment,
                 steps=steps,
                 iterations=iterations,
+                usage=usage_agg,
             )
 
         # Preserve the assistant tool-call message verbatim (content may be null)
@@ -255,10 +262,12 @@ async def run_agent_turn(
         params=base_params,
         correlation_id=ctx.correlation_id,
     )
+    usage_agg = usage_agg.add(TokenUsage.parse(final.get("usage")))
     steps.append(AgentStep(kind="final", detail="max_iters"))
     return AgentRunResult(
         text=_final_text(final),
         model=deployment,
         steps=steps,
         iterations=iterations,
+        usage=usage_agg,
     )

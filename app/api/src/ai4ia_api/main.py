@@ -27,8 +27,12 @@ from .routers import catalog as catalog_router
 from .routers import chat as chat_router
 from .routers import health as health_router
 from .routers import sessions as sessions_router
+from .routers import usage as usage_router
 from .sessions.factory import build_session_repository
 from .sessions.repository import SessionNotFoundError
+from .usage.factory import build_usage_repository
+from .usage.pricing import load_pricing
+from .usage.service import UsageService
 
 _CORRELATION_HEADER = "x-correlation-id"
 
@@ -63,6 +67,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.memory = build_memory_service(
             settings, gateway=app.state.gateway, catalog=app.state.catalog
         )
+        # Usage metering / cost ledger (Phase 6). Observational: records each
+        # completed turn to a per-user ledger and emits structured cost telemetry.
+        # Best-effort by construction (record_completion never raises), and shares
+        # the session store's durability (Cosmos vs in-memory) via the factory.
+        app.state.usage = UsageService(
+            build_usage_repository(settings),
+            load_pricing(),
+            enabled=settings.usage_metering_enabled,
+        )
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
         try:
@@ -80,6 +93,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.memory.close()
             except Exception:  # noqa: BLE001
                 logger.warning("memory close failed", exc_info=True)
+            try:
+                await app.state.usage.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("usage service close failed", exc_info=True)
             repo = app.state.session_repo
             close = getattr(repo, "close", None)
             if close is not None:
@@ -107,6 +124,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(agents_router.router)
     app.include_router(sessions_router.router)
     app.include_router(chat_router.router)
+    app.include_router(usage_router.router)
     return app
 
 

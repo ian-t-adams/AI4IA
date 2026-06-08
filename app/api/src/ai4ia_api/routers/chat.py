@@ -33,6 +33,8 @@ from ..agents.runtime import run_agent_turn
 from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
 from ..memory.service import MemoryServiceProtocol
+from ..usage.models import TokenUsage
+from ..usage.service import UsageService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -133,6 +135,7 @@ async def chat(
     registry: ToolRegistry = request.app.state.tool_registry
     executor: ToolExecutor = request.app.state.tool_executor
     memory: MemoryServiceProtocol = request.app.state.memory
+    metering: UsageService = request.app.state.usage
 
     try:
         session = await repo.get_session(user.internal_user_id, body.sessionId)
@@ -285,6 +288,16 @@ async def chat(
         )
         await repo.add_message(user.internal_user_id, assistant)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
+        await metering.record_completion(
+            user_id=user.internal_user_id,
+            session_id=body.sessionId,
+            model_id=model_id,
+            deployment=deployment,
+            usage=run.usage,
+            status="complete",
+            agent=agent_name,
+            correlation_id=correlation_id,
+        )
         return _local_reply_response(body.sessionId, assistant, body.stream)
 
     if not body.stream:
@@ -309,6 +322,16 @@ async def chat(
         )
         await repo.add_message(user.internal_user_id, assistant)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
+        await metering.record_completion(
+            user_id=user.internal_user_id,
+            session_id=body.sessionId,
+            model_id=model_id,
+            deployment=deployment,
+            usage=TokenUsage.parse(result.get("usage")),
+            status="complete",
+            agent=agent_name,
+            correlation_id=correlation_id,
+        )
         return {"sessionId": body.sessionId, "message": assistant}
 
     # Streaming path: persist a placeholder so a record always exists, then
@@ -330,6 +353,7 @@ async def chat(
         parts: list[str] = []
         final = MessageStatus.complete
         saw_done = False
+        stream_usage: dict | None = None
         try:
             async for chunk in gateway.stream(
                 deployment=deployment.deploymentName,
@@ -337,6 +361,8 @@ async def chat(
                 params=body.params,
                 correlation_id=correlation_id,
             ):
+                if chunk.usage:
+                    stream_usage = chunk.usage
                 if chunk.delta:
                     parts.append(chunk.delta)
                 if chunk.done:
@@ -360,6 +386,29 @@ async def chat(
                 )
             except Exception:  # noqa: BLE001 - best-effort durability
                 logger.exception("Failed to persist assistant message %s", assistant.id)
+            # Meter the turn (best-effort, shielded so a client disconnect still
+            # records it). Non-complete turns are recorded as non-billable status
+            # rows; record_completion gates billability on status == "complete".
+            _status_map = {
+                MessageStatus.complete: "complete",
+                MessageStatus.cancelled: "cancelled",
+                MessageStatus.error: "error",
+            }
+            try:
+                await asyncio.shield(
+                    metering.record_completion(
+                        user_id=user.internal_user_id,
+                        session_id=body.sessionId,
+                        model_id=model_id,
+                        deployment=deployment,
+                        usage=TokenUsage.parse(stream_usage),
+                        status=_status_map.get(final, "error"),
+                        agent=agent_name,
+                        correlation_id=correlation_id,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - metering must never break a turn
+                logger.warning("usage metering failed for %s", assistant.id, exc_info=True)
             # Remember the user's turn only when the model stream completed
             # cleanly (a clean end-of-stream marker), so a truncated or errored
             # turn doesn't seed memory. Best-effort: remember() swallows its own
