@@ -1,0 +1,32 @@
+"""Per-user usage/cost summary endpoint.
+
+Returns an aggregate view of the caller's own metered chat turns (token counts,
+request counts by status, and best-effort cost estimates) over a bounded window.
+Ownership is enforced by always summarizing ``user.internal_user_id`` — a caller
+can never read another user's ledger.
+"""
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Query, Request
+
+from ..auth.base import AuthenticatedUser
+from ..auth.dependencies import get_current_user
+from ..usage.models import UsageSummary
+from ..usage.service import MAX_SUMMARY_DAYS, UsageService
+
+router = APIRouter(prefix="/api/usage", tags=["usage"])
+
+
+@router.get("", response_model=UsageSummary)
+async def get_usage(
+    request: Request,
+    since_days: int = Query(
+        default=30,
+        ge=1,
+        le=MAX_SUMMARY_DAYS,
+        description="Window in days to summarize (1-90).",
+    ),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> UsageSummary:
+    metering: UsageService = request.app.state.usage
+    return await metering.summarize(user.internal_user_id, since_days=since_days)

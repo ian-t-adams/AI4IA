@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workload": {
+      "value": "ai4ia"
+    },
+    "environmentName": {
+      "value": "${AZURE_ENV_NAME}"
+    },
+    "location": {
+      "value": "${AZURE_LOCATION=eastus2}"
+    },
+    "owner": {
+      "value": "${AI4IA_OWNER=ian-t-adams}"
+    },
+    "costCenter": {
+      "value": "${AI4IA_COST_CENTER=genai-demo}"
+    },
+    "postgresLocation": {
+      "value": "${AI4IA_POSTGRES_LOCATION=}"
+    },
+    "adminSubjects": {
+      "value": "${AI4IA_ADMIN_SUBJECTS=}"
+    },
+    "adminApiSecret": {
+      "value": "${AI4IA_ADMIN_API_SECRET=}"
+    },
+    "webCustomDomain": {
+      "value": "${AI4IA_WEB_CUSTOM_DOMAIN=}"
+    },
+    "webManagedCertName": {
+      "value": "${AI4IA_WEB_MANAGED_CERT_NAME=}"
+    },
+    "proxyCustomDomain": {
+      "value": "${AI4IA_PROXY_CUSTOM_DOMAIN=}"
+    },
+    "proxyManagedCertName": {
+      "value": "${AI4IA_PROXY_MANAGED_CERT_NAME=}"
+    }
+  }
+}

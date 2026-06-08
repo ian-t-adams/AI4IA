@@ -1,0 +1,134 @@
+:root {
+  --font-scale: 1;
+
+  /* Light theme (default) */
+  --bg: #f6f7f9;
+  --bg-elevated: #ffffff;
+  --bg-sidebar: #11161f;
+  --sidebar-fg: #e7ebf2;
+  --sidebar-muted: #93a0b4;
+  --fg: #1b2230;
+  --fg-muted: #5a6675;
+  --border: #e2e6ec;
+  --accent: #4f46e5;
+  --accent-fg: #ffffff;
+  --user-bubble: #4f46e5;
+  --user-bubble-fg: #ffffff;
+  --assistant-bubble: #ffffff;
+  --assistant-bubble-fg: #1b2230;
+  --danger: #c0392b;
+  --focus-ring: #1d4ed8;
+  --radius: 12px;
+  --app-bg-image: none;
+}
+
+[data-theme="dark"] {
+  --bg: #0d1117;
+  --bg-elevated: #161b22;
+  --bg-sidebar: #0a0d12;
+  --sidebar-fg: #e7ebf2;
+  --sidebar-muted: #8b97a8;
+  --fg: #e6edf3;
+  --fg-muted: #9aa7b4;
+  --border: #232b36;
+  --accent: #7c83ff;
+  --accent-fg: #0d1117;
+  --user-bubble: #3b3f8f;
+  --user-bubble-fg: #ffffff;
+  --assistant-bubble: #161b22;
+  --assistant-bubble-fg: #e6edf3;
+  --danger: #ff6b5e;
+  --focus-ring: #93b4ff;
+}
+
+/* High-contrast accessibility theme (WCAG AAA-leaning, no subtle greys). */
+[data-theme="contrast"] {
+  --bg: #000000;
+  --bg-elevated: #000000;
+  --bg-sidebar: #000000;
+  --sidebar-fg: #ffffff;
+  --sidebar-muted: #ffff00;
+  --fg: #ffffff;
+  --fg-muted: #ffffff;
+  --border: #ffffff;
+  --accent: #ffff00;
+  --accent-fg: #000000;
+  --user-bubble: #000000;
+  --user-bubble-fg: #ffff00;
+  --assistant-bubble: #000000;
+  --assistant-bubble-fg: #ffffff;
+  --danger: #ff8a80;
+  --focus-ring: #ffff00;
+  --app-bg-image: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background-color: var(--bg);
+  background-image: var(--app-bg-image);
+  background-size: cover;
+  background-attachment: fixed;
+  color: var(--fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial,
+    sans-serif;
+  font-size: calc(16px * var(--font-scale));
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* High-contrast theme adds a visible outline on every interactive element. */
+[data-theme="contrast"] button,
+[data-theme="contrast"] select,
+[data-theme="contrast"] textarea,
+[data-theme="contrast"] input {
+  outline: 2px solid var(--border);
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+textarea,
+input,
+select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

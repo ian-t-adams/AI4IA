@@ -1,0 +1,163 @@
+"""Memory orchestration: embed + store + recall, plus context formatting.
+
+The chat router depends only on :class:`MemoryServiceProtocol`. When memory is
+off it gets a :class:`NoopMemoryService`, so call sites stay unconditional and
+behavior cannot drift between "enabled" and "disabled" code paths.
+
+Safety posture (per design review):
+- Recall and remember are best-effort: failures log and degrade to "no memory",
+  never failing the chat turn. Explicit ``forget`` is *not* swallowed — the user
+  asked to delete, so they must learn whether it worked.
+- Recalled snippets are injected as clearly-delimited, explicitly *untrusted*
+  reference material with hard caps (count, per-item chars, total chars) so a
+  poisoned memory cannot escalate into instructions or bloat the context.
+- Only durable user utterances are remembered (not assistant/tool output) and
+  trivially short ones are skipped.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Protocol
+
+from .base import Embedder, MemoryStore
+from .formatting import format_memory_context
+from .models import MemoryRecord
+
+logger = logging.getLogger(__name__)
+
+
+class MemoryServiceProtocol(Protocol):
+    """What the chat layer needs from memory (real or no-op)."""
+
+    @property
+    def enabled(self) -> bool: ...
+
+    async def recall(self, user_id: str, query: str) -> list[MemoryRecord]: ...
+
+    async def remember(self, user_id: str, session_id: str | None, text: str) -> None: ...
+
+    async def forget_user(self, user_id: str) -> int: ...
+
+    async def forget_session(self, user_id: str, session_id: str) -> int: ...
+
+    def format_context(self, records: list[MemoryRecord]) -> str | None: ...
+
+    async def warmup(self) -> None: ...
+
+    async def close(self) -> None: ...
+
+
+class NoopMemoryService:
+    """Disabled memory: every operation is a safe no-op."""
+
+    enabled = False
+
+    async def recall(self, user_id: str, query: str) -> list[MemoryRecord]:
+        return []
+
+    async def remember(self, user_id: str, session_id: str | None, text: str) -> None:
+        return None
+
+    async def forget_user(self, user_id: str) -> int:
+        return 0
+
+    async def forget_session(self, user_id: str, session_id: str) -> int:
+        return 0
+
+    def format_context(self, records: list[MemoryRecord]) -> str | None:
+        return None
+
+    async def warmup(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+
+class MemoryService:
+    """Embed-backed semantic memory over a pluggable :class:`MemoryStore`."""
+
+    enabled = True
+
+    def __init__(
+        self,
+        *,
+        store: MemoryStore,
+        embedder: Embedder,
+        top_k: int = 5,
+        min_score: float = 0.25,
+        max_injected: int = 5,
+        max_chars_per_item: int = 500,
+        max_total_chars: int = 2000,
+        min_chars_to_store: int = 12,
+    ) -> None:
+        self._store = store
+        self._embedder = embedder
+        self._top_k = top_k
+        self._min_score = min_score
+        self._max_injected = max_injected
+        self._max_chars_per_item = max_chars_per_item
+        self._max_total_chars = max_total_chars
+        self._min_chars_to_store = min_chars_to_store
+
+    async def recall(self, user_id: str, query: str) -> list[MemoryRecord]:
+        """Best-effort: return relevant memories, or [] on any failure."""
+        if not query or not query.strip():
+            return []
+        try:
+            vector = await self._embedder.embed_one(query)
+            if not vector:
+                return []
+            hits = await self._store.search(user_id, vector, self._top_k)
+        except Exception:  # noqa: BLE001 - memory must never break chat
+            logger.warning("memory recall failed", exc_info=True)
+            return []
+        return [h for h in hits if (h.score or 0.0) >= self._min_score]
+
+    async def remember(self, user_id: str, session_id: str | None, text: str) -> None:
+        """Best-effort: store a durable user utterance. Skips trivia + failures."""
+        cleaned = (text or "").strip()
+        if len(cleaned) < self._min_chars_to_store:
+            return
+        try:
+            vector = await self._embedder.embed_one(cleaned)
+            if not vector:
+                return
+            record = MemoryRecord(user_id=user_id, session_id=session_id, text=cleaned)
+            await self._store.add(record, vector)
+        except Exception:  # noqa: BLE001 - memory must never break chat
+            logger.warning("memory remember failed", exc_info=True)
+
+    async def forget_user(self, user_id: str) -> int:
+        """Erase all of a user's memories (NOT swallowed — explicit deletion)."""
+        return await self._store.erase_user(user_id)
+
+    async def forget_session(self, user_id: str, session_id: str) -> int:
+        """Erase a user's memories for one session (NOT swallowed)."""
+        return await self._store.erase_session(user_id, session_id)
+
+    def format_context(self, records: list[MemoryRecord]) -> str | None:
+        """Render recalled records as a capped, untrusted-labelled context block."""
+        return format_memory_context(
+            records,
+            max_injected=self._max_injected,
+            max_chars_per_item=self._max_chars_per_item,
+            max_total_chars=self._max_total_chars,
+        )
+
+    async def warmup(self) -> None:
+        """Eagerly initialize the store (e.g. open the pool + create schema).
+
+        Best-effort: a store without an ``ensure_ready`` hook (the in-memory
+        store) is a no-op. Errors propagate so the caller can decide whether to
+        log-and-continue; the durable store also self-heals by retrying lazily.
+        """
+        ensure = getattr(self._store, "ensure_ready", None)
+        if ensure is not None:
+            await ensure()
+
+    async def close(self) -> None:
+        """Release store resources (connection pool, credential) on shutdown."""
+        close = getattr(self._store, "close", None)
+        if close is not None:
+            await close()

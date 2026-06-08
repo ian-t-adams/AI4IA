@@ -1,0 +1,59 @@
+# --- Azure Developer CLI ---
+.azure/
+*.azd.env
+
+# --- Secrets / local env ---
+.env
+.env.*
+!.env.example
+*.local
+azd.local.*
+*.pem
+*.key
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+dist/
+build/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+.pnpm-store/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Bicep / IaC build artifacts ---
+*.bicepparam.json
+main.json
+*.arm.json
+
+# --- Editors / OS ---
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Logs / scratch ---
+*.log
+.scratch/
+tmp/
+
+# --- Local Azure snapshots/caches (operational, not source) ---
+.inventory/
+.modelcache/

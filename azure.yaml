@@ -1,0 +1,51 @@
+# Azure Developer CLI (azd) service map for AI4IA.
+# Docs: https://learn.microsoft.com/azure/developer/azure-developer-cli/azd-schema
+name: ai4ia
+metadata:
+  template: ai4ia@0.1.0
+
+# Infrastructure is Bicep under ./infra (see infra/main.bicep).
+infra:
+  provider: bicep
+  path: infra
+  module: main
+
+# Deployable services. The MAF agents library runs in-process inside `api`
+# for v1; it can be promoted to its own Container App later.
+services:
+  web:
+    project: ./app/web
+    language: ts
+    host: containerapp
+    docker:
+      path: Dockerfile
+  api:
+    project: ./app/api
+    language: python
+    host: containerapp
+    docker:
+      path: Dockerfile
+  # proxy (SimpleL7Proxy) is provisioned by Bicep (ca-proxy-*). The upstream
+  # https://github.com/microsoft/SimpleL7Proxy source is vendored into ./proxy
+  # (Shared, Shared-parser, SimpleL7Proxy + Dockerfile); azd builds and pushes
+  # the real image here, replacing the placeholder set by Bicep.
+  proxy:
+    project: ./proxy
+    language: docker
+    host: containerapp
+    docker:
+      path: Dockerfile
+
+# Lifecycle hooks (optional). The teardown helper handles soft-delete purge,
+# which `azd down` does not do for Cognitive/Key Vault resources.
+hooks:
+  postprovision:
+    windows:
+      shell: pwsh
+      run: ./scripts/postprovision.ps1
+      continueOnError: true
+      interactive: false
+    posix:
+      shell: sh
+      run: echo "postprovision (posix) - see scripts/postprovision.ps1"
+      continueOnError: true

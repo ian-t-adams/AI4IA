@@ -1,0 +1,38 @@
+name: infra-validate
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra-validate.yml"
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+
+permissions:
+  contents: read
+
+jobs:
+  bicep-lint-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bicep CLI
+        run: |
+          curl -Lo bicep https://github.com/Azure/bicep/releases/latest/download/bicep-linux-x64
+          chmod +x bicep
+          sudo mv bicep /usr/local/bin/bicep
+          bicep --version
+
+      - name: Validate models.json against schema
+        run: |
+          python -m pip install --quiet check-jsonschema
+          check-jsonschema --schemafile infra/models.schema.json infra/models.json
+
+      - name: Validate catalog consistency (regions / SKUs / names)
+        run: python scripts/validate-catalog.py
+
+      - name: Bicep build (lint)
+        run: bicep build infra/main.bicep --stdout > /dev/null

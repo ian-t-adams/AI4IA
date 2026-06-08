@@ -1,0 +1,8 @@
+# Keep the build context reproducible: exclude local build output and IDE state.
+**/bin
+**/obj
+**/.vs
+**/TestResults
+**/*.user
+.git
+README.md
