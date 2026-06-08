@@ -22,7 +22,7 @@ class ToolThenAnswerGateway:
         self.calls = 0
         self.saw_tool_result = False
 
-    async def complete(self, *, deployment, messages, params=None, correlation_id=None):
+    async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         self.calls += 1
         if self.calls == 1:
             return {
@@ -50,7 +50,7 @@ class ToolThenAnswerGateway:
             self.saw_tool_result = True
         return {"choices": [{"message": {"role": "assistant", "content": "It is 42."}}]}
 
-    async def stream(self, *, deployment, messages, params=None, correlation_id=None):  # pragma: no cover
+    async def stream(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):  # pragma: no cover
         raise AssertionError("tool-enabled agent turns must not use the streaming path")
 
 
@@ -106,3 +106,31 @@ def test_toolless_agent_does_not_invoke_tool_loop(client):
     # Only one model call, and the first scripted response (a tool_call) is NOT
     # interpreted as tools here — the direct path extracts content (None -> "").
     assert gw.calls == 1
+
+
+def test_tool_agent_on_responses_model_is_rejected_before_persist(client):
+    """A tool-enabled agent pinned to a Responses-API model is refused with 422
+    BEFORE any model call or persistence — the chat-completions tool loop has no
+    Responses equivalent yet, so the turn must not run or leave a dangling
+    message / rebind the session to an unusable model."""
+    gw = ToolThenAnswerGateway()
+    client.app.state.gateway = gw
+    sid = _create_session(client)["id"]
+
+    resp = client.post(
+        "/api/chat",
+        json={
+            "sessionId": sid,
+            "content": "@analyst what is 6*7?",
+            "model": "gpt-5-pro",
+            "stream": False,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert gw.calls == 0
+    # No user/assistant message was persisted for the refused turn.
+    messages = client.get(f"/api/sessions/{sid}/messages").json()
+    assert messages == []
+    # The session stays on its original model, not the unusable Responses one.
+    session = client.get(f"/api/sessions/{sid}").json()
+    assert session["model"] == "gpt-5.2"

@@ -30,10 +30,10 @@ class FakeGateway:
     def __init__(self, text: str = "hello world") -> None:
         self.text = text
 
-    async def complete(self, *, deployment, messages, params=None, correlation_id=None):
+    async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         return {"choices": [{"message": {"role": "assistant", "content": self.text}}]}
 
-    async def stream(self, *, deployment, messages, params=None, correlation_id=None):
+    async def stream(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         for piece in self.text.split():
             payload = {"choices": [{"delta": {"content": piece + " "}}]}
             yield ChatChunk(delta=piece + " ", raw=json.dumps(payload))

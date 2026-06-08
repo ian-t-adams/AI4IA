@@ -27,6 +27,11 @@ class ModelEntry(BaseModel):
     displayName: str
     category: str
     format: str
+    # Which Azure surface serves this model: "chat" (Chat Completions, the
+    # default) or "responses" (the Responses API — required by gpt-5-pro,
+    # gpt-5-codex, o3-pro, which 400 on chat/completions). The gateway routes by
+    # this flag; the field is informational to the UI.
+    api: str = "chat"
     options: list[DeploymentOption]
 
 
@@ -79,6 +84,7 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
                 "displayName": model.get("displayName", model["name"]),
                 "category": model.get("category", "chat"),
                 "format": model["format"],
+                "api": model.get("api", "chat"),
                 "options": options,
             }
         )

@@ -58,6 +58,7 @@ def build_catalog(models: dict) -> dict:
                 "displayName": model.get("displayName", model["name"]),
                 "category": model.get("category", "chat"),
                 "format": model["format"],
+                "api": model.get("api", "chat"),
                 "options": options,
             }
         )

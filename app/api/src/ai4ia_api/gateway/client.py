@@ -63,6 +63,131 @@ def _normalize_params_for_deployment(body: dict[str, Any], deployment: str) -> N
         body.pop(key, None)
 
 
+# --- Responses API (gpt-5-pro / gpt-5-codex / o3-pro) -----------------------
+#
+# Azure exposes a *separate* surface, the Responses API, for a handful of
+# flagship reasoning models that 400 on chat/completions. It is reached at
+# ``{base}/responses`` with the deployment name carried as ``model`` IN THE BODY
+# (deployment-in-path returns 404 — the opposite of chat completions). The
+# request/response schema also differs (``input``/``instructions`` in, an
+# ``output`` array + ``input_tokens``/``output_tokens`` usage out), so the
+# gateway translates both directions to keep the rest of the app speaking the
+# single chat-completions shape.
+_RESPONSES_PATH = "/responses"
+
+# Reasoning models spend hidden "reasoning tokens" out of the same output budget
+# as the visible answer, so a small ``max_output_tokens`` yields an EMPTY message
+# with status ``incomplete``. The cap only *bounds* (never bills) unused tokens,
+# so we floor it generously for Responses turns to keep short prompts from
+# truncating to nothing; a caller asking for MORE is always honored.
+_RESPONSES_MIN_OUTPUT_TOKENS = 16384
+
+
+def _messages_to_responses_input(
+    messages: Sequence[dict[str, Any]],
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Split chat-style messages into ``(instructions, input items)``.
+
+    Every ``system`` message is concatenated (order-preserving) into the single
+    Responses ``instructions`` field; user/assistant turns become ``input``
+    items. AI4IA injects memory and uploaded-document context as ordered system
+    blocks, so preserving order keeps the primary prompt's authority ahead of
+    those untrusted blocks.
+    """
+    system_parts: list[str] = []
+    items: list[dict[str, Any]] = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content", "")
+        if role == "system":
+            if content:
+                system_parts.append(content)
+        else:
+            items.append({"role": role, "content": content})
+    instructions = "\n\n".join(system_parts) if system_parts else None
+    return instructions, items
+
+
+def _normalize_params_for_responses(params: dict[str, Any] | None) -> dict[str, Any]:
+    """Map chat-completions params onto a Responses request body.
+
+    - ``max_output_tokens``/``max_completion_tokens``/``max_tokens`` ->
+      ``max_output_tokens`` (floored so reasoning models can't truncate to an
+      empty message; a larger caller value wins).
+    - ``reasoning_effort`` -> ``reasoning: {effort}``.
+    - drops the sampling params reasoning models reject and the chat-only
+      ``stream``/``stream_options`` keys (``stream`` is set by the builder).
+    """
+    out: dict[str, Any] = dict(params or {})
+    max_out = out.pop("max_output_tokens", None)
+    for key in ("max_completion_tokens", "max_tokens"):
+        value = out.pop(key, None)
+        if max_out is None:
+            max_out = value
+    try:
+        floored = max(int(max_out), _RESPONSES_MIN_OUTPUT_TOKENS)
+    except (TypeError, ValueError):
+        floored = _RESPONSES_MIN_OUTPUT_TOKENS
+    out["max_output_tokens"] = floored
+
+    effort = out.pop("reasoning_effort", None)
+    if effort:
+        out["reasoning"] = {"effort": effort}
+
+    for key in _REASONING_UNSUPPORTED_PARAMS:
+        out.pop(key, None)
+    out.pop("stream", None)
+    out.pop("stream_options", None)
+    return out
+
+
+def _responses_text(obj: dict[str, Any]) -> str:
+    """Concatenate all ``output_text`` fragments from a Responses ``output``."""
+    parts: list[str] = []
+    for item in obj.get("output") or []:
+        if item.get("type") != "message":
+            continue
+        for block in item.get("content") or []:
+            if block.get("type") == "output_text" and block.get("text"):
+                parts.append(block["text"])
+    return "".join(parts)
+
+
+def _responses_usage_to_chat(usage: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Translate Responses usage -> chat-completions usage keys so the existing
+    ``TokenUsage.parse`` meters Responses turns unchanged. Carries the reasoning
+    token count through for audit (parse ignores unknown keys)."""
+    if not isinstance(usage, dict):
+        return None
+    mapped: dict[str, Any] = {
+        "prompt_tokens": usage.get("input_tokens"),
+        "completion_tokens": usage.get("output_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+    }
+    details = usage.get("output_tokens_details")
+    if isinstance(details, dict) and details.get("reasoning_tokens") is not None:
+        mapped["completion_tokens_details"] = {
+            "reasoning_tokens": details["reasoning_tokens"]
+        }
+    return mapped
+
+
+def _responses_json_to_chat(obj: dict[str, Any]) -> dict[str, Any]:
+    """Translate a non-streamed Responses body into a chat-completions shape the
+    router/metering already understand. ``status`` is preserved (``incomplete``
+    means the answer was truncated but the tokens were still spent + billable)."""
+    result: dict[str, Any] = {
+        "choices": [
+            {"message": {"role": "assistant", "content": _responses_text(obj)}}
+        ],
+        "_responses_status": obj.get("status"),
+    }
+    usage = _responses_usage_to_chat(obj.get("usage"))
+    if usage is not None:
+        result["usage"] = usage
+    return result
+
+
 class ModelGatewayError(Exception):
     def __init__(self, status_code: int, detail: str) -> None:
         super().__init__(f"gateway error {status_code}: {detail}")
@@ -195,6 +320,38 @@ class ModelGatewayClient:
         headers = self._auth_headers(correlation_id)
 
         return GatewayRequest(url=url, headers=headers, json=body)
+
+    def build_responses_request(
+        self,
+        *,
+        deployment: str,
+        messages: Sequence[dict[str, Any]],
+        params: dict[str, Any] | None = None,
+        stream: bool = False,
+        correlation_id: str | None = None,
+    ) -> GatewayRequest:
+        """Build a Responses API request (``POST {base}/responses``).
+
+        Unlike chat completions, the deployment is the ``model`` field IN THE
+        BODY for BOTH provider styles (deployment-in-path 404s on this surface);
+        the Azure-native style still appends ``api-version``.
+        """
+        url = f"{self._base}{_RESPONSES_PATH}"
+        instructions, input_items = _messages_to_responses_input(messages)
+        body: dict[str, Any] = {
+            "model": deployment,
+            "input": input_items,
+            **_normalize_params_for_responses(params),
+        }
+        if instructions:
+            body["instructions"] = instructions
+        if stream:
+            body["stream"] = True
+        if self._style == GatewayProviderStyle.azure_openai_native:
+            url = f"{url}?api-version={self._api_version}"
+        return GatewayRequest(
+            url=url, headers=self._auth_headers(correlation_id), json=body
+        )
 
     def build_embed_request(
         self,
@@ -409,20 +566,36 @@ class ModelGatewayClient:
         messages: Sequence[dict[str, Any]],
         params: dict[str, Any] | None = None,
         correlation_id: str | None = None,
+        api: str = "chat",
     ) -> dict[str, Any]:
-        req = self.build_request(
-            deployment=deployment,
-            messages=messages,
-            params=params,
-            stream=False,
-            correlation_id=correlation_id,
-        )
+        if api == "responses":
+            req = self.build_responses_request(
+                deployment=deployment,
+                messages=messages,
+                params=params,
+                stream=False,
+                correlation_id=correlation_id,
+            )
+        else:
+            req = self.build_request(
+                deployment=deployment,
+                messages=messages,
+                params=params,
+                stream=False,
+                correlation_id=correlation_id,
+            )
         client, owned = self._client()
         try:
             resp = await client.post(req.url, headers=req.headers, json=req.json)
             if resp.status_code >= 400:
                 raise ModelGatewayError(resp.status_code, resp.text)
-            return resp.json()
+            data = resp.json()
+            if api == "responses":
+                if data.get("status") == "failed":
+                    err = (data.get("error") or {}).get("message") or "responses failed"
+                    raise ModelGatewayError(502, err)
+                return _responses_json_to_chat(data)
+            return data
         finally:
             if owned:
                 await client.aclose()
@@ -460,7 +633,17 @@ class ModelGatewayClient:
         messages: Sequence[dict[str, Any]],
         params: dict[str, Any] | None = None,
         correlation_id: str | None = None,
+        api: str = "chat",
     ) -> AsyncIterator[ChatChunk]:
+        if api == "responses":
+            async for chunk in self._stream_responses(
+                deployment=deployment,
+                messages=messages,
+                params=params,
+                correlation_id=correlation_id,
+            ):
+                yield chunk
+            return
         client, owned = self._client()
         try:
             # Request token usage in the stream when enabled, but never let an
@@ -500,6 +683,64 @@ class ModelGatewayClient:
             if owned:
                 await client.aclose()
 
+    async def _stream_responses(
+        self,
+        *,
+        deployment: str,
+        messages: Sequence[dict[str, Any]],
+        params: dict[str, Any] | None = None,
+        correlation_id: str | None = None,
+    ) -> AsyncIterator[ChatChunk]:
+        """Stream a Responses turn, translating its SSE events into the synthetic
+        chat-shaped ``ChatChunk`` stream the router already consumes.
+
+        Responses SSE frames are ``data:`` lines (Azure also emits ``event:``
+        lines, which we ignore) terminated by a blank line, with NO ``[DONE]``
+        sentinel — ``response.completed``/``response.incomplete`` are terminal and
+        carry usage. We accumulate the (possibly multi-line) ``data:`` payload per
+        frame before parsing.
+        """
+        client, owned = self._client()
+        try:
+            req = self.build_responses_request(
+                deployment=deployment,
+                messages=messages,
+                params=params,
+                stream=True,
+                correlation_id=correlation_id,
+            )
+            async with client.stream(
+                "POST", req.url, headers=req.headers, json=req.json
+            ) as resp:
+                if resp.status_code >= 400:
+                    body = await resp.aread()
+                    raise ModelGatewayError(
+                        resp.status_code, body.decode("utf-8", "replace")
+                    )
+                data_buf: list[str] = []
+                async for line in resp.aiter_lines():
+                    if line.startswith("data:"):
+                        data_buf.append(line[len("data:") :].lstrip())
+                        continue
+                    if line == "":
+                        # Frame boundary: flush the accumulated data payload.
+                        if data_buf:
+                            chunk = _parse_responses_event("\n".join(data_buf))
+                            data_buf = []
+                            if chunk is not None:
+                                yield chunk
+                                if chunk.done:
+                                    return
+                    # ``event:``/comment lines carry no payload — ignore them.
+                # Flush a trailing frame not followed by a blank line.
+                if data_buf:
+                    chunk = _parse_responses_event("\n".join(data_buf))
+                    if chunk is not None:
+                        yield chunk
+        finally:
+            if owned:
+                await client.aclose()
+
 
 def parse_sse_line(line: str) -> ChatChunk | None:
     """Parse one SSE line into a ChatChunk (None for blanks/comments)."""
@@ -522,3 +763,42 @@ def parse_sse_line(line: str) -> ChatChunk | None:
     # The final usage chunk (when include_usage is set) has empty ``choices`` and
     # a populated ``usage`` object; surface it so the caller can meter the turn.
     return ChatChunk(delta=delta, raw=payload, usage=obj.get("usage"))
+
+
+def _parse_responses_event(payload: str) -> ChatChunk | None:
+    """Translate one Responses SSE frame payload into a chat-shaped ChatChunk.
+
+    Routes by the event's ``type``:
+      * ``response.output_text.delta`` -> a text increment, mirrored into a
+        chat-shaped ``raw`` so the existing frontend (which reads
+        ``choices[].delta.content``) renders it unchanged.
+      * ``response.completed`` / ``response.incomplete`` -> terminal; carry the
+        mapped usage. ``incomplete`` (reasoning ran out the output budget) is NOT
+        an error — the tokens were spent, so it must still meter + persist the
+        partial answer.
+      * ``response.failed`` -> raise so the router surfaces an error turn.
+    Other event types (created/in_progress/reasoning/etc.) carry no user-visible
+    delta and are dropped.
+    """
+    if not payload:
+        return None
+    try:
+        obj = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    etype = obj.get("type")
+    if etype == "response.output_text.delta":
+        piece = obj.get("delta") or ""
+        if not piece:
+            return None
+        return ChatChunk(
+            delta=piece,
+            raw=json.dumps({"choices": [{"delta": {"content": piece}}]}),
+        )
+    if etype in ("response.completed", "response.incomplete"):
+        usage = _responses_usage_to_chat((obj.get("response") or {}).get("usage"))
+        return ChatChunk(done=True, usage=usage)
+    if etype == "response.failed":
+        err = (((obj.get("response") or {}).get("error")) or {}).get("message")
+        raise ModelGatewayError(502, err or "responses stream failed")
+    return None

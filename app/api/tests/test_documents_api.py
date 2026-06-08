@@ -23,11 +23,11 @@ class CapturingGateway:
         self.reply = reply
         self.last_messages: list[dict] | None = None
 
-    async def complete(self, *, deployment, messages, params=None, correlation_id=None):
+    async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         self.last_messages = list(messages)
         return {"choices": [{"message": {"role": "assistant", "content": self.reply}}]}
 
-    async def stream(self, *, deployment, messages, params=None, correlation_id=None):
+    async def stream(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         self.last_messages = list(messages)
         yield ChatChunk(
             delta=self.reply,

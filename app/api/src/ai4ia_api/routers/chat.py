@@ -295,6 +295,25 @@ async def chat(
     if deployment is None:
         raise HTTPException(status_code=400, detail=f"Unknown or unavailable model: {model_id}")
 
+    # Which Azure surface serves this model (chat completions vs Responses API).
+    entry = catalog.get(model_id)
+    api = entry.api if entry is not None else "chat"
+
+    # Tool-calling agents run the chat-completions function-calling loop, which
+    # has no Responses-API equivalent here yet. Refuse the unsupported combo with
+    # a clear 422 BEFORE persisting the user message or rebinding session.model,
+    # so a refused turn leaves no dangling message and no session stuck on a model
+    # it can't use for this agent.
+    if agent is not None and agent.tools and api == "responses":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Agent @{agent.name} uses tools, but model '{model_id}' is served "
+                "through the Responses API, which AI4IA does not yet support for "
+                "tool-calling. Choose a chat-completions model for this agent."
+            ),
+        )
+
     # Entitlement enforcement (Phase 6B). Placed here so it gates only true
     # model-consuming turns: /commands and @mention errors already returned
     # above (a rate-limited or disabled user can still run /help, /usage, etc.).
@@ -410,6 +429,7 @@ async def chat(
                 messages=payload_messages,
                 params=body.params,
                 correlation_id=correlation_id,
+                api=api,
             )
         except ModelGatewayError as exc:
             raise HTTPException(status_code=502, detail=exc.detail)
@@ -463,6 +483,7 @@ async def chat(
                 messages=payload_messages,
                 params=body.params,
                 correlation_id=correlation_id,
+                api=api,
             ):
                 if chunk.usage:
                     stream_usage = chunk.usage

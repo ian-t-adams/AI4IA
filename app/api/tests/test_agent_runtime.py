@@ -49,7 +49,7 @@ class ScriptedGateway:
         self._responses = list(responses)
         self.calls: list[dict] = []
 
-    async def complete(self, *, deployment, messages, params=None, correlation_id=None):
+    async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         self.calls.append({"messages": [dict(m) for m in messages], "params": params or {}})
         if not self._responses:
             return _assistant_text("(no more scripted responses)")

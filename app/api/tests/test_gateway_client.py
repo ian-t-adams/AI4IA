@@ -2,7 +2,15 @@ import httpx
 import json
 import pytest
 
-from ai4ia_api.gateway.client import ModelGatewayClient, ModelGatewayError, parse_sse_line
+from ai4ia_api.gateway.client import (
+    ModelGatewayClient,
+    ModelGatewayError,
+    _messages_to_responses_input,
+    _normalize_params_for_responses,
+    _parse_responses_event,
+    _responses_json_to_chat,
+    parse_sse_line,
+)
 from tests.conftest import make_settings
 
 
@@ -305,3 +313,379 @@ def test_reasoning_prefix_does_not_overmatch():
     ).json
     assert body["max_tokens"] == 10
     assert body["temperature"] == 0.3
+
+
+# --- Responses API path -----------------------------------------------------
+
+
+
+def test_messages_to_responses_input_splits_system_and_turns():
+    instructions, items = _messages_to_responses_input(
+        [
+            {"role": "system", "content": "primary"},
+            {"role": "system", "content": "memory block"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "again"},
+        ]
+    )
+    # System messages concatenate in order; turns become input items.
+    assert instructions == "primary\n\nmemory block"
+    assert items == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "again"},
+    ]
+
+
+def test_messages_to_responses_input_no_system_is_none():
+    instructions, items = _messages_to_responses_input(
+        [{"role": "user", "content": "hi"}]
+    )
+    assert instructions is None
+    assert items == [{"role": "user", "content": "hi"}]
+
+
+def test_normalize_params_for_responses_maps_and_floors():
+    # A small max_tokens floors up (reasoning tokens would otherwise truncate to
+    # an empty message); reasoning_effort -> reasoning.effort; sampling stripped.
+    out = _normalize_params_for_responses(
+        {"max_tokens": 100, "reasoning_effort": "high", "temperature": 0.5, "top_p": 1}
+    )
+    assert out["max_output_tokens"] == 16384
+    assert out["reasoning"] == {"effort": "high"}
+    assert "temperature" not in out and "top_p" not in out
+    assert "max_tokens" not in out and "reasoning_effort" not in out
+
+
+def test_normalize_params_for_responses_honors_larger_value():
+    out = _normalize_params_for_responses({"max_completion_tokens": 50000})
+    assert out["max_output_tokens"] == 50000
+
+
+def test_normalize_params_for_responses_defaults_when_absent():
+    out = _normalize_params_for_responses(None)
+    assert out["max_output_tokens"] == 16384
+    assert "reasoning" not in out
+
+
+def test_build_responses_request_native_shape():
+    client = _client(
+        gateway_provider_style="azure_openai_native",
+        gateway_api_version="2025-04-01-preview",
+    )
+    req = client.build_responses_request(
+        deployment="gpt-5-pro-slurmfactory-eastus2-glbl",
+        messages=[
+            {"role": "system", "content": "be terse"},
+            {"role": "user", "content": "hi"},
+        ],
+        params={"max_tokens": 200},
+        correlation_id="abc",
+    )
+    # Path is /responses (NOT /deployments/{dep}/...); deployment is model in body.
+    assert req.url == "http://gw.test/openai/responses?api-version=2025-04-01-preview"
+    assert req.json["model"] == "gpt-5-pro-slurmfactory-eastus2-glbl"
+    assert req.json["instructions"] == "be terse"
+    assert req.json["input"] == [{"role": "user", "content": "hi"}]
+    assert req.json["max_output_tokens"] == 16384
+    assert "stream" not in req.json
+    assert req.headers["x-correlation-id"] == "abc"
+
+
+def test_build_responses_request_sets_stream_flag():
+    client = _client(gateway_provider_style="azure_openai_native")
+    req = client.build_responses_request(
+        deployment="dep", messages=[{"role": "user", "content": "x"}], stream=True
+    )
+    assert req.json["stream"] is True
+
+
+def test_responses_json_to_chat_translation():
+    obj = {
+        "status": "completed",
+        "output": [
+            {"type": "reasoning", "summary": []},
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": "Hello "},
+                    {"type": "output_text", "text": "world"},
+                ],
+            },
+        ],
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 7,
+            "total_tokens": 19,
+            "output_tokens_details": {"reasoning_tokens": 4},
+        },
+    }
+    chat = _responses_json_to_chat(obj)
+    assert chat["choices"][0]["message"]["content"] == "Hello world"
+    assert chat["_responses_status"] == "completed"
+    assert chat["usage"]["prompt_tokens"] == 12
+    assert chat["usage"]["completion_tokens"] == 7
+    assert chat["usage"]["total_tokens"] == 19
+    assert chat["usage"]["completion_tokens_details"]["reasoning_tokens"] == 4
+
+
+def test_responses_json_to_chat_incomplete_keeps_text_and_usage():
+    # An incomplete (truncated) turn still spent tokens: text + usage preserved.
+    obj = {
+        "status": "incomplete",
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "partial"}],
+            }
+        ],
+        "usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
+    }
+    chat = _responses_json_to_chat(obj)
+    assert chat["choices"][0]["message"]["content"] == "partial"
+    assert chat["_responses_status"] == "incomplete"
+    assert chat["usage"]["completion_tokens"] == 5
+
+
+async def test_complete_responses_branch_translates():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "ok"}],
+                    }
+                ],
+                "usage": {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+            },
+        )
+
+    client = _client(
+        transport=httpx.MockTransport(handler),
+        gateway_provider_style="azure_openai_native",
+    )
+    result = await client.complete(
+        deployment="dep-1",
+        messages=[{"role": "user", "content": "x"}],
+        api="responses",
+    )
+    assert result["choices"][0]["message"]["content"] == "ok"
+    assert result["usage"]["prompt_tokens"] == 2
+    assert "/responses" in captured["url"]
+    assert captured["body"]["model"] == "dep-1"
+
+
+async def test_complete_responses_failed_status_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"status": "failed", "error": {"message": "content blocked"}},
+        )
+
+    client = _client(
+        transport=httpx.MockTransport(handler),
+        gateway_provider_style="azure_openai_native",
+    )
+    with pytest.raises(ModelGatewayError) as exc:
+        await client.complete(deployment="dep-1", messages=[], api="responses")
+    assert exc.value.status_code == 502
+    assert "content blocked" in exc.value.detail
+
+
+def test_parse_responses_event_delta_is_chat_shaped():
+    chunk = _parse_responses_event(
+        json.dumps({"type": "response.output_text.delta", "delta": "hi"})
+    )
+    assert chunk is not None
+    assert chunk.delta == "hi"
+    # raw mirrors the chat-completions delta shape the frontend already parses.
+    assert json.loads(chunk.raw) == {"choices": [{"delta": {"content": "hi"}}]}
+    assert chunk.done is False
+
+
+def test_parse_responses_event_completed_is_terminal_with_usage():
+    chunk = _parse_responses_event(
+        json.dumps(
+            {
+                "type": "response.completed",
+                "response": {
+                    "usage": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7}
+                },
+            }
+        )
+    )
+    assert chunk is not None
+    assert chunk.done is True
+    assert chunk.usage == {
+        "prompt_tokens": 5,
+        "completion_tokens": 2,
+        "total_tokens": 7,
+    }
+
+
+def test_parse_responses_event_incomplete_is_terminal_not_error():
+    chunk = _parse_responses_event(
+        json.dumps(
+            {
+                "type": "response.incomplete",
+                "response": {
+                    "usage": {"input_tokens": 5, "output_tokens": 9, "total_tokens": 14}
+                },
+            }
+        )
+    )
+    assert chunk is not None
+    assert chunk.done is True
+    assert chunk.usage["completion_tokens"] == 9
+
+
+def test_parse_responses_event_failed_raises():
+    with pytest.raises(ModelGatewayError) as exc:
+        _parse_responses_event(
+            json.dumps(
+                {
+                    "type": "response.failed",
+                    "response": {"error": {"message": "boom"}},
+                }
+            )
+        )
+    assert exc.value.status_code == 502
+    assert "boom" in exc.value.detail
+
+
+def test_parse_responses_event_ignores_noise_events():
+    assert _parse_responses_event(json.dumps({"type": "response.created"})) is None
+    assert _parse_responses_event("") is None
+    assert _parse_responses_event("not json") is None
+
+
+async def test_stream_responses_yields_deltas_then_terminal_usage():
+    sse = (
+        "event: response.output_text.delta\n"
+        'data: {"type":"response.output_text.delta","delta":"Hel"}\n'
+        "\n"
+        "event: response.output_text.delta\n"
+        'data: {"type":"response.output_text.delta","delta":"lo"}\n'
+        "\n"
+        "event: response.completed\n"
+        'data: {"type":"response.completed","response":'
+        '{"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}\n'
+        "\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["stream"] is True
+        return httpx.Response(200, text=sse)
+
+    client = _client(
+        transport=httpx.MockTransport(handler),
+        gateway_provider_style="azure_openai_native",
+    )
+    chunks = [
+        c
+        async for c in client.stream(
+            deployment="dep-1",
+            messages=[{"role": "user", "content": "x"}],
+            api="responses",
+        )
+    ]
+    text = "".join(c.delta for c in chunks)
+    assert text == "Hello"
+    assert chunks[-1].done is True
+    assert chunks[-1].usage == {
+        "prompt_tokens": 5,
+        "completion_tokens": 2,
+        "total_tokens": 7,
+    }
+
+
+async def test_stream_responses_incomplete_terminates_cleanly():
+    sse = (
+        'data: {"type":"response.output_text.delta","delta":"part"}\n'
+        "\n"
+        'data: {"type":"response.incomplete","response":'
+        '{"usage":{"input_tokens":3,"output_tokens":9,"total_tokens":12}}}\n'
+        "\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=sse)
+
+    client = _client(
+        transport=httpx.MockTransport(handler),
+        gateway_provider_style="azure_openai_native",
+    )
+    chunks = [
+        c async for c in client.stream(deployment="d", messages=[], api="responses")
+    ]
+    assert "".join(c.delta for c in chunks) == "part"
+    assert chunks[-1].done is True
+    assert chunks[-1].usage["completion_tokens"] == 9
+
+
+async def test_stream_responses_failed_raises():
+    sse = (
+        'data: {"type":"response.failed","response":'
+        '{"error":{"message":"stream boom"}}}\n'
+        "\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=sse)
+
+    client = _client(
+        transport=httpx.MockTransport(handler),
+        gateway_provider_style="azure_openai_native",
+    )
+    with pytest.raises(ModelGatewayError) as exc:
+        [c async for c in client.stream(deployment="d", messages=[], api="responses")]
+    assert exc.value.status_code == 502
+    assert "stream boom" in exc.value.detail
+
+
+async def test_stream_responses_accumulates_multiline_data():
+    # A single SSE frame whose JSON payload spans multiple data: lines must be
+    # joined before parsing.
+    sse = (
+        'data: {"type":"response.output_text.delta",\n'
+        'data: "delta":"hi"}\n'
+        "\n"
+        'data: {"type":"response.completed","response":{"usage":'
+        '{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n'
+        "\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=sse)
+
+    client = _client(
+        transport=httpx.MockTransport(handler),
+        gateway_provider_style="azure_openai_native",
+    )
+    chunks = [
+        c async for c in client.stream(deployment="d", messages=[], api="responses")
+    ]
+    assert "".join(c.delta for c in chunks) == "hi"
+    assert chunks[-1].done is True
+
+
+async def test_stream_responses_http_error_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="rate limited")
+
+    client = _client(
+        transport=httpx.MockTransport(handler),
+        gateway_provider_style="azure_openai_native",
+    )
+    with pytest.raises(ModelGatewayError) as exc:
+        [c async for c in client.stream(deployment="d", messages=[], api="responses")]
+    assert exc.value.status_code == 429

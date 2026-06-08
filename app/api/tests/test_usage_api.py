@@ -26,13 +26,13 @@ class UsageGateway:
     def __init__(self, text: str = "hello there") -> None:
         self.text = text
 
-    async def complete(self, *, deployment, messages, params=None, correlation_id=None):
+    async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         return {
             "choices": [{"message": {"role": "assistant", "content": self.text}}],
             "usage": dict(_USAGE),
         }
 
-    async def stream(self, *, deployment, messages, params=None, correlation_id=None):
+    async def stream(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         for piece in self.text.split():
             payload = {"choices": [{"delta": {"content": piece + " "}}]}
             yield ChatChunk(delta=piece + " ", raw=json.dumps(payload))
@@ -42,10 +42,10 @@ class UsageGateway:
 
 
 class FailingStreamGateway:
-    async def complete(self, *, deployment, messages, params=None, correlation_id=None):
+    async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         return {"choices": [{"message": {"content": ""}}]}
 
-    async def stream(self, *, deployment, messages, params=None, correlation_id=None):
+    async def stream(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         if False:  # pragma: no cover - generator that yields nothing before raising
             yield ChatChunk()
         raise ModelGatewayError(502, "upstream boom")

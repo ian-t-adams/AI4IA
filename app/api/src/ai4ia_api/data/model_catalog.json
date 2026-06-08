@@ -37,6 +37,7 @@
       "displayName": "gpt-5.4",
       "category": "chat",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -57,6 +58,7 @@
       "displayName": "gpt-5.2",
       "category": "chat",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -77,6 +79,7 @@
       "displayName": "gpt-5.1",
       "category": "chat",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -97,6 +100,7 @@
       "displayName": "gpt-5",
       "category": "chat",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -117,6 +121,7 @@
       "displayName": "gpt-5-nano",
       "category": "chat-fast",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -137,6 +142,7 @@
       "displayName": "o3",
       "category": "reasoning",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -157,6 +163,7 @@
       "displayName": "grok-4-1-fast-reasoning",
       "category": "reasoning",
       "format": "xAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -173,10 +180,74 @@
       ]
     },
     {
+      "id": "gpt-5-pro",
+      "displayName": "gpt-5-pro",
+      "category": "reasoning",
+      "format": "OpenAI",
+      "api": "responses",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5-pro-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5-pro-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "gpt-5-codex",
+      "displayName": "gpt-5-codex",
+      "category": "reasoning",
+      "format": "OpenAI",
+      "api": "responses",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5-codex-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5-codex-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "o3-pro",
+      "displayName": "o3-pro",
+      "category": "reasoning",
+      "format": "OpenAI",
+      "api": "responses",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "o3-pro-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "o3-pro-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
       "id": "Mistral-Large-3",
       "displayName": "Mistral-Large-3",
       "category": "chat",
       "format": "Mistral AI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -197,6 +268,7 @@
       "displayName": "gpt-5.4-mini",
       "category": "chat-fast",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -217,6 +289,7 @@
       "displayName": "gpt-5-mini",
       "category": "chat-fast",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -237,6 +310,7 @@
       "displayName": "gpt-4.1-mini",
       "category": "chat-fast",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -257,6 +331,7 @@
       "displayName": "gpt-4.1-nano",
       "category": "chat-fast",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -277,6 +352,7 @@
       "displayName": "model-router",
       "category": "router",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -297,6 +373,7 @@
       "displayName": "o4-mini",
       "category": "reasoning",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -317,6 +394,7 @@
       "displayName": "DeepSeek-V3.2",
       "category": "reasoning-oss",
       "format": "DeepSeek",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -337,6 +415,7 @@
       "displayName": "gpt-image-1.5",
       "category": "image",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -357,6 +436,7 @@
       "displayName": "gpt-image-2",
       "category": "image",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -377,6 +457,7 @@
       "displayName": "MAI-Image-2.5",
       "category": "image",
       "format": "Microsoft",
+      "api": "chat",
       "options": [
         {
           "region": "westus",
@@ -391,6 +472,7 @@
       "displayName": "text-embedding-3-large",
       "category": "embedding",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -411,6 +493,7 @@
       "displayName": "embed-v-4-0",
       "category": "embedding",
       "format": "Cohere",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -431,6 +514,7 @@
       "displayName": "Cohere-rerank-v4.0-pro",
       "category": "rerank",
       "format": "Cohere",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -451,6 +535,7 @@
       "displayName": "gpt-realtime",
       "category": "realtime",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -471,6 +556,7 @@
       "displayName": "gpt-realtime-mini",
       "category": "realtime",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -491,6 +577,7 @@
       "displayName": "gpt-audio",
       "category": "audio",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -511,6 +598,7 @@
       "displayName": "whisper",
       "category": "transcription",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -531,6 +619,7 @@
       "displayName": "gpt-4o-mini-tts",
       "category": "tts",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -545,6 +634,7 @@
       "displayName": "tts-hd",
       "category": "tts",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "swedencentral",
@@ -559,6 +649,7 @@
       "displayName": "sora-2",
       "category": "video",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "eastus2",
@@ -579,6 +670,7 @@
       "displayName": "o3-deep-research",
       "category": "research",
       "format": "OpenAI",
+      "api": "chat",
       "options": [
         {
           "region": "westus",

@@ -64,11 +64,11 @@ class _CapturingGateway:
     def __init__(self) -> None:
         self.last_messages = None
 
-    async def complete(self, *, deployment, messages, params=None, correlation_id=None):
+    async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         self.last_messages = messages
         return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
 
-    async def stream(self, *, deployment, messages, params=None, correlation_id=None):
+    async def stream(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         from ai4ia_api.gateway.client import ChatChunk
 
         self.last_messages = messages
