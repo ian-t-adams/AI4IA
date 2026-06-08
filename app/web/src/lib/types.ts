@@ -51,6 +51,87 @@ export interface AgentSummary {
   enabled: boolean;
 }
 
+// --- User-defined agents & workflows (Phase 8 Studio) ---
+
+// Durable user-authored agent persona. `id === name`; `name` is immutable.
+export interface UserAgent {
+  id: string;
+  userId: string;
+  name: string;
+  displayName: string;
+  description: string;
+  systemPrompt: string;
+  defaultModel: string | null;
+  tools: string[];
+  links: string[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Create payload — carries `name`; server owns id/userId/timestamps.
+export interface UserAgentCreate {
+  name: string;
+  displayName?: string | null;
+  description: string;
+  systemPrompt: string;
+  defaultModel?: string | null;
+  tools: string[];
+  links: string[];
+  enabled: boolean;
+}
+
+// Update payload — deliberately has NO `name` (the name is the immutable id/path).
+export interface UserAgentUpdate {
+  displayName?: string | null;
+  description: string;
+  systemPrompt: string;
+  defaultModel?: string | null;
+  tools: string[];
+  links: string[];
+  enabled: boolean;
+}
+
+// One step of a workflow: run `agent` with the rendered `instruction`
+// (may reference the {input} and {previous} placeholders).
+export interface WorkflowStep {
+  agent: string;
+  instruction: string;
+}
+
+export interface Workflow {
+  id: string;
+  userId: string;
+  name: string;
+  displayName: string;
+  description: string;
+  steps: WorkflowStep[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkflowCreate {
+  name: string;
+  displayName?: string | null;
+  description: string;
+  steps: WorkflowStep[];
+  enabled: boolean;
+}
+
+export interface WorkflowUpdate {
+  displayName?: string | null;
+  description: string;
+  steps: WorkflowStep[];
+  enabled: boolean;
+}
+
+export interface WorkflowRunResult {
+  sessionId: string;
+  ok: boolean;
+  message: Message;
+}
+
 export interface ChatParams {
   temperature?: number;
   top_p?: number;

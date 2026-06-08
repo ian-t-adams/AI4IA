@@ -8,6 +8,7 @@ import { ModelPicker } from "./ModelPicker";
 import { ParamControls } from "./ParamControls";
 import { SystemPromptEditor } from "./SystemPromptEditor";
 import { SettingsPanel } from "./SettingsPanel";
+import { StudioPanel } from "./StudioPanel";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import { Composer } from "./Composer";
 
@@ -36,6 +37,7 @@ export function ChatApp() {
   const [streamingText, setStreamingText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [studioOpen, setStudioOpen] = useState(false);
 
   const abortRef = useRef<(() => void) | null>(null);
   // Synchronous in-flight flag so guards work before React state settles.
@@ -95,6 +97,7 @@ export function ChatApp() {
         ]);
         setMessages(msgs);
         setDocuments(docs);
+        setSessions(all);
         const s = all.find((x) => x.id === id);
         if (s) {
           if (s.model) setSelectedModel(s.model);
@@ -115,6 +118,22 @@ export function ChatApp() {
     setStreamingText("");
     setError(null);
   }, []);
+
+  const refreshAgents = useCallback(async () => {
+    try {
+      setAgents(await api.listAgents());
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, []);
+
+  const openWorkflowRun = useCallback(
+    (sessionId: string) => {
+      setStudioOpen(false);
+      void selectSession(sessionId);
+    },
+    [selectSession],
+  );
 
   const deleteSession = useCallback(
     async (id: string) => {
@@ -333,6 +352,7 @@ export function ChatApp() {
         onNewChat={newChat}
         onDelete={deleteSession}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenStudio={() => setStudioOpen(true)}
         disabled={streaming}
       />
 
@@ -411,6 +431,16 @@ export function ChatApp() {
 
       {settingsOpen && (
         <SettingsPanel models={models} onClose={() => setSettingsOpen(false)} />
+      )}
+      {studioOpen && (
+        <StudioPanel
+          models={models}
+          agents={agents}
+          runModel={selectedModel}
+          onAgentsChanged={refreshAgents}
+          onRun={openWorkflowRun}
+          onClose={() => setStudioOpen(false)}
+        />
       )}
     </div>
   );

@@ -9,6 +9,13 @@ import type {
   Message,
   ModelCatalog,
   Session,
+  UserAgent,
+  UserAgentCreate,
+  UserAgentUpdate,
+  Workflow,
+  WorkflowCreate,
+  WorkflowRunResult,
+  WorkflowUpdate,
 } from "./types";
 
 async function jsonOrThrow<T>(resp: Response): Promise<T> {
@@ -48,6 +55,101 @@ export async function listAgents(): Promise<AgentSummary[]> {
     await fetch("/api/agents", { cache: "no-store" }),
   );
   return data.agents;
+}
+
+// --- Studio: user-defined agents & workflows (Phase 8) ---
+
+export async function listMyAgents(): Promise<UserAgent[]> {
+  const data = await jsonOrThrow<{ agents: UserAgent[] }>(
+    await fetch("/api/agents/mine", { cache: "no-store" }),
+  );
+  return data.agents;
+}
+
+export async function createAgent(input: UserAgentCreate): Promise<UserAgent> {
+  return jsonOrThrow(
+    await fetch("/api/agents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+export async function updateAgent(
+  name: string,
+  patch: UserAgentUpdate,
+): Promise<UserAgent> {
+  return jsonOrThrow(
+    await fetch(`/api/agents/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  );
+}
+
+export async function deleteAgent(name: string): Promise<void> {
+  const resp = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!resp.ok && resp.status !== 204) {
+    throw new Error(`${resp.status}: failed to delete agent`);
+  }
+}
+
+export async function listWorkflows(): Promise<Workflow[]> {
+  const data = await jsonOrThrow<{ workflows: Workflow[] }>(
+    await fetch("/api/workflows", { cache: "no-store" }),
+  );
+  return data.workflows;
+}
+
+export async function createWorkflow(input: WorkflowCreate): Promise<Workflow> {
+  return jsonOrThrow(
+    await fetch("/api/workflows", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+export async function updateWorkflow(
+  name: string,
+  patch: WorkflowUpdate,
+): Promise<Workflow> {
+  return jsonOrThrow(
+    await fetch(`/api/workflows/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  );
+}
+
+export async function deleteWorkflow(name: string): Promise<void> {
+  const resp = await fetch(`/api/workflows/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!resp.ok && resp.status !== 204) {
+    throw new Error(`${resp.status}: failed to delete workflow`);
+  }
+}
+
+// Runs a saved workflow against a chat session. The backend persists the user
+// input + the pipeline's assistant result to the session like a normal turn.
+export async function runWorkflow(
+  name: string,
+  input: { sessionId: string; input: string; model?: string | null },
+): Promise<WorkflowRunResult> {
+  return jsonOrThrow(
+    await fetch(`/api/workflows/${encodeURIComponent(name)}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
 }
 
 // --- Voice (Phase 7B) ---

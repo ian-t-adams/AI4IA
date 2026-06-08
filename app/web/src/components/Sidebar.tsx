@@ -9,6 +9,7 @@ export function Sidebar({
   onNewChat,
   onDelete,
   onOpenSettings,
+  onOpenStudio,
   disabled = false,
 }: {
   sessions: Session[];
@@ -17,6 +18,7 @@ export function Sidebar({
   onNewChat: () => void;
   onDelete: (id: string) => void;
   onOpenSettings: () => void;
+  onOpenStudio: () => void;
   disabled?: boolean;
 }) {
   return (
@@ -114,7 +116,22 @@ export function Sidebar({
           );
         })}
       </ul>
-      <div style={{ padding: 12, borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+      <div style={{ padding: 12, borderTop: "1px solid rgba(255,255,255,0.08)", display: "flex", flexDirection: "column", gap: 8 }}>
+        <button
+          onClick={onOpenStudio}
+          disabled={disabled}
+          style={{
+            width: "100%",
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: "1px solid var(--border)",
+            background: "transparent",
+            color: "var(--sidebar-fg)",
+            cursor: disabled ? "not-allowed" : "pointer",
+          }}
+        >
+          🛠 Agents &amp; workflows
+        </button>
         <button
           onClick={onOpenSettings}
           style={{
