@@ -29,7 +29,7 @@ from ..sessions.models import Message, MessageRole, MessageStatus, Session
 from ..sessions.repository import SessionNotFoundError, SessionRepository
 from ..agents.agent_catalog import AgentCatalog, AgentSpec
 from ..agents.command_service import execute_command
-from ..agents.commands import parse_input
+from ..agents.commands import CommandKind, parse_input
 from ..agents.runtime import run_agent_turn
 from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
@@ -189,6 +189,9 @@ async def chat(
     repo: SessionRepository = request.app.state.session_repo
     catalog: ModelCatalog = request.app.state.catalog
     gateway: ModelGatewayClient = request.app.state.gateway
+    # Curated catalog by default; user agents are composed in lazily below only
+    # when this turn actually needs them (an @mention or /agents), so a Cosmos
+    # blip can never break /help, /clear, /model, /system, or /forget.
     agents: AgentCatalog = request.app.state.agents
     registry: ToolRegistry = request.app.state.tool_registry
     executor: ToolExecutor = request.app.state.tool_executor
@@ -202,6 +205,18 @@ async def chat(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
     parsed = parse_input(body.content)
+
+    # Compose the caller's user-defined agents on top of the curated catalog only
+    # when this turn needs them: an @mention to resolve, or /agents to list. For
+    # every other path (plain chat, other slash commands) the curated catalog is
+    # used as-is, so a user-agent store outage is contained to these two paths
+    # (and even there the service fails open to curated-only).
+    if parsed.agent is not None or (
+        parsed.command is not None and parsed.command.kind is CommandKind.agents
+    ):
+        agents = await request.app.state.agent_service.catalog_for(
+            user.internal_user_id, agents
+        )
 
     # Resolve an @mention to an agent BEFORE handling commands or the model, so
     # an invalid mention can never fall through to either. Disabled agents are

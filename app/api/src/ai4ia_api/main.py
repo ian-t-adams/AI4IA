@@ -11,7 +11,9 @@ from fastapi.responses import JSONResponse
 
 from .auth.factory import build_auth_provider
 from .agents.agent_catalog import load_agent_catalog
-from .agents.tool_exec import build_tools
+from .agents.factory import build_user_agent_store
+from .agents.service import AgentService
+from .agents.tool_exec import attachable_tool_names, build_tools
 from .catalog import load_catalog
 from .config import Settings, get_settings
 from .entitlements.factory import build_default_entitlement, build_entitlement_store
@@ -68,6 +70,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         registry, executor = build_tools()
         app.state.tool_registry = registry
         app.state.tool_executor = executor
+        # User-defined agents (Phase 8). The service composes the curated catalog
+        # with each user's saved personas (per-user, durable in Cosmos) and owns
+        # CRUD + validation. Reads fail open to the curated catalog so a store
+        # blip can never break chat. Tools a user may attach are an explicit
+        # safe/no-scope/no-approval allowlist computed once from the seeded tools.
+        app.state.agent_service = AgentService(
+            build_user_agent_store(settings),
+            catalog=app.state.catalog,
+            attachable_tools=attachable_tool_names(registry, executor),
+        )
         # Per-user memory (Phase 5). Disabled by default -> NoopMemoryService, so
         # the chat path can call it unconditionally with no behavior change.
         app.state.memory = build_memory_service(
@@ -118,6 +130,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.entitlements.close()
             except Exception:  # noqa: BLE001
                 logger.warning("entitlement store close failed", exc_info=True)
+            try:
+                await app.state.agent_service.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("agent service close failed", exc_info=True)
             repo = app.state.session_repo
             close = getattr(repo, "close", None)
             if close is not None:

@@ -235,6 +235,10 @@ class ToolExecutor:
     def get(self, name: str) -> ToolDefinition | None:
         return self._defs.get(name)
 
+    def names(self) -> list[str]:
+        """Names of every registered (executable) tool, sorted."""
+        return sorted(self._defs)
+
     def schema_for(
         self,
         names: Iterable[str],
@@ -302,3 +306,43 @@ def build_tools(extra: Iterable[ToolDefinition] = ()) -> tuple[ToolRegistry, Too
         registry.register(definition.spec)
         executor.register(definition)
     return registry, executor
+
+
+# Explicit, opt-in allowlist of tools a *user* may attach to a user-defined
+# agent. A tool must be on this list AND independently pass the safety predicate
+# below — so registering a new "safe" tool never silently makes it user-attachable
+# (it would also have to be added here on purpose).
+USER_ATTACHABLE_TOOL_NAMES: frozenset[str] = frozenset({"calculator", "get_current_time"})
+
+
+def attachable_tool_names(
+    registry: ToolRegistry, executor: ToolExecutor
+) -> frozenset[str]:
+    """The effective allowlist of tools a *user* may attach to a user-defined agent.
+
+    A user-attachable tool must be (0) on the explicit
+    :data:`USER_ATTACHABLE_TOOL_NAMES` opt-in list, (1) executable (the executor
+    has a handler), (2) registered + enabled + allowlisted in the safety registry,
+    (3) ``safe`` risk, (4) require no approval, and (5) declare no required scopes,
+    secret refs, or egress hosts. The last three matter because an agent turn runs
+    with an empty :class:`ToolContext` (no granted scopes/approvals), so a tool
+    needing any of those could never actually run — and we must never let a user
+    attach a destructive/external/secret-bearing tool to a persona regardless. The
+    explicit opt-in list is defense in depth: a future "safe" tool added for
+    curated/internal agents does not automatically become user-attachable.
+    """
+    out: set[str] = set()
+    for name in executor.names():
+        if name not in USER_ATTACHABLE_TOOL_NAMES:
+            continue
+        spec = registry.get(name)
+        if spec is None or not spec.enabled:
+            continue
+        if not registry.is_allowlisted(name):
+            continue
+        if spec.risk is not ToolRisk.safe or spec.needs_approval:
+            continue
+        if spec.scopes or spec.secret_refs or spec.egress_allowlist:
+            continue
+        out.add(name)
+    return frozenset(out)
