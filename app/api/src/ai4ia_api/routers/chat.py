@@ -32,6 +32,7 @@ from ..agents.commands import parse_input
 from ..agents.runtime import run_agent_turn
 from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
+from ..entitlements.service import EntitlementService
 from ..memory.service import MemoryServiceProtocol
 from ..usage.models import TokenUsage
 from ..usage.service import UsageService
@@ -136,6 +137,7 @@ async def chat(
     executor: ToolExecutor = request.app.state.tool_executor
     memory: MemoryServiceProtocol = request.app.state.memory
     metering: UsageService = request.app.state.usage
+    entitlements: EntitlementService = request.app.state.entitlements
 
     try:
         session = await repo.get_session(user.internal_user_id, body.sessionId)
@@ -220,6 +222,23 @@ async def chat(
     )
     if deployment is None:
         raise HTTPException(status_code=400, detail=f"Unknown or unavailable model: {model_id}")
+
+    # Entitlement enforcement (Phase 6B). Placed here so it gates only true
+    # model-consuming turns: /commands and @mention errors already returned
+    # above (a rate-limited or disabled user can still run /help, /usage, etc.).
+    # Runs before the user message is persisted so a refused turn leaves no
+    # dangling message. Ships unlimited (check() short-circuits to allow with no
+    # ledger IO unless an admin set a limit on this user).
+    decision = await entitlements.check(user.internal_user_id)
+    if not decision.allowed:
+        headers = (
+            {"Retry-After": str(decision.retry_after_seconds)}
+            if decision.retry_after_seconds is not None
+            else None
+        )
+        raise HTTPException(
+            status_code=decision.code, detail=decision.reason, headers=headers
+        )
 
     prior = await repo.list_messages(user.internal_user_id, body.sessionId)
     user_msg = Message(

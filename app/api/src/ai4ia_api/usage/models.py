@@ -128,6 +128,19 @@ class UsageRecord(BaseModel):
         return round(self.estCostMicroUsd / 1_000_000, 6)
 
 
+class WindowTotals(BaseModel):
+    """Lightweight rolling-window aggregate used by entitlement enforcement.
+
+    A tiny projection of :class:`UsageSummary` over an arbitrary ``[since, now]``
+    window (the summary type carries far more than enforcement needs). Kept here
+    so the ``usage`` package stays the single owner of every ledger read.
+    """
+
+    requests: int = 0
+    totalTokens: int = 0
+    costMicroUsd: int = 0
+
+
 class ModelUsageBucket(BaseModel):
     model: str
     requests: int = 0

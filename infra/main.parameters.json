@@ -19,6 +19,12 @@
     },
     "postgresLocation": {
       "value": "${AI4IA_POSTGRES_LOCATION=}"
+    },
+    "adminSubjects": {
+      "value": "${AI4IA_ADMIN_SUBJECTS=}"
+    },
+    "adminApiSecret": {
+      "value": "${AI4IA_ADMIN_API_SECRET=}"
     }
   }
 }

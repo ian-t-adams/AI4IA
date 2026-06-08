@@ -89,6 +89,13 @@ param entraTenantId string = ''
 @description('Entra audience / API app ID URI (required when authProvider == entra).')
 param entraAudience string = ''
 
+@description('Comma-separated admin subjects for the entitlement-management API (AI4IA_ADMIN_SUBJECTS).')
+param adminSubjects string = ''
+
+@description('Shared secret required for the entitlement-management API under spoofable dev auth (AI4IA_ADMIN_API_SECRET). Stored as a Container App secret.')
+@secure()
+param adminApiSecret string = ''
+
 var entraEnv = authProvider == 'entra' ? [
   {
     name: 'AI4IA_ENTRA_TENANT_ID'
@@ -114,6 +121,30 @@ var gatewayKeyEnv = hasGatewayKey ? [
     secretRef: 'model-gateway-api-key'
   }
 ] : []
+
+// Admin API secret (entitlement management) held as a Container App secret and
+// referenced by env when present. Optional: empty means identity-only admin.
+var hasAdminSecret = !empty(adminApiSecret)
+var adminSecrets = hasAdminSecret ? [
+  {
+    name: 'admin-api-secret'
+    value: adminApiSecret
+  }
+] : []
+var adminEnv = concat(
+  empty(adminSubjects) ? [] : [
+    {
+      name: 'AI4IA_ADMIN_SUBJECTS'
+      value: adminSubjects
+    }
+  ],
+  hasAdminSecret ? [
+    {
+      name: 'AI4IA_ADMIN_API_SECRET'
+      secretRef: 'admin-api-secret'
+    }
+  ] : []
+)
 
 // Postgres connection is only meaningful for the pgvector memory backend.
 var pgEnv = memoryStore == 'pgvector' ? [
@@ -182,7 +213,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: 'ca-api-${environmentName}'
@@ -200,7 +231,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
     managedEnvironmentId: containerEnvId
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: gatewaySecrets
+      secrets: concat(gatewaySecrets, adminSecrets)
       ingress: {
         // External for v1 so the api is directly testable before the web app
         // exists. Flip to internal once web is the only public frontend.

@@ -16,9 +16,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime
 
 from ..catalog import DeploymentOption
-from .models import TokenUsage, UsageRecord, UsageStatus, UsageSummary
+from .models import TokenUsage, UsageRecord, UsageStatus, UsageSummary, WindowTotals
 from .pricing import PricingBook
 from .repository import UsageRepository
 
@@ -176,6 +177,26 @@ class UsageService:
         since = now - timedelta(days=days)
         return await self._repo.summarize(
             user_id, since=since, since_days=days, now=now
+        )
+
+    async def window_totals(
+        self, user_id: str, *, since: datetime, now: datetime | None = None
+    ) -> WindowTotals:
+        """Aggregate a single user's ledger over an arbitrary ``[since, now]``
+        window. Used by entitlement enforcement, which only calls this when a
+        limit is actually configured (the unlimited fast path does no ledger IO).
+        """
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
+        now = now or _dt.now(_tz.utc)
+        # ``since_days`` is summary metadata only (filtering is by ``since``), so
+        # any value is fine here.
+        summary = await self._repo.summarize(user_id, since=since, since_days=1, now=now)
+        return WindowTotals(
+            requests=summary.totalRequests,
+            totalTokens=summary.totalTokens,
+            costMicroUsd=summary.totalCostMicroUsd,
         )
 
     async def close(self) -> None:

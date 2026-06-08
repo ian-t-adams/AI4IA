@@ -52,6 +52,13 @@ param entraTenantId string = ''
 @description('Entra audience / API app ID URI (required when apiAuthProvider == entra).')
 param entraAudience string = ''
 
+@description('Comma-separated admin subjects for the entitlement-management API.')
+param adminSubjects string = ''
+
+@description('Shared secret for the entitlement-management API under spoofable dev auth. Empty => identity-only admin (fail-closed under dev auth in a deployed env).')
+@secure()
+param adminApiSecret string = ''
+
 @description('Dev user the web proxy injects as X-Dev-User (dev/demo only; ignored in prod).')
 param webDevUser string = 'dev@ai4ia.local'
 
@@ -258,6 +265,8 @@ module api 'modules/api.bicep' = {
     allowDevAuth: appEnvironment == 'prod' ? false : apiAllowDevAuth
     entraTenantId: entraTenantId
     entraAudience: entraAudience
+    adminSubjects: adminSubjects
+    adminApiSecret: adminApiSecret
   }
 }
 

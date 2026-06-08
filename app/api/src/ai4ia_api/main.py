@@ -14,6 +14,8 @@ from .agents.agent_catalog import load_agent_catalog
 from .agents.tool_exec import build_tools
 from .catalog import load_catalog
 from .config import Settings, get_settings
+from .entitlements.factory import build_default_entitlement, build_entitlement_store
+from .entitlements.service import EntitlementService
 from .gateway.client import ModelGatewayClient
 from .memory.factory import build_memory_service
 from .logging_setup import (
@@ -25,6 +27,7 @@ from .logging_setup import (
 from .routers import agents as agents_router
 from .routers import catalog as catalog_router
 from .routers import chat as chat_router
+from .routers import entitlements as entitlements_router
 from .routers import health as health_router
 from .routers import sessions as sessions_router
 from .routers import usage as usage_router
@@ -76,6 +79,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             load_pricing(),
             enabled=settings.usage_metering_enabled,
         )
+        # Entitlement enforcement (Phase 6B). Ships effectively unlimited: with
+        # no per-user override and no global default cap, check() short-circuits
+        # to allow with zero ledger IO. The store shares the session store's
+        # durability; the usage service supplies rolling-window totals.
+        app.state.entitlements = EntitlementService(
+            build_entitlement_store(settings),
+            app.state.usage,
+            build_default_entitlement(settings),
+            enabled=settings.entitlements_enabled,
+            cache_ttl_seconds=settings.entitlement_cache_ttl_seconds,
+        )
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
         try:
@@ -97,6 +111,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.usage.close()
             except Exception:  # noqa: BLE001
                 logger.warning("usage service close failed", exc_info=True)
+            try:
+                await app.state.entitlements.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("entitlement store close failed", exc_info=True)
             repo = app.state.session_repo
             close = getattr(repo, "close", None)
             if close is not None:
@@ -125,6 +143,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(sessions_router.router)
     app.include_router(chat_router.router)
     app.include_router(usage_router.router)
+    app.include_router(entitlements_router.self_router)
+    app.include_router(entitlements_router.admin_router)
     return app
 
 

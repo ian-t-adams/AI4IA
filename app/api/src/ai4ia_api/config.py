@@ -99,6 +99,31 @@ class Settings(BaseSettings):
     # ledger. Best-effort: a ledger write failure never breaks a chat response.
     usage_metering_enabled: bool = True
 
+    # --- Entitlement enforcement (Phase 6B) ---
+    # The mechanism is present but ships effectively UNLIMITED: with no per-user
+    # override and no global default_* cap below, every user is unlimited. An
+    # admin sets a per-user limit to govern a specific user. Set false to bypass
+    # the check entirely.
+    entitlements_enabled: bool = True
+    # TTL for the in-process effective-entitlement cache (keeps the unlimited hot
+    # path off Cosmos; an admin change propagates within this window).
+    entitlement_cache_ttl_seconds: int = 30
+    # Admin gate for the entitlement-management API. Identity-based admins
+    # (subjects/emails/roles) are only trusted under non-spoofable auth (entra,
+    # or local dev). Under dev auth in a DEPLOYED env the X-Dev-User header is
+    # spoofable, so admin then additionally requires a matching X-Admin-Secret;
+    # with no secret configured, admin is fail-closed there.
+    admin_subjects: str | None = None
+    admin_emails: str | None = None
+    admin_api_secret: str | None = None
+    # Optional GLOBAL default limits applied to users without an override. All
+    # unset == fully unlimited (the shipped posture). micro-USD to match the ledger.
+    default_requests_per_minute: int | None = None
+    default_tokens_per_day: int | None = None
+    default_cost_per_day_micro_usd: int | None = None
+    default_tokens_per_month: int | None = None
+    default_cost_per_month_micro_usd: int | None = None
+
     # --- Sessions store ---
     session_store: SessionStoreKind = SessionStoreKind.memory
     cosmos_endpoint: str | None = None
@@ -155,6 +180,16 @@ class Settings(BaseSettings):
         return [t.strip() for t in raw.split(",") if t.strip()]
 
     @property
+    def admin_subject_set(self) -> set[str]:
+        raw = self.admin_subjects or ""
+        return {s.strip() for s in raw.split(",") if s.strip()}
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        raw = self.admin_emails or ""
+        return {s.strip().lower() for s in raw.split(",") if s.strip()}
+
+    @property
     def dev_auth_permitted(self) -> bool:
         return self.env == Environment.local or self.allow_dev_auth
 
@@ -189,6 +224,16 @@ class Settings(BaseSettings):
             raise RuntimeError("AI4IA_POSTGRES_HOST is required for the pgvector memory store.")
         if self.memory_store == MemoryStoreKind.pgvector and not self.postgres_user:
             raise RuntimeError("AI4IA_POSTGRES_USER is required for the pgvector memory store.")
+        if self.entitlements_enabled and not self.usage_metering_enabled:
+            # Budgets/rate limits accrue from the usage ledger; with metering off
+            # every positive limit silently never trips (only disabled and
+            # 0-hard-blocks would work). Refuse the half-broken combo so an
+            # admin-set limit can never quietly fail to enforce.
+            raise RuntimeError(
+                "Entitlement enforcement requires usage metering. Set "
+                "AI4IA_USAGE_METERING_ENABLED=true, or disable enforcement with "
+                "AI4IA_ENTITLEMENTS_ENABLED=false."
+            )
 
 
 @lru_cache
