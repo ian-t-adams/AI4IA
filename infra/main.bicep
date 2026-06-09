@@ -67,6 +67,9 @@ param realtimeAllowedOrigins string = ''
 @description('Enable the per-user document library (Phase 11A storage spine). Default OFF: the /api/library API refuses (404) and nothing is constructed, so there is no behavior change.')
 param documentUnderstandingEnabled bool = false
 
+@description('Content Understanding endpoint base URL (Phase 11B). Required when enabling document understanding in a deployed env; the api fails closed at startup otherwise. Empty by default (feature off).')
+param cuBaseUrl string = ''
+
 @description('Comma-separated admin subjects for the entitlement-management API.')
 param adminSubjects string = ''
 
@@ -191,6 +194,9 @@ module data 'modules/data.bicep' = {
     apiPrincipalName: apiIdentity.name
     deployPostgres: postgresEnabled
     postgresLocation: empty(postgresLocation) ? location : postgresLocation
+    // Document library blob storage (Phase 11B). Gated on the feature flag, so the
+    // storage account + container + RBAC are created only when enabled — default OFF.
+    deployDocumentStorage: documentUnderstandingEnabled
   }
 }
 
@@ -305,6 +311,12 @@ module api 'modules/api.bicep' = {
     realtimeAllowedOrigins: realtimeAllowedOrigins
     // Document library (Phase 11A). Default OFF; the /api/library API refuses (404).
     documentUnderstandingEnabled: documentUnderstandingEnabled
+    // Document ingest (Phase 11B): the blob account/container the data module
+    // provisions when enabled, and the Content Understanding endpoint. Emitted to
+    // the api env only when the feature is on (and CU only when a base URL is set).
+    documentBlobAccountUrl: data.outputs.documentBlobAccountUrl
+    documentBlobContainer: data.outputs.documentBlobContainerName
+    cuBaseUrl: cuBaseUrl
   }
 }
 

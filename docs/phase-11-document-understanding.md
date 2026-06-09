@@ -184,16 +184,21 @@ while — hence async ingest + polling with backoff, not an inline call.
 
 ## The arc
 
-- **11A — Storage spine & manifest.** New blob Storage account (infra);
-  `documents` repartitioned to `/userId`; `analyzers` registry container;
+- **11A — Storage spine & manifest.** Per-user manifest data model
+  (`userDocuments` partitioned `/userId`); `analyzers` registry container;
   `can_access` resolver (owner-only); API CRUD with ownership checks;
-  content-hash dedupe. **No CU yet** — Phase 7C extraction stays the parse path.
-  Flag default-OFF; off ⇒ today's behavior.
-- **11B — CU ingest (docs/images).** Async CU client + ingest worker; Markdown →
-  summary card + chunks → pgvector; progressive-enhancement swap-in over the
-  instant quick-text fallback; status surfaced to the UI. Wire tiers 1–2 into
-  `_document_context`; add the `fetch_document` tool (tier 3). Prebuilt +
-  selectable analyzers.
+  content-hash dedupe. **No blob, no CU yet** — Phase 7C extraction stays the
+  parse path. Flag default-OFF; off ⇒ today's behavior.
+- **11B — CU ingest (docs/images).** New blob Storage account + `documents`
+  container + api-MI RBAC (infra); `POST /api/library/documents` upload (store +
+  manifest with an instant quick-text summary); async CU client + ingest worker;
+  Markdown → summary card + chunks → pgvector; progressive-enhancement swap-in
+  over the instant quick-text fallback; status surfaced to the UI. Split for
+  review isolation: **11B-1** ships the ingest *producer* (this list, plus the
+  blob/upload/CU/chunk pipeline), and **11B-2** ships the retrieval *consumer* —
+  wiring tiers 1–2 into `_document_context`, the `fetch_document` tool (tier 3),
+  and the web UI — since the chat hot path is the highest-regression-risk surface.
+  Prebuilt + selectable analyzers.
 - **11C — Intent router + code_interpreter.** Classify ask (Q&A vs compute vs
   transform); route compute/tabular to code_interpreter; "adjust & return"
   export path with versioned blobs.
@@ -216,12 +221,12 @@ caps.
 ## Config (new `AI4IA_*` knobs — all default-OFF/empty)
 
 `document_understanding_enabled: bool = False` · `cu_base_url` ·
-`cu_api_version = "2025-05-01-preview"` · `cu_auth_mode` (none|api_key|bearer) ·
+`cu_api_version = "2025-11-01"` · `cu_auth_mode` (none|api_key|bearer) ·
 `cu_timeout_seconds` · `cu_poll_interval_seconds` · `cu_max_poll_seconds` ·
-blob account/container settings · `max_upload_bytes` per modality ·
-`max_documents_per_user` · default analyzer per modality. Add fail-closed
-`validate_runtime()` checks (enabled ⇒ blob + CU endpoint configured), mirroring
-the realtime/voice-live pattern.
+blob account/container settings · `document_chunk_chars`/`document_chunk_overlap` ·
+`document_max_upload_bytes` · `document_max_per_user` · default analyzer per
+modality. Add fail-closed `validate_runtime()` checks (enabled ⇒ blob + CU
+endpoint configured), mirroring the realtime/voice-live pattern.
 
 ## Open items / future
 

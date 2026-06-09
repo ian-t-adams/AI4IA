@@ -21,6 +21,7 @@ from .entitlements.service import EntitlementService
 from .gateway.client import ModelGatewayClient
 from .routers.realtime import AiohttpRealtimeConnector
 from .library.factory import build_document_library
+from .library.ingest_factory import build_document_ingestor
 from .memory.factory import build_memory_service
 from .logging_setup import (
     configure_logging,
@@ -126,6 +127,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             enabled=settings.entitlements_enabled,
             cache_ttl_seconds=settings.entitlement_cache_ttl_seconds,
         )
+        # Document ingest pipeline (Phase 11B). Built only when document
+        # understanding is enabled (else None), so the upload endpoint refuses
+        # and no blob/CU/pgvector IO is constructed by default — zero regression.
+        # Owns its blob store + CU client + chunk store; closed in finally.
+        app.state.document_ingestor = build_document_ingestor(
+            settings,
+            library=app.state.document_library,
+            gateway=app.state.gateway,
+            catalog=app.state.catalog,
+            usage=app.state.usage,
+        )
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
         try:
@@ -173,6 +185,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await lib_close()
                 except Exception:  # noqa: BLE001
                     logger.warning("document library close failed", exc_info=True)
+            ingestor = getattr(app.state, "document_ingestor", None)
+            if ingestor is not None:
+                try:
+                    await ingestor.close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("document ingestor close failed", exc_info=True)
 
     app = FastAPI(title="AI4IA API", version="0.1.0", lifespan=lifespan)
 
