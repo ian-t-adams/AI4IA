@@ -1,0 +1,212 @@
+"""Responses API Code Interpreter client (Phase 11C).
+
+All IO is injected (a fake ``httpx``-like async client + a fake token provider),
+so these exercise URL building, auth-header construction for each mode, the
+defensive response parser, and error mapping — with no network and no azure SDK.
+"""
+from __future__ import annotations
+
+import httpx
+import pytest
+
+from ai4ia_api.code_interpreter.client import (
+    CODE_INTERPRETER_TOOL,
+    CodeInterpreterClient,
+    CodeInterpreterError,
+)
+from ai4ia_api.code_interpreter.models import parse_response
+from ai4ia_api.config import GatewayAuthMode
+from tests.conftest import make_settings
+
+
+class FakeResponse:
+    def __init__(self, status_code: int, body: dict | None = None, text: str = "") -> None:
+        self.status_code = status_code
+        self._body = body
+        self.text = text
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no json")
+        return self._body
+
+
+class FakeAsyncClient:
+    """Captures the single POST and returns a canned response."""
+
+    def __init__(self, response: FakeResponse | None = None, raise_exc: Exception | None = None) -> None:
+        self._response = response
+        self._raise = raise_exc
+        self.calls: list[dict] = []
+        self.closed = False
+
+    async def post(self, url, headers=None, json=None):
+        self.calls.append({"url": url, "headers": headers, "json": json})
+        if self._raise is not None:
+            raise self._raise
+        return self._response
+
+    async def aclose(self):
+        self.closed = True
+
+
+def _settings(**overrides):
+    base = dict(
+        document_understanding_enabled=True,
+        document_compute_enabled=True,
+        code_interpreter_base_url="https://res.openai.azure.com",
+        code_interpreter_model="gpt-4.1",
+    )
+    base.update(overrides)
+    return make_settings(**base)
+
+
+def _client(settings, http_client, token_provider=None):
+    # Default to a harmless fake AAD token so bearer-mode tests that don't care
+    # about auth never reach DefaultAzureCredential (which fails in CI, where no
+    # Azure identity is configured). Tests that assert a specific token pass their own.
+    async def _fake_token() -> str:
+        return "fake-aad-token"
+
+    return CodeInterpreterClient(
+        settings,
+        http_client=http_client,
+        token_provider=token_provider if token_provider is not None else _fake_token,
+    )
+
+
+# --- URL building ---
+def test_responses_url_omits_api_version_by_default():
+    c = _client(_settings(), FakeAsyncClient())
+    assert c.responses_url() == "https://res.openai.azure.com/openai/v1/responses"
+
+
+def test_responses_url_appends_api_version_when_set():
+    c = _client(_settings(code_interpreter_api_version="preview"), FakeAsyncClient())
+    assert c.responses_url().endswith("/openai/v1/responses?api-version=preview")
+
+
+def test_base_url_trailing_slash_is_normalized():
+    c = _client(_settings(code_interpreter_base_url="https://res.openai.azure.com/"), FakeAsyncClient())
+    assert c.responses_url() == "https://res.openai.azure.com/openai/v1/responses"
+
+
+# --- auth headers ---
+async def test_api_key_mode_sends_api_key_header():
+    settings = _settings(
+        code_interpreter_auth_mode=GatewayAuthMode.api_key,
+        code_interpreter_api_key="secret-key",
+    )
+    fake = FakeAsyncClient(FakeResponse(200, {"status": "completed", "output_text": "ok"}))
+    c = _client(settings, fake)
+    await c.run(instructions="do it", user_input="data")
+    headers = fake.calls[0]["headers"]
+    assert headers["api-key"] == "secret-key"
+    assert "Authorization" not in headers
+
+
+async def test_bearer_mode_with_static_key_sends_bearer():
+    settings = _settings(
+        code_interpreter_auth_mode=GatewayAuthMode.bearer,
+        code_interpreter_api_key="static-bearer",
+    )
+    fake = FakeAsyncClient(FakeResponse(200, {"status": "completed", "output_text": "ok"}))
+    c = _client(settings, fake)
+    await c.run(instructions="i", user_input="u")
+    assert fake.calls[0]["headers"]["Authorization"] == "Bearer static-bearer"
+
+
+async def test_bearer_mode_without_key_uses_aad_token_provider():
+    settings = _settings(code_interpreter_auth_mode=GatewayAuthMode.bearer)
+    fake = FakeAsyncClient(FakeResponse(200, {"status": "completed", "output_text": "ok"}))
+
+    async def token_provider() -> str:
+        return "aad-token-123"
+
+    c = _client(settings, fake, token_provider=token_provider)
+    await c.run(instructions="i", user_input="u")
+    assert fake.calls[0]["headers"]["Authorization"] == "Bearer aad-token-123"
+
+
+# --- payload shape ---
+async def test_run_posts_code_interpreter_tool_payload():
+    fake = FakeAsyncClient(FakeResponse(200, {"status": "completed", "output_text": "42"}))
+    c = _client(_settings(), fake)
+    result = await c.run(instructions="be careful", user_input="sum it")
+    body = fake.calls[0]["json"]
+    assert body["model"] == "gpt-4.1"
+    assert body["tools"] == [CODE_INTERPRETER_TOOL]
+    assert body["instructions"] == "be careful"
+    assert body["input"] == "sum it"
+    assert result.output_text == "42"
+    assert result.succeeded is True
+
+
+# --- error mapping ---
+async def test_non_2xx_raises_code_interpreter_error():
+    fake = FakeAsyncClient(FakeResponse(429, None, text="rate limited"))
+    c = _client(_settings(), fake)
+    with pytest.raises(CodeInterpreterError) as ei:
+        await c.run(instructions="i", user_input="u")
+    assert ei.value.status_code == 429
+
+
+async def test_transport_error_raises_code_interpreter_error():
+    fake = FakeAsyncClient(raise_exc=httpx.ConnectError("boom"))
+    c = _client(_settings(), fake)
+    with pytest.raises(CodeInterpreterError):
+        await c.run(instructions="i", user_input="u")
+
+
+async def test_non_json_body_raises():
+    fake = FakeAsyncClient(FakeResponse(200, None, text="not json"))
+    c = _client(_settings(), fake)
+    with pytest.raises(CodeInterpreterError):
+        await c.run(instructions="i", user_input="u")
+
+
+# --- response parser ---
+def test_parse_top_level_output_text():
+    r = parse_response({"status": "completed", "output_text": "the answer is 7"})
+    assert r.output_text == "the answer is 7"
+    assert r.logs == []
+    assert r.artifacts == []
+
+
+def test_parse_falls_back_to_message_items():
+    body = {
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "fallback answer"}],
+            }
+        ],
+    }
+    assert parse_response(body).output_text == "fallback answer"
+
+
+def test_parse_collects_ci_logs_and_artifacts():
+    body = {
+        "status": "completed",
+        "output_text": "done",
+        "output": [
+            {
+                "type": "code_interpreter_call",
+                "code": "print('hi')",
+                "outputs": [
+                    {"type": "logs", "logs": "hi\n"},
+                    {"type": "image", "file_id": "img-1"},
+                ],
+            }
+        ],
+    }
+    r = parse_response(body)
+    assert r.logs == ["hi\n"]
+    assert r.artifacts == ["img-1"]
+
+
+def test_parse_degrades_on_unknown_shape():
+    r = parse_response({"weird": True})
+    assert r.output_text == ""
+    assert r.succeeded is False

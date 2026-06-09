@@ -124,6 +124,15 @@ param cuBaseUrl string = ''
 @description('Content Understanding REST api-version the ingest worker uses.')
 param cuApiVersion string = '2025-11-01'
 
+@description('Enable compute over the library (Phase 11C): intent router + code_interpreter + "adjust & return" export. Layered ON TOP of documentUnderstandingEnabled. Default OFF (the chat hot path is byte-for-byte unchanged; neither synthetic tool is advertised).')
+param documentComputeEnabled bool = false
+
+@description('Azure OpenAI resource endpoint (e.g. https://<resource>.openai.azure.com) that serves the Responses API code_interpreter tool. Required when enabling document compute in a deployed env; the api fails closed at startup otherwise.')
+param codeInterpreterBaseUrl string = ''
+
+@description('Deployment/model name that serves the Responses API code_interpreter tool (e.g. gpt-4.1). Required when enabling document compute in a deployed env.')
+param codeInterpreterModel string = ''
+
 var entraEnv = authProvider == 'entra' ? [
   {
     name: 'AI4IA_ENTRA_TENANT_ID'
@@ -264,6 +273,26 @@ var documentEnv = documentUnderstandingEnabled ? concat([
   }
 ], documentBlobEnv, documentCuEnv) : []
 
+// Phase 11C compute: only emitted when documentComputeEnabled (which itself
+// requires documentUnderstandingEnabled). Base url + model are emitted only when
+// non-empty so the default-OFF posture leaves no compute config behind.
+var computeCiEnv = (documentComputeEnabled && !empty(codeInterpreterBaseUrl)) ? [
+  {
+    name: 'AI4IA_CODE_INTERPRETER_BASE_URL'
+    value: codeInterpreterBaseUrl
+  }
+  {
+    name: 'AI4IA_CODE_INTERPRETER_MODEL'
+    value: codeInterpreterModel
+  }
+] : []
+var computeEnv = (documentUnderstandingEnabled && documentComputeEnabled) ? concat([
+  {
+    name: 'AI4IA_DOCUMENT_COMPUTE_ENABLED'
+    value: 'true'
+  }
+], computeCiEnv) : []
+
 var apiEnv = concat([
   {
     name: 'PORT'
@@ -309,7 +338,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, computeEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: 'ca-api-${environmentName}'

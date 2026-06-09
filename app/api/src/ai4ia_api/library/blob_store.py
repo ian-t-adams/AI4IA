@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 RAW_NAME = "original"
 PARSED_NAME = "parsed.md"
 CHUNKS_NAME = "chunks.jsonl"
+# Subdirectory under a document's prefix holding "adjust & return" exports
+# (Phase 11C): each export writes ``{userId}/{documentId}/versions/{n}/{name}``,
+# leaving the original raw/parsed artifacts immutable.
+VERSIONS_DIR = "versions"
 
 
 class BlobNotFoundError(Exception):
@@ -32,6 +36,14 @@ def document_prefix(user_id: str, document_id: str) -> str:
 
 def blob_path(user_id: str, document_id: str, name: str) -> str:
     return f"{document_prefix(user_id, document_id)}{name}"
+
+
+def version_prefix(user_id: str, document_id: str, n: int) -> str:
+    return f"{document_prefix(user_id, document_id)}{VERSIONS_DIR}/{n}/"
+
+
+def version_path(user_id: str, document_id: str, n: int, name: str) -> str:
+    return f"{version_prefix(user_id, document_id, n)}{name}"
 
 
 @runtime_checkable

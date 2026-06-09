@@ -257,6 +257,41 @@ class Settings(BaseSettings):
     document_context_max_chars: int = 8000
     document_fetch_max_chars: int = 12000
 
+    # --- Compute over the library (Phase 11C): intent router + code_interpreter
+    # + "adjust & return" export. Layered ON TOP of document_understanding: a
+    # second default-OFF flag so the highest-regression-risk surface (the chat hot
+    # path) is inert unless explicitly enabled. When off, the intent router never
+    # runs, neither synthetic tool is advertised, and chat is byte-for-byte
+    # unchanged. Requires document_understanding_enabled (enforced in
+    # validate_runtime), since compute reads the same ready library.
+    document_compute_enabled: bool = False
+    # Code Interpreter rides the Azure OpenAI **Responses API** built-in
+    # ``code_interpreter`` tool (a sandboxed Azure-managed Python container), NOT
+    # an APIM/chat-completions deployment. Verified on Microsoft Learn: ``POST
+    # {code_interpreter_base_url}/openai/v1/responses`` with
+    # ``tools:[{type:"code_interpreter",container:{type:"auto"}}]``. The v1 GA
+    # surface omits ``api-version``; set ``preview`` to opt into latest preview
+    # features. Base url is the bare resource endpoint, e.g.
+    # ``https://<resource>.openai.azure.com`` (``/openai/v1`` is appended by the
+    # client). Required (with the model) when compute is enabled outside local.
+    code_interpreter_base_url: str | None = None
+    # Deployment/model name that serves the Responses API CI tool (e.g. gpt-4.1).
+    code_interpreter_model: str | None = None
+    code_interpreter_api_version: str = ""
+    # bearer == AAD managed-identity token (Azure OpenAI v1 scope) when no static
+    # key is set; api_key sends the resource key in the ``api-key`` header.
+    code_interpreter_auth_mode: GatewayAuthMode = GatewayAuthMode.bearer
+    code_interpreter_api_key: str | None = None
+    # AAD scope for a managed-identity token against the v1 Responses endpoint.
+    # Verified on Microsoft Learn (Entra samples for /openai/v1): ai.azure.com.
+    code_interpreter_aad_scope: str = "https://ai.azure.com/.default"
+    code_interpreter_timeout_seconds: float = 120.0
+    # Max chars of parsed document text handed to CI as fenced input per run, and
+    # max chars of a single "adjust & return" exported artifact. Both bound how
+    # much untrusted content moves through the compute path.
+    code_interpreter_max_input_chars: int = 60000
+    document_export_max_chars: int = 200000
+
     # --- Memory (Phase 5): per-user semantic recall ---
     # Single source of truth: the store kind both selects the backend AND gates
     # the feature (``disabled`` == off). No separate enable flag, so the two can
@@ -469,6 +504,46 @@ class Settings(BaseSettings):
                 "AI4IA_CU_API_KEY is required when AI4IA_CU_AUTH_MODE=api_key. "
                 "Set the key, switch to bearer (managed identity), or disable the "
                 "feature with AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false."
+            )
+        if self.document_compute_enabled and not self.document_understanding_enabled:
+            # Compute reads the same per-user *ready* library (CI input, export
+            # source) the retrieval consumer surfaces. Enabling it without the
+            # storage/ingest spine would advertise a router + tools over a library
+            # that is never constructed — fail closed rather than ship a feature
+            # wired to nothing.
+            raise RuntimeError(
+                "Document compute requires document understanding. Set "
+                "AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=true, or disable compute with "
+                "AI4IA_DOCUMENT_COMPUTE_ENABLED=false."
+            )
+        if (
+            self.document_compute_enabled
+            and self.env != Environment.local
+            and (not self.code_interpreter_base_url or not self.code_interpreter_model)
+        ):
+            # The Code Interpreter path needs the Responses API endpoint + a model
+            # deployment to run code against. A deployed enable without them would
+            # advertise a run_code tool whose every call fails — fail closed.
+            # Local/dev may enable compute with an injected/fake CI client.
+            raise RuntimeError(
+                "Document compute requires AI4IA_CODE_INTERPRETER_BASE_URL and "
+                "AI4IA_CODE_INTERPRETER_MODEL outside local, or disable it with "
+                "AI4IA_DOCUMENT_COMPUTE_ENABLED=false."
+            )
+        if (
+            self.document_compute_enabled
+            and self.code_interpreter_base_url
+            and self.code_interpreter_auth_mode == GatewayAuthMode.api_key
+            and not self.code_interpreter_api_key
+        ):
+            # api_key mode with no key would send no auth header and 401 on the
+            # first CI call (every run_code degrades to an error). Fail loud at
+            # startup instead, mirroring the CU api_key check.
+            raise RuntimeError(
+                "AI4IA_CODE_INTERPRETER_API_KEY is required when "
+                "AI4IA_CODE_INTERPRETER_AUTH_MODE=api_key. Set the key, switch to "
+                "bearer (managed identity), or disable compute with "
+                "AI4IA_DOCUMENT_COMPUTE_ENABLED=false."
             )
 
 

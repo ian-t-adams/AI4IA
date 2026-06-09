@@ -36,6 +36,7 @@ from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
 from ..entitlements.service import EntitlementService
 from ..library.chat_capability import build_document_capability
+from ..library.compute_factory import DocumentComputeService
 from ..library.retrieval import DocumentRetrievalService
 from ..memory.service import MemoryServiceProtocol
 from ..usage.models import TokenUsage
@@ -205,6 +206,12 @@ async def chat(
     # is off, so plain chat is byte-for-byte unchanged by default.
     retrieval: DocumentRetrievalService | None = getattr(
         request.app.state, "document_retrieval", None
+    )
+    # Document compute consumer (Phase 11C). None when document compute is off
+    # (default), so the intent router never runs, neither compute tool is
+    # advertised, and the chat path is byte-for-byte unchanged.
+    compute: DocumentComputeService | None = getattr(
+        request.app.state, "document_compute", None
     )
 
     try:
@@ -399,6 +406,20 @@ async def chat(
 
     payload_messages.append({"role": "user", "content": content_for_model})
 
+    # Intent routing (Phase 11C, best-effort, flag-gated). Deterministically
+    # classify the turn against the user's library into Q&A / compute / transform.
+    # CU/RAG stays the front door; this only *offers* the run_code + export_document
+    # tools when the ask is genuinely compute/tabular or an "adjust & return" — it
+    # is never the default path. When document compute is off (default), this never
+    # runs and the turn is byte-for-byte unchanged.
+    compute_decision = None
+    if compute is not None:
+        try:
+            compute_decision = compute.classify(content_for_model)
+        except Exception:  # noqa: BLE001 - routing must never break a turn
+            logger.warning("intent routing failed", exc_info=True)
+            compute_decision = None
+
     # Keep the session fresh + auto-title from the first real (non-command) turn.
     has_prior_chat = any(not m.fromCommand for m in prior)
     session.updatedAt = datetime.now(timezone.utc)
@@ -441,6 +462,25 @@ async def chat(
             )
             extra_tools = [*extra_tools, *doc_tools]
             extra_handlers = {**extra_handlers, **doc_handlers}
+        # Phase 11C: when the router classifies this turn as compute/transform,
+        # additionally offer the run_code + export_document capability over the
+        # user's ready library, bound to this user + the turn's library nonce.
+        # Disjoint tool names (the runtime asserts no collisions), so an agent can
+        # delegate, read, compute, and export in one turn. Best-effort: a build
+        # failure leaves the agent with its other tools.
+        if (
+            compute is not None
+            and compute_decision is not None
+            and compute_decision.offers_compute
+        ):
+            try:
+                c_tools, c_handlers = compute.build_capability(
+                    user_id=user.internal_user_id, nonce=library_nonce
+                )
+                extra_tools = [*extra_tools, *c_tools]
+                extra_handlers = {**extra_handlers, **c_handlers}
+            except Exception:  # noqa: BLE001 - compute must never break a turn
+                logger.warning("compute capability build failed", exc_info=True)
         run = await run_agent_turn(
             deployment=deployment.deploymentName,
             messages=payload_messages,
@@ -481,6 +521,76 @@ async def chat(
             correlation_id=correlation_id,
         )
         return _local_reply_response(body.sessionId, assistant, body.stream)
+
+    # Plain-chat compute / "adjust & return" turn (Phase 11C, best-effort,
+    # flag-gated). When the deterministic router classified a *non-agent* turn as
+    # compute/transform and a Code Interpreter / export path is available, run a
+    # governed tool loop that offers run_code + export_document (plus fetch_document
+    # to read the ready source). The model decides whether to use them; each call is
+    # budget-bounded and its untrusted output is nonce-fenced inside the handler.
+    # Only chat-completions models can tool-call here, so Responses-API models fall
+    # through. ANY failure — or an empty answer — falls through to the normal RAG
+    # path below: compute never breaks a turn and is never the forced front door.
+    if (
+        compute is not None
+        and compute_decision is not None
+        and compute_decision.offers_compute
+        and api == "chat"
+    ):
+        try:
+            ctx = ToolContext(correlation_id=correlation_id)
+            c_tools, c_handlers = compute.build_capability(
+                user_id=user.internal_user_id, nonce=library_nonce
+            )
+            if retrieval is not None:
+                doc_tools, doc_handlers = build_document_capability(
+                    service=retrieval,
+                    user_id=user.internal_user_id,
+                    nonce=library_nonce,
+                )
+                c_tools = [*c_tools, *doc_tools]
+                c_handlers = {**c_handlers, **doc_handlers}
+            run = await run_agent_turn(
+                deployment=deployment.deploymentName,
+                messages=payload_messages,
+                tool_names=[],
+                gateway=gateway,
+                registry=registry,
+                executor=executor,
+                ctx=ctx,
+                params=body.params,
+                extra_tools=c_tools or None,
+                extra_handlers=c_handlers or None,
+            )
+            if run.text.strip():
+                assistant = Message(
+                    sessionId=body.sessionId,
+                    userId=user.internal_user_id,
+                    role=MessageRole.assistant,
+                    content=run.text,
+                    status=MessageStatus.complete,
+                    model=deployment.deploymentName,
+                    agent=agent_name,
+                )
+                await repo.add_message(user.internal_user_id, assistant)
+                await memory.remember(
+                    user.internal_user_id, body.sessionId, content_for_model
+                )
+                await metering.record_completion(
+                    user_id=user.internal_user_id,
+                    session_id=body.sessionId,
+                    model_id=model_id,
+                    deployment=deployment,
+                    usage=run.usage,
+                    status="complete",
+                    agent=agent_name,
+                    correlation_id=correlation_id,
+                )
+                return _local_reply_response(body.sessionId, assistant, body.stream)
+        except Exception:  # noqa: BLE001 - compute must never break a turn
+            logger.warning(
+                "compute turn failed; falling back to normal answer", exc_info=True
+            )
 
     if not body.stream:
         try:
