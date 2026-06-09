@@ -118,6 +118,7 @@ function supportsVoiceLive(): boolean {
     typeof window.WebSocket !== "undefined" &&
     typeof navigator !== "undefined" &&
     !!navigator.mediaDevices?.getUserMedia &&
+    typeof window.AudioWorkletNode !== "undefined" &&
     (typeof window.AudioContext !== "undefined" ||
       typeof (window as unknown as { webkitAudioContext?: unknown })
         .webkitAudioContext !== "undefined")
@@ -255,6 +256,11 @@ export function useVoiceLive(
     setStatus("connecting");
     setUserTranscript("");
     setAssistantTranscript("");
+    // Raw resources are acquired before the session is wired into sessionRef; if
+    // init fails before that, teardown() can't see them (it early-returns on a
+    // null sessionRef), so the catch path releases these directly.
+    let pendingStream: MediaStream | null = null;
+    let pendingCtx: AudioContext | null = null;
     try {
       const subprotocols = await buildSubprotocols(config);
       if (!subprotocols) {
@@ -265,11 +271,13 @@ export function useVoiceLive(
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
+      pendingStream = stream;
       if (!mountedRef.current) {
         for (const t of stream.getTracks()) t.stop();
         return;
       }
       const ctx = makeAudioContext();
+      pendingCtx = ctx;
       await ctx.resume();
       const blob = new Blob([CAPTURE_WORKLET_SRC], { type: "application/javascript" });
       const moduleUrl = URL.createObjectURL(blob);
@@ -405,6 +413,13 @@ export function useVoiceLive(
       };
     } catch (e) {
       onErrorRef.current((e as Error).message || "Couldn't start live voice.");
+      // If the session was never wired, teardown() early-returns, so release the
+      // raw mic/AudioContext here — otherwise the mic track stays live (the OS
+      // mic indicator stays lit) and the AudioContext leaks.
+      if (!sessionRef.current) {
+        if (pendingStream) for (const t of pendingStream.getTracks()) t.stop();
+        if (pendingCtx) void pendingCtx.close().catch(() => {});
+      }
       teardown();
       if (mountedRef.current) setStatus("idle");
     } finally {
