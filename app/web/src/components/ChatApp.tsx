@@ -63,17 +63,29 @@ export function ChatApp() {
   // --- initial load ---
   useEffect(() => {
     (async () => {
-      try {
-        const [catalog, sess] = await Promise.all([
-          api.listModels(),
-          api.listSessions(),
-        ]);
-        setModels(catalog.models);
-        setSelectedModel(pickDefaultModel(catalog.models));
-        setSessions(sess);
-      } catch (e) {
-        setError((e as Error).message);
-      }
+      // The model catalog and the conversation list are loaded independently:
+      // the catalog must populate for chat to be usable, while history is
+      // best-effort. Loading them separately means a backing-store outage on one
+      // can't blank the other. (Previously a single Promise.all meant a sessions
+      // 500 rejected the whole load and left the model picker empty.)
+      await Promise.allSettled([
+        api.listModels().then(
+          (catalog) => {
+            setModels(catalog.models);
+            setSelectedModel(pickDefaultModel(catalog.models));
+          },
+          (e) => setError((e as Error).message),
+        ),
+        api.listSessions().then(
+          (sess) => setSessions(sess),
+          (e) =>
+            setError(
+              (prev) =>
+                prev ??
+                `Couldn't load your conversations: ${(e as Error).message}`,
+            ),
+        ),
+      ]);
       // Agents are an optional enhancement (the @-menu); never block chat on them.
       try {
         setAgents(await api.listAgents());
