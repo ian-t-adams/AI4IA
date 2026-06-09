@@ -2,6 +2,8 @@
 and the untrusted-framed, capped context formatter."""
 from __future__ import annotations
 
+import pytest
+
 from ai4ia_api.memory.in_memory import InMemoryVectorStore
 from ai4ia_api.memory.models import MemoryRecord
 from ai4ia_api.memory.service import MemoryService, NoopMemoryService
@@ -118,6 +120,7 @@ async def test_noop_service_is_inert():
     assert svc.enabled is False
     assert await svc.recall("u1", "q") == []
     assert await svc.remember("u1", "s1", "x" * 100) is None
+    assert await svc.remember_document("u1", items=["x" * 100]) == 0
     assert await svc.forget_user("u1") == 0
     assert svc.format_context([MemoryRecord(user_id="u1", text="x")]) is None
     # Lifecycle hooks are safe no-ops.
@@ -151,3 +154,55 @@ async def test_warmup_and_close_are_noops_for_plain_store():
     svc = _service(FakeEmbedder({}))
     assert await svc.warmup() is None
     assert await svc.close() is None
+
+
+# --- remember_document (Phase 11E-1: save-to-memory) ---
+async def test_remember_document_stores_kind_document_records():
+    embedder = FakeEmbedder(
+        {
+            "Quarterly revenue report": [1.0, 0.0, 0.0],
+            "Revenue grew twenty percent.": [1.0, 0.0, 0.0],
+            "query": [1.0, 0.0, 0.0],
+        }
+    )
+    svc = _service(embedder, min_score=0.1)
+    stored = await svc.remember_document(
+        "u1", items=["Quarterly revenue report", "Revenue grew twenty percent."]
+    )
+    assert stored == 2
+    hits = await svc.recall("u1", "query")
+    assert {h.text for h in hits} == {
+        "Quarterly revenue report",
+        "Revenue grew twenty percent.",
+    }
+    # Document memories are attributed with kind="document" (not "user_message").
+    assert all(h.kind == "document" for h in hits)
+
+
+async def test_remember_document_skips_blank_and_bypasses_trivia_gate():
+    # min_chars_to_store would reject "keep" via remember(); save-to-memory is an
+    # explicit action and must store it regardless, while still dropping blanks.
+    embedder = FakeEmbedder({"keep": [1.0, 0.0, 0.0]})
+    svc = _service(embedder, min_chars_to_store=99)
+    assert await svc.remember_document("u1", items=["  ", "", "keep"]) == 1
+
+
+async def test_remember_document_empty_is_noop():
+    embedder = FakeEmbedder({})
+    svc = _service(embedder)
+    assert await svc.remember_document("u1", items=[]) == 0
+    assert embedder.calls == 0
+
+
+async def test_remember_document_surfaces_embed_failure():
+    # Unlike remember(), an explicit save does NOT swallow failures.
+    class Boom:
+        async def embed(self, inputs):
+            raise RuntimeError("embed down")
+
+        async def embed_one(self, text):
+            raise RuntimeError("embed down")
+
+    svc = _service(Boom())
+    with pytest.raises(RuntimeError):
+        await svc.remember_document("u1", items=["a durable excerpt to store"])

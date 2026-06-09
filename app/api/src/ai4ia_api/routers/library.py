@@ -32,6 +32,7 @@ from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..entitlements.service import EntitlementService
 from ..library.access import can_access, require_owner
+from ..library.chunking import chunk_markdown
 from ..library.compute_factory import DocumentComputeService
 from ..library.ingest import DocumentIngestor
 from ..library.models import (
@@ -377,6 +378,111 @@ async def delete_document(
     if ingestor is not None:
         await ingestor.cancel_enrich(uid, document_id)
         await ingestor.purge(uid, document_id)
+
+
+class SaveToMemoryResult(BaseModel):
+    """Result of promoting a document's gist into the caller's durable memory."""
+
+    saved: int
+
+
+async def _document_memory_items(
+    request: Request, user_id: str, doc: UserDocument
+) -> list[str]:
+    """Bounded texts to remember for ``doc``: its summary plus leading parsed
+    excerpts, capped by ``memory_document_max_items``.
+
+    Best-effort on the excerpt read — a missing parsed blob, disabled retrieval,
+    or any read error degrades to summary-only; this never raises."""
+    settings = request.app.state.settings
+    max_items = max(1, settings.memory_document_max_items)
+    chunk_chars = max(1, settings.memory_document_chunk_chars)
+    items: list[str] = []
+    summary = (doc.summary or "").strip()
+    if summary:
+        items.append(summary)
+    retrieval = getattr(request.app.state, "document_retrieval", None)
+    if retrieval is not None and len(items) < max_items:
+        content: str | None = None
+        try:
+            loaded = await retrieval.read_parsed(
+                user_id, doc.id, max_chars=chunk_chars * max_items
+            )
+            if isinstance(loaded, dict):
+                content = loaded.get("content")
+        except Exception:  # noqa: BLE001 - excerpt sourcing is best-effort
+            logger.warning(
+                "save-to-memory excerpt read failed id=%s", doc.id, exc_info=True
+            )
+        if content:
+            for chunk in chunk_markdown(content, max_chars=chunk_chars, overlap=0):
+                if len(items) >= max_items:
+                    break
+                text = chunk.text.strip()
+                if text and text not in items:
+                    items.append(text)
+    return items[:max_items]
+
+
+@router.post(
+    "/documents/{document_id}/memory",
+    response_model=SaveToMemoryResult,
+    status_code=status.HTTP_201_CREATED,
+)
+async def save_document_to_memory(
+    document_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> SaveToMemoryResult:
+    """Promote a ready document's gist into the caller's durable memory (Phase 11E-1).
+
+    The explicit "save to memory and get it back" action: stores the document
+    summary plus a bounded set of leading excerpts as ``kind="document"``
+    memories, so the model can recall the document across sessions even when the
+    library itself isn't queried. Flag-gated by the library (404 when document
+    understanding is off) and by memory (409 when memory is disabled); owner-only
+    and ``ready``-status-gated, mirroring the read/delete gates. Memory failures
+    surface (502) because the user explicitly asked to save."""
+    repo = _library(request)
+    uid = user.internal_user_id
+    await _block_disabled(request, uid)
+
+    memory = request.app.state.memory
+    if not getattr(memory, "enabled", False):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Memory is not enabled."
+        )
+
+    try:
+        doc = await repo.get_document(uid, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if not can_access(uid, doc):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if doc.status != DocumentStatus.ready:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document is not ready; it has no content to remember yet.",
+        )
+
+    items = await _document_memory_items(request, uid, doc)
+    if not items:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Document has no content to remember.",
+        )
+    try:
+        saved = await memory.remember_document(uid, items=items, session_id=None)
+    except Exception:  # noqa: BLE001 - surface a transient memory failure, don't 500
+        logger.warning(
+            "save-to-memory failed user=%s id=%s", uid, document_id, exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not save to memory right now.",
+        )
+    logger.info("save-to-memory user=%s id=%s saved=%s", uid, document_id, saved)
+    return SaveToMemoryResult(saved=saved)
 
 
 # --- analyzers ---

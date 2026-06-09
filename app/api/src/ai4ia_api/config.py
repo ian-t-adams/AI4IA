@@ -313,6 +313,13 @@ class Settings(BaseSettings):
     memory_max_total_chars: int = 2000
     # Don't store trivially short user utterances ("ok", "thanks").
     memory_min_chars_to_store: int = 12
+    # Save-to-memory (Phase 11E-1): an explicit "remember this document" action
+    # promotes a library document's gist into durable memory. Bound how many
+    # memory records one save creates (the summary plus leading excerpts) and how
+    # large each excerpt is, so a big document can neither flood recall nor blow
+    # the injection budget. ``max_items`` includes the summary card.
+    memory_document_max_items: int = 6
+    memory_document_chunk_chars: int = 600
     # --- Real mem0 backend (memory_store=mem0) ---
     # mem0 runs an LLM "fact-extraction" pass on each remembered utterance, then
     # consolidates. This model must be NON-reasoning (mem0 sends temperature +
