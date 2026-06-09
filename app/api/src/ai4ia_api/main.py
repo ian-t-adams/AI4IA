@@ -138,6 +138,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             catalog=app.state.catalog,
             usage=app.state.usage,
         )
+        # Recover documents left stuck at ``analyzing`` by an enrich task that was
+        # cancelled on a prior shutdown (or lost to a crash): flip them to
+        # ``failed`` so they aren't permanent zombies. Best-effort, startup-only.
+        if app.state.document_ingestor is not None:
+            try:
+                await app.state.document_ingestor.recover_interrupted()
+            except Exception:  # noqa: BLE001 - startup sweep must not block boot
+                logger.warning("document recovery sweep failed", exc_info=True)
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
         try:

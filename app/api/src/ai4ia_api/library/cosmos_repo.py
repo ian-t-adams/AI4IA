@@ -10,10 +10,17 @@ Ownership is enforced by the ``/userId`` partition *and* re-checked on read.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from .hashing import dedupe_key
-from .models import BUILTIN_ANALYZER_IDS, BUILTIN_ANALYZERS, Analyzer, UserDocument
+from .models import (
+    BUILTIN_ANALYZER_IDS,
+    BUILTIN_ANALYZERS,
+    Analyzer,
+    DocumentStatus,
+    UserDocument,
+)
 from .repository import (
     AnalyzerConflictError,
     AnalyzerNotFoundError,
@@ -65,13 +72,41 @@ class CosmosDocumentLibraryRepository:
             async for item in self._docs.query_items(query=query, parameters=params)
         ]
 
+    async def list_by_status(
+        self, statuses: Sequence[DocumentStatus]
+    ) -> list[UserDocument]:
+        """Cross-partition scan for the startup recovery sweep (all owners).
+
+        Used only at startup to fail out documents left mid-ingest by an
+        interrupted worker; not on any hot path.
+        """
+        values = [
+            s.value if isinstance(s, DocumentStatus) else str(s) for s in statuses
+        ]
+        if not values:
+            return []
+        query = "SELECT * FROM c WHERE ARRAY_CONTAINS(@statuses, c.status)"
+        params = [{"name": "@statuses", "value": values}]
+        return [
+            UserDocument.model_validate(item)
+            async for item in self._docs.query_items(query=query, parameters=params)
+        ]
+
     async def update_document(self, document: UserDocument) -> UserDocument:
-        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+        from azure.core import MatchConditions
+        from azure.cosmos.exceptions import (
+            CosmosAccessConditionFailedError,
+            CosmosResourceNotFoundError,
+        )
 
         # Parity with the in-memory repo: updating an id that does not exist (or
         # is owned by another user) must raise rather than silently create the
-        # item, which ``upsert_item`` would otherwise do. The extra point-read is
-        # negligible — status transitions are infrequent.
+        # item, which ``upsert_item`` would otherwise do. We read first to enforce
+        # existence + ownership, then write with an ETag precondition so a
+        # concurrent delete between the read and the write (e.g. the enrich worker
+        # racing a user delete) deterministically loses instead of resurrecting
+        # the manifest. The extra point-read is negligible — status transitions
+        # are infrequent.
         try:
             existing = await self._docs.read_item(
                 item=document.id, partition_key=document.userId
@@ -81,7 +116,20 @@ class CosmosDocumentLibraryRepository:
         if existing.get("userId") != document.userId:
             raise DocumentNotFoundError(document.id)
         document.touch()
-        await self._docs.upsert_item(self._to_doc(document))
+        try:
+            await self._docs.replace_item(
+                item=document.id,
+                body=self._to_doc(document),
+                etag=existing.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except CosmosResourceNotFoundError as exc:
+            # Deleted between the read and the write.
+            raise DocumentNotFoundError(document.id) from exc
+        except CosmosAccessConditionFailedError as exc:
+            # ETag moved (concurrent modify/delete) — treat as gone for enrich's
+            # purposes so the caller does not overwrite a newer state.
+            raise DocumentNotFoundError(document.id) from exc
         return document
 
     async def delete_document(self, user_id: str, document_id: str) -> None:

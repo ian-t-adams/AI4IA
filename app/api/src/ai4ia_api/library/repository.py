@@ -10,9 +10,10 @@ Built-in analyzers are not stored — :meth:`list_analyzers` merges the in-proce
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
-from .models import Analyzer, UserDocument
+from .models import Analyzer, DocumentStatus, UserDocument
 
 
 class DocumentNotFoundError(Exception):
@@ -35,6 +36,10 @@ class DocumentLibraryRepository(Protocol):
     async def get_document(self, user_id: str, document_id: str) -> UserDocument: ...
 
     async def list_documents(self, user_id: str) -> list[UserDocument]: ...
+
+    async def list_by_status(
+        self, statuses: Sequence[DocumentStatus]
+    ) -> list[UserDocument]: ...
 
     async def update_document(self, document: UserDocument) -> UserDocument: ...
 
