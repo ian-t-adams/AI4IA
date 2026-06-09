@@ -81,10 +81,13 @@ Bytes are encrypted at rest (account default), reached only through the API with
 the api managed identity — the browser never gets a blob URL. Per-user SAS,
 scoped + time-bound, is reserved for a later direct-download path if needed.
 
-### Cosmos `documents` manifest — **partition `/userId`**
+### Cosmos `userDocuments` manifest — **partition `/userId`**
 
-Repartitioned from today's `/sessionId` (a personal cross-session library; a doc
-is associated with sessions but owned by a user).
+A **new** container (`userDocuments`), separate from the existing Phase 7C
+`documents`/`/sessionId` container — Cosmos can't repartition a container in
+place, and a dedicated container leaves the session-scoped one untouched (true
+zero regression). It's a personal cross-session library: a doc is associated with
+sessions but owned by a user.
 
 | Field | Notes |
 |---|---|
