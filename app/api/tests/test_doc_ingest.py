@@ -3,8 +3,14 @@ CU-success enrichment (parsed.md + chunks + metering), CU-failure degrade, and
 the CU-disabled no-op. All IO is injected (in-memory stores + fakes)."""
 from __future__ import annotations
 
+import pytest
+
 from ai4ia_api.content_understanding.models import CUResult
-from ai4ia_api.library.blob_store import InMemoryBlobStore, blob_path
+from ai4ia_api.library.blob_store import (
+    InMemoryBlobStore,
+    blob_path,
+    document_prefix,
+)
 from ai4ia_api.library.doc_chunks import InMemoryDocChunkStore
 from ai4ia_api.library.ingest import DocumentIngestor, resolve_cu_analyzer_id
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
@@ -13,7 +19,9 @@ from ai4ia_api.library.models import (
     AnalyzerKind,
     DocumentStatus,
     Modality,
+    UserDocument,
 )
+from ai4ia_api.library.repository import DocumentNotFoundError
 from tests.conftest import make_settings
 
 
@@ -52,11 +60,12 @@ def _succeeded(markdown: str) -> CUResult:
     return CUResult(status="Succeeded", analyzer_id="prebuilt-documentSearch", markdown=markdown)
 
 
-def _make(*, cu=None, embedder=None, chunks=None, usage=None, library=None):
+def _make(*, cu=None, embedder=None, chunks=None, usage=None, library=None, **settings_overrides):
     settings = make_settings(
         document_understanding_enabled=True,
         document_chunk_chars=40,
         document_chunk_overlap=5,
+        **settings_overrides,
     )
     return DocumentIngestor(
         library=library or InMemoryDocumentLibraryRepository(),
@@ -218,3 +227,144 @@ async def test_purge_removes_blob_and_chunks():
 
     await ingestor.purge("u1", stored.document.id)
     assert (await chunks.search("u1", [1.0, 1.0, 0.0], top_k=50)) == []
+
+
+# --- enrich vs. delete (resurrection regression) ---
+def _blob_keys(ingestor: DocumentIngestor, user_id: str, document_id: str) -> list[str]:
+    prefix = document_prefix(user_id, document_id)
+    return [k for k in ingestor._blob._data if k.startswith(prefix)]
+
+
+async def test_enrich_deleted_during_cu_poll_does_not_resurrect():
+    """A delete that lands during the CU poll must not be resurrected by enrich:
+    no manifest, no orphaned vector chunks, no orphaned blobs."""
+    library = InMemoryDocumentLibraryRepository()
+    chunks = InMemoryDocChunkStore(expected_dim=3)
+    embedder = FakeEmbedder()
+    ingestor = _make(embedder=embedder, chunks=chunks, library=library)
+
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"B"
+    )
+    doc_id = stored.document.id
+
+    class DeletingCU:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        async def analyze(self, analyzer_id, data, content_type):
+            self.calls.append((analyzer_id, data, content_type))
+            # User deletes mid-poll — mirror the router: manifest delete + purge.
+            await library.delete_document("u1", doc_id)
+            await ingestor.purge("u1", doc_id)
+            return _succeeded("# T\n\n" + ("word " * 30))
+
+    ingestor._cu = DeletingCU()
+    await ingestor.enrich(
+        user_id="u1", document_id=doc_id, data=b"B", content_type="application/pdf"
+    )
+
+    with pytest.raises(DocumentNotFoundError):
+        await library.get_document("u1", doc_id)
+    assert (await chunks.search("u1", [1.0, 1.0, 0.0], top_k=50)) == []
+    assert _blob_keys(ingestor, "u1", doc_id) == []
+
+
+async def test_enrich_delete_between_recheck_and_commit_rolls_back():
+    """If the delete lands after the existence re-check but before the terminal
+    manifest write (the commit point), the freshly-written artifacts are rolled
+    back so the delete wins deterministically."""
+
+    class _DeleteOnReadyRepo(InMemoryDocumentLibraryRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self._tripped = False
+
+        async def update_document(self, document):
+            # The terminal success write is the commit point; simulate the row
+            # having just been deleted so the write loses to the concurrent delete.
+            if document.status == DocumentStatus.ready and not self._tripped:
+                self._tripped = True
+                await super().delete_document(document.userId, document.id)
+                raise DocumentNotFoundError(document.id)
+            return await super().update_document(document)
+
+    library = _DeleteOnReadyRepo()
+    chunks = InMemoryDocChunkStore(expected_dim=3)
+    embedder = FakeEmbedder()
+    cu = FakeCU(result=_succeeded("# T\n\n" + ("word " * 30)))
+    ingestor = _make(cu=cu, embedder=embedder, chunks=chunks, library=library)
+
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"B"
+    )
+    doc_id = stored.document.id
+    await ingestor.enrich(
+        user_id="u1", document_id=doc_id, data=b"B", content_type="application/pdf"
+    )
+
+    with pytest.raises(DocumentNotFoundError):
+        await library.get_document("u1", doc_id)
+    # Persist ran (chunks/blobs were written) but the commit-point loss rolled
+    # them back — nothing survives the delete.
+    assert (await chunks.search("u1", [1.0, 1.0, 0.0], top_k=50)) == []
+    assert _blob_keys(ingestor, "u1", doc_id) == []
+
+
+async def test_update_document_missing_raises_in_memory_repo():
+    """The in-memory repo (the contract Cosmos must match) raises rather than
+    silently creating when updating a document id that does not exist."""
+    library = InMemoryDocumentLibraryRepository()
+    ghost = UserDocument(
+        userId="u1",
+        filename="gone.pdf",
+        contentType="application/pdf",
+        size=1,
+        contentHash="deadbeef",
+        modality=Modality.document,
+        status=DocumentStatus.ready,
+    )
+    with pytest.raises(DocumentNotFoundError):
+        await library.update_document(ghost)
+
+
+# --- chunk cap + batched embed (resource bound) ---
+async def test_enrich_caps_chunks_and_batches_embed():
+    library = InMemoryDocumentLibraryRepository()
+    chunks = InMemoryDocChunkStore(expected_dim=3)
+
+    class CountingEmbedder(FakeEmbedder):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batches = 0
+
+        async def embed(self, inputs):
+            self.batches += 1
+            return await super().embed(inputs)
+
+    embedder = CountingEmbedder()
+    # ~28-char paragraphs at document_chunk_chars=40 → one chunk each (>3 total).
+    md = "# T\n\n" + "\n\n".join(f"paragraph number {i:02d} text" for i in range(12))
+    cu = FakeCU(result=_succeeded(md))
+    ingestor = _make(
+        cu=cu,
+        embedder=embedder,
+        chunks=chunks,
+        library=library,
+        document_max_chunks=3,
+        document_embed_batch=1,
+    )
+
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"B"
+    )
+    await ingestor.enrich(
+        user_id="u1", document_id=stored.document.id, data=b"B", content_type="application/pdf"
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc.status == DocumentStatus.ready
+    assert doc.chunkCount == 3  # capped from >3
+    hits = await chunks.search("u1", [1.0, 1.0, 0.0], top_k=50)
+    assert len(hits) == 3
+    assert embedder.batches == 3  # batch size 1 → one embed round-trip per chunk

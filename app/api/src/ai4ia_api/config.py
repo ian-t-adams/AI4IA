@@ -230,6 +230,12 @@ class Settings(BaseSettings):
     # chunker; these shape the markdown chunker (chars per chunk + overlap).
     document_chunk_chars: int = 1200
     document_chunk_overlap: int = 150
+    # Safety ceiling on indexed chunks per document (0 = unlimited): bounds a
+    # pathological multi-MB parse from embedding/inserting an unbounded number of
+    # vectors in a single enrich. document_embed_batch caps how many chunks are
+    # embedded + inserted per round-trip.
+    document_max_chunks: int = 5000
+    document_embed_batch: int = 128
 
     # --- Memory (Phase 5): per-user semantic recall ---
     # Single source of truth: the store kind both selects the backend AND gates

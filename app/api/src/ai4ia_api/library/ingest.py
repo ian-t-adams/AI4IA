@@ -216,9 +216,13 @@ class DocumentIngestor:
 
         doc.status = DocumentStatus.analyzing
         doc.touch()
-        await self._safe_update(doc)
+        if not await self._safe_update(doc):
+            # Deleted in the (small) window before analysis began; nothing was
+            # persisted beyond the raw upload, which delete_document already purged.
+            return
 
         meter_status = "complete"
+        deleted_mid_flight = False
         try:
             result = await self._cu.analyze(
                 cu_analyzer_id, data, content_type or "application/octet-stream"
@@ -227,9 +231,15 @@ class DocumentIngestor:
                 raise RuntimeError(
                     f"content understanding status={result.status or 'unknown'}"
                 )
-            await self._persist_enrichment(user_id, doc, result.markdown)
-            doc.status = DocumentStatus.ready
-            doc.error = None
+            # The user may have deleted the document during the (potentially long)
+            # CU poll. Re-check before writing blob/vector side effects so enrich
+            # never resurrects content the delete already purged.
+            if not await self._still_present(user_id, document_id):
+                deleted_mid_flight = True
+            else:
+                await self._persist_enrichment(user_id, doc, result.markdown)
+                doc.status = DocumentStatus.ready
+                doc.error = None
         except Exception as exc:  # noqa: BLE001 - degrade, never propagate
             meter_status = "error"
             doc.status = DocumentStatus.failed
@@ -238,9 +248,20 @@ class DocumentIngestor:
                 "enrich failed user=%s id=%s: %s", user_id, document_id, exc, exc_info=True
             )
         finally:
-            doc.touch()
-            await self._safe_update(doc)
+            # Always meter the CU attempt (one synthetic op per enrich).
             await self._meter_cu(user_id, cu_analyzer_id, meter_status)
+            if deleted_mid_flight:
+                # Honor the delete: drop any artifacts and never re-create the
+                # manifest. purge is idempotent with delete_document's own purge.
+                await self.purge(user_id, document_id)
+                return
+            doc.touch()
+            # The terminal manifest write is the commit point. If the document was
+            # deleted between the re-check and here, update_document raises
+            # DocumentNotFoundError; we then roll back the just-written artifacts so
+            # the delete wins deterministically (no orphaned blob/vector chunks).
+            if not await self._safe_update(doc):
+                await self.purge(user_id, document_id)
 
     async def _persist_enrichment(
         self, user_id: str, doc: UserDocument, markdown: str
@@ -258,11 +279,16 @@ class DocumentIngestor:
             max_chars=self._settings.document_chunk_chars,
             overlap=self._settings.document_chunk_overlap,
         )
+        max_chunks = self._settings.document_max_chunks
+        if max_chunks and len(chunks) > max_chunks:
+            logger.info(
+                "enrich: capping chunks %d -> %d id=%s", len(chunks), max_chunks, doc.id
+            )
+            chunks = chunks[:max_chunks]
         if not chunks or self._embedder is None or self._chunks is None:
             doc.chunkCount = 0
             return
 
-        vectors = await self._embedder.embed([c.text for c in chunks])
         records = [
             DocChunkRecord(
                 user_id=user_id,
@@ -275,7 +301,13 @@ class DocumentIngestor:
             )
             for c in chunks
         ]
-        await self._chunks.add_many(records, vectors)
+        # Embed + index in batches so a large document doesn't build one giant embed
+        # request / vector insert.
+        batch = max(1, self._settings.document_embed_batch)
+        for start in range(0, len(records), batch):
+            window = records[start : start + batch]
+            vectors = await self._embedder.embed([r.content for r in window])
+            await self._chunks.add_many(window, vectors)
 
         sidecar = "\n".join(
             json.dumps(
@@ -295,11 +327,34 @@ class DocumentIngestor:
         doc.chunksPath = chunks_path
         doc.chunkCount = len(chunks)
 
-    async def _safe_update(self, doc: UserDocument) -> None:
+    async def _still_present(self, user_id: str, document_id: str) -> bool:
+        """True if the manifest still exists (and is owned by ``user_id``)."""
+        try:
+            await self._library.get_document(user_id, document_id)
+            return True
+        except DocumentNotFoundError:
+            return False
+
+    async def _safe_update(self, doc: UserDocument) -> bool:
+        """Persist the manifest during enrich.
+
+        Returns ``False`` only when the document was deleted mid-flight
+        (``update_document`` raised ``DocumentNotFoundError``) — the caller then
+        rolls back any artifacts so the delete wins. A transient error is logged
+        and returns ``True`` (best-effort; not a deletion, so no rollback).
+        """
         try:
             await self._library.update_document(doc)
+            return True
+        except DocumentNotFoundError:
+            logger.info(
+                "enrich: document deleted mid-flight id=%s; skipping manifest write",
+                doc.id,
+            )
+            return False
         except Exception:  # noqa: BLE001 - manifest write is best-effort in enrich
             logger.warning("enrich manifest update failed id=%s", doc.id, exc_info=True)
+            return True
 
     async def close(self) -> None:
         """Close owned IO resources (blob store, CU client, chunk store)."""
