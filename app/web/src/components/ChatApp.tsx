@@ -12,12 +12,14 @@ import { StudioPanel } from "./StudioPanel";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import { Composer } from "./Composer";
 import { UserMenu } from "./UserMenu";
+import { useVoiceLiveConfig } from "./VoiceLiveProvider";
 
 function pickDefaultModel(models: ModelEntry[]): string | null {
   return models.find((m) => m.category === "chat")?.id ?? models[0]?.id ?? null;
 }
 
 export function ChatApp() {
+  const voiceLiveConfig = useVoiceLiveConfig();
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -344,6 +346,15 @@ export function ChatApp() {
     return base;
   }, [messages, streaming, streamingText]);
 
+  // Live voice is offered only when the runtime flag is on AND the catalog exposes
+  // a realtime model (filtered from the same /api/models the picker uses). When it
+  // is off, the control is never rendered and nothing about the chat UI changes.
+  const realtimeModelId = useMemo(
+    () => models.find((m) => m.category === "realtime")?.id ?? null,
+    [models],
+  );
+  const voiceLiveEnabled = voiceLiveConfig.enabled && realtimeModelId !== null;
+
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
       <Sidebar
@@ -410,6 +421,9 @@ export function ChatApp() {
           onUpload={uploadDocument}
           onRemoveDocument={removeDocument}
           onError={setError}
+          voiceLiveEnabled={voiceLiveEnabled}
+          voiceLiveConfig={voiceLiveConfig}
+          voiceLiveModel={realtimeModelId}
         />
       </main>
 

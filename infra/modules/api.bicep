@@ -97,6 +97,15 @@ param adminSubjects string = ''
 @secure()
 param adminApiSecret string = ''
 
+@description('Enable the Voice Live (Phase 10) realtime WebSocket relay. Default OFF (the /api/voice/live route refuses, so the app is inert).')
+param realtimeEnabled bool = false
+
+@description('Azure OpenAI realtime api-version the relay uses for the upstream WebSocket.')
+param realtimeApiVersion string = '2025-04-01-preview'
+
+@description('Comma-separated browser Origin allowlist for the live-voice relay handshake. Required (non-empty) when realtimeEnabled in a deployed env (the relay fails closed otherwise).')
+param realtimeAllowedOrigins string = ''
+
 var entraEnv = authProvider == 'entra' ? [
   {
     name: 'AI4IA_ENTRA_TENANT_ID'
@@ -178,6 +187,26 @@ var memoryEnv = concat([
   }
 ], pgEnv, mem0Env)
 
+// Voice Live (Phase 10) realtime relay settings. Default OFF: with the flag unset
+// the /api/voice/live WebSocket refuses immediately, so the relay is inert and the
+// app's default behavior is unchanged. When enabled, the relay reuses the same
+// model-gateway URL + credential as chat for the upstream realtime socket; only
+// the flag, api-version, and Origin allowlist are realtime-specific env.
+var realtimeEnv = realtimeEnabled ? [
+  {
+    name: 'AI4IA_REALTIME_ENABLED'
+    value: 'true'
+  }
+  {
+    name: 'AI4IA_REALTIME_API_VERSION'
+    value: realtimeApiVersion
+  }
+  {
+    name: 'AI4IA_REALTIME_ALLOWED_ORIGINS'
+    value: realtimeAllowedOrigins
+  }
+] : []
+
 var apiEnv = concat([
   {
     name: 'PORT'
@@ -223,7 +252,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: 'ca-api-${environmentName}'

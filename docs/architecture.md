@@ -21,7 +21,18 @@ flowchart TB
   MAF --> Bing[Bing Grounding]
   API --> Voice[Foundry Voice Live]
   API --> CU[Content Understanding]
+  User -.->|Voice Live WS · Phase 10<br/>default off| API
 ```
+
+> **Voice Live (Phase 10, default OFF).** Real-time speech-to-speech uses a
+> WebSocket the browser opens **directly to the API's external ingress**
+> (`/api/voice/live`) — the dashed edge above — because the Next.js HTTP proxy
+> can't proxy WebSockets. The API relay still enforces all governance (auth via a
+> WS subprotocol, the entitlement gate, usage metering, and `Origin` validation)
+> and opens the upstream realtime socket through the **same model gateway** as
+> every other model call, so the "all model traffic through the gateway" principle
+> holds. When the feature flag is off, the route refuses and no live-voice UI is
+> shown — the default behavior is unchanged.
 
 ## Core principles
 1. **Model gateway from day one.** The backend never calls Foundry models directly — every

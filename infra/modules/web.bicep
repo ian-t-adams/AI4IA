@@ -62,6 +62,12 @@ param entraTenantId string = ''
 @description('API scope the SPA requests (e.g. api://<api-app-id>/.default; required when authProvider == entra).')
 param entraApiScope string = ''
 
+@description('Enable the Voice Live (Phase 10) browser control. Default OFF (no live-voice UI is surfaced).')
+param voiceLiveEnabled bool = false
+
+@description('Public URL of the API external ingress the browser opens the live-voice WebSocket against (converted to wss in the browser). Required when voiceLiveEnabled.')
+param apiPublicUrl string = ''
+
 // Entra sign-in is only wired when the provider is entra AND all three values are
 // present; otherwise the web stays in dev mode (matching the frontend's fail-open
 // default), so a partial config can never half-enable the sign-in gate.
@@ -95,6 +101,22 @@ var devUserEnv = injectDevUser ? [
   }
 ] : []
 
+// Voice Live (Phase 10) is only surfaced to the browser when the flag is on AND a
+// public API URL is supplied (the browser opens the WS directly against the API
+// ingress). Both are emitted together or not at all, so a half-config can never
+// half-enable the live-voice control. Default OFF -> no env, no UI, no change.
+var voiceLiveReady = voiceLiveEnabled && !empty(apiPublicUrl)
+var voiceLiveEnv = voiceLiveReady ? [
+  {
+    name: 'VOICE_LIVE_ENABLED'
+    value: 'true'
+  }
+  {
+    name: 'API_PUBLIC_URL'
+    value: apiPublicUrl
+  }
+] : []
+
 var webEnv = concat([
   {
     name: 'PORT'
@@ -108,7 +130,7 @@ var webEnv = concat([
     name: 'API_BASE_URL'
     value: apiBaseUrl
   }
-], entraEnv, devUserEnv)
+], entraEnv, devUserEnv, voiceLiveEnv)
 
 // Custom-domain binding. The Azure-managed cert lives at the environment scope and
 // is referenced from the app ingress so `azd provision` keeps the binding durable

@@ -104,6 +104,36 @@ class Settings(BaseSettings):
     # api-version also serves whisper transcription, so both share one version.
     gateway_audio_api_version: str = "2025-03-01-preview"
     gateway_audio_timeout_seconds: float = 120.0
+    # --- Voice Live (Phase 10): real-time speech-to-speech relay ---
+    # Feature-flagged and default-OFF: with realtime_enabled=False the
+    # ``/api/voice/live`` WebSocket refuses (closes immediately), so the app's
+    # default behavior is byte-for-byte unchanged. When enabled, the browser
+    # connects to the API's external ingress (the Next.js HTTP proxy can't proxy
+    # WebSockets) and the relay opens the upstream realtime socket through the
+    # same model gateway as chat — the browser never sees the deployment or the
+    # gateway credential. Governance (auth + entitlement gate + metering +
+    # Origin/auth validation) is enforced in the relay.
+    realtime_enabled: bool = False
+    # Azure OpenAI realtime preview api-version. The preview surface is reached at
+    # ``{base}/realtime?api-version=<v>&deployment=<dep>`` (the GA surface uses
+    # ``/v1/realtime?model=`` instead); 2025-04-01-preview is verified against the
+    # deployed gpt-realtime (version 2025-08-28) on Microsoft Learn.
+    realtime_api_version: str = "2025-04-01-preview"
+    # Upstream base for the realtime WebSocket. Defaults to the model gateway URL
+    # (which already carries the ``/openai`` suffix), so realtime rides the same
+    # governed path as chat. http(s) is converted to ws(s) at connect time.
+    realtime_base_url: str | None = None
+    # Upstream connect/handshake timeout (seconds).
+    realtime_timeout_seconds: float = 30.0
+    # Optional hard clamp on a single live session's total duration (seconds);
+    # 0 disables the clamp. Defense against an abandoned/runaway socket holding a
+    # metered session open indefinitely.
+    realtime_max_session_seconds: float = 0.0
+    # Comma-separated browser Origin allowlist for the relay handshake. WS
+    # handshakes are not CORS-preflighted, so the relay validates Origin itself.
+    # Empty reflects (allows any) ONLY in the local env; in any deployed env an
+    # empty allowlist rejects every Origin (fail-closed).
+    realtime_allowed_origins: str | None = None
     # Override the chat-completions path template (placeholders: {deployment}).
     # When unset, a sensible default is derived from the provider style.
     gateway_chat_path: str | None = None
@@ -235,6 +265,16 @@ class Settings(BaseSettings):
     def dev_auth_permitted(self) -> bool:
         return self.env == Environment.local or self.allow_dev_auth
 
+    @property
+    def realtime_effective_base_url(self) -> str:
+        """Upstream base for the realtime WS (falls back to the model gateway)."""
+        return self.realtime_base_url or self.model_gateway_url
+
+    @property
+    def realtime_allowed_origin_list(self) -> list[str]:
+        raw = self.realtime_allowed_origins or ""
+        return [o.strip() for o in raw.split(",") if o.strip()]
+
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
         if self.auth_provider == AuthProviderKind.dev and not self.dev_auth_permitted:
@@ -283,6 +323,19 @@ class Settings(BaseSettings):
                 "Entitlement enforcement requires usage metering. Set "
                 "AI4IA_USAGE_METERING_ENABLED=true, or disable enforcement with "
                 "AI4IA_ENTITLEMENTS_ENABLED=false."
+            )
+        if self.realtime_enabled and self.env != Environment.local and (
+            not self.realtime_allowed_origin_list
+        ):
+            # An empty Origin allowlist reflects (allows any) only in local. In a
+            # deployed env that means the relay would reject every browser, so a
+            # realtime-enabled deploy with no allowlist is a misconfiguration —
+            # fail closed at startup rather than ship a feature that 1008s every
+            # client.
+            raise RuntimeError(
+                "Voice Live requires an Origin allowlist outside local. Set "
+                "AI4IA_REALTIME_ALLOWED_ORIGINS to the web origin(s), or disable "
+                "the feature with AI4IA_REALTIME_ENABLED=false."
             )
 
 
