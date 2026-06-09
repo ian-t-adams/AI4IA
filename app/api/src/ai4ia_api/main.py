@@ -221,6 +221,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def _session_not_found(_request: Request, _exc: SessionNotFoundError):
         return JSONResponse(status_code=404, content={"detail": "Session not found"})
 
+    # Map unhandled Azure data-plane failures (Cosmos/Blob connectivity, throttling,
+    # 5xx, or managed-identity token-acquisition errors) to 503 instead of a raw 500.
+    # Repos translate expected not-found codes before they reach here, so anything that
+    # bubbles is a genuine availability problem. With this, a managed-store outage (e.g.
+    # the Cosmos public-network drift from a tenant policy remediation) degrades
+    # gracefully: the static model catalog + chat stay usable and the web client
+    # (Promise.allSettled) shows a scoped "temporarily unavailable" notice rather than
+    # blanking the whole app. Imported defensively so the app still builds where the
+    # Azure SDKs are absent (the repos themselves import azure lazily for the same reason).
+    try:
+        from azure.core.exceptions import AzureError, HttpResponseError
+    except Exception:  # noqa: BLE001 - azure-core is a hard dep in the deployed image
+        AzureError = HttpResponseError = None  # type: ignore[assignment,misc]
+
+    if AzureError is not None:
+
+        @app.exception_handler(AzureError)
+        async def _azure_unavailable(_request: Request, exc: AzureError):
+            # Preserve 500 semantics for an unexpected non-transient 4xx (a client/code
+            # bug); treat connectivity, auth, throttling (408/429) and 5xx as transient.
+            status_code = getattr(exc, "status_code", None)
+            if (
+                HttpResponseError is not None
+                and isinstance(exc, HttpResponseError)
+                and isinstance(status_code, int)
+                and 400 <= status_code < 500
+                and status_code not in (408, 429)
+            ):
+                logger.exception("Unexpected Azure client error")
+                return JSONResponse(
+                    status_code=500, content={"detail": "Internal server error"}
+                )
+            logger.warning("Azure data-plane unavailable -> 503 (%s)", type(exc).__name__)
+            return JSONResponse(
+                status_code=503, content={"detail": "Service temporarily unavailable"}
+            )
+
     app.include_router(health_router.router)
     app.include_router(catalog_router.router)
     app.include_router(agents_router.router)
