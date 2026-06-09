@@ -89,3 +89,34 @@ def test_cu_analyzer_for_modality_maps_each_class():
     assert s.cu_analyzer_for_modality("video") == s.cu_video_analyzer
     # Unknown modality falls back to the document analyzer.
     assert s.cu_analyzer_for_modality("other") == s.cu_document_analyzer
+
+
+def test_cu_api_key_mode_without_key_is_rejected():
+    # api_key auth with no key would silently send no auth header and fail at the
+    # first CU call. Fail loud at startup instead — in any env once CU is wired.
+    with pytest.raises(RuntimeError, match="AI4IA_CU_API_KEY"):
+        _settings(
+            document_understanding_enabled=True,
+            cu_base_url="https://cu.example/",
+            cu_auth_mode="api_key",
+            cu_api_key=None,
+        ).validate_runtime()
+
+
+def test_cu_api_key_mode_with_key_is_allowed():
+    _settings(
+        document_understanding_enabled=True,
+        cu_base_url="https://cu.example/",
+        cu_auth_mode="api_key",
+        cu_api_key="secret",
+    ).validate_runtime()  # no raise
+
+
+def test_cu_bearer_mode_without_key_is_allowed():
+    # bearer mode uses managed identity when no static key is set — valid.
+    _settings(
+        document_understanding_enabled=True,
+        cu_base_url="https://cu.example/",
+        cu_auth_mode="bearer",
+        cu_api_key=None,
+    ).validate_runtime()  # no raise

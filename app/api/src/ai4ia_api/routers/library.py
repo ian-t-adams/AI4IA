@@ -17,7 +17,6 @@ from datetime import datetime
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -145,7 +144,6 @@ async def list_documents(
 )
 async def upload_document(
     request: Request,
-    background: BackgroundTasks,
     file: UploadFile = File(...),
     analyzerId: str | None = Form(default=None),
     user: AuthenticatedUser = Depends(get_current_user),
@@ -153,9 +151,10 @@ async def upload_document(
     """Ingest an upload into the user's library.
 
     Persists the bytes + creates the manifest synchronously (status ``stored``),
-    then schedules Content Understanding enrichment as a background task. Identical
-    re-uploads (same bytes + analyzer) return the existing manifest without
-    re-cracking. Flag-gated: 404 when document understanding is disabled.
+    then schedules Content Understanding enrichment as a tracked background task
+    (so a subsequent delete can cancel an in-flight crack). Identical re-uploads
+    (same bytes + analyzer) return the existing manifest without re-cracking.
+    Flag-gated: 404 when document understanding is disabled.
     """
     repo = _library(request)
     ingestor = _ingestor(request)
@@ -221,10 +220,10 @@ async def upload_document(
     )
     doc = result.document
     # Schedule CU enrichment only for a freshly stored document (a dedupe hit is
-    # already terminal). enrich() is a no-op when CU is not configured.
+    # already terminal). schedule_enrich is a no-op when CU is not configured and
+    # tracks the task so a delete can cancel it mid-crack.
     if not result.deduped and doc.status == DocumentStatus.stored:
-        background.add_task(
-            ingestor.enrich,
+        ingestor.schedule_enrich(
             user_id=uid,
             document_id=doc.id,
             data=data,
@@ -270,10 +269,13 @@ async def delete_document(
         # Never reveal another user's document via delete.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     await repo.delete_document(uid, document_id)
-    # Best-effort purge of blob artifacts + indexed chunks (manifest delete is the
-    # source of truth; storage cleanup never blocks or fails the response).
+    # Cancel any in-flight enrich for this document, then best-effort purge of
+    # blob artifacts + indexed chunks. The manifest delete is the source of truth;
+    # cancelling first shrinks the window where a racing crack could re-index, and
+    # the enrich path itself re-checks existence so a late finish can't resurrect.
     ingestor = getattr(request.app.state, "document_ingestor", None)
     if ingestor is not None:
+        await ingestor.cancel_enrich(uid, document_id)
         await ingestor.purge(uid, document_id)
 
 

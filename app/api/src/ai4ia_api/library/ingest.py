@@ -24,6 +24,7 @@ orchestrator is unit-tested end to end without network or Azure SDKs.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -128,10 +129,68 @@ class DocumentIngestor:
         self._cu = cu_client
         self._embedder = embedder
         self._chunks = chunk_store
+        # In-flight enrich tasks keyed by (user_id, document_id) so a delete can
+        # cancel the racing enrich and shutdown can drain them. Bounds the
+        # delete-during-enrich resurrection window to near-zero; correctness does
+        # not depend on cancellation timing (the manifest re-check + non-
+        # resurrecting terminal write make a late finish lose to the delete).
+        self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._closed = False
 
     @property
     def cu_enabled(self) -> bool:
         return self._cu is not None
+
+    def schedule_enrich(
+        self,
+        *,
+        user_id: str,
+        document_id: str,
+        data: bytes,
+        content_type: str,
+    ) -> None:
+        """Fire-and-forget :meth:`enrich`, tracked so delete/shutdown can cancel.
+
+        A no-op when CU is not configured (the document simply settles at
+        ``stored``) or after :meth:`close`. Replaces an untracked
+        ``BackgroundTasks.add_task`` so an in-flight crack can be cancelled the
+        moment the user deletes the document.
+        """
+        if self._cu is None or self._closed:
+            return
+        key = (user_id, document_id)
+        existing = self._tasks.get(key)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            self.enrich(
+                user_id=user_id,
+                document_id=document_id,
+                data=data,
+                content_type=content_type,
+            )
+        )
+        self._tasks[key] = task
+
+        def _done(t: asyncio.Task[None], _key=key) -> None:
+            if self._tasks.get(_key) is t:
+                self._tasks.pop(_key, None)
+            if not t.cancelled():
+                # enrich() never raises, but retrieve any exception so it is not
+                # reported as "never retrieved".
+                exc = t.exception()
+                if exc is not None:  # pragma: no cover - defensive
+                    logger.warning("enrich task errored: %s", exc, exc_info=exc)
+
+        task.add_done_callback(_done)
+
+    async def cancel_enrich(self, user_id: str, document_id: str) -> None:
+        """Cancel and drain the in-flight enrich for a document, if any."""
+        task = self._tasks.pop((user_id, document_id), None)
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     async def ingest(
         self,
@@ -244,6 +303,11 @@ class DocumentIngestor:
             meter_status = "error"
             doc.status = DocumentStatus.failed
             doc.error = str(exc)[:500]
+            # _persist_enrichment may have indexed some chunk batches before the
+            # failure (e.g. an embed error on a later batch). Drop the searchable
+            # vectors so a failed document is never retrievable, while keeping the
+            # raw upload + quick-text summary for the user to see and re-run.
+            await self._purge_chunks(user_id, document_id)
             logger.warning(
                 "enrich failed user=%s id=%s: %s", user_id, document_id, exc, exc_info=True
             )
@@ -357,7 +421,15 @@ class DocumentIngestor:
             return True
 
     async def close(self) -> None:
-        """Close owned IO resources (blob store, CU client, chunk store)."""
+        """Cancel in-flight enrich tasks, then close owned IO resources."""
+        self._closed = True
+        tasks = list(self._tasks.values())
+        self._tasks.clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         for resource in (self._blob, self._cu, self._chunks):
             close = getattr(resource, "close", None) if resource is not None else None
             if close is None:
@@ -366,6 +438,61 @@ class DocumentIngestor:
                 await close()
             except Exception:  # noqa: BLE001 - shutdown must not surface
                 logger.warning("ingestor resource close failed", exc_info=True)
+
+    async def recover_interrupted(self) -> int:
+        """Fail out documents left mid-analysis by an interrupted worker.
+
+        An enrich task that was cancelled on shutdown (or lost to a crash) leaves
+        its manifest stuck at ``analyzing`` with no task to resume it. Run once at
+        startup: flip every such document to ``failed`` with a recoverable message
+        so it is not a permanent zombie. Best-effort and cross-user (startup only,
+        not a hot path). Returns the number of documents swept.
+        """
+        try:
+            stuck = await self._library.list_by_status([DocumentStatus.analyzing])
+        except Exception:  # noqa: BLE001 - startup sweep must never block boot
+            logger.warning("recover_interrupted: list failed", exc_info=True)
+            return 0
+        swept = 0
+        for doc in stuck:
+            doc.status = DocumentStatus.failed
+            doc.error = "Analysis was interrupted (service restart). Re-upload to retry."
+            doc.touch()
+            try:
+                await self._library.update_document(doc)
+            except DocumentNotFoundError:
+                continue
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "recover_interrupted: update failed id=%s", doc.id, exc_info=True
+                )
+                continue
+            # An enrich cancelled inside _persist_enrichment (shutdown/crash) may
+            # have written partial blob/pgvector artifacts before dying, with the
+            # manifest left at ``analyzing``. Now that it is ``failed``, purge those
+            # so a failed document contributes nothing to retrieval (no orphan
+            # chunks under a failed manifest). Best-effort + idempotent.
+            await self.purge(doc.userId, doc.id)
+            swept += 1
+        if swept:
+            logger.info("recover_interrupted: swept %d stuck document(s)", swept)
+        return swept
+
+
+    async def _purge_chunks(self, user_id: str, document_id: str) -> None:
+        """Drop only the document's pgvector chunk index (best-effort, idempotent).
+
+        Unlike :meth:`purge`, the raw upload + parsed artifacts are kept — used when
+        a document settles ``failed`` after a clean enrich error so the user retains
+        their upload + quick-text summary, while the searchable vectors (the only
+        retrieval-reachable surface) are removed.
+        """
+        if self._chunks is None:
+            return
+        try:
+            await self._chunks.delete_document(user_id, document_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("chunk purge failed id=%s", document_id, exc_info=True)
 
     async def purge(self, user_id: str, document_id: str) -> None:
         """Best-effort removal of a document's blob artifacts + indexed chunks.

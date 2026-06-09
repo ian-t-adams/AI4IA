@@ -6,9 +6,16 @@ implementation so behavior is identical across stores.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 
 from .hashing import dedupe_key
-from .models import BUILTIN_ANALYZER_IDS, BUILTIN_ANALYZERS, Analyzer, UserDocument
+from .models import (
+    BUILTIN_ANALYZER_IDS,
+    BUILTIN_ANALYZERS,
+    Analyzer,
+    DocumentStatus,
+    UserDocument,
+)
 from .repository import (
     AnalyzerConflictError,
     AnalyzerNotFoundError,
@@ -39,6 +46,18 @@ class InMemoryDocumentLibraryRepository:
     async def list_documents(self, user_id: str) -> list[UserDocument]:
         docs = list(self._docs.get(user_id, {}).values())
         return sorted(docs, key=lambda d: d.createdAt, reverse=True)
+
+    async def list_by_status(
+        self, statuses: Sequence[DocumentStatus]
+    ) -> list[UserDocument]:
+        wanted = set(statuses)
+        async with self._lock:
+            return [
+                doc
+                for bucket in self._docs.values()
+                for doc in bucket.values()
+                if doc.status in wanted
+            ]
 
     async def update_document(self, document: UserDocument) -> UserDocument:
         async with self._lock:

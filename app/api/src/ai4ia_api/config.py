@@ -436,6 +436,20 @@ class Settings(BaseSettings):
                 "AI4IA_DOCUMENT_BLOB_ACCOUNT_URL outside local, or disable it with "
                 "AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false."
             )
+        if (
+            self.document_understanding_enabled
+            and self.cu_base_url
+            and self.cu_auth_mode == GatewayAuthMode.api_key
+            and not self.cu_api_key
+        ):
+            # api_key mode with no key would silently send no auth header and only
+            # fail at the first CU call (every upload degrades to ``failed``). Fail
+            # loud at startup instead. Runs in any env once CU is configured.
+            raise RuntimeError(
+                "AI4IA_CU_API_KEY is required when AI4IA_CU_AUTH_MODE=api_key. "
+                "Set the key, switch to bearer (managed identity), or disable the "
+                "feature with AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false."
+            )
 
 
 @lru_cache

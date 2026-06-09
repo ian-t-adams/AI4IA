@@ -132,37 +132,51 @@ class ContentUnderstandingClient:
             return self._http, False
         return httpx.AsyncClient(timeout=self._timeout), True
 
+    async def _submit_binary(
+        self,
+        client: httpx.AsyncClient,
+        analyzer_id: str,
+        data: bytes,
+        content_type: str,
+    ) -> str:
+        url = self.submit_url(analyzer_id)
+        headers = await self._auth_headers(content_type or "application/octet-stream")
+        resp = await client.post(url, headers=headers, content=data)
+        if resp.status_code >= 400:
+            raise ContentUnderstandingError(resp.status_code, resp.text)
+        op = resp.headers.get("operation-location") or resp.headers.get(
+            "Operation-Location"
+        )
+        if not op:
+            raise ContentUnderstandingError(
+                resp.status_code, "response missing Operation-Location header"
+            )
+        return op
+
+    async def _poll_once(
+        self, client: httpx.AsyncClient, operation_url: str
+    ) -> dict[str, Any]:
+        headers = await self._auth_headers()
+        resp = await client.get(operation_url, headers=headers)
+        if resp.status_code >= 400:
+            raise ContentUnderstandingError(resp.status_code, resp.text)
+        return resp.json()
+
     async def submit_binary(
         self, analyzer_id: str, data: bytes, content_type: str
     ) -> str:
         """POST the bytes and return the ``Operation-Location`` poll URL."""
-        url = self.submit_url(analyzer_id)
-        headers = await self._auth_headers(content_type or "application/octet-stream")
         client, owned = self._client()
         try:
-            resp = await client.post(url, headers=headers, content=data)
-            if resp.status_code >= 400:
-                raise ContentUnderstandingError(resp.status_code, resp.text)
-            op = resp.headers.get("operation-location") or resp.headers.get(
-                "Operation-Location"
-            )
-            if not op:
-                raise ContentUnderstandingError(
-                    resp.status_code, "response missing Operation-Location header"
-                )
-            return op
+            return await self._submit_binary(client, analyzer_id, data, content_type)
         finally:
             if owned:
                 await client.aclose()
 
     async def poll_once(self, operation_url: str) -> dict[str, Any]:
-        headers = await self._auth_headers()
         client, owned = self._client()
         try:
-            resp = await client.get(operation_url, headers=headers)
-            if resp.status_code >= 400:
-                raise ContentUnderstandingError(resp.status_code, resp.text)
-            return resp.json()
+            return await self._poll_once(client, operation_url)
         finally:
             if owned:
                 await client.aclose()
@@ -178,20 +192,28 @@ class ContentUnderstandingClient:
         """Submit + poll until the operation reaches a terminal state.
 
         Raises :class:`ContentUnderstandingError` on an upstream error or if the
-        poll budget (``cu_max_poll_seconds``) is exhausted.
+        poll budget (``cu_max_poll_seconds``) is exhausted. One ``httpx`` client
+        (and TLS connection) is reused across the submit + every poll.
         """
-        operation_url = await self.submit_binary(analyzer_id, data, content_type)
-        deadline = time.monotonic() + self._max_poll
-        while True:
-            body = await self.poll_once(operation_url)
-            status = str(body.get("status", "")).lower()
-            if status in TERMINAL_STATES:
-                return parse_result(body)
-            if time.monotonic() >= deadline:
-                raise ContentUnderstandingError(
-                    408, "content understanding analyze timed out"
-                )
-            await sleep(self._poll_interval)
+        client, owned = self._client()
+        try:
+            operation_url = await self._submit_binary(
+                client, analyzer_id, data, content_type
+            )
+            deadline = time.monotonic() + self._max_poll
+            while True:
+                body = await self._poll_once(client, operation_url)
+                status = str(body.get("status", "")).lower()
+                if status in TERMINAL_STATES:
+                    return parse_result(body)
+                if time.monotonic() >= deadline:
+                    raise ContentUnderstandingError(
+                        408, "content understanding analyze timed out"
+                    )
+                await sleep(self._poll_interval)
+        finally:
+            if owned:
+                await client.aclose()
 
     async def close(self) -> None:
         if self._owns_token_provider and self._token_provider is not None:

@@ -1,7 +1,9 @@
 """Cosmos repo parity (Phase 11A/11B): ``update_document`` must raise on a
-missing or cross-user id rather than silently create/resurrect it via
-``upsert_item`` — matching the in-memory repo contract that the 11B ingest worker
-relies on when driving status transitions (stored -> ready/failed).
+missing or cross-user id rather than silently create/resurrect it — matching the
+in-memory repo contract that the 11B ingest worker relies on when driving status
+transitions (stored -> ready/failed). The write is an ETag-conditional
+``replace_item`` so a delete that lands between the read and the write also loses
+(no resurrection), closing the delete-during-enrich TOCTOU.
 
 The Cosmos client + AAD credential are constructed in ``__init__``; we bypass it
 with ``object.__new__`` and inject a minimal async fake container so the parity
@@ -10,9 +12,13 @@ logic is exercised without any live network or managed identity.
 from __future__ import annotations
 
 import pytest
-from azure.cosmos.exceptions import CosmosResourceNotFoundError
+from azure.cosmos.exceptions import (
+    CosmosAccessConditionFailedError,
+    CosmosResourceNotFoundError,
+)
 
 from ai4ia_api.library.cosmos_repo import CosmosDocumentLibraryRepository
+from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
 from ai4ia_api.library.models import UserDocument
 from ai4ia_api.library.repository import DocumentNotFoundError
 
@@ -22,15 +28,20 @@ class _FakeDocs:
 
     def __init__(self, existing: dict | None = None) -> None:
         self._existing = existing
-        self.upserts: list[dict] = []
+        self.replaces: list[dict] = []
+        # When set, replace_item raises this (simulating a delete or ETag race
+        # between the read and the conditional write).
+        self.replace_error: Exception | None = None
 
     async def read_item(self, *, item: str, partition_key: str):
         if self._existing is None:
             raise CosmosResourceNotFoundError(message="missing")
         return self._existing
 
-    async def upsert_item(self, body):
-        self.upserts.append(body)
+    async def replace_item(self, *, item, body, etag=None, match_condition=None):
+        if self.replace_error is not None:
+            raise self.replace_error
+        self.replaces.append(body)
         return body
 
 
@@ -52,23 +63,50 @@ async def test_update_missing_id_raises_and_does_not_create():
     doc = _doc()
     with pytest.raises(DocumentNotFoundError):
         await repo.update_document(doc)
-    assert fake.upserts == []  # never resurrected via upsert
+    assert fake.replaces == []  # never resurrected
 
 
 async def test_update_cross_user_raises_and_does_not_write():
     doc = _doc(user="alice")
     # Stored item is owned by someone else (defense in depth beyond the PK).
-    repo, fake = _repo(existing={"id": doc.id, "userId": "mallory"})
+    repo, fake = _repo(existing={"id": doc.id, "userId": "mallory", "_etag": "e1"})
     with pytest.raises(DocumentNotFoundError):
         await repo.update_document(doc)
-    assert fake.upserts == []
+    assert fake.replaces == []
 
 
-async def test_update_existing_owned_succeeds():
+async def test_update_deleted_between_read_and_replace_raises():
+    # The read succeeds but the conditional replace 404s — a delete landed in the
+    # TOCTOU window. The repo must treat this as gone (raise), never resurrect.
+    doc = _doc(user="alice")
+    repo, fake = _repo(existing={"id": doc.id, "userId": "alice", "_etag": "e1"})
+    fake.replace_error = CosmosResourceNotFoundError(message="deleted")
+    with pytest.raises(DocumentNotFoundError):
+        await repo.update_document(doc)
+
+
+async def test_update_etag_conflict_raises():
+    # The item was modified (ETag moved) between read and replace — precondition
+    # failed. Treat as gone for enrich's purposes (do not clobber newer state).
+    doc = _doc(user="alice")
+    repo, fake = _repo(existing={"id": doc.id, "userId": "alice", "_etag": "e1"})
+    fake.replace_error = CosmosAccessConditionFailedError(message="etag")
+    with pytest.raises(DocumentNotFoundError):
+        await repo.update_document(doc)
+
+
+async def test_update_existing_owned_succeeds_via_replace():
     doc = _doc(user="alice", summary="before")
-    repo, fake = _repo(existing={"id": doc.id, "userId": "alice"})
+    repo, fake = _repo(existing={"id": doc.id, "userId": "alice", "_etag": "e1"})
     doc.summary = "after"
     saved = await repo.update_document(doc)
     assert saved.summary == "after"
-    assert len(fake.upserts) == 1
-    assert fake.upserts[0]["userId"] == "alice"
+    assert len(fake.replaces) == 1
+    assert fake.replaces[0]["userId"] == "alice"
+
+
+async def test_in_memory_update_missing_id_raises():
+    # The other half of the parity contract, asserted directly.
+    repo = InMemoryDocumentLibraryRepository()
+    with pytest.raises(DocumentNotFoundError):
+        await repo.update_document(_doc(user="alice"))
