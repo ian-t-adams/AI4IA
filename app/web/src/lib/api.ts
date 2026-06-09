@@ -17,6 +17,7 @@ import type {
   WorkflowRunResult,
   WorkflowUpdate,
 } from "./types";
+import type { LibraryAnalyzer, LibraryDocument } from "./library";
 import { apiFetch } from "./auth";
 
 async function jsonOrThrow<T>(resp: Response): Promise<T> {
@@ -283,6 +284,43 @@ export async function deleteDocument(
   if (!resp.ok && resp.status !== 204) {
     throw new Error(`${resp.status}: failed to delete document`);
   }
+}
+
+// --- Document library (Phase 11B-2): the user's cross-session library. These go
+// through the same Next HTTP proxy as the rest of the API; they 404 when the
+// feature is disabled (the UI is hidden in that case, so they are never called).
+
+export async function listLibraryDocuments(): Promise<LibraryDocument[]> {
+  return jsonOrThrow(
+    await apiFetch("/api/library/documents", { cache: "no-store" }),
+  );
+}
+
+export async function uploadLibraryDocument(
+  file: File,
+  analyzerId?: string | null,
+): Promise<LibraryDocument> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  if (analyzerId) form.append("analyzerId", analyzerId);
+  return jsonOrThrow(
+    await apiFetch("/api/library/documents", { method: "POST", body: form }),
+  );
+}
+
+export async function deleteLibraryDocument(documentId: string): Promise<void> {
+  const resp = await apiFetch(`/api/library/documents/${documentId}`, {
+    method: "DELETE",
+  });
+  if (!resp.ok && resp.status !== 204) {
+    throw new Error(`${resp.status}: failed to delete document`);
+  }
+}
+
+export async function listLibraryAnalyzers(): Promise<LibraryAnalyzer[]> {
+  return jsonOrThrow(
+    await apiFetch("/api/library/analyzers", { cache: "no-store" }),
+  );
 }
 
 export interface StreamHandlers {

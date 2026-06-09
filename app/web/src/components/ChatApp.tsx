@@ -9,10 +9,12 @@ import { ParamControls } from "./ParamControls";
 import { SystemPromptEditor } from "./SystemPromptEditor";
 import { SettingsPanel } from "./SettingsPanel";
 import { StudioPanel } from "./StudioPanel";
+import { LibraryPanel } from "./LibraryPanel";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import { Composer } from "./Composer";
 import { UserMenu } from "./UserMenu";
 import { useVoiceLiveConfig } from "./VoiceLiveProvider";
+import { useLibraryConfig } from "./LibraryProvider";
 
 function pickDefaultModel(models: ModelEntry[]): string | null {
   return models.find((m) => m.category === "chat")?.id ?? models[0]?.id ?? null;
@@ -20,6 +22,7 @@ function pickDefaultModel(models: ModelEntry[]): string | null {
 
 export function ChatApp() {
   const voiceLiveConfig = useVoiceLiveConfig();
+  const libraryConfig = useLibraryConfig();
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -41,6 +44,7 @@ export function ChatApp() {
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
 
   const abortRef = useRef<(() => void) | null>(null);
   // Synchronous in-flight flag so guards work before React state settles.
@@ -355,6 +359,10 @@ export function ChatApp() {
   );
   const voiceLiveEnabled = voiceLiveConfig.enabled && realtimeModelId !== null;
 
+  // The document library is offered only when its runtime flag is on. When off,
+  // the sidebar control is never rendered and nothing about the chat changes.
+  const libraryEnabled = libraryConfig.enabled;
+
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
       <Sidebar
@@ -365,6 +373,7 @@ export function ChatApp() {
         onDelete={deleteSession}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenStudio={() => setStudioOpen(true)}
+        onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
         disabled={streaming}
       />
 
@@ -457,6 +466,9 @@ export function ChatApp() {
           onRun={openWorkflowRun}
           onClose={() => setStudioOpen(false)}
         />
+      )}
+      {libraryOpen && libraryEnabled && (
+        <LibraryPanel onClose={() => setLibraryOpen(false)} />
       )}
     </div>
   );

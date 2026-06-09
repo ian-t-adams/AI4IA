@@ -68,6 +68,9 @@ param voiceLiveEnabled bool = false
 @description('Public URL of the API external ingress the browser opens the live-voice WebSocket against (converted to wss in the browser). Required when voiceLiveEnabled.')
 param apiPublicUrl string = ''
 
+@description('Enable the document-library (Phase 11B-2) browser UI. Default OFF (no library control is surfaced).')
+param documentLibraryEnabled bool = false
+
 // Entra sign-in is only wired when the provider is entra AND all three values are
 // present; otherwise the web stays in dev mode (matching the frontend's fail-open
 // default), so a partial config can never half-enable the sign-in gate.
@@ -117,6 +120,17 @@ var voiceLiveEnv = voiceLiveReady ? [
   }
 ] : []
 
+// The document library (Phase 11B-2) UI is only surfaced to the browser when the
+// flag is on. The library API itself goes through the same-origin Next proxy (no
+// public URL needed, unlike the live-voice WebSocket). Default OFF -> no env, no
+// control, no change to the chat UI.
+var documentLibraryEnv = documentLibraryEnabled ? [
+  {
+    name: 'DOCUMENT_LIBRARY_ENABLED'
+    value: 'true'
+  }
+] : []
+
 var webEnv = concat([
   {
     name: 'PORT'
@@ -130,7 +144,7 @@ var webEnv = concat([
     name: 'API_BASE_URL'
     value: apiBaseUrl
   }
-], entraEnv, devUserEnv, voiceLiveEnv)
+], entraEnv, devUserEnv, voiceLiveEnv, documentLibraryEnv)
 
 // Custom-domain binding. The Azure-managed cert lives at the environment scope and
 // is referenced from the app ingress so `azd provision` keeps the binding durable

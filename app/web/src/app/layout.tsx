@@ -3,8 +3,10 @@ import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { AuthProvider } from "@/components/AuthProvider";
 import { VoiceLiveProvider } from "@/components/VoiceLiveProvider";
+import { LibraryProvider } from "@/components/LibraryProvider";
 import { getAuthConfig } from "@/lib/authConfig";
 import { getVoiceLiveConfig } from "@/lib/voiceLiveConfig";
+import { getLibraryConfig } from "@/lib/libraryConfig";
 
 export const metadata: Metadata = {
   title: "AI4IA — Agentic Chat",
@@ -19,6 +21,7 @@ export default function RootLayout({
 }) {
   const authConfig = getAuthConfig();
   const voiceLiveConfig = getVoiceLiveConfig();
+  const libraryConfig = getLibraryConfig();
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
@@ -28,7 +31,9 @@ export default function RootLayout({
         <ThemeProvider>
           <AuthProvider config={authConfig}>
             <VoiceLiveProvider config={voiceLiveConfig}>
-              {children}
+              <LibraryProvider config={libraryConfig}>
+                {children}
+              </LibraryProvider>
             </VoiceLiveProvider>
           </AuthProvider>
         </ThemeProvider>

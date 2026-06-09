@@ -237,6 +237,17 @@ class Settings(BaseSettings):
     document_max_chunks: int = 5000
     document_embed_batch: int = 128
 
+    # --- Retrieval consumer (Phase 11B-2): how the ready library surfaces in chat.
+    # Tier 1 (always-injected summary cards) + Tier 2 (top-k RAG chunks) are bounded
+    # so the library context can never crowd out the conversation. Tier 3 is the
+    # fetch_document tool, whose single read is capped by document_fetch_max_chars.
+    # All retrieval is gated by document_understanding_enabled and only ever
+    # surfaces `ready` documents (a failed/analyzing doc can never contribute).
+    document_retrieval_top_k: int = 6
+    document_context_max_docs: int = 20
+    document_context_max_chars: int = 8000
+    document_fetch_max_chars: int = 12000
+
     # --- Memory (Phase 5): per-user semantic recall ---
     # Single source of truth: the store kind both selects the backend AND gates
     # the feature (``disabled`` == off). No separate enable flag, so the two can

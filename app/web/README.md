@@ -99,3 +99,29 @@ Both must be set together; a half-config stays disabled. In Azure,
 realtime relay (`AI4IA_REALTIME_*`). When enabling in a deployed env you must also
 set `realtimeAllowedOrigins` (the relay's Origin allowlist) or the relay fails
 closed.
+
+## Document library (Phase 11B-2) — cross-session document understanding
+
+A **feature-flagged, default-OFF** personal document library. When off (the
+default), no library control is rendered and nothing about the chat UI changes —
+the existing per-session chat attachments (Phase 7C) are untouched.
+
+When enabled, a **Document library** panel appears in the sidebar for uploading,
+watching ingest status, and deleting files in your cross-session library. Once a
+document reaches `ready`, the assistant can reference it in chat: a summary card is
+always available, the most relevant excerpts are retrieved per turn, and a
+`fetch_document` tool lets tool-enabled agents read more. Only `ready` documents
+ever contribute to chat; files that are still ingesting or failed never surface.
+The library API goes through the same-origin Next proxy (no public URL needed,
+unlike live voice).
+
+Like the auth config, the flag is read **server-side** (in `app/layout.tsx`,
+surfaced via `LibraryProvider` — never `NEXT_PUBLIC_*`):
+
+| Var | Purpose |
+| --- | --- |
+| `DOCUMENT_LIBRARY_ENABLED` | `false` (default) or `true` to surface the library control |
+
+In Azure, `infra/main.bicep` drives this from the same `documentUnderstanding`
+parameter that enables the API's ingest/retrieval path, so the UI flag and the
+backend feature turn on together. Default `false`.

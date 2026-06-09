@@ -22,6 +22,7 @@ from .blob_store import AzureBlobStore, BlobStore, InMemoryBlobStore
 from .doc_chunks import DocChunkStore, InMemoryDocChunkStore, PgDocChunkStore
 from .ingest import DocumentIngestor
 from .repository import DocumentLibraryRepository
+from .retrieval import DocumentRetrievalService
 
 logger = logging.getLogger(__name__)
 
@@ -84,4 +85,33 @@ def build_document_ingestor(
         cu_client=cu_client,
         embedder=embedder,
         chunk_store=chunk_store,
+    )
+
+
+def build_document_retrieval(
+    settings: Settings,
+    *,
+    ingestor: DocumentIngestor | None,
+) -> DocumentRetrievalService | None:
+    """Construct the retrieval consumer (Phase 11B-2) that surfaces a user's
+    *ready* library in chat.
+
+    Returns ``None`` when document understanding is disabled (no ingestor was
+    built) — the default-OFF, zero-regression posture: chat injects no library
+    context and the ``fetch_document`` tool is never advertised.
+
+    The service deliberately *reuses* the ingestor's backing IO (repository, blob
+    store, chunk store, embedder) rather than constructing its own. For the
+    in-memory stores used locally and in tests this is required for correctness
+    (a document indexed by the producer must be visible to the consumer); for the
+    Azure/Postgres stores it keeps a single source of IO truth.
+    """
+    if ingestor is None:
+        return None
+    return DocumentRetrievalService(
+        library=ingestor.library,
+        blob_store=ingestor.blob,
+        chunk_store=ingestor.chunks,
+        embedder=ingestor.embedder,
+        settings=settings,
     )
