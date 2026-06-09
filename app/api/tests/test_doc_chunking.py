@@ -1,8 +1,13 @@
 """Markdown chunker (Phase 11B): determinism, paragraph packing, heading
-grounding, overlap, and oversized-paragraph hard-wrap."""
+grounding, overlap, and oversized-paragraph hard-wrap. Phase 11D adds the
+time-grounded audio/video chunker and the timestamp formatter."""
 from __future__ import annotations
 
-from ai4ia_api.library.chunking import chunk_markdown
+from ai4ia_api.library.chunking import (
+    chunk_audiovisual,
+    chunk_markdown,
+    format_timestamp,
+)
 
 
 def test_empty_or_whitespace_yields_no_chunks():
@@ -67,3 +72,149 @@ def test_oversized_paragraph_is_hard_wrapped():
     assert len(chunks) == 3
     assert chunks[0].text == "x" * 10
     assert chunks[2].text == "x" * 5
+
+
+# --- format_timestamp (Phase 11D) ---
+def test_format_timestamp_minutes_seconds():
+    assert format_timestamp(0) == "0:00"
+    assert format_timestamp(2480) == "0:02"
+    assert format_timestamp(133000) == "2:13"
+
+
+def test_format_timestamp_hours():
+    assert format_timestamp(3_661_000) == "1:01:01"
+
+
+def test_format_timestamp_absent_or_invalid():
+    assert format_timestamp(None) == ""
+    assert format_timestamp(-5) == ""
+    assert format_timestamp("nope") == ""  # type: ignore[arg-type]
+
+
+# --- chunk_audiovisual (Phase 11D) ---
+def _phrase(text, start, end, speaker="Speaker 1"):
+    return {"text": text, "startTimeMs": start, "endTimeMs": end, "speaker": speaker}
+
+
+def test_audiovisual_empty_contents_yields_no_chunks():
+    assert chunk_audiovisual([]) == []
+    # A segment with neither phrases nor markdown contributes nothing.
+    assert chunk_audiovisual([{"startTimeMs": 0, "endTimeMs": 10}]) == []
+
+
+def test_audiovisual_grounds_chunks_on_phrase_time_and_speaker():
+    contents = [
+        {
+            "kind": "audioVisual",
+            "startTimeMs": 0,
+            "endTimeMs": 5000,
+            "transcriptPhrases": [
+                _phrase("Hello there.", 1000, 2000),
+                _phrase("Welcome to the talk.", 2000, 4000),
+            ],
+        }
+    ]
+    chunks = chunk_audiovisual(contents, max_chars=100, overlap=0)
+    assert len(chunks) == 1
+    g = chunks[0].grounding
+    assert g["startMs"] == 1000
+    assert g["endMs"] == 4000
+    assert g["speaker"] == "Speaker 1"
+    # Single segment → no segment index.
+    assert g["segment"] is None
+    assert "Hello there." in chunks[0].text
+
+
+def test_audiovisual_packs_phrases_up_to_max_chars():
+    contents = [
+        {
+            "transcriptPhrases": [
+                _phrase("aaaa", 0, 1000),
+                _phrase("bbbb", 1000, 2000),
+                _phrase("cccc", 2000, 3000),
+            ]
+        }
+    ]
+    # "aaaa bbbb" = 9 chars > 5 → each phrase becomes its own chunk.
+    chunks = chunk_audiovisual(contents, max_chars=5, overlap=0)
+    assert [c.text for c in chunks] == ["aaaa", "bbbb", "cccc"]
+    assert chunks[0].grounding["startMs"] == 0
+    assert chunks[1].grounding["startMs"] == 1000
+
+
+def test_audiovisual_speaker_none_when_phrases_differ():
+    contents = [
+        {
+            "transcriptPhrases": [
+                _phrase("hi", 0, 1000, speaker="Speaker 1"),
+                _phrase("yo", 1000, 2000, speaker="Speaker 2"),
+            ]
+        }
+    ]
+    chunks = chunk_audiovisual(contents, max_chars=100, overlap=0)
+    assert len(chunks) == 1
+    assert chunks[0].grounding["speaker"] is None
+
+
+def test_audiovisual_segment_index_when_multiple_segments():
+    contents = [
+        {"transcriptPhrases": [_phrase("one", 0, 1000)]},
+        {"transcriptPhrases": [_phrase("two", 5000, 6000)]},
+    ]
+    chunks = chunk_audiovisual(contents, max_chars=100, overlap=0)
+    assert [c.grounding["segment"] for c in chunks] == [0, 1]
+    assert chunks[1].grounding["startMs"] == 5000
+
+
+def test_audiovisual_oversized_phrase_is_hard_wrapped_keeping_time():
+    contents = [{"transcriptPhrases": [_phrase("x" * 25, 1000, 2000)]}]
+    chunks = chunk_audiovisual(contents, max_chars=10, overlap=0)
+    assert [len(c.text) for c in chunks] == [10, 10, 5]
+    assert all(c.grounding["startMs"] == 1000 for c in chunks)
+    assert all(c.grounding["endMs"] == 2000 for c in chunks)
+
+
+def test_audiovisual_falls_back_to_markdown_when_no_phrases():
+    contents = [
+        {
+            "startTimeMs": 7000,
+            "endTimeMs": 9000,
+            "markdown": "WEBVTT transcript body here",
+        }
+    ]
+    chunks = chunk_audiovisual(contents, max_chars=100, overlap=0)
+    assert len(chunks) == 1
+    # Coarse segment timing stamped; no speaker from a markdown-only segment.
+    assert chunks[0].grounding["startMs"] == 7000
+    assert chunks[0].grounding["endMs"] == 9000
+    assert chunks[0].grounding["speaker"] is None
+    assert "transcript body" in chunks[0].text
+
+
+def test_audiovisual_overlap_prepends_previous_primary():
+    contents = [
+        {
+            "transcriptPhrases": [
+                _phrase("first", 0, 1000),
+                _phrase("second", 1000, 2000),
+            ]
+        }
+    ]
+    chunks = chunk_audiovisual(contents, max_chars=6, overlap=3)
+    assert len(chunks) == 2
+    assert chunks[1].text.startswith("rst")
+    assert chunks[1].grounding["startMs"] == 1000
+
+
+def test_audiovisual_is_deterministic():
+    contents = [
+        {
+            "transcriptPhrases": [
+                _phrase("alpha", 0, 1000),
+                _phrase("beta", 1000, 2000),
+            ]
+        }
+    ]
+    first = [(c.text, c.grounding) for c in chunk_audiovisual(contents, max_chars=8, overlap=2)]
+    second = [(c.text, c.grounding) for c in chunk_audiovisual(contents, max_chars=8, overlap=2)]
+    assert first == second

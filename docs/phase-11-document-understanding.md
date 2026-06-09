@@ -251,9 +251,22 @@ while — hence async ingest + polling with backoff, not an inline call.
   a turn. Tool names (`run_code`, `export_document`) are disjoint from the
   builtins/`delegate_to_agent`/`fetch_document` (the runtime keeps its fail-closed
   collision assert).
-- **11D — Multimodal (audio/video).** Audio (transcript + diarization) and video
-  (keyframes + segmentation) analyzers; grounded timestamp/segment citations and
-  deep-link-back.
+- **11D — Multimodal (audio/video). Implemented (chunking + grounding spine).**
+  Audio/video documents now index **time-grounded** chunks: `chunk_audiovisual`
+  (`library/chunking.py`) packs CU `transcriptPhrases` (speaker + start/end ms)
+  into bounded chunks, grounding each on its `{startMs, endMs, speaker, segment}`
+  span; a segment without phrase detail falls back to chunking its Markdown
+  stamped with the segment's coarse start/end ms, and an analyzer that returns no
+  groundable segments falls back to the concatenated parse — so audio/video
+  always indexes regardless of analyzer detail level. `doc_chunks` carries
+  `start_ms`/`end_ms`/`speaker` (additive `ALTER TABLE … ADD COLUMN IF NOT
+  EXISTS` migration), ingest branches on modality, and Tier-2 retrieval renders
+  grounded `mm:ss-mm:ss · Speaker` citations for deep-link-back. Rides the
+  existing `document_understanding_enabled` flag (no new flag); the
+  document/image/text path is byte-for-byte unchanged. The prebuilt audio/video
+  analyzer wiring (`cu_audio_analyzer`/`cu_video_analyzer`,
+  `cu_analyzer_for_modality`) shipped in 11A. Remaining for a later increment:
+  keyframe/scene-segment field surfacing and the UI deep-link player.
 - **11E — Knowledge & lifecycle.** Save-to-memory (promote chunks/summaries into
   pgvector/mem0); annotations (Cosmos sub-resource keyed by
   `(documentId, chunk/segment)`); versioning/immutable history; retention/erase;

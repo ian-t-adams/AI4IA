@@ -131,6 +131,30 @@ async def test_context_block_includes_rag_excerpt_for_ready_doc():
     assert "report.pdf" in block  # citation by filename
 
 
+async def test_rag_citation_includes_timestamp_and_speaker_for_audio():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    chunks = InMemoryDocChunkStore()
+    svc = _service(library=library, blob=blob, chunks=chunks, embedder=FakeEmbedder())
+    doc = await _seed_doc(library, blob, filename="lecture.mp3")
+    rec = DocChunkRecord(
+        user_id=doc.userId,
+        document_id=doc.id,
+        chunk_index=0,
+        content="The mitochondria is the powerhouse of the cell.",
+        start_ms=133000,
+        end_ms=165000,
+        speaker="Speaker 1",
+    )
+    await chunks.add_many([rec], [[1.0, 0.0, 0.0]])
+
+    block = await svc.context_block("u1", "what about the cell?", nonce="n9")
+
+    assert "lecture.mp3" in block
+    assert "2:13-2:45" in block
+    assert "Speaker 1" in block
+
+
 async def test_rag_never_surfaces_chunk_of_nonready_doc():
     """A failed/analyzing doc with a stray chunk must never surface — search is
     scoped to ready ids. This is the invariant the ingest hardening enforces."""

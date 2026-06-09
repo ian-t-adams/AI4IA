@@ -31,12 +31,13 @@ from dataclasses import dataclass
 
 from ..catalog import DeploymentOption
 from ..config import Settings
+from ..content_understanding.models import CUResult
 from ..documents.extract import DocumentError, extract_text
 from ..memory.embedder import GatewayEmbedder
 from ..usage.models import TokenUsage
 from ..usage.service import UsageService
 from .blob_store import CHUNKS_NAME, PARSED_NAME, RAW_NAME, BlobStore, blob_path
-from .chunking import chunk_markdown
+from .chunking import chunk_audiovisual, chunk_markdown
 from .doc_chunks import DocChunkRecord, DocChunkStore
 from .hashing import content_hash
 from .modality import classify_modality
@@ -91,6 +92,24 @@ def summarize_markdown(markdown: str, *, limit: int = _SUMMARY_LIMIT) -> str:
         if line:
             return line[:limit]
     return ""
+
+
+def _sidecar_row(chunk) -> dict:
+    """One ``chunks.jsonl`` record. Always carries the document grounding keys;
+    audio/video time grounding (startMs/endMs/speaker/segment) is added only when
+    present, so the document sidecar shape is unchanged."""
+    row = {
+        "index": chunk.index,
+        "text": chunk.text,
+        "heading": chunk.grounding.get("heading"),
+        "charStart": chunk.grounding.get("charStart"),
+        "charEnd": chunk.grounding.get("charEnd"),
+    }
+    for key in ("startMs", "endMs", "speaker", "segment"):
+        value = chunk.grounding.get(key)
+        if value is not None:
+            row[key] = value
+    return row
 
 
 def _extension(filename: str) -> str:
@@ -318,7 +337,7 @@ class DocumentIngestor:
             if not await self._still_present(user_id, document_id):
                 deleted_mid_flight = True
             else:
-                await self._persist_enrichment(user_id, doc, result.markdown)
+                await self._persist_enrichment(user_id, doc, result)
                 doc.status = DocumentStatus.ready
                 doc.error = None
         except Exception as exc:  # noqa: BLE001 - degrade, never propagate
@@ -350,8 +369,9 @@ class DocumentIngestor:
                 await self.purge(user_id, document_id)
 
     async def _persist_enrichment(
-        self, user_id: str, doc: UserDocument, markdown: str
+        self, user_id: str, doc: UserDocument, result: CUResult
     ) -> None:
+        markdown = result.markdown
         parsed_path = blob_path(user_id, doc.id, PARSED_NAME)
         await self._blob.put(parsed_path, markdown.encode("utf-8"), "text/markdown")
         doc.parsedPath = parsed_path
@@ -360,11 +380,17 @@ class DocumentIngestor:
         if summary:
             doc.summary = summary
 
-        chunks = chunk_markdown(
-            markdown,
-            max_chars=self._settings.document_chunk_chars,
-            overlap=self._settings.document_chunk_overlap,
-        )
+        max_chars = self._settings.document_chunk_chars
+        overlap = self._settings.document_chunk_overlap
+        modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
+        chunks: list = []
+        if modality in ("audio", "video"):
+            # Time-grounded chunking from the CU segments/transcript phrases. Falls
+            # back to Markdown chunking when the analyzer returned nothing
+            # groundable, so audio/video without phrase detail still indexes.
+            chunks = chunk_audiovisual(result.contents, max_chars=max_chars, overlap=overlap)
+        if not chunks:
+            chunks = chunk_markdown(markdown, max_chars=max_chars, overlap=overlap)
         max_chunks = self._settings.document_max_chunks
         if max_chunks and len(chunks) > max_chunks:
             logger.info(
@@ -384,6 +410,9 @@ class DocumentIngestor:
                 heading=c.grounding.get("heading"),
                 char_start=c.grounding.get("charStart"),
                 char_end=c.grounding.get("charEnd"),
+                start_ms=c.grounding.get("startMs"),
+                end_ms=c.grounding.get("endMs"),
+                speaker=c.grounding.get("speaker"),
             )
             for c in chunks
         ]
@@ -395,19 +424,7 @@ class DocumentIngestor:
             vectors = await self._embedder.embed([r.content for r in window])
             await self._chunks.add_many(window, vectors)
 
-        sidecar = "\n".join(
-            json.dumps(
-                {
-                    "index": c.index,
-                    "text": c.text,
-                    "heading": c.grounding.get("heading"),
-                    "charStart": c.grounding.get("charStart"),
-                    "charEnd": c.grounding.get("charEnd"),
-                },
-                ensure_ascii=False,
-            )
-            for c in chunks
-        )
+        sidecar = "\n".join(json.dumps(_sidecar_row(c), ensure_ascii=False) for c in chunks)
         chunks_path = blob_path(user_id, doc.id, CHUNKS_NAME)
         await self._blob.put(chunks_path, sidecar.encode("utf-8"), "application/json")
         doc.chunksPath = chunks_path

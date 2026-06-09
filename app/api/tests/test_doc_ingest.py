@@ -368,3 +368,75 @@ async def test_enrich_caps_chunks_and_batches_embed():
     hits = await chunks.search("u1", [1.0, 1.0, 0.0], top_k=50)
     assert len(hits) == 3
     assert embedder.batches == 3  # batch size 1 → one embed round-trip per chunk
+
+
+# --- audio/video time-grounded enrich (Phase 11D) ---
+def _succeeded_av(contents: list[dict], markdown: str = "WEBVTT transcript") -> CUResult:
+    return CUResult(
+        status="Succeeded",
+        analyzer_id="prebuilt-audioSearch",
+        markdown=markdown,
+        contents=contents,
+    )
+
+
+async def test_enrich_audio_indexes_time_grounded_chunks():
+    library = InMemoryDocumentLibraryRepository()
+    embedder = FakeEmbedder()
+    chunks = InMemoryDocChunkStore(expected_dim=3)
+    contents = [
+        {
+            "kind": "audioVisual",
+            "startTimeMs": 0,
+            "endTimeMs": 5000,
+            "transcriptPhrases": [
+                {"text": "Hello.", "startTimeMs": 1000, "endTimeMs": 2000, "speaker": "Speaker 1"},
+                {"text": "Welcome.", "startTimeMs": 2000, "endTimeMs": 4000, "speaker": "Speaker 1"},
+            ],
+        }
+    ]
+    cu = FakeCU(result=_succeeded_av(contents))
+    ingestor = _make(cu=cu, embedder=embedder, chunks=chunks, library=library)
+
+    stored = await ingestor.ingest(
+        user_id="u1", filename="lecture.mp3", content_type="audio/mpeg", data=b"AUDIO"
+    )
+    assert stored.document.modality == Modality.audio
+    await ingestor.enrich(
+        user_id="u1", document_id=stored.document.id, data=b"AUDIO", content_type="audio/mpeg"
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc.status == DocumentStatus.ready
+    assert doc.chunkCount > 0
+    hits = await chunks.search("u1", [1.0, 1.0, 0.0], top_k=50)
+    grounded = [h for h in hits if h.start_ms is not None]
+    assert grounded, "expected at least one time-grounded chunk"
+    assert grounded[0].speaker == "Speaker 1"
+    assert grounded[0].start_ms == 1000
+
+
+async def test_enrich_audio_without_phrases_falls_back_to_markdown():
+    library = InMemoryDocumentLibraryRepository()
+    embedder = FakeEmbedder()
+    chunks = InMemoryDocChunkStore(expected_dim=3)
+    # No transcriptPhrases and no per-segment markdown → fall back to the
+    # concatenated result markdown so the document still indexes + goes ready.
+    cu = FakeCU(result=_succeeded_av([], markdown="# Talk\n\nfull transcript text body"))
+    ingestor = _make(cu=cu, embedder=embedder, chunks=chunks, library=library)
+
+    stored = await ingestor.ingest(
+        user_id="u1", filename="clip.mp4", content_type="video/mp4", data=b"VIDEO"
+    )
+    assert stored.document.modality == Modality.video
+    await ingestor.enrich(
+        user_id="u1", document_id=stored.document.id, data=b"VIDEO", content_type="video/mp4"
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc.status == DocumentStatus.ready
+    assert doc.chunkCount > 0
+    hits = await chunks.search("u1", [1.0, 1.0, 0.0], top_k=50)
+    # Markdown fallback → no time grounding, but content is retrievable.
+    assert all(h.start_ms is None for h in hits)
+    assert hits

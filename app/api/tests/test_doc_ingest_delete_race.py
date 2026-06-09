@@ -318,7 +318,11 @@ async def test_recover_interrupted_purges_partial_artifacts():
     doc = stored.document
     # Simulate an interrupted enrich: artifacts written, but the manifest never
     # reached the terminal ready/failed write — it is stuck at ``analyzing``.
-    await ingestor._persist_enrichment("u1", doc, "# T\n\n" + ("word " * 30))
+    await ingestor._persist_enrichment(
+        "u1",
+        doc,
+        CUResult(status="Succeeded", analyzer_id="a", markdown="# T\n\n" + ("word " * 30)),
+    )
     doc.status = DocumentStatus.analyzing
     await library.update_document(doc)
     assert _blob_keys(blob, "u1", doc.id) != []
