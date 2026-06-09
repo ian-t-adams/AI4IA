@@ -62,8 +62,16 @@ def _settings(**overrides):
 
 
 def _client(settings, http_client, token_provider=None):
+    # Default to a harmless fake AAD token so bearer-mode tests that don't care
+    # about auth never reach DefaultAzureCredential (which fails in CI, where no
+    # Azure identity is configured). Tests that assert a specific token pass their own.
+    async def _fake_token() -> str:
+        return "fake-aad-token"
+
     return CodeInterpreterClient(
-        settings, http_client=http_client, token_provider=token_provider
+        settings,
+        http_client=http_client,
+        token_provider=token_provider if token_provider is not None else _fake_token,
     )
 
 
