@@ -314,6 +314,23 @@ async def chat(
     entry = catalog.get(model_id)
     api = entry.api if entry is not None else "chat"
 
+    # Capability models (image, video, tts, transcription, embedding, rerank) and
+    # voice models (realtime, audio) aren't chat targets — they're driven through
+    # their own surfaces/tools. Refuse them with a clear 422 BEFORE persisting the
+    # user message or rebinding session.model, so a stale session.model or a
+    # direct API caller can't push a non-chat model down the chat-completions path
+    # (which would resolve a deployment and then fail or return garbage).
+    if entry is not None and not entry.conversational:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"'{model_id}' is a {entry.category} model and can't be used for "
+                "chat. Image, video, speech, transcription, embedding and rerank "
+                "models are available through their own tools and surfaces, not as "
+                "a raw chat model."
+            ),
+        )
+
     # Tool-calling agents (and multi-agent orchestrators, which delegate via a
     # synthetic tool) run the chat-completions function-calling loop, which has no
     # Responses-API equivalent here yet. Refuse the unsupported combo with a clear

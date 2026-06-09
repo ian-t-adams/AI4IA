@@ -10,9 +10,19 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 _PACKAGED = Path(__file__).resolve().parent / "data" / "model_catalog.json"
+
+# Categories whose models are driven through a normal text chat turn and so
+# belong in the chat / agent model pickers. Everything else — image, video, tts,
+# transcription, audio, realtime, embedding, rerank — is a capability model
+# invoked through its own surface or tool, not selected as a raw chat target.
+# This is an allowlist on purpose: a new capability category added to the
+# catalog stays out of the chat picker until it's explicitly opted in here.
+CONVERSATIONAL_CATEGORIES = frozenset(
+    {"chat", "chat-fast", "reasoning", "reasoning-oss", "router", "research"}
+)
 
 
 class DeploymentOption(BaseModel):
@@ -34,12 +44,29 @@ class ModelEntry(BaseModel):
     api: str = "chat"
     options: list[DeploymentOption]
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def conversational(self) -> bool:
+        """Whether this model is offered in the chat/agent model pickers.
+
+        True for text-chat categories (chat, reasoning, router, …); False for
+        capability models (image, video, tts, transcription, embedding, rerank)
+        and voice models (realtime, audio), which are reached through their own
+        surfaces/tools rather than selected as a raw chat target. Serialized so
+        the web app can filter the dropdowns from the same source of truth.
+        """
+        return self.category in CONVERSATIONAL_CATEGORIES
+
 
 class ModelCatalog(BaseModel):
     models: list[ModelEntry]
 
     def get(self, model_id: str) -> ModelEntry | None:
         return next((m for m in self.models if m.id == model_id), None)
+
+    def conversational_models(self) -> list[ModelEntry]:
+        """Models the chat/agent pickers should offer (excludes capability models)."""
+        return [m for m in self.models if m.conversational]
 
     def resolve_deployment(
         self, model_id: str, *, region: str | None = None, data_zone: str | None = None
