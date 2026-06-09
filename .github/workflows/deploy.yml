@@ -1,0 +1,83 @@
+name: deploy
+
+# Continuous deployment: provision infra + deploy the app to Azure with azd.
+#
+# Why this exists: app-ci.yml and infra-validate.yml only *validate* (lint /
+# build / test). Nothing redeployed on merge, so main could be many commits
+# ahead of what is actually running. This workflow closes that gap — once the
+# one-time OIDC setup below is done, every merge to main reconciles infra and
+# ships the new app images. See docs/runbooks/deployment.md.
+#
+# One-time setup (no secrets in this file): create a user-assigned managed
+# identity (or app registration) with a GitHub federated credential, grant it
+# the subscription roles azd needs, then add these **repository variables**
+# (Settings -> Secrets and variables -> Actions -> Variables):
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
+#   AZURE_ENV_NAME, AZURE_LOCATION
+# The job is a clean no-op until AZURE_CLIENT_ID is set, so this is safe to
+# merge before the identity exists.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "infra/**"
+      - "proxy/**"
+      - "azure.yaml"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+    inputs:
+      provision:
+        description: "Run azd provision (reconcile infrastructure) before deploy"
+        type: boolean
+        default: true
+
+# OIDC federated login needs id-token: write. No long-lived credentials.
+permissions:
+  id-token: write
+  contents: read
+
+# Never let two deploys to the same environment overlap; queue, don't cancel,
+# so an in-flight provision/deploy is allowed to finish cleanly.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Clean no-op until the federated identity variables are configured, so this
+    # workflow can be merged before the one-time Azure setup is complete.
+    if: ${{ vars.AZURE_CLIENT_ID != '' }}
+    runs-on: ubuntu-latest
+    # A GitHub Environment gives you an approval gate + scoped vars/secrets.
+    # Referencing it auto-creates it (no protection) until you add reviewers.
+    environment: production
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install azd
+        uses: Azure/setup-azd@v2
+
+      - name: Log in to Azure (OIDC federated credentials)
+        run: |
+          azd auth login \
+            --client-id "$AZURE_CLIENT_ID" \
+            --federated-credential-provider "github" \
+            --tenant-id "$AZURE_TENANT_ID"
+
+      - name: Provision infrastructure
+        # Skipped only when a manual run explicitly opts out; push events always
+        # reconcile infra (azd provision is idempotent).
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
+        run: azd provision --no-prompt
+
+      - name: Deploy application
+        run: azd deploy --no-prompt
