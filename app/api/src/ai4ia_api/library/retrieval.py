@@ -202,10 +202,16 @@ class DocumentRetrievalService:
             )
             return {"error": "Could not read that document right now."}
 
+        # Sanitize the (untrusted) filename the same way Tier 1 does before it goes
+        # back to the model in any field or message — strip newlines and bound the
+        # length so a crafted name can't inject structure outside the nonce fence.
+        # Defense in depth on top of the producer's _safe_filename.
+        safe_name = _one_line(doc.filename, _LABEL_LIMIT) or "document"
+
         if doc.status != DocumentStatus.ready:
             return {
                 "error": (
-                    f"Document '{doc.filename}' is not ready (status="
+                    f"Document '{safe_name}' is not ready (status="
                     f"{doc.status.value}); it has no readable content yet."
                 )
             }
@@ -214,7 +220,7 @@ class DocumentRetrievalService:
         try:
             raw = await self._blob.get(parsed_path)
         except BlobNotFoundError:
-            return {"error": f"No parsed content available for '{doc.filename}'."}
+            return {"error": f"No parsed content available for '{safe_name}'."}
         except Exception:  # noqa: BLE001 - degrade, never propagate
             logger.warning(
                 "fetch_document blob read failed user=%s id=%s", user_id, document_id,
@@ -231,7 +237,7 @@ class DocumentRetrievalService:
         next_start = start + len(window)
         return {
             "document_id": document_id,
-            "filename": doc.filename,
+            "filename": safe_name,
             "total_chars": total,
             "start": start,
             "returned_chars": len(window),
