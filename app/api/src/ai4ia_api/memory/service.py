@@ -17,6 +17,7 @@ Safety posture (per design review):
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Protocol
 
 from .base import Embedder, MemoryStore
@@ -35,6 +36,10 @@ class MemoryServiceProtocol(Protocol):
     async def recall(self, user_id: str, query: str) -> list[MemoryRecord]: ...
 
     async def remember(self, user_id: str, session_id: str | None, text: str) -> None: ...
+
+    async def remember_document(
+        self, user_id: str, *, items: Sequence[str], session_id: str | None = None
+    ) -> int: ...
 
     async def forget_user(self, user_id: str) -> int: ...
 
@@ -57,6 +62,11 @@ class NoopMemoryService:
 
     async def remember(self, user_id: str, session_id: str | None, text: str) -> None:
         return None
+
+    async def remember_document(
+        self, user_id: str, *, items: Sequence[str], session_id: str | None = None
+    ) -> int:
+        return 0
 
     async def forget_user(self, user_id: str) -> int:
         return 0
@@ -127,6 +137,31 @@ class MemoryService:
             await self._store.add(record, vector)
         except Exception:  # noqa: BLE001 - memory must never break chat
             logger.warning("memory remember failed", exc_info=True)
+
+    async def remember_document(
+        self, user_id: str, *, items: Sequence[str], session_id: str | None = None
+    ) -> int:
+        """Store document excerpts as durable ``kind="document"`` memories.
+
+        Unlike :meth:`remember` this is an *explicit*, user-initiated action over
+        content the user owns, so it skips the trivia gate and does NOT swallow
+        failures — the user asked to save, so they must learn whether it worked.
+        Embeds the items as a batch, stores one record each, and returns how many
+        were stored (blank items and zero vectors are skipped)."""
+        texts = [t.strip() for t in items if t and t.strip()]
+        if not texts:
+            return 0
+        vectors = await self._embedder.embed(texts)
+        stored = 0
+        for text, vector in zip(texts, vectors):
+            if not vector:
+                continue
+            record = MemoryRecord(
+                user_id=user_id, session_id=session_id, text=text, kind="document"
+            )
+            await self._store.add(record, vector)
+            stored += 1
+        return stored
 
     async def forget_user(self, user_id: str) -> int:
         """Erase all of a user's memories (NOT swallowed — explicit deletion)."""

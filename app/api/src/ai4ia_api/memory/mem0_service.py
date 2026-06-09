@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -314,6 +314,32 @@ class Mem0MemoryService:
             )
         except Exception:  # noqa: BLE001 - memory must never break chat
             logger.warning("mem0 remember failed", exc_info=True)
+
+    async def remember_document(
+        self, user_id: str, *, items: Sequence[str], session_id: str | None = None
+    ) -> int:
+        """Store document excerpts verbatim as durable memories.
+
+        An *explicit* user action, so (unlike :meth:`remember`) failures are NOT
+        swallowed. ``infer=False`` stores each excerpt as-is, bypassing mem0's
+        LLM fact-extraction pass — document text is reference content to recall
+        verbatim, not an utterance to distill. Returns how many items were
+        stored."""
+        texts = [t.strip() for t in items if t and t.strip()]
+        if not texts:
+            return 0
+        add_kwargs: dict[str, Any] = {"user_id": user_id, "infer": False}
+        if session_id:
+            add_kwargs["run_id"] = session_id
+        mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
+        stored = 0
+        for text in texts:
+            await self._call(
+                lambda t=text: mem.add([{"role": "user", "content": t}], **add_kwargs),
+                self._add_timeout_s,
+            )
+            stored += 1
+        return stored
 
     async def forget_user(self, user_id: str) -> int:
         """Erase all of a user's memories (NOT swallowed — explicit deletion).

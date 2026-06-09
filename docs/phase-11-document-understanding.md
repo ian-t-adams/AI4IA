@@ -272,6 +272,19 @@ while — hence async ingest + polling with backoff, not an inline call.
   `(documentId, chunk/segment)`); versioning/immutable history; retention/erase;
   **sharing enablement** — create the `grants` container, flip `can_access` to
   consult grants, extend the retrieval filter to accessible owners/docs.
+  - **11E-1 implemented (save-to-memory).** `POST
+    /api/library/documents/{id}/memory` promotes a ready document's gist — its
+    summary plus a bounded set of leading parsed excerpts (sourced via the
+    already-governed `DocumentRetrievalService.read_parsed` → `chunk_markdown`) —
+    into the caller's durable memory as `kind="document"` records, so the model
+    can recall the document across sessions even when the library isn't queried.
+    Owner-only and `ready`-gated (mirroring read/delete); 404 when document
+    understanding is off, 409 when memory is disabled, 422 when the document has
+    no content, 502 on a transient memory failure. The explicit action bypasses
+    the trivia gate and (unlike passive `remember`) surfaces failures. Knobs:
+    `memory_document_max_items = 6`, `memory_document_chunk_chars = 600`.
+    Re-saving is not yet idempotent (duplicate records) — source-tracked dedupe
+    / forget-by-document is deferred to the retention increment.
 
 ## Speed / accuracy / robustness levers
 
@@ -306,6 +319,12 @@ endpoint; `/openai/v1` is appended by the client) · `code_interpreter_model`
 `code_interpreter_timeout_seconds = 120` ·
 `code_interpreter_max_input_chars = 60000` (parsed text handed to CI per run) ·
 `document_export_max_chars = 200000` (one exported artifact).
+
+**Save-to-memory (Phase 11E-1, reuses the existing memory store):**
+`memory_document_max_items = 6` (max records stored per save: the summary plus
+leading excerpts) · `memory_document_chunk_chars = 600` (size of each parsed
+excerpt). Gated by the existing `memory_store` (no new flag); when memory is
+disabled the endpoint returns 409.
 
 ## Open items / future
 
