@@ -9,9 +9,17 @@ custom tools, per-user memory/history, theming + accessibility, and **governed m
 through SimpleL7Proxy + APIM across multiple Foundry regions.
 
 ## Status
-🚧 **Phase 0 — Foundations.** Repo scaffold, azd/Bicep layout, data-driven model catalog,
-teardown/inventory scripts, CI, and docs are in place. Infrastructure modules and application
-code land in subsequent phases. See [`docs/architecture.md`](docs/architecture.md).
+✅ **Phases 0–11 implemented.** Foundations + IaC, model gateway, web chat, agents & workflows
+(Studio builder), per-user memory, usage/cost metering & entitlements, imagery, voice (STT/TTS +
+agent-aware Voice Live), Entra/MSAL sign-in, and the document & multimodal understanding pipeline
+(library, Content Understanding ingest, intent router + code-interpreter, audio/video grounding)
+are all merged. Advanced capabilities ship **default-OFF** and are turned on per environment — see
+[`docs/runbooks/feature-enablement.md`](docs/runbooks/feature-enablement.md). Architecture and the
+phase arc: [`docs/architecture.md`](docs/architecture.md).
+
+> **Deploying:** merges to `main` are validated by CI and (once the one-time OIDC setup is done)
+> deployed by [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml). See the
+> [deployment runbook](docs/runbooks/deployment.md).
 
 ## Repository layout
 ```
@@ -50,4 +58,6 @@ azd up
 - [Architecture](docs/architecture.md)
 - [Region & capability map](docs/region-capability-matrix.md)
 - [Naming & tagging](docs/naming-and-tagging.md)
+- [Deployment (CI/CD) runbook](docs/runbooks/deployment.md)
+- [Feature enablement runbook](docs/runbooks/feature-enablement.md)
 - [Teardown & rebuild runbook](docs/runbooks/teardown.md)
