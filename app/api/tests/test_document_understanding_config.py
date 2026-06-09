@@ -53,5 +53,39 @@ def test_enabled_deployed_with_cosmos_store_is_allowed():
         document_understanding_enabled=True,
         session_store="cosmos",
         cosmos_endpoint="https://cosmos.example/",
+        cu_base_url="https://cu.example/",
+        document_blob_account_url="https://acct.blob.core.windows.net",
     )
     s.validate_runtime()  # no raise
+
+
+def test_enabled_deployed_without_cu_or_blob_is_rejected():
+    # The 11B ingest path needs both the CU endpoint and the blob account in a
+    # deployed env; enabling without them must fail closed.
+    base = dict(
+        env="dev",
+        allow_dev_auth=True,
+        document_understanding_enabled=True,
+        session_store="cosmos",
+        cosmos_endpoint="https://cosmos.example/",
+    )
+    with pytest.raises(RuntimeError, match="AI4IA_CU_BASE_URL"):
+        _settings(**base, document_blob_account_url="https://acct.blob.core.windows.net").validate_runtime()
+    with pytest.raises(RuntimeError, match="AI4IA_CU_BASE_URL"):
+        _settings(**base, cu_base_url="https://cu.example/").validate_runtime()
+
+
+def test_enabled_local_without_cu_or_blob_is_allowed():
+    # Local/dev runs with an in-memory blob store and CU disabled.
+    _settings(document_understanding_enabled=True).validate_runtime()
+
+
+def test_cu_analyzer_for_modality_maps_each_class():
+    s = _settings()
+    assert s.cu_analyzer_for_modality("document") == s.cu_document_analyzer
+    assert s.cu_analyzer_for_modality("text") == s.cu_document_analyzer
+    assert s.cu_analyzer_for_modality("image") == s.cu_image_analyzer
+    assert s.cu_analyzer_for_modality("audio") == s.cu_audio_analyzer
+    assert s.cu_analyzer_for_modality("video") == s.cu_video_analyzer
+    # Unknown modality falls back to the document analyzer.
+    assert s.cu_analyzer_for_modality("other") == s.cu_document_analyzer

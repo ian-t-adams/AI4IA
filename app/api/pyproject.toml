@@ -41,6 +41,11 @@ dependencies = [
     # lazily (only when memory_store=mem0) so the app/tests run without them wired.
     "psycopg[binary]>=3.2",
     "psycopg-pool>=3.2",
+    # Blob storage for the document library (Phase 11B): raw uploads + parsed
+    # artifacts. Async client (azure.storage.blob.aio) reached via the api managed
+    # identity; imported lazily so the app/tests run without it wired (the
+    # in-memory blob store covers local/dev + unit tests).
+    "azure-storage-blob>=12.20",
 ]
 
 [project.optional-dependencies]

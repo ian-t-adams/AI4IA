@@ -91,3 +91,46 @@ library is durable cross-session storage); `validate_runtime()` fails closed
 otherwise. Content Understanding ingest, chunking, and retrieval build on this
 spine in later Phase 11 sub-phases. See `.env.example` for the
 `AI4IA_DOCUMENT_*` settings.
+
+## Document ingest (Phase 11B-1) — the producer path
+
+Builds on the 11A spine to turn an upload into a manifest + retrievable chunks.
+Still **feature-flagged, default-OFF** (same `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`
+flag): with it off nothing here is constructed and `POST /api/library/documents`
+404s, so the API is byte-for-byte unchanged. The retrieval *consumer* (wiring into
+chat's `_document_context` + the `fetch_document` tool + web UI) is deliberately
+deferred to **11B-2** to isolate the chat-hot-path regression risk.
+
+- **Upload** (`POST /api/library/documents`, `routers/library.py`): persists the
+  bytes + creates the manifest synchronously (status `stored`) with an instant
+  local-text summary (Phase 7C extractor, best-effort), then schedules Content
+  Understanding enrichment as a FastAPI background task. Caps fail fast: `413` over
+  `document_max_upload_bytes`, `409` over `document_max_per_user`, `422` empty,
+  `404` unknown analyzer. Identical re-uploads (same bytes + analyzer) return the
+  existing manifest without re-cracking.
+- **Ingest orchestrator** (`library/ingest.py` `DocumentIngestor`): `ingest()` is
+  the sync request-path half; `enrich()` is the background half — it runs CU,
+  writes `parsed.md`, chunks + embeds into the per-user `doc_chunks` vector store,
+  writes a `chunks.jsonl` sidecar, and flips the manifest to `ready` (or `failed`
+  with the quick-text fallback kept). `enrich()` **never raises** (it runs detached)
+  and is a **no-op when CU is not configured** (a document then stays at `stored`).
+- **Content Understanding client** (`content_understanding/`): the async REST
+  surface (`:analyzeBinary` submit → poll `Operation-Location` until terminal),
+  gateway-style auth (bearer managed-identity on the Cognitive Services scope, or
+  `api_key`). Verified against api-version `2025-11-01` (GA).
+- **Blob store** (`library/blob_store.py`): raw + parsed + chunk artifacts under
+  `{userId}/{documentId}/...` in a private, AAD-only container — the browser never
+  receives a blob URL. In-memory locally; Azure Blob when configured.
+- **Chunk store** (`library/doc_chunks.py`): per-user `doc_chunks` pgvector table
+  (exact cosine; the 3072-dim embeddings exceed pgvector's ANN ceiling), filtered
+  by `user_id` and an optional `document_id` set. In-memory locally.
+- **Governance**: the upload runs the entitlement gate (disabled-account 403); each
+  enrich meters exactly one CU operation against a synthetic deployment with
+  `TokenUsage(known=False, calls=1)` — counted but never priced, mirroring the
+  voice "unknown call" convention. Deleting a manifest best-effort purges its blob
+  artifacts + indexed chunks.
+
+Enabling ingest outside `local` requires **both** a Content Understanding endpoint
+(`AI4IA_CU_BASE_URL`) and a blob account (`AI4IA_DOCUMENT_BLOB_ACCOUNT_URL`);
+`validate_runtime()` fails closed otherwise. See `.env.example` for the
+`AI4IA_CU_*` and `AI4IA_DOCUMENT_BLOB_*` settings.

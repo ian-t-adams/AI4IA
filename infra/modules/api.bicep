@@ -109,6 +109,18 @@ param realtimeAllowedOrigins string = ''
 @description('Enable the per-user document library (Phase 11A). Default OFF (the /api/library API refuses with 404 and nothing is constructed, so the app is inert).')
 param documentUnderstandingEnabled bool = false
 
+@description('Blob account URL backing the document library raw + parsed + chunk artifacts (empty until document storage is provisioned).')
+param documentBlobAccountUrl string = ''
+
+@description('Blob container the document library writes to.')
+param documentBlobContainer string = 'documents'
+
+@description('Content Understanding endpoint base URL (e.g. the AI Services / Foundry account or the gateway fronting it). Required when enabling document understanding in a deployed env; the api fails closed at startup otherwise.')
+param cuBaseUrl string = ''
+
+@description('Content Understanding REST api-version the ingest worker uses.')
+param cuApiVersion string = '2025-11-01'
+
 var entraEnv = authProvider == 'entra' ? [
   {
     name: 'AI4IA_ENTRA_TENANT_ID'
@@ -210,16 +222,40 @@ var realtimeEnv = realtimeEnabled ? [
   }
 ] : []
 
-// Document understanding (Phase 11A) library flag. Default OFF: the library repo
-// is not constructed and the /api/library API refuses (404), so the feature is
-// inert. The Cosmos containers it uses (userDocuments, analyzers) are created
-// unconditionally by the data module — empty + harmless when the flag is off.
-var documentEnv = documentUnderstandingEnabled ? [
+// Document understanding (Phase 11A/11B) settings. Default OFF: the library repo
+// + ingest pipeline are not constructed and the /api/library API refuses (404),
+// so the feature is inert. When enabled, the blob env points the ingest path at
+// the provisioned (AAD-only) storage account; the CU env is emitted only when a
+// Content Understanding endpoint is supplied (without it, enrich is a no-op and a
+// document stays at `stored` with its instant quick-text summary). The Cosmos
+// containers it uses (userDocuments, analyzers) are created unconditionally by the
+// data module — empty + harmless when the flag is off.
+var documentBlobEnv = (documentUnderstandingEnabled && !empty(documentBlobAccountUrl)) ? [
+  {
+    name: 'AI4IA_DOCUMENT_BLOB_ACCOUNT_URL'
+    value: documentBlobAccountUrl
+  }
+  {
+    name: 'AI4IA_DOCUMENT_BLOB_CONTAINER'
+    value: documentBlobContainer
+  }
+] : []
+var documentCuEnv = (documentUnderstandingEnabled && !empty(cuBaseUrl)) ? [
+  {
+    name: 'AI4IA_CU_BASE_URL'
+    value: cuBaseUrl
+  }
+  {
+    name: 'AI4IA_CU_API_VERSION'
+    value: cuApiVersion
+  }
+] : []
+var documentEnv = documentUnderstandingEnabled ? concat([
   {
     name: 'AI4IA_DOCUMENT_UNDERSTANDING_ENABLED'
     value: 'true'
   }
-] : []
+], documentBlobEnv, documentCuEnv) : []
 
 var apiEnv = concat([
   {

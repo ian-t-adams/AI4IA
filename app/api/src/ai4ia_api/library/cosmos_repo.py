@@ -66,6 +66,20 @@ class CosmosDocumentLibraryRepository:
         ]
 
     async def update_document(self, document: UserDocument) -> UserDocument:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        # Parity with the in-memory repo: updating an id that does not exist (or
+        # is owned by another user) must raise rather than silently create the
+        # item, which ``upsert_item`` would otherwise do. The extra point-read is
+        # negligible — status transitions are infrequent.
+        try:
+            existing = await self._docs.read_item(
+                item=document.id, partition_key=document.userId
+            )
+        except CosmosResourceNotFoundError as exc:
+            raise DocumentNotFoundError(document.id) from exc
+        if existing.get("userId") != document.userId:
+            raise DocumentNotFoundError(document.id)
         document.touch()
         await self._docs.upsert_item(self._to_doc(document))
         return document

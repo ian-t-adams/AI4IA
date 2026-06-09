@@ -192,6 +192,51 @@ class Settings(BaseSettings):
     # Max documents retained per user in the library (0 = unlimited).
     document_max_per_user: int = 200
 
+    # --- Content Understanding ingest (Phase 11B) ---
+    # CU is its own async REST surface (PUT analyzer / POST :analyzeBinary / GET
+    # poll), NOT an OpenAI deployment. Reached at
+    # ``{cu_base_url}/contentunderstanding/...``. Default empty/OFF; only used when
+    # document_understanding_enabled AND a base url is configured (enforced by
+    # validate_runtime outside local). api-version is verified GA on Microsoft
+    # Learn (supported: 2024-12-01-preview, 2025-05-01-preview, 2025-11-01).
+    cu_base_url: str | None = None
+    cu_api_version: str = "2025-11-01"
+    # bearer == AAD managed identity token (Cognitive Services scope) when no
+    # static key is set, mirroring the gateway's bearer mode; api_key sends the
+    # CU resource key in the ``Ocp-Apim-Subscription-Key`` header.
+    cu_auth_mode: GatewayAuthMode = GatewayAuthMode.bearer
+    cu_api_key: str | None = None
+    cu_timeout_seconds: float = 30.0
+    # Poll the analyze operation this often, up to this ceiling, before giving up
+    # (the manifest then degrades to ``failed`` with the quick-text fallback kept).
+    cu_poll_interval_seconds: float = 2.0
+    cu_max_poll_seconds: float = 300.0
+    # Concrete prebuilt CU analyzer ids per modality. The "*Search" prebuilts are
+    # RAG-optimized (Markdown + grounded fields). Overridable per deployment.
+    cu_document_analyzer: str = "prebuilt-documentSearch"
+    cu_image_analyzer: str = "prebuilt-imageSearch"
+    cu_audio_analyzer: str = "prebuilt-audioSearch"
+    cu_video_analyzer: str = "prebuilt-videoSearch"
+
+    # --- Document blob storage (Phase 11B) ---
+    # Blob account endpoint, e.g. ``https://<acct>.blob.core.windows.net``. Raw
+    # uploads + parsed artifacts live here under ``{userId}/{documentId}/...`` and
+    # are reached ONLY via the api managed identity (AAD) — the browser never gets
+    # a blob URL. Required (with cu_base_url) when the feature is enabled outside
+    # local; in local/dev an in-memory blob store is used when this is unset.
+    document_blob_account_url: str | None = None
+    document_blob_container: str = "documents"
+    # Number of retrieval chunks to embed/index per document is bounded by the
+    # chunker; these shape the markdown chunker (chars per chunk + overlap).
+    document_chunk_chars: int = 1200
+    document_chunk_overlap: int = 150
+    # Safety ceiling on indexed chunks per document (0 = unlimited): bounds a
+    # pathological multi-MB parse from embedding/inserting an unbounded number of
+    # vectors in a single enrich. document_embed_batch caps how many chunks are
+    # embedded + inserted per round-trip.
+    document_max_chunks: int = 5000
+    document_embed_batch: int = 128
+
     # --- Memory (Phase 5): per-user semantic recall ---
     # Single source of truth: the store kind both selects the backend AND gates
     # the feature (``disabled`` == off). No separate enable flag, so the two can
@@ -290,6 +335,16 @@ class Settings(BaseSettings):
         raw = self.realtime_allowed_origins or ""
         return [o.strip() for o in raw.split(",") if o.strip()]
 
+    def cu_analyzer_for_modality(self, modality: str) -> str:
+        """Concrete prebuilt CU analyzer id for a modality (the ingest default)."""
+        return {
+            "document": self.cu_document_analyzer,
+            "text": self.cu_document_analyzer,
+            "image": self.cu_image_analyzer,
+            "audio": self.cu_audio_analyzer,
+            "video": self.cu_video_analyzer,
+        }.get(modality, self.cu_document_analyzer)
+
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
         if self.auth_provider == AuthProviderKind.dev and not self.dev_auth_permitted:
@@ -364,6 +419,21 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "Document understanding requires the cosmos session store outside "
                 "local (set AI4IA_SESSION_STORE=cosmos), or disable it with "
+                "AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false."
+            )
+        if (
+            self.document_understanding_enabled
+            and self.env != Environment.local
+            and (not self.cu_base_url or not self.document_blob_account_url)
+        ):
+            # The 11B ingest path needs both the Content Understanding endpoint
+            # (the parse front door) and the blob account (raw + parsed artifacts).
+            # A deployed enable without them would accept uploads it can't store or
+            # crack, so fail closed rather than ship a half-wired feature. Local/dev
+            # may run with an in-memory blob store and CU disabled.
+            raise RuntimeError(
+                "Document understanding requires AI4IA_CU_BASE_URL and "
+                "AI4IA_DOCUMENT_BLOB_ACCOUNT_URL outside local, or disable it with "
                 "AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false."
             )
 

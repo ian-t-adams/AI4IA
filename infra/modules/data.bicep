@@ -30,6 +30,12 @@ param deployPostgres bool = true
 @description('Location for the Postgres Flexible Server (may differ from `location` due to subscription offer restrictions).')
 param postgresLocation string = location
 
+@description('Provision the document library blob storage account + container (Phase 11B). Gated on the document-understanding flag so nothing is created by default — zero regression.')
+param deployDocumentStorage bool = false
+
+@description('Blob container holding the raw + parsed + chunk artifacts of the document library.')
+param documentBlobContainer string = 'documents'
+
 // ---------------- Cosmos DB (NoSQL) ----------------
 var cosmosAccountName = take('cosmos-${workload}-${environmentName}-${uniqueSuffix}', 44)
 
@@ -226,9 +232,68 @@ resource postgresAllowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallR
   }
 }
 
+// ---------------- Document library blob storage (Phase 11B) ----------------
+// Provisioned only when document understanding is enabled (deployDocumentStorage).
+// AAD-only (no account keys), private container, TLS 1.2+. Raw uploads and the
+// parsed/chunk artifacts live under {userId}/{documentId}/... — the userId prefix
+// is the per-user isolation boundary mirroring the Cosmos partition key.
+// uniqueString() returns a stable 13-char alphanumeric hash; 'st' + it is a valid
+// (15-char, lowercase) globally-unique storage account name, no take() needed.
+var documentStorageName = 'st${uniqueString(resourceGroup().id)}'
+var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+
+resource documentStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (deployDocumentStorage) {
+  name: documentStorageName
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: false
+    minimumTlsVersion: 'TLS1_2'
+    supportsHttpsTrafficOnly: true
+    publicNetworkAccess: 'Enabled'
+    networkAcls: {
+      defaultAction: 'Allow'
+      bypass: 'AzureServices'
+    }
+  }
+}
+
+resource documentBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = if (deployDocumentStorage) {
+  parent: documentStorage
+  name: 'default'
+  properties: {}
+}
+
+resource documentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = if (deployDocumentStorage) {
+  parent: documentBlobService
+  name: documentBlobContainer
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+// Blob data-plane RBAC: the api identity gets Storage Blob Data Contributor on the
+// account (read/write/delete the user library artifacts via AAD; no account keys).
+resource documentStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployDocumentStorage) {
+  name: guid(documentStorage.id, apiPrincipalId, storageBlobDataContributorRoleId)
+  scope: documentStorage
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
+    principalId: apiPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 output cosmosAccountName string = cosmos.name
 output cosmosEndpoint string = cosmos.properties.documentEndpoint
 output cosmosDatabaseName string = cosmosDb.name
 output postgresName string = deployPostgres ? postgres.name : ''
 output postgresFqdn string = postgres.?properties.fullyQualifiedDomainName ?? ''
 output postgresDatabaseName string = deployPostgres ? memoryDb.name : ''
+output documentBlobAccountUrl string = documentStorage.?properties.primaryEndpoints.blob ?? ''
+output documentBlobContainerName string = documentBlobContainer
