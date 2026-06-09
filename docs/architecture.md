@@ -48,7 +48,13 @@ flowchart TB
    full capacity-sharing/entitlement layer arrives in Phase 6.
 2. **Data-driven model catalog.** `infra/models.json` is the single source of truth for which
    models deploy to which regions/SKUs. Bicep iterates over it; no hand-maintained per-model
-   resources. The catalog is generated/validated from live Azure availability.
+   resources. The catalog is generated/validated from live Azure availability. Each model carries
+   a `category`; the catalog derives a `conversational` flag from it (chat, chat-fast, reasoning,
+   reasoning-oss, router, research) so the chat/agent model pickers only offer text-chat targets.
+   Capability models (image, video, tts, transcription, embedding, rerank) and voice models
+   (realtime, audio) are reached through their own surfaces/tools — the chat API rejects them
+   with a 422 rather than running them down the chat-completions path. Surfacing image/video/speech
+   models as invokable agent tools (or a dedicated "Generate" tab) is future work.
 3. **Identity decoupled from IdP.** Users carry a canonical internal ID independent of the
    Entra object ID, with an IdP-mapping table. This lets us add Entra External ID (CIAM)
    later without rewriting data.

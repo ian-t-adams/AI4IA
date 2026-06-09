@@ -82,7 +82,7 @@ export function AgentBuilder({
   const [error, setError] = useState<string | null>(null);
 
   const chatModels = useMemo(
-    () => models.filter((m) => m.category === "chat"),
+    () => models.filter((m) => m.conversational),
     [models],
   );
   const linkOptions = useMemo(

@@ -17,7 +17,14 @@ import { useVoiceLiveConfig } from "./VoiceLiveProvider";
 import { useLibraryConfig } from "./LibraryProvider";
 
 function pickDefaultModel(models: ModelEntry[]): string | null {
-  return models.find((m) => m.category === "chat")?.id ?? models[0]?.id ?? null;
+  // Never default to a capability model: prefer a plain "chat" model, then any
+  // conversational model, and only then give up.
+  const conversational = models.filter((m) => m.conversational);
+  return (
+    conversational.find((m) => m.category === "chat")?.id ??
+    conversational[0]?.id ??
+    null
+  );
 }
 
 export function ChatApp() {

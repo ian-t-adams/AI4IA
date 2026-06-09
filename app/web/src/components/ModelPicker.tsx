@@ -11,10 +11,15 @@ export function ModelPicker({
   value: string | null;
   onChange: (modelId: string) => void;
 }) {
-  const grouped = models.reduce<Record<string, ModelEntry[]>>((acc, m) => {
-    (acc[m.category] ??= []).push(m);
-    return acc;
-  }, {});
+  // Only conversational models belong in the chat picker. Capability models
+  // (image, tts, transcription, embedding, …) are reached through their own
+  // surfaces/tools, not selected as a raw chat target.
+  const grouped = models
+    .filter((m) => m.conversational)
+    .reduce<Record<string, ModelEntry[]>>((acc, m) => {
+      (acc[m.category] ??= []).push(m);
+      return acc;
+    }, {});
 
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>

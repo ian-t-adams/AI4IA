@@ -58,6 +58,22 @@ def test_model_command_switches_session_model(client):
     assert session["model"] == "gpt-5.1"
 
 
+def test_chat_rejects_capability_model(client):
+    """A non-conversational model (image/tts/etc.) can't be used as a chat target."""
+    sid = _create_session(client, model="gpt-5.2")["id"]
+    resp = client.post(
+        "/api/chat",
+        json={"sessionId": sid, "content": "draw a cat", "model": "gpt-image-1.5",
+              "stream": False},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "image" in resp.json()["detail"].lower()
+    # The refused turn left no dangling message and didn't rebind the session model.
+    assert client.get(f"/api/sessions/{sid}/messages").json() == []
+    assert client.get(f"/api/sessions/{sid}").json()["model"] == "gpt-5.2"
+
+
+
 class _CapturingGateway:
     """Records the messages handed to the model so tests can assert on context."""
 
