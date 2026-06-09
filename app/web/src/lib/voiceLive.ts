@@ -31,12 +31,40 @@ export interface VoiceLiveConfig {
 
 export type VoiceLiveStatus = "idle" | "connecting" | "live" | "closing";
 
+// The voices the gpt-realtime / gpt-realtime-mini models support. An unsupported
+// value errors upstream, so the picker is constrained to this set and any stored
+// value is validated against it before use. ``marin`` and ``cedar`` are the newest
+// gpt-realtime voices.
+export const REALTIME_VOICES = [
+  "alloy",
+  "ash",
+  "ballad",
+  "coral",
+  "echo",
+  "sage",
+  "shimmer",
+  "verse",
+  "marin",
+  "cedar",
+] as const;
+
+export type RealtimeVoice = (typeof REALTIME_VOICES)[number];
+
+export const DEFAULT_VOICE: RealtimeVoice = "alloy";
+
+export function isRealtimeVoice(value: string): value is RealtimeVoice {
+  return (REALTIME_VOICES as readonly string[]).includes(value);
+}
+
 export interface VoiceLiveController {
   status: VoiceLiveStatus;
   active: boolean;
   supported: boolean;
   userTranscript: string;
   assistantTranscript: string;
+  // The most recent tool the assistant invoked in this session (governed,
+  // server-executed), or "" when none. Surfaced as a small activity hint.
+  toolActivity: string;
   toggle: () => void;
   stop: () => void;
 }
@@ -138,18 +166,26 @@ function makeAudioContext(): AudioContext {
 const DEFAULT_INSTRUCTIONS =
   "You are a helpful, concise voice assistant. Keep spoken replies brief and natural.";
 
-function sessionUpdate(): string {
+function sessionUpdate(voice: string): string {
+  // Guard against a stale/invalid stored value reaching the upstream model.
+  const selected = isRealtimeVoice(voice) ? voice : DEFAULT_VOICE;
   return JSON.stringify({
     type: "session.update",
     session: {
       instructions: DEFAULT_INSTRUCTIONS,
-      voice: "alloy",
+      voice: selected,
       input_audio_format: "pcm16",
       output_audio_format: "pcm16",
       turn_detection: { type: "server_vad" },
       input_audio_transcription: { model: "whisper-1" },
     },
   });
+}
+
+// A readable label for a server-executed tool name (e.g. "get_current_time" ->
+// "get current time") for the live-voice activity hint.
+export function friendlyToolName(name: string): string {
+  return name.replace(/[_-]+/g, " ").trim() || name;
 }
 
 // Builds the WebSocket auth subprotocols. Under Entra we pass a real bearer token;
@@ -182,12 +218,14 @@ interface LiveSession {
 export function useVoiceLive(
   config: VoiceLiveConfig,
   model: string | null,
+  voice: string,
   onError: (message: string) => void,
 ): VoiceLiveController {
   const [status, setStatus] = useState<VoiceLiveStatus>("idle");
   const [supported, setSupported] = useState(false);
   const [userTranscript, setUserTranscript] = useState("");
   const [assistantTranscript, setAssistantTranscript] = useState("");
+  const [toolActivity, setToolActivity] = useState("");
 
   const sessionRef = useRef<LiveSession | null>(null);
   const startingRef = useRef(false);
@@ -197,6 +235,14 @@ export function useVoiceLive(
   useEffect(() => {
     onErrorRef.current = onError;
   }, [onError]);
+
+  // The voice is read at connect time (it locks for the session after the first
+  // audio reply). A ref keeps the latest selection without re-creating ``start``
+  // or restarting a live session when the picker changes.
+  const voiceRef = useRef(voice);
+  useEffect(() => {
+    voiceRef.current = voice;
+  }, [voice]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -256,6 +302,7 @@ export function useVoiceLive(
     setStatus("connecting");
     setUserTranscript("");
     setAssistantTranscript("");
+    setToolActivity("");
     // Raw resources are acquired before the session is wired into sessionRef; if
     // init fails before that, teardown() can't see them (it early-returns on a
     // null sessionRef), so the catch path releases these directly.
@@ -355,6 +402,14 @@ export function useVoiceLive(
             }
             break;
           }
+          case "response.function_call_arguments.done": {
+            // The relay executes governed tools server-side; show a brief hint so
+            // the user understands why the assistant paused / what grounded its
+            // answer. The spoken reply still arrives as normal audio deltas.
+            const name = typeof msg.name === "string" ? msg.name : "";
+            if (name && mountedRef.current) setToolActivity(friendlyToolName(name));
+            break;
+          }
           case "conversation.item.input_audio_transcription.completed": {
             const t = typeof msg.transcript === "string" ? msg.transcript : "";
             if (t && mountedRef.current) {
@@ -368,6 +423,8 @@ export function useVoiceLive(
           }
           case "input_audio_buffer.speech_started": {
             bargeIn();
+            // A new user turn supersedes the last tool hint.
+            if (mountedRef.current) setToolActivity("");
             break;
           }
           case "error": {
@@ -393,7 +450,7 @@ export function useVoiceLive(
       };
 
       ws.onopen = () => {
-        ws.send(sessionUpdate());
+        ws.send(sessionUpdate(voiceRef.current));
         // Connect the capture graph. The worklet emits silence to the
         // destination (it only forwards mic frames via its port), so wiring it to
         // the destination keeps it in the active render graph without echo.
@@ -444,6 +501,7 @@ export function useVoiceLive(
     supported,
     userTranscript,
     assistantTranscript,
+    toolActivity,
     toggle,
     stop,
   };

@@ -211,3 +211,125 @@ def test_live_accepts_matching_origin_with_allowlist():
     finally:
         c.__exit__(None, None, None)
 
+
+# --------------------------------------------------------------------------- #
+# Governed tool calling end to end (relay executes a function call in-process).
+# --------------------------------------------------------------------------- #
+
+
+class ToolFakeUpstream:
+    """Fake upstream that drives a function call after the session is configured.
+
+    On the tool-injected ``session.update`` it emits a ``calculator`` function-call
+    event; on the relay's follow-up ``response.create`` it emits a ``response.done``
+    sync point. Every frame is also recorded so the test can assert the relay sent
+    the tool result back upstream.
+    """
+
+    def __init__(self) -> None:
+        import asyncio
+
+        self.sent_text: list[str] = []
+        self.sent_bytes: list[bytes] = []
+        self.closed = False
+        self._queue: asyncio.Queue[UpstreamMessage] = asyncio.Queue()
+
+    async def send_text(self, data: str) -> None:
+        self.sent_text.append(data)
+        if '"session.update"' in data:
+            await self._queue.put(
+                UpstreamMessage(
+                    "text",
+                    text=(
+                        '{"type":"response.function_call_arguments.done",'
+                        '"call_id":"call_1","name":"calculator",'
+                        '"arguments":"{\\"expression\\":\\"2+3\\"}"}'
+                    ),
+                )
+            )
+        elif '"response.create"' in data:
+            await self._queue.put(UpstreamMessage("text", text='{"type":"response.done"}'))
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.sent_bytes.append(data)
+
+    async def receive(self) -> UpstreamMessage:
+        return await self._queue.get()
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class ToolFakeConnector:
+    def __init__(self) -> None:
+        self.upstream = ToolFakeUpstream()
+        self.connects: list[dict] = []
+
+    @asynccontextmanager
+    async def connect(self, *, url: str, headers: dict[str, str], timeout: float):
+        self.connects.append({"url": url, "headers": headers, "timeout": timeout})
+        try:
+            yield self.upstream
+        finally:
+            await self.upstream.close()
+
+
+def test_live_tool_call_executed_and_returned_upstream():
+    import json
+
+    c = _client(realtime_enabled=True, realtime_tools_enabled=True)
+    try:
+        connector = ToolFakeConnector()
+        c.app.state.realtime_connector = connector
+        with c.websocket_connect(
+            "/api/voice/live", subprotocols=[DEV_SUBPROTOCOL, "tooluser"], headers=_origin()
+        ) as ws:
+            ws.send_text('{"type":"session.update","session":{"voice":"verse"}}')
+            # The browser still observes the model's function-call event (forwarded).
+            fc = json.loads(ws.receive_text())
+            assert fc["type"] == "response.function_call_arguments.done"
+            # Then the relay's tool result prompts a response; we get the sync point.
+            assert json.loads(ws.receive_text())["type"] == "response.done"
+
+        sent = connector.upstream.sent_text
+        # 1) The session.update the relay forwarded carries the injected tools.
+        injected = json.loads(sent[0])
+        assert injected["session"]["voice"] == "verse"  # client field preserved
+        names = {t["name"] for t in injected["session"]["tools"]}
+        assert "calculator" in names
+        assert injected["session"]["tool_choice"] == "auto"
+        # 2) The relay sent a function_call_output with the computed result, then
+        #    a response.create.
+        output_frame = json.loads(sent[1])
+        assert output_frame["item"]["type"] == "function_call_output"
+        assert output_frame["item"]["call_id"] == "call_1"
+        assert json.loads(output_frame["item"]["output"])["result"] == 5
+        assert json.loads(sent[2]) == {"type": "response.create"}
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_live_tools_disabled_does_not_inject_or_execute():
+    # realtime_enabled but tools OFF -> relay stays a transparent pump: the
+    # session.update is forwarded byte-for-byte and no tool frames are injected.
+    import json
+
+    c = _client(realtime_enabled=True)
+    try:
+        connector = ToolFakeConnector()
+        c.app.state.realtime_connector = connector
+        with c.websocket_connect(
+            "/api/voice/live", subprotocols=[DEV_SUBPROTOCOL, "u"], headers=_origin()
+        ) as ws:
+            ws.send_text('{"type":"session.update","session":{"voice":"verse"}}')
+            # The function-call event is still forwarded to the browser...
+            assert json.loads(ws.receive_text())["type"] == (
+                "response.function_call_arguments.done"
+            )
+
+        sent = connector.upstream.sent_text
+        # ...but the relay neither rewrote the session.update nor replied to the call.
+        assert sent == ['{"type":"session.update","session":{"voice":"verse"}}']
+    finally:
+        c.__exit__(None, None, None)
+

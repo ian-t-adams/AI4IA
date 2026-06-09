@@ -134,6 +134,15 @@ class Settings(BaseSettings):
     # Empty reflects (allows any) ONLY in the local env; in any deployed env an
     # empty allowlist rejects every Origin (fail-closed).
     realtime_allowed_origins: str | None = None
+    # Server-side governed tool calling inside a live session. Default OFF and, like
+    # every realtime knob, inert unless ``realtime_enabled`` is also true — so the
+    # app's default behavior stays byte-for-byte unchanged. When BOTH are on, the
+    # relay injects the safe built-in tools (calculator, get_current_time) into the
+    # client's ``session.update`` and executes the model's function calls in-process
+    # through the same governed registry/executor as chat (authorize -> validate ->
+    # run), so the browser never gains a new capability surface. Disabling this
+    # leaves the relay a transparent pump (the merged Phase 10 behavior).
+    realtime_tools_enabled: bool = False
     # Override the chat-completions path template (placeholders: {deployment}).
     # When unset, a sensible default is derived from the provider style.
     gateway_chat_path: str | None = None

@@ -8,9 +8,12 @@ disabled-by-default config posture. No network, no WebSocket — just functions.
 from __future__ import annotations
 
 import asyncio
+import json
+from types import SimpleNamespace
 
 import pytest
 
+from ai4ia_api.agents.tool_exec import build_tools
 from ai4ia_api.auth.base import AuthCredentials, AuthError, AuthenticatedUser
 from ai4ia_api.catalog import DeploymentOption, ModelCatalog, ModelEntry
 from ai4ia_api.config import GatewayAuthMode
@@ -18,12 +21,19 @@ from ai4ia_api.routers.realtime import (
     BEARER_SUBPROTOCOL,
     DEV_SUBPROTOCOL,
     AuthSubprotocol,
+    RealtimeFunctionCall,
     RealtimeResolutionError,
+    ToolBridge,
     authenticate_subprotocol,
+    build_function_call_output,
+    build_tool_bridge,
     build_upstream_headers,
     build_upstream_url,
+    flatten_realtime_tools,
+    inject_session_tools,
     origin_allowed,
     parse_auth_subprotocols,
+    parse_function_call_done,
     resolve_realtime_deployment,
 )
 from tests.conftest import make_settings
@@ -285,3 +295,220 @@ def test_authenticate_bearer_passes_token_to_provider():
         )
     )
     assert user.subject == "tok-xyz"
+
+
+# --------------------------------------------------------------------------- #
+# Governed tool calling: pure helpers (flatten / inject / parse / build).
+# --------------------------------------------------------------------------- #
+
+
+_NESTED_CALC = {
+    "type": "function",
+    "function": {
+        "name": "calculator",
+        "description": "Evaluate arithmetic.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+
+def test_flatten_realtime_tools_lifts_function_body():
+    flat = flatten_realtime_tools([_NESTED_CALC])
+    assert flat == [
+        {
+            "type": "function",
+            "name": "calculator",
+            "description": "Evaluate arithmetic.",
+            "parameters": {"type": "object", "properties": {}},
+        }
+    ]
+
+
+def test_flatten_realtime_tools_skips_entries_without_function():
+    assert flatten_realtime_tools([{"type": "function"}, {"nope": 1}]) == []
+    # A function block missing a name is unusable and skipped.
+    assert flatten_realtime_tools([{"type": "function", "function": {}}]) == []
+
+
+def test_inject_session_tools_merges_and_preserves_client_fields():
+    frame = json.dumps(
+        {"type": "session.update", "session": {"voice": "verse", "instructions": "hi"}}
+    )
+    tools = [{"type": "function", "name": "calculator"}]
+    out = json.loads(inject_session_tools(frame, tools, "auto"))
+    assert out["session"]["voice"] == "verse"  # client field preserved
+    assert out["session"]["instructions"] == "hi"
+    assert out["session"]["tools"] == tools  # relay owns tools
+    assert out["session"]["tool_choice"] == "auto"
+
+
+def test_inject_session_tools_adds_session_when_absent():
+    frame = json.dumps({"type": "session.update"})
+    out = json.loads(inject_session_tools(frame, [{"type": "function", "name": "x"}], "auto"))
+    assert out["session"]["tools"] == [{"type": "function", "name": "x"}]
+
+
+def test_inject_session_tools_passthrough_for_other_frames():
+    frame = json.dumps({"type": "input_audio_buffer.append", "audio": "AAAA"})
+    assert inject_session_tools(frame, [{"type": "function", "name": "x"}], "auto") == frame
+
+
+def test_inject_session_tools_passthrough_when_no_tools():
+    frame = json.dumps({"type": "session.update", "session": {"voice": "verse"}})
+    assert inject_session_tools(frame, [], "auto") == frame
+
+
+def test_inject_session_tools_malformed_frame_unchanged():
+    # Contains the hint substring but is not valid JSON -> returned verbatim.
+    frame = 'not json but "session.update"'
+    assert inject_session_tools(frame, [{"type": "function", "name": "x"}], "auto") == frame
+
+
+def test_parse_function_call_done_valid():
+    frame = json.dumps(
+        {
+            "type": "response.function_call_arguments.done",
+            "call_id": "call_1",
+            "name": "calculator",
+            "arguments": '{"expression":"2+3"}',
+        }
+    )
+    call = parse_function_call_done(frame)
+    assert call == RealtimeFunctionCall("call_1", "calculator", '{"expression":"2+3"}')
+
+
+def test_parse_function_call_done_defaults_missing_arguments():
+    frame = json.dumps(
+        {"type": "response.function_call_arguments.done", "call_id": "c", "name": "n"}
+    )
+    call = parse_function_call_done(frame)
+    assert call is not None and call.arguments == "{}"
+
+
+def test_parse_function_call_done_other_frame_is_none():
+    assert parse_function_call_done(json.dumps({"type": "response.audio.delta"})) is None
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        'malformed "response.function_call_arguments.done"',  # hint but not JSON
+        json.dumps(
+            {"type": "response.function_call_arguments.done", "name": "n"}
+        ),  # missing call_id
+        json.dumps(
+            {"type": "response.function_call_arguments.done", "call_id": "c"}
+        ),  # missing name
+    ],
+)
+def test_parse_function_call_done_malformed_is_none(frame):
+    assert parse_function_call_done(frame) is None
+
+
+def test_build_function_call_output_shape():
+    out = json.loads(build_function_call_output("call_9", '{"result":5}'))
+    assert out["type"] == "conversation.item.create"
+    assert out["item"] == {
+        "type": "function_call_output",
+        "call_id": "call_9",
+        "output": '{"result":5}',
+    }
+
+
+# --------------------------------------------------------------------------- #
+# ToolBridge: governed execution round-trip (reuses the real builtins).
+# --------------------------------------------------------------------------- #
+
+
+def _calc_done_frame(call_id: str = "call_1", expression: str = "2+3") -> str:
+    return json.dumps(
+        {
+            "type": "response.function_call_arguments.done",
+            "call_id": call_id,
+            "name": "calculator",
+            "arguments": json.dumps({"expression": expression}),
+        }
+    )
+
+
+def _enabled_bridge() -> ToolBridge:
+    state = SimpleNamespace()
+    settings = make_settings(realtime_tools_enabled=True)
+    state.tool_registry, state.tool_executor = build_tools()
+    return build_tool_bridge(state, settings, "corr-1")
+
+
+def test_build_tool_bridge_inert_when_tools_disabled():
+    state = SimpleNamespace()
+    state.tool_registry, state.tool_executor = build_tools()
+    bridge = build_tool_bridge(state, make_settings(realtime_tools_enabled=False), "c")
+    assert bridge.enabled is False
+    assert bridge.tools == []
+
+
+def test_build_tool_bridge_advertises_builtins_when_enabled():
+    bridge = _enabled_bridge()
+    assert bridge.enabled is True
+    names = {t["name"] for t in bridge.tools}
+    assert {"calculator", "get_current_time"} <= names
+    # Flat realtime schema: name at the top level, no nested "function" wrapper.
+    assert all(t["type"] == "function" and "function" not in t for t in bridge.tools)
+
+
+def test_tool_bridge_executes_calculator_round_trip():
+    bridge = _enabled_bridge()
+    frames = asyncio.run(bridge.handle_upstream_frame(_calc_done_frame()))
+    assert len(frames) == 2
+    output_frame = json.loads(frames[0])
+    assert output_frame["item"]["call_id"] == "call_1"
+    result = json.loads(output_frame["item"]["output"])
+    assert result["result"] == 5
+    # Second frame nudges the model to speak the tool result.
+    assert json.loads(frames[1]) == {"type": "response.create"}
+
+
+def test_tool_bridge_rewrites_session_update_with_tools():
+    bridge = _enabled_bridge()
+    out = json.loads(bridge.rewrite_client_frame(json.dumps({"type": "session.update"})))
+    assert {t["name"] for t in out["session"]["tools"]} >= {"calculator"}
+    assert out["session"]["tool_choice"] == "auto"
+
+
+def test_tool_bridge_unknown_tool_returns_error_not_execution():
+    bridge = _enabled_bridge()
+    frame = json.dumps(
+        {
+            "type": "response.function_call_arguments.done",
+            "call_id": "c",
+            "name": "definitely_not_a_tool",
+            "arguments": "{}",
+        }
+    )
+    frames = asyncio.run(bridge.handle_upstream_frame(frame))
+    assert len(frames) == 2
+    output = json.loads(json.loads(frames[0])["item"]["output"])
+    assert "error" in output and "not permitted" in output["error"]
+
+
+def test_tool_bridge_invalid_arguments_return_error():
+    bridge = _enabled_bridge()
+    frame = json.dumps(
+        {
+            "type": "response.function_call_arguments.done",
+            "call_id": "c",
+            "name": "calculator",
+            "arguments": "not-json",
+        }
+    )
+    frames = asyncio.run(bridge.handle_upstream_frame(frame))
+    output = json.loads(json.loads(frames[0])["item"]["output"])
+    assert "error" in output
+
+
+def test_tool_bridge_disabled_is_passthrough():
+    state = SimpleNamespace()
+    state.tool_registry, state.tool_executor = build_tools()
+    bridge = build_tool_bridge(state, make_settings(realtime_tools_enabled=False), "c")
+    frame = json.dumps({"type": "session.update", "session": {"voice": "verse"}})
+    assert bridge.rewrite_client_frame(frame) == frame
+    assert asyncio.run(bridge.handle_upstream_frame(_calc_done_frame())) == []

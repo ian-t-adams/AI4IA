@@ -106,6 +106,9 @@ param realtimeApiVersion string = '2025-04-01-preview'
 @description('Comma-separated browser Origin allowlist for the live-voice relay handshake. Required (non-empty) when realtimeEnabled in a deployed env (the relay fails closed otherwise).')
 param realtimeAllowedOrigins string = ''
 
+@description('Enable governed tool calling inside a live session (the relay injects the safe built-in tools and executes the model\'s function calls in-process). Inert unless realtimeEnabled is also true.')
+param realtimeToolsEnabled bool = true
+
 @description('Enable the per-user document library (Phase 11A). Default OFF (the /api/library API refuses with 404 and nothing is constructed, so the app is inert).')
 param documentUnderstandingEnabled bool = false
 
@@ -219,6 +222,10 @@ var realtimeEnv = realtimeEnabled ? [
   {
     name: 'AI4IA_REALTIME_ALLOWED_ORIGINS'
     value: realtimeAllowedOrigins
+  }
+  {
+    name: 'AI4IA_REALTIME_TOOLS_ENABLED'
+    value: realtimeToolsEnabled ? 'true' : 'false'
   }
 ] : []
 
