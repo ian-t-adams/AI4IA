@@ -349,6 +349,10 @@ module web 'modules/web.bicep' = {
     // proxy can't proxy WebSockets). Emitted only when enabled; default OFF.
     voiceLiveEnabled: voiceLiveEnabled
     apiPublicUrl: api.outputs.apiUrl
+    // Document library (Phase 11B-2): surface the same feature flag that drives the
+    // API ingest/retrieval path so the browser shows the library UI only when the
+    // feature is on. Default OFF -> no control, no change.
+    documentLibraryEnabled: documentUnderstandingEnabled
   }
 }
 

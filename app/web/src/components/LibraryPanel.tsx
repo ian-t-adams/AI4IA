@@ -1,0 +1,303 @@
+"use client";
+
+// Phase 11B-2 document-library panel. Lets a signed-in user upload documents to
+// their cross-session library, watch ingest status, pick an analyzer, and delete.
+// Rendered only when the DOCUMENT_LIBRARY_ENABLED flag is on (gated by ChatApp),
+// so it is inert by default.
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  deleteLibraryDocument,
+  listLibraryAnalyzers,
+  listLibraryDocuments,
+  uploadLibraryDocument,
+} from "@/lib/api";
+import type { LibraryAnalyzer, LibraryDocument } from "@/lib/library";
+
+const STATUS_LABEL: Record<LibraryDocument["status"], string> = {
+  pending: "Pending",
+  stored: "Stored",
+  analyzing: "Analyzing…",
+  ready: "Ready",
+  failed: "Failed",
+};
+
+const STATUS_COLOR: Record<LibraryDocument["status"], string> = {
+  pending: "var(--fg-muted)",
+  stored: "var(--fg-muted)",
+  analyzing: "#0e7490",
+  ready: "#15803d",
+  failed: "#b91c1c",
+};
+
+// Documents in these states are still being ingested, so we poll for changes.
+const IN_FLIGHT = new Set<LibraryDocument["status"]>([
+  "pending",
+  "stored",
+  "analyzing",
+]);
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function LibraryPanel({ onClose }: { onClose: () => void }) {
+  const [docs, setDocs] = useState<LibraryDocument[]>([]);
+  const [analyzers, setAnalyzers] = useState<LibraryAnalyzer[]>([]);
+  const [analyzerId, setAnalyzerId] = useState<string>("");
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const mountedRef = useRef(true);
+
+  const refresh = useCallback(async () => {
+    try {
+      const list = await listLibraryDocuments();
+      if (mountedRef.current) setDocs(list);
+    } catch (e) {
+      if (mountedRef.current) setError((e as Error).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    (async () => {
+      try {
+        const [list, analyzerList] = await Promise.all([
+          listLibraryDocuments(),
+          listLibraryAnalyzers().catch(() => [] as LibraryAnalyzer[]),
+        ]);
+        if (!mountedRef.current) return;
+        setDocs(list);
+        setAnalyzers(analyzerList);
+      } catch (e) {
+        if (mountedRef.current) setError((e as Error).message);
+      } finally {
+        if (mountedRef.current) setLoading(false);
+      }
+    })();
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // Poll while any document is still being ingested.
+  useEffect(() => {
+    if (!docs.some((d) => IN_FLIGHT.has(d.status))) return;
+    const t = setInterval(refresh, 3000);
+    return () => clearInterval(t);
+  }, [docs, refresh]);
+
+  async function onFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    setError(null);
+    try {
+      for (const file of Array.from(files)) {
+        await uploadLibraryDocument(file, analyzerId || null);
+      }
+      await refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      if (mountedRef.current) setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  async function onDelete(doc: LibraryDocument) {
+    if (!confirm(`Delete "${doc.filename}" from your library?`)) return;
+    setError(null);
+    try {
+      await deleteLibraryDocument(doc.id);
+      setDocs((prev) => prev.filter((d) => d.id !== doc.id));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Document library"
+      aria-modal="true"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.45)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 50,
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--bg-elevated)",
+          color: "var(--fg)",
+          width: "min(560px, 94vw)",
+          borderRadius: "var(--radius)",
+          border: "1px solid var(--border)",
+          padding: 24,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+          maxHeight: "90vh",
+          overflowY: "auto",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <h2 style={{ margin: 0, fontSize: "1.2em" }}>Document library</h2>
+          <button
+            onClick={onClose}
+            aria-label="Close library"
+            style={{
+              border: "none",
+              background: "transparent",
+              color: "var(--fg)",
+              fontSize: "1.2em",
+            }}
+          >
+            ✕
+          </button>
+        </div>
+
+        <p style={{ margin: 0, fontSize: "0.85em", color: "var(--fg-muted)" }}>
+          Upload documents to your personal library. Once ready, the assistant
+          can reference and cite them across all your chats.
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {analyzers.length > 0 && (
+            <label
+              style={{ fontSize: "0.8em", color: "var(--fg-muted)", display: "flex", flexDirection: "column", gap: 4 }}
+            >
+              Analyzer
+              <select
+                value={analyzerId}
+                onChange={(e) => setAnalyzerId(e.target.value)}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                  color: "var(--fg)",
+                }}
+              >
+                <option value="">Automatic (by file type)</option>
+                {analyzers.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                    {a.kind === "custom" ? " (custom)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <input
+            ref={fileRef}
+            type="file"
+            multiple
+            disabled={uploading}
+            onChange={(e) => onFiles(e.target.files)}
+            style={{ fontSize: "0.85em" }}
+          />
+          {uploading && (
+            <span style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}>
+              Uploading…
+            </span>
+          )}
+        </div>
+
+        {error && (
+          <div
+            role="alert"
+            style={{
+              fontSize: "0.8em",
+              color: "#b91c1c",
+              border: "1px solid #b91c1c",
+              borderRadius: 8,
+              padding: "8px 10px",
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {loading ? (
+            <span style={{ fontSize: "0.85em", color: "var(--fg-muted)" }}>
+              Loading…
+            </span>
+          ) : docs.length === 0 ? (
+            <span style={{ fontSize: "0.85em", color: "var(--fg-muted)" }}>
+              No documents yet.
+            </span>
+          ) : (
+            docs.map((doc) => (
+              <div
+                key={doc.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontWeight: 600,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={doc.filename}
+                  >
+                    {doc.filename}
+                  </div>
+                  <div style={{ fontSize: "0.75em", color: "var(--fg-muted)" }}>
+                    {formatSize(doc.size)}
+                    {doc.status === "ready" && doc.chunkCount > 0
+                      ? ` · ${doc.chunkCount} chunks`
+                      : ""}
+                  </div>
+                </div>
+                <span
+                  style={{
+                    fontSize: "0.75em",
+                    fontWeight: 600,
+                    color: STATUS_COLOR[doc.status],
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {STATUS_LABEL[doc.status]}
+                </span>
+                <button
+                  onClick={() => onDelete(doc)}
+                  aria-label={`Delete ${doc.filename}`}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--fg-muted)",
+                    fontSize: "1em",
+                    cursor: "pointer",
+                  }}
+                >
+                  🗑
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -10,6 +10,7 @@ export function Sidebar({
   onDelete,
   onOpenSettings,
   onOpenStudio,
+  onOpenLibrary,
   disabled = false,
 }: {
   sessions: Session[];
@@ -19,6 +20,7 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onOpenSettings: () => void;
   onOpenStudio: () => void;
+  onOpenLibrary?: () => void;
   disabled?: boolean;
 }) {
   return (
@@ -132,6 +134,23 @@ export function Sidebar({
         >
           🛠 Agents &amp; workflows
         </button>
+        {onOpenLibrary && (
+          <button
+            onClick={onOpenLibrary}
+            disabled={disabled}
+            style={{
+              width: "100%",
+              padding: "8px 12px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: "transparent",
+              color: "var(--sidebar-fg)",
+              cursor: disabled ? "not-allowed" : "pointer",
+            }}
+          >
+            📚 Document library
+          </button>
+        )}
         <button
           onClick={onOpenSettings}
           style={{

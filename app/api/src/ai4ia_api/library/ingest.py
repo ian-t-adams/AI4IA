@@ -141,6 +141,28 @@ class DocumentIngestor:
     def cu_enabled(self) -> bool:
         return self._cu is not None
 
+    # Read-only accessors so the retrieval consumer (11B-2) can share the SAME
+    # backing IO instances the producer writes through. This matters for the
+    # in-memory stores used in local/dev/tests: a document indexed into the
+    # ingestor's in-process chunk/blob store would be invisible to retrieval if
+    # the consumer built its own. Sharing keeps a single source of IO truth and
+    # guarantees producer/consumer parity.
+    @property
+    def library(self) -> DocumentLibraryRepository:
+        return self._library
+
+    @property
+    def blob(self) -> BlobStore:
+        return self._blob
+
+    @property
+    def chunks(self) -> DocChunkStore | None:
+        return self._chunks
+
+    @property
+    def embedder(self) -> GatewayEmbedder | None:
+        return self._embedder
+
     def schedule_enrich(
         self,
         *,

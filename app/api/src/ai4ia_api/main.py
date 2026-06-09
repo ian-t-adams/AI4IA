@@ -21,7 +21,7 @@ from .entitlements.service import EntitlementService
 from .gateway.client import ModelGatewayClient
 from .routers.realtime import AiohttpRealtimeConnector
 from .library.factory import build_document_library
-from .library.ingest_factory import build_document_ingestor
+from .library.ingest_factory import build_document_ingestor, build_document_retrieval
 from .memory.factory import build_memory_service
 from .logging_setup import (
     configure_logging,
@@ -146,6 +146,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.document_ingestor.recover_interrupted()
             except Exception:  # noqa: BLE001 - startup sweep must not block boot
                 logger.warning("document recovery sweep failed", exc_info=True)
+        # Document retrieval consumer (Phase 11B-2). Reuses the ingestor's backing
+        # IO so a document indexed by the producer is visible to chat retrieval.
+        # None when document understanding is off (no library context, no
+        # fetch_document tool) — zero regression by default.
+        app.state.document_retrieval = build_document_retrieval(
+            settings, ingestor=app.state.document_ingestor
+        )
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
         try:

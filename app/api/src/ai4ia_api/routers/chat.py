@@ -35,6 +35,8 @@ from ..agents.orchestration import build_delegate_capability
 from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
 from ..entitlements.service import EntitlementService
+from ..library.chat_capability import build_document_capability
+from ..library.retrieval import DocumentRetrievalService
 from ..memory.service import MemoryServiceProtocol
 from ..usage.models import TokenUsage
 from ..usage.service import UsageService
@@ -199,6 +201,11 @@ async def chat(
     memory: MemoryServiceProtocol = request.app.state.memory
     metering: UsageService = request.app.state.usage
     entitlements: EntitlementService = request.app.state.entitlements
+    # Document retrieval consumer (Phase 11B-2). None when document understanding
+    # is off, so plain chat is byte-for-byte unchanged by default.
+    retrieval: DocumentRetrievalService | None = getattr(
+        request.app.state, "document_retrieval", None
+    )
 
     try:
         session = await repo.get_session(user.internal_user_id, body.sessionId)
@@ -363,10 +370,29 @@ async def chat(
     # (content_for_model); docs are re-supplied per turn.
     doc_block = await _document_context(repo, user.internal_user_id, body.sessionId)
 
+    # Per-user document-library context (Phase 11B-2, best-effort, flag-gated).
+    # Tiers 1-2 (summary cards + RAG excerpts over the user's *ready* library) are
+    # injected as a SYSTEM block for every turn (plain chat and agents alike), so
+    # the library is universally available without changing the streaming path.
+    # The per-turn nonce fences the untrusted block and is reused for the
+    # fetch_document tool (Tier 3) so both share one anti-injection marker. When
+    # retrieval is off (default) or the library is empty, this is "".
+    library_nonce = secrets.token_hex(4)
+    library_block = ""
+    if retrieval is not None:
+        try:
+            library_block = await retrieval.context_block(
+                user.internal_user_id, content_for_model, nonce=library_nonce
+            )
+        except Exception:  # noqa: BLE001 - retrieval must never break a turn
+            logger.warning("library context build failed", exc_info=True)
+            library_block = ""
+
     # Insert context system blocks after the main system prompt, memory first,
-    # then documents, so session/agent instructions retain top authority.
+    # then session documents, then the library, so session/agent instructions
+    # retain top authority.
     insert_at = 1 if (payload_messages and payload_messages[0]["role"] == "system") else 0
-    for block in (memory_block, doc_block):
+    for block in (memory_block, doc_block, library_block):
         if block:
             payload_messages.insert(insert_at, {"role": "system", "content": block})
             insert_at += 1
@@ -403,6 +429,18 @@ async def chat(
             executor=executor,
             deployment=deployment.deploymentName,
         )
+        # Tier 3: give tool-enabled agents the fetch_document capability over the
+        # user's ready library, bound to this user + the turn's library nonce.
+        # Merged alongside delegate_to_agent (disjoint names) so an orchestrator
+        # can both delegate and read documents.
+        if retrieval is not None:
+            doc_tools, doc_handlers = build_document_capability(
+                service=retrieval,
+                user_id=user.internal_user_id,
+                nonce=library_nonce,
+            )
+            extra_tools = [*extra_tools, *doc_tools]
+            extra_handlers = {**extra_handlers, **doc_handlers}
         run = await run_agent_turn(
             deployment=deployment.deploymentName,
             messages=payload_messages,

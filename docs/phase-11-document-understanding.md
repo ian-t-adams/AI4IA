@@ -199,9 +199,17 @@ while — hence async ingest + polling with backoff, not an inline call.
   over the instant quick-text fallback; status surfaced to the UI. Split for
   review isolation: **11B-1** ships the ingest *producer* (this list, plus the
   blob/upload/CU/chunk pipeline), and **11B-2** ships the retrieval *consumer* —
-  wiring tiers 1–2 into `_document_context`, the `fetch_document` tool (tier 3),
+  wiring tiers 1–2 into the chat hot path, the `fetch_document` tool (tier 3),
   and the web UI — since the chat hot path is the highest-regression-risk surface.
-  Prebuilt + selectable analyzers.
+  Prebuilt + selectable analyzers. **11B-2 implemented:** a universal system-block
+  injection (Tier 1 summary cards + Tier 2 RAG excerpts) built by
+  `library/retrieval.py`'s `DocumentRetrievalService`, the `fetch_document` synthetic
+  tool (`library/chat_capability.py`, tool-enabled agents only) for Tier 3, and a
+  sidebar **Document library** panel (flag `DOCUMENT_LIBRARY_ENABLED`, default OFF).
+  Status-gated end to end — only `ready` documents contribute, the pgvector search is
+  scoped to ready doc ids, all injection is best-effort (never breaks a turn) and
+  nonce-fenced as untrusted, preserving the producer invariant that a document which
+  never reaches `ready` exposes no retrievable chunks.
 - **11C — Intent router + code_interpreter.** Classify ask (Q&A vs compute vs
   transform); route compute/tabular to code_interpreter; "adjust & return"
   export path with versioned blobs.
@@ -228,8 +236,11 @@ caps.
 `cu_timeout_seconds` · `cu_poll_interval_seconds` · `cu_max_poll_seconds` ·
 blob account/container settings · `document_chunk_chars`/`document_chunk_overlap` ·
 `document_max_upload_bytes` · `document_max_per_user` · default analyzer per
-modality. Add fail-closed `validate_runtime()` checks (enabled ⇒ blob + CU
-endpoint configured), mirroring the realtime/voice-live pattern.
+modality · retrieval-consumer knobs (`document_retrieval_top_k = 6`,
+`document_context_max_docs = 20`, `document_context_max_chars = 8000`,
+`document_fetch_max_chars = 12000`). Add fail-closed `validate_runtime()` checks
+(enabled ⇒ blob + CU endpoint configured), mirroring the realtime/voice-live
+pattern.
 
 ## Open items / future
 
