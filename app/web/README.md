@@ -65,3 +65,37 @@ In Azure, `infra/main.bicep` wires these automatically: set `apiAuthProvider=ent
 (defaults to `<entraAudience>/.default`). `infra/modules/web.bicep` only emits the
 `ENTRA_*` env when the provider is `entra` and all values are present, and stops
 injecting `DEV_USER` once Entra is on.
+
+## Voice Live (Phase 10) — real-time speech-to-speech
+
+A **feature-flagged, default-OFF** live voice mode. When off (the default), no
+live-voice control is rendered and nothing about the chat UI changes — the existing
+turn-based voice (Phase 7B: record → transcribe, and read-aloud) is untouched.
+
+When enabled, a **Live** button appears in the composer (only if the model catalog
+also exposes a `realtime` model). It opens a WebSocket **directly to the API's
+external ingress** at `/api/voice/live` — the Next.js HTTP proxy can't proxy
+WebSockets — and streams 24 kHz mono PCM16 mic audio up while playing the model's
+PCM16 response back, with barge-in (playback stops the instant you start speaking).
+The API relay enforces all governance (auth, entitlement gate, usage metering,
+and `Origin` validation); the browser never sees the deployment or gateway key.
+
+Auth on that WebSocket rides a **subprotocol** (a browser-direct WS can't set an
+`Authorization` header): under Entra the client offers `["ai4ia-bearer", <token>]`
+(from `getApiAccessToken()`); under dev it offers `["ai4ia-dev", <DEV_USER>]`,
+honored by the API only when dev auth is permitted.
+
+Like the auth config, the flag and API URL are read **server-side** (in
+`app/layout.tsx`, surfaced via `VoiceLiveProvider` — never `NEXT_PUBLIC_*`):
+
+| Var | Purpose |
+| --- | --- |
+| `VOICE_LIVE_ENABLED` | `false` (default) or `true` to surface the Live control |
+| `API_PUBLIC_URL` | Public https URL of the API ingress; converted to `wss` for the WS |
+
+Both must be set together; a half-config stays disabled. In Azure,
+`infra/main.bicep` wires this with the `voiceLiveEnabled` parameter (default
+`false`), passing `api.outputs.apiUrl` as `API_PUBLIC_URL` and enabling the API's
+realtime relay (`AI4IA_REALTIME_*`). When enabling in a deployed env you must also
+set `realtimeAllowedOrigins` (the relay's Origin allowlist) or the relay fails
+closed.

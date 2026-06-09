@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { AuthProvider } from "@/components/AuthProvider";
+import { VoiceLiveProvider } from "@/components/VoiceLiveProvider";
 import { getAuthConfig } from "@/lib/authConfig";
+import { getVoiceLiveConfig } from "@/lib/voiceLiveConfig";
 
 export const metadata: Metadata = {
   title: "AI4IA — Agentic Chat",
@@ -16,6 +18,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   const authConfig = getAuthConfig();
+  const voiceLiveConfig = getVoiceLiveConfig();
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
@@ -23,7 +26,11 @@ export default function RootLayout({
           Skip to main content
         </a>
         <ThemeProvider>
-          <AuthProvider config={authConfig}>{children}</AuthProvider>
+          <AuthProvider config={authConfig}>
+            <VoiceLiveProvider config={voiceLiveConfig}>
+              {children}
+            </VoiceLiveProvider>
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>

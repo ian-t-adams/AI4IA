@@ -58,6 +58,12 @@ param entraWebClientId string = ''
 @description('API scope the web SPA requests (empty derives <entraAudience>/.default when an audience is set).')
 param entraApiScope string = ''
 
+@description('Enable Voice Live (Phase 10) end to end: the API realtime relay and the browser live-voice control. Default OFF (no behavior change).')
+param voiceLiveEnabled bool = false
+
+@description('Comma-separated browser Origin allowlist for the live-voice relay handshake (required when voiceLiveEnabled in a deployed env; the relay fails closed otherwise).')
+param realtimeAllowedOrigins string = ''
+
 @description('Comma-separated admin subjects for the entitlement-management API.')
 param adminSubjects string = ''
 
@@ -290,6 +296,10 @@ module api 'modules/api.bicep' = {
     entraAudience: entraAudience
     adminSubjects: adminSubjects
     adminApiSecret: adminApiSecret
+    // Voice Live (Phase 10) realtime relay. Default OFF; the Origin allowlist is
+    // required (non-empty) when enabling in a deployed env or the relay fails closed.
+    realtimeEnabled: voiceLiveEnabled
+    realtimeAllowedOrigins: realtimeAllowedOrigins
   }
 }
 
@@ -317,6 +327,11 @@ module web 'modules/web.bicep' = {
     entraClientId: entraWebClientId
     entraTenantId: entraTenantId
     entraApiScope: !empty(entraApiScope) ? entraApiScope : (empty(entraAudience) ? '' : '${entraAudience}/.default')
+    // Voice Live (Phase 10): surface the flag + the API's public URL so the browser
+    // can open the live-voice WebSocket directly against the API ingress (the web
+    // proxy can't proxy WebSockets). Emitted only when enabled; default OFF.
+    voiceLiveEnabled: voiceLiveEnabled
+    apiPublicUrl: api.outputs.apiUrl
   }
 }
 

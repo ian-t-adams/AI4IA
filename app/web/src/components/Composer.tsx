@@ -9,6 +9,7 @@ import {
 } from "react";
 import type { AgentSummary, DocumentSummary } from "@/lib/types";
 import { useVoiceRecorder } from "@/lib/voice";
+import { useVoiceLive, type VoiceLiveConfig } from "@/lib/voiceLive";
 
 // Mirrors the backend cap (routers/documents.py MAX_DOCS_PER_SESSION).
 const MAX_DOCS = 8;
@@ -35,6 +36,10 @@ interface ActiveMention {
 const MENTION_RE = /^(\s*)@([A-Za-z0-9_.-]*)$/;
 const MAX_OPTIONS = 8;
 
+// A stable disabled config so the always-called useVoiceLive hook gets a constant
+// reference when the feature is off (no per-render object churn).
+const DISABLED_LIVE: VoiceLiveConfig = { enabled: false, wsUrl: "", devUser: "" };
+
 function detectMention(value: string, caret: number): ActiveMention | null {
   const prefix = value.slice(0, caret);
   const m = prefix.match(MENTION_RE);
@@ -53,6 +58,9 @@ export function Composer({
   onUpload,
   onRemoveDocument,
   onError,
+  voiceLiveEnabled = false,
+  voiceLiveConfig,
+  voiceLiveModel = null,
 }: {
   disabled: boolean;
   streaming: boolean;
@@ -64,6 +72,9 @@ export function Composer({
   onUpload: (file: File) => void;
   onRemoveDocument: (id: string) => void;
   onError?: (message: string) => void;
+  voiceLiveEnabled?: boolean;
+  voiceLiveConfig?: VoiceLiveConfig;
+  voiceLiveModel?: string | null;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -112,6 +123,16 @@ export function Composer({
   };
 
   const voice = useVoiceRecorder(appendTranscript, (msg) => onError?.(msg));
+
+  // Live voice (Phase 10). The hook is always called (rules of hooks) but stays
+  // inert until the user toggles it; the control below is only rendered when the
+  // feature flag is on and a realtime model exists.
+  const live = useVoiceLive(
+    voiceLiveConfig ?? DISABLED_LIVE,
+    voiceLiveModel,
+    (msg) => onError?.(msg),
+  );
+  const showLive = voiceLiveEnabled && live.supported;
 
   const enabledAgents = useMemo(
     () => agents.filter((a) => a.enabled),
@@ -459,6 +480,49 @@ export function Composer({
           {voice.transcribing ? "…" : voice.recording ? "■" : "🎙"}
         </button>
 
+        {showLive && (
+          <button
+            type="button"
+            onClick={live.toggle}
+            aria-pressed={live.active}
+            aria-busy={live.status === "connecting"}
+            aria-label={
+              live.status === "connecting"
+                ? "Connecting live voice"
+                : live.active
+                  ? "Stop live voice"
+                  : "Start live voice conversation"
+            }
+            title={
+              live.status === "connecting"
+                ? "Connecting…"
+                : live.active
+                  ? "Stop live voice"
+                  : "Start a live voice conversation"
+            }
+            style={{
+              alignSelf: "stretch",
+              minHeight: 46,
+              padding: "0 14px",
+              borderRadius: 10,
+              border: "1px solid var(--border)",
+              background: live.active ? "var(--accent)" : "var(--bg)",
+              color: live.active ? "var(--accent-fg)" : "var(--fg)",
+              fontSize: "1.05em",
+              lineHeight: 1,
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <span aria-hidden="true">
+              {live.status === "connecting" ? "…" : live.active ? "◉" : "🎧"}
+            </span>
+            <span style={{ fontSize: "0.85em", fontWeight: 600 }}>Live</span>
+          </button>
+        )}
+
         <label htmlFor="composer" className="visually-hidden">
           Message
         </label>
@@ -535,8 +599,39 @@ export function Composer({
           ? "● Recording… click the mic again to stop."
           : voice.transcribing
             ? "Transcribing your audio…"
-            : ""}
+            : showLive && live.active
+              ? live.status === "connecting"
+                ? "Connecting live voice…"
+                : "● Live — speak naturally; click Live again to end."
+              : ""}
       </div>
+
+      {showLive && live.active && (live.userTranscript || live.assistantTranscript) && (
+        <div
+          aria-live="polite"
+          style={{
+            marginTop: 4,
+            fontSize: "0.8em",
+            color: "var(--fg-muted)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+          }}
+        >
+          {live.userTranscript && (
+            <div>
+              <strong style={{ color: "var(--fg)" }}>You:</strong>{" "}
+              {live.userTranscript}
+            </div>
+          )}
+          {live.assistantTranscript && (
+            <div>
+              <strong style={{ color: "var(--fg)" }}>Assistant:</strong>{" "}
+              {live.assistantTranscript}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -19,6 +19,7 @@ from .config import Settings, get_settings
 from .entitlements.factory import build_default_entitlement, build_entitlement_store
 from .entitlements.service import EntitlementService
 from .gateway.client import ModelGatewayClient
+from .routers.realtime import AiohttpRealtimeConnector
 from .memory.factory import build_memory_service
 from .logging_setup import (
     configure_logging,
@@ -33,6 +34,7 @@ from .routers import documents as documents_router
 from .routers import entitlements as entitlements_router
 from .routers import health as health_router
 from .routers import images as images_router
+from .routers import realtime as realtime_router
 from .routers import sessions as sessions_router
 from .routers import usage as usage_router
 from .routers import voice as voice_router
@@ -66,6 +68,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.auth_provider = build_auth_provider(settings)
         app.state.session_repo = build_session_repository(settings)
         app.state.gateway = ModelGatewayClient(settings, http_client=http)
+        # Voice Live (Phase 10): the upstream realtime-WS connector. Default OFF,
+        # so this is unused unless settings.realtime_enabled is true. Swappable in
+        # tests (a fake socket) the same way app.state.gateway is.
+        app.state.realtime_connector = AiohttpRealtimeConnector()
         app.state.catalog = load_catalog(settings.model_catalog_path)
         app.state.agents = load_agent_catalog(settings.agent_catalog_path)
         # Tool-safety registry (governs) + executor (runs). Separate objects,
@@ -177,6 +183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(documents_router.router)
     app.include_router(images_router.router)
     app.include_router(voice_router.router)
+    app.include_router(realtime_router.router)
     app.include_router(usage_router.router)
     app.include_router(entitlements_router.self_router)
     app.include_router(entitlements_router.admin_router)
