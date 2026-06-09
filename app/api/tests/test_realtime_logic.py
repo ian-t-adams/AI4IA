@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ai4ia_api.agents.agent_catalog import AgentCatalog, AgentSpec
 from ai4ia_api.agents.tool_exec import build_tools
 from ai4ia_api.auth.base import AuthCredentials, AuthError, AuthenticatedUser
 from ai4ia_api.catalog import DeploymentOption, ModelCatalog, ModelEntry
@@ -26,6 +27,7 @@ from ai4ia_api.routers.realtime import (
     ToolBridge,
     authenticate_subprotocol,
     build_function_call_output,
+    build_session_bridge,
     build_tool_bridge,
     build_upstream_headers,
     build_upstream_url,
@@ -512,3 +514,191 @@ def test_tool_bridge_disabled_is_passthrough():
     frame = json.dumps({"type": "session.update", "session": {"voice": "verse"}})
     assert bridge.rewrite_client_frame(frame) == frame
     assert asyncio.run(bridge.handle_upstream_frame(_calc_done_frame())) == []
+
+
+# --------------------------------------------------------------------------- #
+# Agent-aware live voice: persona injection + per-agent tool scoping.
+# --------------------------------------------------------------------------- #
+
+
+class _FakeAgentService:
+    """Returns a fixed composed catalog (the store layer is irrelevant to tests)."""
+
+    def __init__(self, catalog: AgentCatalog) -> None:
+        self._catalog = catalog
+
+    async def catalog_for(self, user_id: str, curated: AgentCatalog) -> AgentCatalog:
+        return self._catalog
+
+
+class _BrokenAgentService:
+    async def catalog_for(self, user_id: str, curated: AgentCatalog) -> AgentCatalog:
+        raise RuntimeError("agent store down")
+
+
+def _agent_state(*specs: AgentSpec, service=None) -> SimpleNamespace:
+    state = SimpleNamespace()
+    state.tool_registry, state.tool_executor = build_tools()
+    catalog = AgentCatalog(agents=list(specs))
+    state.agents = catalog
+    state.agent_service = service if service is not None else _FakeAgentService(catalog)
+    return state
+
+
+def _spec(name: str, *, tools: list[str], prompt: str = "PERSONA", enabled: bool = True) -> AgentSpec:
+    return AgentSpec(
+        name=name,
+        displayName=name.title(),
+        description="d",
+        systemPrompt=prompt,
+        tools=tools,
+        enabled=enabled,
+    )
+
+
+_USER = SimpleNamespace(internal_user_id="u1")
+
+
+def test_inject_session_tools_injects_instructions_with_tools():
+    frame = json.dumps({"type": "session.update", "session": {"voice": "verse"}})
+    out = json.loads(
+        inject_session_tools(
+            frame, [{"type": "function", "name": "calculator"}], "auto", instructions="P"
+        )
+    )
+    assert out["session"]["voice"] == "verse"
+    assert out["session"]["instructions"] == "P"  # relay owns instructions when bound
+    assert out["session"]["tool_choice"] == "auto"
+
+
+def test_inject_session_tools_injects_instructions_only_when_no_tools():
+    frame = json.dumps({"type": "session.update", "session": {"voice": "verse"}})
+    out = json.loads(inject_session_tools(frame, [], "auto", instructions="P"))
+    assert out["session"]["instructions"] == "P"
+    # Persona-only: tools/tool_choice are NOT touched when no tools are advertised.
+    assert "tools" not in out["session"]
+    assert "tool_choice" not in out["session"]
+
+
+def test_inject_session_tools_leaves_client_instructions_when_none():
+    frame = json.dumps({"type": "session.update", "session": {"instructions": "client"}})
+    out = json.loads(
+        inject_session_tools(frame, [{"type": "function", "name": "x"}], "auto")
+    )
+    assert out["session"]["instructions"] == "client"  # untouched for generic sessions
+
+
+def test_tool_bridge_persona_only_rewrites_instructions_without_tools():
+    state = SimpleNamespace()
+    state.tool_registry, state.tool_executor = build_tools()
+    bridge = build_tool_bridge(
+        state, make_settings(realtime_tools_enabled=False), "c", instructions="P"
+    )
+    assert bridge.enabled is False  # no tools -> no in-process execution
+    out = json.loads(
+        bridge.rewrite_client_frame(
+            json.dumps({"type": "session.update", "session": {"voice": "x"}})
+        )
+    )
+    assert out["session"]["instructions"] == "P"
+    assert "tools" not in out["session"]
+
+
+def test_build_tool_bridge_scopes_to_tool_names():
+    state = SimpleNamespace()
+    state.tool_registry, state.tool_executor = build_tools()
+    bridge = build_tool_bridge(
+        state, make_settings(realtime_tools_enabled=True), "c", tool_names=["calculator"]
+    )
+    assert {t["name"] for t in bridge.tools} == {"calculator"}
+
+
+def test_build_session_bridge_agent_scopes_tools_and_persona():
+    state = _agent_state(_spec("analyst", tools=["calculator"], prompt="ANALYST"))
+    bridge = asyncio.run(
+        build_session_bridge(
+            state,
+            make_settings(realtime_tools_enabled=True),
+            "c",
+            user=_USER,
+            agent_name="analyst",
+        )
+    )
+    assert bridge.instructions == "ANALYST"
+    # Scoped to the agent's allowlist: calculator only, NOT get_current_time.
+    assert {t["name"] for t in bridge.tools} == {"calculator"}
+
+
+def test_build_session_bridge_agent_persona_without_tools_when_tools_disabled():
+    state = _agent_state(_spec("coder", tools=[], prompt="CODER"))
+    bridge = asyncio.run(
+        build_session_bridge(
+            state,
+            make_settings(realtime_tools_enabled=False),
+            "c",
+            user=_USER,
+            agent_name="coder",
+        )
+    )
+    assert bridge.instructions == "CODER"
+    assert bridge.tools == []  # persona-only when realtime tools are off
+
+
+def test_build_session_bridge_unknown_agent_falls_back_to_generic():
+    state = _agent_state(_spec("analyst", tools=["calculator"]))
+    bridge = asyncio.run(
+        build_session_bridge(
+            state,
+            make_settings(realtime_tools_enabled=True),
+            "c",
+            user=_USER,
+            agent_name="nope",
+        )
+    )
+    assert bridge.instructions is None
+    assert {t["name"] for t in bridge.tools} >= {"calculator", "get_current_time"}
+
+
+def test_build_session_bridge_disabled_agent_falls_back_to_generic():
+    state = _agent_state(_spec("off", tools=["calculator"], enabled=False))
+    bridge = asyncio.run(
+        build_session_bridge(
+            state,
+            make_settings(realtime_tools_enabled=True),
+            "c",
+            user=_USER,
+            agent_name="off",
+        )
+    )
+    assert bridge.instructions is None
+    assert {t["name"] for t in bridge.tools} >= {"get_current_time"}
+
+
+def test_build_session_bridge_no_agent_is_generic():
+    state = _agent_state(_spec("analyst", tools=["calculator"]))
+    bridge = asyncio.run(
+        build_session_bridge(
+            state,
+            make_settings(realtime_tools_enabled=True),
+            "c",
+            user=_USER,
+            agent_name=None,
+        )
+    )
+    assert bridge.instructions is None
+    assert {t["name"] for t in bridge.tools} >= {"calculator", "get_current_time"}
+
+
+def test_build_session_bridge_store_error_falls_back_to_generic():
+    state = _agent_state(service=_BrokenAgentService())
+    bridge = asyncio.run(
+        build_session_bridge(
+            state,
+            make_settings(realtime_tools_enabled=True),
+            "c",
+            user=_USER,
+            agent_name="analyst",
+        )
+    )
+    assert bridge.instructions is None  # fail OPEN to the generic assistant
+    assert bridge.tools  # builtins still offered

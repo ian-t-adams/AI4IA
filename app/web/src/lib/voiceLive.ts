@@ -220,6 +220,7 @@ export function useVoiceLive(
   model: string | null,
   voice: string,
   onError: (message: string) => void,
+  agent: string | null = null,
 ): VoiceLiveController {
   const [status, setStatus] = useState<VoiceLiveStatus>("idle");
   const [supported, setSupported] = useState(false);
@@ -336,9 +337,14 @@ export function useVoiceLive(
       const source = ctx.createMediaStreamSource(stream);
       const worklet = new AudioWorkletNode(ctx, "ai4ia-capture");
 
-      const wsUrl = model
-        ? `${config.wsUrl}?model=${encodeURIComponent(model)}`
-        : config.wsUrl;
+      // The relay resolves the realtime deployment and (when ?agent= is set) the
+      // agent's server-authoritative persona + tool allowlist; the browser only
+      // names them. An unknown/disabled agent falls back to the generic assistant.
+      const params = new URLSearchParams();
+      if (model) params.set("model", model);
+      if (agent) params.set("agent", agent);
+      const qs = params.toString();
+      const wsUrl = qs ? `${config.wsUrl}?${qs}` : config.wsUrl;
       const ws = new WebSocket(wsUrl, subprotocols);
       ws.binaryType = "arraybuffer";
 
@@ -482,7 +488,7 @@ export function useVoiceLive(
     } finally {
       startingRef.current = false;
     }
-  }, [config, model, teardown]);
+  }, [config, model, agent, teardown]);
 
   const stop = useCallback(() => {
     setStatus("closing");
