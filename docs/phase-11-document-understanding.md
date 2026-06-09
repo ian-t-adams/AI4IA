@@ -163,11 +163,23 @@ while — hence async ingest + polling with backoff, not an inline call.
   inside the existing nonce-fenced untrusted block (`_document_context`).
 - **Tier 3 — `fetch_document(document_id, range)` tool:** returns full/partial
   parsed Markdown from blob when the agent needs everything (long-doc tail).
-- **Intent router:** Q&A / interrogate / cite → RAG; "compute over it"
-  (spreadsheets, totals, charts, transforms) → **code_interpreter** handed the
-  original file (pandas-native) or CU's extracted tables; "adjust & return it" →
-  CI/export writing a **new versioned blob**. CU is always the front door; CI is
-  never the default — it's the slowest path and weak at corpus search.
+- **Intent router (11C, implemented).** A deterministic, dependency-free
+  classifier (`library/router.py`) labels each turn **qa** (→ Tiers 1–3 RAG),
+  **compute** (totals, stats, charts, tabular → the `run_code` tool), or
+  **transform** ("adjust & return it" → the `export_document` tool). CU/RAG is
+  always the front door; CI is **never the default** — the router only *offers* the
+  compute tools (the model still chooses), since CI is the slowest path and weak at
+  corpus search. `run_code` rides the Azure OpenAI **Responses API** built-in
+  `code_interpreter` tool — a sandboxed Azure-managed Python container: `POST
+  {code_interpreter_base_url}/openai/v1/responses` with
+  `tools:[{type:"code_interpreter",container:{type:"auto"}}]`, synchronous
+  (`status: "completed"`, `output_text` + `output[]`). The v1 GA surface omits
+  `api-version`; `?api-version=preview` opts into preview features. Verified on
+  Microsoft Learn — *"Use the Azure OpenAI Responses API"* → **Code Interpreter**
+  section (learn.microsoft.com/azure/foundry/openai/how-to/responses; REST schema at
+  learn.microsoft.com/rest/api/aifoundry/azureopenai/responses). v1 hands CI the **ready-gated parsed Markdown**
+  (handing CI the original-file container `file_ids` is a documented future
+  enhancement).
 - **Citations** come from the grounding map (page "p.4", timestamp "02:13",
   segment), enabling deep-link-back in the UI.
 
@@ -210,9 +222,35 @@ while — hence async ingest + polling with backoff, not an inline call.
   scoped to ready doc ids, all injection is best-effort (never breaks a turn) and
   nonce-fenced as untrusted, preserving the producer invariant that a document which
   never reaches `ready` exposes no retrievable chunks.
-- **11C — Intent router + code_interpreter.** Classify ask (Q&A vs compute vs
-  transform); route compute/tabular to code_interpreter; "adjust & return"
-  export path with versioned blobs.
+- **11C — Intent router + code_interpreter + "adjust & return" export.**
+  **Implemented:** a deterministic, dependency-free `IntentRouter`
+  (`library/router.py`) classifies each turn — **qa** (Q&A / interrogate / cite →
+  the 11B-2 Tier-1/2 RAG already shipped), **compute** (totals, stats, charts,
+  tabular → `run_code`), or **transform** ("adjust & return it" → `export_document`).
+  CU/RAG stays the front door; **code_interpreter is never the default** — the
+  router only *offers* the compute tools when the ask is genuinely
+  compute/tabular/transform (the model still decides), since CI is the slowest path
+  and weak at corpus search. `run_code` is a governed Azure OpenAI **Responses API**
+  built-in `code_interpreter` tool (sandboxed Azure-managed Python container; `POST
+  {base}/openai/v1/responses` with
+  `tools:[{type:"code_interpreter",container:{type:"auto"}}]` — see the Microsoft
+  Learn citation in *Retrieval & routing*) handed the **ready-gated** parsed document
+  text. `export_document` writes a **new versioned blob** under
+  `…/versions/{n}/…` and bumps a `versions[]` entry on the manifest, leaving the
+  original immutable. All of it is a **second** default-OFF flag
+  (`document_compute_enabled`, layered on top of document understanding) guarding the
+  chat hot path: when off, the router never runs, neither synthetic tool is
+  advertised, the version-download endpoint refuses, and chat is byte-for-byte
+  unchanged. Governance mirrors 11B exactly — per-user ownership re-check, `ready`
+  status-gate on every doc-access path (CI input + export source), generic not-found
+  on cross-user (no existence leak), per-turn budgets (max runs/exports), usage
+  metering, and the per-turn nonce fence + `_one_line`/`_safe_filename` on **every**
+  new untrusted string (CI stdout/stderr, artifact filenames, exported content
+  metadata) in both success **and** error results. Router/CI/export failures are
+  best-effort: they swallow and fall through to the normal RAG answer, never breaking
+  a turn. Tool names (`run_code`, `export_document`) are disjoint from the
+  builtins/`delegate_to_agent`/`fetch_document` (the runtime keeps its fail-closed
+  collision assert).
 - **11D — Multimodal (audio/video).** Audio (transcript + diarization) and video
   (keyframes + segmentation) analyzers; grounded timestamp/segment citations and
   deep-link-back.
@@ -241,6 +279,20 @@ modality · retrieval-consumer knobs (`document_retrieval_top_k = 6`,
 `document_fetch_max_chars = 12000`). Add fail-closed `validate_runtime()` checks
 (enabled ⇒ blob + CU endpoint configured), mirroring the realtime/voice-live
 pattern.
+
+**Compute over the library (Phase 11C, all default-OFF/empty):**
+`document_compute_enabled: bool = False` (the second flag guarding the chat hot
+path; enabling it requires `document_understanding_enabled` — `validate_runtime`
+fails closed otherwise) · `code_interpreter_base_url` (bare Azure OpenAI resource
+endpoint; `/openai/v1` is appended by the client) · `code_interpreter_model`
+(both **required** when compute is enabled outside `local`) ·
+`code_interpreter_api_version = ""` (empty ⇒ Responses v1 GA; `preview` opts in) ·
+`code_interpreter_auth_mode` (bearer AAD / api_key) · `code_interpreter_api_key`
+(required when `auth_mode == api_key`) ·
+`code_interpreter_aad_scope = "https://ai.azure.com/.default"` ·
+`code_interpreter_timeout_seconds = 120` ·
+`code_interpreter_max_input_chars = 60000` (parsed text handed to CI per run) ·
+`document_export_max_chars = 200000` (one exported artifact).
 
 ## Open items / future
 

@@ -143,6 +143,32 @@ BUILTIN_ANALYZERS: tuple[Analyzer, ...] = (
 BUILTIN_ANALYZER_IDS: frozenset[str] = frozenset(a.id for a in BUILTIN_ANALYZERS)
 
 
+class DocumentVersion(BaseModel):
+    """An "adjust & return" derived artifact of a library document (Phase 11C).
+
+    Each export writes a **new** versioned blob under
+    ``{userId}/{documentId}/versions/{n}/...`` and appends one of these to the
+    owning :class:`UserDocument`. The original artifacts (raw + parsed) are never
+    overwritten, so the source stays immutable and every adjustment is an additive
+    pointer. ``n`` is 1-based and dense (the manifest's next version is
+    ``len(versions) + 1``). The field is additive with an inert default so adding
+    it is not a breaking manifest migration and round-trips through both the
+    in-memory and Cosmos stores unchanged.
+    """
+
+    n: int
+    # Stored blob path of this version's artifact (under the versions/ prefix).
+    path: str
+    # Sanitized filename surfaced to the user/UI (already ``_safe_filename``-d).
+    filename: str
+    contentType: str = "text/markdown"
+    size: int = 0
+    # Short, single-line provenance (e.g. "totals by quarter"); sanitized before
+    # it is ever shown to the model or the user.
+    note: str = ""
+    createdAt: datetime = Field(default_factory=_now)
+
+
 class UserDocument(BaseModel):
     """A document in a user's cross-session library (manifest; PK ``/userId``).
 
@@ -183,8 +209,28 @@ class UserDocument(BaseModel):
     acl: list[str] = Field(default_factory=list)
     # Sessions that reference this library document (for cascade/usage views).
     sessionLinks: list[str] = Field(default_factory=list)
+    # "Adjust & return" derived artifacts (Phase 11C). Additive, default empty so
+    # the manifest contract is unchanged for documents that were never exported.
+    # The original raw/parsed artifacts are never mutated; each export appends one
+    # dense, 1-based entry here.
+    versions: list[DocumentVersion] = Field(default_factory=list)
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
 
     def touch(self) -> None:
         self.updatedAt = _now()
+
+    @property
+    def version_count(self) -> int:
+        return len(self.versions)
+
+    @property
+    def next_version(self) -> int:
+        """1-based number for the next export (dense; one past the current max)."""
+        return (max((v.n for v in self.versions), default=0)) + 1
+
+    @property
+    def latest_version(self) -> DocumentVersion | None:
+        if not self.versions:
+            return None
+        return max(self.versions, key=lambda v: v.n)

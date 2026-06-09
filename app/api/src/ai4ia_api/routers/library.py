@@ -25,12 +25,14 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..entitlements.service import EntitlementService
 from ..library.access import can_access, require_owner
+from ..library.compute_factory import DocumentComputeService
 from ..library.ingest import DocumentIngestor
 from ..library.models import (
     Analyzer,
@@ -52,6 +54,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/library", tags=["library"])
 
 
+class DocumentVersionSummary(BaseModel):
+    """An "adjust & return" version pointer surfaced to the client. Carries no
+    blob path (downloads go through the gated version endpoint)."""
+
+    version: int
+    filename: str
+    contentType: str
+    size: int
+    note: str
+    createdAt: datetime
+
+
 class UserDocumentSummary(BaseModel):
     """Library document metadata returned to the client. Excludes reserved
     internal fields (e.g. ``acl``) and never carries the document body."""
@@ -68,6 +82,8 @@ class UserDocumentSummary(BaseModel):
     visibility: Visibility
     createdAt: datetime
     updatedAt: datetime
+    versionCount: int = 0
+    versions: list[DocumentVersionSummary] = Field(default_factory=list)
 
     @classmethod
     def of(cls, doc: UserDocument) -> "UserDocumentSummary":
@@ -84,6 +100,18 @@ class UserDocumentSummary(BaseModel):
             visibility=doc.visibility,
             createdAt=doc.createdAt,
             updatedAt=doc.updatedAt,
+            versionCount=doc.version_count,
+            versions=[
+                DocumentVersionSummary(
+                    version=v.n,
+                    filename=v.filename,
+                    contentType=v.contentType,
+                    size=v.size,
+                    note=v.note,
+                    createdAt=v.createdAt,
+                )
+                for v in sorted(doc.versions, key=lambda v: v.n)
+            ],
         )
 
 
@@ -115,6 +143,21 @@ def _ingestor(request: Request) -> DocumentIngestor:
             detail="The document library is not enabled.",
         )
     return ingestor
+
+
+def _compute(request: Request) -> "DocumentComputeService":
+    """Return the document compute service or 404 when compute is disabled.
+
+    Gates the version-download endpoints behind the Phase 11C flag: when document
+    compute is off (default) there is no export path and no versions, so these
+    routes refuse exactly like the library routes do when understanding is off."""
+    compute = getattr(request.app.state, "document_compute", None)
+    if compute is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document compute is not enabled.",
+        )
+    return compute
 
 
 async def _block_disabled(request: Request, user_id: str) -> None:
@@ -251,6 +294,63 @@ async def get_document(
     if not can_access(uid, doc):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     return UserDocumentSummary.of(doc)
+
+
+@router.get(
+    "/documents/{document_id}/versions",
+    response_model=list[DocumentVersionSummary],
+)
+async def list_document_versions(
+    document_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[DocumentVersionSummary]:
+    """List the "adjust & return" versions of a ready document (Phase 11C).
+
+    Gated behind document compute (404 when off) and the export service's own
+    ownership + ready-status gate; a missing, cross-user, or non-ready document
+    returns a generic 404 (never leaks existence)."""
+    compute = _compute(request)
+    result = await compute.export.list_versions(user.internal_user_id, document_id)
+    if "error" in result:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return [
+        DocumentVersionSummary(
+            version=v["version"],
+            filename=v["filename"],
+            contentType=v["contentType"],
+            size=v["size"],
+            note=v["note"],
+            createdAt=datetime.fromisoformat(v["createdAt"]),
+        )
+        for v in result["versions"]
+    ]
+
+
+@router.get("/documents/{document_id}/versions/{n}/content")
+async def download_document_version(
+    document_id: str,
+    n: int,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Response:
+    """Download a version's bytes (Phase 11C), ownership- + ready-status-gated.
+
+    The original raw/parsed artifacts are never exposed here — only the additive
+    versioned export blobs. A missing/cross-user/non-ready document or unknown
+    version number returns a generic 404."""
+    compute = _compute(request)
+    result = await compute.export.read_version(user.internal_user_id, document_id, n)
+    if "error" in result:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
+    # ASCII-fold the (already path-stripped, printable-only) filename for the
+    # latin-1 header transport so a unicode name can't raise on send.
+    header_name = result["filename"].replace('"', "").encode("ascii", "ignore").decode() or "export.md"
+    return Response(
+        content=result["data"],
+        media_type=result["contentType"] or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{header_name}"'},
+    )
 
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

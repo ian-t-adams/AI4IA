@@ -175,20 +175,16 @@ class DocumentRetrievalService:
             out.append(f"[{cite}]\n{content}")
         return out
 
-    async def fetch_document(
-        self,
-        user_id: str,
-        document_id: str,
-        *,
-        start: int = 0,
-        length: int | None = None,
-    ) -> dict:
-        """Tier 3: read a window of a ready document's parsed markdown.
+    async def _load_ready_parsed(
+        self, user_id: str, document_id: str
+    ) -> tuple[str, str] | dict:
+        """Ownership- + status-gated load of a ready document's parsed markdown.
 
-        Ownership- and status-gated: a missing, unowned, or not-``ready`` document
-        returns a structured ``{"error": ...}`` (never an exception, never leaks
-        existence of another user's document). The window is bounded by
-        ``document_fetch_max_chars`` so one call can't flood the context."""
+        Returns ``(safe_filename, text)`` for a readable document, or a structured
+        ``{"error": ...}`` for a missing/unowned/non-ready document or an
+        unreadable blob (never an exception, never an existence leak). Shared by
+        :meth:`fetch_document` (Tier 3 windowed read) and :meth:`read_parsed` (the
+        compute path's larger bounded read) so the gate lives in one place."""
         document_id = (document_id or "").strip()
         if not document_id:
             return {"error": "document_id is required."}
@@ -198,7 +194,7 @@ class DocumentRetrievalService:
             return {"error": f"No document found with id '{document_id}'."}
         except Exception:  # noqa: BLE001 - degrade, never propagate
             logger.warning(
-                "fetch_document load failed user=%s id=%s", user_id, document_id, exc_info=True
+                "parsed load failed user=%s id=%s", user_id, document_id, exc_info=True
             )
             return {"error": "Could not read that document right now."}
 
@@ -223,12 +219,32 @@ class DocumentRetrievalService:
             return {"error": f"No parsed content available for '{safe_name}'."}
         except Exception:  # noqa: BLE001 - degrade, never propagate
             logger.warning(
-                "fetch_document blob read failed user=%s id=%s", user_id, document_id,
+                "parsed blob read failed user=%s id=%s", user_id, document_id,
                 exc_info=True,
             )
             return {"error": "Could not read that document right now."}
 
-        text = raw.decode("utf-8", "ignore")
+        return safe_name, raw.decode("utf-8", "ignore")
+
+    async def fetch_document(
+        self,
+        user_id: str,
+        document_id: str,
+        *,
+        start: int = 0,
+        length: int | None = None,
+    ) -> dict:
+        """Tier 3: read a window of a ready document's parsed markdown.
+
+        Ownership- and status-gated: a missing, unowned, or not-``ready`` document
+        returns a structured ``{"error": ...}`` (never an exception, never leaks
+        existence of another user's document). The window is bounded by
+        ``document_fetch_max_chars`` so one call can't flood the context."""
+        loaded = await self._load_ready_parsed(user_id, document_id)
+        if isinstance(loaded, dict):
+            return loaded
+        safe_name, text = loaded
+
         total = len(text)
         start = max(0, min(int(start or 0), total))
         cap = max(1, self._settings.document_fetch_max_chars)
@@ -236,7 +252,7 @@ class DocumentRetrievalService:
         window = text[start : start + want]
         next_start = start + len(window)
         return {
-            "document_id": document_id,
+            "document_id": document_id.strip(),
             "filename": safe_name,
             "total_chars": total,
             "start": start,
@@ -244,4 +260,27 @@ class DocumentRetrievalService:
             "next_start": next_start if next_start < total else None,
             "truncated": next_start < total,
             "content": window,
+        }
+
+    async def read_parsed(self, user_id: str, document_id: str, *, max_chars: int) -> dict:
+        """Read a ready document's parsed markdown for the compute path, bounded by
+        ``max_chars`` (the compute input cap, which may exceed the Tier-3 window).
+
+        Same ownership + ``ready`` gate as :meth:`fetch_document`; returns
+        ``{"filename","content","total_chars","truncated"}`` or ``{"error": ...}``.
+        The compute capability fences the returned content with the turn nonce."""
+        loaded = await self._load_ready_parsed(user_id, document_id)
+        if isinstance(loaded, dict):
+            return loaded
+        safe_name, text = loaded
+        total = len(text)
+        cap = max(1, int(max_chars))
+        content = text[:cap]
+        return {
+            "document_id": document_id.strip(),
+            "filename": safe_name,
+            "total_chars": total,
+            "returned_chars": len(content),
+            "truncated": total > cap,
+            "content": content,
         }

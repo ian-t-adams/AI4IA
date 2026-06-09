@@ -22,6 +22,7 @@ from .gateway.client import ModelGatewayClient
 from .routers.realtime import AiohttpRealtimeConnector
 from .library.factory import build_document_library
 from .library.ingest_factory import build_document_ingestor, build_document_retrieval
+from .library.compute_factory import build_document_compute
 from .memory.factory import build_memory_service
 from .logging_setup import (
     configure_logging,
@@ -153,6 +154,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.document_retrieval = build_document_retrieval(
             settings, ingestor=app.state.document_ingestor
         )
+        # Document compute consumer (Phase 11C): intent router + Code Interpreter
+        # + "adjust & return" export. Layered on top of retrieval and reusing the
+        # ingestor's IO. None when document compute is off (default), so the chat
+        # hot path never classifies intent, advertises neither tool, and the
+        # version-download endpoint refuses — zero regression by default. Owns the
+        # Code Interpreter client; closed in finally.
+        app.state.document_compute = build_document_compute(
+            settings,
+            ingestor=app.state.document_ingestor,
+            retrieval=app.state.document_retrieval,
+        )
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
         try:
@@ -206,6 +218,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await ingestor.close()
                 except Exception:  # noqa: BLE001
                     logger.warning("document ingestor close failed", exc_info=True)
+            compute = getattr(app.state, "document_compute", None)
+            if compute is not None:
+                try:
+                    await compute.close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("document compute close failed", exc_info=True)
 
     app = FastAPI(title="AI4IA API", version="0.1.0", lifespan=lifespan)
 

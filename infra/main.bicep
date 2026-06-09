@@ -73,6 +73,15 @@ param documentUnderstandingEnabled bool = false
 @description('Content Understanding endpoint base URL (Phase 11B). Required when enabling document understanding in a deployed env; the api fails closed at startup otherwise. Empty by default (feature off).')
 param cuBaseUrl string = ''
 
+@description('Enable compute over the library (Phase 11C): intent router + code_interpreter + "adjust & return" export. Layered ON TOP of documentUnderstandingEnabled. Default OFF (the chat hot path is byte-for-byte unchanged).')
+param documentComputeEnabled bool = false
+
+@description('Azure OpenAI resource endpoint (e.g. https://<resource>.openai.azure.com) that serves the Responses API code_interpreter tool (Phase 11C). Required when enabling document compute in a deployed env; the api fails closed at startup otherwise. Empty by default (feature off).')
+param codeInterpreterBaseUrl string = ''
+
+@description('Deployment/model name that serves the Responses API code_interpreter tool (Phase 11C, e.g. gpt-4.1). Required when enabling document compute in a deployed env.')
+param codeInterpreterModel string = ''
+
 @description('Comma-separated admin subjects for the entitlement-management API.')
 param adminSubjects string = ''
 
@@ -321,6 +330,11 @@ module api 'modules/api.bicep' = {
     documentBlobAccountUrl: data.outputs.documentBlobAccountUrl
     documentBlobContainer: data.outputs.documentBlobContainerName
     cuBaseUrl: cuBaseUrl
+    // Compute over the library (Phase 11C). Default OFF; layered on top of
+    // documentUnderstandingEnabled. Base url + model emitted only when non-empty.
+    documentComputeEnabled: documentComputeEnabled
+    codeInterpreterBaseUrl: codeInterpreterBaseUrl
+    codeInterpreterModel: codeInterpreterModel
   }
 }
 
