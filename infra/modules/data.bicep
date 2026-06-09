@@ -63,6 +63,15 @@ resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
     ]
     disableLocalAuth: true
     minimalTlsVersion: 'Tls12'
+    // Required: the api Container App runs on the Consumption plan with public egress
+    // and no VNet integration, so it reaches Cosmos over public networking (data-plane
+    // auth is still AAD-only via managed identity + the Built-in Data Contributor role
+    // assigned below). NOTE: a tenant policy remediation (`CosmosDB_LocalAuth_Modify`,
+    // which enforces disableLocalAuth) can issue a control-plane PATCH that drifts this
+    // to 'Disabled', which severs the api from Cosmos (every Cosmos-backed endpoint 500s
+    // while the static model catalog stays up). Re-running `azd provision` re-asserts
+    // 'Enabled'. To be drift-proof / policy-compliant instead, move to a VNet-integrated
+    // Container Apps environment + a Cosmos private endpoint (a later hardening pass).
     publicNetworkAccess: 'Enabled'
   }
 }
