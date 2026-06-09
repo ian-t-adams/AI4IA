@@ -32,3 +32,9 @@ export interface LibraryAnalyzer {
   modalities: string[];
   baseAnalyzerId: string | null;
 }
+
+// Mirrors the API's SaveToMemoryResult (Phase 11E-1): how many memory items
+// were stored when promoting a document's gist into durable memory.
+export interface SaveToMemoryResult {
+  saved: number;
+}

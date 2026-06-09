@@ -9,9 +9,16 @@ import {
   deleteLibraryDocument,
   listLibraryAnalyzers,
   listLibraryDocuments,
+  saveLibraryDocumentToMemory,
   uploadLibraryDocument,
 } from "@/lib/api";
 import type { LibraryAnalyzer, LibraryDocument } from "@/lib/library";
+
+// Per-document "save to memory" UI state (Phase 11E-1). Keyed by document id.
+type MemorySave =
+  | { status: "saving" }
+  | { status: "saved"; saved: number }
+  | { status: "error"; error: string };
 
 const STATUS_LABEL: Record<LibraryDocument["status"], string> = {
   pending: "Pending",
@@ -49,6 +56,9 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [memorySaves, setMemorySaves] = useState<Record<string, MemorySave>>(
+    {},
+  );
   const fileRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
 
@@ -118,6 +128,24 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
     }
   }
 
+  async function onSaveToMemory(doc: LibraryDocument) {
+    setMemorySaves((prev) => ({ ...prev, [doc.id]: { status: "saving" } }));
+    try {
+      const { saved } = await saveLibraryDocumentToMemory(doc.id);
+      if (mountedRef.current)
+        setMemorySaves((prev) => ({
+          ...prev,
+          [doc.id]: { status: "saved", saved },
+        }));
+    } catch (e) {
+      if (mountedRef.current)
+        setMemorySaves((prev) => ({
+          ...prev,
+          [doc.id]: { status: "error", error: (e as Error).message },
+        }));
+    }
+  }
+
   return (
     <div
       role="dialog"
@@ -168,7 +196,9 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
 
         <p style={{ margin: 0, fontSize: "0.85em", color: "var(--fg-muted)" }}>
           Upload documents to your personal library. Once ready, the assistant
-          can reference and cite them across all your chats.
+          can reference and cite them across all your chats. Use 🧠 to save a
+          document&apos;s gist to durable memory for recall even when the library
+          isn&apos;t queried.
         </p>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -268,6 +298,24 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                     {doc.status === "ready" && doc.chunkCount > 0
                       ? ` · ${doc.chunkCount} chunks`
                       : ""}
+                    {(() => {
+                      const m = memorySaves[doc.id];
+                      if (!m) return null;
+                      if (m.status === "saving")
+                        return (
+                          <span style={{ color: "#0e7490" }}> · saving to memory…</span>
+                        );
+                      if (m.status === "saved")
+                        return (
+                          <span style={{ color: "#15803d" }}>
+                            {" "}
+                            · saved {m.saved} to memory ✓
+                          </span>
+                        );
+                      return (
+                        <span style={{ color: "#b91c1c" }}> · {m.error}</span>
+                      );
+                    })()}
                   </div>
                 </div>
                 <span
@@ -280,6 +328,26 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                 >
                   {STATUS_LABEL[doc.status]}
                 </span>
+                {doc.status === "ready" && (
+                  <button
+                    onClick={() => onSaveToMemory(doc)}
+                    disabled={memorySaves[doc.id]?.status === "saving"}
+                    aria-label={`Save ${doc.filename} to memory`}
+                    title="Save this document's gist to durable memory so the assistant can recall it across chats"
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: "var(--fg-muted)",
+                      fontSize: "1em",
+                      cursor:
+                        memorySaves[doc.id]?.status === "saving"
+                          ? "default"
+                          : "pointer",
+                    }}
+                  >
+                    🧠
+                  </button>
+                )}
                 <button
                   onClick={() => onDelete(doc)}
                   aria-label={`Delete ${doc.filename}`}

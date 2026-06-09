@@ -17,7 +17,7 @@ import type {
   WorkflowRunResult,
   WorkflowUpdate,
 } from "./types";
-import type { LibraryAnalyzer, LibraryDocument } from "./library";
+import type { LibraryAnalyzer, LibraryDocument, SaveToMemoryResult } from "./library";
 import { apiFetch } from "./auth";
 
 async function jsonOrThrow<T>(resp: Response): Promise<T> {
@@ -320,6 +320,19 @@ export async function deleteLibraryDocument(documentId: string): Promise<void> {
 export async function listLibraryAnalyzers(): Promise<LibraryAnalyzer[]> {
   return jsonOrThrow(
     await apiFetch("/api/library/analyzers", { cache: "no-store" }),
+  );
+}
+
+// Phase 11E-1: explicitly promote a ready document's gist into the caller's
+// durable memory so the assistant can recall it across sessions. 409 when the
+// memory store is disabled, 409 when the document is not yet ready.
+export async function saveLibraryDocumentToMemory(
+  documentId: string,
+): Promise<SaveToMemoryResult> {
+  return jsonOrThrow(
+    await apiFetch(`/api/library/documents/${documentId}/memory`, {
+      method: "POST",
+    }),
   );
 }
 
