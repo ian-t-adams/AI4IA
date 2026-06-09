@@ -31,8 +31,15 @@ flowchart TB
 > WS subprotocol, the entitlement gate, usage metering, and `Origin` validation)
 > and opens the upstream realtime socket through the **same model gateway** as
 > every other model call, so the "all model traffic through the gateway" principle
-> holds. When the feature flag is off, the route refuses and no live-voice UI is
-> shown — the default behavior is unchanged.
+> holds. The browser owns the conversation shape (it sends `session.update`), so it
+> picks the **voice** from the model's supported set; the relay can additionally run
+> **governed tool calling** in-session (flag `AI4IA_REALTIME_TOOLS_ENABLED`,
+> inert unless realtime is on): it injects the safe built-in tools into the
+> client's `session.update` and executes the model's function calls in-process
+> through the **same registry/executor as chat** (authorize → validate → run), so
+> live voice never gains a capability the gateway didn't authorize. When the
+> feature flag is off, the route refuses and no live-voice UI is shown — the
+> default behavior is unchanged.
 
 ## Core principles
 1. **Model gateway from day one.** The backend never calls Foundry models directly — every

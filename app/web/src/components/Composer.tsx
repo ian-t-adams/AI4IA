@@ -9,7 +9,13 @@ import {
 } from "react";
 import type { AgentSummary, DocumentSummary } from "@/lib/types";
 import { useVoiceRecorder } from "@/lib/voice";
-import { useVoiceLive, type VoiceLiveConfig } from "@/lib/voiceLive";
+import {
+  useVoiceLive,
+  DEFAULT_VOICE,
+  REALTIME_VOICES,
+  isRealtimeVoice,
+  type VoiceLiveConfig,
+} from "@/lib/voiceLive";
 
 // Mirrors the backend cap (routers/documents.py MAX_DOCS_PER_SESSION).
 const MAX_DOCS = 8;
@@ -39,6 +45,9 @@ const MAX_OPTIONS = 8;
 // A stable disabled config so the always-called useVoiceLive hook gets a constant
 // reference when the feature is off (no per-render object churn).
 const DISABLED_LIVE: VoiceLiveConfig = { enabled: false, wsUrl: "", devUser: "" };
+
+// Where the chosen live-voice persona is remembered across reloads.
+const VOICE_STORAGE_KEY = "ai4ia.voiceLive.voice";
 
 function detectMention(value: string, caret: number): ActiveMention | null {
   const prefix = value.slice(0, caret);
@@ -127,9 +136,31 @@ export function Composer({
   // Live voice (Phase 10). The hook is always called (rules of hooks) but stays
   // inert until the user toggles it; the control below is only rendered when the
   // feature flag is on and a realtime model exists.
+  // The chosen voice persists across reloads and locks for a session once live
+  // (the model fixes the voice after its first audio reply), so the picker is
+  // disabled while a session is active.
+  const [liveVoice, setLiveVoice] = useState<string>(DEFAULT_VOICE);
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(VOICE_STORAGE_KEY);
+      if (stored && isRealtimeVoice(stored)) setLiveVoice(stored);
+    } catch {
+      /* storage unavailable -> keep the default */
+    }
+  }, []);
+  const onPickVoice = (value: string) => {
+    setLiveVoice(value);
+    try {
+      window.localStorage.setItem(VOICE_STORAGE_KEY, value);
+    } catch {
+      /* best effort */
+    }
+  };
+
   const live = useVoiceLive(
     voiceLiveConfig ?? DISABLED_LIVE,
     voiceLiveModel,
+    liveVoice,
     (msg) => onError?.(msg),
   );
   const showLive = voiceLiveEnabled && live.supported;
@@ -481,6 +512,38 @@ export function Composer({
         </button>
 
         {showLive && (
+          <select
+            aria-label="Live voice"
+            title={
+              live.active
+                ? "Stop live voice to change the voice"
+                : "Choose the live voice"
+            }
+            value={liveVoice}
+            disabled={live.active}
+            onChange={(e) => onPickVoice(e.target.value)}
+            style={{
+              alignSelf: "stretch",
+              minHeight: 46,
+              padding: "0 8px",
+              borderRadius: 10,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+              color: "var(--fg)",
+              fontSize: "0.85em",
+              cursor: live.active ? "not-allowed" : "pointer",
+              opacity: live.active ? 0.6 : 1,
+            }}
+          >
+            {REALTIME_VOICES.map((v) => (
+              <option key={v} value={v}>
+                {v.charAt(0).toUpperCase() + v.slice(1)}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {showLive && (
           <button
             type="button"
             onClick={live.toggle}
@@ -605,6 +668,21 @@ export function Composer({
                 : "● Live — speak naturally; click Live again to end."
               : ""}
       </div>
+
+      {showLive && live.active && live.toolActivity && (
+        <div
+          aria-live="polite"
+          style={{
+            minHeight: 16,
+            marginTop: 2,
+            fontSize: "0.75em",
+            color: "var(--accent)",
+            fontWeight: 600,
+          }}
+        >
+          🔧 {live.toolActivity}…
+        </div>
+      )}
 
       {showLive && live.active && (live.userTranscript || live.assistantTranscript) && (
         <div

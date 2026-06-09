@@ -64,6 +64,9 @@ param voiceLiveEnabled bool = false
 @description('Comma-separated browser Origin allowlist for the live-voice relay handshake (required when voiceLiveEnabled in a deployed env; the relay fails closed otherwise).')
 param realtimeAllowedOrigins string = ''
 
+@description('Enable governed tool calling inside a live voice session (calculator, current time). Inert unless voiceLiveEnabled is also true; default ON so enabling Voice Live gives the assistant tools.')
+param voiceLiveToolsEnabled bool = true
+
 @description('Enable the per-user document library (Phase 11A storage spine). Default OFF: the /api/library API refuses (404) and nothing is constructed, so there is no behavior change.')
 param documentUnderstandingEnabled bool = false
 
@@ -309,6 +312,7 @@ module api 'modules/api.bicep' = {
     // required (non-empty) when enabling in a deployed env or the relay fails closed.
     realtimeEnabled: voiceLiveEnabled
     realtimeAllowedOrigins: realtimeAllowedOrigins
+    realtimeToolsEnabled: voiceLiveToolsEnabled
     // Document library (Phase 11A). Default OFF; the /api/library API refuses (404).
     documentUnderstandingEnabled: documentUnderstandingEnabled
     // Document ingest (Phase 11B): the blob account/container the data module
