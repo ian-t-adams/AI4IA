@@ -76,3 +76,21 @@ async def test_duplicate_ids_are_ignored():
     await store.add_many([_rec("u1", "d1", 0)], [[0.0, 1.0]])  # same id
     hits = await store.search("u1", [1.0, 0.0], top_k=10)
     assert len(hits) == 1
+
+
+async def test_time_grounding_round_trips_through_search():
+    store = InMemoryDocChunkStore(expected_dim=2)
+    rec = DocChunkRecord(
+        user_id="u1",
+        document_id="d1",
+        chunk_index=0,
+        content="hello",
+        start_ms=1000,
+        end_ms=4000,
+        speaker="Speaker 1",
+    )
+    await store.add_many([rec], [[1.0, 0.0]])
+    hits = await store.search("u1", [1.0, 0.0], top_k=1)
+    assert hits[0].start_ms == 1000
+    assert hits[0].end_ms == 4000
+    assert hits[0].speaker == "Speaker 1"

@@ -40,6 +40,9 @@ _DDL_TABLE = (
     "heading text, "
     "char_start int, "
     "char_end int, "
+    "start_ms int, "
+    "end_ms int, "
+    "speaker text, "
     "embedding vector({dim}) NOT NULL, "
     "created_at timestamptz NOT NULL DEFAULT now()"
     ")"
@@ -48,19 +51,27 @@ _DDL_USER_INDEX = "CREATE INDEX IF NOT EXISTS doc_chunks_user_idx ON doc_chunks 
 _DDL_DOC_INDEX = (
     "CREATE INDEX IF NOT EXISTS doc_chunks_doc_idx ON doc_chunks (user_id, document_id)"
 )
+# Additive migrations so a doc_chunks table created before Phase 11D gains the
+# audio/video time-grounding columns without a destructive recreate.
+_DDL_ALTERS = (
+    "ALTER TABLE doc_chunks ADD COLUMN IF NOT EXISTS start_ms int",
+    "ALTER TABLE doc_chunks ADD COLUMN IF NOT EXISTS end_ms int",
+    "ALTER TABLE doc_chunks ADD COLUMN IF NOT EXISTS speaker text",
+)
 
 _INSERT = (
     "INSERT INTO doc_chunks "
     "(id, user_id, document_id, chunk_index, content, heading, char_start, char_end, "
-    "embedding, created_at) "
-    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10) "
+    "start_ms, end_ms, speaker, embedding, created_at) "
+    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::vector, $13) "
     "ON CONFLICT (id) DO NOTHING"
 )
 # Cosine similarity = 1 - distance, scoped to user_id and (optionally) a set of
 # document ids. $4 NULL => no document filter. Deterministic tie-break for tests.
 _SEARCH = (
     "SELECT id, user_id, document_id, chunk_index, content, heading, char_start, "
-    "char_end, created_at, 1 - (embedding <=> $2::vector) AS score "
+    "char_end, start_ms, end_ms, speaker, created_at, "
+    "1 - (embedding <=> $2::vector) AS score "
     "FROM doc_chunks "
     "WHERE user_id = $1 AND ($4::text[] IS NULL OR document_id = ANY($4)) "
     "ORDER BY embedding <=> $2::vector, document_id, chunk_index "
@@ -82,6 +93,11 @@ class DocChunkRecord:
     heading: str | None = None
     char_start: int | None = None
     char_end: int | None = None
+    # Audio/video time grounding (Phase 11D): the chunk's media start/end offset
+    # in milliseconds and its speaker label, when known. ``None`` for documents.
+    start_ms: int | None = None
+    end_ms: int | None = None
+    speaker: str | None = None
     id: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     score: float | None = None
@@ -181,6 +197,9 @@ class InMemoryDocChunkStore:
                     heading=record.heading,
                     char_start=record.char_start,
                     char_end=record.char_end,
+                    start_ms=record.start_ms,
+                    end_ms=record.end_ms,
+                    speaker=record.speaker,
                     id=record.id,
                     created_at=record.created_at,
                     score=score,
@@ -311,6 +330,8 @@ class PgDocChunkStore:
                 async with self._pool.acquire() as conn:
                     await conn.execute(_DDL_EXTENSION)
                     await conn.execute(_DDL_TABLE.format(dim=int(self._expected_dim)))
+                    for alter in _DDL_ALTERS:
+                        await conn.execute(alter)
                     await conn.execute(_DDL_USER_INDEX)
                     await conn.execute(_DDL_DOC_INDEX)
             except BaseException:
@@ -352,6 +373,9 @@ class PgDocChunkStore:
                 record.heading,
                 record.char_start,
                 record.char_end,
+                record.start_ms,
+                record.end_ms,
+                record.speaker,
                 self._vector_literal(vector),
                 record.created_at,
             )
@@ -382,6 +406,9 @@ class PgDocChunkStore:
                 heading=row["heading"],
                 char_start=row["char_start"],
                 char_end=row["char_end"],
+                start_ms=row["start_ms"],
+                end_ms=row["end_ms"],
+                speaker=row["speaker"],
                 id=row["id"],
                 created_at=row["created_at"],
                 score=float(row["score"]),

@@ -37,6 +37,7 @@ import logging
 from ..config import Settings
 from ..memory.embedder import GatewayEmbedder
 from .blob_store import PARSED_NAME, BlobNotFoundError, BlobStore, blob_path
+from .chunking import format_timestamp
 from .doc_chunks import DocChunkStore
 from .models import DocumentStatus, UserDocument
 from .repository import DocumentLibraryRepository, DocumentNotFoundError
@@ -51,6 +52,16 @@ _LABEL_LIMIT = 120
 def _one_line(text: str, limit: int) -> str:
     """Single-line, length-bounded text safe to embed in a delimiter header."""
     return (text or "").replace("\n", " ").replace("\r", " ").strip()[:limit]
+
+
+def _format_timespan(start_ms: int | None, end_ms: int | None) -> str:
+    """``mm:ss-mm:ss`` (or a single ``mm:ss``) media citation, or ``""`` when the
+    chunk has no time grounding (i.e. a document, not audio/video)."""
+    start = format_timestamp(start_ms)
+    end = format_timestamp(end_ms)
+    if start and end and end != start:
+        return f"{start}-{end}"
+    return start or end
 
 
 class DocumentRetrievalService:
@@ -167,6 +178,11 @@ class DocumentRetrievalService:
             ground = []
             if rec.heading:
                 ground.append(_one_line(rec.heading, _LABEL_LIMIT))
+            timespan = _format_timespan(rec.start_ms, rec.end_ms)
+            if timespan:
+                ground.append(timespan)
+            if rec.speaker:
+                ground.append(_one_line(rec.speaker, _LABEL_LIMIT))
             if rec.char_start is not None and rec.char_end is not None:
                 ground.append(f"chars {rec.char_start}-{rec.char_end}")
             cite = f"{names[rec.document_id]}"
