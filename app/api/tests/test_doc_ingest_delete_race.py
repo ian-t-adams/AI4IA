@@ -241,6 +241,48 @@ async def test_schedule_enrich_runs_to_ready():
     assert doc.status == DocumentStatus.ready
 
 
+async def test_enrich_failure_midpersist_purges_partial_chunks():
+    """A clean enrich failure (embed errors on a later batch) must not leave the
+    earlier batch's chunks indexed under the resulting ``failed`` document — while
+    the raw upload + quick-text summary are retained."""
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    chunks = InMemoryDocChunkStore(expected_dim=3)
+
+    calls = {"n": 0}
+
+    async def fail_second_batch() -> None:
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise RuntimeError("embed gateway down")
+
+    embedder = _Embedder(on_embed=fail_second_batch)
+    cu = _CU("# T\n\n" + ("word " * 200))  # many chunks at 40 chars/chunk
+    ingestor = _build(
+        cu=cu,
+        embedder=embedder,
+        chunks=chunks,
+        library=library,
+        blob=blob,
+        document_embed_batch=2,
+    )
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"BYTES"
+    )
+    doc_id = stored.document.id
+
+    await ingestor.enrich(
+        user_id="u1", document_id=doc_id, data=b"BYTES", content_type="application/pdf"
+    )
+
+    failed = await library.get_document("u1", doc_id)
+    assert failed.status == DocumentStatus.failed
+    # First batch indexed before the failure was purged — no orphan chunks.
+    assert await chunks.search("u1", _QUERY, top_k=50) == []
+    # The raw upload is retained (failed enrich keeps the user's document).
+    assert _blob_keys(blob, "u1", doc_id) != []
+
+
 async def test_recover_interrupted_fails_stuck_analyzing():
     library = InMemoryDocumentLibraryRepository()
     stuck = await library.create_document(
@@ -258,6 +300,38 @@ async def test_recover_interrupted_fails_stuck_analyzing():
     assert "interrupted" in (failed.error or "").lower()
     # A ready document is untouched.
     assert (await library.get_document("u1", healthy.id)).status == DocumentStatus.ready
+
+
+async def test_recover_interrupted_purges_partial_artifacts():
+    """A worker cancelled mid-persist leaves blob/chunk artifacts under a manifest
+    still at ``analyzing``. The startup sweep must flip it to ``failed`` AND purge
+    those artifacts so a failed doc contributes nothing to retrieval."""
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    chunks = InMemoryDocChunkStore(expected_dim=3)
+    ingestor = _build(
+        cu=_CU(""), embedder=_Embedder(), chunks=chunks, library=library, blob=blob
+    )
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"BYTES"
+    )
+    doc = stored.document
+    # Simulate an interrupted enrich: artifacts written, but the manifest never
+    # reached the terminal ready/failed write — it is stuck at ``analyzing``.
+    await ingestor._persist_enrichment("u1", doc, "# T\n\n" + ("word " * 30))
+    doc.status = DocumentStatus.analyzing
+    await library.update_document(doc)
+    assert _blob_keys(blob, "u1", doc.id) != []
+    assert await chunks.search("u1", _QUERY, top_k=50) != []
+
+    swept = await ingestor.recover_interrupted()
+
+    assert swept == 1
+    failed = await library.get_document("u1", doc.id)
+    assert failed.status == DocumentStatus.failed
+    # The partial artifacts are gone — no orphan chunks/blobs under the failed doc.
+    assert _blob_keys(blob, "u1", doc.id) == []
+    assert await chunks.search("u1", _QUERY, top_k=50) == []
 
 
 async def test_chunk_cap_truncates_and_batches():

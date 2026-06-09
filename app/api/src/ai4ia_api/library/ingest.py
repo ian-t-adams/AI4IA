@@ -303,6 +303,11 @@ class DocumentIngestor:
             meter_status = "error"
             doc.status = DocumentStatus.failed
             doc.error = str(exc)[:500]
+            # _persist_enrichment may have indexed some chunk batches before the
+            # failure (e.g. an embed error on a later batch). Drop the searchable
+            # vectors so a failed document is never retrievable, while keeping the
+            # raw upload + quick-text summary for the user to see and re-run.
+            await self._purge_chunks(user_id, document_id)
             logger.warning(
                 "enrich failed user=%s id=%s: %s", user_id, document_id, exc, exc_info=True
             )
@@ -455,17 +460,39 @@ class DocumentIngestor:
             doc.touch()
             try:
                 await self._library.update_document(doc)
-                swept += 1
             except DocumentNotFoundError:
                 continue
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "recover_interrupted: update failed id=%s", doc.id, exc_info=True
                 )
+                continue
+            # An enrich cancelled inside _persist_enrichment (shutdown/crash) may
+            # have written partial blob/pgvector artifacts before dying, with the
+            # manifest left at ``analyzing``. Now that it is ``failed``, purge those
+            # so a failed document contributes nothing to retrieval (no orphan
+            # chunks under a failed manifest). Best-effort + idempotent.
+            await self.purge(doc.userId, doc.id)
+            swept += 1
         if swept:
             logger.info("recover_interrupted: swept %d stuck document(s)", swept)
         return swept
 
+
+    async def _purge_chunks(self, user_id: str, document_id: str) -> None:
+        """Drop only the document's pgvector chunk index (best-effort, idempotent).
+
+        Unlike :meth:`purge`, the raw upload + parsed artifacts are kept — used when
+        a document settles ``failed`` after a clean enrich error so the user retains
+        their upload + quick-text summary, while the searchable vectors (the only
+        retrieval-reachable surface) are removed.
+        """
+        if self._chunks is None:
+            return
+        try:
+            await self._chunks.delete_document(user_id, document_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("chunk purge failed id=%s", document_id, exc_info=True)
 
     async def purge(self, user_id: str, document_id: str) -> None:
         """Best-effort removal of a document's blob artifacts + indexed chunks.
