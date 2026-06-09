@@ -20,6 +20,7 @@ from .entitlements.factory import build_default_entitlement, build_entitlement_s
 from .entitlements.service import EntitlementService
 from .gateway.client import ModelGatewayClient
 from .routers.realtime import AiohttpRealtimeConnector
+from .library.factory import build_document_library
 from .memory.factory import build_memory_service
 from .logging_setup import (
     configure_logging,
@@ -34,6 +35,7 @@ from .routers import documents as documents_router
 from .routers import entitlements as entitlements_router
 from .routers import health as health_router
 from .routers import images as images_router
+from .routers import library as library_router
 from .routers import realtime as realtime_router
 from .routers import sessions as sessions_router
 from .routers import usage as usage_router
@@ -67,6 +69,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = settings
         app.state.auth_provider = build_auth_provider(settings)
         app.state.session_repo = build_session_repository(settings)
+        # Per-user document library (Phase 11A). Feature-flagged + default-OFF:
+        # build_document_library returns None unless
+        # settings.document_understanding_enabled, so the ``/api/library`` API
+        # refuses (404) and nothing is constructed by default — zero regression.
+        app.state.document_library = build_document_library(settings)
         app.state.gateway = ModelGatewayClient(settings, http_client=http)
         # Voice Live (Phase 10): the upstream realtime-WS connector. Default OFF,
         # so this is unused unless settings.realtime_enabled is true. Swappable in
@@ -159,6 +166,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await close()
                 except Exception:  # noqa: BLE001
                     logger.warning("session repo close failed", exc_info=True)
+            library = getattr(app.state, "document_library", None)
+            lib_close = getattr(library, "close", None) if library else None
+            if lib_close is not None:
+                try:
+                    await lib_close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("document library close failed", exc_info=True)
 
     app = FastAPI(title="AI4IA API", version="0.1.0", lifespan=lifespan)
 
@@ -182,6 +196,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(chat_router.router)
     app.include_router(documents_router.router)
     app.include_router(images_router.router)
+    app.include_router(library_router.router)
     app.include_router(voice_router.router)
     app.include_router(realtime_router.router)
     app.include_router(usage_router.router)

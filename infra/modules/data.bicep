@@ -105,6 +105,14 @@ var containers = [
     name: 'documents'
     partitionKey: '/sessionId'
   }
+  {
+    name: 'userDocuments'
+    partitionKey: '/userId'
+  }
+  {
+    name: 'analyzers'
+    partitionKey: '/userId'
+  }
 ]
 
 resource cosmosContainers 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = [for c in containers: {

@@ -177,6 +177,21 @@ class Settings(BaseSettings):
     cosmos_endpoint: str | None = None
     cosmos_database: str = "ai4ia"
 
+    # --- Document & multimodal understanding (Phase 11A): storage spine ---
+    # Feature-flagged and default-OFF. With document_understanding_enabled=False
+    # the per-user document library is never constructed and the ``/api/library``
+    # API refuses (404), so the app's default behavior is unchanged. 11A ships
+    # only the storage spine (per-user manifest + analyzers registry + ownership/
+    # dedupe helpers); Content Understanding ingest, chunking, and retrieval land
+    # in later sub-phases. The existing per-session Phase 7C upload path
+    # (``/api/sessions/{id}/documents``) is independent and always available.
+    document_understanding_enabled: bool = False
+    # Max bytes accepted for a single library upload (bound resource use). Reused
+    # by the 11B ingest path; declared here so the cap is one source of truth.
+    document_max_upload_bytes: int = 50_000_000
+    # Max documents retained per user in the library (0 = unlimited).
+    document_max_per_user: int = 200
+
     # --- Memory (Phase 5): per-user semantic recall ---
     # Single source of truth: the store kind both selects the backend AND gates
     # the feature (``disabled`` == off). No separate enable flag, so the two can
@@ -336,6 +351,20 @@ class Settings(BaseSettings):
                 "Voice Live requires an Origin allowlist outside local. Set "
                 "AI4IA_REALTIME_ALLOWED_ORIGINS to the web origin(s), or disable "
                 "the feature with AI4IA_REALTIME_ENABLED=false."
+            )
+        if (
+            self.document_understanding_enabled
+            and self.env != Environment.local
+            and self.session_store != SessionStoreKind.cosmos
+        ):
+            # The per-user document library is durable cross-session storage; in a
+            # deployed env the in-memory store would silently lose every manifest
+            # on restart/scale. Require the Cosmos store so the feature is durable,
+            # or keep it disabled. Local/dev may use the in-memory store freely.
+            raise RuntimeError(
+                "Document understanding requires the cosmos session store outside "
+                "local (set AI4IA_SESSION_STORE=cosmos), or disable it with "
+                "AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false."
             )
 
 

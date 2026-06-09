@@ -1,0 +1,190 @@
+"""Domain models for the per-user document library (Phase 11A).
+
+Forward-looking but stable: the manifest carries the fields the later sub-phases
+populate (Content Understanding summary, blob artifact paths, chunk count) so
+adding them is never a breaking migration. 11A only writes the identity/dedupe
+fields; the rest keep their inert defaults until ingest (11B) fills them.
+
+Sharing is *designed in but not enabled* in v1: ``visibility`` is always
+``private`` and ``acl`` is always empty, so :func:`library.access.can_access` is
+owner-only. The fields exist so enabling sharing later is an additive flip, not a
+schema change.
+"""
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from enum import Enum
+
+from pydantic import BaseModel, Field
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _new_id() -> str:
+    return uuid.uuid4().hex
+
+
+# userId stamped on the built-in analyzers. A real user id is never this value,
+# so built-ins can never collide with or be mutated by a user's custom analyzers.
+SYSTEM_OWNER = "__system__"
+
+
+class DocumentStatus(str, Enum):
+    # Manifest created; bytes not yet persisted.
+    pending = "pending"
+    # Raw bytes stored (blob); not yet cracked by Content Understanding.
+    stored = "stored"
+    # Content Understanding ingest in flight.
+    analyzing = "analyzing"
+    # Cracked + indexed; available for retrieval.
+    ready = "ready"
+    # Ingest failed; ``error`` carries the reason.
+    failed = "failed"
+
+
+class Modality(str, Enum):
+    document = "document"
+    image = "image"
+    audio = "audio"
+    video = "video"
+    text = "text"
+    other = "other"
+
+
+class Visibility(str, Enum):
+    # Owner-only (the only value used in v1).
+    private = "private"
+    # Reserved for the sharing enablement in a later sub-phase.
+    shared = "shared"
+    public = "public"
+
+
+class AnalyzerKind(str, Enum):
+    # A Content Understanding prebuilt analyzer surfaced to every user.
+    builtin = "builtin"
+    # A user-defined analyzer stored in the per-user registry.
+    custom = "custom"
+
+
+class Analyzer(BaseModel):
+    """A selectable Content Understanding analyzer.
+
+    Built-ins are constants (see :data:`BUILTIN_ANALYZERS`) returned to every
+    user and never persisted. Custom analyzers are stored per-user (PK
+    ``/userId``) and selectable at upload. 11A only manages the registry; the CU
+    config is consumed by the ingest worker in 11B.
+    """
+
+    id: str = Field(default_factory=_new_id)
+    userId: str
+    name: str
+    description: str = ""
+    kind: AnalyzerKind = AnalyzerKind.custom
+    # Modalities this analyzer is appropriate for (UI filtering + validation).
+    modalities: list[Modality] = Field(default_factory=lambda: [Modality.document])
+    # CU base analyzer id this one derives from (e.g. a prebuilt). Used by the
+    # 11B ingest worker; unset for a from-scratch custom analyzer.
+    baseAnalyzerId: str | None = None
+    # Opaque CU analyzer configuration (field schema, etc.). Validated/consumed
+    # in 11B; kept as a free-form dict so the registry isn't coupled to the CU
+    # schema version.
+    config: dict = Field(default_factory=dict)
+    createdAt: datetime = Field(default_factory=_now)
+    updatedAt: datetime = Field(default_factory=_now)
+
+    @property
+    def builtin(self) -> bool:
+        return self.kind == AnalyzerKind.builtin
+
+
+# Built-in analyzers surfaced to every user. Logical descriptors only in 11A —
+# the concrete CU prebuilt-analyzer ids + field configs are wired in 11B against
+# the verified Content Understanding api-version, so nothing unverified is
+# hardcoded here. ``id`` is stable and safe to reference from the manifest.
+BUILTIN_ANALYZERS: tuple[Analyzer, ...] = (
+    Analyzer(
+        id="builtin-document",
+        userId=SYSTEM_OWNER,
+        name="Document",
+        description="General document understanding (PDF, Office, text): layout, "
+        "sections, tables, and a summary.",
+        kind=AnalyzerKind.builtin,
+        modalities=[Modality.document, Modality.text],
+    ),
+    Analyzer(
+        id="builtin-image",
+        userId=SYSTEM_OWNER,
+        name="Image",
+        description="Image understanding: caption, OCR text, and detected content.",
+        kind=AnalyzerKind.builtin,
+        modalities=[Modality.image],
+    ),
+    Analyzer(
+        id="builtin-audio",
+        userId=SYSTEM_OWNER,
+        name="Audio",
+        description="Audio transcription with speaker diarization.",
+        kind=AnalyzerKind.builtin,
+        modalities=[Modality.audio],
+    ),
+    Analyzer(
+        id="builtin-video",
+        userId=SYSTEM_OWNER,
+        name="Video",
+        description="Video understanding: transcript, key frames, and segments.",
+        kind=AnalyzerKind.builtin,
+        modalities=[Modality.video],
+    ),
+)
+
+BUILTIN_ANALYZER_IDS: frozenset[str] = frozenset(a.id for a in BUILTIN_ANALYZERS)
+
+
+class UserDocument(BaseModel):
+    """A document in a user's cross-session library (manifest; PK ``/userId``).
+
+    The raw bytes and any parsed artifacts live in blob storage (added with the
+    11B ingest path); this manifest holds identity, status, dedupe hash, and the
+    artifact pointers. ``userId`` is the partition key *and* is ownership-checked
+    on every access (defense in depth).
+    """
+
+    id: str = Field(default_factory=_new_id)
+    userId: str
+    filename: str
+    contentType: str = ""
+    # Size of the original uploaded bytes.
+    size: int = 0
+    # sha256 of the raw bytes (hex). Combined with ``analyzerId`` it is the
+    # dedupe key: re-uploading identical bytes for the same analyzer reuses the
+    # existing manifest instead of re-cracking.
+    contentHash: str = ""
+    modality: Modality = Modality.other
+    status: DocumentStatus = DocumentStatus.pending
+    # Analyzer selected/used to crack this document (a builtin or custom id).
+    analyzerId: str | None = None
+    # One-line summary produced by Content Understanding (filled in 11B).
+    summary: str = ""
+    # Blob artifact paths (filled by the 11B ingest path): raw upload, parsed
+    # markdown, and the chunk sidecar. Kept as nullable pointers so the manifest
+    # is valid the moment it is created, before any artifact exists.
+    rawPath: str | None = None
+    parsedPath: str | None = None
+    chunksPath: str | None = None
+    # Number of embedded chunks indexed for retrieval (filled in 11B).
+    chunkCount: int = 0
+    # Failure reason when ``status == failed``.
+    error: str | None = None
+    # --- Sharing (reserved; inert in v1) ---
+    visibility: Visibility = Visibility.private
+    acl: list[str] = Field(default_factory=list)
+    # Sessions that reference this library document (for cascade/usage views).
+    sessionLinks: list[str] = Field(default_factory=list)
+    createdAt: datetime = Field(default_factory=_now)
+    updatedAt: datetime = Field(default_factory=_now)
+
+    def touch(self) -> None:
+        self.updatedAt = _now()

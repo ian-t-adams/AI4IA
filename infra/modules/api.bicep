@@ -106,6 +106,9 @@ param realtimeApiVersion string = '2025-04-01-preview'
 @description('Comma-separated browser Origin allowlist for the live-voice relay handshake. Required (non-empty) when realtimeEnabled in a deployed env (the relay fails closed otherwise).')
 param realtimeAllowedOrigins string = ''
 
+@description('Enable the per-user document library (Phase 11A). Default OFF (the /api/library API refuses with 404 and nothing is constructed, so the app is inert).')
+param documentUnderstandingEnabled bool = false
+
 var entraEnv = authProvider == 'entra' ? [
   {
     name: 'AI4IA_ENTRA_TENANT_ID'
@@ -207,6 +210,17 @@ var realtimeEnv = realtimeEnabled ? [
   }
 ] : []
 
+// Document understanding (Phase 11A) library flag. Default OFF: the library repo
+// is not constructed and the /api/library API refuses (404), so the feature is
+// inert. The Cosmos containers it uses (userDocuments, analyzers) are created
+// unconditionally by the data module — empty + harmless when the flag is off.
+var documentEnv = documentUnderstandingEnabled ? [
+  {
+    name: 'AI4IA_DOCUMENT_UNDERSTANDING_ENABLED'
+    value: 'true'
+  }
+] : []
+
 var apiEnv = concat([
   {
     name: 'PORT'
@@ -252,7 +266,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: 'ca-api-${environmentName}'

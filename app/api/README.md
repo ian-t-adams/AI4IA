@@ -57,3 +57,37 @@ web HTTP proxy can't proxy WebSockets) and the relay:
 The event protocol stays client-driven (the relay is a mostly-transparent pump);
 the relay owns only the connection, governance, and metering. See `.env.example`
 for the `AI4IA_REALTIME_*` settings.
+
+## Document library (Phase 11A) — per-user storage spine
+
+A **feature-flagged, default-OFF** per-user document library under `/api/library`
+(`routers/library.py`). With `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false` (the
+default) the library repository is never constructed and every route refuses with
+404, so the API is inert and unchanged. The existing per-session Phase 7C uploads
+(`routers/documents.py`, `/api/sessions/{id}/documents`) are distinct and untouched.
+
+11A ships only the storage spine so the data model and governance are settled
+before any model calls:
+
+- **Manifest** (`library/models.py` `UserDocument`): the user's cross-session
+  library, partitioned by `/userId` (`userDocuments` Cosmos container). Forward-
+  looking fields (CU `summary`, blob artifact paths, `chunkCount`) are present but
+  inert until ingest (11B). Sharing is *designed in but disabled* — `visibility`
+  is always `private` and `acl` empty, so `library/access.py:can_access` is
+  owner-only; enabling sharing later is an additive flip, not a migration.
+- **Analyzer registry** (`analyzers` container, PK `/userId`): per-user custom
+  analyzers selectable at upload, merged with built-in descriptors
+  (`BUILTIN_ANALYZERS`). Built-ins are never persisted and can't be shadowed or
+  deleted by a user.
+- **Dedupe** (`library/hashing.py`): sha256 of the bytes + analyzer id is the
+  cache key, so re-uploading identical bytes reuses the manifest instead of
+  re-cracking.
+- **Repository** mirrors the session store: in-memory for local/dev/tests,
+  Cosmos (AAD/managed-identity) when `AI4IA_SESSION_STORE=cosmos`. Ownership is
+  enforced on every operation (partition + explicit check).
+
+Enabling the feature outside `local` requires the cosmos session store (the
+library is durable cross-session storage); `validate_runtime()` fails closed
+otherwise. Content Understanding ingest, chunking, and retrieval build on this
+spine in later Phase 11 sub-phases. See `.env.example` for the
+`AI4IA_DOCUMENT_*` settings.

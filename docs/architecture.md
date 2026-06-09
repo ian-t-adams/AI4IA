@@ -47,7 +47,12 @@ flowchart TB
    later without rewriting data.
 4. **Cosmos is canonical; memory is rebuildable.** Chat sessions/history/agents/workflows live
    in Cosmos DB. mem0 + pgvector hold derived memory that can be rebuilt from Cosmos. Deletion
-   is tombstone + async purge + cross-store verification.
+   is tombstone + async purge + cross-store verification. The per-user document library
+   (Phase 11A; `userDocuments` + `analyzers` containers, partitioned by `/userId`) is likewise
+   canonical in Cosmos. It is feature-flagged **default-OFF** (`AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`):
+   when off, the `/api/library` API refuses (404) and nothing is constructed, so there is no
+   behavior change. Content Understanding ingest, chunking, and retrieval build on this spine in
+   later Phase 11 sub-phases.
 5. **Least privilege.** Managed identities + Key Vault/App Configuration for all secrets; no
    secrets in code or images.
 

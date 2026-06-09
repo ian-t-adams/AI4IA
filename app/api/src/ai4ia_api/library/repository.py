@@ -1,0 +1,54 @@
+"""DocumentLibraryRepository protocol + shared errors (Phase 11A).
+
+Every method takes the authenticated ``user_id`` and MUST enforce ownership.
+Documents and custom analyzers are partitioned by ``/userId``; ownership is still
+checked explicitly (defense in depth) so a bug in partition routing can never
+leak another user's data.
+
+Built-in analyzers are not stored — :meth:`list_analyzers` merges the in-process
+:data:`library.models.BUILTIN_ANALYZERS` with the user's custom registry.
+"""
+from __future__ import annotations
+
+from typing import Protocol, runtime_checkable
+
+from .models import Analyzer, UserDocument
+
+
+class DocumentNotFoundError(Exception):
+    """Raised when a library document does not exist or is not owned by the user."""
+
+
+class AnalyzerNotFoundError(Exception):
+    """Raised when an analyzer does not exist or is not owned by the user."""
+
+
+class AnalyzerConflictError(Exception):
+    """Raised when a custom analyzer would collide with a built-in id."""
+
+
+@runtime_checkable
+class DocumentLibraryRepository(Protocol):
+    # --- documents ---
+    async def create_document(self, document: UserDocument) -> UserDocument: ...
+
+    async def get_document(self, user_id: str, document_id: str) -> UserDocument: ...
+
+    async def list_documents(self, user_id: str) -> list[UserDocument]: ...
+
+    async def update_document(self, document: UserDocument) -> UserDocument: ...
+
+    async def delete_document(self, user_id: str, document_id: str) -> None: ...
+
+    async def find_by_dedupe_key(
+        self, user_id: str, content_hash: str, analyzer_id: str | None
+    ) -> UserDocument | None: ...
+
+    # --- analyzers (built-ins are merged in by the implementation) ---
+    async def create_analyzer(self, analyzer: Analyzer) -> Analyzer: ...
+
+    async def get_analyzer(self, user_id: str, analyzer_id: str) -> Analyzer: ...
+
+    async def list_analyzers(self, user_id: str) -> list[Analyzer]: ...
+
+    async def delete_analyzer(self, user_id: str, analyzer_id: str) -> None: ...
