@@ -49,6 +49,10 @@ const DISABLED_LIVE: VoiceLiveConfig = { enabled: false, wsUrl: "", devUser: "" 
 // Where the chosen live-voice persona is remembered across reloads.
 const VOICE_STORAGE_KEY = "ai4ia.voiceLive.voice";
 
+// Where the chosen live-voice agent (persona to speak as) is remembered. Empty
+// string means the generic assistant (no agent bound).
+const AGENT_STORAGE_KEY = "ai4ia.voiceLive.agent";
+
 function detectMention(value: string, caret: number): ActiveMention | null {
   const prefix = value.slice(0, caret);
   const m = prefix.match(MENTION_RE);
@@ -157,11 +161,46 @@ export function Composer({
     }
   };
 
+  // The agent (persona) the live session speaks as. "" = generic assistant. The
+  // relay resolves it server-authoritatively (persona prompt + tool allowlist);
+  // the picker only passes the name. Locks while a session is active.
+  const [liveAgent, setLiveAgent] = useState<string>("");
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(AGENT_STORAGE_KEY);
+      if (stored) setLiveAgent(stored);
+    } catch {
+      /* storage unavailable -> generic assistant */
+    }
+  }, []);
+  // Drop a remembered agent that no longer exists or was disabled, once the
+  // agent list has loaded, so the picker never points at a dead persona.
+  useEffect(() => {
+    if (!liveAgent) return;
+    if (agents.length > 0 && !agents.some((a) => a.enabled && a.name === liveAgent)) {
+      setLiveAgent("");
+    }
+  }, [agents, liveAgent]);
+  const onPickAgent = (value: string) => {
+    setLiveAgent(value);
+    try {
+      if (value) window.localStorage.setItem(AGENT_STORAGE_KEY, value);
+      else window.localStorage.removeItem(AGENT_STORAGE_KEY);
+    } catch {
+      /* best effort */
+    }
+  };
+  // Display name of the bound agent (for the live status hint), or "" for generic.
+  const liveAgentLabel = liveAgent
+    ? agents.find((a) => a.name === liveAgent)?.displayName ?? liveAgent
+    : "";
+
   const live = useVoiceLive(
     voiceLiveConfig ?? DISABLED_LIVE,
     voiceLiveModel,
     liveVoice,
     (msg) => onError?.(msg),
+    liveAgent || null,
   );
   const showLive = voiceLiveEnabled && live.supported;
 
@@ -511,6 +550,40 @@ export function Composer({
           {voice.transcribing ? "…" : voice.recording ? "■" : "🎙"}
         </button>
 
+        {showLive && enabledAgents.length > 0 && (
+          <select
+            aria-label="Live voice agent"
+            title={
+              live.active
+                ? "Stop live voice to change the agent"
+                : "Choose which agent to talk to"
+            }
+            value={liveAgent}
+            disabled={live.active}
+            onChange={(e) => onPickAgent(e.target.value)}
+            style={{
+              alignSelf: "stretch",
+              minHeight: 46,
+              padding: "0 8px",
+              borderRadius: 10,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+              color: "var(--fg)",
+              fontSize: "0.85em",
+              maxWidth: 160,
+              cursor: live.active ? "not-allowed" : "pointer",
+              opacity: live.active ? 0.6 : 1,
+            }}
+          >
+            <option value="">Default assistant</option>
+            {enabledAgents.map((a) => (
+              <option key={a.name} value={a.name}>
+                {a.displayName}
+              </option>
+            ))}
+          </select>
+        )}
+
         {showLive && (
           <select
             aria-label="Live voice"
@@ -665,7 +738,9 @@ export function Composer({
             : showLive && live.active
               ? live.status === "connecting"
                 ? "Connecting live voice…"
-                : "● Live — speak naturally; click Live again to end."
+                : liveAgentLabel
+                  ? `● Live with ${liveAgentLabel} — speak naturally; click Live again to end.`
+                  : "● Live — speak naturally; click Live again to end."
               : ""}
       </div>
 

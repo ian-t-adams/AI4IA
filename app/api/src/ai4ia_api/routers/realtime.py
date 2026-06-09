@@ -22,7 +22,9 @@ this relay:
 The event protocol itself stays client-driven (the relay is a mostly-transparent
 pump): the browser sends ``session.update`` / ``input_audio_buffer.append`` and
 receives ``response.audio.delta`` etc. The relay owns only the connection,
-governance, and metering — never the conversation shape.
+governance, metering, and — when the session is bound to an agent (``?agent=``) —
+the server-authoritative persona instructions + tool allowlist injected into the
+client's ``session.update``. It never drives the turn-by-turn conversation shape.
 """
 from __future__ import annotations
 
@@ -38,6 +40,7 @@ import aiohttp
 import anyio
 from fastapi import APIRouter, WebSocket
 
+from ..agents.agent_catalog import AgentSpec
 from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
 from ..auth.base import AuthCredentials, AuthError, AuthenticatedUser
@@ -272,20 +275,24 @@ class AiohttpRealtimeConnector:
 
 
 # --------------------------------------------------------------------------- #
-# Governed tool calling inside a live session (Phase 10 increment).
+# Governed tool calling + agent persona inside a live session (Phase 10 / 11).
 #
 # When realtime tools are enabled the relay stops being a pure pump for exactly
 # two narrow frame kinds and owns governed function calling, reusing the SAME
 # tool registry + executor as chat (authorize -> validate -> run). It:
-#   * rewrites the client's ``session.update`` to advertise the safe built-in
-#     tools (flat realtime schema) + ``tool_choice: "auto"``, so the browser can
-#     never advertise a tool the gateway didn't authorize, and
+#   * rewrites the client's ``session.update`` to advertise the authorized tools
+#     (flat realtime schema) + ``tool_choice: "auto"`` — scoped to the bound
+#     agent's allowlist when one is selected — so the browser can never advertise
+#     a tool the gateway didn't authorize, and
 #   * on a ``response.function_call_arguments.done`` event, authorizes + executes
 #     the call in-process and returns the result to the model via a
 #     ``conversation.item.create`` (function_call_output) + ``response.create``.
-# Every other frame (audio, transcripts, all other events) is forwarded verbatim,
-# and when tools are disabled the bridge is an inert pass-through so the relay's
-# byte-for-byte Phase 10 behavior is preserved.
+# When the session is bound to an agent (``?agent=``) the same session.update
+# rewrite also sets the server-authoritative persona ``instructions`` (so a voice
+# turn carries the same persona as a chat @mention, and the browser can't spoof a
+# different one). Every other frame (audio, transcripts, all other events) is
+# forwarded verbatim, and with no tools and no agent persona the bridge is an
+# inert pass-through so the relay's byte-for-byte Phase 10 behavior is preserved.
 # --------------------------------------------------------------------------- #
 
 SESSION_UPDATE_TYPE = "session.update"
@@ -327,15 +334,30 @@ def flatten_realtime_tools(nested: Sequence[dict]) -> list[dict]:
     return out
 
 
-def inject_session_tools(frame: str, tools: Sequence[dict], tool_choice: str) -> str:
-    """Merge ``tools`` + ``tool_choice`` into a client ``session.update`` frame.
+def inject_session_tools(
+    frame: str,
+    tools: Sequence[dict],
+    tool_choice: str,
+    *,
+    instructions: str | None = None,
+) -> str:
+    """Merge relay-owned fields into a client ``session.update`` frame.
 
     Returns the frame unchanged when it isn't a parseable session.update (the relay
     stays transparent for everything it doesn't own). The client's own session
-    fields are preserved EXCEPT tools/tool_choice, which the relay owns so the
-    browser can never advertise a tool the gateway didn't authorize.
+    fields are preserved EXCEPT the ones the relay owns:
+
+    * ``tools`` / ``tool_choice`` — so the browser can never advertise a tool the
+      gateway didn't authorize, and
+    * ``instructions`` — when an agent persona is bound, the relay sets the system
+      instructions server-authoritatively so the browser can't spoof a different
+      persona. When ``instructions`` is ``None`` the client's own value is left
+      untouched (generic-assistant behavior).
+
+    A no-op (frame returned verbatim) when there is nothing to inject — neither
+    tools nor instructions.
     """
-    if not tools or _SESSION_UPDATE_HINT not in frame:
+    if (not tools and instructions is None) or _SESSION_UPDATE_HINT not in frame:
         return frame
     try:
         payload = json.loads(frame)
@@ -346,8 +368,11 @@ def inject_session_tools(frame: str, tools: Sequence[dict], tool_choice: str) ->
     session = payload.get("session")
     if not isinstance(session, dict):
         session = {}
-    session["tools"] = list(tools)
-    session["tool_choice"] = tool_choice
+    if tools:
+        session["tools"] = list(tools)
+        session["tool_choice"] = tool_choice
+    if instructions is not None:
+        session["instructions"] = instructions
     payload["session"] = session
     return json.dumps(payload)
 
@@ -405,11 +430,15 @@ def _tool_error(message: str) -> str:
 
 @dataclass
 class ToolBridge:
-    """Governed tool calling for the live relay; inert when ``tools`` is empty.
+    """Governed tool calling + persona policy for the live relay.
 
     Holds the same registry/executor as chat plus the flat realtime tool schemas
-    advertised to the model. With no tools it is a pure pass-through, so the relay
-    keeps its byte-for-byte Phase 10 (transparent-pump) behavior.
+    advertised to the model and, optionally, the server-authoritative ``instructions``
+    for a bound agent persona. With no tools and no instructions it is a pure
+    pass-through, so the relay keeps its byte-for-byte Phase 10 (transparent-pump)
+    behavior. Tools drive in-process governed execution; ``instructions`` only
+    rewrites the session.update (no execution), so a persona-only bridge has
+    ``enabled is False`` yet still injects the persona.
     """
 
     registry: ToolRegistry
@@ -417,15 +446,18 @@ class ToolBridge:
     ctx: ToolContext
     tools: list[dict]
     tool_choice: str = "auto"
+    instructions: str | None = None
 
     @property
     def enabled(self) -> bool:
         return bool(self.tools)
 
     def rewrite_client_frame(self, frame: str) -> str:
-        if not self.tools:
+        if not self.tools and self.instructions is None:
             return frame
-        return inject_session_tools(frame, self.tools, self.tool_choice)
+        return inject_session_tools(
+            frame, self.tools, self.tool_choice, instructions=self.instructions
+        )
 
     async def handle_upstream_frame(self, frame: str) -> list[str]:
         """Upstream frames to send back for a function call, or ``[]`` to forward only."""
@@ -465,23 +497,93 @@ class ToolBridge:
         return _tool_output(result)
 
 
-def build_tool_bridge(state, settings: Settings, correlation_id: str) -> ToolBridge:
+def build_tool_bridge(
+    state,
+    settings: Settings,
+    correlation_id: str,
+    *,
+    tool_names: Sequence[str] | None = None,
+    instructions: str | None = None,
+) -> ToolBridge:
     """Construct the relay's tool bridge from app state.
 
-    Returns an inert bridge (empty tools -> pass-through) when realtime tools are
-    disabled OR no governed builtin is authorized, so the relay stays a pure pump
-    unless tool calling is explicitly turned on alongside the realtime feature.
+    Returns an inert bridge (empty tools + no instructions -> pass-through) when
+    realtime tools are disabled OR no governed builtin is authorized, so the relay
+    stays a pure pump unless tool calling is explicitly turned on alongside the
+    realtime feature.
+
+    ``tool_names`` scopes the advertised tools to a specific allowlist (an agent's
+    tools); when ``None`` every registered builtin is offered (generic-assistant
+    behavior). ``instructions`` binds a server-authoritative agent persona that the
+    relay injects into the session.update regardless of the tools gate.
     """
     registry: ToolRegistry = state.tool_registry
     executor: ToolExecutor = state.tool_executor
     ctx = ToolContext(correlation_id=correlation_id)
+    names = executor.names() if tool_names is None else list(tool_names)
     tools: list[dict] = []
     if settings.realtime_tools_enabled:
-        # schema_for already drops any tool not authorized for this empty context,
-        # so the model only ever sees tools it can actually run.
-        nested = executor.schema_for(executor.names(), registry=registry, ctx=ctx)
+        # schema_for already drops any tool not authorized for this empty context
+        # (and any name not in ``names``), so the model only ever sees tools it can
+        # actually run AND that the bound agent is allowed to use.
+        nested = executor.schema_for(names, registry=registry, ctx=ctx)
         tools = flatten_realtime_tools(nested)
-    return ToolBridge(registry=registry, executor=executor, ctx=ctx, tools=tools)
+    return ToolBridge(
+        registry=registry,
+        executor=executor,
+        ctx=ctx,
+        tools=tools,
+        instructions=instructions,
+    )
+
+
+async def resolve_live_agent(state, user, agent_name: str) -> AgentSpec | None:
+    """Resolve the live session's selected agent for this user, or ``None``.
+
+    Composes the caller's user-defined agents on top of the curated catalog (same
+    resolution chat uses), then looks the mention up case-insensitively. Returns
+    ``None`` for an unknown/disabled agent or a store outage, so live voice fails
+    OPEN to the generic assistant rather than breaking the session.
+    """
+    try:
+        composed = await state.agent_service.catalog_for(user.internal_user_id, state.agents)
+    except Exception:  # noqa: BLE001 - agent resolution must never break a live session
+        logger.warning("voice-live agent resolution failed; using generic", exc_info=True)
+        return None
+    spec = composed.get(agent_name)
+    if spec is None or not spec.enabled:
+        return None
+    return spec
+
+
+async def build_session_bridge(
+    state,
+    settings: Settings,
+    correlation_id: str,
+    *,
+    user,
+    agent_name: str | None,
+) -> ToolBridge:
+    """Build the relay bridge for a live session, agent-aware when ``agent_name`` is set.
+
+    When the browser names an agent and it resolves for this user, the live session
+    speaks as that agent: its ``systemPrompt`` becomes the server-authoritative
+    session instructions and the advertised tools are scoped to the agent's own
+    allowlist (so a voice turn has the SAME persona + tools as a chat @mention).
+    Otherwise the session falls back to the generic assistant with every authorized
+    builtin — the original Phase 10 behavior.
+    """
+    if agent_name:
+        spec = await resolve_live_agent(state, user, agent_name)
+        if spec is not None:
+            return build_tool_bridge(
+                state,
+                settings,
+                correlation_id,
+                tool_names=spec.tools,
+                instructions=spec.systemPrompt,
+            )
+    return build_tool_bridge(state, settings, correlation_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -683,7 +785,15 @@ async def voice_live(websocket: WebSocket) -> None:
         settings.model_gateway_auth_mode, settings.model_gateway_api_key, correlation_id
     )
     connector: RealtimeConnector = state.realtime_connector
-    bridge = build_tool_bridge(state, settings, correlation_id)
+    # Agent-aware live voice: when the browser names an agent (?agent=), bind that
+    # agent's persona + tool allowlist into the session (server-authoritative).
+    bridge = await build_session_bridge(
+        state,
+        settings,
+        correlation_id,
+        user=user,
+        agent_name=websocket.query_params.get("agent"),
+    )
 
     try:
         async with connector.connect(

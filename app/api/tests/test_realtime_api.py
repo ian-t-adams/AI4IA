@@ -333,3 +333,79 @@ def test_live_tools_disabled_does_not_inject_or_execute():
     finally:
         c.__exit__(None, None, None)
 
+
+# --------------------------------------------------------------------------- #
+# Agent-aware live voice end to end: ?agent= binds persona + scoped tools.
+# --------------------------------------------------------------------------- #
+
+
+def test_live_agent_binds_persona_and_scopes_tools():
+    # ?agent=analyst (a curated agent with tools=["calculator"]) + tools enabled:
+    # the forwarded session.update carries the analyst persona instructions and
+    # ONLY the calculator tool (not get_current_time).
+    import json
+
+    c = _client(realtime_enabled=True, realtime_tools_enabled=True)
+    try:
+        connector = FakeRealtimeConnector()
+        c.app.state.realtime_connector = connector
+        with c.websocket_connect(
+            "/api/voice/live?agent=analyst",
+            subprotocols=[DEV_SUBPROTOCOL, "u"],
+            headers=_origin(),
+        ) as ws:
+            ws.send_text('{"type":"session.update","session":{"voice":"verse"}}')
+            ws.receive_text()  # echo of the (rewritten) session.update
+
+        injected = json.loads(connector.upstream.sent_text[0])
+        assert injected["session"]["voice"] == "verse"  # client field preserved
+        assert injected["session"]["instructions"].startswith("You are AI4IA's Data Analyst")
+        assert {t["name"] for t in injected["session"]["tools"]} == {"calculator"}
+        assert injected["session"]["tool_choice"] == "auto"
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_live_agent_persona_only_when_tools_disabled():
+    # ?agent=coder (no tools) with realtime tools OFF: the relay still binds the
+    # persona instructions but advertises no tools (persona-only voice agent).
+    import json
+
+    c = _client(realtime_enabled=True)
+    try:
+        connector = FakeRealtimeConnector()
+        c.app.state.realtime_connector = connector
+        with c.websocket_connect(
+            "/api/voice/live?agent=coder",
+            subprotocols=[DEV_SUBPROTOCOL, "u"],
+            headers=_origin(),
+        ) as ws:
+            ws.send_text('{"type":"session.update","session":{"voice":"verse"}}')
+            ws.receive_text()
+
+        injected = json.loads(connector.upstream.sent_text[0])
+        assert injected["session"]["instructions"].startswith("You are AI4IA's Code Assistant")
+        assert "tools" not in injected["session"]
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_live_unknown_agent_falls_back_to_generic_passthrough():
+    # An unknown ?agent= must not break the session: it falls back to the generic
+    # assistant, and with tools off the relay stays a byte-for-byte pump.
+    c = _client(realtime_enabled=True)
+    try:
+        connector = FakeRealtimeConnector()
+        c.app.state.realtime_connector = connector
+        with c.websocket_connect(
+            "/api/voice/live?agent=does-not-exist",
+            subprotocols=[DEV_SUBPROTOCOL, "u"],
+            headers=_origin(),
+        ) as ws:
+            ws.send_text('{"type":"session.update"}')
+            assert ws.receive_text() == 'echo:{"type":"session.update"}'
+
+        assert connector.upstream.sent_text == ['{"type":"session.update"}']
+    finally:
+        c.__exit__(None, None, None)
+
