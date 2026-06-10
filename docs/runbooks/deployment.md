@@ -109,6 +109,40 @@ The moment `AZURE_CLIENT_ID` is set, the next qualifying push to `main` deploys.
 Settings → Environments → `production` → add **Required reviewers** so a human approves each deploy,
 and/or restrict to the `main` branch. Until you add protection, the environment exists with no gate.
 
+### 2.5 Custom domains (vanity hostnames) — **required if you use them**
+
+The app is reached at vanity hostnames (`ai4ia.nomad-analytics.com` for the web app,
+`genaiproxy.nomad-analytics.com` for the proxy). The binding + Azure-managed TLS cert are declared in
+Bicep (`infra/modules/web.bicep`, `infra/modules/gateway.bicep`) but only when these repo variables
+are set. **If they are empty, `azd provision` resets the ingress to *no* custom domain** and the live
+site fails with `ERR_CONNECTION_CLOSED` on the vanity hostname (the default
+`*.azurecontainerapps.io` FQDN keeps working). DNS records are untouched — only the Azure-side
+binding is dropped.
+
+| Variable | Value (this deployment) |
+|---|---|
+| `AI4IA_WEB_CUSTOM_DOMAIN` | `ai4ia.nomad-analytics.com` |
+| `AI4IA_WEB_MANAGED_CERT_NAME` | `mc-cae-ai4ia-slur-ai4ia-nomad-anal-2891` |
+| `AI4IA_PROXY_CUSTOM_DOMAIN` | `genaiproxy.nomad-analytics.com` |
+| `AI4IA_PROXY_MANAGED_CERT_NAME` | `mc-cae-ai4ia-slur-genaiproxy-nomad-6552` |
+
+The `*_MANAGED_CERT_NAME` values **adopt the existing managed cert** (look it up with
+`az containerapp env certificate list -n <managed-env> -g <rg> --managed-certificates-only`) so the
+deploy reuses the issued cert instead of creating a duplicate subject. DNS prerequisites must exist at
+your DNS provider: a `CNAME` from the vanity host to the app's `*.azurecontainerapps.io` FQDN, and an
+`asuid.<host>` `TXT` record holding the domain-verification ID
+(`az containerapp show ... --query properties.customDomainVerificationId`, or read it off the existing
+managed cert). These records are external to Azure, so a reprovision never touches them.
+
+If a deploy ever wipes the binding before these vars were set, rebind imperatively to restore service
+immediately (cert survives on the environment), then ensure the vars are set so it stays bound:
+
+```powershell
+az containerapp hostname bind --hostname ai4ia.nomad-analytics.com `
+  -g <rg> -n ca-web-<env> --environment <managed-env> `
+  --certificate mc-cae-ai4ia-slur-ai4ia-nomad-anal-2891
+```
+
 ## 3. Enabling feature-flagged capabilities at deploy time
 
 Feature flags (Voice Live, document library, memory, etc.) are **not** turned on by this pipeline —
