@@ -10,6 +10,7 @@ export function Sidebar({
   onDelete,
   onOpenSettings,
   onOpenStudio,
+  onOpenImagery,
   onOpenLibrary,
   disabled = false,
 }: {
@@ -20,6 +21,7 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onOpenSettings: () => void;
   onOpenStudio: () => void;
+  onOpenImagery: () => void;
   onOpenLibrary?: () => void;
   disabled?: boolean;
 }) {
@@ -142,6 +144,21 @@ export function Sidebar({
           }}
         >
           🛠 Agents &amp; workflows
+        </button>
+        <button
+          onClick={onOpenImagery}
+          disabled={disabled}
+          style={{
+            width: "100%",
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: "1px solid var(--border)",
+            background: "transparent",
+            color: "var(--sidebar-fg)",
+            cursor: disabled ? "not-allowed" : "pointer",
+          }}
+        >
+          🖼 Imagery studio
         </button>
         {onOpenLibrary && (
           <button

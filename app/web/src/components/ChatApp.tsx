@@ -9,6 +9,7 @@ import { ParamControls } from "./ParamControls";
 import { SystemPromptEditor } from "./SystemPromptEditor";
 import { SettingsPanel } from "./SettingsPanel";
 import { StudioPanel } from "./StudioPanel";
+import { ImageStudioPanel } from "./ImageStudioPanel";
 import { LibraryPanel } from "./LibraryPanel";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import { Composer } from "./Composer";
@@ -51,6 +52,7 @@ export function ChatApp() {
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
+  const [imageryOpen, setImageryOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
 
   const abortRef = useRef<(() => void) | null>(null);
@@ -392,6 +394,7 @@ export function ChatApp() {
         onDelete={deleteSession}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenStudio={() => setStudioOpen(true)}
+        onOpenImagery={() => setImageryOpen(true)}
         onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
         disabled={streaming}
       />
@@ -488,6 +491,9 @@ export function ChatApp() {
       )}
       {libraryOpen && libraryEnabled && (
         <LibraryPanel onClose={() => setLibraryOpen(false)} />
+      )}
+      {imageryOpen && (
+        <ImageStudioPanel models={models} onClose={() => setImageryOpen(false)} />
       )}
     </div>
   );
