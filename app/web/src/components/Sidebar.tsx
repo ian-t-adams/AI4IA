@@ -11,6 +11,7 @@ export function Sidebar({
   onOpenSettings,
   onOpenStudio,
   onOpenImagery,
+  onOpenVoice,
   onOpenLibrary,
   disabled = false,
 }: {
@@ -22,6 +23,7 @@ export function Sidebar({
   onOpenSettings: () => void;
   onOpenStudio: () => void;
   onOpenImagery: () => void;
+  onOpenVoice?: () => void;
   onOpenLibrary?: () => void;
   disabled?: boolean;
 }) {
@@ -160,6 +162,23 @@ export function Sidebar({
         >
           🖼 Imagery studio
         </button>
+        {onOpenVoice && (
+          <button
+            onClick={onOpenVoice}
+            disabled={disabled}
+            style={{
+              width: "100%",
+              padding: "8px 12px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: "transparent",
+              color: "var(--sidebar-fg)",
+              cursor: disabled ? "not-allowed" : "pointer",
+            }}
+          >
+            🎧 Voice Live
+          </button>
+        )}
         {onOpenLibrary && (
           <button
             onClick={onOpenLibrary}

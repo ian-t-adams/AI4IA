@@ -12,7 +12,7 @@
 | Feature | API flag (default) | Web flag (default) | IaC param (default) | External resources needed | Lift |
 |---|---|---|---|---|---|
 | Voice Live (Phase 10, agent-aware) | `AI4IA_REALTIME_ENABLED=false` | `VOICE_LIVE_ENABLED=false` + `API_PUBLIC_URL` | `voiceLiveEnabled=false` | none — `gpt-realtime` already deployed | **Low** |
-| Realtime tools in voice | `AI4IA_REALTIME_TOOLS_ENABLED=false` | — | `voiceLiveToolsEnabled=true` (inert unless realtime on) | none | **Low** |
+| Realtime tools in voice | `AI4IA_REALTIME_TOOLS_ENABLED=false` | — | `voiceLiveToolsEnabled=false` (inert unless realtime on) | none | **Low** |
 | Document library (11A/11B) | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false` | `DOCUMENT_LIBRARY_ENABLED=false` | `documentUnderstandingEnabled=false` | Cosmos store + blob account + Content Understanding endpoint | **High** |
 | Document compute (11C) | `AI4IA_DOCUMENT_COMPUTE_ENABLED=false` | — | `documentComputeEnabled=false` | above **+** Azure OpenAI Responses/code-interpreter resource | **High** |
 | Memory / semantic recall (Phase 5) | `AI4IA_MEMORY_STORE=disabled` | — (no UI on `main`) | `memoryStore='disabled'` | pgvector/Postgres **or** mem0 backend | **Med-High** |
@@ -36,9 +36,16 @@ provisions every catalog model by region; `gpt-realtime` v`2025-08-28` in `eastu
 ```
 voiceLiveEnabled       = true
 realtimeAllowedOrigins = "https://<your-web-app-origin>"   # REQUIRED in any deployed env
+voiceLiveToolsEnabled  = true                              # optional; gives the live agent tools
 ```
+The live env already sets these in `infra/main.parameters.json`: `voiceLiveEnabled=true`,
+`realtimeAllowedOrigins="https://ai4ia.nomad-analytics.com"` (the web vanity host), and
+`voiceLiveToolsEnabled=true`. If users reach the app via the web Container App's default
+`*.azurecontainerapps.io` FQDN instead of the vanity host, append that exact origin
+(comma-separated) to `realtimeAllowedOrigins` — the relay matches Origin exactly (no wildcards).
+
 This sets, on the API: `AI4IA_REALTIME_ENABLED=true`, `AI4IA_REALTIME_ALLOWED_ORIGINS`,
-`AI4IA_REALTIME_TOOLS_ENABLED` (from `voiceLiveToolsEnabled`, default `true`),
+`AI4IA_REALTIME_TOOLS_ENABLED` (from `voiceLiveToolsEnabled`, default `false` in bicep),
 `AI4IA_REALTIME_API_VERSION` (default `2025-04-01-preview`); and on the web app:
 `VOICE_LIVE_ENABLED=true` + `API_PUBLIC_URL` (the API's **external** ingress — the Next.js proxy
 cannot proxy WebSockets, so the browser connects to the API directly).
@@ -55,7 +62,8 @@ persona and only its allow-listed tools are callable.
 
 ## 2. Realtime tools in a live session
 
-`AI4IA_REALTIME_TOOLS_ENABLED` (IaC `voiceLiveToolsEnabled`, default `true`) governs whether the
+`AI4IA_REALTIME_TOOLS_ENABLED` (IaC `voiceLiveToolsEnabled`, default `false` in bicep; set `true`
+in the live env's `main.parameters.json`) governs whether the
 relay injects + executes the safe built-in tools (`calculator`, `get_current_time`) in-session.
 **Inert unless Voice Live is on.** Persona injection is independent of this flag (persona works even
 with live tools off). Leave on unless you specifically want a tool-free voice session.

@@ -56,6 +56,23 @@ export function isRealtimeVoice(value: string): value is RealtimeVoice {
   return (REALTIME_VOICES as readonly string[]).includes(value);
 }
 
+export type LiveTurnRole = "user" | "assistant";
+
+// One entry in the live-conversation timeline. A *user* turn holds a whole
+// transcribed utterance (or stays ``pending`` while the model transcribes it); an
+// *assistant* turn accumulates the spoken reply's transcript across one exchange
+// and carries an optional governed-tool label. ``streaming`` marks the assistant
+// turn that is still producing output.
+export interface LiveTurn {
+  id: string;
+  role: LiveTurnRole;
+  text: string;
+  streaming: boolean;
+  pending: boolean;
+  // Friendly label of a governed tool the assistant invoked this turn, or "".
+  tool: string;
+}
+
 export interface VoiceLiveController {
   status: VoiceLiveStatus;
   active: boolean;
@@ -65,6 +82,13 @@ export interface VoiceLiveController {
   // The most recent tool the assistant invoked in this session (governed,
   // server-executed), or "" when none. Surfaced as a small activity hint.
   toolActivity: string;
+  // Turn-by-turn timeline of the live conversation (user vs assistant), with
+  // live-updating partial transcripts. Reset at the start of each session.
+  turns: LiveTurn[];
+  // The user is currently speaking (between server-VAD speech start/stop).
+  listening: boolean;
+  // The assistant is currently producing audio (speaking) for its reply.
+  speaking: boolean;
   toggle: () => void;
   stop: () => void;
 }
@@ -227,6 +251,9 @@ export function useVoiceLive(
   const [userTranscript, setUserTranscript] = useState("");
   const [assistantTranscript, setAssistantTranscript] = useState("");
   const [toolActivity, setToolActivity] = useState("");
+  const [turns, setTurns] = useState<LiveTurn[]>([]);
+  const [listening, setListening] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
 
   const sessionRef = useRef<LiveSession | null>(null);
   const startingRef = useRef(false);
@@ -304,6 +331,9 @@ export function useVoiceLive(
     setUserTranscript("");
     setAssistantTranscript("");
     setToolActivity("");
+    setTurns([]);
+    setListening(false);
+    setSpeaking(false);
     // Raw resources are acquired before the session is wired into sessionRef; if
     // init fails before that, teardown() can't see them (it early-returns on a
     // null sessionRef), so the catch path releases these directly.
@@ -386,6 +416,38 @@ export function useVoiceLive(
         session.scheduled.clear();
         session.nextPlayTime = 0;
       };
+
+      // --- live timeline state (per session; closed over by the event handler) ---
+      // The id of the user turn awaiting its transcription, and of the assistant
+      // turn currently open (it spans one exchange: it accumulates the spoken
+      // reply + any tool label until the user speaks again, so each exchange is a
+      // single user bubble + single assistant bubble even when a tool call splits
+      // the model's output into two upstream responses).
+      let userTurnId: string | null = null;
+      let assistantTurnId: string | null = null;
+      let turnSeq = 0;
+      const nextTurnId = () => `lt${++turnSeq}`;
+
+      const pushTurn = (turn: LiveTurn) => {
+        if (mountedRef.current) setTurns((prev) => [...prev, turn]);
+      };
+      const patchTurn = (id: string, patch: (t: LiveTurn) => LiveTurn) => {
+        if (mountedRef.current) {
+          setTurns((prev) => prev.map((t) => (t.id === id ? patch(t) : t)));
+        }
+      };
+      const dropTurn = (id: string) => {
+        if (mountedRef.current) setTurns((prev) => prev.filter((t) => t.id !== id));
+      };
+      // Get (or lazily open) the assistant turn for the current exchange.
+      const ensureAssistantTurn = (): string => {
+        if (assistantTurnId) return assistantTurnId;
+        const id = nextTurnId();
+        assistantTurnId = id;
+        pushTurn({ id, role: "assistant", text: "", streaming: true, pending: false, tool: "" });
+        return id;
+      };
+
       const handleServerEvent = (ev: MessageEvent) => {
         if (typeof ev.data !== "string") return;
         let msg: Record<string, unknown>;
@@ -398,13 +460,18 @@ export function useVoiceLive(
         switch (type) {
           case "response.audio.delta": {
             const delta = typeof msg.delta === "string" ? msg.delta : "";
-            if (delta) enqueuePlayback(delta);
+            if (delta) {
+              enqueuePlayback(delta);
+              if (mountedRef.current) setSpeaking(true);
+            }
             break;
           }
           case "response.audio_transcript.delta": {
             const delta = typeof msg.delta === "string" ? msg.delta : "";
             if (delta && mountedRef.current) {
               setAssistantTranscript((p) => p + delta);
+              const id = ensureAssistantTurn();
+              patchTurn(id, (t) => ({ ...t, text: t.text + delta, streaming: true }));
             }
             break;
           }
@@ -413,24 +480,79 @@ export function useVoiceLive(
             // the user understands why the assistant paused / what grounded its
             // answer. The spoken reply still arrives as normal audio deltas.
             const name = typeof msg.name === "string" ? msg.name : "";
-            if (name && mountedRef.current) setToolActivity(friendlyToolName(name));
+            if (name && mountedRef.current) {
+              const label = friendlyToolName(name);
+              setToolActivity(label);
+              const id = ensureAssistantTurn();
+              patchTurn(id, (t) => ({ ...t, tool: label }));
+            }
             break;
           }
           case "conversation.item.input_audio_transcription.completed": {
             const t = typeof msg.transcript === "string" ? msg.transcript : "";
-            if (t && mountedRef.current) {
-              setUserTranscript((p) => (p ? `${p} ` : "") + t.trim());
+            const trimmed = t.trim();
+            if (mountedRef.current) {
+              if (trimmed) setUserTranscript((p) => (p ? `${p} ` : "") + trimmed);
+              // Resolve the pending user bubble created on speech start, or push a
+              // completed one if none is open. Empty transcripts drop the bubble.
+              if (userTurnId) {
+                const id = userTurnId;
+                if (trimmed) patchTurn(id, (u) => ({ ...u, text: trimmed, pending: false }));
+                else dropTurn(id);
+              } else if (trimmed) {
+                pushTurn({
+                  id: nextTurnId(),
+                  role: "user",
+                  text: trimmed,
+                  streaming: false,
+                  pending: false,
+                  tool: "",
+                });
+              }
             }
+            userTurnId = null;
             break;
           }
           case "response.created": {
             if (mountedRef.current) setAssistantTranscript("");
             break;
           }
+          case "response.done": {
+            // The model finished this response. Mark the open assistant turn idle
+            // and stop the speaking indicator; the turn stays open (a tool call can
+            // chain a second response into the same bubble) until the user speaks.
+            if (mountedRef.current) {
+              setSpeaking(false);
+              if (assistantTurnId) patchTurn(assistantTurnId, (t) => ({ ...t, streaming: false }));
+            }
+            break;
+          }
           case "input_audio_buffer.speech_started": {
             bargeIn();
-            // A new user turn supersedes the last tool hint.
-            if (mountedRef.current) setToolActivity("");
+            // A new user turn supersedes the last tool hint, closes the assistant
+            // turn, and stops playback/indicators.
+            if (mountedRef.current) {
+              setToolActivity("");
+              setListening(true);
+              setSpeaking(false);
+              if (assistantTurnId) {
+                patchTurn(assistantTurnId, (t) => ({ ...t, streaming: false }));
+              }
+            }
+            assistantTurnId = null;
+            userTurnId = nextTurnId();
+            pushTurn({
+              id: userTurnId,
+              role: "user",
+              text: "",
+              streaming: false,
+              pending: true,
+              tool: "",
+            });
+            break;
+          }
+          case "input_audio_buffer.speech_stopped": {
+            if (mountedRef.current) setListening(false);
             break;
           }
           case "error": {
@@ -471,7 +593,11 @@ export function useVoiceLive(
       ws.onclose = () => {
         if (sessionRef.current === session) {
           teardown();
-          if (mountedRef.current) setStatus("idle");
+          if (mountedRef.current) {
+            setListening(false);
+            setSpeaking(false);
+            setStatus("idle");
+          }
         }
       };
     } catch (e) {
@@ -493,7 +619,11 @@ export function useVoiceLive(
   const stop = useCallback(() => {
     setStatus("closing");
     teardown();
-    if (mountedRef.current) setStatus("idle");
+    if (mountedRef.current) {
+      setListening(false);
+      setSpeaking(false);
+      setStatus("idle");
+    }
   }, [teardown]);
 
   const toggle = useCallback(() => {
@@ -508,6 +638,9 @@ export function useVoiceLive(
     userTranscript,
     assistantTranscript,
     toolActivity,
+    turns,
+    listening,
+    speaking,
     toggle,
     stop,
   };

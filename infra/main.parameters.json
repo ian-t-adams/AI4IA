@@ -55,6 +55,15 @@
     },
     "searchLocation": {
       "value": "${AI4IA_SEARCH_LOCATION=eastus}"
+    },
+    "voiceLiveEnabled": {
+      "value": true
+    },
+    "realtimeAllowedOrigins": {
+      "value": "https://ai4ia.nomad-analytics.com"
+    },
+    "voiceLiveToolsEnabled": {
+      "value": true
     }
   }
 }
