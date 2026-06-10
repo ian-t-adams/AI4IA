@@ -32,6 +32,7 @@ class FakeAsyncMemory:
         self.add_calls: list[dict] = []
         self.get_all_calls: list[dict] = []
         self.delete_calls: list[dict] = []
+        self.delete_by_id_calls: list[dict] = []
 
     async def search(self, query, *, top_k=20, filters=None, threshold=None, **kwargs):
         self.search_calls.append(
@@ -49,6 +50,10 @@ class FakeAsyncMemory:
 
     async def delete_all(self, user_id=None, agent_id=None, run_id=None):
         self.delete_calls.append({"user_id": user_id, "run_id": run_id})
+        return {"message": "ok"}
+
+    async def delete(self, memory_id=None):
+        self.delete_by_id_calls.append({"memory_id": memory_id})
         return {"message": "ok"}
 
 
@@ -183,6 +188,76 @@ async def test_forget_propagates_errors():
     svc = _service(Boom())
     with pytest.raises(RuntimeError):
         await svc.forget_user("u1")
+
+
+# --- 11E-3: document-scoped save (idempotent) + forget-by-document ---
+
+async def test_remember_document_tags_metadata_and_infer_false():
+    mem = FakeAsyncMemory()
+    svc = _service(mem)
+    n = await svc.remember_document(
+        "u1", items=["excerpt one", "excerpt two"], document_id="docA"
+    )
+    assert n == 2
+    # Each excerpt is stored verbatim (infer=False) and tagged with the document.
+    for call in mem.add_calls:
+        assert call["kwargs"]["infer"] is False
+        assert call["kwargs"]["user_id"] == "u1"
+        assert call["kwargs"]["metadata"] == {"document_id": "docA"}
+
+
+async def test_remember_document_idempotent_deletes_prior_generation():
+    # A prior save for docA exists; re-saving must remove it first, then add anew.
+    mem = FakeAsyncMemory(
+        get_all_results=[
+            {"id": "old1", "metadata": {"document_id": "docA"}},
+            {"id": "other", "metadata": {"document_id": "docB"}},
+            {"id": "chat", "metadata": {}},
+        ]
+    )
+    svc = _service(mem)
+    await svc.remember_document("u1", items=["new gist"], document_id="docA")
+    # Only docA's prior memory is deleted by id (docB + chat untouched).
+    assert mem.delete_by_id_calls == [{"memory_id": "old1"}]
+    # Then the fresh excerpt is added.
+    assert mem.add_calls[0]["kwargs"]["metadata"] == {"document_id": "docA"}
+
+
+async def test_remember_document_without_id_does_not_list_or_delete():
+    mem = FakeAsyncMemory(get_all_results=[{"id": "x", "metadata": {"document_id": "d"}}])
+    svc = _service(mem)
+    await svc.remember_document("u1", items=["a gist"])
+    # No document_id -> no idempotent replace path (legacy accumulate behavior).
+    assert mem.get_all_calls == []
+    assert mem.delete_by_id_calls == []
+    assert "metadata" not in mem.add_calls[0]["kwargs"]
+
+
+async def test_forget_document_deletes_only_matching_metadata():
+    mem = FakeAsyncMemory(
+        get_all_results=[
+            {"id": "a1", "metadata": {"document_id": "docA"}},
+            {"id": "a2", "metadata": {"document_id": "docA"}},
+            {"id": "b1", "metadata": {"document_id": "docB"}},
+            {"id": "c1", "metadata": {}},
+            {"id": None, "metadata": {"document_id": "docA"}},  # no id -> skipped
+        ]
+    )
+    svc = _service(mem)
+    n = await svc.forget_document("u1", "docA")
+    assert n == 2
+    assert mem.get_all_calls[0]["filters"] == {"user_id": "u1"}
+    assert mem.delete_by_id_calls == [{"memory_id": "a1"}, {"memory_id": "a2"}]
+
+
+async def test_forget_document_propagates_errors():
+    class Boom(FakeAsyncMemory):
+        async def get_all(self, *a, **k):
+            raise RuntimeError("store down")
+
+    svc = _service(Boom())
+    with pytest.raises(RuntimeError):
+        await svc.forget_document("u1", "docA")
 
 
 # --- lazy build / lifecycle -------------------------------------------------

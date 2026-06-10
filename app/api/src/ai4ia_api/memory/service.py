@@ -38,12 +38,19 @@ class MemoryServiceProtocol(Protocol):
     async def remember(self, user_id: str, session_id: str | None, text: str) -> None: ...
 
     async def remember_document(
-        self, user_id: str, *, items: Sequence[str], session_id: str | None = None
+        self,
+        user_id: str,
+        *,
+        items: Sequence[str],
+        session_id: str | None = None,
+        document_id: str | None = None,
     ) -> int: ...
 
     async def forget_user(self, user_id: str) -> int: ...
 
     async def forget_session(self, user_id: str, session_id: str) -> int: ...
+
+    async def forget_document(self, user_id: str, document_id: str) -> int: ...
 
     def format_context(self, records: list[MemoryRecord]) -> str | None: ...
 
@@ -64,7 +71,12 @@ class NoopMemoryService:
         return None
 
     async def remember_document(
-        self, user_id: str, *, items: Sequence[str], session_id: str | None = None
+        self,
+        user_id: str,
+        *,
+        items: Sequence[str],
+        session_id: str | None = None,
+        document_id: str | None = None,
     ) -> int:
         return 0
 
@@ -72,6 +84,9 @@ class NoopMemoryService:
         return 0
 
     async def forget_session(self, user_id: str, session_id: str) -> int:
+        return 0
+
+    async def forget_document(self, user_id: str, document_id: str) -> int:
         return 0
 
     def format_context(self, records: list[MemoryRecord]) -> str | None:
@@ -139,7 +154,12 @@ class MemoryService:
             logger.warning("memory remember failed", exc_info=True)
 
     async def remember_document(
-        self, user_id: str, *, items: Sequence[str], session_id: str | None = None
+        self,
+        user_id: str,
+        *,
+        items: Sequence[str],
+        session_id: str | None = None,
+        document_id: str | None = None,
     ) -> int:
         """Store document excerpts as durable ``kind="document"`` memories.
 
@@ -147,17 +167,29 @@ class MemoryService:
         content the user owns, so it skips the trivia gate and does NOT swallow
         failures — the user asked to save, so they must learn whether it worked.
         Embeds the items as a batch, stores one record each, and returns how many
-        were stored (blank items and zero vectors are skipped)."""
+        were stored (blank items and zero vectors are skipped).
+
+        When ``document_id`` is given the save is *idempotent* (Phase 11E-3): any
+        prior generation saved from the same document is replaced, so clicking
+        "save to memory" twice does not accumulate duplicates. Embedding runs
+        before the erase so a failed embed surfaces without first deleting the
+        existing memories."""
         texts = [t.strip() for t in items if t and t.strip()]
         if not texts:
             return 0
         vectors = await self._embedder.embed(texts)
+        if document_id is not None:
+            await self._store.erase_document(user_id, document_id)
         stored = 0
         for text, vector in zip(texts, vectors):
             if not vector:
                 continue
             record = MemoryRecord(
-                user_id=user_id, session_id=session_id, text=text, kind="document"
+                user_id=user_id,
+                session_id=session_id,
+                text=text,
+                kind="document",
+                document_id=document_id,
             )
             await self._store.add(record, vector)
             stored += 1
@@ -170,6 +202,13 @@ class MemoryService:
     async def forget_session(self, user_id: str, session_id: str) -> int:
         """Erase a user's memories for one session (NOT swallowed)."""
         return await self._store.erase_session(user_id, session_id)
+
+    async def forget_document(self, user_id: str, document_id: str) -> int:
+        """Erase a user's memories saved from one document (NOT swallowed).
+
+        The explicit counterpart to :meth:`remember_document` — lets a user undo
+        a save-to-memory for one document (Phase 11E-3)."""
+        return await self._store.erase_document(user_id, document_id)
 
     def format_context(self, records: list[MemoryRecord]) -> str | None:
         """Render recalled records as a capped, untrusted-labelled context block."""

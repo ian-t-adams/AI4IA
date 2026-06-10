@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   deleteLibraryDocument,
+  forgetLibraryDocumentFromMemory,
   listLibraryAnalyzers,
   listLibraryDocuments,
   saveLibraryDocumentToMemory,
@@ -14,10 +15,13 @@ import {
 } from "@/lib/api";
 import type { LibraryAnalyzer, LibraryDocument } from "@/lib/library";
 
-// Per-document "save to memory" UI state (Phase 11E-1). Keyed by document id.
+// Per-document "save to memory" UI state (Phase 11E-1, forget added 11E-3).
+// Keyed by document id.
 type MemorySave =
   | { status: "saving" }
   | { status: "saved"; saved: number }
+  | { status: "forgetting" }
+  | { status: "forgotten"; forgotten: number }
   | { status: "error"; error: string };
 
 const STATUS_LABEL: Record<LibraryDocument["status"], string> = {
@@ -136,6 +140,25 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
         setMemorySaves((prev) => ({
           ...prev,
           [doc.id]: { status: "saved", saved },
+        }));
+    } catch (e) {
+      if (mountedRef.current)
+        setMemorySaves((prev) => ({
+          ...prev,
+          [doc.id]: { status: "error", error: (e as Error).message },
+        }));
+    }
+  }
+
+  async function onForgetFromMemory(doc: LibraryDocument) {
+    if (!confirm(`Forget "${doc.filename}" from the assistant's memory?`)) return;
+    setMemorySaves((prev) => ({ ...prev, [doc.id]: { status: "forgetting" } }));
+    try {
+      const { forgotten } = await forgetLibraryDocumentFromMemory(doc.id);
+      if (mountedRef.current)
+        setMemorySaves((prev) => ({
+          ...prev,
+          [doc.id]: { status: "forgotten", forgotten },
         }));
     } catch (e) {
       if (mountedRef.current)
@@ -312,6 +335,17 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                             · saved {m.saved} to memory ✓
                           </span>
                         );
+                      if (m.status === "forgetting")
+                        return (
+                          <span style={{ color: "#0e7490" }}> · forgetting…</span>
+                        );
+                      if (m.status === "forgotten")
+                        return (
+                          <span style={{ color: "#15803d" }}>
+                            {" "}
+                            · forgot {m.forgotten} from memory ✓
+                          </span>
+                        );
                       return (
                         <span style={{ color: "#b91c1c" }}> · {m.error}</span>
                       );
@@ -331,7 +365,10 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                 {doc.status === "ready" && (
                   <button
                     onClick={() => onSaveToMemory(doc)}
-                    disabled={memorySaves[doc.id]?.status === "saving"}
+                    disabled={
+                      memorySaves[doc.id]?.status === "saving" ||
+                      memorySaves[doc.id]?.status === "forgetting"
+                    }
                     aria-label={`Save ${doc.filename} to memory`}
                     title="Save this document's gist to durable memory so the assistant can recall it across chats"
                     style={{
@@ -340,12 +377,37 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                       color: "var(--fg-muted)",
                       fontSize: "1em",
                       cursor:
-                        memorySaves[doc.id]?.status === "saving"
+                        memorySaves[doc.id]?.status === "saving" ||
+                        memorySaves[doc.id]?.status === "forgetting"
                           ? "default"
                           : "pointer",
                     }}
                   >
                     🧠
+                  </button>
+                )}
+                {doc.status === "ready" && (
+                  <button
+                    onClick={() => onForgetFromMemory(doc)}
+                    disabled={
+                      memorySaves[doc.id]?.status === "saving" ||
+                      memorySaves[doc.id]?.status === "forgetting"
+                    }
+                    aria-label={`Forget ${doc.filename} from memory`}
+                    title="Forget everything this document contributed to durable memory"
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: "var(--fg-muted)",
+                      fontSize: "1em",
+                      cursor:
+                        memorySaves[doc.id]?.status === "saving" ||
+                        memorySaves[doc.id]?.status === "forgetting"
+                          ? "default"
+                          : "pointer",
+                    }}
+                  >
+                    🧽
                   </button>
                 )}
                 <button

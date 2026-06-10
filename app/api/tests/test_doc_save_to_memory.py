@@ -138,3 +138,88 @@ def test_save_to_memory_422_when_document_has_no_content(client):
     uid = _uid(client)
     doc = asyncio.run(_seed(client, uid=uid, summary="", parsed=None))
     assert client.post(f"/api/library/documents/{doc.id}/memory").status_code == 422
+
+
+# --- 11E-3: idempotent re-save + forget-by-document ---
+
+
+def test_resaving_same_document_is_idempotent(client):
+    uid = _uid(client)
+    doc = asyncio.run(_seed(client, uid=uid))
+
+    first = client.post(f"/api/library/documents/{doc.id}/memory")
+    assert first.status_code == 201, first.text
+    saved = first.json()["saved"]
+
+    second = client.post(f"/api/library/documents/{doc.id}/memory")
+    assert second.status_code == 201, second.text
+    assert second.json()["saved"] == saved
+
+    # Re-save replaced rather than duplicated: the recall set is the same size as
+    # a single save, not double.
+    hits = asyncio.run(client.app.state.memory.recall(uid, "anything"))
+    assert len(hits) == saved
+
+
+def test_forget_document_from_memory_removes_only_that_document(client):
+    uid = _uid(client)
+    keep = asyncio.run(_seed(client, uid=uid, summary="Keep me", parsed=None))
+    drop = asyncio.run(_seed(client, uid=uid, summary="Forget me", parsed=None))
+    client.post(f"/api/library/documents/{keep.id}/memory")
+    client.post(f"/api/library/documents/{drop.id}/memory")
+
+    resp = client.delete(f"/api/library/documents/{drop.id}/memory")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["forgotten"] == 1
+
+    texts = {h.text for h in asyncio.run(client.app.state.memory.recall(uid, "anything"))}
+    assert texts == {"Keep me"}
+
+    # Idempotent: forgetting again removes nothing.
+    again = client.delete(f"/api/library/documents/{drop.id}/memory")
+    assert again.status_code == 200
+    assert again.json()["forgotten"] == 0
+
+
+def test_forget_document_404_when_library_disabled():
+    c = TestClient(create_app(make_settings()))  # document understanding OFF
+    c.__enter__()
+    try:
+        assert c.delete("/api/library/documents/whatever/memory").status_code == 404
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_forget_document_409_when_memory_disabled():
+    c = _client(memory=False)  # Noop memory service (disabled)
+    try:
+        uid = _uid(c)
+        doc = asyncio.run(_seed(c, uid=uid))
+        assert c.delete(f"/api/library/documents/{doc.id}/memory").status_code == 409
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_forget_document_404_for_other_users_document(client):
+    uid = _uid(client)
+    doc = asyncio.run(_seed(client, uid=uid))
+    client.post(f"/api/library/documents/{doc.id}/memory")
+    other = {"X-Dev-User": "mallory"}
+    resp = client.delete(f"/api/library/documents/{doc.id}/memory", headers=other)
+    assert resp.status_code == 404
+    # The owner's saved memory is untouched by the refused forget.
+    assert asyncio.run(client.app.state.memory.recall(uid, "anything"))
+
+
+def test_forget_document_allowed_regardless_of_status(client):
+    # Unlike save, forget has no ready-status gate: a document that has since
+    # moved out of "ready" can still have its memories forgotten.
+    uid = _uid(client)
+    doc = asyncio.run(_seed(client, uid=uid, summary="Stored gist", parsed=None))
+    client.post(f"/api/library/documents/{doc.id}/memory")
+    # Flip the document out of ready; forgetting must still work.
+    doc.status = DocumentStatus.stored
+    asyncio.run(client.app.state.document_library.update_document(doc))
+    resp = client.delete(f"/api/library/documents/{doc.id}/memory")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["forgotten"] == 1

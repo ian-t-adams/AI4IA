@@ -386,6 +386,12 @@ class SaveToMemoryResult(BaseModel):
     saved: int
 
 
+class ForgetFromMemoryResult(BaseModel):
+    """Result of removing a document's saved memories from the caller's store."""
+
+    forgotten: int
+
+
 async def _document_memory_items(
     request: Request, user_id: str, doc: UserDocument
 ) -> list[str]:
@@ -472,7 +478,9 @@ async def save_document_to_memory(
             detail="Document has no content to remember.",
         )
     try:
-        saved = await memory.remember_document(uid, items=items, session_id=None)
+        saved = await memory.remember_document(
+            uid, items=items, session_id=None, document_id=document_id
+        )
     except Exception:  # noqa: BLE001 - surface a transient memory failure, don't 500
         logger.warning(
             "save-to-memory failed user=%s id=%s", uid, document_id, exc_info=True
@@ -483,6 +491,58 @@ async def save_document_to_memory(
         )
     logger.info("save-to-memory user=%s id=%s saved=%s", uid, document_id, saved)
     return SaveToMemoryResult(saved=saved)
+
+
+@router.delete(
+    "/documents/{document_id}/memory",
+    response_model=ForgetFromMemoryResult,
+)
+async def forget_document_from_memory(
+    document_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> ForgetFromMemoryResult:
+    """Remove a document's saved memories from the caller's durable store (11E-3).
+
+    The explicit undo of :func:`save_document_to_memory`: forgets exactly the
+    memories saved from this document, leaving chat-sourced and other documents'
+    memories intact. Flag-gated by the library (404 when document understanding
+    is off) and by memory (409 when memory is disabled); owner-only. Unlike save
+    there is no ``ready``-status gate — a document whose memories were saved
+    earlier can be forgotten regardless of its current status. Idempotent: a
+    document with nothing saved forgets ``0``. Memory failures surface (502)
+    because the user explicitly asked to forget."""
+    repo = _library(request)
+    uid = user.internal_user_id
+    await _block_disabled(request, uid)
+
+    memory = request.app.state.memory
+    if not getattr(memory, "enabled", False):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Memory is not enabled."
+        )
+
+    try:
+        doc = await repo.get_document(uid, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if not can_access(uid, doc):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    try:
+        forgotten = await memory.forget_document(uid, document_id)
+    except Exception:  # noqa: BLE001 - surface a transient memory failure, don't 500
+        logger.warning(
+            "forget-from-memory failed user=%s id=%s", uid, document_id, exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not update memory right now.",
+        )
+    logger.info(
+        "forget-from-memory user=%s id=%s forgotten=%s", uid, document_id, forgotten
+    )
+    return ForgetFromMemoryResult(forgotten=forgotten)
 
 
 # --- analyzers ---

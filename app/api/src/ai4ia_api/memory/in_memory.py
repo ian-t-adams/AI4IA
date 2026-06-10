@@ -71,6 +71,7 @@ class InMemoryVectorStore:
                 text=record.text,
                 session_id=record.session_id,
                 kind=record.kind,
+                document_id=record.document_id,
                 id=record.id,
                 created_at=record.created_at,
                 score=score,
@@ -89,6 +90,15 @@ class InMemoryVectorStore:
         if not bucket:
             return 0
         kept = [(r, v) for (r, v) in bucket if r.session_id != session_id]
+        removed = len(bucket) - len(kept)
+        self._by_user[user_id] = kept
+        return removed
+
+    async def erase_document(self, user_id: str, document_id: str) -> int:
+        bucket = self._by_user.get(user_id)
+        if not bucket:
+            return 0
+        kept = [(r, v) for (r, v) in bucket if r.document_id != document_id]
         removed = len(bucket) - len(kept)
         self._by_user[user_id] = kept
         return removed
