@@ -52,6 +52,9 @@
     },
     "searchEnabled": {
       "value": true
+    },
+    "searchLocation": {
+      "value": "${AI4IA_SEARCH_LOCATION=eastus}"
     }
   }
 }
