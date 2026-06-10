@@ -322,6 +322,19 @@ class Settings(BaseSettings):
     code_interpreter_max_input_chars: int = 60000
     document_export_max_chars: int = 200000
 
+    # --- Document processing tool (Phase 11H): the agent-callable
+    # ``process_document`` tool. Rides the same document_understanding flag and
+    # ready library as compute/retrieval (no new flag, no new infra): the tool is
+    # only injected when the retrieval consumer is constructed. These bound how
+    # much parsed text is fed to the single analysis call, how large a result may
+    # be, and the inline-vs-artifact split (results at or under the inline cap are
+    # returned inline; larger ones persist to a per-user artifact and return a
+    # reference). The inline cap stays well under the runtime's ~8 KB tool-result
+    # limit so a returned-inline result can never overflow the tool channel.
+    document_processing_max_input_chars: int = 60000
+    document_processing_max_output_chars: int = 100000
+    document_processing_inline_max_chars: int = 6000
+
     # --- Memory (Phase 5): per-user semantic recall ---
     # Single source of truth: the store kind both selects the backend AND gates
     # the feature (``disabled`` == off). No separate enable flag, so the two can

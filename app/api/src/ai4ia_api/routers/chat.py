@@ -41,6 +41,12 @@ from ..images.service import ImageGenerationService
 from ..videos.artifacts import VideoArtifactStore
 from ..videos.capability import GENERATE_VIDEO_TOOL_NAME, build_video_capability
 from ..videos.service import VideoGenerationService
+from ..docprocessing.artifacts import DocumentArtifactStore
+from ..docprocessing.capability import build_document_processing_capability
+from ..docprocessing.service import (
+    PROCESS_DOCUMENT_TOOL_NAME,
+    DocumentProcessingService,
+)
 from ..library.chat_capability import build_document_capability
 from ..library.compute_factory import DocumentComputeService
 from ..library.retrieval import DocumentRetrievalService
@@ -228,6 +234,13 @@ async def chat(
     # ``generate_video`` capability when an agent attaches that tool.
     video_artifacts: VideoArtifactStore | None = getattr(
         request.app.state, "video_artifacts", None
+    )
+    # Processed-document artifact store (Phase 11H). Always present; backs the
+    # ``process_document`` capability's over-cap results when an agent attaches
+    # that tool. The capability itself only runs when ``retrieval`` is also
+    # present (i.e. document understanding is enabled).
+    document_artifacts: DocumentArtifactStore | None = getattr(
+        request.app.state, "document_artifacts", None
     )
 
     try:
@@ -568,6 +581,40 @@ async def chat(
                 extra_handlers = {**extra_handlers, **v_handlers}
             except Exception:  # noqa: BLE001 - video tool must never break a turn
                 logger.warning("video capability build failed", exc_info=True)
+        # Phase 11H: when the agent attaches the ``process_document`` tool, inject
+        # the synthetic document-processing capability — same closure-bound pattern
+        # as the image/video tools. It reuses the user's ready library (via
+        # ``retrieval``) and runs one analysis call on THIS turn's deployment, so it
+        # is only offered when document understanding is enabled (``retrieval`` is
+        # present). Over-cap results are collected in ``doc_sink`` and attached to
+        # the assistant message below.
+        doc_sink: list[MessageAttachment] = []
+        if (
+            PROCESS_DOCUMENT_TOOL_NAME in agent.tools
+            and document_artifacts is not None
+            and retrieval is not None
+        ):
+            try:
+                settings = request.app.state.settings
+                proc_service = DocumentProcessingService(
+                    retrieval=retrieval, gateway=gateway, settings=settings
+                )
+                p_tools, p_handlers = build_document_processing_capability(
+                    processing_service=proc_service,
+                    artifact_store=document_artifacts,
+                    entitlements=entitlements,
+                    metering=metering,
+                    deployment=deployment,
+                    model_id=model_id,
+                    user_id=user.internal_user_id,
+                    session_id=body.sessionId,
+                    settings=settings,
+                    sink=doc_sink,
+                )
+                extra_tools = [*extra_tools, *p_tools]
+                extra_handlers = {**extra_handlers, **p_handlers}
+            except Exception:  # noqa: BLE001 - doc tool must never break a turn
+                logger.warning("document processing capability build failed", exc_info=True)
         run = await run_agent_turn(
             deployment=deployment.deploymentName,
             messages=payload_messages,
@@ -594,7 +641,7 @@ async def chat(
             status=MessageStatus.complete,
             model=deployment.deploymentName,
             agent=agent_name,
-            attachments=[*image_sink, *video_sink],
+            attachments=[*image_sink, *video_sink, *doc_sink],
         )
         await repo.add_message(user.internal_user_id, assistant)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
