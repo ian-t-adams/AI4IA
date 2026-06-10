@@ -36,7 +36,16 @@ export function Sidebar({
         height: "100%",
       }}
     >
-      <div style={{ padding: 16, display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ padding: 16, display: "flex", alignItems: "center", gap: 10 }}>
+        {/* eslint-disable-next-line @next/next/no-img-element -- small static brand mark; next/image adds no value here */}
+        <img
+          src="/ai4ia-mark.png"
+          alt=""
+          aria-hidden="true"
+          width={28}
+          height={28}
+          style={{ borderRadius: 6, flexShrink: 0, display: "block" }}
+        />
         <span style={{ fontWeight: 700, fontSize: "1.1em", letterSpacing: 0.5 }}>
           AI4IA
         </span>
