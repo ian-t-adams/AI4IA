@@ -39,11 +39,28 @@ export function SignInGate({ children }: { children: React.ReactNode }) {
         textAlign: "center",
       }}
     >
-      <div>
-        <h1 style={{ margin: "0 0 8px", fontSize: "1.5em" }}>AI4IA</h1>
-        <p style={{ margin: 0, color: "var(--fg-muted)" }}>
-          Sign in with your Microsoft account to continue.
-        </p>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 14,
+        }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element -- small static brand mark; next/image adds no value here */}
+        <img
+          src="/ai4ia-mark.png"
+          alt="AI4IA"
+          width={72}
+          height={72}
+          style={{ borderRadius: 16, display: "block" }}
+        />
+        <div>
+          <h1 style={{ margin: "0 0 8px", fontSize: "1.5em" }}>AI4IA</h1>
+          <p style={{ margin: 0, color: "var(--fg-muted)" }}>
+            Sign in with your Microsoft account to continue.
+          </p>
+        </div>
       </div>
       <button
         type="button"
