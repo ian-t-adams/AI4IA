@@ -46,6 +46,13 @@ dependencies = [
     # identity; imported lazily so the app/tests run without it wired (the
     # in-memory blob store covers local/dev + unit tests).
     "azure-storage-blob>=12.20",
+    # Azure AI Search data + index plane for the document chunk index (Phase 11I).
+    # Reached over the global *.search.windows.net endpoint via the api managed
+    # identity (RBAC: Search Index Data Contributor + Service Contributor) — no
+    # admin keys. Imported lazily (only when search_endpoint is configured) so the
+    # app/tests run without it wired; the in-memory chunk store covers local/dev +
+    # unit tests, and the unit tests inject fake clients.
+    "azure-search-documents>=11.5",
 ]
 
 [project.optional-dependencies]

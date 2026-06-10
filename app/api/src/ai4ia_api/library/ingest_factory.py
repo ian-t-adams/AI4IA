@@ -36,6 +36,18 @@ def _build_blob_store(settings: Settings) -> BlobStore:
 
 
 def _build_chunk_store(settings: Settings) -> DocChunkStore:
+    # Prefer the Azure AI Search index when a search service is provisioned: a
+    # durable, semantic-ready index that scales independently of Postgres. Falls
+    # back to pgvector, then the in-memory store (local/dev/tests). Dormant unless
+    # ``search_endpoint`` is set, so this is zero-regression by default.
+    if settings.search_endpoint:
+        from .ai_search_chunks import AzureSearchDocChunkStore
+
+        return AzureSearchDocChunkStore(
+            endpoint=settings.search_endpoint,
+            index_name=settings.search_index_name,
+            expected_dim=settings.memory_embedding_dimensions,
+        )
     if settings.postgres_host and settings.postgres_user:
         return PgDocChunkStore(
             host=settings.postgres_host,
