@@ -210,6 +210,13 @@ class Settings(BaseSettings):
     # Max documents retained per user in the library (0 = unlimited).
     document_max_per_user: int = 200
 
+    # --- Azure AI Search (indexing/retrieval) ---
+    # Endpoint of the provisioned search service, e.g.
+    # ``https://<svc>.search.windows.net``. Reached via the api managed identity
+    # (RBAC: Search Index Data Contributor + Service Contributor) — no admin keys.
+    # Empty/None when no search service is provisioned (the feature is dormant).
+    search_endpoint: str | None = None
+
     # --- Content Understanding ingest (Phase 11B) ---
     # CU is its own async REST surface (PUT analyzer / POST :analyzeBinary / GET
     # poll), NOT an OpenAI deployment. Reached at

@@ -151,6 +151,9 @@ param videoBlobAccountUrl string = ''
 @description('Blob container tool-generated videos are written to.')
 param videoBlobContainer string = 'videos'
 
+@description('Azure AI Search endpoint (e.g. https://<svc>.search.windows.net). Empty unless a search service is provisioned; when set, emitted as AI4IA_SEARCH_ENDPOINT so the api can index/query via managed identity.')
+param searchEndpoint string = ''
+
 var entraEnv = authProvider == 'entra' ? [
   {
     name: 'AI4IA_ENTRA_TENANT_ID'
@@ -339,6 +342,16 @@ var videoEnv = (videoGenerationEnabled && !empty(videoBlobAccountUrl)) ? [
   }
 ] : []
 
+// Azure AI Search endpoint, emitted only when a search service is provisioned.
+// The api reaches the data plane via its managed identity (no keys); empty here
+// leaves the env var unset and the feature dormant.
+var searchEnv = !empty(searchEndpoint) ? [
+  {
+    name: 'AI4IA_SEARCH_ENDPOINT'
+    value: searchEndpoint
+  }
+] : []
+
 var apiEnv = concat([
   {
     name: 'PORT'
@@ -384,7 +397,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, computeEnv, imageEnv, videoEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, computeEnv, imageEnv, videoEnv, searchEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: 'ca-api-${environmentName}'
