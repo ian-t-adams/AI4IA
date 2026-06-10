@@ -38,6 +38,9 @@ from ..entitlements.service import EntitlementService
 from ..images.artifacts import ImageArtifactStore
 from ..images.capability import GENERATE_IMAGE_TOOL_NAME, build_image_capability
 from ..images.service import ImageGenerationService
+from ..videos.artifacts import VideoArtifactStore
+from ..videos.capability import GENERATE_VIDEO_TOOL_NAME, build_video_capability
+from ..videos.service import VideoGenerationService
 from ..library.chat_capability import build_document_capability
 from ..library.compute_factory import DocumentComputeService
 from ..library.retrieval import DocumentRetrievalService
@@ -220,6 +223,11 @@ async def chat(
     # ``generate_image`` capability when an agent attaches that tool.
     image_artifacts: ImageArtifactStore | None = getattr(
         request.app.state, "image_artifacts", None
+    )
+    # Generated-video artifact store (Phase 11G). Always present; backs the
+    # ``generate_video`` capability when an agent attaches that tool.
+    video_artifacts: VideoArtifactStore | None = getattr(
+        request.app.state, "video_artifacts", None
     )
 
     try:
@@ -532,6 +540,34 @@ async def chat(
                 extra_handlers = {**extra_handlers, **i_handlers}
             except Exception:  # noqa: BLE001 - image tool must never break a turn
                 logger.warning("image capability build failed", exc_info=True)
+        # Phase 11G: when the agent attaches the ``generate_video`` tool, inject
+        # the synthetic video-generation (Sora) capability — same closure-bound
+        # pattern as the image tool. Produced clips are collected in
+        # ``video_sink`` and attached to the assistant message below.
+        video_sink: list[MessageAttachment] = []
+        if GENERATE_VIDEO_TOOL_NAME in agent.tools and video_artifacts is not None:
+            try:
+                settings = request.app.state.settings
+                vid_service = VideoGenerationService(
+                    catalog=catalog,
+                    gateway=gateway,
+                    poll_interval_seconds=settings.gateway_video_poll_interval_seconds,
+                    max_wait_seconds=settings.gateway_video_max_wait_seconds,
+                )
+                v_tools, v_handlers = build_video_capability(
+                    video_service=vid_service,
+                    artifact_store=video_artifacts,
+                    entitlements=entitlements,
+                    metering=metering,
+                    catalog=catalog,
+                    user_id=user.internal_user_id,
+                    session_id=body.sessionId,
+                    sink=video_sink,
+                )
+                extra_tools = [*extra_tools, *v_tools]
+                extra_handlers = {**extra_handlers, **v_handlers}
+            except Exception:  # noqa: BLE001 - video tool must never break a turn
+                logger.warning("video capability build failed", exc_info=True)
         run = await run_agent_turn(
             deployment=deployment.deploymentName,
             messages=payload_messages,
@@ -558,7 +594,7 @@ async def chat(
             status=MessageStatus.complete,
             model=deployment.deploymentName,
             agent=agent_name,
-            attachments=image_sink,
+            attachments=[*image_sink, *video_sink],
         )
         await repo.add_message(user.internal_user_id, assistant)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)

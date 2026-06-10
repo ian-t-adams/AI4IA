@@ -44,6 +44,7 @@ class ImageRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=MAX_PROMPT_CHARS)
     model: str | None = None
     size: str | None = None
+    quality: str | None = None
     n: int = Field(default=1, ge=1, le=MAX_IMAGES)
     region: str | None = None
     dataZone: str | None = None
@@ -57,6 +58,7 @@ class ImageResponse(BaseModel):
     model: str
     deployment: str
     size: str
+    quality: str
     images: list[GeneratedImage]
 
 
@@ -93,6 +95,7 @@ async def generate_images(
             prompt=body.prompt,
             model=body.model,
             size=body.size,
+            quality=body.quality,
             n=body.n,
             region=body.region,
             data_zone=body.dataZone,
@@ -120,6 +123,7 @@ async def generate_images(
         model=result.model_id,
         deployment=result.deployment.deploymentName,
         size=result.size,
+        quality=result.quality,
         images=[GeneratedImage(b64=b) for b in result.images_b64],
     )
 

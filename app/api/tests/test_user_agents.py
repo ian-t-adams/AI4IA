@@ -48,10 +48,11 @@ def test_attachable_tools_are_the_safe_builtins():
     registry, executor = build_tools()
     attachable = attachable_tool_names(registry, executor)
     # The seeded built-ins are both safe/no-scope/no-approval, so both qualify.
-    # ``generate_image`` is a service-backed synthetic capability (no registry
-    # handler) seeded via SELECTABLE_SYNTHETIC_TOOL_NAMES, so it is also offered.
+    # ``generate_image`` and ``generate_video`` are service-backed synthetic
+    # capabilities (no registry handler) seeded via
+    # SELECTABLE_SYNTHETIC_TOOL_NAMES, so they are also offered.
     assert attachable == frozenset(
-        {"calculator", "get_current_time", "generate_image"}
+        {"calculator", "get_current_time", "generate_image", "generate_video"}
     )
 
 

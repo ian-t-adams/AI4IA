@@ -122,6 +122,14 @@ def build_image_capability(
                             "1024x1536 for portrait or 1536x1024 for landscape."
                         ),
                     },
+                    "quality": {
+                        "type": "string",
+                        "enum": ["auto", "low", "medium", "high"],
+                        "description": (
+                            "Optional rendering quality. Higher quality costs more and "
+                            "takes longer; omit (auto) to let the provider choose."
+                        ),
+                    },
                 },
                 "required": ["prompt"],
                 "additionalProperties": False,
@@ -137,6 +145,7 @@ def build_image_capability(
             return {"error": "prompt must be a non-empty string."}
         model = args.get("model") if isinstance(args.get("model"), str) else None
         size = args.get("size") if isinstance(args.get("size"), str) else None
+        quality = args.get("quality") if isinstance(args.get("quality"), str) else None
         budget["used"] += 1
 
         # Entitlement gate (mirrors the HTTP endpoint): a disabled user is blocked
@@ -150,6 +159,7 @@ def build_image_capability(
                 prompt=prompt,
                 model=model,
                 size=size,
+                quality=quality,
                 n=1,
                 correlation_id=ctx.correlation_id,
             )
@@ -192,6 +202,7 @@ def build_image_capability(
                 prompt=prompt[:_PROMPT_KEEP],
                 model=result.model_id,
                 size=result.size,
+                quality=result.quality,
             )
         )
         return {
@@ -199,6 +210,7 @@ def build_image_capability(
             "artifact_id": artifact_id,
             "model": _one_line(result.model_id),
             "size": _one_line(result.size),
+            "quality": _one_line(result.quality),
             "note": (
                 "The image was generated and is shown to the user. You do not have "
                 "the pixels; do not describe the image contents."

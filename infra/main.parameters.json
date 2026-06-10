@@ -40,6 +40,9 @@
     },
     "imageGenerationEnabled": {
       "value": true
+    },
+    "videoGenerationEnabled": {
+      "value": true
     }
   }
 }

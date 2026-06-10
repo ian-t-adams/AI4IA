@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Message, MessageAttachment } from "@/lib/types";
-import { fetchImageArtifact } from "@/lib/api";
+import { fetchImageArtifact, fetchVideoArtifact } from "@/lib/api";
 import { useSpeechPlayback, type SpeechState } from "@/lib/voice";
 
 interface DisplayMessage {
@@ -86,7 +86,103 @@ function ImageAttachmentView({ attachment }: { attachment: MessageAttachment }) 
         style={{ fontSize: "0.72em", color: "var(--fg-muted)", marginTop: 4 }}
       >
         {caption}
-        {attachment.model ? ` · ${attachment.model}` : ""}
+        {[
+          attachment.model,
+          attachment.size,
+          attachment.quality && attachment.quality !== "auto"
+            ? `${attachment.quality} quality`
+            : null,
+        ]
+          .filter(Boolean)
+          .map((part) => ` · ${part}`)
+          .join("")}
+      </figcaption>
+    </figure>
+  );
+}
+
+// Renders one tool-generated video. Like images, the MP4 bytes live behind an
+// authenticated endpoint, so we fetch the blob, wrap it in an object URL for a
+// <video controls> element, and revoke it on unmount to avoid leaks.
+function VideoAttachmentView({ attachment }: { attachment: MessageAttachment }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    fetchVideoArtifact(attachment.id)
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [attachment.id]);
+
+  const caption = attachment.prompt?.trim() || "Generated video";
+
+  if (failed) {
+    return (
+      <div style={{ fontSize: "0.8em", color: "var(--fg-muted)", marginTop: 8 }}>
+        (video unavailable)
+      </div>
+    );
+  }
+  return (
+    <figure style={{ margin: "10px 0 0" }}>
+      {url ? (
+        <video
+          src={url}
+          controls
+          playsInline
+          style={{
+            maxWidth: "100%",
+            borderRadius: 10,
+            border: "1px solid var(--border)",
+            display: "block",
+          }}
+        />
+      ) : (
+        <div
+          aria-label="Loading video"
+          style={{
+            width: "100%",
+            aspectRatio: "16 / 9",
+            maxWidth: 480,
+            borderRadius: 10,
+            border: "1px solid var(--border)",
+            background: "var(--assistant-bubble)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "var(--fg-muted)",
+            fontSize: "0.8em",
+          }}
+        >
+          Generating video…
+        </div>
+      )}
+      <figcaption
+        style={{ fontSize: "0.72em", color: "var(--fg-muted)", marginTop: 4 }}
+      >
+        {caption}
+        {[
+          attachment.model,
+          attachment.size,
+          attachment.durationSeconds
+            ? `${attachment.durationSeconds}s`
+            : null,
+        ]
+          .filter(Boolean)
+          .map((part) => ` · ${part}`)
+          .join("")}
       </figcaption>
     </figure>
   );
@@ -165,6 +261,8 @@ function Bubble({
         {msg.attachments?.map((att) =>
           att.kind === "image" ? (
             <ImageAttachmentView key={att.id} attachment={att} />
+          ) : att.kind === "video" ? (
+            <VideoAttachmentView key={att.id} attachment={att} />
           ) : null,
         )}
         {speakable && (

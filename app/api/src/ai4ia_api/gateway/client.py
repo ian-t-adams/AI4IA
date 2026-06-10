@@ -262,6 +262,8 @@ class ModelGatewayClient:
         self._stream_include_usage = settings.gateway_stream_include_usage
         self._image_api_version = settings.gateway_image_api_version
         self._image_timeout = settings.gateway_image_timeout_seconds
+        self._video_api_version = settings.gateway_video_api_version
+        self._video_timeout = settings.gateway_video_timeout_seconds
         self._audio_api_version = settings.gateway_audio_api_version
         self._audio_timeout = settings.gateway_audio_timeout_seconds
         self._http = http_client
@@ -431,6 +433,103 @@ class ModelGatewayClient:
             if resp.status_code >= 400:
                 raise ModelGatewayError(resp.status_code, resp.text)
             return resp.json()
+        finally:
+            if owned:
+                await client.aclose()
+
+    # --- Video generation (Sora 2, Phase 11G) ---------------------------------
+    # Sora is an async job API (NOT a single round-trip like images): create a
+    # job, poll it to completion, then download the generation's MP4 bytes. The
+    # three primitives below are intentionally thin; the submit -> poll ->
+    # download orchestration (timeout, backoff, status interpretation) lives in
+    # :class:`~ai4ia_api.videos.service.VideoGenerationService` so the gateway
+    # stays a pure transport, mirroring the image gateway/service split.
+    def _video_url(self, suffix: str) -> str:
+        """Build a Sora video URL. ``suffix`` is the path under ``/v1/video``
+        (e.g. ``/generations/jobs``). Appends the video api-version for the
+        Azure-native style (the only style that serves the Sora job API)."""
+        url = f"{self._base}/v1/video{suffix}"
+        if self._style == GatewayProviderStyle.azure_openai_native:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}api-version={self._video_api_version}"
+        return url
+
+    async def create_video_job(
+        self,
+        *,
+        deployment: str,
+        prompt: str,
+        width: int,
+        height: int,
+        n_seconds: int,
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Submit a Sora video-generation job; returns the parsed job JSON
+        (``{id, status, ...}``). The deployment is carried in the ``model`` body
+        field (Sora's create API keys off the body, not the path)."""
+        url = self._video_url("/generations/jobs")
+        body: dict[str, Any] = {
+            "model": deployment,
+            "prompt": prompt,
+            "width": width,
+            "height": height,
+            "n_seconds": n_seconds,
+        }
+        if self._http is not None:
+            client, owned = self._http, False
+        else:
+            client, owned = httpx.AsyncClient(timeout=self._video_timeout), True
+        try:
+            resp = await client.post(
+                url,
+                headers=self._auth_headers(correlation_id),
+                json=body,
+                timeout=self._video_timeout,
+            )
+            if resp.status_code >= 400:
+                raise ModelGatewayError(resp.status_code, resp.text)
+            return resp.json()
+        finally:
+            if owned:
+                await client.aclose()
+
+    async def get_video_job(
+        self, *, job_id: str, correlation_id: str | None = None
+    ) -> dict[str, Any]:
+        """Poll a Sora job's status; returns the parsed job JSON. On success the
+        job carries ``generations[].id`` referencing the downloadable content."""
+        url = self._video_url(f"/generations/jobs/{job_id}")
+        if self._http is not None:
+            client, owned = self._http, False
+        else:
+            client, owned = httpx.AsyncClient(timeout=self._video_timeout), True
+        try:
+            resp = await client.get(
+                url, headers=self._auth_headers(correlation_id), timeout=self._video_timeout
+            )
+            if resp.status_code >= 400:
+                raise ModelGatewayError(resp.status_code, resp.text)
+            return resp.json()
+        finally:
+            if owned:
+                await client.aclose()
+
+    async def get_video_content(
+        self, *, generation_id: str, correlation_id: str | None = None
+    ) -> bytes:
+        """Download a completed generation's MP4 bytes."""
+        url = self._video_url(f"/generations/{generation_id}/content/video")
+        if self._http is not None:
+            client, owned = self._http, False
+        else:
+            client, owned = httpx.AsyncClient(timeout=self._video_timeout), True
+        try:
+            resp = await client.get(
+                url, headers=self._auth_headers(correlation_id), timeout=self._video_timeout
+            )
+            if resp.status_code >= 400:
+                raise ModelGatewayError(resp.status_code, resp.text)
+            return resp.content
         finally:
             if owned:
                 await client.aclose()

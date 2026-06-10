@@ -25,6 +25,7 @@ const TOOL_LABELS: Record<string, string> = {
   calculator: "Calculator",
   get_current_time: "Current time",
   generate_image: "Generate image",
+  generate_video: "Generate video",
 };
 const inputStyle: React.CSSProperties = {
   width: "100%",

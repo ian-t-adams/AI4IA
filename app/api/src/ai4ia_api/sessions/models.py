@@ -39,11 +39,12 @@ class MessageAttachment(BaseModel):
     """A non-text artifact produced during a turn and rendered alongside the
     message text (Phase 11F).
 
-    Currently only ``kind="image"`` (a generated image persisted by the
-    ``generate_image`` tool). The bytes are NOT inlined — ``id`` references a
-    durable, user-scoped blob fetched through the authenticated serve endpoint
-    (``GET /api/images/artifacts/{id}``), so a message stays small and the
-    8 KB tool-result cap is never an issue.
+    ``kind="image"`` is a generated image persisted by the ``generate_image``
+    tool; ``kind="video"`` is a generated MP4 persisted by the ``generate_video``
+    tool. The bytes are NOT inlined — ``id`` references a durable, user-scoped
+    blob fetched through the matching authenticated serve endpoint
+    (``GET /api/images/artifacts/{id}`` or ``GET /api/videos/artifacts/{id}``),
+    so a message stays small and the 8 KB tool-result cap is never an issue.
     """
 
     id: str
@@ -52,6 +53,10 @@ class MessageAttachment(BaseModel):
     prompt: str | None = None
     model: str | None = None
     size: str | None = None
+    # Image-only: the rendering quality the image was generated at.
+    quality: str | None = None
+    # Video-only: the requested clip length in seconds.
+    durationSeconds: int | None = None
 
 
 class Message(BaseModel):

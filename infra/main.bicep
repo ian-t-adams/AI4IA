@@ -85,6 +85,9 @@ param codeInterpreterModel string = ''
 @description('Enable the agent-callable generate_image tool (Phase 11F). Default OFF. When on, a dedicated image blob storage account is provisioned and any agent may attach generate_image; produced images persist durably and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
 
+@description('Enable the agent-callable generate_video tool (Phase 11G, Sora 2). Default OFF. When on, a videos container is provisioned on the shared generated-media account and any agent may attach generate_video; produced clips persist durably and serve through an authenticated endpoint.')
+param videoGenerationEnabled bool = false
+
 @description('Comma-separated admin subjects for the entitlement-management API.')
 param adminSubjects string = ''
 
@@ -215,6 +218,9 @@ module data 'modules/data.bicep' = {
     // Generated-image blob storage (Phase 11F). Dedicated, independent of the
     // library account; gated on the image-generation flag — default OFF.
     deployImageStorage: imageGenerationEnabled
+    // Generated-video container (Phase 11G) on the same shared media account;
+    // gated on the video-generation flag — default OFF.
+    deployVideoStorage: videoGenerationEnabled
   }
 }
 
@@ -347,6 +353,12 @@ module api 'modules/api.bicep' = {
     imageGenerationEnabled: imageGenerationEnabled
     imageBlobAccountUrl: data.outputs.imageBlobAccountUrl
     imageBlobContainer: data.outputs.imageBlobContainerName
+    // Agent-callable video tool (Phase 11G). Default OFF; the videos container on
+    // the shared media account is emitted to the api env only when on and the data
+    // module provisioned it (else the api uses an in-memory store).
+    videoGenerationEnabled: videoGenerationEnabled
+    videoBlobAccountUrl: data.outputs.videoBlobAccountUrl
+    videoBlobContainer: data.outputs.videoBlobContainerName
   }
 }
 
@@ -408,6 +420,7 @@ module modelDeployments 'modules/models.bicep' = [for (r, i) in regionList: {
   scope: rg
   params: {
     accountName: foundry[i].outputs.accountName
+    raiPolicyName: foundry[i].outputs.raiPolicyName
     deployments: flatten(map(catalog, m => map(filter(m.deployments, d => d.region == r.name), d => {
       deploymentName: '${m.name}-${subscriptionToken}-${r.name}-${skuShort[d.sku]}'
       modelName: m.name

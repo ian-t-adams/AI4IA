@@ -96,6 +96,15 @@ class Settings(BaseSettings):
     # against the deployed gpt-image-2 deployment.
     gateway_image_api_version: str = "2024-10-21"
     gateway_image_timeout_seconds: float = 180.0
+    # Video generation (Phase 11G, Sora 2) is an async job: create -> poll ->
+    # download. The Sora REST surface tracks the ``preview`` api-version. Each
+    # individual HTTP call uses ``gateway_video_timeout_seconds``; the service
+    # polls every ``gateway_video_poll_interval_seconds`` up to a hard
+    # ``gateway_video_max_wait_seconds`` ceiling so a turn can never hang.
+    gateway_video_api_version: str = "preview"
+    gateway_video_timeout_seconds: float = 60.0
+    gateway_video_poll_interval_seconds: float = 5.0
+    gateway_video_max_wait_seconds: float = 240.0
     # Voice (Phase 7B) — speech-to-text (whisper) and text-to-speech
     # (gpt-4o-mini-tts / tts-hd) ride the same gateway/auth path as chat. They
     # track their own api-version and a generous timeout (audio synthesis /
@@ -256,6 +265,16 @@ class Settings(BaseSettings):
     # gated on the document-understanding flag.
     image_blob_account_url: str | None = None
     image_blob_container: str = "images"
+
+    # --- Generated-video blob storage (Phase 11G) ---
+    # Durable home for MP4 clips produced by the ``generate_video`` agent tool.
+    # Each artifact lives under ``{userId}/generated/{id}.mp4`` and is reached
+    # ONLY via the api managed identity (AAD) through an authenticated serve
+    # endpoint, never a public blob URL. Unset locally/in tests, where a
+    # process-local in-memory store is used instead. May reuse the image storage
+    # account (a distinct container) or a dedicated one.
+    video_blob_account_url: str | None = None
+    video_blob_container: str = "videos"
 
     # --- Retrieval consumer (Phase 11B-2): how the ready library surfaces in chat.
     # Tier 1 (always-injected summary cards) + Tier 2 (top-k RAG chunks) are bounded

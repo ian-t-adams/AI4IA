@@ -219,6 +219,19 @@ export async function fetchImageArtifact(artifactId: string): Promise<Blob> {
   return await resp.blob();
 }
 
+// Fetches a tool-generated video's MP4 bytes from the authenticated serve
+// endpoint (mirrors fetchImageArtifact). The caller wraps the Blob in an object
+// URL for a <video> element, since a raw src would not carry the bearer token.
+export async function fetchVideoArtifact(artifactId: string): Promise<Blob> {
+  const resp = await apiFetch(`/api/videos/artifacts/${artifactId}`, {
+    cache: "no-store",
+  });
+  if (!resp.ok) {
+    throw new Error(`${resp.status}: failed to load video`);
+  }
+  return await resp.blob();
+}
+
 export async function listSessions(): Promise<Session[]> {
   return jsonOrThrow(await apiFetch("/api/sessions", { cache: "no-store" }));
 }

@@ -323,7 +323,9 @@ USER_ATTACHABLE_TOOL_NAMES: frozenset[str] = frozenset({"calculator", "get_curre
 # services are available; if they are not, the agent simply runs without it. They
 # are listed here so a user agent may reference them and the Agent Builder can
 # offer them, governed by the same per-user agent validation as builtin tools.
-SELECTABLE_SYNTHETIC_TOOL_NAMES: frozenset[str] = frozenset({"generate_image"})
+SELECTABLE_SYNTHETIC_TOOL_NAMES: frozenset[str] = frozenset(
+    {"generate_image", "generate_video"}
+)
 
 
 def attachable_tool_names(

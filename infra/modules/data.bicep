@@ -42,6 +42,12 @@ param deployImageStorage bool = false
 @description('Blob container holding tool-generated images, scoped per-user as {userId}/generated/{id}.png.')
 param imageBlobContainer string = 'images'
 
+@description('Provision the generated-video blob container (Phase 11G). Gated on the video-generation flag. Reuses the generated-media storage account (shared with images) and adds a dedicated videos container — the account-scoped RBAC already covers it.')
+param deployVideoStorage bool = false
+
+@description('Blob container holding tool-generated videos, scoped per-user as {userId}/generated/{id}.mp4.')
+param videoBlobContainer string = 'videos'
+
 // ---------------- Cosmos DB (NoSQL) ----------------
 var cosmosAccountName = take('cosmos-${workload}-${environmentName}-${uniqueSuffix}', 44)
 
@@ -304,16 +310,18 @@ resource documentStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01
   }
 }
 
-// ---------------- Generated-image blob storage (Phase 11F) ----------------
-// Provisioned only when image generation is enabled (deployImageStorage). A
-// dedicated account, fully independent of the document library, so enabling the
-// agent-callable generate_image tool never touches the library's storage. Same
-// hardening: AAD-only (no account keys), private container, TLS 1.2+. Artifacts
-// live under {userId}/generated/{id}.png — the userId prefix is the per-user
-// isolation boundary enforced by the authenticated serve endpoint.
+// ---------------- Generated-media blob storage (Phase 11F/11G) ----------------
+// A single dedicated media account backs both the generate_image (Phase 11F) and
+// generate_video (Phase 11G) tools, fully independent of the document library so
+// enabling either tool never touches the library's storage. Provisioned when
+// EITHER tool is enabled; each tool's container is created only when its own flag
+// is on. Same hardening: AAD-only (no account keys), private containers, TLS 1.2+.
+// Artifacts live under {userId}/generated/{id}.{ext} — the userId prefix is the
+// per-user isolation boundary enforced by the authenticated serve endpoints.
 var imageStorageName = 'sti${uniqueString(resourceGroup().id)}'
+var deployMediaStorage = deployImageStorage || deployVideoStorage
 
-resource imageStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (deployImageStorage) {
+resource imageStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (deployMediaStorage) {
   name: imageStorageName
   location: location
   tags: tags
@@ -334,7 +342,7 @@ resource imageStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (deplo
   }
 }
 
-resource imageBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = if (deployImageStorage) {
+resource imageBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = if (deployMediaStorage) {
   parent: imageStorage
   name: 'default'
   properties: {}
@@ -348,7 +356,15 @@ resource imageContainer 'Microsoft.Storage/storageAccounts/blobServices/containe
   }
 }
 
-resource imageStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployImageStorage) {
+resource videoContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = if (deployVideoStorage) {
+  parent: imageBlobService
+  name: videoBlobContainer
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource imageStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployMediaStorage) {
   name: guid(imageStorage.id, apiPrincipalId, storageBlobDataContributorRoleId)
   scope: imageStorage
   properties: {
@@ -368,3 +384,5 @@ output documentBlobAccountUrl string = documentStorage.?properties.primaryEndpoi
 output documentBlobContainerName string = documentBlobContainer
 output imageBlobAccountUrl string = imageStorage.?properties.primaryEndpoints.blob ?? ''
 output imageBlobContainerName string = imageBlobContainer
+output videoBlobAccountUrl string = imageStorage.?properties.primaryEndpoints.blob ?? ''
+output videoBlobContainerName string = videoBlobContainer

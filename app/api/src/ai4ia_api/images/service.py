@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 MAX_IMAGES = 1
 ALLOWED_SIZES = {"1024x1024", "1024x1536", "1536x1024", "auto"}
 DEFAULT_SIZE = "1024x1024"
+# Image quality is a closed allowlist mirroring the provider's accepted values.
+# "auto" lets the provider pick (and is omitted from the request body); the rest
+# are forwarded as an explicit trusted parameter.
+ALLOWED_QUALITIES = {"auto", "low", "medium", "high"}
+DEFAULT_QUALITY = "auto"
 MAX_PROMPT_CHARS = 4000
 # Reject an upstream response whose combined base64 exceeds this (defense against
 # a misbehaving/oversized provider response blowing up the browser + proxy).
@@ -59,6 +64,7 @@ class ImageGenerationResult:
     model_id: str
     deployment: DeploymentOption
     size: str
+    quality: str
     images_b64: list[str]
     usage: TokenUsage
 
@@ -113,6 +119,7 @@ class ImageGenerationService:
         prompt: str,
         model: str | None,
         size: str | None,
+        quality: str | None = None,
         n: int = 1,
         region: str | None = None,
         data_zone: str | None = None,
@@ -131,6 +138,13 @@ class ImageGenerationService:
             raise ImageGenerationError(
                 422,
                 f"Unsupported size. Allowed: {', '.join(sorted(ALLOWED_SIZES))}.",
+            )
+
+        resolved_quality = quality or DEFAULT_QUALITY
+        if resolved_quality not in ALLOWED_QUALITIES:
+            raise ImageGenerationError(
+                422,
+                f"Unsupported quality. Allowed: {', '.join(sorted(ALLOWED_QUALITIES))}.",
             )
 
         count = 1 if n is None else int(n)
@@ -164,6 +178,7 @@ class ImageGenerationService:
                 prompt=clean_prompt,
                 size=None if resolved_size == "auto" else resolved_size,
                 n=count,
+                extra=None if resolved_quality == "auto" else {"quality": resolved_quality},
                 correlation_id=correlation_id,
             )
         except ModelGatewayError as exc:
@@ -205,6 +220,7 @@ class ImageGenerationService:
             model_id=model_id,
             deployment=deployment,
             size=resolved_size,
+            quality=resolved_quality,
             images_b64=images,
             usage=image_token_usage(result.get("usage")),
         )

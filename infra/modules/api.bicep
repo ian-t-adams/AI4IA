@@ -142,6 +142,15 @@ param imageBlobAccountUrl string = ''
 @description('Blob container tool-generated images are written to.')
 param imageBlobContainer string = 'images'
 
+@description('Enable the agent-callable generate_video tool (Phase 11G, Sora 2). Default OFF. When on (and a video blob account is provisioned) any agent may attach generate_video; produced clips persist to blob storage and serve through an authenticated endpoint.')
+param videoGenerationEnabled bool = false
+
+@description('Blob account URL backing tool-generated videos (empty until video storage is provisioned). When empty the api falls back to an in-memory store.')
+param videoBlobAccountUrl string = ''
+
+@description('Blob container tool-generated videos are written to.')
+param videoBlobContainer string = 'videos'
+
 var entraEnv = authProvider == 'entra' ? [
   {
     name: 'AI4IA_ENTRA_TENANT_ID'
@@ -316,6 +325,20 @@ var imageEnv = (imageGenerationEnabled && !empty(imageBlobAccountUrl)) ? [
   }
 ] : []
 
+// Phase 11G video tool: same pattern as images — the durable blob account/container
+// are emitted only when video generation is enabled AND an account is provisioned;
+// otherwise the api falls back to its in-memory artifact store (ephemeral).
+var videoEnv = (videoGenerationEnabled && !empty(videoBlobAccountUrl)) ? [
+  {
+    name: 'AI4IA_VIDEO_BLOB_ACCOUNT_URL'
+    value: videoBlobAccountUrl
+  }
+  {
+    name: 'AI4IA_VIDEO_BLOB_CONTAINER'
+    value: videoBlobContainer
+  }
+] : []
+
 var apiEnv = concat([
   {
     name: 'PORT'
@@ -361,7 +384,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, computeEnv, imageEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, computeEnv, imageEnv, videoEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: 'ca-api-${environmentName}'

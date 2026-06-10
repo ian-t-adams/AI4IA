@@ -8,6 +8,9 @@ param accountName string
 { deploymentName: string, modelName: string, format: string, version: string, sku: string, capacity: int }''')
 param deployments array
 
+@description('Name of the Responsible AI policy applied to every deployment (annotate-only).')
+param raiPolicyName string = ''
+
 resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = {
   name: accountName
 }
@@ -27,6 +30,7 @@ resource modelDeployments 'Microsoft.CognitiveServices/accounts/deployments@2024
       version: d.version
     }
     versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
+    raiPolicyName: empty(raiPolicyName) ? null : raiPolicyName
   }
 }]
 

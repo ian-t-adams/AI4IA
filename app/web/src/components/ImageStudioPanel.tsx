@@ -6,6 +6,7 @@ import type { ModelEntry } from "@/lib/types";
 import { useTheme } from "./ThemeProvider";
 
 const SIZES = ["1024x1024", "1024x1536", "1536x1024", "auto"];
+const QUALITIES = ["auto", "low", "medium", "high"];
 
 type GalleryItem = {
   id: string;
@@ -13,6 +14,7 @@ type GalleryItem = {
   prompt: string;
   model: string;
   size: string;
+  quality: string;
 };
 
 // A dedicated media surface for image generation. Unlike the Settings
@@ -38,6 +40,7 @@ export function ImageStudioPanel({
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState<string>("");
   const [size, setSize] = useState<string>("1024x1024");
+  const [quality, setQuality] = useState<string>("auto");
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gallery, setGallery] = useState<GalleryItem[]>([]);
@@ -61,6 +64,7 @@ export function ImageStudioPanel({
         prompt: prompt.trim(),
         model: effectiveModel || undefined,
         size,
+        quality,
       });
       const b64 = resp.images[0]?.b64;
       if (!b64) {
@@ -73,6 +77,7 @@ export function ImageStudioPanel({
         prompt: prompt.trim(),
         model: resp.model || effectiveModel,
         size: resp.size || size,
+        quality: resp.quality || quality,
       };
       setGallery((g) => [item, ...g]);
     } catch (e) {
@@ -176,6 +181,21 @@ export function ImageStudioPanel({
                   ))}
                 </select>
               </label>
+              <label style={{ fontSize: "0.78em", color: "var(--fg-muted)" }}>
+                Quality
+                <select
+                  aria-label="Image quality"
+                  value={quality}
+                  onChange={(e) => setQuality(e.target.value)}
+                  style={{ width: "100%", padding: 6, marginTop: 4 }}
+                >
+                  {QUALITIES.map((q) => (
+                    <option key={q} value={q}>
+                      {q}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <button
                 type="button"
                 onClick={generate}
@@ -245,6 +265,9 @@ export function ImageStudioPanel({
                         </span>
                         <span style={{ fontSize: "0.66em", color: "var(--fg-muted)" }}>
                           {item.model} · {item.size}
+                          {item.quality && item.quality !== "auto"
+                            ? ` · ${item.quality}`
+                            : ""}
                         </span>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                           <a

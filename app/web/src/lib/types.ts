@@ -44,6 +44,8 @@ export interface MessageAttachment {
   prompt: string | null;
   model: string | null;
   size: string | null;
+  quality?: string | null;
+  durationSeconds?: number | null;
 }
 
 export interface Message {
@@ -159,6 +161,7 @@ export interface ImageRequest {
   prompt: string;
   model?: string | null;
   size?: string | null;
+  quality?: string | null;
   n?: number;
   region?: string | null;
   dataZone?: string | null;
@@ -172,6 +175,7 @@ export interface ImageResponse {
   model: string;
   deployment: string;
   size: string;
+  quality: string;
   images: GeneratedImageData[];
 }
 
