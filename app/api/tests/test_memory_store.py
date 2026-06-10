@@ -62,3 +62,42 @@ async def test_erase_user_and_session_counts():
 
     assert await store.erase_user("u1") == 1
     assert await store.search("u1", [0.0, 1.0], top_k=10) == []
+
+
+async def test_erase_document_scopes_by_document_id():
+    store = InMemoryVectorStore()
+    await store.add(
+        MemoryRecord(user_id="u1", text="doc-a 1", kind="document", document_id="a"),
+        [1.0, 0.0],
+    )
+    await store.add(
+        MemoryRecord(user_id="u1", text="doc-a 2", kind="document", document_id="a"),
+        [1.0, 0.0],
+    )
+    await store.add(
+        MemoryRecord(user_id="u1", text="doc-b", kind="document", document_id="b"),
+        [0.0, 1.0],
+    )
+    await store.add(MemoryRecord(user_id="u1", text="chat note"), [0.0, 1.0])
+
+    # Only document "a" is removed; document "b" and the chat note survive.
+    assert await store.erase_document("u1", "a") == 2
+    remaining = {h.text for h in await store.search("u1", [0.0, 1.0], top_k=10)}
+    assert remaining == {"doc-b", "chat note"}
+    # Idempotent: forgetting again removes nothing.
+    assert await store.erase_document("u1", "a") == 0
+
+
+async def test_erase_document_is_user_isolated():
+    store = InMemoryVectorStore()
+    await store.add(
+        MemoryRecord(user_id="u1", text="mine", kind="document", document_id="d"),
+        [1.0, 0.0],
+    )
+    await store.add(
+        MemoryRecord(user_id="u2", text="theirs", kind="document", document_id="d"),
+        [1.0, 0.0],
+    )
+    # Same document_id, different users: erasing u1's does not touch u2's.
+    assert await store.erase_document("u1", "d") == 1
+    assert [h.text for h in await store.search("u2", [1.0, 0.0], top_k=10)] == ["theirs"]

@@ -41,3 +41,9 @@ class MemoryStore(Protocol):
     async def erase_session(self, user_id: str, session_id: str) -> int:
         """Delete a user's memories for one session; return how many removed."""
         ...
+
+    async def erase_document(self, user_id: str, document_id: str) -> int:
+        """Delete a user's memories saved from one document; return how many
+        were removed. Enables idempotent re-save (replace) and forget-by-document
+        (Phase 11E-3)."""
+        ...

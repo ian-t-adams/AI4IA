@@ -38,3 +38,9 @@ export interface LibraryAnalyzer {
 export interface SaveToMemoryResult {
   saved: number;
 }
+
+// Mirrors the API's ForgetFromMemoryResult (Phase 11E-3): how many memory items
+// were erased when forgetting a document's contributions to durable memory.
+export interface ForgetFromMemoryResult {
+  forgotten: number;
+}

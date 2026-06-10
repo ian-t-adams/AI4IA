@@ -206,3 +206,54 @@ async def test_remember_document_surfaces_embed_failure():
     svc = _service(Boom())
     with pytest.raises(RuntimeError):
         await svc.remember_document("u1", items=["a durable excerpt to store"])
+
+
+# --- 11E-3: idempotent re-save + forget-by-document ---
+async def test_remember_document_with_document_id_is_idempotent():
+    # Re-saving the same document replaces its prior generation rather than
+    # accumulating duplicates.
+    embedder = FakeEmbedder(
+        {"first gist": [1.0, 0.0, 0.0], "second gist": [1.0, 0.0, 0.0],
+         "query": [1.0, 0.0, 0.0]}
+    )
+    svc = _service(embedder, min_score=0.1)
+
+    assert await svc.remember_document("u1", items=["first gist"], document_id="d1") == 1
+    # Second save (e.g. a re-click, or after re-analysis) for the SAME document.
+    assert await svc.remember_document("u1", items=["second gist"], document_id="d1") == 1
+
+    hits = await svc.recall("u1", "query")
+    # Only the latest generation survives — no duplicate from the first save.
+    assert {h.text for h in hits} == {"second gist"}
+
+
+async def test_remember_document_without_id_still_accumulates():
+    # Backwards-compatible: no document_id means no dedupe (legacy behavior).
+    embedder = FakeEmbedder({"a gist": [1.0, 0.0, 0.0], "query": [1.0, 0.0, 0.0]})
+    svc = _service(embedder, min_score=0.1)
+    await svc.remember_document("u1", items=["a gist"])
+    await svc.remember_document("u1", items=["a gist"])
+    hits = await svc.recall("u1", "query")
+    assert len([h for h in hits if h.text == "a gist"]) == 2
+
+
+async def test_forget_document_removes_only_that_document():
+    embedder = FakeEmbedder(
+        {"doc one": [1.0, 0.0, 0.0], "doc two": [1.0, 0.0, 0.0],
+         "query": [1.0, 0.0, 0.0]}
+    )
+    svc = _service(embedder, min_score=0.1)
+    await svc.remember_document("u1", items=["doc one"], document_id="d1")
+    await svc.remember_document("u1", items=["doc two"], document_id="d2")
+
+    assert await svc.forget_document("u1", "d1") == 1
+    hits = await svc.recall("u1", "query")
+    assert {h.text for h in hits} == {"doc two"}
+    # Idempotent: forgetting a document with nothing saved returns 0.
+    assert await svc.forget_document("u1", "d1") == 0
+
+
+async def test_noop_service_remember_and_forget_document_are_zero():
+    noop = NoopMemoryService()
+    assert await noop.remember_document("u1", items=["x"], document_id="d") == 0
+    assert await noop.forget_document("u1", "d") == 0

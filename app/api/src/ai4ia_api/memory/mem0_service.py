@@ -316,7 +316,12 @@ class Mem0MemoryService:
             logger.warning("mem0 remember failed", exc_info=True)
 
     async def remember_document(
-        self, user_id: str, *, items: Sequence[str], session_id: str | None = None
+        self,
+        user_id: str,
+        *,
+        items: Sequence[str],
+        session_id: str | None = None,
+        document_id: str | None = None,
     ) -> int:
         """Store document excerpts verbatim as durable memories.
 
@@ -324,14 +329,23 @@ class Mem0MemoryService:
         swallowed. ``infer=False`` stores each excerpt as-is, bypassing mem0's
         LLM fact-extraction pass — document text is reference content to recall
         verbatim, not an utterance to distill. Returns how many items were
-        stored."""
+        stored.
+
+        When ``document_id`` is given the excerpts are tagged with it
+        (``metadata``) and any prior generation for that document is removed
+        first, so a re-save is idempotent rather than duplicating (Phase
+        11E-3)."""
         texts = [t.strip() for t in items if t and t.strip()]
         if not texts:
             return 0
         add_kwargs: dict[str, Any] = {"user_id": user_id, "infer": False}
         if session_id:
             add_kwargs["run_id"] = session_id
+        if document_id is not None:
+            add_kwargs["metadata"] = {"document_id": document_id}
         mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
+        if document_id is not None:
+            await self._forget_document(mem, user_id, document_id)
         stored = 0
         for text in texts:
             await self._call(
@@ -370,6 +384,38 @@ class Mem0MemoryService:
             self._op_timeout_s,
         )
         return count
+
+    async def forget_document(self, user_id: str, document_id: str) -> int:
+        """Erase a user's memories saved from one document (NOT swallowed).
+
+        mem0's ``delete_all`` only scopes by entity (user/run), not by custom
+        metadata, so document-scoped deletion lists the user's memories and
+        removes by id the ones whose ``metadata.document_id`` matches (Phase
+        11E-3)."""
+        mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
+        return await self._forget_document(mem, user_id, document_id)
+
+    async def _forget_document(self, mem: Any, user_id: str, document_id: str) -> int:
+        """List the user's memories and delete by id those tagged with
+        ``document_id``. Shared by the idempotent re-save and the explicit
+        forget-by-document path; failures propagate (explicit deletion)."""
+        listing = await self._call(
+            lambda: mem.get_all(filters={"user_id": user_id}, top_k=_FORGET_LIST_CAP),
+            self._op_timeout_s,
+        )
+        deleted = 0
+        for item in _results(listing):
+            metadata = item.get("metadata") or {}
+            if metadata.get("document_id") != document_id:
+                continue
+            mem_id = item.get("id")
+            if mem_id is None:
+                continue
+            await self._call(
+                lambda i=mem_id: mem.delete(memory_id=i), self._op_timeout_s
+            )
+            deleted += 1
+        return deleted
 
     def format_context(self, records: list[MemoryRecord]) -> str | None:
         """Render recalled records as a capped, untrusted-labelled context block."""

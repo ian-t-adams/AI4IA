@@ -17,7 +17,12 @@ import type {
   WorkflowRunResult,
   WorkflowUpdate,
 } from "./types";
-import type { LibraryAnalyzer, LibraryDocument, SaveToMemoryResult } from "./library";
+import type {
+  ForgetFromMemoryResult,
+  LibraryAnalyzer,
+  LibraryDocument,
+  SaveToMemoryResult,
+} from "./library";
 import { apiFetch } from "./auth";
 
 async function jsonOrThrow<T>(resp: Response): Promise<T> {
@@ -332,6 +337,21 @@ export async function saveLibraryDocumentToMemory(
   return jsonOrThrow(
     await apiFetch(`/api/library/documents/${documentId}/memory`, {
       method: "POST",
+    }),
+  );
+}
+
+// Phase 11E-3: the explicit undo of saveLibraryDocumentToMemory. Erases exactly
+// the memories saved from this document, leaving chat-sourced and other
+// documents' memories intact. 404 when the library is off, 409 when the memory
+// store is disabled. Idempotent — forgetting a document with nothing saved
+// returns { forgotten: 0 }.
+export async function forgetLibraryDocumentFromMemory(
+  documentId: string,
+): Promise<ForgetFromMemoryResult> {
+  return jsonOrThrow(
+    await apiFetch(`/api/library/documents/${documentId}/memory`, {
+      method: "DELETE",
     }),
   );
 }
