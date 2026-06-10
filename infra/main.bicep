@@ -94,6 +94,9 @@ param searchEnabled bool = false
 @description('Azure AI Search SKU when searchEnabled (basic is the smallest tier with semantic ranking).')
 param searchSku string = 'basic'
 
+@description('Region for the Azure AI Search service. Empty => use the primary location. Provided as a separate knob because Search SKU capacity is region-constrained: eastus2 returned InsufficientResourcesAvailable, so Search is placed in a region with capacity (overridable via AI4IA_SEARCH_LOCATION). The service is reached over its global *.search.windows.net endpoint, so a different region from the rest of the stack is fine.')
+param searchLocation string = ''
+
 @description('Comma-separated admin subjects for the entitlement-management API.')
 param adminSubjects string = ''
 
@@ -237,7 +240,7 @@ module search 'modules/search.bicep' = {
   name: 'search'
   scope: rg
   params: {
-    location: location
+    location: empty(searchLocation) ? location : searchLocation
     tags: tags
     workload: workload
     uniqueSuffix: uniqueSuffix
