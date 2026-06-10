@@ -216,6 +216,10 @@ class Settings(BaseSettings):
     # (RBAC: Search Index Data Contributor + Service Contributor) — no admin keys.
     # Empty/None when no search service is provisioned (the feature is dormant).
     search_endpoint: str | None = None
+    # Name of the document-chunk index. Created lazily (idempotently) on first use
+    # when ``search_endpoint`` is set. A single shared index, scoped per-user by a
+    # filterable ``user_id`` field, mirroring the pgvector ``doc_chunks`` table.
+    search_index_name: str = "ai4ia-doc-chunks"
 
     # --- Content Understanding ingest (Phase 11B) ---
     # CU is its own async REST surface (PUT analyzer / POST :analyzeBinary / GET
