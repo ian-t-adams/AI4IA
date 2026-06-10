@@ -61,3 +61,13 @@ azd up
 - [Deployment (CI/CD) runbook](docs/runbooks/deployment.md)
 - [Feature enablement runbook](docs/runbooks/feature-enablement.md)
 - [Teardown & rebuild runbook](docs/runbooks/teardown.md)
+
+## Branding
+![AI4IA lettermark](assets/branding/ai4ia-lettermark.png)
+
+The mark above is the official **AI4IA** project lettermark. Brand assets live in
+[`assets/branding/`](assets/branding/):
+
+- `ai4ia-lettermark.png` — primary lettermark (1024×1024, opaque background).
+- `ai4ia-icon-1024.png` — 1024×1024 icon with a transparent, rounded-corner background.
+- `ai4ia-icon.ico` — multi-size Windows icon (16–256px) for app/favicon use.
