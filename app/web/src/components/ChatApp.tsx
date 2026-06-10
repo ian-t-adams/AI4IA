@@ -11,6 +11,7 @@ import { SystemPromptEditor } from "./SystemPromptEditor";
 import { SettingsPanel } from "./SettingsPanel";
 import { StudioPanel } from "./StudioPanel";
 import { ImageStudioPanel } from "./ImageStudioPanel";
+import { VoiceLivePanel } from "./VoiceLivePanel";
 import { LibraryPanel } from "./LibraryPanel";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import { Composer } from "./Composer";
@@ -63,6 +64,7 @@ export function ChatApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
   const [imageryOpen, setImageryOpen] = useState(false);
+  const [voiceOpen, setVoiceOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
 
   const abortRef = useRef<(() => void) | null>(null);
@@ -464,6 +466,7 @@ export function ChatApp() {
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenStudio={() => setStudioOpen(true)}
         onOpenImagery={() => setImageryOpen(true)}
+        onOpenVoice={voiceLiveEnabled ? () => setVoiceOpen(true) : undefined}
         onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
         disabled={streaming}
       />
@@ -523,9 +526,7 @@ export function ChatApp() {
           onRemoveDocument={removeDocument}
           onRemoveLibraryDocument={removeLibraryDocument}
           onError={setError}
-          voiceLiveEnabled={voiceLiveEnabled}
-          voiceLiveConfig={voiceLiveConfig}
-          voiceLiveModel={realtimeModelId}
+          onStartVoice={voiceLiveEnabled ? () => setVoiceOpen(true) : undefined}
         />
       </main>
 
@@ -565,6 +566,15 @@ export function ChatApp() {
       )}
       {imageryOpen && (
         <ImageStudioPanel models={models} onClose={() => setImageryOpen(false)} />
+      )}
+      {voiceOpen && voiceLiveEnabled && (
+        <VoiceLivePanel
+          config={voiceLiveConfig}
+          model={realtimeModelId}
+          agents={agents}
+          onClose={() => setVoiceOpen(false)}
+          onError={setError}
+        />
       )}
     </div>
   );
