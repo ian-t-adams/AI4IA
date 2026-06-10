@@ -461,6 +461,7 @@ export function ChatApp() {
           onUpload={uploadDocument}
           onRemoveDocument={removeDocument}
           onError={setError}
+          onStartVoice={voiceLiveEnabled ? () => setVoiceOpen(true) : undefined}
         />
       </main>
 

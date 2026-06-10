@@ -53,6 +53,7 @@ export function Composer({
   onUpload,
   onRemoveDocument,
   onError,
+  onStartVoice,
 }: {
   disabled: boolean;
   streaming: boolean;
@@ -64,6 +65,10 @@ export function Composer({
   onUpload: (file: File) => void;
   onRemoveDocument: (id: string) => void;
   onError?: (message: string) => void;
+  // Opens the live voice-to-voice (VoiceLive) panel. Only provided when the
+  // VoiceLive feature flag is on, so the button is gated exactly like the
+  // Sidebar launcher.
+  onStartVoice?: () => void;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -458,6 +463,29 @@ export function Composer({
         >
           {voice.transcribing ? "…" : voice.recording ? "■" : "🎙"}
         </button>
+
+        {onStartVoice && (
+          <button
+            type="button"
+            onClick={onStartVoice}
+            aria-label="Start a live voice conversation"
+            title="Voice conversation — talk live, hands-free (voice to voice)"
+            style={{
+              alignSelf: "stretch",
+              minHeight: 46,
+              padding: "0 14px",
+              borderRadius: 10,
+              border: "1px solid var(--accent)",
+              background: "var(--accent)",
+              color: "var(--accent-fg)",
+              fontSize: "1.15em",
+              lineHeight: 1,
+              cursor: "pointer",
+            }}
+          >
+            🎤
+          </button>
+        )}
 
         <label htmlFor="composer" className="visually-hidden">
           Message
