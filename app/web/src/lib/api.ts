@@ -206,6 +206,19 @@ export async function synthesizeSpeech(
   return await resp.blob();
 }
 
+// Fetches a tool-generated image's bytes from the authenticated serve endpoint.
+// A raw <img src> would not carry the bearer token, so (like synthesizeSpeech) we
+// fetch via apiFetch and hand back a Blob the caller wraps in an object URL.
+export async function fetchImageArtifact(artifactId: string): Promise<Blob> {
+  const resp = await apiFetch(`/api/images/artifacts/${artifactId}`, {
+    cache: "no-store",
+  });
+  if (!resp.ok) {
+    throw new Error(`${resp.status}: failed to load image`);
+  }
+  return await resp.blob();
+}
+
 export async function listSessions(): Promise<Session[]> {
   return jsonOrThrow(await apiFetch("/api/sessions", { cache: "no-store" }));
 }

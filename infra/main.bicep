@@ -82,6 +82,9 @@ param codeInterpreterBaseUrl string = ''
 @description('Deployment/model name that serves the Responses API code_interpreter tool (Phase 11C, e.g. gpt-4.1). Required when enabling document compute in a deployed env.')
 param codeInterpreterModel string = ''
 
+@description('Enable the agent-callable generate_image tool (Phase 11F). Default OFF. When on, a dedicated image blob storage account is provisioned and any agent may attach generate_image; produced images persist durably and serve through an authenticated endpoint.')
+param imageGenerationEnabled bool = false
+
 @description('Comma-separated admin subjects for the entitlement-management API.')
 param adminSubjects string = ''
 
@@ -209,6 +212,9 @@ module data 'modules/data.bicep' = {
     // Document library blob storage (Phase 11B). Gated on the feature flag, so the
     // storage account + container + RBAC are created only when enabled — default OFF.
     deployDocumentStorage: documentUnderstandingEnabled
+    // Generated-image blob storage (Phase 11F). Dedicated, independent of the
+    // library account; gated on the image-generation flag — default OFF.
+    deployImageStorage: imageGenerationEnabled
   }
 }
 
@@ -335,6 +341,12 @@ module api 'modules/api.bicep' = {
     documentComputeEnabled: documentComputeEnabled
     codeInterpreterBaseUrl: codeInterpreterBaseUrl
     codeInterpreterModel: codeInterpreterModel
+    // Agent-callable image tool (Phase 11F). Default OFF; the dedicated image blob
+    // account/container are emitted to the api env only when the feature is on and
+    // the data module provisioned an account (else the api uses an in-memory store).
+    imageGenerationEnabled: imageGenerationEnabled
+    imageBlobAccountUrl: data.outputs.imageBlobAccountUrl
+    imageBlobContainer: data.outputs.imageBlobContainerName
   }
 }
 

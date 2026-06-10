@@ -22,7 +22,11 @@ export const PREVIOUS_TOKEN = "{previous}";
 // The backend's user-attachable tool allowlist. Mirrored here so the builder can
 // offer the tools as checkboxes; unknown tools are rejected server-side (422), so
 // drift fails safe rather than silently.
-export const ATTACHABLE_TOOLS = ["calculator", "get_current_time"] as const;
+export const ATTACHABLE_TOOLS = [
+  "calculator",
+  "get_current_time",
+  "generate_image",
+] as const;
 
 // Returns a human-readable reason the name is invalid, or null if it's valid.
 export function nameError(name: string): string | null {

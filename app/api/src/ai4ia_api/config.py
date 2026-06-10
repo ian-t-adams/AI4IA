@@ -246,6 +246,17 @@ class Settings(BaseSettings):
     document_max_chunks: int = 5000
     document_embed_batch: int = 128
 
+    # --- Generated-image blob storage (Phase 11F) ---
+    # Durable home for images produced by the ``generate_image`` agent tool. Each
+    # artifact lives under ``{userId}/generated/{id}.png`` and is reached ONLY via
+    # the api managed identity (AAD) — the browser fetches it through an
+    # authenticated serve endpoint, never a public blob URL. Unset locally/in
+    # tests, where a process-local in-memory store is used instead. Independent of
+    # the document library: image generation ships live, so its storage is not
+    # gated on the document-understanding flag.
+    image_blob_account_url: str | None = None
+    image_blob_container: str = "images"
+
     # --- Retrieval consumer (Phase 11B-2): how the ready library surfaces in chat.
     # Tier 1 (always-injected summary cards) + Tier 2 (top-k RAG chunks) are bounded
     # so the library context can never crowd out the conversation. Tier 3 is the

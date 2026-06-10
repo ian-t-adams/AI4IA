@@ -19,6 +19,7 @@ from .config import Settings, get_settings
 from .entitlements.factory import build_default_entitlement, build_entitlement_store
 from .entitlements.service import EntitlementService
 from .gateway.client import ModelGatewayClient
+from .images.artifacts import ImageArtifactStore, build_image_blob_store
 from .routers.realtime import AiohttpRealtimeConnector
 from .library.factory import build_document_library
 from .library.ingest_factory import build_document_ingestor, build_document_retrieval
@@ -165,6 +166,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ingestor=app.state.document_ingestor,
             retrieval=app.state.document_retrieval,
         )
+        # Durable store for tool-generated images (Phase 11F). Shared (single
+        # instance) so the byte written during a tool turn is readable by the
+        # later authenticated serve request. Durable AzureBlobStore when
+        # image_blob_account_url is set; an in-memory store locally/in tests.
+        # Independent of the document library (image generation ships live).
+        app.state.image_artifacts = ImageArtifactStore(build_image_blob_store(settings))
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
         try:
@@ -224,6 +231,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await compute.close()
                 except Exception:  # noqa: BLE001
                     logger.warning("document compute close failed", exc_info=True)
+            image_artifacts = getattr(app.state, "image_artifacts", None)
+            if image_artifacts is not None:
+                try:
+                    await image_artifacts.close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("image artifact store close failed", exc_info=True)
 
     app = FastAPI(title="AI4IA API", version="0.1.0", lifespan=lifespan)
 

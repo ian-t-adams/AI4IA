@@ -25,7 +25,7 @@ from ..auth.dependencies import get_current_user
 from ..catalog import ModelCatalog
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..logging_setup import get_correlation_id
-from ..sessions.models import Message, MessageRole, MessageStatus, Session
+from ..sessions.models import Message, MessageAttachment, MessageRole, MessageStatus, Session
 from ..sessions.repository import SessionNotFoundError, SessionRepository
 from ..agents.agent_catalog import AgentCatalog, AgentSpec
 from ..agents.command_service import execute_command
@@ -35,6 +35,9 @@ from ..agents.orchestration import build_delegate_capability
 from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
 from ..entitlements.service import EntitlementService
+from ..images.artifacts import ImageArtifactStore
+from ..images.capability import GENERATE_IMAGE_TOOL_NAME, build_image_capability
+from ..images.service import ImageGenerationService
 from ..library.chat_capability import build_document_capability
 from ..library.compute_factory import DocumentComputeService
 from ..library.retrieval import DocumentRetrievalService
@@ -212,6 +215,11 @@ async def chat(
     # advertised, and the chat path is byte-for-byte unchanged.
     compute: DocumentComputeService | None = getattr(
         request.app.state, "document_compute", None
+    )
+    # Generated-image artifact store (Phase 11F). Always present; backs the
+    # ``generate_image`` capability when an agent attaches that tool.
+    image_artifacts: ImageArtifactStore | None = getattr(
+        request.app.state, "image_artifacts", None
     )
 
     try:
@@ -498,6 +506,32 @@ async def chat(
                 extra_handlers = {**extra_handlers, **c_handlers}
             except Exception:  # noqa: BLE001 - compute must never break a turn
                 logger.warning("compute capability build failed", exc_info=True)
+        # Phase 11F: when the agent attaches the ``generate_image`` tool, inject
+        # the synthetic image-generation capability. It needs real services (the
+        # gateway, catalog, entitlement gate, usage meter, and durable artifact
+        # store), so it cannot run through the registry executor like a builtin —
+        # it is built here per turn, bound to this user. Disjoint tool name (the
+        # runtime asserts no collisions). Best-effort: a build failure leaves the
+        # agent with its other tools. Produced images are collected in
+        # ``image_sink`` and attached to the assistant message below.
+        image_sink: list[MessageAttachment] = []
+        if GENERATE_IMAGE_TOOL_NAME in agent.tools and image_artifacts is not None:
+            try:
+                img_service = ImageGenerationService(catalog=catalog, gateway=gateway)
+                i_tools, i_handlers = build_image_capability(
+                    image_service=img_service,
+                    artifact_store=image_artifacts,
+                    entitlements=entitlements,
+                    metering=metering,
+                    catalog=catalog,
+                    user_id=user.internal_user_id,
+                    session_id=body.sessionId,
+                    sink=image_sink,
+                )
+                extra_tools = [*extra_tools, *i_tools]
+                extra_handlers = {**extra_handlers, **i_handlers}
+            except Exception:  # noqa: BLE001 - image tool must never break a turn
+                logger.warning("image capability build failed", exc_info=True)
         run = await run_agent_turn(
             deployment=deployment.deploymentName,
             messages=payload_messages,
@@ -524,6 +558,7 @@ async def chat(
             status=MessageStatus.complete,
             model=deployment.deploymentName,
             agent=agent_name,
+            attachments=image_sink,
         )
         await repo.add_message(user.internal_user_id, assistant)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)

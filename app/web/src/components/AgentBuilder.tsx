@@ -19,6 +19,13 @@ const labelStyle: React.CSSProperties = {
   marginBottom: 4,
   display: "block",
 };
+
+// Friendly names for the attachable tools (the registry uses snake_case ids).
+const TOOL_LABELS: Record<string, string> = {
+  calculator: "Calculator",
+  get_current_time: "Current time",
+  generate_image: "Generate image",
+};
 const inputStyle: React.CSSProperties = {
   width: "100%",
   padding: "8px 10px",
@@ -306,7 +313,7 @@ export function AgentBuilder({
                 checked={form.tools.includes(t)}
                 onChange={() => toggleIn("tools", t)}
               />
-              {t}
+              {TOOL_LABELS[t] ?? t}
             </label>
           ))}
         </fieldset>

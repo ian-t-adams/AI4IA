@@ -133,6 +133,15 @@ param codeInterpreterBaseUrl string = ''
 @description('Deployment/model name that serves the Responses API code_interpreter tool (e.g. gpt-4.1). Required when enabling document compute in a deployed env.')
 param codeInterpreterModel string = ''
 
+@description('Enable the agent-callable generate_image tool (Phase 11F). Default OFF. When on (and an image blob account is provisioned) any agent may attach generate_image; produced images persist to dedicated blob storage and serve through an authenticated endpoint.')
+param imageGenerationEnabled bool = false
+
+@description('Blob account URL backing tool-generated images (empty until image storage is provisioned). When empty the api falls back to an in-memory store.')
+param imageBlobAccountUrl string = ''
+
+@description('Blob container tool-generated images are written to.')
+param imageBlobContainer string = 'images'
+
 var entraEnv = authProvider == 'entra' ? [
   {
     name: 'AI4IA_ENTRA_TENANT_ID'
@@ -293,6 +302,20 @@ var computeEnv = (documentUnderstandingEnabled && documentComputeEnabled) ? conc
   }
 ], computeCiEnv) : []
 
+// Phase 11F image tool: the durable blob account/container are emitted only when
+// image generation is enabled AND an account is provisioned; otherwise the api
+// falls back to its in-memory artifact store (fine for local/dev, but ephemeral).
+var imageEnv = (imageGenerationEnabled && !empty(imageBlobAccountUrl)) ? [
+  {
+    name: 'AI4IA_IMAGE_BLOB_ACCOUNT_URL'
+    value: imageBlobAccountUrl
+  }
+  {
+    name: 'AI4IA_IMAGE_BLOB_CONTAINER'
+    value: imageBlobContainer
+  }
+] : []
+
 var apiEnv = concat([
   {
     name: 'PORT'
@@ -338,7 +361,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, computeEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, computeEnv, imageEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: 'ca-api-${environmentName}'

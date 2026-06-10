@@ -1,0 +1,209 @@
+"""The agent-callable ``generate_image`` capability + artifact serve endpoint.
+
+Covers the synthetic tool's core contract (generate → persist → media-ref sink →
+meter), the per-user ownership boundary of the authenticated serve endpoint, and
+that a generated-image reference round-trips through ``Message`` serialization
+(how attachments survive the Cosmos store + the messages-list response model).
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+
+import pytest
+from fastapi.testclient import TestClient
+
+from ai4ia_api.agents.tool_exec import ToolContext
+from ai4ia_api.images.capability import (
+    GENERATE_IMAGE_TOOL_NAME,
+    MAX_IMAGES_PER_TURN,
+    build_image_capability,
+)
+from ai4ia_api.images.service import ImageGenerationService
+from ai4ia_api.main import create_app
+from ai4ia_api.sessions.models import Message, MessageAttachment, MessageRole
+from tests.conftest import make_settings
+from tests.test_image_api import TINY_PNG_B64, FakeImageGateway
+
+
+def _client() -> TestClient:
+    app = create_app(make_settings(admin_subjects="alice"))
+    c = TestClient(app)
+    c.__enter__()
+    c.app.state.gateway = FakeImageGateway()
+    return c
+
+
+@pytest.fixture
+def client():
+    c = _client()
+    try:
+        yield c
+    finally:
+        c.__exit__(None, None, None)
+
+
+def _internal_id(client, headers) -> str:
+    return client.get("/api/entitlement", headers=headers).json()["userId"]
+
+
+def _build_capability(client, user_id: str, sink: list[MessageAttachment]):
+    service = ImageGenerationService(
+        catalog=client.app.state.catalog, gateway=client.app.state.gateway
+    )
+    tools, handlers = build_image_capability(
+        image_service=service,
+        artifact_store=client.app.state.image_artifacts,
+        entitlements=client.app.state.entitlements,
+        metering=client.app.state.usage,
+        catalog=client.app.state.catalog,
+        user_id=user_id,
+        session_id="s-img",
+        sink=sink,
+    )
+    return tools, handlers
+
+
+# ---- capability handler ----
+
+
+def test_handler_generates_persists_sinks_and_meters(client):
+    headers = {"X-Dev-User": "ian"}
+    uid = _internal_id(client, headers)
+    sink: list[MessageAttachment] = []
+    tools, handlers = _build_capability(client, uid, sink)
+
+    # The tool advertises exactly the generate_image function schema.
+    assert tools[0]["function"]["name"] == GENERATE_IMAGE_TOOL_NAME
+    handler = handlers[GENERATE_IMAGE_TOOL_NAME]
+
+    out = asyncio.run(
+        handler({"prompt": "a red bird", "model": "gpt-image-2"}, ToolContext())
+    )
+    assert out["status"] == "generated"
+    artifact_id = out["artifact_id"]
+    assert out["model"] == "gpt-image-2"
+    # The base64 pixels never come back through the tool result (8 KB cap).
+    assert "b64" not in str(out).lower()
+
+    # A media reference was appended for the chat router to attach.
+    assert len(sink) == 1
+    att = sink[0]
+    assert att.id == artifact_id
+    assert att.kind == "image"
+    assert att.prompt == "a red bird"
+
+    # The bytes are durably stored, owner-scoped, and decode to the canned PNG.
+    stored = asyncio.run(client.app.state.image_artifacts.get(uid, artifact_id))
+    assert stored == base64.b64decode(TINY_PNG_B64)
+
+    # The call was metered into the usage ledger (rate/budget windows see it).
+    summary = client.get("/api/usage", headers=headers).json()
+    assert summary["totalRequests"] >= 1
+
+
+def test_handler_blocks_disabled_user(client):
+    headers = {"X-Dev-User": "banned"}
+    uid = _internal_id(client, headers)
+    client.put(
+        f"/api/admin/entitlements/{uid}",
+        json={"disabled": True},
+        headers={"X-Dev-User": "alice"},
+    )
+    sink: list[MessageAttachment] = []
+    _, handlers = _build_capability(client, uid, sink)
+    out = asyncio.run(
+        handlers[GENERATE_IMAGE_TOOL_NAME]({"prompt": "x"}, ToolContext())
+    )
+    assert "error" in out
+    assert sink == []
+
+
+def test_handler_enforces_per_turn_budget(client):
+    headers = {"X-Dev-User": "ian"}
+    uid = _internal_id(client, headers)
+    sink: list[MessageAttachment] = []
+    _, handlers = _build_capability(client, uid, sink)
+    handler = handlers[GENERATE_IMAGE_TOOL_NAME]
+    for _ in range(MAX_IMAGES_PER_TURN):
+        ok = asyncio.run(handler({"prompt": "x", "model": "gpt-image-2"}, ToolContext()))
+        assert ok["status"] == "generated"
+    over = asyncio.run(handler({"prompt": "x", "model": "gpt-image-2"}, ToolContext()))
+    assert "error" in over
+    assert len(sink) == MAX_IMAGES_PER_TURN
+
+
+# ---- serve endpoint ownership ----
+
+
+def test_serve_endpoint_owner_can_read_others_cannot(client):
+    owner = {"X-Dev-User": "owner"}
+    other = {"X-Dev-User": "intruder"}
+    owner_id = _internal_id(client, owner)
+    sink: list[MessageAttachment] = []
+    _, handlers = _build_capability(client, owner_id, sink)
+    out = asyncio.run(
+        handlers[GENERATE_IMAGE_TOOL_NAME](
+            {"prompt": "x", "model": "gpt-image-2"}, ToolContext()
+        )
+    )
+    artifact_id = out["artifact_id"]
+
+    # Owner reads their own image bytes.
+    r_owner = client.get(f"/api/images/artifacts/{artifact_id}", headers=owner)
+    assert r_owner.status_code == 200
+    assert r_owner.headers["content-type"] == "image/png"
+    assert r_owner.content == base64.b64decode(TINY_PNG_B64)
+
+    # A different user guessing the same id gets a 404, never a cross-user read.
+    r_other = client.get(f"/api/images/artifacts/{artifact_id}", headers=other)
+    assert r_other.status_code == 404
+
+
+def test_serve_endpoint_rejects_malformed_id(client):
+    r = client.get(
+        "/api/images/artifacts/..%2f..%2fetc", headers={"X-Dev-User": "ian"}
+    )
+    assert r.status_code in (404, 400)
+
+
+def test_serve_endpoint_unknown_id_404(client):
+    r = client.get(
+        "/api/images/artifacts/" + "a" * 32, headers={"X-Dev-User": "ian"}
+    )
+    assert r.status_code == 404
+
+
+# ---- Message.attachments serialization ----
+
+
+def test_message_attachments_round_trip():
+    msg = Message(
+        sessionId="s1",
+        userId="u1",
+        role=MessageRole.assistant,
+        content="here it is",
+        attachments=[
+            MessageAttachment(
+                id="a" * 32,
+                kind="image",
+                mimeType="image/png",
+                prompt="a cat",
+                model="gpt-image-2",
+                size="1024x1024",
+            )
+        ],
+    )
+    doc = msg.model_dump(mode="json")
+    assert doc["attachments"][0]["id"] == "a" * 32
+    restored = Message.model_validate(doc)
+    assert len(restored.attachments) == 1
+    assert restored.attachments[0].model == "gpt-image-2"
+    assert restored.attachments[0].size == "1024x1024"
+
+
+def test_message_defaults_to_no_attachments():
+    msg = Message(
+        sessionId="s1", userId="u1", role=MessageRole.user, content="hi"
+    )
+    assert msg.attachments == []

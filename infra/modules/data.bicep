@@ -36,6 +36,12 @@ param deployDocumentStorage bool = false
 @description('Blob container holding the raw + parsed + chunk artifacts of the document library.')
 param documentBlobContainer string = 'documents'
 
+@description('Provision the generated-image blob storage account + container (Phase 11F). Gated on the image-generation flag so nothing is created by default. Independent of the document library storage — zero regression to either.')
+param deployImageStorage bool = false
+
+@description('Blob container holding tool-generated images, scoped per-user as {userId}/generated/{id}.png.')
+param imageBlobContainer string = 'images'
+
 // ---------------- Cosmos DB (NoSQL) ----------------
 var cosmosAccountName = take('cosmos-${workload}-${environmentName}-${uniqueSuffix}', 44)
 
@@ -298,6 +304,60 @@ resource documentStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01
   }
 }
 
+// ---------------- Generated-image blob storage (Phase 11F) ----------------
+// Provisioned only when image generation is enabled (deployImageStorage). A
+// dedicated account, fully independent of the document library, so enabling the
+// agent-callable generate_image tool never touches the library's storage. Same
+// hardening: AAD-only (no account keys), private container, TLS 1.2+. Artifacts
+// live under {userId}/generated/{id}.png — the userId prefix is the per-user
+// isolation boundary enforced by the authenticated serve endpoint.
+var imageStorageName = 'sti${uniqueString(resourceGroup().id)}'
+
+resource imageStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (deployImageStorage) {
+  name: imageStorageName
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: false
+    minimumTlsVersion: 'TLS1_2'
+    supportsHttpsTrafficOnly: true
+    publicNetworkAccess: 'Enabled'
+    networkAcls: {
+      defaultAction: 'Allow'
+      bypass: 'AzureServices'
+    }
+  }
+}
+
+resource imageBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = if (deployImageStorage) {
+  parent: imageStorage
+  name: 'default'
+  properties: {}
+}
+
+resource imageContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = if (deployImageStorage) {
+  parent: imageBlobService
+  name: imageBlobContainer
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource imageStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployImageStorage) {
+  name: guid(imageStorage.id, apiPrincipalId, storageBlobDataContributorRoleId)
+  scope: imageStorage
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
+    principalId: apiPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 output cosmosAccountName string = cosmos.name
 output cosmosEndpoint string = cosmos.properties.documentEndpoint
 output cosmosDatabaseName string = cosmosDb.name
@@ -306,3 +366,5 @@ output postgresFqdn string = postgres.?properties.fullyQualifiedDomainName ?? ''
 output postgresDatabaseName string = deployPostgres ? memoryDb.name : ''
 output documentBlobAccountUrl string = documentStorage.?properties.primaryEndpoints.blob ?? ''
 output documentBlobContainerName string = documentBlobContainer
+output imageBlobAccountUrl string = imageStorage.?properties.primaryEndpoints.blob ?? ''
+output imageBlobContainerName string = imageBlobContainer
