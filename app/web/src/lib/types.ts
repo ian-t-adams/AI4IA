@@ -46,6 +46,7 @@ export interface MessageAttachment {
   size: string | null;
   quality?: string | null;
   durationSeconds?: number | null;
+  filename?: string | null;
 }
 
 export interface Message {

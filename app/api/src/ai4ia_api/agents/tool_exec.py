@@ -324,7 +324,7 @@ USER_ATTACHABLE_TOOL_NAMES: frozenset[str] = frozenset({"calculator", "get_curre
 # are listed here so a user agent may reference them and the Agent Builder can
 # offer them, governed by the same per-user agent validation as builtin tools.
 SELECTABLE_SYNTHETIC_TOOL_NAMES: frozenset[str] = frozenset(
-    {"generate_image", "generate_video"}
+    {"generate_image", "generate_video", "process_document"}
 )
 
 

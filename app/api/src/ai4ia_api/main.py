@@ -21,6 +21,10 @@ from .entitlements.service import EntitlementService
 from .gateway.client import ModelGatewayClient
 from .images.artifacts import ImageArtifactStore, build_image_blob_store
 from .videos.artifacts import VideoArtifactStore, build_video_blob_store
+from .docprocessing.artifacts import (
+    DocumentArtifactStore,
+    build_document_artifact_blob_store,
+)
 from .routers.realtime import AiohttpRealtimeConnector
 from .library.factory import build_document_library
 from .library.ingest_factory import build_document_ingestor, build_document_retrieval
@@ -35,6 +39,7 @@ from .logging_setup import (
 from .routers import agents as agents_router
 from .routers import catalog as catalog_router
 from .routers import chat as chat_router
+from .routers import docprocessing as docprocessing_router
 from .routers import documents as documents_router
 from .routers import entitlements as entitlements_router
 from .routers import health as health_router
@@ -178,6 +183,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # shared-instance rationale as images; durable AzureBlobStore when
         # video_blob_account_url is set, else an in-memory store.
         app.state.video_artifacts = VideoArtifactStore(build_video_blob_store(settings))
+        # Durable store for over-cap ``process_document`` results (Phase 11H).
+        # Same shared-instance rationale as images/video; reuses the document
+        # library's blob account (document_blob_account_url) when configured, else
+        # an in-memory store. The backing capability only runs when document
+        # understanding is enabled, but the store is always built so the serve
+        # endpoint can answer (404) regardless.
+        app.state.document_artifacts = DocumentArtifactStore(
+            build_document_artifact_blob_store(settings)
+        )
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
         try:
@@ -249,6 +263,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await video_artifacts.close()
                 except Exception:  # noqa: BLE001
                     logger.warning("video artifact store close failed", exc_info=True)
+            document_artifacts = getattr(app.state, "document_artifacts", None)
+            if document_artifacts is not None:
+                try:
+                    await document_artifacts.close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("document artifact store close failed", exc_info=True)
 
     app = FastAPI(title="AI4IA API", version="0.1.0", lifespan=lifespan)
 
@@ -310,6 +330,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(documents_router.router)
     app.include_router(images_router.router)
     app.include_router(videos_router.router)
+    app.include_router(docprocessing_router.router)
     app.include_router(library_router.router)
     app.include_router(voice_router.router)
     app.include_router(realtime_router.router)

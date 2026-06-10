@@ -26,6 +26,7 @@ const TOOL_LABELS: Record<string, string> = {
   get_current_time: "Current time",
   generate_image: "Generate image",
   generate_video: "Generate video",
+  process_document: "Process document",
 };
 const inputStyle: React.CSSProperties = {
   width: "100%",

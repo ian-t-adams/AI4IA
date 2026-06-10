@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Message, MessageAttachment } from "@/lib/types";
-import { fetchImageArtifact, fetchVideoArtifact } from "@/lib/api";
+import { fetchImageArtifact, fetchVideoArtifact, fetchDocumentArtifact } from "@/lib/api";
 import { useSpeechPlayback, type SpeechState } from "@/lib/voice";
 
 interface DisplayMessage {
@@ -188,6 +188,92 @@ function VideoAttachmentView({ attachment }: { attachment: MessageAttachment }) 
   );
 }
 
+// Renders one over-cap process_document result. The markdown text lives behind an
+// authenticated endpoint, so we fetch it and show it in a collapsible block with a
+// download link. Small results return inline in the message text instead.
+function DocumentAttachmentView({ attachment }: { attachment: MessageAttachment }) {
+  const [text, setText] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchDocumentArtifact(attachment.id)
+      .then((value) => {
+        if (!cancelled) setText(value);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [attachment.id]);
+
+  const name = attachment.filename?.trim() || "document";
+  const summary = `Processed: ${name}`;
+
+  if (failed) {
+    return (
+      <div style={{ fontSize: "0.8em", color: "var(--fg-muted)", marginTop: 8 }}>
+        (processed document unavailable)
+      </div>
+    );
+  }
+
+  const downloadName = name.toLowerCase().endsWith(".md") ? name : `${name}.md`;
+
+  return (
+    <details style={{ margin: "10px 0 0" }}>
+      <summary
+        style={{
+          cursor: "pointer",
+          fontSize: "0.8em",
+          color: "var(--fg-muted)",
+          padding: "6px 10px",
+          borderRadius: 10,
+          border: "1px solid var(--border)",
+          background: "var(--assistant-bubble)",
+        }}
+      >
+        {summary}
+        {attachment.model ? ` · ${attachment.model}` : ""}
+      </summary>
+      {text === null ? (
+        <div style={{ fontSize: "0.8em", color: "var(--fg-muted)", marginTop: 6 }}>
+          Loading…
+        </div>
+      ) : (
+        <>
+          <pre
+            style={{
+              maxHeight: 360,
+              overflow: "auto",
+              marginTop: 8,
+              padding: "10px 12px",
+              borderRadius: 10,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+              color: "var(--fg)",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              fontSize: "0.85em",
+            }}
+          >
+            {text}
+          </pre>
+          <a
+            href={`data:text/markdown;charset=utf-8,${encodeURIComponent(text)}`}
+            download={downloadName}
+            style={{ fontSize: "0.75em", color: "var(--accent)" }}
+          >
+            Download {downloadName}
+          </a>
+        </>
+      )}
+    </details>
+  );
+}
+
 function Bubble({
   msg,
   speechState,
@@ -263,6 +349,8 @@ function Bubble({
             <ImageAttachmentView key={att.id} attachment={att} />
           ) : att.kind === "video" ? (
             <VideoAttachmentView key={att.id} attachment={att} />
+          ) : att.kind === "document" ? (
+            <DocumentAttachmentView key={att.id} attachment={att} />
           ) : null,
         )}
         {speakable && (

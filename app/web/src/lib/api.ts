@@ -232,6 +232,19 @@ export async function fetchVideoArtifact(artifactId: string): Promise<Blob> {
   return await resp.blob();
 }
 
+// Fetches an over-cap process_document result's markdown text from the
+// authenticated serve endpoint (mirrors fetchImageArtifact). Returns text rather
+// than a Blob since the result is rendered inline as Markdown.
+export async function fetchDocumentArtifact(artifactId: string): Promise<string> {
+  const resp = await apiFetch(`/api/documents/artifacts/${artifactId}`, {
+    cache: "no-store",
+  });
+  if (!resp.ok) {
+    throw new Error(`${resp.status}: failed to load document`);
+  }
+  return await resp.text();
+}
+
 export async function listSessions(): Promise<Session[]> {
   return jsonOrThrow(await apiFetch("/api/sessions", { cache: "no-store" }));
 }
