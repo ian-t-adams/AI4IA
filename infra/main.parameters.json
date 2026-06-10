@@ -43,6 +43,15 @@
     },
     "videoGenerationEnabled": {
       "value": true
+    },
+    "documentUnderstandingEnabled": {
+      "value": true
+    },
+    "documentComputeEnabled": {
+      "value": true
+    },
+    "searchEnabled": {
+      "value": true
     }
   }
 }

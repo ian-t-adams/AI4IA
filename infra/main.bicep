@@ -88,6 +88,12 @@ param imageGenerationEnabled bool = false
 @description('Enable the agent-callable generate_video tool (Phase 11G, Sora 2). Default OFF. When on, a videos container is provisioned on the shared generated-media account and any agent may attach generate_video; produced clips persist durably and serve through an authenticated endpoint.')
 param videoGenerationEnabled bool = false
 
+@description('Provision an Azure AI Search service (for indexing/retrieval). Default OFF: nothing is created. When on, the api identity gets data-plane RBAC (Index Data Contributor + Service Contributor) and AI4IA_SEARCH_ENDPOINT is emitted to the api.')
+param searchEnabled bool = false
+
+@description('Azure AI Search SKU when searchEnabled (basic is the smallest tier with semantic ranking).')
+param searchSku string = 'basic'
+
 @description('Comma-separated admin subjects for the entitlement-management API.')
 param adminSubjects string = ''
 
@@ -224,6 +230,23 @@ module data 'modules/data.bicep' = {
   }
 }
 
+// Azure AI Search service (owner-requested, for indexing/retrieval). Always
+// declared; resources are gated internally on searchEnabled so nothing is created
+// by default. The api identity gets data-plane RBAC when provisioned.
+module search 'modules/search.bicep' = {
+  name: 'search'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    workload: workload
+    uniqueSuffix: uniqueSuffix
+    apiPrincipalId: apiIdentity.principalId
+    deploySearch: searchEnabled
+    sku: searchSku
+  }
+}
+
 module platform 'modules/containerapps.bicep' = {
   name: 'platform'
   scope: rg
@@ -272,6 +295,18 @@ module cost 'modules/cost.bicep' = {
 // like `foundryEndpoints` below, so no new dependency cycle is introduced.
 var regionNames = map(regionList, r => r.name)
 var primaryFoundryIndex = filter(range(0, length(regionList)), i => regionNames[i] == location)[0]
+
+// Content Understanding (Phase 11B) and the code_interpreter Responses API (Phase
+// 11C) reach the Foundry data plane directly — the api identity already holds
+// "Cognitive Services User" + "Cognitive Services OpenAI User" on every Foundry
+// account (see foundry.bicep). When an explicit endpoint isn't supplied, default
+// both to the primary Foundry account so enabling the document flags "just works"
+// without hand-wiring a URL. The CI model defaults to the primary-region
+// gpt-4.1-mini deployment (naming: {model}-slurmfactory-{region}-glbl).
+var primaryFoundryEndpoint = foundry[primaryFoundryIndex].outputs.endpoint
+var effectiveCuBaseUrl = !empty(cuBaseUrl) ? cuBaseUrl : primaryFoundryEndpoint
+var effectiveCodeInterpreterBaseUrl = !empty(codeInterpreterBaseUrl) ? codeInterpreterBaseUrl : primaryFoundryEndpoint
+var effectiveCodeInterpreterModel = !empty(codeInterpreterModel) ? codeInterpreterModel : 'gpt-4.1-mini-${subscriptionToken}-${location}-glbl'
 
 module gateway 'modules/gateway.bicep' = {
   name: 'gateway'
@@ -341,12 +376,12 @@ module api 'modules/api.bicep' = {
     // the api env only when the feature is on (and CU only when a base URL is set).
     documentBlobAccountUrl: data.outputs.documentBlobAccountUrl
     documentBlobContainer: data.outputs.documentBlobContainerName
-    cuBaseUrl: cuBaseUrl
+    cuBaseUrl: effectiveCuBaseUrl
     // Compute over the library (Phase 11C). Default OFF; layered on top of
     // documentUnderstandingEnabled. Base url + model emitted only when non-empty.
     documentComputeEnabled: documentComputeEnabled
-    codeInterpreterBaseUrl: codeInterpreterBaseUrl
-    codeInterpreterModel: codeInterpreterModel
+    codeInterpreterBaseUrl: effectiveCodeInterpreterBaseUrl
+    codeInterpreterModel: effectiveCodeInterpreterModel
     // Agent-callable image tool (Phase 11F). Default OFF; the dedicated image blob
     // account/container are emitted to the api env only when the feature is on and
     // the data module provisioned an account (else the api uses an in-memory store).
@@ -359,6 +394,10 @@ module api 'modules/api.bicep' = {
     videoGenerationEnabled: videoGenerationEnabled
     videoBlobAccountUrl: data.outputs.videoBlobAccountUrl
     videoBlobContainer: data.outputs.videoBlobContainerName
+    // Azure AI Search (for indexing/retrieval). The endpoint is emitted to the api
+    // env only when the service is provisioned (searchEnabled); the api reaches it
+    // via managed identity (no keys). Empty string when off -> env var not set.
+    searchEndpoint: search.outputs.searchEndpoint
   }
 }
 
@@ -463,3 +502,5 @@ output AZURE_FOUNDRY_ENDPOINTS array = [for (r, i) in regionList: {
   accountName: foundry[i].outputs.accountName
 }]
 output AZURE_APP_IDENTITIES array = identity.outputs.identities
+output AZURE_SEARCH_ENDPOINT string = search.outputs.searchEndpoint
+output AZURE_SEARCH_SERVICE_NAME string = search.outputs.searchServiceName
