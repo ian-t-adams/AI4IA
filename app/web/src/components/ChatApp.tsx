@@ -359,7 +359,13 @@ export function ChatApp() {
   const displayMessages: DisplayMessage[] = useMemo(() => {
     const base: DisplayMessage[] = messages
       .filter((m) => m.role !== "system")
-      .map((m) => ({ id: m.id, role: m.role, content: m.content, agent: m.agent }));
+      .map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        agent: m.agent,
+        attachments: m.attachments,
+      }));
     if (streaming) {
       base.push({
         id: "streaming",

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import type { Message } from "@/lib/types";
+import { useEffect, useRef, useState } from "react";
+import type { Message, MessageAttachment } from "@/lib/types";
+import { fetchImageArtifact } from "@/lib/api";
 import { useSpeechPlayback, type SpeechState } from "@/lib/voice";
 
 interface DisplayMessage {
@@ -10,6 +11,85 @@ interface DisplayMessage {
   content: string;
   agent?: string | null;
   pending?: boolean;
+  attachments?: MessageAttachment[];
+}
+
+// Renders one tool-generated image. The bytes live behind an authenticated
+// endpoint (a raw <img src> would not carry the bearer token), so we fetch the
+// blob, wrap it in an object URL, and revoke it on unmount to avoid leaks.
+function ImageAttachmentView({ attachment }: { attachment: MessageAttachment }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    fetchImageArtifact(attachment.id)
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [attachment.id]);
+
+  const caption = attachment.prompt?.trim() || "Generated image";
+
+  if (failed) {
+    return (
+      <div style={{ fontSize: "0.8em", color: "var(--fg-muted)", marginTop: 8 }}>
+        (image unavailable)
+      </div>
+    );
+  }
+  return (
+    <figure style={{ margin: "10px 0 0" }}>
+      {url ? (
+        // eslint-disable-next-line @next/next/no-img-element -- authenticated blob object URL; next/image adds no value
+        <img
+          src={url}
+          alt={caption}
+          style={{
+            maxWidth: "100%",
+            borderRadius: 10,
+            border: "1px solid var(--border)",
+            display: "block",
+          }}
+        />
+      ) : (
+        <div
+          aria-label="Loading image"
+          style={{
+            width: "100%",
+            aspectRatio: "1 / 1",
+            maxWidth: 320,
+            borderRadius: 10,
+            border: "1px solid var(--border)",
+            background: "var(--assistant-bubble)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "var(--fg-muted)",
+            fontSize: "0.8em",
+          }}
+        >
+          Generating image…
+        </div>
+      )}
+      <figcaption
+        style={{ fontSize: "0.72em", color: "var(--fg-muted)", marginTop: 4 }}
+      >
+        {caption}
+        {attachment.model ? ` · ${attachment.model}` : ""}
+      </figcaption>
+    </figure>
+  );
 }
 
 function Bubble({
@@ -81,6 +161,11 @@ function Bubble({
           <span aria-label="Generating" style={{ opacity: 0.6 }}>
             ▍
           </span>
+        )}
+        {msg.attachments?.map((att) =>
+          att.kind === "image" ? (
+            <ImageAttachmentView key={att.id} attachment={att} />
+          ) : null,
         )}
         {speakable && (
           <div style={{ marginTop: 8 }}>

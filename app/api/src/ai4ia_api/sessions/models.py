@@ -35,6 +35,25 @@ class MessageStatus(str, Enum):
     error = "error"
 
 
+class MessageAttachment(BaseModel):
+    """A non-text artifact produced during a turn and rendered alongside the
+    message text (Phase 11F).
+
+    Currently only ``kind="image"`` (a generated image persisted by the
+    ``generate_image`` tool). The bytes are NOT inlined — ``id`` references a
+    durable, user-scoped blob fetched through the authenticated serve endpoint
+    (``GET /api/images/artifacts/{id}``), so a message stays small and the
+    8 KB tool-result cap is never an issue.
+    """
+
+    id: str
+    kind: str = "image"
+    mimeType: str = "image/png"
+    prompt: str | None = None
+    model: str | None = None
+    size: str | None = None
+
+
 class Message(BaseModel):
     id: str = Field(default_factory=_new_id)
     sessionId: str
@@ -50,6 +69,10 @@ class Message(BaseModel):
     # its reply). These are shown in the UI but excluded from model context and
     # from first-turn auto-titling.
     fromCommand: bool = False
+    # Non-text artifacts produced during the turn (e.g. generated images). Empty
+    # for ordinary text replies; each entry references a durable blob served
+    # through an authenticated endpoint.
+    attachments: list[MessageAttachment] = Field(default_factory=list)
     createdAt: datetime = Field(default_factory=_now)
 
 

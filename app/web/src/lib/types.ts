@@ -37,6 +37,15 @@ export interface Session {
   updatedAt: string;
 }
 
+export interface MessageAttachment {
+  id: string;
+  kind: string;
+  mimeType: string;
+  prompt: string | null;
+  model: string | null;
+  size: string | null;
+}
+
 export interface Message {
   id: string;
   sessionId: string;
@@ -47,6 +56,7 @@ export interface Message {
   model: string | null;
   agent: string | null;
   createdAt: string;
+  attachments?: MessageAttachment[];
 }
 
 export interface AgentSummary {

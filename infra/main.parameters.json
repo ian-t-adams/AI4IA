@@ -37,6 +37,9 @@
     },
     "proxyManagedCertName": {
       "value": "${AI4IA_PROXY_MANAGED_CERT_NAME=}"
+    },
+    "imageGenerationEnabled": {
+      "value": true
     }
   }
 }

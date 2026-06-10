@@ -315,6 +315,17 @@ def build_tools(extra: Iterable[ToolDefinition] = ()) -> tuple[ToolRegistry, Too
 USER_ATTACHABLE_TOOL_NAMES: frozenset[str] = frozenset({"calculator", "get_current_time"})
 
 
+# Synthetic, service-backed capabilities a *user* may attach to an agent. Unlike
+# the builtin registry tools above, these are NOT executed through the registry
+# executor (their handlers need real services + the authenticated user, which an
+# empty agent-turn ``ToolContext`` cannot carry). The chat router builds and
+# injects the backing capability per turn when the tool is present AND its
+# services are available; if they are not, the agent simply runs without it. They
+# are listed here so a user agent may reference them and the Agent Builder can
+# offer them, governed by the same per-user agent validation as builtin tools.
+SELECTABLE_SYNTHETIC_TOOL_NAMES: frozenset[str] = frozenset({"generate_image"})
+
+
 def attachable_tool_names(
     registry: ToolRegistry, executor: ToolExecutor
 ) -> frozenset[str]:
@@ -330,8 +341,13 @@ def attachable_tool_names(
     attach a destructive/external/secret-bearing tool to a persona regardless. The
     explicit opt-in list is defense in depth: a future "safe" tool added for
     curated/internal agents does not automatically become user-attachable.
+
+    The result also includes :data:`SELECTABLE_SYNTHETIC_TOOL_NAMES` — service-backed
+    capabilities (e.g. ``generate_image``) that the chat router injects per turn
+    rather than running through the executor. They are user-selectable but are not
+    subject to the executor/registry predicate above (they have no registry entry).
     """
-    out: set[str] = set()
+    out: set[str] = set(SELECTABLE_SYNTHETIC_TOOL_NAMES)
     for name in executor.names():
         if name not in USER_ATTACHABLE_TOOL_NAMES:
             continue

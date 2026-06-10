@@ -48,7 +48,11 @@ def test_attachable_tools_are_the_safe_builtins():
     registry, executor = build_tools()
     attachable = attachable_tool_names(registry, executor)
     # The seeded built-ins are both safe/no-scope/no-approval, so both qualify.
-    assert attachable == frozenset({"calculator", "get_current_time"})
+    # ``generate_image`` is a service-backed synthetic capability (no registry
+    # handler) seeded via SELECTABLE_SYNTHETIC_TOOL_NAMES, so it is also offered.
+    assert attachable == frozenset(
+        {"calculator", "get_current_time", "generate_image"}
+    )
 
 
 async def test_create_then_compose_into_catalog():
@@ -68,6 +72,22 @@ async def test_create_then_compose_into_catalog():
     assert catalog.get("pirate").systemPrompt == "Arr, speak like a pirate."
     # Curated agents remain.
     assert catalog.get("coder") is not None
+
+
+async def test_create_with_generate_image_tool_is_accepted():
+    # ``generate_image`` is a service-backed synthetic capability offered via the
+    # selectable allowlist, so an agent may compose it like a safe built-in.
+    service, _ = _service()
+    agent = await service.create(
+        "u1",
+        UserAgentCreate(
+            name="illustrator",
+            systemPrompt="You draw things.",
+            tools=["generate_image"],
+        ),
+        reserved_names=_curated_names(),
+    )
+    assert "generate_image" in agent.tools
 
 
 async def test_user_agents_are_per_user_isolated():
