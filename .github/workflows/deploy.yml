@@ -16,6 +16,14 @@ name: deploy
 #   AZURE_ENV_NAME, AZURE_LOCATION
 # The job is a clean no-op until AZURE_CLIENT_ID is set, so this is safe to
 # merge before the identity exists.
+#
+# Custom domains: the bicep binds the web/proxy custom domains + their
+# Azure-managed certs only when these repo variables are set. They MUST be
+# present in CI or `azd provision` resets the ingress to no custom domain and
+# the live site drops to ERR_CONNECTION_CLOSED on the vanity hostname:
+#   AI4IA_WEB_CUSTOM_DOMAIN, AI4IA_WEB_MANAGED_CERT_NAME,
+#   AI4IA_PROXY_CUSTOM_DOMAIN, AI4IA_PROXY_MANAGED_CERT_NAME
+# The *_MANAGED_CERT_NAME values adopt the existing managed cert (no re-issue).
 
 on:
   push:
@@ -59,6 +67,13 @@ jobs:
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      # Custom-domain + managed-cert binding. Empty -> bicep leaves the ingress
+      # with no custom domain (azd would otherwise wipe an imperatively-bound
+      # hostname on every deploy). Set as repo variables; see header.
+      AI4IA_WEB_CUSTOM_DOMAIN: ${{ vars.AI4IA_WEB_CUSTOM_DOMAIN }}
+      AI4IA_WEB_MANAGED_CERT_NAME: ${{ vars.AI4IA_WEB_MANAGED_CERT_NAME }}
+      AI4IA_PROXY_CUSTOM_DOMAIN: ${{ vars.AI4IA_PROXY_CUSTOM_DOMAIN }}
+      AI4IA_PROXY_MANAGED_CERT_NAME: ${{ vars.AI4IA_PROXY_MANAGED_CERT_NAME }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
