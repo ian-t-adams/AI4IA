@@ -1,5 +1,6 @@
 """Azure AI Search doc-chunk store (Phase 11I): index bootstrap, document mapping,
-filter construction, vector query shaping, result mapping, and delete-by-filter.
+filter construction, vector query shaping, hybrid + semantic ranking (with graceful
+fallback), result mapping, and delete-by-filter.
 
 The async ``SearchClient`` / ``SearchIndexClient`` are injected as fakes so the
 store's logic is exercised without a live search service. The real azure index
@@ -56,6 +57,16 @@ class _FakeSearchClient:
         self.closed = True
 
 
+class _FailSemanticSearchClient(_FakeSearchClient):
+    """A search client whose semantic query fails, exercising hybrid fallback."""
+
+    async def search(self, **kwargs):
+        self.search_calls.append(kwargs)
+        if kwargs.get("query_type") == "semantic":
+            raise RuntimeError("semantic ranker not available on this tier")
+        return _FakeResults(self.results)
+
+
 class _FakeIndexClient:
     def __init__(self):
         self.created: list = []
@@ -69,11 +80,12 @@ class _FakeIndexClient:
         self.closed = True
 
 
-def _store(search_client=None, index_client=None, expected_dim=_DIM):
+def _store(search_client=None, index_client=None, expected_dim=_DIM, semantic_ranking=True):
     return AzureSearchDocChunkStore(
         endpoint="https://example.search.windows.net",
         index_name="ai4ia-doc-chunks",
         expected_dim=expected_dim,
+        semantic_ranking=semantic_ranking,
         search_client=search_client or _FakeSearchClient(),
         index_client=index_client or _FakeIndexClient(),
     )
@@ -236,3 +248,102 @@ async def test_close_does_not_close_injected_clients():
     # Injected clients are caller-owned: close must not tear them down.
     assert search_client.closed is False
     assert index_client.closed is False
+
+
+async def test_ensure_ready_index_includes_semantic_config():
+    index_client = _FakeIndexClient()
+    store = _store(index_client=index_client)
+    await store.ensure_ready()
+    index = index_client.created[0]
+    assert index.semantic_search is not None
+    cfg = index.semantic_search.configurations[0]
+    assert cfg.name == "ai4ia-semantic"
+    assert cfg.prioritized_fields.content_fields[0].field_name == "content"
+
+
+async def test_search_with_query_text_runs_hybrid_semantic():
+    search_client = _FakeSearchClient(results=[])
+    store = _store(search_client=search_client)
+    await store.search(
+        "u1", [1.0, 0.0, 0.0], top_k=5, document_ids=["d1"], query_text="quarterly revenue"
+    )
+    call = search_client.search_calls[0]
+    # Hybrid: keyword text alongside the vector query; semantic rerank requested.
+    assert call["search_text"] == "quarterly revenue"
+    assert call["query_type"] == "semantic"
+    assert call["semantic_configuration_name"] == "ai4ia-semantic"
+    assert call["vector_queries"][0].fields == "embedding"
+    assert call["filter"] == "user_id eq 'u1' and (document_id eq 'd1')"
+
+
+async def test_search_without_query_text_is_pure_vector():
+    search_client = _FakeSearchClient(results=[])
+    store = _store(search_client=search_client)
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=5)
+    call = search_client.search_calls[0]
+    assert call["search_text"] is None
+    assert "query_type" not in call
+    assert "semantic_configuration_name" not in call
+
+
+async def test_search_blank_query_text_is_pure_vector():
+    search_client = _FakeSearchClient(results=[])
+    store = _store(search_client=search_client)
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=5, query_text="   ")
+    call = search_client.search_calls[0]
+    assert call["search_text"] is None
+    assert "query_type" not in call
+
+
+async def test_search_semantic_disabled_uses_plain_hybrid():
+    search_client = _FakeSearchClient(results=[])
+    store = _store(search_client=search_client, semantic_ranking=False)
+    await store.search("u1", [1.0, 0.0, 0.0], top_k=5, query_text="hello world")
+    call = search_client.search_calls[0]
+    assert call["search_text"] == "hello world"
+    assert "query_type" not in call
+
+
+async def test_search_semantic_failure_falls_back_to_hybrid():
+    search_client = _FailSemanticSearchClient(
+        results=[
+            {
+                "chunk_id": "u1:d1:0",
+                "user_id": "u1",
+                "document_id": "d1",
+                "chunk_index": 0,
+                "content": "hit",
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "@search.score": 0.5,
+            }
+        ]
+    )
+    store = _store(search_client=search_client)
+    hits = await store.search("u1", [1.0, 0.0, 0.0], top_k=4, query_text="revenue")
+    # Two calls: the failed semantic attempt, then the plain-hybrid retry.
+    assert len(search_client.search_calls) == 2
+    assert search_client.search_calls[0]["query_type"] == "semantic"
+    assert "query_type" not in search_client.search_calls[1]
+    assert search_client.search_calls[1]["search_text"] == "revenue"
+    assert len(hits) == 1
+    assert hits[0].content == "hit"
+
+
+async def test_from_document_prefers_reranker_score():
+    search_client = _FakeSearchClient(
+        results=[
+            {
+                "chunk_id": "u1:d1:0",
+                "user_id": "u1",
+                "document_id": "d1",
+                "chunk_index": 0,
+                "content": "x",
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "@search.score": 0.41,
+                "@search.reranker_score": 3.2,
+            }
+        ]
+    )
+    store = _store(search_client=search_client)
+    hits = await store.search("u1", [1.0, 0.0, 0.0], top_k=3, query_text="q")
+    assert hits[0].score == pytest.approx(3.2)

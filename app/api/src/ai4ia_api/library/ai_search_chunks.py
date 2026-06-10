@@ -17,6 +17,12 @@ Design mirrors :class:`~ai4ia_api.library.doc_chunks.PgDocChunkStore`:
 * **Per-user isolation.** A single shared index scoped by a filterable ``user_id``
   field; ``search`` always filters to the caller and may further restrict to a set
   of ``document_id`` values ("retrieve over these documents").
+* **Hybrid + semantic retrieval.** When the caller passes ``query_text`` (RAG
+  retrieval always does), ``search`` issues a *hybrid* query — the vector kNN
+  alongside a BM25 keyword match over ``content`` — and, when ``semantic_ranking``
+  is on, applies the L2 *semantic reranker* for materially better top-k ordering.
+  A semantic failure (tier/quota unavailable) degrades gracefully to plain hybrid;
+  with no ``query_text`` it is exactly the prior pure-vector search.
 * **Injectable clients.** The async ``SearchClient`` / ``SearchIndexClient`` and the
   credential can be injected so unit tests run with fakes and no live service.
 
@@ -38,6 +44,10 @@ logger = logging.getLogger(__name__)
 _VECTOR_FIELD = "embedding"
 _VECTOR_PROFILE = "vprofile"
 _HNSW_CONFIG = "hnsw"
+# Semantic (L2 reranker) configuration name. Defined on the index unconditionally
+# (harmless when unused); a query opts into it via ``query_type="semantic"`` when
+# semantic ranking is enabled and the query carries text.
+_SEMANTIC_CONFIG = "ai4ia-semantic"
 # AI Search caps an index batch at 1000 documents.
 _UPLOAD_BATCH = 1000
 # Fields read back on a query (the embedding vector is deliberately omitted — it is
@@ -102,6 +112,7 @@ class AzureSearchDocChunkStore:
         endpoint: str,
         index_name: str,
         expected_dim: int,
+        semantic_ranking: bool = True,
         credential: Any | None = None,
         search_client: Any | None = None,
         index_client: Any | None = None,
@@ -109,6 +120,7 @@ class AzureSearchDocChunkStore:
         self._endpoint = endpoint
         self._index_name = index_name
         self._expected_dim = expected_dim
+        self._semantic_ranking = semantic_ranking
         self._credential = credential
         self._owns_credential = credential is None
         self._search_client = search_client
@@ -160,6 +172,10 @@ class AzureSearchDocChunkStore:
             SearchField,
             SearchFieldDataType,
             SearchIndex,
+            SemanticConfiguration,
+            SemanticField,
+            SemanticPrioritizedFields,
+            SemanticSearch,
             SimpleField,
             VectorSearch,
             VectorSearchAlgorithmMetric,
@@ -206,8 +222,24 @@ class AzureSearchDocChunkStore:
                 )
             ],
         )
+        # ``content`` is the only searchable field, so it is the semantic content
+        # field. Adding the configuration to an existing index is a non-destructive
+        # update (no field-attribute change, no rebuild).
+        semantic_search = SemanticSearch(
+            configurations=[
+                SemanticConfiguration(
+                    name=_SEMANTIC_CONFIG,
+                    prioritized_fields=SemanticPrioritizedFields(
+                        content_fields=[SemanticField(field_name="content")]
+                    ),
+                )
+            ]
+        )
         return SearchIndex(
-            name=self._index_name, fields=fields, vector_search=vector_search
+            name=self._index_name,
+            fields=fields,
+            vector_search=vector_search,
+            semantic_search=semantic_search,
         )
 
     async def ensure_ready(self) -> None:
@@ -249,7 +281,11 @@ class AzureSearchDocChunkStore:
 
     def _from_document(self, doc: Any) -> DocChunkRecord:
         raw_id = doc.get("chunk_id") or _decode_key(doc.get("key", ""))
-        score = doc.get("@search.score")
+        # Prefer the semantic reranker score (0-4) when present so the record's
+        # score reflects the final ordering; fall back to the search/RRF score.
+        score = doc.get("@search.reranker_score")
+        if score is None:
+            score = doc.get("@search.score")
         return DocChunkRecord(
             user_id=doc.get("user_id", ""),
             document_id=doc.get("document_id", ""),
@@ -295,6 +331,14 @@ class AzureSearchDocChunkStore:
                 documents=documents[start : start + _UPLOAD_BATCH]
             )
 
+    async def _collect(self, search_awaitable: Any) -> list[DocChunkRecord]:
+        """Await a ``client.search(...)`` call and map its async results in order."""
+        results = await search_awaitable
+        out: list[DocChunkRecord] = []
+        async for doc in results:
+            out.append(self._from_document(doc))
+        return out
+
     async def search(
         self,
         user_id: str,
@@ -302,6 +346,7 @@ class AzureSearchDocChunkStore:
         top_k: int,
         *,
         document_ids: Sequence[str] | None = None,
+        query_text: str | None = None,
     ) -> list[DocChunkRecord]:
         self._check_dim(query_vector)
         k = max(0, top_k)
@@ -322,17 +367,36 @@ class AzureSearchDocChunkStore:
             fields=_VECTOR_FIELD,
         )
         client = await self._get_search_client()
-        results = await client.search(
-            search_text=None,
-            vector_queries=[vector_query],
-            filter=self._build_filter(user_id, document_ids),
-            top=k,
-            select=list(_SELECT_FIELDS),
-        )
-        out: list[DocChunkRecord] = []
-        async for doc in results:
-            out.append(self._from_document(doc))
-        return out
+        # A non-empty query text turns the pure-vector kNN into a *hybrid* query
+        # (vector + BM25 over ``content``). ``None`` preserves the prior pure-vector
+        # behavior. Azure AI Search requires ``search_text=None`` (not "") for a
+        # vector-only query.
+        text = (query_text or "").strip() or None
+        base_kwargs: dict[str, Any] = {
+            "vector_queries": [vector_query],
+            "filter": self._build_filter(user_id, document_ids),
+            "top": k,
+            "select": list(_SELECT_FIELDS),
+        }
+        # Hybrid + semantic L2 rerank when enabled and the query carries text. If the
+        # semantic tier is unavailable (SKU/quota), degrade to plain hybrid rather
+        # than failing the retrieval turn.
+        if text is not None and self._semantic_ranking:
+            try:
+                return await self._collect(
+                    client.search(
+                        search_text=text,
+                        query_type="semantic",
+                        semantic_configuration_name=_SEMANTIC_CONFIG,
+                        **base_kwargs,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - semantic unavailable => degrade to hybrid
+                logger.warning(
+                    "AI Search semantic rerank unavailable; falling back to hybrid",
+                    exc_info=True,
+                )
+        return await self._collect(client.search(search_text=text, **base_kwargs))
 
     async def delete_document(self, user_id: str, document_id: str) -> int:
         await self.ensure_ready()

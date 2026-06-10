@@ -120,6 +120,7 @@ class DocChunkStore(Protocol):
         top_k: int,
         *,
         document_ids: Sequence[str] | None = None,
+        query_text: str | None = None,
     ) -> list[DocChunkRecord]: ...
 
     async def delete_document(self, user_id: str, document_id: str) -> int: ...
@@ -173,7 +174,11 @@ class InMemoryDocChunkStore:
         top_k: int,
         *,
         document_ids: Sequence[str] | None = None,
+        query_text: str | None = None,
     ) -> list[DocChunkRecord]:
+        # ``query_text`` is accepted for protocol parity with the Azure AI Search
+        # backend (hybrid + semantic); this in-memory store is pure-vector and
+        # ignores it.
         self._check_dim(query_vector)
         allow = set(document_ids) if document_ids is not None else None
         scored: list[tuple[float, DocChunkRecord]] = []
@@ -391,7 +396,10 @@ class PgDocChunkStore:
         top_k: int,
         *,
         document_ids: Sequence[str] | None = None,
+        query_text: str | None = None,
     ) -> list[DocChunkRecord]:
+        # ``query_text`` is accepted for protocol parity with the Azure AI Search
+        # backend; pgvector here ranks purely by vector distance and ignores it.
         await self.ensure_ready()
         literal = self._vector_literal(query_vector)
         doc_filter = list(document_ids) if document_ids is not None else None
