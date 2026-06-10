@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import type { AgentSummary, ChatParams, DocumentSummary, Message, ModelEntry, Session } from "@/lib/types";
+import type { LibraryDocument } from "@/lib/library";
 import { Sidebar } from "./Sidebar";
 import { ModelPicker } from "./ModelPicker";
 import { ParamControls } from "./ParamControls";
@@ -31,12 +32,21 @@ function pickDefaultModel(models: ModelEntry[]): string | null {
 export function ChatApp() {
   const voiceLiveConfig = useVoiceLiveConfig();
   const libraryConfig = useLibraryConfig();
+  // The document library (Phase 11B-2). When on, the Composer paperclip routes
+  // uploads through the per-user library CU-ingest pipeline instead of the
+  // session-scoped local-extract path, so the doc is parsed, surfaced to the
+  // agent (retrieval tiers + fetch_document) and runnable via run_code.
+  const libraryEnabled = libraryConfig.enabled;
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
+  // Library docs attached via the paperclip this view (only used when
+  // libraryEnabled). Transient: cleared on new chat / session switch, but the
+  // doc itself persists in the user's library and stays available to the agent.
+  const [libraryDocs, setLibraryDocs] = useState<LibraryDocument[]>([]);
   const [uploading, setUploading] = useState(false);
 
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
@@ -125,6 +135,9 @@ export function ChatApp() {
         ]);
         setMessages(msgs);
         setDocuments(docs);
+        // Library chips are a transient per-view confirmation; the docs persist
+        // in the library and stay available to the agent regardless.
+        setLibraryDocs([]);
         setSessions(all);
         const s = all.find((x) => x.id === id);
         if (s) {
@@ -143,6 +156,7 @@ export function ChatApp() {
     setActiveId(null);
     setMessages([]);
     setDocuments([]);
+    setLibraryDocs([]);
     setStreamingText("");
     setError(null);
   }, []);
@@ -234,17 +248,27 @@ export function ChatApp() {
       setError(null);
       setUploading(true);
       try {
-        const sid = await ensureSession();
-        const doc = await api.uploadDocument(sid, file);
-        // Replace any same-id entry (defensive) and append.
-        setDocuments((prev) => [...prev.filter((d) => d.id !== doc.id), doc]);
+        if (libraryEnabled) {
+          // CU-ingest path: send the file to the user's library so it is
+          // parsed by Content Understanding and surfaced to the agent (and
+          // run_code) via the existing retrieval tiers. No session is needed
+          // for ingest — it is created lazily on the first send.
+          const doc = await api.uploadLibraryDocument(file);
+          setLibraryDocs((prev) => [...prev.filter((d) => d.id !== doc.id), doc]);
+        } else {
+          // Session-scoped local-extract fallback (flag off / local dev).
+          const sid = await ensureSession();
+          const doc = await api.uploadDocument(sid, file);
+          // Replace any same-id entry (defensive) and append.
+          setDocuments((prev) => [...prev.filter((d) => d.id !== doc.id), doc]);
+        }
       } catch (e) {
         setError((e as Error).message);
       } finally {
         setUploading(false);
       }
     },
-    [ensureSession],
+    [ensureSession, libraryEnabled],
   );
 
   const removeDocument = useCallback(
@@ -262,6 +286,49 @@ export function ChatApp() {
     },
     [activeId, documents],
   );
+
+  // Removing a library chip deletes the just-uploaded library document (the
+  // paperclip both adds and removes it), mirroring the session-doc remove.
+  const removeLibraryDocument = useCallback(
+    async (documentId: string) => {
+      const prev = libraryDocs;
+      setLibraryDocs((cur) => cur.filter((d) => d.id !== documentId));
+      try {
+        await api.deleteLibraryDocument(documentId);
+      } catch (e) {
+        setLibraryDocs(prev);
+        setError((e as Error).message);
+      }
+    },
+    [libraryDocs],
+  );
+
+  // Poll while any attached library doc is still being ingested (stored →
+  // analyzing → ready/failed), reconciling tracked chips by id. Mirrors the
+  // LibraryPanel polling; stops once nothing is in flight.
+  useEffect(() => {
+    if (!libraryEnabled) return;
+    const inFlight = libraryDocs.some(
+      (d) =>
+        d.status === "pending" ||
+        d.status === "stored" ||
+        d.status === "analyzing",
+    );
+    if (!inFlight) return;
+    const tracked = new Set(libraryDocs.map((d) => d.id));
+    const t = setInterval(async () => {
+      try {
+        const all = await api.listLibraryDocuments();
+        const byId = new Map(all.map((d) => [d.id, d]));
+        setLibraryDocs((prev) =>
+          prev.map((d) => (tracked.has(d.id) ? byId.get(d.id) ?? d : d)),
+        );
+      } catch {
+        /* best effort: keep the last-known status */
+      }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [libraryEnabled, libraryDocs]);
 
   const send = useCallback(
     async (content: string) => {
@@ -386,10 +453,6 @@ export function ChatApp() {
   );
   const voiceLiveEnabled = voiceLiveConfig.enabled && realtimeModelId !== null;
 
-  // The document library is offered only when its runtime flag is on. When off,
-  // the sidebar control is never rendered and nothing about the chat changes.
-  const libraryEnabled = libraryConfig.enabled;
-
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
       <Sidebar
@@ -452,11 +515,13 @@ export function ChatApp() {
           streaming={streaming}
           agents={agents}
           documents={documents}
+          libraryDocuments={libraryDocs}
           uploading={uploading}
           onSend={send}
           onStop={stop}
           onUpload={uploadDocument}
           onRemoveDocument={removeDocument}
+          onRemoveLibraryDocument={removeLibraryDocument}
           onError={setError}
           voiceLiveEnabled={voiceLiveEnabled}
           voiceLiveConfig={voiceLiveConfig}

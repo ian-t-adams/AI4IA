@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import type { AgentSummary, DocumentSummary } from "@/lib/types";
+import type { LibraryDocument } from "@/lib/library";
 import { useVoiceRecorder } from "@/lib/voice";
 import {
   useVoiceLive,
@@ -30,6 +31,23 @@ function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+// Ingest-status pill labels/colours for library doc chips (mirrors LibraryPanel).
+const LIB_STATUS_LABEL: Record<LibraryDocument["status"], string> = {
+  pending: "Queued",
+  stored: "Analyzing…",
+  analyzing: "Analyzing…",
+  ready: "Ready",
+  failed: "Failed",
+};
+
+const LIB_STATUS_COLOR: Record<LibraryDocument["status"], string> = {
+  pending: "var(--fg-muted)",
+  stored: "#0e7490",
+  analyzing: "#0e7490",
+  ready: "#15803d",
+  failed: "#b91c1c",
+};
 
 // An active mention being typed at the START of the message (ignoring leading
 // whitespace), since the backend only routes a mention at the start of a turn.
@@ -65,11 +83,13 @@ export function Composer({
   streaming,
   agents,
   documents,
+  libraryDocuments = [],
   uploading,
   onSend,
   onStop,
   onUpload,
   onRemoveDocument,
+  onRemoveLibraryDocument,
   onError,
   voiceLiveEnabled = false,
   voiceLiveConfig,
@@ -79,11 +99,13 @@ export function Composer({
   streaming: boolean;
   agents: AgentSummary[];
   documents: DocumentSummary[];
+  libraryDocuments?: LibraryDocument[];
   uploading: boolean;
   onSend: (text: string) => void;
   onStop: () => void;
   onUpload: (file: File) => void;
   onRemoveDocument: (id: string) => void;
+  onRemoveLibraryDocument?: (id: string) => void;
   onError?: (message: string) => void;
   voiceLiveEnabled?: boolean;
   voiceLiveConfig?: VoiceLiveConfig;
@@ -101,13 +123,17 @@ export function Composer({
   // Caret position to restore after a programmatic value change (insertion).
   const pendingCaret = useRef<number | null>(null);
 
-  const atDocLimit = documents.length >= MAX_DOCS;
+  // The attach control tracks whichever doc set is in use this view: the
+  // session-scoped docs (flag off) or the library chips (flag on). They are
+  // mutually exclusive in practice, so a combined count gives the right cap.
+  const totalDocs = documents.length + libraryDocuments.length;
+  const atDocLimit = totalDocs >= MAX_DOCS;
 
   const onPickFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
     // Upload sequentially (the parent dedupes the lazy session creation); the
     // backend enforces the real per-session cap and rejects extras.
-    const remaining = MAX_DOCS - documents.length;
+    const remaining = MAX_DOCS - totalDocs;
     if (remaining <= 0) {
       onError?.(`You can upload at most ${MAX_DOCS} documents per chat.`);
       return;
@@ -314,7 +340,7 @@ export function Composer({
         background: "var(--bg-elevated)",
       }}
     >
-      {documents.length > 0 && (
+      {(documents.length > 0 || libraryDocuments.length > 0) && (
         <ul
           aria-label="Attached documents"
           style={{
@@ -379,6 +405,75 @@ export function Composer({
               </button>
             </li>
           ))}
+          {libraryDocuments.map((d) => {
+            const label = LIB_STATUS_LABEL[d.status];
+            const color = LIB_STATUS_COLOR[d.status];
+            return (
+              <li
+                key={d.id}
+                title={`${d.filename} · ${formatBytes(d.size)} · ${label}${
+                  d.status === "ready" && d.chunkCount > 0
+                    ? ` · ${d.chunkCount} chunks`
+                    : ""
+                }`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  maxWidth: 300,
+                  padding: "5px 6px 5px 10px",
+                  borderRadius: 999,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                  fontSize: "0.8em",
+                }}
+              >
+                <span aria-hidden="true">📄</span>
+                <span
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {d.filename}
+                </span>
+                <span
+                  aria-label={`Status: ${label}`}
+                  style={{
+                    flexShrink: 0,
+                    fontSize: "0.85em",
+                    fontWeight: 600,
+                    color,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {label}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onRemoveLibraryDocument?.(d.id)}
+                  aria-label={`Remove ${d.filename}`}
+                  title="Remove document"
+                  style={{
+                    flexShrink: 0,
+                    width: 20,
+                    height: 20,
+                    display: "grid",
+                    placeItems: "center",
+                    borderRadius: "50%",
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--fg-muted)",
+                    cursor: "pointer",
+                    lineHeight: 1,
+                  }}
+                >
+                  ✕
+                </button>
+              </li>
+            );
+          })}
           <li
             style={{
               alignSelf: "center",
@@ -386,7 +481,10 @@ export function Composer({
               color: "var(--fg-muted)",
             }}
           >
-            {documents.length}/{MAX_DOCS} · {DOC_BUDGET_HINT}
+            {totalDocs}/{MAX_DOCS} ·{" "}
+            {libraryDocuments.length > 0
+              ? "ingested to your library"
+              : DOC_BUDGET_HINT}
           </li>
         </ul>
       )}
