@@ -110,3 +110,59 @@ async def test_in_memory_update_missing_id_raises():
     repo = InMemoryDocumentLibraryRepository()
     with pytest.raises(DocumentNotFoundError):
         await repo.update_document(_doc(user="alice"))
+
+
+# --- sharing-lookup parity (Phase 11F): the Cosmos repo issues the right
+# cross-partition query and marshals rows into UserDocument. A fake container
+# captures the query/params and yields preset rows (Cosmos's SQL engine isn't
+# exercised here — only the repo's query construction + result marshalling). ---
+class _QueryDocs:
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+        self.last_query: str | None = None
+        self.last_params: list | None = None
+
+    async def query_items(self, *, query, parameters=None):
+        self.last_query = query
+        self.last_params = parameters
+        for row in self._rows:
+            yield row
+
+
+def _query_repo(rows: list[dict]) -> tuple[CosmosDocumentLibraryRepository, _QueryDocs]:
+    repo = object.__new__(CosmosDocumentLibraryRepository)
+    fake = _QueryDocs(rows)
+    repo._docs = fake
+    return repo, fake
+
+
+async def test_cosmos_list_shared_with_marshals_and_scopes():
+    doc = _doc(user="alice")
+    repo, fake = _query_repo([doc.model_dump(mode="json")])
+    out = await repo.list_shared_with("BOB@Example.com ")
+    assert [d.id for d in out] == [doc.id]
+    # Query is scoped to shared + the normalized grantee email.
+    assert "ARRAY_CONTAINS(c.acl, @email)" in fake.last_query
+    by_name = {p["name"]: p["value"] for p in fake.last_params}
+    assert by_name["@email"] == "bob@example.com"
+    assert by_name["@shared"] == "shared"
+
+
+async def test_cosmos_list_shared_with_blank_skips_query():
+    repo, fake = _query_repo([_doc().model_dump(mode="json")])
+    assert await repo.list_shared_with("") == []
+    assert fake.last_query is None  # short-circuited, no cross-partition scan
+
+
+async def test_cosmos_get_by_id_returns_first_or_none():
+    doc = _doc(user="carol")
+    repo, fake = _query_repo([doc.model_dump(mode="json")])
+    got = await repo.get_by_id(doc.id)
+    assert got is not None and got.userId == "carol"
+    assert "c.id = @id" in fake.last_query
+
+    empty, _ = _query_repo([])
+    assert await empty.get_by_id("anything") is None
+    blank, blank_fake = _query_repo([doc.model_dump(mode="json")])
+    assert await blank.get_by_id("") is None
+    assert blank_fake.last_query is None

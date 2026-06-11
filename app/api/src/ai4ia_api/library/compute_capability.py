@@ -96,12 +96,17 @@ def build_compute_capability(
     settings: Settings,
     user_id: str,
     nonce: str,
+    email: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Handler]]:
     """Build the ``run_code`` + ``export_document`` tools for ``user_id``.
 
     Returns ``(extra_tools, extra_handlers)`` ready to merge into
     :func:`run_agent_turn`. Handlers are bound to ``user_id`` and fence untrusted
     payloads with ``nonce`` (the same fence the turn's library context uses).
+    ``email`` is the caller's identity for sharing (Phase 11F): ``run_code`` may
+    compute over a document shared with that email (read via the owner's storage),
+    consistent with the read/RAG paths. ``export_document`` stays owner-only — a
+    grantee never writes a new version onto someone else's document.
     """
     run_budget = {"used": 0}
     export_budget = {"used": 0}
@@ -202,6 +207,7 @@ def build_compute_capability(
                 user_id,
                 document_id,
                 max_bytes=max(1, settings.code_interpreter_max_raw_file_bytes),
+                email=email,
             )
             if "error" not in raw and _ci_supports_file(str(raw.get("filename") or "")):
                 source_name = _safe_filename(raw.get("filename"))
@@ -250,6 +256,7 @@ def build_compute_capability(
                 user_id,
                 document_id,
                 max_chars=max(1, settings.code_interpreter_max_input_chars),
+                email=email,
             )
             if "error" in read:
                 return {"error": _one_line(str(read.get("error")))}

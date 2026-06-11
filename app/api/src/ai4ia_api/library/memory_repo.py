@@ -15,6 +15,7 @@ from .models import (
     Analyzer,
     DocumentStatus,
     UserDocument,
+    Visibility,
 )
 from .repository import (
     AnalyzerConflictError,
@@ -46,6 +47,27 @@ class InMemoryDocumentLibraryRepository:
     async def list_documents(self, user_id: str) -> list[UserDocument]:
         docs = list(self._docs.get(user_id, {}).values())
         return sorted(docs, key=lambda d: d.createdAt, reverse=True)
+
+    async def list_shared_with(self, email: str) -> list[UserDocument]:
+        principal = (email or "").strip().lower()
+        if not principal:
+            return []
+        async with self._lock:
+            shared = [
+                doc
+                for bucket in self._docs.values()
+                for doc in bucket.values()
+                if doc.visibility == Visibility.shared and principal in doc.acl
+            ]
+        return sorted(shared, key=lambda d: d.updatedAt, reverse=True)
+
+    async def get_by_id(self, document_id: str) -> UserDocument | None:
+        async with self._lock:
+            for bucket in self._docs.values():
+                doc = bucket.get(document_id)
+                if doc is not None:
+                    return doc
+        return None
 
     async def list_by_status(
         self, statuses: Sequence[DocumentStatus]

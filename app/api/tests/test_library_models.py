@@ -57,15 +57,22 @@ def test_non_owner_denied_in_v1():
 
 
 def test_reserved_sharing_paths():
-    # These branches are inert in v1 (defaults never set them) but must behave
-    # correctly so enabling sharing later is a pure flip.
+    # Phase 11F sharing semantics: ``public`` is tenant-walled (any authenticated
+    # user reads, mutations stay owner-only); ``shared`` grants read by the
+    # grantee's *email* (the acl holds normalized emails, never user ids).
     public = _doc(userId="alice", visibility=Visibility.public)
     assert can_access("anyone", public) is True
     assert require_owner("anyone", public) is False  # mutations stay owner-only
 
-    shared = _doc(userId="alice", visibility=Visibility.shared, acl=["bob"])
-    assert can_access("bob", shared) is True
-    assert can_access("carol", shared) is False
+    shared = _doc(userId="alice", visibility=Visibility.shared, acl=["bob@example.com"])
+    # Grant is keyed on email, not user id: the bare user id never matches.
+    assert can_access("bob", shared) is False
+    assert can_access("bob", shared, email="bob@example.com") is True
+    # Case/whitespace are normalized before the acl comparison.
+    assert can_access("bob", shared, email="  BOB@Example.com ") is True
+    assert can_access("carol", shared, email="carol@example.com") is False
+    # The owner always reads, regardless of email.
+    assert can_access("alice", shared) is True
 
 
 # --- hashing / dedupe ---

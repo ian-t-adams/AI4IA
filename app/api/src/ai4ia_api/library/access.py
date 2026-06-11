@@ -1,33 +1,48 @@
-"""Ownership / access resolution for the document library (Phase 11A).
+"""Ownership / access resolution for the document library.
 
-v1 is **owner-only**. The resolver is written against the sharing-ready manifest
-fields (``visibility`` + ``acl``) so enabling sharing later is an additive flip
-here, not a change at every call site. In v1 those fields keep their inert
-defaults (``private`` / empty), so this is equivalent to ``doc.userId == user``.
+Reads are governed by :func:`can_access`; mutations stay owner-only via
+:func:`require_owner`. Sharing (Phase 11F) is keyed on the grantee's *email*: a
+``shared`` document grants read access to every email in its ``acl``, while a
+``public`` document grants read access to every authenticated user (the app
+authenticates against a single tenant, so "public" is tenant-walled — there is no
+unauthenticated path). Ownership and storage partitioning stay keyed on the
+owner's ``userId``; only the *grant* dimension is email-based.
 """
 from __future__ import annotations
 
 from .models import UserDocument, Visibility
 
 
-def can_access(user_id: str, doc: UserDocument) -> bool:
-    """True if ``user_id`` may read ``doc``.
+def normalize_principal(email: str | None) -> str:
+    """Canonical form of a grantee/viewer email for ACL storage and comparison.
 
-    Owner always wins. The non-owner branches are reserved for the sharing
-    enablement and are unreachable in v1 (visibility is always ``private`` and
-    ``acl`` is always empty), but encoding them now keeps the contract stable.
+    Lowercased and trimmed; ``None``/blank collapses to ``""`` (never a valid
+    grant), so a viewer with no email claim can only reach owner/public documents.
+    """
+    return (email or "").strip().lower()
+
+
+def can_access(user_id: str, doc: UserDocument, *, email: str | None = None) -> bool:
+    """True if the caller may *read* ``doc``.
+
+    Owner always wins (by ``userId``). A ``public`` document is readable by any
+    authenticated caller (tenant-walled). A ``shared`` document is readable when
+    the caller's normalized ``email`` is in the document's ``acl``. Everything
+    else is denied.
     """
     if doc.userId == user_id:
         return True
-    # --- Reserved sharing paths (inert in v1) ---
     if doc.visibility == Visibility.public:
         return True
-    if doc.visibility == Visibility.shared and user_id in doc.acl:
-        return True
+    if doc.visibility == Visibility.shared:
+        principal = normalize_principal(email)
+        return bool(principal) and principal in doc.acl
     return False
 
 
 def require_owner(user_id: str, doc: UserDocument) -> bool:
-    """True only for the owner. Mutations (delete/update) stay owner-only even
-    after read-sharing is enabled, so they use this rather than ``can_access``."""
+    """True only for the owner. Mutations (delete/update/share/annotate) and the
+    owner-private features (annotations, save-to-memory) stay owner-only even with
+    read-sharing enabled, so they use this rather than ``can_access``."""
     return doc.userId == user_id
+

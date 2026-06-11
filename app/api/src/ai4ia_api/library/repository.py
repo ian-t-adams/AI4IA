@@ -37,6 +37,15 @@ class DocumentLibraryRepository(Protocol):
 
     async def list_documents(self, user_id: str) -> list[UserDocument]: ...
 
+    # Sharing lookups (Phase 11F). These intentionally cross partitions: a grantee
+    # finds documents owned by *others*. ``list_shared_with`` returns the ``shared``
+    # documents whose ``acl`` contains ``email``; ``get_by_id`` resolves a single
+    # document by id regardless of owner (callers MUST gate the result with
+    # ``access.can_access`` before exposing it).
+    async def list_shared_with(self, email: str) -> list[UserDocument]: ...
+
+    async def get_by_id(self, document_id: str) -> UserDocument | None: ...
+
     async def list_by_status(
         self, statuses: Sequence[DocumentStatus]
     ) -> list[UserDocument]: ...
