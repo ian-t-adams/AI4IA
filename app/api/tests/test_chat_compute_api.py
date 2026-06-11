@@ -32,8 +32,10 @@ class FakeCI:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    async def run(self, *, instructions, user_input):
-        self.calls.append({"instructions": instructions, "user_input": user_input})
+    async def run(self, *, instructions, user_input, file_ids=None):
+        self.calls.append(
+            {"instructions": instructions, "user_input": user_input, "file_ids": file_ids}
+        )
         return CodeInterpreterResult(status="completed", output_text="The total is 30.")
 
     async def close(self):

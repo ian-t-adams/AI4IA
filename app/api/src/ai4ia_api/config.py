@@ -332,6 +332,17 @@ class Settings(BaseSettings):
     # much untrusted content moves through the compute path.
     code_interpreter_max_input_chars: int = 60000
     document_export_max_chars: int = 200000
+    # Raw-file compute: when ON, ``run_code`` uploads the document's ORIGINAL bytes
+    # (the uploaded PDF/xlsx/csv/…) to the Responses Files API and attaches them to
+    # the code-interpreter container (``container.file_ids``), so the sandbox reads
+    # the real file rather than its CU-parsed text. Only the Azure-OpenAI
+    # CI-supported file types are eligible; anything else (or an oversize/missing
+    # original, or any upload failure) transparently falls back to the parsed-text
+    # path — so this never breaks an existing run. Default OFF (parsed-text only).
+    code_interpreter_raw_files_enabled: bool = False
+    # Hard cap on the original-file size handed to the interpreter (bytes). A larger
+    # original falls back to the parsed-text path rather than uploading. 25 MiB.
+    code_interpreter_max_raw_file_bytes: int = 26_214_400
 
     # --- Document processing tool (Phase 11H): the agent-callable
     # ``process_document`` tool. Rides the same document_understanding flag and

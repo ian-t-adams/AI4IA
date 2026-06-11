@@ -4,7 +4,12 @@ documents, nonce-fenced, and best-effort. All IO is injected (in-memory stores +
 a fake embedder); no network."""
 from __future__ import annotations
 
-from ai4ia_api.library.blob_store import PARSED_NAME, InMemoryBlobStore, blob_path
+from ai4ia_api.library.blob_store import (
+    PARSED_NAME,
+    RAW_NAME,
+    InMemoryBlobStore,
+    blob_path,
+)
 from ai4ia_api.library.chat_capability import (
     MAX_FETCHES_PER_TURN,
     build_document_capability,
@@ -362,3 +367,115 @@ async def test_retrieval_shares_ingestor_io():
     assert "shared doc" in block
     fetched = await svc.fetch_document("u1", doc.id)
     assert "Revenue grew twenty percent" in fetched["content"]
+
+
+# --- read_raw: original-bytes read for the compute path ---
+async def _seed_raw(
+    library,
+    blob,
+    *,
+    user="u1",
+    status=DocumentStatus.ready,
+    filename="report.csv",
+    content_type="text/csv",
+    raw=b"a,b\n1,2\n",
+    parsed="# Report\n\nparsed text",
+) -> UserDocument:
+    doc = UserDocument(
+        userId=user,
+        filename=filename,
+        status=status,
+        summary="s",
+        contentType=content_type,
+    )
+    if parsed is not None:
+        ppath = blob_path(user, doc.id, PARSED_NAME)
+        await blob.put(ppath, parsed.encode("utf-8"), "text/markdown")
+        doc.parsedPath = ppath
+    if raw is not None:
+        rpath = blob_path(user, doc.id, RAW_NAME)
+        await blob.put(rpath, raw, content_type)
+        doc.rawPath = rpath
+    await library.create_document(doc)
+    return doc
+
+
+async def test_read_raw_happy_path_returns_original_bytes():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_raw(library, blob, raw=b"a,b\n1,2\n")
+
+    res = await svc.read_raw("u1", doc.id, max_bytes=1_000)
+    assert "error" not in res
+    assert res["document_id"] == doc.id
+    assert res["filename"] == "report.csv"
+    assert res["content_type"] == "text/csv"
+    assert res["data"] == b"a,b\n1,2\n"
+    assert res["size"] == len(b"a,b\n1,2\n")
+
+
+async def test_read_raw_missing_raw_path_errors():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_raw(library, blob, raw=None)  # parsed only, no original
+
+    res = await svc.read_raw("u1", doc.id, max_bytes=1_000)
+    assert "error" in res
+    assert "No original file" in res["error"]
+
+
+async def test_read_raw_blob_absent_errors():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_raw(library, blob, raw=None)
+    # rawPath recorded but the blob was never written.
+    doc.rawPath = blob_path("u1", doc.id, RAW_NAME)
+    await library.update_document(doc)
+
+    res = await svc.read_raw("u1", doc.id, max_bytes=1_000)
+    assert "error" in res
+    assert "No original file" in res["error"]
+
+
+async def test_read_raw_oversize_errors():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_raw(library, blob, raw=b"0123456789")
+
+    res = await svc.read_raw("u1", doc.id, max_bytes=4)
+    assert "error" in res
+    assert "too large" in res["error"]
+
+
+async def test_read_raw_cross_user_is_not_found():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_raw(library, blob, user="u1")
+
+    res = await svc.read_raw("intruder", doc.id, max_bytes=1_000)
+    assert "error" in res
+    assert "No document found" in res["error"]
+
+
+async def test_read_raw_non_ready_is_gated():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_raw(library, blob, status=DocumentStatus.analyzing)
+
+    res = await svc.read_raw("u1", doc.id, max_bytes=1_000)
+    assert "error" in res
+    assert "not ready" in res["error"]
+
+
+async def test_read_raw_blank_document_id_errors():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    res = await svc.read_raw("u1", "   ", max_bytes=1_000)
+    assert "error" in res

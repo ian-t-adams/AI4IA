@@ -191,6 +191,39 @@ class DocumentRetrievalService:
             out.append(f"[{cite}]\n{content}")
         return out
 
+    async def _gated_ready_doc(
+        self, user_id: str, document_id: str
+    ) -> tuple[UserDocument, str] | dict:
+        """Ownership- + status-gate one document, shared by all reads.
+
+        Returns ``(doc, safe_filename)`` for an owned, ``ready`` document, or a
+        structured ``{"error": ...}`` for a missing/unowned/non-ready document
+        (never an exception, never an existence leak). The filename is sanitized
+        the same way Tier 1 does — newlines stripped, length bounded — so a crafted
+        name can't inject structure outside the nonce fence."""
+        document_id = (document_id or "").strip()
+        if not document_id:
+            return {"error": "document_id is required."}
+        try:
+            doc = await self._library.get_document(user_id, document_id)
+        except DocumentNotFoundError:
+            return {"error": f"No document found with id '{document_id}'."}
+        except Exception:  # noqa: BLE001 - degrade, never propagate
+            logger.warning(
+                "document load failed user=%s id=%s", user_id, document_id, exc_info=True
+            )
+            return {"error": "Could not read that document right now."}
+
+        safe_name = _one_line(doc.filename, _LABEL_LIMIT) or "document"
+        if doc.status != DocumentStatus.ready:
+            return {
+                "error": (
+                    f"Document '{safe_name}' is not ready (status="
+                    f"{doc.status.value}); it has no readable content yet."
+                )
+            }
+        return doc, safe_name
+
     async def _load_ready_parsed(
         self, user_id: str, document_id: str
     ) -> tuple[str, str] | dict:
@@ -201,46 +234,66 @@ class DocumentRetrievalService:
         unreadable blob (never an exception, never an existence leak). Shared by
         :meth:`fetch_document` (Tier 3 windowed read) and :meth:`read_parsed` (the
         compute path's larger bounded read) so the gate lives in one place."""
-        document_id = (document_id or "").strip()
-        if not document_id:
-            return {"error": "document_id is required."}
-        try:
-            doc = await self._library.get_document(user_id, document_id)
-        except DocumentNotFoundError:
-            return {"error": f"No document found with id '{document_id}'."}
-        except Exception:  # noqa: BLE001 - degrade, never propagate
-            logger.warning(
-                "parsed load failed user=%s id=%s", user_id, document_id, exc_info=True
-            )
-            return {"error": "Could not read that document right now."}
+        gated = await self._gated_ready_doc(user_id, document_id)
+        if isinstance(gated, dict):
+            return gated
+        doc, safe_name = gated
 
-        # Sanitize the (untrusted) filename the same way Tier 1 does before it goes
-        # back to the model in any field or message — strip newlines and bound the
-        # length so a crafted name can't inject structure outside the nonce fence.
-        # Defense in depth on top of the producer's _safe_filename.
-        safe_name = _one_line(doc.filename, _LABEL_LIMIT) or "document"
-
-        if doc.status != DocumentStatus.ready:
-            return {
-                "error": (
-                    f"Document '{safe_name}' is not ready (status="
-                    f"{doc.status.value}); it has no readable content yet."
-                )
-            }
-
-        parsed_path = doc.parsedPath or blob_path(user_id, document_id, PARSED_NAME)
+        parsed_path = doc.parsedPath or blob_path(user_id, doc.id, PARSED_NAME)
         try:
             raw = await self._blob.get(parsed_path)
         except BlobNotFoundError:
             return {"error": f"No parsed content available for '{safe_name}'."}
         except Exception:  # noqa: BLE001 - degrade, never propagate
             logger.warning(
-                "parsed blob read failed user=%s id=%s", user_id, document_id,
+                "parsed blob read failed user=%s id=%s", user_id, doc.id,
                 exc_info=True,
             )
             return {"error": "Could not read that document right now."}
 
         return safe_name, raw.decode("utf-8", "ignore")
+
+    async def read_raw(self, user_id: str, document_id: str, *, max_bytes: int) -> dict:
+        """Read a ready document's ORIGINAL uploaded bytes for the compute path.
+
+        Same ownership + ``ready`` gate as :meth:`read_parsed`, but returns the raw
+        file the user uploaded (PDF/xlsx/csv/…) rather than its CU-parsed text, so
+        the code interpreter can load the real file. Returns
+        ``{"document_id","filename","content_type","data","size"}`` for a readable
+        original, or ``{"error": ...}`` when the original is missing, unreadable, or
+        larger than ``max_bytes`` (the caller then falls back to the parsed text)."""
+        gated = await self._gated_ready_doc(user_id, document_id)
+        if isinstance(gated, dict):
+            return gated
+        doc, safe_name = gated
+
+        if not doc.rawPath:
+            return {"error": f"No original file available for '{safe_name}'."}
+        try:
+            data = await self._blob.get(doc.rawPath)
+        except BlobNotFoundError:
+            return {"error": f"No original file available for '{safe_name}'."}
+        except Exception:  # noqa: BLE001 - degrade, never propagate
+            logger.warning(
+                "raw blob read failed user=%s id=%s", user_id, doc.id, exc_info=True
+            )
+            return {"error": "Could not read that document right now."}
+
+        cap = max(1, int(max_bytes))
+        if len(data) > cap:
+            return {
+                "error": (
+                    f"Original file for '{safe_name}' is too large to process "
+                    f"directly ({len(data)} bytes)."
+                )
+            }
+        return {
+            "document_id": doc.id,
+            "filename": safe_name,
+            "content_type": doc.contentType or "application/octet-stream",
+            "data": data,
+            "size": len(data),
+        }
 
     async def fetch_document(
         self,
