@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Message, MessageAttachment } from "@/lib/types";
 import { fetchImageArtifact, fetchVideoArtifact, fetchDocumentArtifact } from "@/lib/api";
 import { useSpeechPlayback, type SpeechState } from "@/lib/voice";
+import { parseCitations } from "@/lib/citations";
 
 interface DisplayMessage {
   id: string;
@@ -274,14 +275,84 @@ function DocumentAttachmentView({ attachment }: { attachment: MessageAttachment 
   );
 }
 
+// Renders an assistant message, turning `[[cite:FILENAME@MM:SS]]` tokens into
+// clickable chips that deep-link the media player (Phase 11D). When there are no
+// tokens this is just the text, so non-cited answers are byte-for-byte unchanged.
+// The chip is only interactive when an `onCitation` handler is supplied (i.e. the
+// library is enabled); otherwise the citation renders as a static label so a stray
+// token is never shown as raw `[[cite:...]]` text.
+function CitedContent({
+  content,
+  onCitation,
+}: {
+  content: string;
+  onCitation?: (filename: string, ms: number) => void;
+}) {
+  const segments = parseCitations(content);
+  if (segments.length <= 1 && (segments[0]?.type ?? "text") === "text") {
+    return <>{content}</>;
+  }
+  return (
+    <>
+      {segments.map((seg, i) =>
+        seg.type === "text" ? (
+          <span key={i}>{seg.value}</span>
+        ) : onCitation ? (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onCitation(seg.filename, seg.ms)}
+            title={`Play ${seg.label}`}
+            aria-label={`Play ${seg.label}`}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              margin: "0 1px",
+              padding: "0 8px",
+              borderRadius: 999,
+              border: "1px solid var(--accent)",
+              background: "transparent",
+              color: "var(--accent)",
+              font: "inherit",
+              fontSize: "0.85em",
+              lineHeight: 1.6,
+              cursor: "pointer",
+              verticalAlign: "baseline",
+            }}
+          >
+            <span aria-hidden="true">▶</span>
+            {seg.label}
+          </button>
+        ) : (
+          <span
+            key={i}
+            style={{
+              padding: "0 6px",
+              borderRadius: 999,
+              border: "1px solid var(--border)",
+              color: "var(--fg-muted)",
+              fontSize: "0.85em",
+            }}
+          >
+            {seg.label}
+          </span>
+        ),
+      )}
+    </>
+  );
+}
+
 function Bubble({
   msg,
   speechState,
   onToggleSpeak,
+  onCitation,
 }: {
   msg: DisplayMessage;
   speechState: SpeechState;
   onToggleSpeak: (id: string, text: string) => void;
+  onCitation?: (filename: string, ms: number) => void;
 }) {
   const isUser = msg.role === "user";
   const isSystem = msg.role === "system";
@@ -338,7 +409,11 @@ function Bubble({
             </span>
           )}
         </div>
-        {msg.content}
+        {isUser ? (
+          msg.content
+        ) : (
+          <CitedContent content={msg.content} onCitation={onCitation} />
+        )}
         {msg.pending && (
           <span aria-label="Generating" style={{ opacity: 0.6 }}>
             ▍
@@ -407,9 +482,11 @@ function Bubble({
 export function MessageList({
   messages,
   onError,
+  onCitation,
 }: {
   messages: DisplayMessage[];
   onError?: (message: string) => void;
+  onCitation?: (filename: string, ms: number) => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const playback = useSpeechPlayback((msg) => onError?.(msg));
@@ -459,6 +536,7 @@ export function MessageList({
                   : "idle"
             }
             onToggleSpeak={playback.toggle}
+            onCitation={onCitation}
           />
         ))
       )}

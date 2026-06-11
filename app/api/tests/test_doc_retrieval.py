@@ -161,6 +161,25 @@ async def test_rag_citation_includes_timestamp_and_speaker_for_audio():
     assert "lecture.mp3" in block
     assert "2:13-2:45" in block
     assert "Speaker 1" in block
+    # The copyable deep-link token is keyed to the chunk's START timestamp so the
+    # frontend can parse the model's citation and seek the player there.
+    assert "cite-as: [[cite:lecture.mp3@2:13]]" in block
+
+
+async def test_rag_citation_explains_token_format_and_omits_token_for_documents():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    chunks = InMemoryDocChunkStore()
+    svc = _service(library=library, blob=blob, chunks=chunks, embedder=FakeEmbedder())
+    doc = await _seed_doc(library, blob, filename="report.pdf")
+    await _add_chunk(chunks, doc, content="Revenue grew twenty percent.")
+
+    block = await svc.context_block("u1", "revenue?", nonce="n9")
+
+    # The instruction teaches the model the media-citation token format...
+    assert "[[cite:FILENAME@MM:SS]]" in block
+    # ...but a plain document (no time grounding) gets no copyable token to echo.
+    assert "[[cite:report.pdf@" not in block
 
 
 async def test_rag_never_surfaces_chunk_of_nonready_doc():

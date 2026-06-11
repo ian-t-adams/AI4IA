@@ -13,6 +13,7 @@ import { StudioPanel } from "./StudioPanel";
 import { ImageStudioPanel } from "./ImageStudioPanel";
 import { VoiceLivePanel } from "./VoiceLivePanel";
 import { LibraryPanel } from "./LibraryPanel";
+import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import { Composer } from "./Composer";
 import { UserMenu } from "./UserMenu";
@@ -66,6 +67,16 @@ export function ChatApp() {
   const [imageryOpen, setImageryOpen] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  // Phase 11D citation deep-link: the audio/video doc a clicked chat citation
+  // resolved to, plus the moment to seek. Opens the same MediaPlayer modal the
+  // LibraryPanel uses. Null when no citation is open.
+  const [citationTarget, setCitationTarget] = useState<{
+    doc: LibraryDocument;
+    seekToMs?: number;
+  } | null>(null);
+  // Cache of the user's full library, lazily fetched the first time a citation is
+  // clicked so resolution doesn't pay a round-trip on every chip.
+  const libraryIndexRef = useRef<LibraryDocument[] | null>(null);
 
   const abortRef = useRef<(() => void) | null>(null);
   // Synchronous in-flight flag so guards work before React state settles.
@@ -305,8 +316,43 @@ export function ChatApp() {
     [libraryDocs],
   );
 
-  // Poll while any attached library doc is still being ingested (stored →
-  // analyzing → ready/failed), reconciling tracked chips by id. Mirrors the
+  // Phase 11D: resolve a clicked chat citation to a ready audio/video library
+  // document and open the player at the cited moment. Citations name a file by
+  // its filename (what the model is given + told to cite), so we match
+  // case-insensitively against the user's ready media; the first match wins on the
+  // rare duplicate-name case. Best-effort: a miss surfaces a soft error, never
+  // throws into the message list.
+  const handleCitation = useCallback(
+    async (filename: string, ms: number) => {
+      if (!libraryEnabled) return;
+      const resolve = (docs: LibraryDocument[]) =>
+        docs.find(
+          (d) =>
+            d.status === "ready" &&
+            (d.modality === "audio" || d.modality === "video") &&
+            d.filename.toLowerCase() === filename.toLowerCase(),
+        );
+      let doc = libraryIndexRef.current
+        ? resolve(libraryIndexRef.current)
+        : undefined;
+      if (!doc) {
+        try {
+          const all = await api.listLibraryDocuments();
+          libraryIndexRef.current = all;
+          doc = resolve(all);
+        } catch {
+          setError("Couldn't open the cited media.");
+          return;
+        }
+      }
+      if (doc) {
+        setCitationTarget({ doc, seekToMs: ms });
+      } else {
+        setError(`Couldn't find a playable document named "${filename}".`);
+      }
+    },
+    [libraryEnabled],
+  );
   // LibraryPanel polling; stops once nothing is in flight.
   useEffect(() => {
     if (!libraryEnabled) return;
@@ -512,7 +558,11 @@ export function ChatApp() {
           </div>
         )}
 
-        <MessageList messages={displayMessages} onError={setError} />
+        <MessageList
+          messages={displayMessages}
+          onError={setError}
+          onCitation={libraryEnabled ? handleCitation : undefined}
+        />
         <Composer
           disabled={streaming || !selectedModel}
           streaming={streaming}
@@ -563,6 +613,13 @@ export function ChatApp() {
       )}
       {libraryOpen && libraryEnabled && (
         <LibraryPanel onClose={() => setLibraryOpen(false)} />
+      )}
+      {citationTarget && libraryEnabled && (
+        <MediaPlayer
+          doc={citationTarget.doc}
+          seekToMs={citationTarget.seekToMs}
+          onClose={() => setCitationTarget(null)}
+        />
       )}
       {imageryOpen && (
         <ImageStudioPanel models={models} onClose={() => setImageryOpen(false)} />
