@@ -43,12 +43,16 @@ def build_document_capability(
     service: DocumentRetrievalService,
     user_id: str,
     nonce: str,
+    email: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Handler]]:
     """Build the ``fetch_document`` tool for ``user_id``.
 
     Returns ``(extra_tools, extra_handlers)`` ready to merge into
     :func:`run_agent_turn`. The handler is bound to ``user_id`` and fences the
     returned text with ``nonce`` (the same fence the turn's library context uses).
+    ``email`` is the caller's identity for sharing (Phase 11F): when present,
+    documents shared with that email (or tenant-public) are readable too, keyed on
+    the owner's storage. ``None`` keeps the prior owner-only behavior.
     """
     budget = {"used": 0}
 
@@ -97,6 +101,7 @@ def build_document_capability(
             document_id,
             start=_coerce_int(args.get("start")) or 0,
             length=_coerce_int(args.get("length")),
+            email=email,
         )
         if "error" in result:
             return result

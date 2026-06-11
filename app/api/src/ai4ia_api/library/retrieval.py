@@ -37,6 +37,7 @@ import logging
 
 from ..config import Settings
 from ..memory.embedder import GatewayEmbedder
+from .access import can_access
 from .blob_store import MEDIA_NAME, PARSED_NAME, BlobNotFoundError, BlobStore, blob_path
 from .chunking import format_timestamp
 from .doc_chunks import DocChunkStore
@@ -92,12 +93,50 @@ class DocumentRetrievalService:
         ready.sort(key=lambda d: d.updatedAt, reverse=True)
         return ready
 
-    async def context_block(self, user_id: str, query: str, *, nonce: str) -> str:
-        """Tier 1 + Tier 2 context for ``user_id``'s ready library, fenced with
-        ``nonce``. Returns ``""`` when the library is empty or on any store error
-        (best-effort: retrieval never breaks a turn)."""
+    async def _shared_ready_documents(self, email: str | None) -> list[UserDocument]:
+        """Ready documents *shared with* ``email`` (owned by other users).
+
+        Best-effort: a store error degrades to no shared documents (retrieval must
+        never break a turn). Returns ``[]`` when ``email`` is blank or the
+        repository doesn't implement the sharing lookup."""
+        principal = (email or "").strip().lower()
+        if not principal:
+            return []
+        lookup = getattr(self._library, "list_shared_with", None)
+        if lookup is None:
+            return []
         try:
-            ready = await self._ready_documents(user_id)
+            docs = await lookup(principal)
+        except Exception:  # noqa: BLE001 - retrieval must never break a turn
+            logger.warning("shared-document lookup failed email=%s", principal, exc_info=True)
+            return []
+        ready = [d for d in docs if d.status == DocumentStatus.ready]
+        ready.sort(key=lambda d: d.updatedAt, reverse=True)
+        return ready
+
+    async def _accessible_ready_documents(
+        self, user_id: str, email: str | None
+    ) -> list[UserDocument]:
+        """The caller's own ready documents plus the ready documents shared with
+        them, de-duplicated by id (own copy wins) and newest-first."""
+        own = await self._ready_documents(user_id)
+        shared = await self._shared_ready_documents(email)
+        if not shared:
+            return own
+        seen = {d.id for d in own}
+        merged = [*own, *(d for d in shared if d.id not in seen)]
+        merged.sort(key=lambda d: d.updatedAt, reverse=True)
+        return merged
+
+    async def context_block(
+        self, user_id: str, query: str, *, nonce: str, email: str | None = None
+    ) -> str:
+        """Tier 1 + Tier 2 context for ``user_id``'s accessible library (own
+        documents plus those shared with ``email``), fenced with ``nonce``. Returns
+        ``""`` when the library is empty or on any store error (best-effort:
+        retrieval never breaks a turn)."""
+        try:
+            ready = await self._accessible_ready_documents(user_id, email)
         except Exception:  # noqa: BLE001 - retrieval must never break a turn
             logger.warning("library context load failed user=%s", user_id, exc_info=True)
             return ""
@@ -108,8 +147,9 @@ class DocumentRetrievalService:
         for doc in ready[: max(0, self._settings.document_context_max_docs)]:
             summary = _one_line(doc.summary, _SUMMARY_LIMIT)
             label = _one_line(doc.filename, _LABEL_LIMIT) or "document"
+            shared_tag = " (shared with you)" if doc.userId != user_id else ""
             suffix = f" summary={summary}" if summary else ""
-            cards.append(f"- id={doc.id} filename={label}{suffix}")
+            cards.append(f"- id={doc.id} filename={label}{shared_tag}{suffix}")
 
         excerpts = await self._retrieve_excerpts(user_id, query, ready)
 
@@ -144,29 +184,50 @@ class DocumentRetrievalService:
 
         Returns ``[]`` when retrieval is unavailable (no embedder/chunk store, no
         query) or on any error. The pgvector search is scoped to the ready
-        document ids, so a non-ready document never surfaces a chunk."""
+        document ids, so a non-ready document never surfaces a chunk.
+
+        Chunks are partitioned by their owner's ``userId``, so documents shared by
+        other users are searched against the *owner's* partition: the ready set is
+        grouped by owner and one scoped search is issued per owner, then the
+        results are merged by score. For the common case (only the caller's own
+        documents) this is a single search, identical to before."""
         if self._embedder is None or self._chunks is None:
             return []
         if not (query or "").strip():
             return []
-        ready_ids = [d.id for d in ready]
-        if not ready_ids:
+        if not ready:
             return []
         names = {d.id: _one_line(d.filename, _LABEL_LIMIT) or "document" for d in ready}
+        # owner userId -> the accessible ready doc ids owned by that user.
+        by_owner: dict[str, list[str]] = {}
+        for doc in ready:
+            by_owner.setdefault(doc.userId, []).append(doc.id)
+        top_k = max(1, self._settings.document_retrieval_top_k)
         try:
             vector = await self._embedder.embed_one(query)
             if not vector:
                 return []
-            records = await self._chunks.search(
-                user_id,
-                vector,
-                max(1, self._settings.document_retrieval_top_k),
-                document_ids=ready_ids,
-                query_text=query,
-            )
+            records = []
+            for owner_id, doc_ids in by_owner.items():
+                owned = await self._chunks.search(
+                    owner_id,
+                    vector,
+                    top_k,
+                    document_ids=doc_ids,
+                    query_text=query,
+                )
+                records.extend(owned)
         except Exception:  # noqa: BLE001 - retrieval must never break a turn
             logger.warning("library RAG search failed user=%s", user_id, exc_info=True)
             return []
+
+        # Merge across owners by score (desc), deterministic tie-break, then cap
+        # to the global top-k so a multi-owner search yields the same budget as a
+        # single-owner one.
+        records.sort(
+            key=lambda r: (-(r.score or 0.0), r.document_id, r.chunk_index)
+        )
+        records = records[:top_k]
 
         budget = max(0, self._settings.document_context_max_chars)
         out: list[str] = []
@@ -207,22 +268,28 @@ class DocumentRetrievalService:
         return out
 
     async def _gated_ready_doc(
-        self, user_id: str, document_id: str
+        self, user_id: str, document_id: str, *, email: str | None = None
     ) -> tuple[UserDocument, str] | dict:
-        """Ownership- + status-gate one document, shared by all reads.
+        """Access- + status-gate one document, shared by all reads.
 
-        Returns ``(doc, safe_filename)`` for an owned, ``ready`` document, or a
-        structured ``{"error": ...}`` for a missing/unowned/non-ready document
-        (never an exception, never an existence leak). The filename is sanitized
-        the same way Tier 1 does — newlines stripped, length bounded — so a crafted
-        name can't inject structure outside the nonce fence."""
+        Resolves the caller's own document first; if they don't own it, falls back
+        to a cross-owner lookup gated by :func:`access.can_access` so a document
+        shared with ``email`` (or tenant-public) resolves too. Returns
+        ``(doc, safe_filename)`` for an accessible, ``ready`` document (``doc.userId``
+        is the *owner*, which all blob/chunk reads key on), or a structured
+        ``{"error": ...}`` for a missing/forbidden/non-ready document (never an
+        exception, never an existence leak). The filename is sanitized the same way
+        Tier 1 does — newlines stripped, length bounded — so a crafted name can't
+        inject structure outside the nonce fence."""
         document_id = (document_id or "").strip()
         if not document_id:
             return {"error": "document_id is required."}
         try:
             doc = await self._library.get_document(user_id, document_id)
         except DocumentNotFoundError:
-            return {"error": f"No document found with id '{document_id}'."}
+            doc = await self._resolve_shared(user_id, document_id, email)
+            if doc is None:
+                return {"error": f"No document found with id '{document_id}'."}
         except Exception:  # noqa: BLE001 - degrade, never propagate
             logger.warning(
                 "document load failed user=%s id=%s", user_id, document_id, exc_info=True
@@ -239,22 +306,43 @@ class DocumentRetrievalService:
             }
         return doc, safe_name
 
+    async def _resolve_shared(
+        self, user_id: str, document_id: str, email: str | None
+    ) -> UserDocument | None:
+        """Cross-owner resolution of a document the caller doesn't own, gated by
+        :func:`can_access`. Returns the document only when it is shared with the
+        caller (by email) or tenant-public; otherwise ``None``. Best-effort: a
+        store error or a repository without ``get_by_id`` degrades to ``None``."""
+        getter = getattr(self._library, "get_by_id", None)
+        if getter is None:
+            return None
+        try:
+            doc = await getter(document_id)
+        except Exception:  # noqa: BLE001 - degrade, never propagate
+            logger.warning("shared document load failed id=%s", document_id, exc_info=True)
+            return None
+        if doc is None or not can_access(user_id, doc, email=email):
+            return None
+        return doc
+
     async def _load_ready_parsed(
-        self, user_id: str, document_id: str
+        self, user_id: str, document_id: str, *, email: str | None = None
     ) -> tuple[str, str] | dict:
-        """Ownership- + status-gated load of a ready document's parsed markdown.
+        """Access- + status-gated load of a ready document's parsed markdown.
 
         Returns ``(safe_filename, text)`` for a readable document, or a structured
-        ``{"error": ...}`` for a missing/unowned/non-ready document or an
+        ``{"error": ...}`` for a missing/forbidden/non-ready document or an
         unreadable blob (never an exception, never an existence leak). Shared by
         :meth:`fetch_document` (Tier 3 windowed read) and :meth:`read_parsed` (the
-        compute path's larger bounded read) so the gate lives in one place."""
-        gated = await self._gated_ready_doc(user_id, document_id)
+        compute path's larger bounded read) so the gate lives in one place. The
+        parsed blob is read from the *owner's* path (``doc.userId``), so a shared
+        document resolves the same artifact the owner ingested."""
+        gated = await self._gated_ready_doc(user_id, document_id, email=email)
         if isinstance(gated, dict):
             return gated
         doc, safe_name = gated
 
-        parsed_path = doc.parsedPath or blob_path(user_id, doc.id, PARSED_NAME)
+        parsed_path = doc.parsedPath or blob_path(doc.userId, doc.id, PARSED_NAME)
         try:
             raw = await self._blob.get(parsed_path)
         except BlobNotFoundError:
@@ -268,16 +356,18 @@ class DocumentRetrievalService:
 
         return safe_name, raw.decode("utf-8", "ignore")
 
-    async def read_raw(self, user_id: str, document_id: str, *, max_bytes: int) -> dict:
+    async def read_raw(
+        self, user_id: str, document_id: str, *, max_bytes: int, email: str | None = None
+    ) -> dict:
         """Read a ready document's ORIGINAL uploaded bytes for the compute path.
 
-        Same ownership + ``ready`` gate as :meth:`read_parsed`, but returns the raw
+        Same access + ``ready`` gate as :meth:`read_parsed`, but returns the raw
         file the user uploaded (PDF/xlsx/csv/…) rather than its CU-parsed text, so
         the code interpreter can load the real file. Returns
         ``{"document_id","filename","content_type","data","size"}`` for a readable
         original, or ``{"error": ...}`` when the original is missing, unreadable, or
         larger than ``max_bytes`` (the caller then falls back to the parsed text)."""
-        gated = await self._gated_ready_doc(user_id, document_id)
+        gated = await self._gated_ready_doc(user_id, document_id, email=email)
         if isinstance(gated, dict):
             return gated
         doc, safe_name = gated
@@ -317,14 +407,16 @@ class DocumentRetrievalService:
         *,
         start: int = 0,
         length: int | None = None,
+        email: str | None = None,
     ) -> dict:
         """Tier 3: read a window of a ready document's parsed markdown.
 
-        Ownership- and status-gated: a missing, unowned, or not-``ready`` document
+        Access- and status-gated: a missing, forbidden, or not-``ready`` document
         returns a structured ``{"error": ...}`` (never an exception, never leaks
-        existence of another user's document). The window is bounded by
+        existence of another user's document). A document shared with ``email``
+        (or tenant-public) resolves like an owned one. The window is bounded by
         ``document_fetch_max_chars`` so one call can't flood the context."""
-        loaded = await self._load_ready_parsed(user_id, document_id)
+        loaded = await self._load_ready_parsed(user_id, document_id, email=email)
         if isinstance(loaded, dict):
             return loaded
         safe_name, text = loaded
@@ -346,14 +438,16 @@ class DocumentRetrievalService:
             "content": window,
         }
 
-    async def read_parsed(self, user_id: str, document_id: str, *, max_chars: int) -> dict:
+    async def read_parsed(
+        self, user_id: str, document_id: str, *, max_chars: int, email: str | None = None
+    ) -> dict:
         """Read a ready document's parsed markdown for the compute path, bounded by
         ``max_chars`` (the compute input cap, which may exceed the Tier-3 window).
 
-        Same ownership + ``ready`` gate as :meth:`fetch_document`; returns
+        Same access + ``ready`` gate as :meth:`fetch_document`; returns
         ``{"filename","content","total_chars","truncated"}`` or ``{"error": ...}``.
         The compute capability fences the returned content with the turn nonce."""
-        loaded = await self._load_ready_parsed(user_id, document_id)
+        loaded = await self._load_ready_parsed(user_id, document_id, email=email)
         if isinstance(loaded, dict):
             return loaded
         safe_name, text = loaded
@@ -373,16 +467,18 @@ class DocumentRetrievalService:
         modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
         return modality in ("audio", "video")
 
-    async def read_media_timeline(self, user_id: str, document_id: str) -> dict:
+    async def read_media_timeline(
+        self, user_id: str, document_id: str, *, email: str | None = None
+    ) -> dict:
         """Read a ready audio/video document's deep-link scene timeline (Phase 11D).
 
-        Same ownership + ``ready`` gate as the other reads, restricted to
+        Same access + ``ready`` gate as the other reads, restricted to
         audio/video. Returns ``{"document_id","modality","durationMs","segments"}``
         (``segments`` empty when the analyzer surfaced no scene detail), or
-        ``{"error": ...}`` for a missing/unowned/non-ready/non-AV document. A missing
+        ``{"error": ...}`` for a missing/forbidden/non-ready/non-AV document. A missing
         or unparseable sidecar degrades to an empty timeline (never an error), so a
         freshly enabled analyzer without scene output still plays."""
-        gated = await self._gated_ready_doc(user_id, document_id)
+        gated = await self._gated_ready_doc(user_id, document_id, email=email)
         if isinstance(gated, dict):
             return gated
         doc, safe_name = gated
@@ -392,7 +488,7 @@ class DocumentRetrievalService:
         modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
         duration: int | None = None
         segments: list = []
-        media_path = blob_path(user_id, doc.id, MEDIA_NAME)
+        media_path = blob_path(doc.userId, doc.id, MEDIA_NAME)
         raw: bytes | None
         try:
             raw = await self._blob.get(media_path)
@@ -420,16 +516,18 @@ class DocumentRetrievalService:
             "segments": segments,
         }
 
-    async def read_media(self, user_id: str, document_id: str) -> dict:
+    async def read_media(
+        self, user_id: str, document_id: str, *, email: str | None = None
+    ) -> dict:
         """Read a ready audio/video document's ORIGINAL bytes for the deep-link player.
 
-        Same ownership + ``ready`` gate as :meth:`read_raw`, restricted to
+        Same access + ``ready`` gate as :meth:`read_raw`, restricted to
         audio/video, and without the compute byte cap (the media player streams the
         whole file the user already uploaded). Returns
         ``{"document_id","filename","content_type","modality","data","size"}`` or
         ``{"error": ...}`` when the original is missing/unreadable. The raw artifacts
         of non-AV documents are never exposed here."""
-        gated = await self._gated_ready_doc(user_id, document_id)
+        gated = await self._gated_ready_doc(user_id, document_id, email=email)
         if isinstance(gated, dict):
             return gated
         doc, safe_name = gated

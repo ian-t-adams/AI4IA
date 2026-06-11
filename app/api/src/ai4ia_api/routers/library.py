@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..entitlements.service import EntitlementService
-from ..library.access import can_access, require_owner
+from ..library.access import can_access, normalize_principal, require_owner
 from ..library.chunking import chunk_markdown
 from ..library.compute_factory import DocumentComputeService
 from ..library.ingest import DocumentIngestor
@@ -186,6 +186,30 @@ async def _block_disabled(request: Request, user_id: str) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=decision.reason)
 
 
+async def _accessible_document(
+    request: Request, user: AuthenticatedUser, document_id: str
+) -> UserDocument:
+    """Load a document the caller may *access* (Phase 11F sharing), or raise 404.
+
+    Resolves the caller's own document first; if they don't own it, falls back to
+    a cross-owner lookup gated by :func:`can_access`, so a document shared with the
+    caller's email (or tenant-public) resolves too. A missing or forbidden document
+    returns a generic 404 (never leaks existence). The returned document's
+    ``userId`` is the *owner* — callers that touch owner-scoped blobs/chunks must
+    key on that, not on the caller's id."""
+    repo = _library(request)
+    uid = user.internal_user_id
+    try:
+        return await repo.get_document(uid, document_id)
+    except DocumentNotFoundError:
+        pass
+    getter = getattr(repo, "get_by_id", None)
+    doc = await getter((document_id or "").strip()) if getter is not None else None
+    if doc is None or not can_access(uid, doc, email=user.email):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return doc
+
+
 # --- documents ---
 @router.get("/documents", response_model=list[UserDocumentSummary])
 async def list_documents(
@@ -302,14 +326,8 @@ async def get_document(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> UserDocumentSummary:
-    repo = _library(request)
-    uid = user.internal_user_id
-    try:
-        doc = await repo.get_document(uid, document_id)
-    except DocumentNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    if not can_access(uid, doc):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    _library(request)
+    doc = await _accessible_document(request, user, document_id)
     return UserDocumentSummary.of(doc)
 
 
@@ -400,11 +418,15 @@ async def get_media_timeline(
 ) -> MediaTimeline:
     """Deep-link scene timeline for a ready audio/video document (Phase 11D).
 
-    Ownership- + ready-status-gated and restricted to audio/video; a missing,
-    cross-user, non-ready, or non-AV document returns a generic 404 (never leaks
-    existence). A document with no scene detail returns an empty ``segments`` list."""
+    Access- + ready-status-gated and restricted to audio/video: the owner, a
+    grantee the document is shared with, or any authenticated user for a
+    tenant-public document. A missing, forbidden, non-ready, or non-AV document
+    returns a generic 404 (never leaks existence). A document with no scene detail
+    returns an empty ``segments`` list."""
     retrieval = _retrieval(request)
-    result = await retrieval.read_media_timeline(user.internal_user_id, document_id)
+    result = await retrieval.read_media_timeline(
+        user.internal_user_id, document_id, email=user.email
+    )
     if "error" in result:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     return MediaTimeline(
@@ -423,13 +445,18 @@ async def stream_document_media(
 ) -> Response:
     """Stream a ready audio/video document's ORIGINAL bytes for the deep-link player.
 
-    Ownership- + ready-status-gated and restricted to audio/video; the parsed/raw
-    artifacts of non-AV documents are never exposed here. The browser fetches this
-    with its bearer token (a raw ``<video src>`` could not), wraps the blob in an
-    object URL, and seeks client-side — so the whole file is served as a single
-    response. A missing/cross-user/non-ready/non-AV document returns a generic 404."""
+    Access- + ready-status-gated and restricted to audio/video (owner, grantee, or
+    any authenticated user for a tenant-public document); the parsed/raw artifacts
+    of non-AV documents are never exposed here. The browser fetches this with its
+    bearer token (a raw ``<video src>`` could not), wraps the blob in an object URL,
+    and seeks client-side — so the whole file is served as a single response. The
+    bytes are read from the *owner's* blob path, so a shared document streams the
+    owner's original. A missing/forbidden/non-ready/non-AV document returns a
+    generic 404."""
     retrieval = _retrieval(request)
-    result = await retrieval.read_media(user.internal_user_id, document_id)
+    result = await retrieval.read_media(
+        user.internal_user_id, document_id, email=user.email
+    )
     if "error" in result:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media not found")
     header_name = (
@@ -581,7 +608,7 @@ async def save_document_to_memory(
         doc = await repo.get_document(uid, document_id)
     except DocumentNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    if not can_access(uid, doc):
+    if not require_owner(uid, doc):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     if doc.status != DocumentStatus.ready:
         raise HTTPException(
@@ -644,7 +671,7 @@ async def forget_document_from_memory(
         doc = await repo.get_document(uid, document_id)
     except DocumentNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    if not can_access(uid, doc):
+    if not require_owner(uid, doc):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     try:
@@ -661,6 +688,183 @@ async def forget_document_from_memory(
         "forget-from-memory user=%s id=%s forgotten=%s", uid, document_id, forgotten
     )
     return ForgetFromMemoryResult(forgotten=forgotten)
+
+
+# --- sharing (Phase 11F) ---
+_MAX_GRANTEES = 100
+
+
+def _valid_email(value: str) -> bool:
+    """Lightweight grantee-email check: a normalized single-token address with a
+    local part and a dotted domain. Intentionally permissive — the IdP is the real
+    authority on who an email resolves to; this only rejects obvious junk so the
+    ACL stays clean and a typo can't poison the grant list."""
+    if not value or " " in value or value.count("@") != 1:
+        return False
+    local, _, domain = value.partition("@")
+    return bool(local) and "." in domain and not domain.startswith(".") and not domain.endswith(".")
+
+
+class ShareState(BaseModel):
+    """A document's sharing posture, surfaced to its owner."""
+
+    documentId: str
+    visibility: Visibility
+    grantees: list[str] = Field(default_factory=list)
+
+    @classmethod
+    def of(cls, doc: UserDocument) -> "ShareState":
+        return cls(documentId=doc.id, visibility=doc.visibility, grantees=list(doc.acl))
+
+
+class ShareUpdate(BaseModel):
+    """Owner request to replace a document's sharing posture. ``grantees`` are
+    grantee emails; they only take effect for ``visibility == shared`` (cleared for
+    ``private``/``public``, since those don't use the per-principal grant list)."""
+
+    visibility: Visibility
+    grantees: list[str] = Field(default_factory=list)
+
+
+def _normalize_grantees(raw: list[str], owner_email: str | None) -> list[str]:
+    """Normalize, validate, de-duplicate, and bound a grantee email list.
+
+    Drops blanks, the owner's own email (self-share is implicit), and duplicates;
+    rejects obviously malformed addresses (422); caps the list at
+    ``_MAX_GRANTEES`` (422) so a single document can't accumulate an unbounded ACL.
+    Order is preserved for a stable, reviewable grant list."""
+    owner = normalize_principal(owner_email)
+    seen: set[str] = set()
+    out: list[str] = []
+    for entry in raw or []:
+        principal = normalize_principal(entry)
+        if not principal or principal == owner or principal in seen:
+            continue
+        if not _valid_email(principal):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"'{entry}' is not a valid email address.",
+            )
+        seen.add(principal)
+        out.append(principal)
+    if len(out) > _MAX_GRANTEES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"A document can be shared with at most {_MAX_GRANTEES} people.",
+        )
+    return out
+
+
+@router.get("/shared", response_model=list[UserDocumentSummary])
+async def list_shared_with_me(
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[UserDocumentSummary]:
+    """List documents explicitly shared *with* the caller (Phase 11F).
+
+    Scoped to ``visibility == shared`` documents whose ACL contains the caller's
+    email — tenant-public documents are openable by id but deliberately not
+    auto-listed here (scale + privacy). Returns ``[]`` when the caller has no email
+    claim or the repository predates the sharing lookup. Owner-private artifacts
+    (annotations, saved memories) never travel with these."""
+    repo = _library(request)
+    uid = user.internal_user_id
+    principal = normalize_principal(user.email)
+    if not principal:
+        return []
+    lookup = getattr(repo, "list_shared_with", None)
+    if lookup is None:
+        return []
+    docs = await lookup(principal)
+    return [UserDocumentSummary.of(d) for d in docs if d.userId != uid]
+
+
+@router.get("/documents/{document_id}/shares", response_model=ShareState)
+async def get_document_shares(
+    document_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> ShareState:
+    """Read a document's sharing posture (owner-only, Phase 11F).
+
+    A missing or non-owned document returns a generic 404 (never leaks existence):
+    only the owner can see or change who a document is shared with."""
+    repo = _library(request)
+    uid = user.internal_user_id
+    try:
+        doc = await repo.get_document(uid, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if not require_owner(uid, doc):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return ShareState.of(doc)
+
+
+@router.put("/documents/{document_id}/shares", response_model=ShareState)
+async def set_document_shares(
+    document_id: str,
+    request: Request,
+    payload: ShareUpdate,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> ShareState:
+    """Replace a document's sharing posture (owner-only, Phase 11F).
+
+    Sets ``visibility`` and, for ``shared``, the grantee email ACL (normalized,
+    validated, de-duped, owner-skipped, capped). For ``private``/``public`` the ACL
+    is cleared. A missing or non-owned document returns a generic 404. Annotations
+    and saved memories stay owner-private and are never shared by this."""
+    repo = _library(request)
+    uid = user.internal_user_id
+    try:
+        doc = await repo.get_document(uid, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if not require_owner(uid, doc):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    if payload.visibility == Visibility.shared:
+        doc.acl = _normalize_grantees(payload.grantees, user.email)
+    else:
+        doc.acl = []
+    doc.visibility = payload.visibility
+    doc.touch()
+    saved = await repo.update_document(doc)
+    logger.info(
+        "share-set user=%s id=%s visibility=%s grantees=%d",
+        uid, document_id, doc.visibility.value, len(doc.acl),
+    )
+    return ShareState.of(saved)
+
+
+@router.delete("/documents/{document_id}/shares/{email}", response_model=ShareState)
+async def revoke_document_share(
+    document_id: str,
+    email: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> ShareState:
+    """Revoke one grantee's access to a shared document (owner-only, Phase 11F).
+
+    Idempotent: revoking an email that isn't on the ACL is a no-op that returns the
+    current state. Leaves ``visibility`` untouched (the owner flips that via PUT);
+    an emptied ACL simply grants no one besides the owner. A missing or non-owned
+    document returns a generic 404."""
+    repo = _library(request)
+    uid = user.internal_user_id
+    try:
+        doc = await repo.get_document(uid, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if not require_owner(uid, doc):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    principal = normalize_principal(email)
+    if principal and principal in doc.acl:
+        doc.acl = [e for e in doc.acl if e != principal]
+        doc.touch()
+        doc = await repo.update_document(doc)
+        logger.info("share-revoke user=%s id=%s", uid, document_id)
+    return ShareState.of(doc)
 
 
 # --- annotations (Phase 11E-2) ---

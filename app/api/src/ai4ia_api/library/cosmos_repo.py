@@ -20,6 +20,7 @@ from .models import (
     Analyzer,
     DocumentStatus,
     UserDocument,
+    Visibility,
 )
 from .repository import (
     AnalyzerConflictError,
@@ -71,6 +72,44 @@ class CosmosDocumentLibraryRepository:
             UserDocument.model_validate(item)
             async for item in self._docs.query_items(query=query, parameters=params)
         ]
+
+    async def list_shared_with(self, email: str) -> list[UserDocument]:
+        """Cross-partition: the ``shared`` documents whose ``acl`` contains
+        ``email`` (the grantee's normalized address). Used by the "shared with me"
+        listing and to widen retrieval to shared documents; not on the per-turn
+        hot path for users without inbound shares (the query simply returns []).
+        """
+        principal = (email or "").strip().lower()
+        if not principal:
+            return []
+        query = (
+            "SELECT * FROM c WHERE c.visibility = @shared "
+            "AND ARRAY_CONTAINS(c.acl, @email) ORDER BY c.updatedAt DESC"
+        )
+        params = [
+            {"name": "@shared", "value": Visibility.shared.value},
+            {"name": "@email", "value": principal},
+        ]
+        return [
+            UserDocument.model_validate(item)
+            async for item in self._docs.query_items(query=query, parameters=params)
+        ]
+
+    async def get_by_id(self, document_id: str) -> UserDocument | None:
+        """Cross-partition fetch of a single document by id, regardless of owner.
+
+        Returns ``None`` when no such document exists. The caller MUST gate the
+        result with :func:`access.can_access` before exposing it — this method
+        performs no ownership/sharing check itself.
+        """
+        document_id = (document_id or "").strip()
+        if not document_id:
+            return None
+        query = "SELECT * FROM c WHERE c.id = @id"
+        params = [{"name": "@id", "value": document_id}]
+        async for item in self._docs.query_items(query=query, parameters=params):
+            return UserDocument.model_validate(item)
+        return None
 
     async def list_by_status(
         self, statuses: Sequence[DocumentStatus]

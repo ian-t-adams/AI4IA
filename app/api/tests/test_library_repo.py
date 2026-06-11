@@ -131,3 +131,48 @@ async def test_builtin_analyzer_not_deletable(repo):
         await repo.delete_analyzer("alice", builtin_id)
     # Still resolvable after the failed delete.
     assert (await repo.get_analyzer("alice", builtin_id)).id == builtin_id
+
+
+# --- sharing lookups (Phase 11F) ---
+async def test_list_shared_with_returns_only_explicit_shares(repo):
+    from ai4ia_api.library.models import Visibility
+
+    s1 = await repo.create_document(
+        _doc(user="alice", visibility=Visibility.shared, acl=["bob@example.com"])
+    )
+    s2 = await repo.create_document(
+        _doc(user="carol", visibility=Visibility.shared, acl=["bob@example.com", "dan@x.io"])
+    )
+    # Private + public + a share to someone else must NOT appear for bob.
+    await repo.create_document(_doc(user="alice", visibility=Visibility.private))
+    await repo.create_document(_doc(user="alice", visibility=Visibility.public))
+    await repo.create_document(
+        _doc(user="carol", visibility=Visibility.shared, acl=["eve@example.com"])
+    )
+
+    shared = await repo.list_shared_with("bob@example.com")
+    ids = {d.id for d in shared}
+    assert ids == {s1.id, s2.id}
+    # Newest-first ordering (s2 created after s1).
+    assert [d.id for d in shared] == [s2.id, s1.id]
+
+
+async def test_list_shared_with_normalizes_lookup_and_handles_blank(repo):
+    from ai4ia_api.library.models import Visibility
+
+    doc = await repo.create_document(
+        _doc(user="alice", visibility=Visibility.shared, acl=["bob@example.com"])
+    )
+    assert [d.id for d in await repo.list_shared_with("  BOB@Example.com ")] == [doc.id]
+    assert await repo.list_shared_with("") == []
+    assert await repo.list_shared_with("nobody@example.com") == []
+
+
+async def test_get_by_id_crosses_owners_and_misses(repo):
+    a = await repo.create_document(_doc(user="alice"))
+    b = await repo.create_document(_doc(user="bob"))
+    # Resolves regardless of owner (caller must gate with can_access).
+    assert (await repo.get_by_id(a.id)).userId == "alice"
+    assert (await repo.get_by_id(b.id)).userId == "bob"
+    assert await repo.get_by_id("missing") is None
+    assert await repo.get_by_id("") is None

@@ -435,7 +435,8 @@ async def chat(
     if retrieval is not None:
         try:
             library_block = await retrieval.context_block(
-                user.internal_user_id, content_for_model, nonce=library_nonce
+                user.internal_user_id, content_for_model, nonce=library_nonce,
+                email=user.email,
             )
         except Exception:  # noqa: BLE001 - retrieval must never break a turn
             logger.warning("library context build failed", exc_info=True)
@@ -505,6 +506,7 @@ async def chat(
                 service=retrieval,
                 user_id=user.internal_user_id,
                 nonce=library_nonce,
+                email=user.email,
             )
             extra_tools = [*extra_tools, *doc_tools]
             extra_handlers = {**extra_handlers, **doc_handlers}
@@ -521,7 +523,8 @@ async def chat(
         ):
             try:
                 c_tools, c_handlers = compute.build_capability(
-                    user_id=user.internal_user_id, nonce=library_nonce
+                    user_id=user.internal_user_id, nonce=library_nonce,
+                    email=user.email,
                 )
                 extra_tools = [*extra_tools, *c_tools]
                 extra_handlers = {**extra_handlers, **c_handlers}
@@ -675,13 +678,15 @@ async def chat(
         try:
             ctx = ToolContext(correlation_id=correlation_id)
             c_tools, c_handlers = compute.build_capability(
-                user_id=user.internal_user_id, nonce=library_nonce
+                user_id=user.internal_user_id, nonce=library_nonce,
+                email=user.email,
             )
             if retrieval is not None:
                 doc_tools, doc_handlers = build_document_capability(
                     service=retrieval,
                     user_id=user.internal_user_id,
                     nonce=library_nonce,
+                    email=user.email,
                 )
                 c_tools = [*c_tools, *doc_tools]
                 c_handlers = {**c_handlers, **doc_handlers}

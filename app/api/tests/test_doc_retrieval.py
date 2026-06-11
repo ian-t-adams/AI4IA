@@ -21,7 +21,7 @@ from ai4ia_api.library.doc_chunks import DocChunkRecord, InMemoryDocChunkStore
 from ai4ia_api.library.ingest import DocumentIngestor
 from ai4ia_api.library.ingest_factory import build_document_retrieval
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
-from ai4ia_api.library.models import DocumentStatus, Modality, UserDocument
+from ai4ia_api.library.models import DocumentStatus, Modality, UserDocument, Visibility
 from ai4ia_api.library.retrieval import DocumentRetrievalService
 from tests.conftest import make_settings
 
@@ -656,3 +656,118 @@ async def test_read_media_timeline_cross_user_is_not_found():
     res = await svc.read_media_timeline("intruder", doc.id)
     assert "error" in res
     assert "No document found" in res["error"]
+
+
+# --- Phase 11F: document-level sharing (read/RAG/fetch widened to grantees) ---
+# A grantee is identified by EMAIL; chunks/blobs stay partitioned on the OWNER's
+# id, so every shared read keys on ``doc.userId``, not the caller's id. The
+# grantee's own internal_user_id is arbitrary here ("bob-uid") — only the email
+# matters for access.
+async def test_shared_doc_surfaces_in_tier1_with_tag():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    await _seed_doc(
+        library, blob, user="u1", filename="shared.pdf", summary="owner's report",
+    )
+    # Tag it shared with bob.
+    docs = await library.list_documents("u1")
+    docs[0].visibility = Visibility.shared
+    docs[0].acl = ["bob@example.com"]
+    await library.update_document(docs[0])
+
+    block = await svc.context_block("bob-uid", "what's in it?", nonce="z1", email="bob@example.com")
+    assert "shared.pdf" in block
+    assert "(shared with you)" in block
+    assert "owner's report" in block
+
+
+async def test_shared_doc_surfaces_in_tier2_rag_on_owner_partition():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    chunks = InMemoryDocChunkStore()
+    svc = _service(library=library, blob=blob, chunks=chunks, embedder=FakeEmbedder())
+    doc = await _seed_doc(library, blob, user="u1", filename="shared.pdf")
+    doc.visibility = Visibility.shared
+    doc.acl = ["bob@example.com"]
+    await library.update_document(doc)
+    # Chunk is indexed under the OWNER's partition (u1), not the grantee's.
+    await _add_chunk(chunks, doc, content="The grantee can read this excerpt.")
+
+    block = await svc.context_block(
+        "bob-uid", "what can I read?", nonce="z2", email="bob@example.com"
+    )
+    assert "Relevant excerpts" in block
+    assert "The grantee can read this excerpt." in block
+    assert "shared.pdf" in block
+
+
+async def test_private_doc_never_leaks_to_non_grantee_context():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    chunks = InMemoryDocChunkStore()
+    svc = _service(library=library, blob=blob, chunks=chunks, embedder=FakeEmbedder())
+    doc = await _seed_doc(library, blob, user="u1", filename="private.pdf", summary="owner only")
+    await _add_chunk(chunks, doc, content="TOP SECRET PRIVATE BODY")
+
+    # Bob owns nothing and the doc is private → empty context, no leak.
+    block = await svc.context_block("bob-uid", "secret?", nonce="z3", email="bob@example.com")
+    assert block == ""
+
+
+async def test_fetch_document_resolves_shared_for_grantee():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_doc(library, blob, user="u1", parsed="SHARED PARSED CONTENT")
+    doc.visibility = Visibility.shared
+    doc.acl = ["bob@example.com"]
+    await library.update_document(doc)
+
+    res = await svc.fetch_document("bob-uid", doc.id, email="bob@example.com")
+    assert "error" not in res
+    assert res["content"] == "SHARED PARSED CONTENT"
+    # No email / not a grantee → 404-equivalent (never leaks existence).
+    miss = await svc.fetch_document("bob-uid", doc.id)
+    assert "error" in miss and "No document found" in miss["error"]
+
+
+async def test_fetch_document_private_not_found_for_non_grantee():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_doc(library, blob, user="u1", parsed="owner only")
+
+    res = await svc.fetch_document("bob-uid", doc.id, email="bob@example.com")
+    assert "error" in res and "No document found" in res["error"]
+
+
+async def test_read_raw_resolves_shared_on_owner_blob():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_raw(library, blob, user="u1")
+    doc.visibility = Visibility.shared
+    doc.acl = ["bob@example.com"]
+    await library.update_document(doc)
+
+    res = await svc.read_raw("bob-uid", doc.id, max_bytes=10_000, email="bob@example.com")
+    assert "error" not in res
+    assert res["document_id"] == doc.id
+
+
+async def test_read_media_resolves_shared_for_grantee():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_media(library, blob, user="u1", raw=b"SHAREDVIDEO")
+    doc.visibility = Visibility.shared
+    doc.acl = ["bob@example.com"]
+    await library.update_document(doc)
+
+    res = await svc.read_media("bob-uid", doc.id, email="bob@example.com")
+    assert "error" not in res
+    assert res["data"] == b"SHAREDVIDEO"
+    # Non-grantee with no email is refused without leaking existence.
+    miss = await svc.read_media("bob-uid", doc.id)
+    assert "error" in miss and "No document found" in miss["error"]

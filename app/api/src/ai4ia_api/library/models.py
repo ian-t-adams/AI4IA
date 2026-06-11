@@ -5,10 +5,11 @@ populate (Content Understanding summary, blob artifact paths, chunk count) so
 adding them is never a breaking migration. 11A only writes the identity/dedupe
 fields; the rest keep their inert defaults until ingest (11B) fills them.
 
-Sharing is *designed in but not enabled* in v1: ``visibility`` is always
-``private`` and ``acl`` is always empty, so :func:`library.access.can_access` is
-owner-only. The fields exist so enabling sharing later is an additive flip, not a
-schema change.
+Sharing is enabled in Phase 11F: ``visibility`` may be ``shared`` (read access to
+the principals in ``acl``, by email) or ``public`` (every authenticated user in
+the tenant). Mutations remain owner-only, and annotations/memories never travel
+with a shared document. The fields are additive with inert defaults, so enabling
+sharing was not a schema change.
 """
 from __future__ import annotations
 
@@ -55,10 +56,14 @@ class Modality(str, Enum):
 
 
 class Visibility(str, Enum):
-    # Owner-only (the only value used in v1).
+    # Owner-only (the default).
     private = "private"
-    # Reserved for the sharing enablement in a later sub-phase.
+    # Owner plus the principals listed in ``acl`` (Phase 11F sharing).
     shared = "shared"
+    # Owner plus every authenticated user. The app authenticates against a single
+    # Entra tenant (and dev auth is local), so "public" is tenant-walled by
+    # construction: there is no unauthenticated path to a document. No public,
+    # unauthenticated URLs are ever minted.
     public = "public"
 
 
@@ -230,7 +235,15 @@ class UserDocument(BaseModel):
     chunkCount: int = 0
     # Failure reason when ``status == failed``.
     error: str | None = None
-    # --- Sharing (reserved; inert in v1) ---
+    # --- Sharing (Phase 11F) ---
+    # ``visibility`` governs who may *read* this document; mutations always stay
+    # owner-only. ``acl`` is the grant list for ``visibility == shared``: it holds
+    # normalized grantee *emails* (lowercased), not internal user ids — sharing is
+    # done by email (the universal collaboration primitive) while ownership and
+    # partitioning stay keyed on the owner's ``userId``. Both fields are additive
+    # with inert defaults (``private`` / empty), so enabling sharing is not a
+    # breaking manifest migration. Annotations and saved memories never travel
+    # with a shared document (owner-private by design).
     visibility: Visibility = Visibility.private
     acl: list[str] = Field(default_factory=list)
     # Sessions that reference this library document (for cascade/usage views).
