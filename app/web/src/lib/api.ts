@@ -24,6 +24,8 @@ import type {
   LibraryDocument,
   MediaTimeline,
   SaveToMemoryResult,
+  ShareState,
+  ShareVisibility,
 } from "./library";
 import { apiFetch } from "./auth";
 
@@ -479,6 +481,60 @@ export async function deleteLibraryAnnotation(
   if (!resp.ok && resp.status !== 204) {
     throw new Error(`${resp.status}: failed to delete annotation`);
   }
+}
+
+// --- Document-level sharing (Phase 11F). Grants are keyed on grantee EMAIL; the
+// owner-only endpoints below set/read/revoke who a document is shared with. A
+// non-owner gets a generic 404 from the API (never leaks existence). Annotations
+// and saved memories deliberately do NOT travel with a shared document.
+
+// Documents explicitly shared *with* the caller (by their email). Tenant-public
+// documents are openable by id but intentionally not listed here.
+export async function listSharedWithMe(): Promise<LibraryDocument[]> {
+  return jsonOrThrow(
+    await apiFetch("/api/library/shared", { cache: "no-store" }),
+  );
+}
+
+// Read a document's sharing posture (owner-only). 404 if not owned.
+export async function getDocumentShares(
+  documentId: string,
+): Promise<ShareState> {
+  return jsonOrThrow(
+    await apiFetch(`/api/library/documents/${documentId}/shares`, {
+      cache: "no-store",
+    }),
+  );
+}
+
+// Replace a document's sharing posture (owner-only). grantees only take effect
+// for visibility === "shared"; they are normalized/validated/de-duped/capped
+// server-side (422 on a malformed email or over the cap). 404 if not owned.
+export async function setDocumentShares(
+  documentId: string,
+  visibility: ShareVisibility,
+  grantees: string[],
+): Promise<ShareState> {
+  return jsonOrThrow(
+    await apiFetch(`/api/library/documents/${documentId}/shares`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ visibility, grantees }),
+    }),
+  );
+}
+
+// Revoke one grantee's access (owner-only, idempotent). Returns the new state.
+export async function revokeDocumentShare(
+  documentId: string,
+  email: string,
+): Promise<ShareState> {
+  return jsonOrThrow(
+    await apiFetch(
+      `/api/library/documents/${documentId}/shares/${encodeURIComponent(email)}`,
+      { method: "DELETE" },
+    ),
+  );
 }
 
 export interface StreamHandlers {

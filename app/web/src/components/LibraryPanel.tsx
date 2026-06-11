@@ -10,12 +10,18 @@ import {
   forgetLibraryDocumentFromMemory,
   listLibraryAnalyzers,
   listLibraryDocuments,
+  listSharedWithMe,
   saveLibraryDocumentToMemory,
   uploadLibraryDocument,
 } from "@/lib/api";
-import type { LibraryAnalyzer, LibraryDocument } from "@/lib/library";
+import type {
+  LibraryAnalyzer,
+  LibraryDocument,
+  ShareVisibility,
+} from "@/lib/library";
 import { MediaPlayer } from "./MediaPlayer";
 import AnnotationsPanel from "./AnnotationsPanel";
+import SharePanel from "./SharePanel";
 
 // Per-document "save to memory" UI state (Phase 11E-1, forget added 11E-3).
 // Keyed by document id.
@@ -68,6 +74,10 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
   // Phase 11D: the audio/video document currently open in the deep-link player.
   const [playing, setPlaying] = useState<LibraryDocument | null>(null);
   const [annotating, setAnnotating] = useState<LibraryDocument | null>(null);
+  // Phase 11F: the document whose sharing dialog is open, and the documents
+  // others have shared with this user.
+  const [sharing, setSharing] = useState<LibraryDocument | null>(null);
+  const [sharedWithMe, setSharedWithMe] = useState<LibraryDocument[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
 
@@ -84,13 +94,15 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
     mountedRef.current = true;
     (async () => {
       try {
-        const [list, analyzerList] = await Promise.all([
+        const [list, analyzerList, shared] = await Promise.all([
           listLibraryDocuments(),
           listLibraryAnalyzers().catch(() => [] as LibraryAnalyzer[]),
+          listSharedWithMe().catch(() => [] as LibraryDocument[]),
         ]);
         if (!mountedRef.current) return;
         setDocs(list);
         setAnalyzers(analyzerList);
+        setSharedWithMe(shared);
       } catch (e) {
         if (mountedRef.current) setError((e as Error).message);
       } finally {
@@ -172,6 +184,13 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
           [doc.id]: { status: "error", error: (e as Error).message },
         }));
     }
+  }
+
+  // Phase 11F: reflect a sharing change on the document's badge without refetch.
+  function onShareChanged(docId: string, visibility: ShareVisibility) {
+    setDocs((prev) =>
+      prev.map((d) => (d.id === docId ? { ...d, visibility } : d)),
+    );
   }
 
   return (
@@ -368,6 +387,40 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                 >
                   {STATUS_LABEL[doc.status]}
                 </span>
+                {doc.visibility && doc.visibility !== "private" && (
+                  <span
+                    title={
+                      doc.visibility === "public"
+                        ? "Shared with anyone in your organization"
+                        : "Shared with specific people"
+                    }
+                    style={{
+                      fontSize: "0.68em",
+                      fontWeight: 600,
+                      color: "var(--accent)",
+                      border: "1px solid var(--accent)",
+                      borderRadius: 999,
+                      padding: "1px 7px",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {doc.visibility === "public" ? "Org" : "Shared"}
+                  </span>
+                )}
+                <button
+                  onClick={() => setSharing(doc)}
+                  aria-label={`Share ${doc.filename}`}
+                  title="Share this document with specific people or your whole organization"
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--fg-muted)",
+                    fontSize: "1em",
+                    cursor: "pointer",
+                  }}
+                >
+                  🔗
+                </button>
                 {doc.status === "ready" &&
                   (doc.modality === "audio" || doc.modality === "video") && (
                     <button
@@ -464,6 +517,89 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
             ))
           )}
         </div>
+
+        {sharedWithMe.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <h3
+              style={{
+                margin: 0,
+                fontSize: "0.95em",
+                borderTop: "1px solid var(--border)",
+                paddingTop: 14,
+              }}
+            >
+              Shared with you
+            </h3>
+            <p
+              style={{ margin: 0, fontSize: "0.78em", color: "var(--fg-muted)" }}
+            >
+              Documents other people have shared with you. Your assistant can read
+              and cite them too.
+            </p>
+            {sharedWithMe.map((doc) => (
+              <div
+                key={doc.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontWeight: 600,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={doc.filename}
+                  >
+                    {doc.filename}
+                  </div>
+                  <div style={{ fontSize: "0.75em", color: "var(--fg-muted)" }}>
+                    {formatSize(doc.size)}
+                    {doc.status === "ready" && doc.chunkCount > 0
+                      ? ` · ${doc.chunkCount} chunks`
+                      : ""}
+                    <span style={{ color: "var(--accent)" }}> · shared with you</span>
+                  </div>
+                </div>
+                <span
+                  style={{
+                    fontSize: "0.75em",
+                    fontWeight: 600,
+                    color: STATUS_COLOR[doc.status],
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {STATUS_LABEL[doc.status]}
+                </span>
+                {doc.status === "ready" &&
+                  (doc.modality === "audio" || doc.modality === "video") && (
+                    <button
+                      onClick={() => setPlaying(doc)}
+                      aria-label={`Play ${doc.filename}`}
+                      title="Play this shared media and jump to detected scenes & keyframes"
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        color: "var(--fg-muted)",
+                        fontSize: "1em",
+                        cursor: "pointer",
+                      }}
+                    >
+                      ▶️
+                    </button>
+                  )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
       {playing && (
@@ -474,6 +610,14 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
           documentId={annotating.id}
           filename={annotating.filename}
           onClose={() => setAnnotating(null)}
+        />
+      )}
+      {sharing && (
+        <SharePanel
+          documentId={sharing.id}
+          filename={sharing.filename}
+          onClose={() => setSharing(null)}
+          onChanged={(visibility) => onShareChanged(sharing.id, visibility)}
         />
       )}
     </>

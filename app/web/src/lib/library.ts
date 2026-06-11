@@ -75,3 +75,18 @@ export interface DocumentAnnotation {
   createdAt: string;
   updatedAt: string;
 }
+
+// A document's visibility (Phase 11F sharing). "private" = owner only; "shared" =
+// owner + the emails in the grant list; "public" = owner + any signed-in user in
+// the tenant (no unauthenticated access).
+export type ShareVisibility = "private" | "shared" | "public";
+
+// Mirrors the API's ShareState (Phase 11F): a document's sharing posture, surfaced
+// to its owner. grantees are normalized grantee emails (only meaningful when
+// visibility === "shared"). Owner-private artifacts (notes, saved memories) never
+// travel with a shared document.
+export interface ShareState {
+  documentId: string;
+  visibility: ShareVisibility;
+  grantees: string[];
+}
