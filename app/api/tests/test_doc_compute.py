@@ -40,12 +40,34 @@ class FakeCI:
         self.raise_exc = raise_exc
         self.calls: list[dict] = []
         self.closed = False
+        # Raw-file upload plumbing (Phase 11H follow-up): record uploads/deletes so
+        # raw-files-path tests can assert the file went to the interpreter.
+        self.uploads: list[dict] = []
+        self.deletes: list[str] = []
+        self.upload_file_id = "file-abc"
+        self.upload_raise: Exception | None = None
 
-    async def run(self, *, instructions: str, user_input: str) -> CodeInterpreterResult:
-        self.calls.append({"instructions": instructions, "user_input": user_input})
+    async def run(
+        self, *, instructions: str, user_input: str, file_ids=None
+    ) -> CodeInterpreterResult:
+        self.calls.append(
+            {"instructions": instructions, "user_input": user_input, "file_ids": file_ids}
+        )
         if self.raise_exc is not None:
             raise self.raise_exc
         return self.result
+
+    async def upload_file(self, *, filename, content, content_type=None) -> str:
+        self.uploads.append(
+            {"filename": filename, "content": content, "content_type": content_type}
+        )
+        if self.upload_raise is not None:
+            raise self.upload_raise
+        return self.upload_file_id
+
+    async def delete_file(self, file_id: str) -> bool:
+        self.deletes.append(file_id)
+        return True
 
     async def close(self) -> None:
         self.closed = True
@@ -238,6 +260,143 @@ async def test_run_code_flattens_error_field():
     await library.update_document(doc)
     res = await handlers[RUN_CODE_TOOL_NAME]({"document_id": doc.id, "task": "sum"}, ctx=None)
     assert "\n" not in res["error"]
+
+
+# --- run_code: raw-file path (code_interpreter_raw_files_enabled) ---
+def _raw_settings(**overrides):
+    return _settings(code_interpreter_raw_files_enabled=True, **overrides)
+
+
+async def _seed_raw_doc(
+    library,
+    blob,
+    *,
+    user="u1",
+    filename="data.csv",
+    content_type="text/csv",
+    raw=b"name,amount\nA,10\nB,20\n",
+    parsed="name,amount\nA,10\nB,20\n",
+):
+    doc = UserDocument(
+        userId=user,
+        filename=filename,
+        status=DocumentStatus.ready,
+        summary="seed",
+        contentType=content_type,
+    )
+    if parsed is not None:
+        ppath = blob_path(user, doc.id, PARSED_NAME)
+        await blob.put(ppath, parsed.encode("utf-8"), "text/markdown")
+        doc.parsedPath = ppath
+    if raw is not None:
+        rpath = blob_path(user, doc.id, RAW_NAME)
+        await blob.put(rpath, raw, content_type)
+        doc.rawPath = rpath
+    await library.create_document(doc)
+    return doc
+
+
+async def test_run_code_raw_path_uploads_file_and_passes_file_ids():
+    library, blob = InMemoryDocumentLibraryRepository(), InMemoryBlobStore()
+    ci = FakeCI(CodeInterpreterResult(status="completed", output_text="Total is 30"))
+    ci.upload_file_id = "file-xyz"
+    _, handlers, _ = _caps(library, blob, ci, _raw_settings(), nonce="abcd")
+    doc = await _seed_raw_doc(library, blob, raw=b"name,amount\nA,10\nB,20\n")
+
+    res = await handlers[RUN_CODE_TOOL_NAME]({"document_id": doc.id, "task": "sum amount"}, ctx=None)
+
+    # The original bytes were uploaded with the right filename + content type.
+    assert ci.uploads[0]["filename"] == "data.csv"
+    assert ci.uploads[0]["content"] == b"name,amount\nA,10\nB,20\n"
+    assert ci.uploads[0]["content_type"] == "text/csv"
+    # The uploaded file id was attached to the interpreter run.
+    assert ci.calls[0]["file_ids"] == ["file-xyz"]
+    # Raw path does NOT inline the document text in a DOCUMENT fence; it points the
+    # model at /mnt/data instead.
+    sent = ci.calls[0]["user_input"]
+    assert "BEGIN DOCUMENT" not in sent
+    assert "/mnt/data" in sent
+    # Output still comes back nonce-fenced.
+    assert "BEGIN COMPUTE abcd" in res["result"]
+    assert "Total is 30" in res["result"]
+    # The uploaded file was cleaned up afterwards.
+    assert ci.deletes == ["file-xyz"]
+
+
+async def test_run_code_flag_off_never_uploads_and_uses_parsed_text():
+    library, blob = InMemoryDocumentLibraryRepository(), InMemoryBlobStore()
+    ci = FakeCI(CodeInterpreterResult(status="completed", output_text="ok"))
+    _, handlers, _ = _caps(library, blob, ci, _settings(), nonce="abcd")  # flag OFF
+    doc = await _seed_raw_doc(library, blob)
+
+    res = await handlers[RUN_CODE_TOOL_NAME]({"document_id": doc.id, "task": "sum"}, ctx=None)
+    assert ci.uploads == []
+    assert ci.deletes == []
+    assert ci.calls[0]["file_ids"] is None
+    assert "BEGIN DOCUMENT abcd" in ci.calls[0]["user_input"]
+    assert "BEGIN COMPUTE abcd" in res["result"]
+
+
+async def test_run_code_raw_path_unsupported_type_falls_back_to_parsed():
+    library, blob = InMemoryDocumentLibraryRepository(), InMemoryBlobStore()
+    ci = FakeCI(CodeInterpreterResult(status="completed", output_text="ok"))
+    _, handlers, _ = _caps(library, blob, ci, _raw_settings(), nonce="abcd")
+    # .mp4 is NOT a CI-supported type → must fall back to parsed text.
+    doc = await _seed_raw_doc(
+        library, blob, filename="clip.mp4", content_type="video/mp4", raw=b"\x00\x01video"
+    )
+
+    res = await handlers[RUN_CODE_TOOL_NAME]({"document_id": doc.id, "task": "sum"}, ctx=None)
+    assert ci.uploads == []
+    assert ci.calls[0]["file_ids"] is None
+    assert "BEGIN DOCUMENT abcd" in ci.calls[0]["user_input"]
+    assert "BEGIN COMPUTE abcd" in res["result"]
+
+
+async def test_run_code_raw_path_oversize_falls_back_to_parsed():
+    library, blob = InMemoryDocumentLibraryRepository(), InMemoryBlobStore()
+    ci = FakeCI(CodeInterpreterResult(status="completed", output_text="ok"))
+    settings = _raw_settings(code_interpreter_max_raw_file_bytes=4)
+    _, handlers, _ = _caps(library, blob, ci, settings, nonce="abcd")
+    doc = await _seed_raw_doc(library, blob, raw=b"way-too-many-bytes-here")
+
+    res = await handlers[RUN_CODE_TOOL_NAME]({"document_id": doc.id, "task": "sum"}, ctx=None)
+    assert ci.uploads == []
+    assert ci.calls[0]["file_ids"] is None
+    assert "BEGIN DOCUMENT abcd" in ci.calls[0]["user_input"]
+    assert "BEGIN COMPUTE abcd" in res["result"]
+
+
+async def test_run_code_raw_path_upload_failure_falls_back_to_parsed():
+    from ai4ia_api.code_interpreter.client import CodeInterpreterError
+
+    library, blob = InMemoryDocumentLibraryRepository(), InMemoryBlobStore()
+    ci = FakeCI(CodeInterpreterResult(status="completed", output_text="ok"))
+    ci.upload_raise = CodeInterpreterError(413, "too large")
+    _, handlers, _ = _caps(library, blob, ci, _raw_settings(), nonce="abcd")
+    doc = await _seed_raw_doc(library, blob)
+
+    res = await handlers[RUN_CODE_TOOL_NAME]({"document_id": doc.id, "task": "sum"}, ctx=None)
+    # Upload was attempted but failed → no file_ids, parsed-text fallback, no delete.
+    assert len(ci.uploads) == 1
+    assert ci.calls[0]["file_ids"] is None
+    assert ci.deletes == []
+    assert "BEGIN DOCUMENT abcd" in ci.calls[0]["user_input"]
+    assert "BEGIN COMPUTE abcd" in res["result"]
+
+
+async def test_run_code_raw_path_missing_original_falls_back_to_parsed():
+    library, blob = InMemoryDocumentLibraryRepository(), InMemoryBlobStore()
+    ci = FakeCI(CodeInterpreterResult(status="completed", output_text="ok"))
+    _, handlers, _ = _caps(library, blob, ci, _raw_settings(), nonce="abcd")
+    # No raw original at all, only parsed text.
+    doc = await _seed_raw_doc(library, blob, raw=None)
+
+    res = await handlers[RUN_CODE_TOOL_NAME]({"document_id": doc.id, "task": "sum"}, ctx=None)
+    assert ci.uploads == []
+    assert ci.calls[0]["file_ids"] is None
+    assert "BEGIN DOCUMENT abcd" in ci.calls[0]["user_input"]
+    assert "BEGIN COMPUTE abcd" in res["result"]
 
 
 # --- export_document / versioning ---

@@ -13,6 +13,7 @@ from ai4ia_api.code_interpreter.client import (
     CODE_INTERPRETER_TOOL,
     CodeInterpreterClient,
     CodeInterpreterError,
+    code_interpreter_tool,
 )
 from ai4ia_api.code_interpreter.models import parse_response
 from ai4ia_api.config import GatewayAuthMode
@@ -32,16 +33,25 @@ class FakeResponse:
 
 
 class FakeAsyncClient:
-    """Captures the single POST and returns a canned response."""
+    """Captures the single POST/DELETE and returns a canned response."""
 
     def __init__(self, response: FakeResponse | None = None, raise_exc: Exception | None = None) -> None:
         self._response = response
         self._raise = raise_exc
         self.calls: list[dict] = []
+        self.deletes: list[dict] = []
         self.closed = False
 
-    async def post(self, url, headers=None, json=None):
-        self.calls.append({"url": url, "headers": headers, "json": json})
+    async def post(self, url, headers=None, json=None, files=None, data=None):
+        self.calls.append(
+            {"url": url, "headers": headers, "json": json, "files": files, "data": data}
+        )
+        if self._raise is not None:
+            raise self._raise
+        return self._response
+
+    async def delete(self, url, headers=None):
+        self.deletes.append({"url": url, "headers": headers})
         if self._raise is not None:
             raise self._raise
         return self._response
@@ -140,6 +150,112 @@ async def test_run_posts_code_interpreter_tool_payload():
     assert body["input"] == "sum it"
     assert result.output_text == "42"
     assert result.succeeded is True
+
+
+# --- code_interpreter_tool factory ---
+def test_code_interpreter_tool_default_is_auto_container():
+    assert code_interpreter_tool() == CODE_INTERPRETER_TOOL
+    assert code_interpreter_tool(None) == CODE_INTERPRETER_TOOL
+    assert code_interpreter_tool([]) == CODE_INTERPRETER_TOOL
+
+
+def test_code_interpreter_tool_seeds_file_ids():
+    tool = code_interpreter_tool(["file-1", "file-2"])
+    assert tool["type"] == "code_interpreter"
+    assert tool["container"] == {"type": "auto", "file_ids": ["file-1", "file-2"]}
+    # Must not mutate the shared default constant.
+    assert "file_ids" not in CODE_INTERPRETER_TOOL["container"]
+
+
+# --- files URL building ---
+def test_files_url_collection_and_single():
+    c = _client(_settings(), FakeAsyncClient())
+    assert c.files_url() == "https://res.openai.azure.com/openai/v1/files"
+    assert c.files_url("file-9") == "https://res.openai.azure.com/openai/v1/files/file-9"
+
+
+def test_files_url_appends_api_version():
+    c = _client(_settings(code_interpreter_api_version="preview"), FakeAsyncClient())
+    assert c.files_url().endswith("/openai/v1/files?api-version=preview")
+    assert c.files_url("file-9").endswith("/openai/v1/files/file-9?api-version=preview")
+
+
+# --- run with file_ids ---
+async def test_run_with_file_ids_seeds_container():
+    fake = FakeAsyncClient(FakeResponse(200, {"status": "completed", "output_text": "ok"}))
+    c = _client(_settings(), fake)
+    await c.run(instructions="i", user_input="u", file_ids=["file-7"])
+    body = fake.calls[0]["json"]
+    assert body["tools"] == [
+        {"type": "code_interpreter", "container": {"type": "auto", "file_ids": ["file-7"]}}
+    ]
+
+
+# --- upload_file ---
+async def test_upload_file_posts_multipart_and_returns_id():
+    fake = FakeAsyncClient(FakeResponse(200, {"id": "file-uploaded-1"}))
+    c = _client(_settings(), fake)
+    file_id = await c.upload_file(
+        filename="report.csv", content=b"a,b\n1,2\n", content_type="text/csv"
+    )
+    assert file_id == "file-uploaded-1"
+    call = fake.calls[0]
+    assert call["url"] == "https://res.openai.azure.com/openai/v1/files"
+    # Multipart upload must NOT carry a JSON content-type (httpx sets the boundary).
+    assert "Content-Type" not in call["headers"]
+    assert call["json"] is None
+    assert call["data"] == {"purpose": "assistants"}
+    assert call["files"]["file"] == ("report.csv", b"a,b\n1,2\n", "text/csv")
+
+
+async def test_upload_file_defaults_content_type_and_filename():
+    fake = FakeAsyncClient(FakeResponse(200, {"id": "file-2"}))
+    c = _client(_settings(), fake)
+    await c.upload_file(filename="", content=b"x")
+    assert fake.calls[0]["files"]["file"] == ("file", b"x", "application/octet-stream")
+
+
+async def test_upload_file_missing_id_raises():
+    fake = FakeAsyncClient(FakeResponse(200, {"object": "file"}))
+    c = _client(_settings(), fake)
+    with pytest.raises(CodeInterpreterError):
+        await c.upload_file(filename="f.csv", content=b"x")
+
+
+async def test_upload_file_non_2xx_raises():
+    fake = FakeAsyncClient(FakeResponse(413, None, text="too large"))
+    c = _client(_settings(), fake)
+    with pytest.raises(CodeInterpreterError) as ei:
+        await c.upload_file(filename="f.csv", content=b"x")
+    assert ei.value.status_code == 413
+
+
+async def test_upload_file_transport_error_raises():
+    fake = FakeAsyncClient(raise_exc=httpx.ConnectError("boom"))
+    c = _client(_settings(), fake)
+    with pytest.raises(CodeInterpreterError):
+        await c.upload_file(filename="f.csv", content=b"x")
+
+
+# --- delete_file (best-effort, never raises) ---
+async def test_delete_file_issues_delete():
+    fake = FakeAsyncClient(FakeResponse(200, {"deleted": True}))
+    c = _client(_settings(), fake)
+    assert await c.delete_file("file-9") is True
+    assert fake.deletes[0]["url"] == "https://res.openai.azure.com/openai/v1/files/file-9"
+
+
+async def test_delete_file_swallows_errors():
+    fake = FakeAsyncClient(raise_exc=httpx.ConnectError("boom"))
+    c = _client(_settings(), fake)
+    assert await c.delete_file("file-9") is False
+
+
+async def test_delete_file_empty_id_is_noop():
+    fake = FakeAsyncClient(FakeResponse(200, {"deleted": True}))
+    c = _client(_settings(), fake)
+    assert await c.delete_file("") is False
+    assert fake.deletes == []
 
 
 # --- error mapping ---
