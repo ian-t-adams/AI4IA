@@ -469,6 +469,33 @@ async def delete_document(
     if ingestor is not None:
         await ingestor.cancel_enrich(uid, document_id)
         await ingestor.purge(uid, document_id)
+    # Complete the erase: also forget anything this document contributed to the
+    # owner's durable memory (Phase 11E-1 save-to-memory). Delete already cascades
+    # to the document's other derived artifacts (blobs + indexed chunks above), so
+    # leaving its saved memories behind is the inconsistency; forgetting them here
+    # makes "delete" a complete erase with no derived trace left. Best-effort and
+    # idempotent, exactly like the purge: the manifest delete is the source of
+    # truth and a memory hiccup must never block the delete. No-op when memory is
+    # disabled or the document had nothing saved. Reuses the same machinery as the
+    # explicit 11E-3 forget endpoint (memory.forget_document).
+    memory = getattr(request.app.state, "memory", None)
+    if memory is not None and getattr(memory, "enabled", False):
+        try:
+            forgotten = await memory.forget_document(uid, document_id)
+            if forgotten:
+                logger.info(
+                    "delete cascaded memory-forget user=%s id=%s forgotten=%s",
+                    uid,
+                    document_id,
+                    forgotten,
+                )
+        except Exception:  # noqa: BLE001 - memory cleanup is best-effort
+            logger.warning(
+                "delete memory-forget failed user=%s id=%s",
+                uid,
+                document_id,
+                exc_info=True,
+            )
 
 
 class SaveToMemoryResult(BaseModel):
