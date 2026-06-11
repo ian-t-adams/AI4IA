@@ -15,6 +15,7 @@ import {
 } from "@/lib/api";
 import type { LibraryAnalyzer, LibraryDocument } from "@/lib/library";
 import { MediaPlayer } from "./MediaPlayer";
+import AnnotationsPanel from "./AnnotationsPanel";
 
 // Per-document "save to memory" UI state (Phase 11E-1, forget added 11E-3).
 // Keyed by document id.
@@ -66,6 +67,7 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
   );
   // Phase 11D: the audio/video document currently open in the deep-link player.
   const [playing, setPlaying] = useState<LibraryDocument | null>(null);
+  const [annotating, setAnnotating] = useState<LibraryDocument | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
 
@@ -174,21 +176,21 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
 
   return (
     <>
-    <div
-      role="dialog"
-      aria-label="Document library"
-      aria-modal="true"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.45)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 50,
-      }}
-      onClick={onClose}
-    >
+      <div
+        role="dialog"
+        aria-label="Document library"
+        aria-modal="true"
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(0,0,0,0.45)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 50,
+        }}
+        onClick={onClose}
+      >
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -432,6 +434,20 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                   </button>
                 )}
                 <button
+                  onClick={() => setAnnotating(doc)}
+                  aria-label={`Notes for ${doc.filename}`}
+                  title="Private notes pinned to this document (not shared with the assistant)"
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--fg-muted)",
+                    fontSize: "1em",
+                    cursor: "pointer",
+                  }}
+                >
+                  📝
+                </button>
+                <button
                   onClick={() => onDelete(doc)}
                   aria-label={`Delete ${doc.filename}`}
                   style={{
@@ -452,6 +468,13 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
     </div>
       {playing && (
         <MediaPlayer doc={playing} onClose={() => setPlaying(null)} />
+      )}
+      {annotating && (
+        <AnnotationsPanel
+          documentId={annotating.id}
+          filename={annotating.filename}
+          onClose={() => setAnnotating(null)}
+        />
       )}
     </>
   );

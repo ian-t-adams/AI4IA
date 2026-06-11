@@ -143,6 +143,32 @@ BUILTIN_ANALYZERS: tuple[Analyzer, ...] = (
 BUILTIN_ANALYZER_IDS: frozenset[str] = frozenset(a.id for a in BUILTIN_ANALYZERS)
 
 
+class DocumentAnnotation(BaseModel):
+    """An owner's note attached to a library document (Phase 11E-2).
+
+    Annotations are additive, owner-private metadata: free-form notes the owner
+    pins to a document, optionally anchored to a location (a page label, an
+    ``mm:ss`` timestamp, a quoted span, etc.). They live on the manifest like
+    :class:`DocumentVersion`, default empty so adding them is not a breaking
+    migration, and round-trip through both the in-memory and Cosmos stores
+    unchanged. They are presentation metadata for the owner only — never injected
+    into the model's retrieval context — so they carry no prompt-injection surface.
+    Mutations are owner-only (``require_owner``); reads use ``can_access`` (which is
+    owner-only in v1).
+    """
+
+    id: str = Field(default_factory=_new_id)
+    # The note text (multi-line allowed). Sanitized + length-capped at the API edge.
+    body: str
+    # Optional free-form anchor (single line): a page label, "mm:ss", a short quote.
+    anchor: str = ""
+    createdAt: datetime = Field(default_factory=_now)
+    updatedAt: datetime = Field(default_factory=_now)
+
+    def touch(self) -> None:
+        self.updatedAt = _now()
+
+
 class DocumentVersion(BaseModel):
     """An "adjust & return" derived artifact of a library document (Phase 11C).
 
@@ -214,6 +240,11 @@ class UserDocument(BaseModel):
     # The original raw/parsed artifacts are never mutated; each export appends one
     # dense, 1-based entry here.
     versions: list[DocumentVersion] = Field(default_factory=list)
+    # Owner-private notes pinned to this document (Phase 11E-2). Additive, default
+    # empty so the manifest contract is unchanged for un-annotated documents, and
+    # deliberately excluded from the model-facing summary so notes never leak into
+    # the retrieval/prompt context.
+    annotations: list[DocumentAnnotation] = Field(default_factory=list)
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
 

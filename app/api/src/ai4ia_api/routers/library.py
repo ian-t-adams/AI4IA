@@ -39,6 +39,7 @@ from ..library.models import (
     Analyzer,
     AnalyzerKind,
     BUILTIN_ANALYZER_IDS,
+    DocumentAnnotation,
     DocumentStatus,
     Modality,
     UserDocument,
@@ -633,6 +634,174 @@ async def forget_document_from_memory(
         "forget-from-memory user=%s id=%s forgotten=%s", uid, document_id, forgotten
     )
     return ForgetFromMemoryResult(forgotten=forgotten)
+
+
+# --- annotations (Phase 11E-2) ---
+_MAX_ANNOTATION_BODY = 4000
+_MAX_ANNOTATION_ANCHOR = 200
+
+
+def _clean_body(value: str) -> str:
+    """Sanitize an annotation body: drop control characters except newlines and
+    tabs, normalize line endings, and trim. Multi-line is allowed (notes)."""
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = "".join(
+        ch for ch in text if ch in ("\n", "\t") or ord(ch) >= 32
+    )
+    return cleaned.strip()
+
+
+def _clean_anchor(value: str) -> str:
+    """Sanitize an annotation anchor to a single trimmed line (no control chars)."""
+    cleaned = "".join(ch for ch in value if ord(ch) >= 32)
+    return cleaned.strip()
+
+
+class AnnotationCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=_MAX_ANNOTATION_BODY)
+    anchor: str = Field(default="", max_length=_MAX_ANNOTATION_ANCHOR)
+
+
+class AnnotationUpdate(BaseModel):
+    body: str | None = Field(default=None, max_length=_MAX_ANNOTATION_BODY)
+    anchor: str | None = Field(default=None, max_length=_MAX_ANNOTATION_ANCHOR)
+
+
+class AnnotationView(BaseModel):
+    """An annotation surfaced to the client (mirrors DocumentAnnotation)."""
+
+    id: str
+    body: str
+    anchor: str
+    createdAt: datetime
+    updatedAt: datetime
+
+    @classmethod
+    def of(cls, a: DocumentAnnotation) -> "AnnotationView":
+        return cls(
+            id=a.id,
+            body=a.body,
+            anchor=a.anchor,
+            createdAt=a.createdAt,
+            updatedAt=a.updatedAt,
+        )
+
+
+async def _owned_document(request: Request, user_id: str, document_id: str) -> UserDocument:
+    """Load a document and require ownership, or raise a generic 404.
+
+    Annotations are owner-only (create/read/update/delete) — even after read
+    sharing is enabled later, notes stay private to the owner — so this uses
+    ``require_owner`` rather than ``can_access``."""
+    repo = _library(request)
+    try:
+        doc = await repo.get_document(user_id, document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if not require_owner(user_id, doc):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return doc
+
+
+@router.get(
+    "/documents/{document_id}/annotations",
+    response_model=list[AnnotationView],
+)
+async def list_annotations(
+    document_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[AnnotationView]:
+    """List the owner's notes on a document, oldest first."""
+    doc = await _owned_document(request, user.internal_user_id, document_id)
+    ordered = sorted(doc.annotations, key=lambda a: a.createdAt)
+    return [AnnotationView.of(a) for a in ordered]
+
+
+@router.post(
+    "/documents/{document_id}/annotations",
+    response_model=AnnotationView,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_annotation(
+    document_id: str,
+    body: AnnotationCreate,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AnnotationView:
+    """Pin a note to a document. Owner-only; body/anchor are sanitized + capped."""
+    repo = _library(request)
+    uid = user.internal_user_id
+    doc = await _owned_document(request, uid, document_id)
+    text = _clean_body(body.body)
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Annotation body must not be empty.",
+        )
+    annotation = DocumentAnnotation(body=text, anchor=_clean_anchor(body.anchor))
+    doc.annotations.append(annotation)
+    doc.touch()
+    await repo.update_document(doc)
+    logger.info("annotation created user=%s doc=%s id=%s", uid, document_id, annotation.id)
+    return AnnotationView.of(annotation)
+
+
+@router.patch(
+    "/documents/{document_id}/annotations/{annotation_id}",
+    response_model=AnnotationView,
+)
+async def update_annotation(
+    document_id: str,
+    annotation_id: str,
+    body: AnnotationUpdate,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AnnotationView:
+    """Edit a note's body and/or anchor in place. Owner-only."""
+    repo = _library(request)
+    uid = user.internal_user_id
+    doc = await _owned_document(request, uid, document_id)
+    annotation = next((a for a in doc.annotations if a.id == annotation_id), None)
+    if annotation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Annotation not found"
+        )
+    if body.body is not None:
+        text = _clean_body(body.body)
+        if not text:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Annotation body must not be empty.",
+            )
+        annotation.body = text
+    if body.anchor is not None:
+        annotation.anchor = _clean_anchor(body.anchor)
+    annotation.touch()
+    doc.touch()
+    await repo.update_document(doc)
+    return AnnotationView.of(annotation)
+
+
+@router.delete(
+    "/documents/{document_id}/annotations/{annotation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_annotation(
+    document_id: str,
+    annotation_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> None:
+    """Remove a note. Owner-only and idempotent (a missing note still 204s)."""
+    repo = _library(request)
+    uid = user.internal_user_id
+    doc = await _owned_document(request, uid, document_id)
+    before = len(doc.annotations)
+    doc.annotations = [a for a in doc.annotations if a.id != annotation_id]
+    if len(doc.annotations) != before:
+        doc.touch()
+        await repo.update_document(doc)
 
 
 # --- analyzers ---

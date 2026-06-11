@@ -18,6 +18,7 @@ import type {
   WorkflowUpdate,
 } from "./types";
 import type {
+  DocumentAnnotation,
   ForgetFromMemoryResult,
   LibraryAnalyzer,
   LibraryDocument,
@@ -421,6 +422,63 @@ export async function forgetLibraryDocumentFromMemory(
       method: "DELETE",
     }),
   );
+}
+
+// Phase 11E-2: owner-private annotations pinned to a library document. These notes
+// are presentation-only metadata — they are deliberately never surfaced to the
+// model's retrieval/prompt context, and every operation is owner-only.
+export async function listLibraryAnnotations(
+  documentId: string,
+): Promise<DocumentAnnotation[]> {
+  return jsonOrThrow(
+    await apiFetch(`/api/library/documents/${documentId}/annotations`, {
+      cache: "no-store",
+    }),
+  );
+}
+
+export async function createLibraryAnnotation(
+  documentId: string,
+  body: string,
+  anchor?: string,
+): Promise<DocumentAnnotation> {
+  return jsonOrThrow(
+    await apiFetch(`/api/library/documents/${documentId}/annotations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body, anchor: anchor ?? "" }),
+    }),
+  );
+}
+
+export async function updateLibraryAnnotation(
+  documentId: string,
+  annotationId: string,
+  changes: { body?: string; anchor?: string },
+): Promise<DocumentAnnotation> {
+  return jsonOrThrow(
+    await apiFetch(
+      `/api/library/documents/${documentId}/annotations/${annotationId}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(changes),
+      },
+    ),
+  );
+}
+
+export async function deleteLibraryAnnotation(
+  documentId: string,
+  annotationId: string,
+): Promise<void> {
+  const resp = await apiFetch(
+    `/api/library/documents/${documentId}/annotations/${annotationId}`,
+    { method: "DELETE" },
+  );
+  if (!resp.ok && resp.status !== 204) {
+    throw new Error(`${resp.status}: failed to delete annotation`);
+  }
 }
 
 export interface StreamHandlers {
