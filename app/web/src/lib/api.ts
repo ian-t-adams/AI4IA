@@ -21,6 +21,7 @@ import type {
   ForgetFromMemoryResult,
   LibraryAnalyzer,
   LibraryDocument,
+  MediaTimeline,
   SaveToMemoryResult,
 } from "./library";
 import { apiFetch } from "./auth";
@@ -243,6 +244,33 @@ export async function fetchDocumentArtifact(artifactId: string): Promise<string>
     throw new Error(`${resp.status}: failed to load document`);
   }
   return await resp.text();
+}
+
+// Phase 11D deep-link player: fetches the ORIGINAL audio/video bytes of a ready
+// library document (owner + ready gated server-side). Fetched via apiFetch so the
+// bearer token rides along — a raw <video src> URL could not carry it — then the
+// caller wraps the Blob in an object URL, which also gives client-side seeking.
+export async function fetchLibraryMedia(documentId: string): Promise<Blob> {
+  const resp = await apiFetch(`/api/library/documents/${documentId}/media`, {
+    cache: "no-store",
+  });
+  if (!resp.ok) {
+    throw new Error(`${resp.status}: failed to load media`);
+  }
+  return await resp.blob();
+}
+
+// Phase 11D: the scene/keyframe timeline for an audio/video document, used to draw
+// clickable deep-link markers on the player. A missing analyzer sidecar degrades to
+// an empty segments list server-side rather than erroring.
+export async function fetchLibraryTimeline(
+  documentId: string,
+): Promise<MediaTimeline> {
+  return jsonOrThrow(
+    await apiFetch(`/api/library/documents/${documentId}/timeline`, {
+      cache: "no-store",
+    }),
+  );
 }
 
 export async function listSessions(): Promise<Session[]> {

@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 RAW_NAME = "original"
 PARSED_NAME = "parsed.md"
 CHUNKS_NAME = "chunks.jsonl"
+# Audio/video deep-link timeline (Phase 11D): per-segment scene/keyframe markers
+# extracted from the CU result, served to the media player. Optional sidecar —
+# absent for documents and for AV without scene detail.
+MEDIA_NAME = "media.json"
 # Subdirectory under a document's prefix holding "adjust & return" exports
 # (Phase 11C): each export writes ``{userId}/{documentId}/versions/{n}/{name}``,
 # leaving the original raw/parsed artifacts immutable.

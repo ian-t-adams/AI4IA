@@ -32,14 +32,15 @@ is unit-tested end to end without network or Azure SDKs.
 """
 from __future__ import annotations
 
+import json
 import logging
 
 from ..config import Settings
 from ..memory.embedder import GatewayEmbedder
-from .blob_store import PARSED_NAME, BlobNotFoundError, BlobStore, blob_path
+from .blob_store import MEDIA_NAME, PARSED_NAME, BlobNotFoundError, BlobStore, blob_path
 from .chunking import format_timestamp
 from .doc_chunks import DocChunkStore
-from .models import DocumentStatus, UserDocument
+from .models import DocumentStatus, Modality, UserDocument
 from .repository import DocumentLibraryRepository, DocumentNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -353,4 +354,92 @@ class DocumentRetrievalService:
             "returned_chars": len(content),
             "truncated": total > cap,
             "content": content,
+        }
+
+    def _is_audiovisual(self, doc: UserDocument) -> bool:
+        modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
+        return modality in ("audio", "video")
+
+    async def read_media_timeline(self, user_id: str, document_id: str) -> dict:
+        """Read a ready audio/video document's deep-link scene timeline (Phase 11D).
+
+        Same ownership + ``ready`` gate as the other reads, restricted to
+        audio/video. Returns ``{"document_id","modality","durationMs","segments"}``
+        (``segments`` empty when the analyzer surfaced no scene detail), or
+        ``{"error": ...}`` for a missing/unowned/non-ready/non-AV document. A missing
+        or unparseable sidecar degrades to an empty timeline (never an error), so a
+        freshly enabled analyzer without scene output still plays."""
+        gated = await self._gated_ready_doc(user_id, document_id)
+        if isinstance(gated, dict):
+            return gated
+        doc, safe_name = gated
+        if not self._is_audiovisual(doc):
+            return {"error": f"'{safe_name}' is not an audio or video document."}
+
+        modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
+        duration: int | None = None
+        segments: list = []
+        media_path = blob_path(user_id, doc.id, MEDIA_NAME)
+        raw: bytes | None
+        try:
+            raw = await self._blob.get(media_path)
+        except BlobNotFoundError:
+            raw = None
+        except Exception:  # noqa: BLE001 - degrade, never propagate
+            logger.warning(
+                "media timeline read failed user=%s id=%s", user_id, doc.id, exc_info=True
+            )
+            raw = None
+        if raw is not None:
+            try:
+                parsed = json.loads(raw.decode("utf-8", "ignore"))
+            except (ValueError, TypeError):
+                logger.warning("media timeline parse failed user=%s id=%s", user_id, doc.id)
+                parsed = None
+            if isinstance(parsed, dict):
+                duration = parsed.get("durationMs") if isinstance(parsed.get("durationMs"), int) else None
+                segs = parsed.get("segments")
+                segments = segs if isinstance(segs, list) else []
+        return {
+            "document_id": doc.id,
+            "modality": modality,
+            "durationMs": duration,
+            "segments": segments,
+        }
+
+    async def read_media(self, user_id: str, document_id: str) -> dict:
+        """Read a ready audio/video document's ORIGINAL bytes for the deep-link player.
+
+        Same ownership + ``ready`` gate as :meth:`read_raw`, restricted to
+        audio/video, and without the compute byte cap (the media player streams the
+        whole file the user already uploaded). Returns
+        ``{"document_id","filename","content_type","modality","data","size"}`` or
+        ``{"error": ...}`` when the original is missing/unreadable. The raw artifacts
+        of non-AV documents are never exposed here."""
+        gated = await self._gated_ready_doc(user_id, document_id)
+        if isinstance(gated, dict):
+            return gated
+        doc, safe_name = gated
+        if not self._is_audiovisual(doc):
+            return {"error": f"'{safe_name}' is not an audio or video document."}
+
+        modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
+        if not doc.rawPath:
+            return {"error": f"No media available for '{safe_name}'."}
+        try:
+            data = await self._blob.get(doc.rawPath)
+        except BlobNotFoundError:
+            return {"error": f"No media available for '{safe_name}'."}
+        except Exception:  # noqa: BLE001 - degrade, never propagate
+            logger.warning(
+                "media blob read failed user=%s id=%s", user_id, doc.id, exc_info=True
+            )
+            return {"error": "Could not read that media right now."}
+        return {
+            "document_id": doc.id,
+            "filename": safe_name,
+            "content_type": doc.contentType or "application/octet-stream",
+            "modality": modality,
+            "data": data,
+            "size": len(data),
         }

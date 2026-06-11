@@ -14,6 +14,7 @@ import {
   uploadLibraryDocument,
 } from "@/lib/api";
 import type { LibraryAnalyzer, LibraryDocument } from "@/lib/library";
+import { MediaPlayer } from "./MediaPlayer";
 
 // Per-document "save to memory" UI state (Phase 11E-1, forget added 11E-3).
 // Keyed by document id.
@@ -63,6 +64,8 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
   const [memorySaves, setMemorySaves] = useState<Record<string, MemorySave>>(
     {},
   );
+  // Phase 11D: the audio/video document currently open in the deep-link player.
+  const [playing, setPlaying] = useState<LibraryDocument | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
 
@@ -170,6 +173,7 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
   }
 
   return (
+    <>
     <div
       role="dialog"
       aria-label="Document library"
@@ -362,6 +366,23 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                 >
                   {STATUS_LABEL[doc.status]}
                 </span>
+                {doc.status === "ready" &&
+                  (doc.modality === "audio" || doc.modality === "video") && (
+                    <button
+                      onClick={() => setPlaying(doc)}
+                      aria-label={`Play ${doc.filename}`}
+                      title="Play this media and jump to detected scenes & keyframes"
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        color: "var(--fg-muted)",
+                        fontSize: "1em",
+                        cursor: "pointer",
+                      }}
+                    >
+                      ▶️
+                    </button>
+                  )}
                 {doc.status === "ready" && (
                   <button
                     onClick={() => onSaveToMemory(doc)}
@@ -429,5 +450,9 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </div>
+      {playing && (
+        <MediaPlayer doc={playing} onClose={() => setPlaying(null)} />
+      )}
+    </>
   );
 }

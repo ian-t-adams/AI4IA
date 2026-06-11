@@ -44,3 +44,23 @@ export interface SaveToMemoryResult {
 export interface ForgetFromMemoryResult {
   forgotten: number;
 }
+
+// Phase 11D deep-link player: one analyzed audio/video segment's scene grounding —
+// its time span plus the analyzer's keyframe and camera-shot boundaries (ms).
+export interface MediaTimelineSegment {
+  index: number;
+  startMs: number | null;
+  endMs: number | null;
+  keyframes: number[];
+  shots: number[];
+}
+
+// Mirrors the API's MediaTimeline: the scene timeline for an audio/video document,
+// consumed by the player to render clickable scene/keyframe markers. segments is
+// empty when the analyzer surfaced no scene detail (media still plays).
+export interface MediaTimeline {
+  documentId: string;
+  modality: string;
+  durationMs: number | null;
+  segments: MediaTimelineSegment[];
+}

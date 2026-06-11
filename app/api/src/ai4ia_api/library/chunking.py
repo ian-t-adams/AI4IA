@@ -205,6 +205,78 @@ def chunk_audiovisual(
     return chunks
 
 
+# Cap markers per segment so a pathological analyzer response can't produce an
+# unbounded sidecar; deep-linking only needs scene/shot boundaries, not every frame.
+_MAX_MARKERS_PER_SEGMENT = 2000
+
+
+def _marker_times(value: Any) -> list[int]:
+    """Sorted, de-duplicated, non-negative millisecond markers from a CU time list.
+
+    Accepts a ``keyFrameTimesMs`` / ``cameraShotTimesMs`` array; coerces each entry
+    via :func:`_as_int_ms`, drops ``None``/negative values, sorts + de-duplicates,
+    and caps the count. Returns ``[]`` for any non-list input.
+    """
+    if not isinstance(value, list):
+        return []
+    seen: set[int] = set()
+    for item in value:
+        ms = _as_int_ms(item)
+        if ms is not None and ms >= 0:
+            seen.add(ms)
+    out = sorted(seen)
+    if len(out) > _MAX_MARKERS_PER_SEGMENT:
+        out = out[:_MAX_MARKERS_PER_SEGMENT]
+    return out
+
+
+def media_timeline(contents: Sequence[Any]) -> dict[str, Any]:
+    """Extract a deep-link scene timeline from audio/video CU ``contents[]``.
+
+    Surfaces each segment's time span plus the analyzer's ``keyFrameTimesMs`` and
+    ``cameraShotTimesMs`` (Phase 11D leftover: keyframe / scene surfacing) so the UI
+    can deep-link a media player to scene boundaries. Returns::
+
+        {"durationMs": int | None,
+         "segments": [{"index": int, "startMs": int | None, "endMs": int | None,
+                       "keyframes": [int, ...], "shots": [int, ...]}, ...]}
+
+    Only segments carrying a usable span or any marker are included, so the timeline
+    is empty (``segments == []``) when nothing is groundable and the caller can skip
+    persisting a sidecar. Pure and deterministic — presentation metadata for
+    deep-linking, not retrieval grounding.
+    """
+    segments: list[dict[str, Any]] = []
+    duration: int | None = None
+    for idx, content in enumerate(contents or []):
+        if not isinstance(content, dict):
+            continue
+        start_ms = _as_int_ms(content.get("startTimeMs"))
+        end_ms = _as_int_ms(content.get("endTimeMs"))
+        keyframes = _marker_times(content.get("keyFrameTimesMs"))
+        shots = _marker_times(content.get("cameraShotTimesMs"))
+        if start_ms is None and end_ms is None and not keyframes and not shots:
+            continue
+        segments.append(
+            {
+                "index": idx,
+                "startMs": start_ms,
+                "endMs": end_ms,
+                "keyframes": keyframes,
+                "shots": shots,
+            }
+        )
+        for candidate in (
+            end_ms,
+            start_ms,
+            keyframes[-1] if keyframes else None,
+            shots[-1] if shots else None,
+        ):
+            if candidate is not None and (duration is None or candidate > duration):
+                duration = candidate
+    return {"durationMs": duration, "segments": segments}
+
+
 def _as_int_ms(value: Any) -> int | None:
     """Coerce a CU millisecond value to ``int`` (ints + integer floats only)."""
     if isinstance(value, bool):
