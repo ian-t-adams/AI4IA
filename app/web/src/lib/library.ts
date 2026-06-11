@@ -64,3 +64,14 @@ export interface MediaTimeline {
   durationMs: number | null;
   segments: MediaTimelineSegment[];
 }
+
+// Mirrors the API's AnnotationView (Phase 11E-2): an owner-private note pinned to
+// a library document, optionally anchored to a location (page label, "mm:ss", a
+// short quote). Presentation metadata only — never part of the model context.
+export interface DocumentAnnotation {
+  id: string;
+  body: string;
+  anchor: string;
+  createdAt: string;
+  updatedAt: string;
+}
