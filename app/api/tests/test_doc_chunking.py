@@ -7,6 +7,7 @@ from ai4ia_api.library.chunking import (
     chunk_audiovisual,
     chunk_markdown,
     format_timestamp,
+    media_timeline,
 )
 
 
@@ -218,3 +219,70 @@ def test_audiovisual_is_deterministic():
     first = [(c.text, c.grounding) for c in chunk_audiovisual(contents, max_chars=8, overlap=2)]
     second = [(c.text, c.grounding) for c in chunk_audiovisual(contents, max_chars=8, overlap=2)]
     assert first == second
+
+
+# --- Phase 11D: media_timeline scene/keyframe surfacing ---
+def test_media_timeline_extracts_keyframes_and_shots():
+    contents = [
+        {
+            "startTimeMs": 0,
+            "endTimeMs": 30000,
+            "keyFrameTimesMs": [0, 5000, 10000],
+            "cameraShotTimesMs": [0, 12000],
+        },
+        {
+            "startTimeMs": 30000,
+            "endTimeMs": 60000,
+            "keyFrameTimesMs": [35000],
+            "cameraShotTimesMs": [],
+        },
+    ]
+    tl = media_timeline(contents)
+    assert tl["durationMs"] == 60000
+    assert len(tl["segments"]) == 2
+    assert tl["segments"][0]["index"] == 0
+    assert tl["segments"][0]["startMs"] == 0
+    assert tl["segments"][0]["endMs"] == 30000
+    assert tl["segments"][0]["keyframes"] == [0, 5000, 10000]
+    assert tl["segments"][0]["shots"] == [0, 12000]
+    assert tl["segments"][1]["keyframes"] == [35000]
+    assert tl["segments"][1]["shots"] == []
+
+
+def test_media_timeline_sorts_dedupes_and_drops_negatives():
+    contents = [
+        {
+            "startTimeMs": 0,
+            "endTimeMs": 9000,
+            "keyFrameTimesMs": [9000, 1000, 1000, -50, 3000],
+            "cameraShotTimesMs": [2000, 2000],
+        }
+    ]
+    tl = media_timeline(contents)
+    # sorted, de-duplicated, negatives dropped
+    assert tl["segments"][0]["keyframes"] == [1000, 3000, 9000]
+    assert tl["segments"][0]["shots"] == [2000]
+
+
+def test_media_timeline_skips_segments_without_span_or_markers():
+    contents = [
+        {"markdown": "no timing here"},  # no span, no markers -> skipped
+        {"startTimeMs": 1000, "endTimeMs": 2000},  # span only -> kept
+        "not-a-dict",
+    ]
+    tl = media_timeline(contents)
+    assert len(tl["segments"]) == 1
+    assert tl["segments"][0]["startMs"] == 1000
+    assert tl["segments"][0]["keyframes"] == []
+
+
+def test_media_timeline_empty_when_nothing_groundable():
+    assert media_timeline([]) == {"durationMs": None, "segments": []}
+    assert media_timeline([{"markdown": "x"}]) == {"durationMs": None, "segments": []}
+
+
+def test_media_timeline_duration_from_markers_when_no_end():
+    contents = [{"startTimeMs": 0, "keyFrameTimesMs": [0, 4000, 8000]}]
+    tl = media_timeline(contents)
+    assert tl["durationMs"] == 8000
+    assert tl["segments"][0]["endMs"] is None

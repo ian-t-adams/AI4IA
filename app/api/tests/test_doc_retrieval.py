@@ -4,7 +4,10 @@ documents, nonce-fenced, and best-effort. All IO is injected (in-memory stores +
 a fake embedder); no network."""
 from __future__ import annotations
 
+import json
+
 from ai4ia_api.library.blob_store import (
+    MEDIA_NAME,
     PARSED_NAME,
     RAW_NAME,
     InMemoryBlobStore,
@@ -18,7 +21,7 @@ from ai4ia_api.library.doc_chunks import DocChunkRecord, InMemoryDocChunkStore
 from ai4ia_api.library.ingest import DocumentIngestor
 from ai4ia_api.library.ingest_factory import build_document_retrieval
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
-from ai4ia_api.library.models import DocumentStatus, UserDocument
+from ai4ia_api.library.models import DocumentStatus, Modality, UserDocument
 from ai4ia_api.library.retrieval import DocumentRetrievalService
 from tests.conftest import make_settings
 
@@ -479,3 +482,158 @@ async def test_read_raw_blank_document_id_errors():
     svc = _service(library=library, blob=blob)
     res = await svc.read_raw("u1", "   ", max_bytes=1_000)
     assert "error" in res
+
+
+# --- Phase 11D: deep-link media (original-bytes stream + scene timeline) ---
+async def _seed_media(
+    library,
+    blob,
+    *,
+    user="u1",
+    status=DocumentStatus.ready,
+    filename="lecture.mp4",
+    content_type="video/mp4",
+    modality=Modality.video,
+    raw=b"\x00\x00\x00\x18mp4\x00",
+    timeline=None,
+) -> UserDocument:
+    doc = UserDocument(
+        userId=user,
+        filename=filename,
+        status=status,
+        summary="s",
+        contentType=content_type,
+        modality=modality,
+    )
+    if raw is not None:
+        rpath = blob_path(user, doc.id, RAW_NAME)
+        await blob.put(rpath, raw, content_type)
+        doc.rawPath = rpath
+    if timeline is not None:
+        mpath = blob_path(user, doc.id, MEDIA_NAME)
+        await blob.put(mpath, json.dumps(timeline).encode("utf-8"), "application/json")
+    await library.create_document(doc)
+    return doc
+
+
+async def test_read_media_happy_path_returns_original_bytes():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_media(library, blob, raw=b"VIDEOBYTES")
+
+    res = await svc.read_media("u1", doc.id)
+    assert "error" not in res
+    assert res["document_id"] == doc.id
+    assert res["filename"] == "lecture.mp4"
+    assert res["content_type"] == "video/mp4"
+    assert res["modality"] == "video"
+    assert res["data"] == b"VIDEOBYTES"
+    assert res["size"] == len(b"VIDEOBYTES")
+
+
+async def test_read_media_rejects_non_audiovisual():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_media(
+        library, blob, filename="report.pdf",
+        content_type="application/pdf", modality=Modality.document,
+    )
+
+    res = await svc.read_media("u1", doc.id)
+    assert "error" in res
+    assert "not an audio or video" in res["error"]
+
+
+async def test_read_media_cross_user_is_not_found():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_media(library, blob, user="u1")
+
+    res = await svc.read_media("intruder", doc.id)
+    assert "error" in res
+    assert "No document found" in res["error"]
+
+
+async def test_read_media_non_ready_is_gated():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_media(library, blob, status=DocumentStatus.analyzing)
+
+    res = await svc.read_media("u1", doc.id)
+    assert "error" in res
+    assert "not ready" in res["error"]
+
+
+async def test_read_media_missing_blob_errors():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_media(library, blob, raw=None)  # rawPath never set
+
+    res = await svc.read_media("u1", doc.id)
+    assert "error" in res
+    assert "No media available" in res["error"]
+
+
+async def test_read_media_timeline_returns_scene_markers():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    tl = {
+        "durationMs": 60000,
+        "segments": [
+            {"index": 0, "startMs": 0, "endMs": 60000,
+             "keyframes": [0, 5000, 10000], "shots": [0, 30000]},
+        ],
+    }
+    doc = await _seed_media(library, blob, timeline=tl)
+
+    res = await svc.read_media_timeline("u1", doc.id)
+    assert "error" not in res
+    assert res["document_id"] == doc.id
+    assert res["modality"] == "video"
+    assert res["durationMs"] == 60000
+    assert len(res["segments"]) == 1
+    assert res["segments"][0]["keyframes"] == [0, 5000, 10000]
+    assert res["segments"][0]["shots"] == [0, 30000]
+
+
+async def test_read_media_timeline_missing_sidecar_is_empty_not_error():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_media(library, blob, timeline=None)  # ready AV, no scene detail
+
+    res = await svc.read_media_timeline("u1", doc.id)
+    assert "error" not in res
+    assert res["durationMs"] is None
+    assert res["segments"] == []
+
+
+async def test_read_media_timeline_rejects_non_audiovisual():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_media(
+        library, blob, filename="report.pdf",
+        content_type="application/pdf", modality=Modality.document,
+    )
+
+    res = await svc.read_media_timeline("u1", doc.id)
+    assert "error" in res
+    assert "not an audio or video" in res["error"]
+
+
+async def test_read_media_timeline_cross_user_is_not_found():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    svc = _service(library=library, blob=blob)
+    doc = await _seed_media(library, blob, user="u1", timeline={"durationMs": 1, "segments": []})
+
+    res = await svc.read_media_timeline("intruder", doc.id)
+    assert "error" in res
+    assert "No document found" in res["error"]

@@ -161,6 +161,21 @@ def _compute(request: Request) -> "DocumentComputeService":
     return compute
 
 
+def _retrieval(request: Request):
+    """Return the document retrieval service or 404 when understanding is disabled.
+
+    Gates the Phase 11D media endpoints (timeline + original-media stream): when the
+    library is off the retrieval service is never constructed, so these routes refuse
+    exactly like the other library routes."""
+    retrieval = getattr(request.app.state, "document_retrieval", None)
+    if retrieval is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="The document library is not enabled.",
+        )
+    return retrieval
+
+
 async def _block_disabled(request: Request, user_id: str) -> None:
     """Block only *disabled* accounts (403), mirroring the Phase 7C upload path:
     library bookkeeping is local work, so rate/budget limits don't apply here."""
@@ -351,6 +366,81 @@ async def download_document_version(
         content=result["data"],
         media_type=result["contentType"] or "application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{header_name}"'},
+    )
+
+
+class MediaTimelineSegment(BaseModel):
+    """One analyzed audio/video segment's deep-link grounding (Phase 11D): its time
+    span plus the analyzer's keyframe and camera-shot boundaries (milliseconds)."""
+
+    index: int
+    startMs: int | None = None
+    endMs: int | None = None
+    keyframes: list[int] = Field(default_factory=list)
+    shots: list[int] = Field(default_factory=list)
+
+
+class MediaTimeline(BaseModel):
+    """Scene timeline for an audio/video document, consumed by the web player to
+    render clickable scene/keyframe markers. ``segments`` is empty when the analyzer
+    surfaced no scene detail (the media still plays, just without markers)."""
+
+    documentId: str
+    modality: str
+    durationMs: int | None = None
+    segments: list[MediaTimelineSegment] = Field(default_factory=list)
+
+
+@router.get("/documents/{document_id}/timeline", response_model=MediaTimeline)
+async def get_media_timeline(
+    document_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> MediaTimeline:
+    """Deep-link scene timeline for a ready audio/video document (Phase 11D).
+
+    Ownership- + ready-status-gated and restricted to audio/video; a missing,
+    cross-user, non-ready, or non-AV document returns a generic 404 (never leaks
+    existence). A document with no scene detail returns an empty ``segments`` list."""
+    retrieval = _retrieval(request)
+    result = await retrieval.read_media_timeline(user.internal_user_id, document_id)
+    if "error" in result:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return MediaTimeline(
+        documentId=result["document_id"],
+        modality=result["modality"],
+        durationMs=result.get("durationMs"),
+        segments=[MediaTimelineSegment(**s) for s in result["segments"]],
+    )
+
+
+@router.get("/documents/{document_id}/media")
+async def stream_document_media(
+    document_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Response:
+    """Stream a ready audio/video document's ORIGINAL bytes for the deep-link player.
+
+    Ownership- + ready-status-gated and restricted to audio/video; the parsed/raw
+    artifacts of non-AV documents are never exposed here. The browser fetches this
+    with its bearer token (a raw ``<video src>`` could not), wraps the blob in an
+    object URL, and seeks client-side — so the whole file is served as a single
+    response. A missing/cross-user/non-ready/non-AV document returns a generic 404."""
+    retrieval = _retrieval(request)
+    result = await retrieval.read_media(user.internal_user_id, document_id)
+    if "error" in result:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media not found")
+    header_name = (
+        result["filename"].replace('"', "").encode("ascii", "ignore").decode() or "media"
+    )
+    return Response(
+        content=result["data"],
+        media_type=result["content_type"] or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'inline; filename="{header_name}"',
+            "Cache-Control": "private, no-store",
+        },
     )
 
 

@@ -36,8 +36,8 @@ from ..documents.extract import DocumentError, extract_text
 from ..memory.embedder import GatewayEmbedder
 from ..usage.models import TokenUsage
 from ..usage.service import UsageService
-from .blob_store import CHUNKS_NAME, PARSED_NAME, RAW_NAME, BlobStore, blob_path
-from .chunking import chunk_audiovisual, chunk_markdown
+from .blob_store import CHUNKS_NAME, MEDIA_NAME, PARSED_NAME, RAW_NAME, BlobStore, blob_path
+from .chunking import chunk_audiovisual, chunk_markdown, media_timeline
 from .doc_chunks import DocChunkRecord, DocChunkStore
 from .hashing import content_hash
 from .modality import classify_modality
@@ -380,9 +380,24 @@ class DocumentIngestor:
         if summary:
             doc.summary = summary
 
+        modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
+        # Phase 11D leftover: surface the analyzer's scene/keyframe boundaries for
+        # audio/video as a media.json sidecar so the web player can deep-link to
+        # scenes. Independent of chunking/embedding (persisted before the early
+        # return below) and best-effort — absent scene detail simply means no
+        # sidecar, and the timeline endpoint degrades to an empty timeline.
+        if modality in ("audio", "video"):
+            timeline = media_timeline(result.contents)
+            if timeline["segments"]:
+                media_path = blob_path(user_id, doc.id, MEDIA_NAME)
+                await self._blob.put(
+                    media_path,
+                    json.dumps(timeline, ensure_ascii=False).encode("utf-8"),
+                    "application/json",
+                )
+
         max_chars = self._settings.document_chunk_chars
         overlap = self._settings.document_chunk_overlap
-        modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
         chunks: list = []
         if modality in ("audio", "video"):
             # Time-grounded chunking from the CU segments/transcript phrases. Falls
