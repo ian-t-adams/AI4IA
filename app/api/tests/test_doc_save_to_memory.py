@@ -223,3 +223,60 @@ def test_forget_document_allowed_regardless_of_status(client):
     resp = client.delete(f"/api/library/documents/{doc.id}/memory")
     assert resp.status_code == 200, resp.text
     assert resp.json()["forgotten"] == 1
+
+
+# --- delete cascades to memory (erase hardening) ---
+
+
+def test_delete_document_cascades_forget_from_memory(client):
+    # Deleting a document is a complete erase: it also forgets anything that
+    # document contributed to durable memory, mirroring the blob/chunk purge.
+    uid = _uid(client)
+    doc = asyncio.run(_seed(client, uid=uid, summary="Forget on delete", parsed=None))
+    client.post(f"/api/library/documents/{doc.id}/memory")
+    assert asyncio.run(client.app.state.memory.recall(uid, "anything"))  # precondition
+
+    resp = client.delete(f"/api/library/documents/{doc.id}")
+    assert resp.status_code == 204, resp.text
+    assert asyncio.run(client.app.state.memory.recall(uid, "anything")) == []
+
+
+def test_delete_document_forgets_only_that_documents_memory(client):
+    uid = _uid(client)
+    keep = asyncio.run(_seed(client, uid=uid, summary="Keep me", parsed=None))
+    drop = asyncio.run(_seed(client, uid=uid, summary="Drop me", parsed=None))
+    client.post(f"/api/library/documents/{keep.id}/memory")
+    client.post(f"/api/library/documents/{drop.id}/memory")
+
+    assert client.delete(f"/api/library/documents/{drop.id}").status_code == 204
+
+    texts = {h.text for h in asyncio.run(client.app.state.memory.recall(uid, "anything"))}
+    assert texts == {"Keep me"}
+
+
+def test_delete_document_succeeds_when_memory_disabled():
+    c = _client(memory=False)  # Noop memory service (disabled) -> cascade is a no-op
+    try:
+        uid = _uid(c)
+        doc = asyncio.run(_seed(c, uid=uid, parsed=None))
+        assert c.delete(f"/api/library/documents/{doc.id}").status_code == 204
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_delete_document_survives_memory_forget_failure(client):
+    # The manifest delete is the source of truth; a transient memory failure in
+    # the best-effort cascade must never block the delete.
+    from ai4ia_api.library.repository import DocumentNotFoundError
+
+    uid = _uid(client)
+    doc = asyncio.run(_seed(client, uid=uid, parsed=None))
+    client.post(f"/api/library/documents/{doc.id}/memory")
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("memory down")
+
+    client.app.state.memory.forget_document = boom  # type: ignore[assignment]
+    assert client.delete(f"/api/library/documents/{doc.id}").status_code == 204
+    with pytest.raises(DocumentNotFoundError):
+        asyncio.run(client.app.state.document_library.get_document(uid, doc.id))
