@@ -47,6 +47,7 @@ def _build_chunk_store(settings: Settings) -> DocChunkStore:
             endpoint=settings.search_endpoint,
             index_name=settings.search_index_name,
             expected_dim=settings.memory_embedding_dimensions,
+            semantic_ranking=settings.search_semantic_ranking,
         )
     if settings.postgres_host and settings.postgres_user:
         return PgDocChunkStore(

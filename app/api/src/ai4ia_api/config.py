@@ -220,6 +220,14 @@ class Settings(BaseSettings):
     # when ``search_endpoint`` is set. A single shared index, scoped per-user by a
     # filterable ``user_id`` field, mirroring the pgvector ``doc_chunks`` table.
     search_index_name: str = "ai4ia-doc-chunks"
+    # When a query carries text (RAG retrieval always does), the Azure AI Search
+    # backend issues a *hybrid* query (vector + BM25 keyword) and, when this flag is
+    # on, applies the L2 *semantic* reranker for materially better top-k ordering.
+    # If the semantic tier is unavailable (quota/SKU), the store degrades gracefully
+    # to plain hybrid — never breaking retrieval. Only affects the AI Search backend;
+    # pgvector / in-memory ignore it. Default ON (the search.bicep enables free
+    # semantic ranking); set ``AI4IA_SEARCH_SEMANTIC_RANKING=false`` to force hybrid.
+    search_semantic_ranking: bool = True
 
     # --- Content Understanding ingest (Phase 11B) ---
     # CU is its own async REST surface (PUT analyzer / POST :analyzeBinary / GET

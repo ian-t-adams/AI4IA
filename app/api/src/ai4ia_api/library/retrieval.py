@@ -157,6 +157,7 @@ class DocumentRetrievalService:
                 vector,
                 max(1, self._settings.document_retrieval_top_k),
                 document_ids=ready_ids,
+                query_text=query,
             )
         except Exception:  # noqa: BLE001 - retrieval must never break a turn
             logger.warning("library RAG search failed user=%s", user_id, exc_info=True)
