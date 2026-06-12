@@ -237,6 +237,48 @@ export function friendlyToolName(name: string): string {
   return name.replace(/[_-]+/g, " ").trim() || name;
 }
 
+// One prior text-chat turn used to seed a fresh live session with context.
+export interface VoiceSeedTurn {
+  role: "user" | "assistant";
+  text: string;
+}
+
+// Bounds on how much prior text history we replay into a new live session: seed
+// useful context without flooding the model or the seed payload.
+const MAX_SEED_TURNS = 20;
+const MAX_SEED_CHARS = 6000;
+
+// Builds the conversation.item.create frames that seed a fresh live session with
+// recent text-chat history so voice continues the SAME conversation. These pass
+// through the relay verbatim (it only rewrites session.update). The newest turns
+// are kept within the char budget, then emitted oldest-first to preserve order.
+// Seeded items are passive context — they do not trigger a model response (only
+// the user speaking does), so the session opens silently with memory of the chat.
+function seedFrames(history: VoiceSeedTurn[]): string[] {
+  const recent = history
+    .filter((t) => t.text && t.text.trim())
+    .slice(-MAX_SEED_TURNS);
+  const selected: VoiceSeedTurn[] = [];
+  let budget = MAX_SEED_CHARS;
+  for (let i = recent.length - 1; i >= 0 && budget > 0; i--) {
+    const text = recent[i].text.trim().slice(0, budget);
+    selected.unshift({ role: recent[i].role, text });
+    budget -= text.length;
+  }
+  return selected.map((t) =>
+    JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: t.role,
+        content: [
+          { type: t.role === "user" ? "input_text" : "text", text: t.text },
+        ],
+      },
+    }),
+  );
+}
+
 // Builds the WebSocket auth subprotocols. Under Entra we pass a real bearer token;
 // otherwise we carry the dev identity (honored by the relay only when dev auth is
 // permitted). Returns null when Entra is on but no token can be acquired (the
@@ -270,6 +312,7 @@ export function useVoiceLive(
   voice: string,
   onError: (message: string) => void,
   agent: string | null = null,
+  history: VoiceSeedTurn[] = [],
 ): VoiceLiveController {
   const [status, setStatus] = useState<VoiceLiveStatus>("idle");
   const [supported, setSupported] = useState(false);
@@ -296,6 +339,13 @@ export function useVoiceLive(
   useEffect(() => {
     voiceRef.current = voice;
   }, [voice]);
+
+  // Recent text-chat history to seed into the next live session, kept in a ref so
+  // updates don't re-create ``start`` or restart a live session mid-conversation.
+  const historyRef = useRef(history);
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -604,6 +654,9 @@ export function useVoiceLive(
 
       ws.onopen = () => {
         ws.send(sessionUpdate(voiceRef.current));
+        // Seed the session with recent text history so voice continues the same
+        // conversation. Sent after session.update; passes through the relay as-is.
+        for (const frame of seedFrames(historyRef.current)) ws.send(frame);
         // Connect the capture graph. The worklet emits silence to the
         // destination (it only forwards mic frames via its port), so wiring it to
         // the destination keeps it in the active render graph without echo.

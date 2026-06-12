@@ -1,17 +1,24 @@
 """Per-user session + message CRUD. Every operation is ownership-scoped."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
-from ..sessions.models import Message, Session
+from ..sessions.models import Message, MessageRole, MessageSource, Session
 from ..sessions.repository import SessionNotFoundError, SessionRepository
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+
+# Caps for persisting a Voice Live exchange back into a session. A single live
+# conversation is bounded by the relay's max-session clamp, so these only guard
+# against an abusive/garbage client payload, not normal use.
+MAX_VOICE_TURNS = 200
+MAX_VOICE_TURN_CHARS = 8000
 
 
 class CreateSessionRequest(BaseModel):
@@ -106,3 +113,78 @@ async def list_messages(
         return await _repo(request).list_messages(user.internal_user_id, session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+
+class VoiceTurnInput(BaseModel):
+    """A single finalized Voice Live turn the browser is persisting back."""
+
+    role: Literal["user", "assistant"]
+    text: str = Field(min_length=1)
+
+
+class AppendVoiceTurnsRequest(BaseModel):
+    turns: list[VoiceTurnInput] = Field(default_factory=list)
+
+
+def _clean_turn_text(text: str) -> str:
+    """Strip control characters (keep newline/tab), trim, and cap length.
+
+    Voice transcripts are model/ASR output relayed verbatim through the browser,
+    so they are sanitized the same way typed content is before persisting.
+    """
+    cleaned = "".join(ch for ch in text if ch in ("\n", "\t") or ord(ch) >= 32)
+    return cleaned.strip()[:MAX_VOICE_TURN_CHARS]
+
+
+@router.post(
+    "/{session_id}/voice-turns",
+    response_model=list[Message],
+    status_code=status.HTTP_201_CREATED,
+)
+async def append_voice_turns(
+    session_id: str,
+    body: AppendVoiceTurnsRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[Message]:
+    """Persist a finalized Voice Live exchange into a session's transcript.
+
+    Lets text chat and Voice Live share ONE conversation: the live turns land as
+    ordinary user/assistant messages (tagged ``source=voice``) so they appear in
+    the transcript and feed model context when the user resumes typing. Ownership
+    is enforced (404 for a session the caller does not own); empty/whitespace
+    turns are dropped; ``createdAt`` is monotonically offset to preserve order.
+    """
+    repo = _repo(request)
+    try:
+        session = await repo.get_session(user.internal_user_id, session_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    if len(body.turns) > MAX_VOICE_TURNS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"too many turns (max {MAX_VOICE_TURNS})",
+        )
+
+    base = datetime.now(timezone.utc)
+    created: list[Message] = []
+    for index, turn in enumerate(body.turns):
+        text = _clean_turn_text(turn.text)
+        if not text:
+            continue
+        message = Message(
+            sessionId=session_id,
+            userId=user.internal_user_id,
+            role=MessageRole(turn.role),
+            content=text,
+            source=MessageSource.voice,
+            createdAt=base + timedelta(milliseconds=index),
+        )
+        created.append(await repo.add_message(user.internal_user_id, message))
+
+    if created:
+        session.updatedAt = datetime.now(timezone.utc)
+        await repo.update_session(session)
+
+    return created

@@ -35,6 +35,21 @@ class MessageStatus(str, Enum):
     error = "error"
 
 
+class MessageSource(str, Enum):
+    """How a message entered the conversation.
+
+    ``chat`` is the default (typed text turns + their replies). ``voice`` marks a
+    turn captured from a Voice Live (real-time speech) exchange and persisted back
+    into the SAME session, so text and voice share one continuous transcript and
+    context. Voice turns are ordinary user/assistant messages for every other
+    purpose (they DO feed model context on subsequent turns); ``source`` is only
+    provenance so the UI can mark them and future logic can tell them apart.
+    """
+
+    chat = "chat"
+    voice = "voice"
+
+
 class MessageAttachment(BaseModel):
     """A non-text artifact produced during a turn and rendered alongside the
     message text (Phase 11F).
@@ -78,6 +93,10 @@ class Message(BaseModel):
     # its reply). These are shown in the UI but excluded from model context and
     # from first-turn auto-titling.
     fromCommand: bool = False
+    # How this turn entered the conversation: ``chat`` (typed) or ``voice`` (a
+    # Voice Live exchange persisted back into the same session). Voice turns still
+    # feed model context like any other; this is provenance only.
+    source: MessageSource = MessageSource.chat
     # Non-text artifacts produced during the turn (e.g. generated images). Empty
     # for ordinary text replies; each entry references a durable blob served
     # through an authenticated endpoint.

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
-import type { AgentSummary, ChatParams, DocumentSummary, Message, ModelEntry, Session } from "@/lib/types";
+import type { AgentSummary, ChatParams, DocumentSummary, Message, ModelEntry, Session, VoiceTurnInput } from "@/lib/types";
 import type { LibraryDocument } from "@/lib/library";
 import { Sidebar } from "./Sidebar";
 import { ModelPicker } from "./ModelPicker";
@@ -289,6 +289,37 @@ export function ChatApp() {
     [ensureSession, libraryEnabled],
   );
 
+  // Recent text-chat turns handed to Voice Live so a live session opens with the
+  // conversation's context (the hook caps how much it actually replays). System
+  // turns are excluded; empties are dropped.
+  const voiceHistory = useMemo<VoiceTurnInput[]>(
+    () =>
+      messages
+        .filter((m) => m.role !== "system" && m.content.trim())
+        .map((m) => ({ role: m.role as "user" | "assistant", text: m.content })),
+    [messages],
+  );
+
+  // Persist a finished Voice Live exchange back into the shared session so voice
+  // turns land in the text transcript and the user can keep typing in the same
+  // conversation. Lazily creates the session if the live chat was the first turn.
+  const persistVoiceConversation = useCallback(
+    async (turns: VoiceTurnInput[]) => {
+      if (turns.length === 0) return;
+      try {
+        const sid = await ensureSession();
+        await api.appendVoiceTurns(sid, turns);
+        if (sessionIdRef.current === sid) {
+          setMessages(await api.listMessages(sid));
+        }
+        await refreshSessions();
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    },
+    [ensureSession, refreshSessions],
+  );
+
   const removeDocument = useCallback(
     async (documentId: string) => {
       if (!activeId) return;
@@ -485,6 +516,7 @@ export function ChatApp() {
         content: m.content,
         agent: m.agent,
         attachments: m.attachments,
+        source: m.source,
       }));
     if (streaming) {
       base.push({
@@ -780,6 +812,8 @@ export function ChatApp() {
           agents={agents}
           onClose={() => setVoiceOpen(false)}
           onError={setError}
+          history={voiceHistory}
+          onConversation={persistVoiceConversation}
         />
       )}
     </div>
