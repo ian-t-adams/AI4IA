@@ -40,6 +40,15 @@ flowchart TB
 > live voice never gains a capability the gateway didn't authorize. When the
 > feature flag is off, the route refuses and no live-voice UI is shown — the
 > default behavior is unchanged.
+>
+> **Shared text ↔ voice conversation.** Voice Live and text chat operate on **one**
+> session. On connect the relay is seeded (verbatim, passively) with the recent text
+> turns, so a live session opens with the chat's memory; when a live session ends, the
+> finalized voice turns are persisted back as ordinary messages (tagged
+> `source=voice`) via `POST /api/sessions/{id}/voice-turns`, so the user can flow
+> between typing and talking in the same transcript. The relay itself stays
+> byte-for-byte transparent — seeding and persistence happen on the web client and the
+> new HTTP endpoint.
 
 ## Core principles
 1. **Model gateway from day one.** The backend never calls Foundry models directly — every
@@ -65,7 +74,11 @@ flowchart TB
    canonical in Cosmos. It is feature-flagged **default-OFF** (`AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`):
    when off, the `/api/library` API refuses (404) and nothing is constructed, so there is no
    behavior change. Content Understanding ingest, chunking, and retrieval build on this spine in
-   later Phase 11 sub-phases.
+   later Phase 11 sub-phases (11B–11F — CU ingest, tiered retrieval, intent router +
+   code-interpreter, audio/video grounding with a citation-linked media player,
+   save-to-memory, owner-private annotations, and document-level email sharing — all
+   merged, all default-OFF). See
+   [`phase-11-document-understanding.md`](./phase-11-document-understanding.md).
 5. **Least privilege.** Managed identities + Key Vault/App Configuration for all secrets; no
    secrets in code or images.
 

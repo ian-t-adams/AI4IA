@@ -113,7 +113,10 @@ always available, the most relevant excerpts are retrieved per turn, and a
 `fetch_document` tool lets tool-enabled agents read more. Only `ready` documents
 ever contribute to chat; files that are still ingesting or failed never surface.
 The library API goes through the same-origin Next proxy (no public URL needed,
-unlike live voice).
+unlike live voice). Later Phase 11 increments enrich this panel: a ▶️ media player
+with a keyframe/scene strip for audio/video (and clickable `[[cite:…]]` citation
+chips in chat that deep-link to the cited moment), 🧠/🧽 save-to-memory + forget,
+📝 owner-private annotations, and a 🔗 share modal for document-level email sharing.
 
 Like the auth config, the flag is read **server-side** (in `app/layout.tsx`,
 surfaced via `LibraryProvider` — never `NEXT_PUBLIC_*`):
