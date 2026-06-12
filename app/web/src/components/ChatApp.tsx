@@ -67,6 +67,11 @@ export function ChatApp() {
   const [imageryOpen, setImageryOpen] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  // Left sidebar + right parameters panel collapse state, persisted across
+  // reloads. Initialized false (matching SSR) and hydrated from localStorage on
+  // mount to avoid a hydration mismatch.
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
   // Phase 11D citation deep-link: the audio/video doc a clicked chat citation
   // resolved to, plus the moment to seek. Opens the same MediaPlayer modal the
   // LibraryPanel uses. Null when no citation is open.
@@ -501,21 +506,97 @@ export function ChatApp() {
   );
   const voiceLiveEnabled = voiceLiveConfig.enabled && realtimeModelId !== null;
 
+  // Hydrate panel-collapse preferences from localStorage on mount (after SSR).
+  useEffect(() => {
+    try {
+      setLeftCollapsed(localStorage.getItem("ai4ia.leftCollapsed") === "1");
+      setRightCollapsed(localStorage.getItem("ai4ia.rightCollapsed") === "1");
+    } catch {
+      // localStorage unavailable (private mode etc.) — keep expanded defaults.
+    }
+  }, []);
+
+  const toggleLeftCollapsed = useCallback(() => {
+    setLeftCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("ai4ia.leftCollapsed", next ? "1" : "0");
+      } catch {
+        // best-effort persistence
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleRightCollapsed = useCallback(() => {
+    setRightCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("ai4ia.rightCollapsed", next ? "1" : "0");
+      } catch {
+        // best-effort persistence
+      }
+      return next;
+    });
+  }, []);
+
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
-      <Sidebar
-        sessions={sessions}
-        activeId={activeId}
-        onSelect={selectSession}
-        onNewChat={newChat}
-        onDelete={deleteSession}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onOpenStudio={() => setStudioOpen(true)}
-        onOpenImagery={() => setImageryOpen(true)}
-        onOpenVoice={voiceLiveEnabled ? () => setVoiceOpen(true) : undefined}
-        onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
-        disabled={streaming}
-      />
+      {leftCollapsed ? (
+        <div
+          aria-label="Chat sessions (collapsed)"
+          style={{
+            width: 48,
+            flexShrink: 0,
+            background: "var(--bg-sidebar)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            paddingTop: 16,
+            gap: 12,
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element -- small static brand mark */}
+          <img
+            src="/ai4ia-mark.png"
+            alt=""
+            aria-hidden="true"
+            width={28}
+            height={28}
+            style={{ borderRadius: 6, display: "block" }}
+          />
+          <button
+            onClick={toggleLeftCollapsed}
+            aria-label="Expand sidebar"
+            title="Expand sidebar"
+            style={{
+              border: "none",
+              background: "transparent",
+              color: "var(--sidebar-muted)",
+              cursor: "pointer",
+              fontSize: "1.1em",
+              lineHeight: 1,
+              padding: 4,
+            }}
+          >
+            »
+          </button>
+        </div>
+      ) : (
+        <Sidebar
+          sessions={sessions}
+          activeId={activeId}
+          onSelect={selectSession}
+          onNewChat={newChat}
+          onDelete={deleteSession}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenStudio={() => setStudioOpen(true)}
+          onOpenImagery={() => setImageryOpen(true)}
+          onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
+          onCollapse={toggleLeftCollapsed}
+          disabled={streaming}
+        />
+      )}
 
       <main style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         <header
@@ -580,23 +661,91 @@ export function ChatApp() {
         />
       </main>
 
-      <aside
-        aria-label="Model parameters"
-        style={{
-          width: 320,
-          flexShrink: 0,
-          borderLeft: "1px solid var(--border)",
-          background: "var(--bg-elevated)",
-          padding: 20,
-          display: "flex",
-          flexDirection: "column",
-          gap: 24,
-          overflowY: "auto",
-        }}
-      >
-        <ParamControls params={params} onChange={setParams} />
-        <SystemPromptEditor value={systemPrompt} onSave={saveSystemPrompt} />
-      </aside>
+      {rightCollapsed ? (
+        <aside
+          aria-label="Model parameters (collapsed)"
+          style={{
+            width: 44,
+            flexShrink: 0,
+            borderLeft: "1px solid var(--border)",
+            background: "var(--bg-elevated)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            paddingTop: 20,
+          }}
+        >
+          <button
+            onClick={toggleRightCollapsed}
+            aria-label="Expand parameters panel"
+            title="Parameters"
+            style={{
+              border: "none",
+              background: "transparent",
+              color: "var(--fg-muted)",
+              cursor: "pointer",
+              fontSize: "1.1em",
+              lineHeight: 1,
+              padding: 4,
+            }}
+          >
+            «
+          </button>
+        </aside>
+      ) : (
+        <aside
+          aria-label="Model parameters"
+          style={{
+            width: 320,
+            flexShrink: 0,
+            borderLeft: "1px solid var(--border)",
+            background: "var(--bg-elevated)",
+            padding: 20,
+            display: "flex",
+            flexDirection: "column",
+            gap: 24,
+            overflowY: "auto",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <span
+              style={{
+                fontWeight: 600,
+                fontSize: "0.8em",
+                letterSpacing: 0.5,
+                textTransform: "uppercase",
+                color: "var(--fg-muted)",
+              }}
+            >
+              Parameters
+            </span>
+            <button
+              onClick={toggleRightCollapsed}
+              aria-label="Collapse parameters panel"
+              title="Collapse panel"
+              style={{
+                border: "none",
+                background: "transparent",
+                color: "var(--fg-muted)",
+                cursor: "pointer",
+                fontSize: "1.1em",
+                lineHeight: 1,
+                padding: 4,
+              }}
+            >
+              »
+            </button>
+          </div>
+          <ParamControls params={params} onChange={setParams} />
+          <SystemPromptEditor value={systemPrompt} onSave={saveSystemPrompt} />
+        </aside>
+      )}
 
       {settingsOpen && (
         <SettingsPanel models={models} onClose={() => setSettingsOpen(false)} />

@@ -21,6 +21,31 @@ export const PCM_SAMPLE_RATE = 24000;
 const BEARER_SUBPROTOCOL = "ai4ia-bearer";
 const DEV_SUBPROTOCOL = "ai4ia-dev";
 
+// WebSocket subprotocol values must be RFC 7230 tokens (the browser's WebSocket
+// constructor throws "The subprotocol '...' is invalid" otherwise). A bearer JWT
+// is already token-safe (base64url segments joined by "."), but the dev identity
+// can be an email like "dev@ai4ia.local" whose "@" is NOT a valid token char. So
+// we base64url-encode the dev id (prefixed "b64u.") whenever it isn't already a
+// bare token; the relay's decode_dev_credential() reverses it so the live session
+// resolves to the same user as the HTTP path. Plain ids (e.g. "alice") pass
+// through unencoded, keeping the wire human-readable and back-compatible.
+const SUBPROTOCOL_TOKEN_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const DEV_CREDENTIAL_B64URL_PREFIX = "b64u.";
+
+function toBase64Url(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// Returns a dev identity that is always a valid WebSocket subprotocol token.
+export function encodeDevCredential(devUser: string): string {
+  return SUBPROTOCOL_TOKEN_RE.test(devUser)
+    ? devUser
+    : `${DEV_CREDENTIAL_B64URL_PREFIX}${toBase64Url(devUser)}`;
+}
+
 export interface VoiceLiveConfig {
   enabled: boolean;
   // wss:// URL of the relay endpoint (API external ingress + /api/voice/live).
@@ -224,7 +249,7 @@ async function buildSubprotocols(
     if (!token) return null;
     return [BEARER_SUBPROTOCOL, token];
   }
-  return [DEV_SUBPROTOCOL, config.devUser || "dev"];
+  return [DEV_SUBPROTOCOL, encodeDevCredential(config.devUser || "dev")];
 }
 
 interface LiveSession {

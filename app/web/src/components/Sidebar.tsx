@@ -11,8 +11,8 @@ export function Sidebar({
   onOpenSettings,
   onOpenStudio,
   onOpenImagery,
-  onOpenVoice,
   onOpenLibrary,
+  onCollapse,
   disabled = false,
 }: {
   sessions: Session[];
@@ -23,8 +23,8 @@ export function Sidebar({
   onOpenSettings: () => void;
   onOpenStudio: () => void;
   onOpenImagery: () => void;
-  onOpenVoice?: () => void;
   onOpenLibrary?: () => void;
+  onCollapse?: () => void;
   disabled?: boolean;
 }) {
   return (
@@ -53,6 +53,25 @@ export function Sidebar({
         <span style={{ fontWeight: 700, fontSize: "1.1em", letterSpacing: 0.5 }}>
           AI4IA
         </span>
+        {onCollapse && (
+          <button
+            onClick={onCollapse}
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar"
+            style={{
+              marginLeft: "auto",
+              border: "none",
+              background: "transparent",
+              color: "var(--sidebar-muted)",
+              cursor: "pointer",
+              fontSize: "1.1em",
+              lineHeight: 1,
+              padding: 4,
+            }}
+          >
+            «
+          </button>
+        )}
       </div>
       <div style={{ padding: "0 12px 12px" }}>
         <button
@@ -162,23 +181,6 @@ export function Sidebar({
         >
           🖼 Imagery studio
         </button>
-        {onOpenVoice && (
-          <button
-            onClick={onOpenVoice}
-            disabled={disabled}
-            style={{
-              width: "100%",
-              padding: "8px 12px",
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-              background: "transparent",
-              color: "var(--sidebar-fg)",
-              cursor: disabled ? "not-allowed" : "pointer",
-            }}
-          >
-            🎧 Voice Live
-          </button>
-        )}
         {onOpenLibrary && (
           <button
             onClick={onOpenLibrary}
