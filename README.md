@@ -12,8 +12,11 @@ through SimpleL7Proxy + APIM across multiple Foundry regions.
 ✅ **Phases 0–11 implemented.** Foundations + IaC, model gateway, web chat, agents & workflows
 (Studio builder), per-user memory, usage/cost metering & entitlements, imagery, voice (STT/TTS +
 agent-aware Voice Live), Entra/MSAL sign-in, and the document & multimodal understanding pipeline
-(library, Content Understanding ingest, intent router + code-interpreter, audio/video grounding)
-are all merged. Advanced capabilities ship **default-OFF** and are turned on per environment — see
+(library, Content Understanding ingest, intent router + code-interpreter, audio/video grounding
+with a citation-linked media player, save-to-memory, owner-private annotations, and document-level
+email sharing) are all merged. Text chat and Voice Live also share **one** conversation, so users
+can move between typing and talking in the same transcript. Advanced capabilities ship
+**default-OFF** and are turned on per environment — see
 [`docs/runbooks/feature-enablement.md`](docs/runbooks/feature-enablement.md). Architecture and the
 phase arc: [`docs/architecture.md`](docs/architecture.md).
 

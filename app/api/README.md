@@ -72,9 +72,10 @@ before any model calls:
 - **Manifest** (`library/models.py` `UserDocument`): the user's cross-session
   library, partitioned by `/userId` (`userDocuments` Cosmos container). Forward-
   looking fields (CU `summary`, blob artifact paths, `chunkCount`) are present but
-  inert until ingest (11B). Sharing is *designed in but disabled* — `visibility`
-  is always `private` and `acl` empty, so `library/access.py:can_access` is
-  owner-only; enabling sharing later is an additive flip, not a migration.
+  inert until ingest (11B). **Sharing shipped in 11F** (document-level, email-keyed):
+  `visibility` ∈ `private`/`shared`/`public` and `acl` holds grantee emails, so
+  `library/access.py:can_access(user, doc, email=…)` admits the owner, tenant-`public`
+  docs, and shared grantees — owner-only mutations stay on `require_owner`.
 - **Analyzer registry** (`analyzers` container, PK `/userId`): per-user custom
   analyzers selectable at upload, merged with built-in descriptors
   (`BUILTIN_ANALYZERS`). Built-ins are never persisted and can't be shadowed or
@@ -88,9 +89,11 @@ before any model calls:
 
 Enabling the feature outside `local` requires the cosmos session store (the
 library is durable cross-session storage); `validate_runtime()` fails closed
-otherwise. Content Understanding ingest, chunking, and retrieval build on this
-spine in later Phase 11 sub-phases. See `.env.example` for the
-`AI4IA_DOCUMENT_*` settings.
+otherwise. Content Understanding ingest, chunking, and retrieval (11B), the intent
+router + code-interpreter (11C), audio/video time-grounding + media player (11D),
+save-to-memory + owner-private annotations + erase cascade (11E), and document-level
+email sharing (11F) all build on this spine — all merged, all on the same flag. See
+`.env.example` for the `AI4IA_DOCUMENT_*` settings.
 
 ## Document ingest (Phase 11B-1) — the producer path
 

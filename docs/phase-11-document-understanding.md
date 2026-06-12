@@ -9,8 +9,10 @@ surfaced to chat/agents cheapest-context-first. Per-user by default,
 sharing-ready by design, and **feature-flagged default-OFF** so the current
 behavior is byte-for-byte unchanged until enabled.
 
-This document plans the **whole arc** (11A–11E) up front for consistency. Each
-sub-phase ships behind the flag and is independently shippable.
+This document plans the **whole arc** (11A–11F) up front for consistency. Each
+sub-phase ships behind the flag and is independently shippable. **Status: 11A–11F
+are implemented and merged** (still default-OFF); the per-sub-phase notes in
+[The arc](#the-arc) record exactly what shipped.
 
 ## Core principles (additive to the repo's)
 
@@ -103,10 +105,12 @@ sessions but owned by a user.
 | `summary` | header card: title, abstract, key fields, outline |
 | `chunkCount`, `grounding` | chunkId → page/segment/timestamp map (citations) |
 | `sessionLinks[]` | sessions that reference it (association, **not** partition) |
-| `visibility` | `private` (v1 always) — reserved for `shared` |
-| `acl[]` | reserved, empty in v1 (future grant principals) |
+| `visibility` | `private` \| `shared` \| `public` (tenant-walled); set by the owner via the share endpoints (Phase 11F) |
+| `acl[]` | normalized grantee **emails** for a `shared` doc (empty for `private`/`public`) |
 
-`visibility` + `acl` exist from v1 so sharing is a field flip, not a migration.
+`visibility` + `acl` shipped from v1, so enabling sharing (Phase 11F) was a field
+flip on the manifest, not a migration — the owner sets `visibility` and the grantee
+email ACL through the share endpoints below.
 
 ### Cosmos `analyzers` registry — **partition `/userId`** (+ `global`)
 
@@ -130,11 +134,15 @@ model and the "pick an analyzer at upload" path exist from the start.
 created_at`. Filtered by `user_id` (+ `document_id`), exact cosine scan — same
 constraints/pattern as `memories` (3072-dim exceeds the ANN ceiling).
 
-### Reserved for sharing (not created in v1): `grants`
+### "Shared with me" lookup (Phase 11F — no separate container)
 
-`grants` partitioned by `/granteeUserId` → `{documentId, ownerUserId, scope}`.
-Enables "find docs shared *with me*" without scanning owners. Cross-partition
-read of one shared doc by id is fine; this index is only for enumeration.
+Sharing shipped **without** the originally-reserved `grants` container. Because the
+grant dimension is the grantee's **email** (stored on the document's `acl[]`, not a
+per-grantee row), "find docs shared *with me*" is a single cross-partition query
+over `userDocuments` — `repository.list_shared_with(email)` filters
+`visibility = 'shared'` AND the caller's email ∈ `acl`. Tenant-`public` docs are
+openable by id but deliberately **not** auto-listed (scale + privacy). A read of one
+shared doc by id resolves through `can_access(user, doc, email=…)`.
 
 ## Content Understanding integration
 
@@ -181,7 +189,10 @@ while — hence async ingest + polling with backoff, not an inline call.
   (handing CI the original-file container `file_ids` is a documented future
   enhancement).
 - **Citations** come from the grounding map (page "p.4", timestamp "02:13",
-  segment), enabling deep-link-back in the UI.
+  segment). For time-grounded (audio/video) excerpts, retrieval also emits a
+  copyable **`cite-as: [[cite:FILENAME@MM:SS]]`** token (keyed to the chunk's start
+  timestamp) and instructs the model to echo it; the web parses that token and
+  deep-links the media player to the cited moment (Phase 11D player, below).
 
 ## Governance & security
 
@@ -265,13 +276,27 @@ while — hence async ingest + polling with backoff, not an inline call.
   existing `document_understanding_enabled` flag (no new flag); the
   document/image/text path is byte-for-byte unchanged. The prebuilt audio/video
   analyzer wiring (`cu_audio_analyzer`/`cu_video_analyzer`,
-  `cu_analyzer_for_modality`) shipped in 11A. Remaining for a later increment:
-  keyframe/scene-segment field surfacing and the UI deep-link player.
+  `cu_analyzer_for_modality`) shipped in 11A.
+  - **Keyframe/scene surfacing + deep-link player (shipped).** Ingest persists a
+    `media.json` sidecar blob — `chunking.media_timeline()` packs each CU segment
+    into `{index, startMs, endMs, keyframes[], shots[]}` plus `durationMs` — written
+    before the chunk/embed early-return (no DB/manifest/vector change).
+    `retrieval.read_media_timeline()`/`read_media()` (owner- + `ready`-gated,
+    AV-only) back `GET /documents/{id}/timeline` (MediaTimeline) and
+    `GET /documents/{id}/media` (full bytes, inline, `no-store`). The web
+    `MediaPlayer` modal renders `<video>`/`<audio>` with a clickable scene/keyframe
+    strip that seeks the element (optional `seekToMs`), launched from a ▶️ control on
+    ready AV documents.
+  - **Citation → player deep-link (shipped).** `lib/citations.ts` parses the
+    `[[cite:FILENAME@MM:SS]]` token (above) out of assistant text into text + cite
+    segments; `MessageList` renders ▶ chips; `ChatApp` resolves the filename to a
+    ready audio/video document and opens `MediaPlayer` at the cited millisecond.
+    v1 resolves by filename (first match on duplicates); only audio/video chips are
+    clickable.
 - **11E — Knowledge & lifecycle.** Save-to-memory (promote chunks/summaries into
-  pgvector/mem0); annotations (Cosmos sub-resource keyed by
-  `(documentId, chunk/segment)`); versioning/immutable history; retention/erase;
-  **sharing enablement** — create the `grants` container, flip `can_access` to
-  consult grants, extend the retrieval filter to accessible owners/docs.
+  pgvector/mem0); owner-private annotations; idempotent re-save + forget-by-document
+  and an erase cascade; versioning/immutable history; retention/erase. (Sharing
+  graduated into its own **Phase 11F**, below.)
   - **11E-1 implemented (save-to-memory).** `POST
     /api/library/documents/{id}/memory` promotes a ready document's gist — its
     summary plus a bounded set of leading parsed excerpts (sourced via the
@@ -283,8 +308,39 @@ while — hence async ingest + polling with backoff, not an inline call.
     no content, 502 on a transient memory failure. The explicit action bypasses
     the trivia gate and (unlike passive `remember`) surfaces failures. Knobs:
     `memory_document_max_items = 6`, `memory_document_chunk_chars = 600`.
-    Re-saving is not yet idempotent (duplicate records) — source-tracked dedupe
-    / forget-by-document is deferred to the retention increment.
+    (Idempotent re-save + forget-by-document shipped in **11E-3**, below.)
+  - **11E-2 implemented (owner-private annotations).** A `DocumentAnnotation`
+    sub-model (`id/body/anchor/createdAt/updatedAt`) on an additive
+    `UserDocument.annotations` list (round-trips through the existing model
+    dump/validate — no migration, no new repo methods).
+    `GET/POST/PATCH/DELETE /api/library/documents/{id}/annotations[/{aid}]` with
+    body/anchor sanitizers (control-char strip, caps 4000/200). Every op is
+    `require_owner` (generic 404 otherwise), and annotations are **excluded from
+    `UserDocumentSummary`**, so they never reach the model's retrieval/prompt
+    context — they stay owner-private even after read-sharing lands.
+  - **11E-3 implemented (idempotent re-save + forget + erase cascade).** Saving a
+    library doc to memory twice now **replaces** instead of accumulating
+    (`MemoryRecord.document_id` keys an embed → erase-prior → add);
+    `DELETE /api/library/documents/{id}/memory` (`memory.forget_document`) is the
+    explicit forget. `delete_document` additionally **cascades**: after the blob +
+    indexed-chunk purge it best-effort `forget_document`s the doc's saved memories,
+    so a deleted document can no longer be recalled (idempotent, swallowed on
+    failure, no-op when memory is off).
+
+- **11F — Sharing (implemented, document-level).** Document-level read-sharing by
+  **email**, owner-authorized. The owner sets posture through
+  `GET/PUT/DELETE /api/library/documents/{id}/shares[/{email}]` (owner-only;
+  missing/non-owned → generic 404), and `GET /api/library/shared` lists documents
+  shared *with* the caller. `can_access(user, doc, email=…)` admits the owner, any
+  authenticated caller for a `public` (tenant-walled) doc, and an email on a
+  `shared` doc's `acl`. Shared docs are **both** agent-searchable (they enter the
+  grantee's RAG accessible-owner set, tagged "(shared with you)") **and** manually
+  openable, including shared AV (timeline/media/player). Ownership + storage
+  partitioning stay keyed on the owner's `userId`; **annotations and saved memories
+  stay owner-private and never travel with a share** (`require_owner`). Rides
+  `document_understanding_enabled` (no new flag). **Deferred:** collection/folder-
+  level sharing and any unauthenticated public-link path (today's `public` is
+  tenant-walled).
 
 ## Speed / accuracy / robustness levers
 
@@ -328,6 +384,7 @@ disabled the endpoint returns 409.
 
 ## Open items / future
 
-Sharing UX + link-sharing semantics · OCR confidence thresholds / human-review
-queue (CU `pro`) · corpus-level (cross-document) synthesis · custom-analyzer
-authoring UI · optional per-user time-boxed SAS for direct large-file download.
+Collection/folder-level sharing · unauthenticated public links (today's `public`
+is tenant-walled) · OCR confidence thresholds / human-review queue (CU `pro`) ·
+corpus-level (cross-document) synthesis · custom-analyzer authoring UI · optional
+per-user time-boxed SAS for direct large-file download.
