@@ -28,6 +28,8 @@ client's ``session.update``. It never drives the turn-by-turn conversation shape
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 from collections.abc import AsyncIterator, Sequence
@@ -62,8 +64,35 @@ REALTIME_CATEGORIES = {"realtime"}
 # selected subprotocol); the second is the credential.
 #  - entra: ["ai4ia-bearer", "<access_token>"]
 #  - dev:   ["ai4ia-dev", "<dev_user_id>"]  (honored only when dev auth is permitted)
+# Subprotocol values must be RFC 7230 tokens (no "@", spaces, etc.), so the dev
+# identity is base64url-encoded with a "b64u." prefix by the browser whenever it
+# is not already a bare token (e.g. an email like "dev@ai4ia.local"). Bearer
+# (entra) tokens are JWTs whose base64url segments + "." separators are already
+# valid tokens, so they ride unencoded. decode_dev_credential() reverses this so
+# the live session resolves to the SAME internal user id as the HTTP path.
 BEARER_SUBPROTOCOL = "ai4ia-bearer"
 DEV_SUBPROTOCOL = "ai4ia-dev"
+_DEV_CREDENTIAL_B64URL_PREFIX = "b64u."
+
+
+def decode_dev_credential(credential: str) -> str:
+    """Reverse the browser's token-safe encoding of the dev identity.
+
+    The browser base64url-encodes the dev user id (prefixing it with ``b64u.``)
+    only when it is not already a valid WebSocket subprotocol token. A bare id
+    (no prefix) is returned unchanged, keeping older clients + plain ids working.
+    A malformed encoded value falls back to the raw credential rather than
+    raising, so a bad encoding degrades to a denied/unknown user rather than a
+    500 during the handshake.
+    """
+    if not credential.startswith(_DEV_CREDENTIAL_B64URL_PREFIX):
+        return credential
+    encoded = credential[len(_DEV_CREDENTIAL_B64URL_PREFIX) :]
+    padding = "=" * (-len(encoded) % 4)
+    try:
+        return base64.urlsafe_b64decode(encoded + padding).decode("utf-8")
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return credential
 
 # Close codes (RFC 6455). 1008 = policy violation (denied), 1011 = internal error.
 WS_NORMAL_CLOSURE = 1000
@@ -200,7 +229,8 @@ async def authenticate_subprotocol(
     if auth.marker == DEV_SUBPROTOCOL:
         if not settings.dev_auth_permitted:
             raise AuthError("Dev subprotocol is not permitted in this environment.")
-        creds = AuthCredentials(token=None, headers={"X-Dev-User": auth.credential})
+        dev_user = decode_dev_credential(auth.credential)
+        creds = AuthCredentials(token=None, headers={"X-Dev-User": dev_user})
     else:
         creds = AuthCredentials(token=auth.credential, headers={})
     return await provider.authenticate(creds)

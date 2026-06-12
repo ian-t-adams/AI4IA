@@ -31,6 +31,7 @@ from ai4ia_api.routers.realtime import (
     build_tool_bridge,
     build_upstream_headers,
     build_upstream_url,
+    decode_dev_credential,
     flatten_realtime_tools,
     inject_session_tools,
     origin_allowed,
@@ -95,6 +96,29 @@ def test_parse_extra_subprotocols_ignored():
     parsed = parse_auth_subprotocols([BEARER_SUBPROTOCOL, "tok", "something-else"])
     assert parsed is not None
     assert parsed.credential == "tok"
+
+
+# --------------------------------------------------------------------------- #
+# decode_dev_credential (reverses the browser's token-safe dev-id encoding)
+# --------------------------------------------------------------------------- #
+
+
+def test_decode_dev_credential_plain_passthrough():
+    # A bare token (no prefix) is returned unchanged — back-compatible with
+    # plain ids and older clients.
+    assert decode_dev_credential("alice") == "alice"
+
+
+def test_decode_dev_credential_decodes_email():
+    # "dev@ai4ia.local" base64url-encoded, no padding (what the browser sends
+    # because "@" is not a valid WebSocket subprotocol token char).
+    assert decode_dev_credential("b64u.ZGV2QGFpNGlhLmxvY2Fs") == "dev@ai4ia.local"
+
+
+def test_decode_dev_credential_malformed_falls_back_to_raw():
+    # A malformed encoded value must not raise during the handshake; it falls
+    # back to the raw credential (which then fails to resolve a real user).
+    assert decode_dev_credential("b64u.!!!not-base64!!!") == "b64u.!!!not-base64!!!"
 
 
 @pytest.mark.parametrize(
@@ -277,6 +301,21 @@ def test_authenticate_dev_subprotocol_when_permitted():
         )
     )
     assert user.subject == "alice"
+
+
+def test_authenticate_dev_subprotocol_decodes_encoded_email():
+    # The browser encodes "dev@ai4ia.local" (invalid as a raw subprotocol token)
+    # as base64url; the relay must decode it so the live session resolves to the
+    # SAME user id as the HTTP path (X-Dev-User: dev@ai4ia.local).
+    settings = make_settings(env="local")
+    user = asyncio.run(
+        authenticate_subprotocol(
+            _DummyProvider(),
+            settings,
+            AuthSubprotocol(DEV_SUBPROTOCOL, "b64u.ZGV2QGFpNGlhLmxvY2Fs"),
+        )
+    )
+    assert user.subject == "dev@ai4ia.local"
 
 
 def test_authenticate_dev_subprotocol_denied_when_not_permitted():
