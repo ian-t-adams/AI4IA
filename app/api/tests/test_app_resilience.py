@@ -3,8 +3,9 @@
 Regression for the live incident where Cosmos public-network access drifted to
 'Disabled' (a tenant policy remediation side-effect): every Cosmos-backed endpoint
 raised an unhandled azure-core error -> raw 500, which (pre PR #9) blanked the whole
-web app. The handler now maps connectivity/auth/throttling/5xx to 503 so the client
-can treat it as a transient, scoped failure while the catalog + chat stay usable.
+web app. The handler now maps connectivity/auth/firewall(401/403)/throttling/5xx to
+503 so the client can treat it as a transient, scoped failure while the catalog +
+chat stay usable.
 """
 from __future__ import annotations
 
@@ -61,6 +62,32 @@ def test_managed_identity_token_failure_maps_to_503():
 def test_throttling_429_maps_to_503():
     exc = HttpResponseError("throttled")
     exc.status_code = 429
+    with _client_with_repo(exc) as client:
+        resp = client.get("/api/sessions")
+    assert resp.status_code == 503
+
+
+def test_cosmos_firewall_403_maps_to_503():
+    # The documented incident: a tenant policy remediation flips Cosmos
+    # publicNetworkAccess to 'Disabled', so every data-plane call returns
+    # 403 Forbidden ("blocked by your Cosmos DB account firewall settings").
+    # That is an operational/network problem, not a malformed-request bug, so
+    # it must degrade to 503 rather than masquerade as an opaque 500.
+    # (CosmosHttpResponseError is an HttpResponseError subclass; the handler
+    # keys on the base type + status_code, so HttpResponseError stands in.)
+    exc = HttpResponseError("blocked by firewall")
+    exc.status_code = 403
+    with _client_with_repo(exc) as client:
+        resp = client.get("/api/sessions")
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Service temporarily unavailable"
+
+
+def test_data_plane_401_maps_to_503():
+    # A data-plane 401 (token/identity not yet propagated) is operational, not a
+    # request-shape bug, so it is transient too.
+    exc = HttpResponseError("unauthorized")
+    exc.status_code = 401
     with _client_with_repo(exc) as client:
         resp = client.get("/api/sessions")
     assert resp.status_code == 503

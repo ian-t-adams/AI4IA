@@ -300,17 +300,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     if AzureError is not None:
 
+        # Data-plane 4xx codes that signal an operational/availability problem rather
+        # than a malformed-request (code) bug, so they degrade to 503 rather than 500:
+        #   401 token/identity not yet propagated, 403 firewall/network/RBAC drift
+        #   (e.g. the documented Cosmos publicNetworkAccess flip to Disabled by a tenant
+        #   policy remediation), 408 request timeout, 429 throttling.
+        _TRANSIENT_DATA_PLANE_CODES = frozenset({401, 403, 408, 429})
+
         @app.exception_handler(AzureError)
         async def _azure_unavailable(_request: Request, exc: AzureError):
             # Preserve 500 semantics for an unexpected non-transient 4xx (a client/code
-            # bug); treat connectivity, auth, throttling (408/429) and 5xx as transient.
+            # bug); treat connectivity, auth, firewall, throttling and 5xx as transient.
             status_code = getattr(exc, "status_code", None)
             if (
                 HttpResponseError is not None
                 and isinstance(exc, HttpResponseError)
                 and isinstance(status_code, int)
                 and 400 <= status_code < 500
-                and status_code not in (408, 429)
+                and status_code not in _TRANSIENT_DATA_PLANE_CODES
             ):
                 logger.exception("Unexpected Azure client error")
                 return JSONResponse(
