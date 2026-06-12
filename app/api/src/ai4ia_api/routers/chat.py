@@ -28,11 +28,19 @@ from ..logging_setup import get_correlation_id
 from ..sessions.models import Message, MessageAttachment, MessageRole, MessageStatus, Session
 from ..sessions.repository import SessionNotFoundError, SessionRepository
 from ..agents.agent_catalog import AgentCatalog, AgentSpec
-from ..agents.command_service import execute_command
+from ..agents.command_service import (
+    DIRECT_SLASH_TOOLS,
+    execute_command,
+    execute_tool_command,
+)
 from ..agents.commands import CommandKind, parse_input
 from ..agents.runtime import run_agent_turn
 from ..agents.orchestration import build_delegate_capability
-from ..agents.tool_exec import ToolContext, ToolExecutor
+from ..agents.tool_exec import (
+    SELECTABLE_SYNTHETIC_TOOL_NAMES,
+    ToolContext,
+    ToolExecutor,
+)
 from ..agents.tools import ToolRegistry
 from ..entitlements.service import EntitlementService
 from ..images.artifacts import ImageArtifactStore
@@ -196,6 +204,81 @@ async def _persist_local_reply(
     return assistant
 
 
+# --- Capability-tool slash commands -------------------------------------------
+# A "capability" tool (generate_image / generate_video / process_document) named
+# directly via a slash command runs through the standard agent turn: we synthesize
+# an ephemeral, single-tool agent whose persona instructs the model to call that
+# one tool with the user's text. This reuses ALL the existing capability injection,
+# entitlement, metering, and attachment plumbing rather than duplicating it.
+_TOOL_AGENT_PROMPTS: dict[str, str] = {
+    GENERATE_IMAGE_TOOL_NAME: (
+        "The user invoked the image generator directly. Call the generate_image "
+        "tool to create an image from their request, then briefly describe what "
+        "you produced. Do not ask clarifying questions unless the request is empty."
+    ),
+    GENERATE_VIDEO_TOOL_NAME: (
+        "The user invoked the video generator directly. Call the generate_video "
+        "tool to create a short video from their request, then briefly describe "
+        "what you produced. Do not ask clarifying questions unless the request is "
+        "empty."
+    ),
+    PROCESS_DOCUMENT_TOOL_NAME: (
+        "The user invoked document processing directly. Call the process_document "
+        "tool over their library to satisfy the request, then summarize the result. "
+        "Do not ask clarifying questions unless the request is empty."
+    ),
+}
+
+_TOOL_COMMAND_USAGE: dict[str, str] = {
+    GENERATE_IMAGE_TOOL_NAME: (
+        "Usage: /generate_image <description> — e.g. /generate_image a red bicycle "
+        "on a beach at sunset"
+    ),
+    GENERATE_VIDEO_TOOL_NAME: (
+        "Usage: /generate_video <description> — e.g. /generate_video a timelapse of "
+        "city traffic at night"
+    ),
+    PROCESS_DOCUMENT_TOOL_NAME: (
+        "Usage: /process_document <what to do> — e.g. /process_document summarize "
+        "the latest contract in my library"
+    ),
+}
+
+
+def _capability_tool_available(
+    name: str,
+    *,
+    image_artifacts: ImageArtifactStore | None,
+    video_artifacts: VideoArtifactStore | None,
+    document_artifacts: DocumentArtifactStore | None,
+    retrieval: DocumentRetrievalService | None,
+) -> bool:
+    """Whether a capability tool's backing services are present this turn.
+
+    Mirrors the per-tool gating in the agent-turn capability injection below so a
+    ``/tool`` slash command and an agent-attached tool light up under exactly the
+    same conditions.
+    """
+    if name == GENERATE_IMAGE_TOOL_NAME:
+        return image_artifacts is not None
+    if name == GENERATE_VIDEO_TOOL_NAME:
+        return video_artifacts is not None
+    if name == PROCESS_DOCUMENT_TOOL_NAME:
+        return document_artifacts is not None and retrieval is not None
+    return False
+
+
+def _ephemeral_tool_agent(name: str) -> AgentSpec:
+    """Build a transient single-tool agent for a ``/tool`` capability command."""
+    return AgentSpec(
+        name=name,
+        displayName=name.replace("_", " ").title(),
+        description=f"Direct {name} invocation",
+        systemPrompt=_TOOL_AGENT_PROMPTS[name],
+        tools=[name],
+    )
+
+
 @router.post("/chat")
 async def chat(
     body: ChatRequest,
@@ -250,52 +333,111 @@ async def chat(
 
     parsed = parse_input(body.content)
 
-    # Compose the caller's user-defined agents on top of the curated catalog only
-    # when this turn needs them: an @mention to resolve, or /agents to list. For
-    # every other path (plain chat, other slash commands) the curated catalog is
-    # used as-is, so a user-agent store outage is contained to these two paths
-    # (and even there the service fails open to curated-only).
-    if parsed.agent is not None or (
-        parsed.command is not None and parsed.command.kind is CommandKind.agents
-    ):
-        agents = await request.app.state.agent_service.catalog_for(
-            user.internal_user_id, agents
-        )
+    # A slash command may name a *tool* (e.g. /calculator, /generate_image)
+    # rather than a built-in action command (/help, /clear, ...). Tools split
+    # into two execution classes:
+    #   - DIRECT (calculator, get_current_time): deterministic, no-scope builtins
+    #     that run locally via the executor — no model call, no entitlement spend.
+    #   - CAPABILITY (generate_image/video, process_document): service-backed, so
+    #     they run through the standard agent turn via an ephemeral single-tool
+    #     agent (synthesized below), reusing all existing capability injection,
+    #     entitlement, metering, and attachment plumbing with zero duplication.
+    capability_tool: str | None = None
+    if parsed.command is not None and parsed.command.kind is CommandKind.unknown:
+        cmd_name = parsed.command.name
+        if cmd_name in DIRECT_SLASH_TOOLS:
+            assistant = await execute_tool_command(
+                parsed=parsed,
+                session=session,
+                user=user,
+                repo=repo,
+                registry=registry,
+                executor=executor,
+                correlation_id=get_correlation_id(),
+            )
+            return _local_reply_response(body.sessionId, assistant, body.stream)
+        if cmd_name in SELECTABLE_SYNTHETIC_TOOL_NAMES:
+            capability_tool = cmd_name
 
-    # Resolve an @mention to an agent BEFORE handling commands or the model, so
-    # an invalid mention can never fall through to either. Disabled agents are
-    # treated as unavailable.
-    agent: AgentSpec | None = None
-    if parsed.agent is not None:
-        agent = agents.get(parsed.agent)
-        if agent is None or not agent.enabled:
+    # A capability-tool slash command becomes an ephemeral single-tool agent. Give
+    # friendly local replies when the tool isn't enabled here or has no arguments;
+    # otherwise synthesize the agent and let the normal agent turn run it.
+    tool_agent: AgentSpec | None = None
+    if capability_tool is not None:
+        if not _capability_tool_available(
+            capability_tool,
+            image_artifacts=image_artifacts,
+            video_artifacts=video_artifacts,
+            document_artifacts=document_artifacts,
+            retrieval=retrieval,
+        ):
             assistant = await _persist_local_reply(
                 repo=repo,
                 session=session,
                 user=user,
                 user_content=parsed.raw,
-                reply=(
-                    f"Unknown agent: @{parsed.agent}. "
-                    "Type /agents to see the agents you can mention."
-                ),
+                reply=f"/{capability_tool} isn't enabled in this environment yet.",
             )
             return _local_reply_response(body.sessionId, assistant, body.stream)
+        if not parsed.text:
+            assistant = await _persist_local_reply(
+                repo=repo,
+                session=session,
+                user=user,
+                user_content=parsed.raw,
+                reply=_TOOL_COMMAND_USAGE[capability_tool],
+            )
+            return _local_reply_response(body.sessionId, assistant, body.stream)
+        tool_agent = _ephemeral_tool_agent(capability_tool)
 
-    # Slash commands (/help, /clear, /system, /model, /agents, ...) are handled
-    # locally and never reach a model. A command takes precedence over an agent
-    # mention (e.g. "@coder /help" runs /help); the mention was already
-    # validated above.
-    if parsed.is_command:
-        assistant = await execute_command(
-            parsed=parsed,
-            session=session,
-            user=user,
-            repo=repo,
-            catalog=catalog,
-            agents=agents,
-            memory=memory,
-        )
-        return _local_reply_response(body.sessionId, assistant, body.stream)
+    # Compose the caller's user-defined agents on top of the curated catalog only
+    # when this turn needs them: an @mention to resolve, or /agents to list. For
+    # every other path (plain chat, other slash commands) the curated catalog is
+    # used as-is, so a user-agent store outage is contained to these two paths
+    # (and even there the service fails open to curated-only). Skipped entirely for
+    # a synthesized tool agent, which already carries its persona + single tool.
+    agent: AgentSpec | None = tool_agent
+    if tool_agent is None:
+        if parsed.agent is not None or (
+            parsed.command is not None and parsed.command.kind is CommandKind.agents
+        ):
+            agents = await request.app.state.agent_service.catalog_for(
+                user.internal_user_id, agents
+            )
+
+        # Resolve an @mention to an agent BEFORE handling commands or the model, so
+        # an invalid mention can never fall through to either. Disabled agents are
+        # treated as unavailable.
+        if parsed.agent is not None:
+            agent = agents.get(parsed.agent)
+            if agent is None or not agent.enabled:
+                assistant = await _persist_local_reply(
+                    repo=repo,
+                    session=session,
+                    user=user,
+                    user_content=parsed.raw,
+                    reply=(
+                        f"Unknown agent: @{parsed.agent}. "
+                        "Type /agents to see the agents you can mention."
+                    ),
+                )
+                return _local_reply_response(body.sessionId, assistant, body.stream)
+
+        # Slash commands (/help, /clear, /system, /model, /agents, ...) are handled
+        # locally and never reach a model. A command takes precedence over an agent
+        # mention (e.g. "@coder /help" runs /help); the mention was already
+        # validated above. (A /tool command was already routed above.)
+        if parsed.is_command:
+            assistant = await execute_command(
+                parsed=parsed,
+                session=session,
+                user=user,
+                repo=repo,
+                catalog=catalog,
+                agents=agents,
+                memory=memory,
+            )
+            return _local_reply_response(body.sessionId, assistant, body.stream)
 
     # Determine the system prompt, model, and the content the model actually
     # sees. For an agent turn the persona prompt replaces the session prompt

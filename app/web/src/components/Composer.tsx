@@ -9,6 +9,7 @@ import {
 } from "react";
 import type { AgentSummary, DocumentSummary } from "@/lib/types";
 import type { LibraryDocument } from "@/lib/library";
+import { SLASH_COMMANDS, type SlashCommand } from "@/lib/commands";
 import { useVoiceRecorder } from "@/lib/voice";
 
 // Mirrors the backend cap (routers/documents.py MAX_DOCS_PER_SESSION).
@@ -42,23 +43,35 @@ const LIB_STATUS_COLOR: Record<LibraryDocument["status"], string> = {
   failed: "#b91c1c",
 };
 
-// An active mention being typed at the START of the message (ignoring leading
-// whitespace), since the backend only routes a mention at the start of a turn.
-interface ActiveMention {
-  start: number; // index of the '@'
+// An active mention/command being typed at the START of the message (ignoring
+// leading whitespace), since the backend only routes a mention or command at the
+// start of a turn. The same shape backs both the "@" agent menu and the "/"
+// command menu.
+interface ActiveToken {
+  start: number; // index of the '@' or '/'
   end: number; // caret position
-  query: string; // text after '@', lowercased
+  query: string; // text after the sigil, lowercased
 }
 
 const MENTION_RE = /^(\s*)@([A-Za-z0-9_.-]*)$/;
+const SLASH_RE = /^(\s*)\/([A-Za-z0-9_.-]*)$/;
 const MAX_OPTIONS = 8;
 
-function detectMention(value: string, caret: number): ActiveMention | null {
+function detectMention(value: string, caret: number): ActiveToken | null {
   const prefix = value.slice(0, caret);
   const m = prefix.match(MENTION_RE);
   if (!m) return null;
   return { start: m[1].length, end: caret, query: m[2].toLowerCase() };
 }
+
+function detectCommand(value: string, caret: number): ActiveToken | null {
+  const prefix = value.slice(0, caret);
+  const m = prefix.match(SLASH_RE);
+  if (!m) return null;
+  return { start: m[1].length, end: caret, query: m[2].toLowerCase() };
+}
+
+type MenuMode = "mention" | "command";
 
 export function Composer({
   disabled,
@@ -150,8 +163,9 @@ export function Composer({
   );
 
   const mention = useMemo(() => detectMention(text, caret), [text, caret]);
+  const command = useMemo(() => detectCommand(text, caret), [text, caret]);
 
-  const filtered = useMemo(() => {
+  const agentOptions = useMemo(() => {
     if (!mention) return [];
     const q = mention.query;
     const matches = enabledAgents.filter(
@@ -163,12 +177,38 @@ export function Composer({
     return matches.slice(0, MAX_OPTIONS);
   }, [mention, enabledAgents]);
 
-  const menuOpen = mention !== null && filtered.length > 0 && !suppressed;
+  const commandOptions = useMemo(() => {
+    if (!command) return [];
+    const q = command.query;
+    const matches = SLASH_COMMANDS.filter(
+      (c) =>
+        q === "" ||
+        c.name.toLowerCase().startsWith(q) ||
+        c.label.toLowerCase().startsWith(q),
+    );
+    return matches.slice(0, MAX_OPTIONS);
+  }, [command]);
 
-  // Keep the highlight in range as the filtered list changes.
+  // A "@" mention and a "/" command are mutually exclusive (the regexes anchor on
+  // different sigils at the start), so at most one menu is active per keystroke.
+  const menuMode: MenuMode | null =
+    mention && agentOptions.length > 0
+      ? "mention"
+      : command && commandOptions.length > 0
+        ? "command"
+        : null;
+  const optionCount =
+    menuMode === "mention"
+      ? agentOptions.length
+      : menuMode === "command"
+        ? commandOptions.length
+        : 0;
+  const menuOpen = menuMode !== null && !suppressed;
+
+  // Keep the highlight in range as the active list changes.
   useEffect(() => {
     setHighlight(0);
-  }, [mention?.query, filtered.length]);
+  }, [mention?.query, command?.query, optionCount]);
 
   // Restore the caret after an insertion changed the value programmatically.
   useLayoutEffect(() => {
@@ -198,6 +238,30 @@ export function Composer({
     setSuppressed(false);
   };
 
+  const acceptCommand = (cmd: SlashCommand) => {
+    if (!command) return;
+    const suffix = text.slice(command.end);
+    // Trailing space (when there isn't one already) both readies any arguments
+    // and closes the menu, since "/name " no longer matches SLASH_RE.
+    const insert = suffix.startsWith(" ") ? `/${cmd.name}` : `/${cmd.name} `;
+    const next = text.slice(0, command.start) + insert + suffix;
+    const pos = command.start + insert.length;
+    pendingCaret.current = pos;
+    setText(next);
+    setSuppressed(false);
+  };
+
+  const acceptHighlighted = () => {
+    const idx = Math.min(highlight, optionCount - 1);
+    if (menuMode === "mention") {
+      const a = agentOptions[idx];
+      if (a) acceptAgent(a);
+    } else if (menuMode === "command") {
+      const c = commandOptions[idx];
+      if (c) acceptCommand(c);
+    }
+  };
+
   const submit = () => {
     const trimmed = text.trim();
     if (!trimmed || disabled) return;
@@ -214,18 +278,17 @@ export function Composer({
     if (menuOpen) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setHighlight((h) => (h + 1) % filtered.length);
+        setHighlight((h) => (h + 1) % optionCount);
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
-        setHighlight((h) => (h - 1 + filtered.length) % filtered.length);
+        setHighlight((h) => (h - 1 + optionCount) % optionCount);
         return;
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
-        const agent = filtered[Math.min(highlight, filtered.length - 1)];
-        if (agent) acceptAgent(agent);
+        acceptHighlighted();
         return;
       }
       if (e.key === "Escape") {
@@ -241,10 +304,12 @@ export function Composer({
     }
   };
 
-  const activeOptionId =
-    menuOpen && filtered[highlight]
-      ? `agent-option-${filtered[highlight].name}`
-      : undefined;
+  const highlightedIndex = Math.min(highlight, optionCount - 1);
+  const activeOptionId = !menuOpen
+    ? undefined
+    : menuMode === "mention"
+      ? `agent-option-${agentOptions[highlightedIndex]?.name}`
+      : `command-option-${commandOptions[highlightedIndex]?.name}`;
 
   return (
     <div
@@ -413,9 +478,9 @@ export function Composer({
       >
         {menuOpen && (
           <ul
-            id="agent-mention-menu"
+            id="composer-autocomplete-menu"
             role="listbox"
-            aria-label="Agents"
+            aria-label={menuMode === "mention" ? "Agents" : "Commands"}
             style={{
               position: "absolute",
               bottom: "calc(100% + 6px)",
@@ -433,40 +498,74 @@ export function Composer({
               zIndex: 20,
             }}
           >
-            {filtered.map((a, i) => (
-              <li
-                key={a.name}
-                id={`agent-option-${a.name}`}
-                role="option"
-                aria-selected={i === highlight}
-                onMouseDown={(e) => {
-                  // Keep textarea focus so insertion + caret restore work.
-                  e.preventDefault();
-                  acceptAgent(a);
-                }}
-                onMouseEnter={() => setHighlight(i)}
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 8,
-                  cursor: "pointer",
-                  background:
-                    i === highlight ? "var(--accent)" : "transparent",
-                  color:
-                    i === highlight ? "var(--accent-fg)" : "var(--fg)",
-                }}
-              >
-                <div style={{ fontWeight: 600 }}>
-                  @{a.name}
-                  <span style={{ opacity: 0.7, fontWeight: 400 }}>
-                    {" "}
-                    · {a.displayName}
-                  </span>
-                </div>
-                <div style={{ fontSize: "0.8em", opacity: 0.75 }}>
-                  {a.description}
-                </div>
-              </li>
-            ))}
+            {menuMode === "mention"
+              ? agentOptions.map((a, i) => (
+                  <li
+                    key={a.name}
+                    id={`agent-option-${a.name}`}
+                    role="option"
+                    aria-selected={i === highlightedIndex}
+                    onMouseDown={(e) => {
+                      // Keep textarea focus so insertion + caret restore work.
+                      e.preventDefault();
+                      acceptAgent(a);
+                    }}
+                    onMouseEnter={() => setHighlight(i)}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: 8,
+                      cursor: "pointer",
+                      background:
+                        i === highlightedIndex ? "var(--accent)" : "transparent",
+                      color:
+                        i === highlightedIndex ? "var(--accent-fg)" : "var(--fg)",
+                    }}
+                  >
+                    <div style={{ fontWeight: 600 }}>
+                      @{a.name}
+                      <span style={{ opacity: 0.7, fontWeight: 400 }}>
+                        {" "}
+                        · {a.displayName}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: "0.8em", opacity: 0.75 }}>
+                      {a.description}
+                    </div>
+                  </li>
+                ))
+              : commandOptions.map((c, i) => (
+                  <li
+                    key={c.name}
+                    id={`command-option-${c.name}`}
+                    role="option"
+                    aria-selected={i === highlightedIndex}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      acceptCommand(c);
+                    }}
+                    onMouseEnter={() => setHighlight(i)}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: 8,
+                      cursor: "pointer",
+                      background:
+                        i === highlightedIndex ? "var(--accent)" : "transparent",
+                      color:
+                        i === highlightedIndex ? "var(--accent-fg)" : "var(--fg)",
+                    }}
+                  >
+                    <div style={{ fontWeight: 600 }}>
+                      /{c.name}
+                      <span style={{ opacity: 0.7, fontWeight: 400 }}>
+                        {" "}
+                        · {c.label}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: "0.8em", opacity: 0.75 }}>
+                      {c.hint}
+                    </div>
+                  </li>
+                ))}
           </ul>
         )}
 
@@ -593,12 +692,12 @@ export function Composer({
           ref={textareaRef}
           value={text}
           rows={1}
-          placeholder="Send a message…  (Enter to send, Shift+Enter for newline, @ to mention an agent)"
+          placeholder="Send a message…  (Enter to send, Shift+Enter for newline, @ to mention an agent, / for commands)"
           role="combobox"
           aria-autocomplete="list"
           aria-haspopup="listbox"
           aria-expanded={menuOpen}
-          aria-controls="agent-mention-menu"
+          aria-controls="composer-autocomplete-menu"
           aria-activedescendant={activeOptionId}
           onChange={(e) => {
             setText(e.target.value);

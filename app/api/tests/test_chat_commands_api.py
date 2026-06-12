@@ -127,3 +127,104 @@ def test_command_first_turn_does_not_block_auto_title(client):
     )
     session = client.get(f"/api/sessions/{sid}").json()
     assert session["title"] == "What is the capital of France?"
+
+
+# --- Slash-command tools ------------------------------------------------------
+
+
+def test_calculator_slash_command_runs_locally(client):
+    """A direct tool runs in the command path (no model) and returns its result."""
+    gw = _CapturingGateway()
+    client.app.state.gateway = gw
+    sid = _create_session(client)["id"]
+
+    resp = client.post(
+        "/api/chat",
+        json={"sessionId": sid, "content": "/calculator (2 + 3) * 4", "stream": False},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "20" in resp.json()["message"]["content"]
+    # A direct tool never invokes the model.
+    assert gw.last_messages is None
+
+    messages = client.get(f"/api/sessions/{sid}/messages").json()
+    assert [m["role"] for m in messages] == ["user", "assistant"]
+    assert "20" in messages[-1]["content"]
+
+
+def test_calculator_slash_command_usage_when_empty(client):
+    sid = _create_session(client)["id"]
+    resp = client.post(
+        "/api/chat", json={"sessionId": sid, "content": "/calculator", "stream": False}
+    )
+    assert resp.status_code == 200
+    assert "Usage:" in resp.json()["message"]["content"]
+
+
+def test_calculator_slash_command_reports_bad_expression(client):
+    sid = _create_session(client)["id"]
+    resp = client.post(
+        "/api/chat",
+        json={"sessionId": sid, "content": "/calculator open(1)", "stream": False},
+    )
+    assert resp.status_code == 200
+    # A handler error is surfaced as a friendly per-tool reply, not a 500.
+    assert resp.json()["message"]["content"].startswith("/calculator:")
+
+
+def test_get_current_time_slash_command_runs_locally(client):
+    sid = _create_session(client)["id"]
+    resp = client.post(
+        "/api/chat",
+        json={"sessionId": sid, "content": "/get_current_time", "stream": False},
+    )
+    assert resp.status_code == 200
+    assert "Current time (UTC):" in resp.json()["message"]["content"]
+
+
+def test_generate_image_slash_command_routes_through_model(client):
+    """A capability tool becomes an ephemeral single-tool agent run via the model."""
+    gw = _CapturingGateway()
+    client.app.state.gateway = gw
+    sid = _create_session(client)["id"]
+
+    resp = client.post(
+        "/api/chat",
+        json={"sessionId": sid, "content": "/generate_image a red bicycle", "stream": False},
+    )
+    assert resp.status_code == 200, resp.text
+    # The model WAS invoked, and its system prompt instructs it to call the tool.
+    assert gw.last_messages is not None
+    assert gw.last_messages[0]["role"] == "system"
+    assert "generate_image" in gw.last_messages[0]["content"]
+    # The stripped request text (not the slash command) is what the model sees.
+    assert {"role": "user", "content": "a red bicycle"} in gw.last_messages
+
+
+def test_generate_image_slash_command_usage_when_empty(client):
+    sid = _create_session(client)["id"]
+    resp = client.post(
+        "/api/chat", json={"sessionId": sid, "content": "/generate_image", "stream": False}
+    )
+    assert resp.status_code == 200
+    assert "Usage:" in resp.json()["message"]["content"]
+
+
+def test_process_document_slash_command_not_enabled(client):
+    """A capability tool whose services are absent gives a friendly local reply."""
+    sid = _create_session(client)["id"]
+    resp = client.post(
+        "/api/chat",
+        json={"sessionId": sid, "content": "/process_document summarize it", "stream": False},
+    )
+    assert resp.status_code == 200
+    assert "isn't enabled" in resp.json()["message"]["content"]
+
+
+def test_unknown_slash_command_still_unknown(client):
+    sid = _create_session(client)["id"]
+    resp = client.post(
+        "/api/chat", json={"sessionId": sid, "content": "/bogus do a thing", "stream": False}
+    )
+    assert resp.status_code == 200
+    assert "Unknown command" in resp.json()["message"]["content"]
