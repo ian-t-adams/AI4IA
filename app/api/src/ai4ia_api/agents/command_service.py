@@ -12,7 +12,10 @@ service; when memory is disabled it reports that nothing is stored.
 """
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Any
 
 from ..auth.base import AuthenticatedUser
 from ..catalog import ModelCatalog
@@ -21,6 +24,13 @@ from ..sessions.models import Message, MessageRole, MessageStatus, Session
 from ..sessions.repository import SessionRepository
 from .agent_catalog import AgentCatalog
 from .commands import CommandKind, ParsedInput
+from .tool_exec import (
+    ToolContext,
+    ToolExecutionError,
+    ToolExecutor,
+    ToolValidationError,
+)
+from .tools import ToolRegistry
 
 HELP_TEXT = (
     "Available commands:\n"
@@ -32,9 +42,23 @@ HELP_TEXT = (
     "/summarize — summarize the conversation (coming soon)\n"
     "/forget [session|me] — erase stored memories for this chat (default) or "
     "all of yours\n"
+    "/<tool> [args] — run a tool directly (e.g. /calculator (2+3)*4, "
+    "/generate_image a red bicycle). Type / in the composer to see the tools.\n"
     "Mention @agent at the start of a turn to route it to that agent "
     "(e.g. @coder review this function). Use /agents to see who's available."
 )
+
+
+# Direct tools run locally via the executor (with an empty ToolContext) the
+# instant the user types ``/<tool> args`` — no model call, no entitlement spend.
+# Each entry maps the slash argument string to the tool's JSON arguments. Only
+# safe, deterministic, no-scope builtins belong here; service-backed capability
+# tools (generate_image/…) are routed through a model turn by the chat router.
+_DIRECT_TOOL_ARGS: dict[str, Callable[[str], dict[str, Any]]] = {
+    "calculator": lambda args: {"expression": args},
+    "get_current_time": lambda args: {},
+}
+DIRECT_SLASH_TOOLS: frozenset[str] = frozenset(_DIRECT_TOOL_ARGS)
 
 
 def _now() -> datetime:
@@ -95,6 +119,96 @@ async def execute_command(
     )
     await repo.add_message(user_id, assistant)
     return assistant
+
+
+async def execute_tool_command(
+    *,
+    parsed: ParsedInput,
+    session: Session,
+    user: AuthenticatedUser,
+    repo: SessionRepository,
+    registry: ToolRegistry,
+    executor: ToolExecutor,
+    correlation_id: str | None = None,
+) -> Message:
+    """Run a *direct* tool named by a slash command and persist the user echo +
+    the result reply. These tools (see :data:`DIRECT_SLASH_TOOLS`) are
+    deterministic builtins with no scopes/egress, so they execute locally with
+    an empty :class:`ToolContext` — no model call and no entitlement spend."""
+    command = parsed.command
+    assert command is not None, "execute_tool_command requires a parsed command"
+    user_id = user.internal_user_id
+
+    await repo.add_message(
+        user_id,
+        Message(
+            sessionId=session.id,
+            userId=user_id,
+            role=MessageRole.user,
+            content=parsed.raw,
+            status=MessageStatus.complete,
+            fromCommand=True,
+        ),
+    )
+
+    reply = await _run_direct_tool(
+        command.name, command.args, registry, executor, correlation_id
+    )
+
+    session.updatedAt = _now()
+    await repo.update_session(session)
+
+    assistant = Message(
+        sessionId=session.id,
+        userId=user_id,
+        role=MessageRole.assistant,
+        content=reply,
+        status=MessageStatus.complete,
+        fromCommand=True,
+    )
+    await repo.add_message(user_id, assistant)
+    return assistant
+
+
+async def _run_direct_tool(
+    name: str,
+    args: str,
+    registry: ToolRegistry,
+    executor: ToolExecutor,
+    correlation_id: str | None,
+) -> str:
+    builder = _DIRECT_TOOL_ARGS.get(name)
+    if builder is None:  # pragma: no cover - guarded by the caller's routing
+        return f"Unknown tool: /{name}. Type /help to see what's available."
+    if name == "calculator" and not args.strip():
+        return "Usage: /calculator <expression> — e.g. /calculator (2 + 3) * 4"
+
+    # Defense in depth: confirm the registry still permits this tool before
+    # running it (these builtins request no scopes/hosts/approval).
+    decision = registry.authorize(
+        name, granted_scopes=frozenset(), target_hosts=frozenset(), approved=False
+    )
+    if not decision.allowed:
+        return f"/{name} isn't available right now."
+
+    ctx = ToolContext(correlation_id=correlation_id)
+    try:
+        result = await executor.execute(name, builder(args), ctx)
+    except (ToolValidationError, ToolExecutionError) as exc:
+        return f"/{name}: {exc}"
+    return _format_tool_result(name, result)
+
+
+def _format_tool_result(name: str, result: Any) -> str:
+    """Render a direct tool's result as a short, friendly chat reply."""
+    if isinstance(result, dict):
+        if name == "calculator" and "result" in result:
+            expr = str(result.get("expression", "")).strip()
+            value = result["result"]
+            return f"`{expr}` = **{value}**" if expr else f"= **{value}**"
+        if name == "get_current_time" and "utc" in result:
+            return f"Current time (UTC): **{result['utc']}**"
+    return f"```json\n{json.dumps(result, indent=2, default=str)}\n```"
 
 
 async def _reply_for(
