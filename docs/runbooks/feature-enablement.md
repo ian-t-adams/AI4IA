@@ -16,7 +16,7 @@
 | Document library (11A/11B, + 11D–11F) | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false` | `DOCUMENT_LIBRARY_ENABLED=false` | `documentUnderstandingEnabled=false` | Cosmos store + blob account + Content Understanding endpoint | **High** |
 | Document compute (11C) | `AI4IA_DOCUMENT_COMPUTE_ENABLED=false` | — | `documentComputeEnabled=false` | above **+** Azure OpenAI Responses/code-interpreter resource | **High** |
 | AI Search chunk store (Phase 11) | `AI4IA_SEARCH_ENDPOINT` (set ⇒ used) | — | `searchEnabled=false` + `searchLocation` | Azure AI Search service | **Med** |
-| Memory / semantic recall (Phase 5) | `AI4IA_MEMORY_STORE=disabled` | — (per-doc save/forget UI) | `memoryStore='disabled'` | pgvector/Postgres **or** mem0 backend | **Med-High** |
+| Memory / semantic recall (Phase 5) | `AI4IA_MEMORY_STORE=disabled` | — (per-doc save/forget UI) | `postgresLocation` (empty ⇒ `memoryStore='disabled'`) | Postgres Flexible Server (auto-provisioned: pgvector + `mem0` db) | **Med-High** |
 
 Already **on and usable** (for contrast): chat, push-to-talk STT + TTS, image generation
 (Settings → Imagery), agents, workflows, per-session document attach.
@@ -24,9 +24,10 @@ Already **on and usable** (for contrast): chat, push-to-talk STT + TTS, image ge
 > **Current live-env posture (`infra/main.parameters.json`).** The deployed `slurmfactory`
 > env flips several of these ON: `imageGenerationEnabled`, `videoGenerationEnabled`,
 > `documentUnderstandingEnabled`, `documentComputeEnabled`, `searchEnabled` (Search in
-> `eastus`), and `voiceLiveEnabled` + `voiceLiveToolsEnabled` (origin
-> `https://ai4ia.nomad-analytics.com`). `memoryStore` is left at its bicep default. The
-> "default" columns above are the **code/bicep** defaults — not the live env.
+> `eastus`), `voiceLiveEnabled` + `voiceLiveToolsEnabled` (origin
+> `https://ai4ia.nomad-analytics.com`), and **`postgresLocation=eastus2`** — which derives
+> `memoryStore='mem0'` and provisions the Postgres Flexible Server (real per-user memory).
+> The "default" columns above are the **code/bicep** defaults — not the live env.
 
 ---
 
@@ -135,12 +136,25 @@ Per-user recall of past snippets, embedded + retrieved and injected into chat (h
 snippets, 500 chars each, 2000 total). The store kind **both selects the backend and gates the
 feature** — there is no separate enable flag.
 
-**Enable:** set `AI4IA_MEMORY_STORE` (IaC `memoryStore`) to one of:
+**Enable (live env / IaC):** set `postgresLocation` (param `AI4IA_POSTGRES_LOCATION`, default
+`eastus2`) to a region. A non-empty value flips `postgresEnabled` in `main.bicep`, which:
+- provisions a **Postgres Flexible Server** (`Standard_B2s` Burstable) with the api managed
+  identity as its **Entra admin** (no SQL passwords), the `vector` extension allowlisted, and a
+  `mem0` database;
+- derives `memoryStore='mem0'` and wires the api env (`AI4IA_MEMORY_STORE=mem0`,
+  `AI4IA_POSTGRES_HOST/DATABASE/USER`, `MEM0_TELEMETRY=false`).
+
+The mem0 fact-extraction (`memory_extraction_model`, a **non-reasoning** model) and embedding
+(`memory_embedding_model`) calls resolve through the existing model gateway — no extra endpoint.
+The server name embeds its region, so a later region change yields a fresh resource (ARM enforces
+per-`resourceId` location immutability); override `AI4IA_POSTGRES_LOCATION` only if `eastus2` lacks
+Postgres capacity.
+
+**Enable (manual / dev):** set `AI4IA_MEMORY_STORE` directly to one of:
 - `pgvector` — custom store; requires `postgres_host` + `postgres_user` (AAD role; no SQL passwords).
-- `mem0` — real mem0 backend over pgvector; also runs an LLM fact-extraction pass
-  (`memory_extraction_model`, must be a **non-reasoning** model).
+- `mem0` — real mem0 backend over pgvector; also runs the LLM fact-extraction pass above.
 - `in_memory` — ephemeral, per-replica. **Dev only** (lost on restart/scale).
-- `disabled` — off (default).
+- `disabled` — off (bicep default when `postgresLocation` is empty).
 
 **Caveats / gaps:**
 - **Per-document save/forget UI shipped** (the former PR #14 is merged): ready library docs expose a
