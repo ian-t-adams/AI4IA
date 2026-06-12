@@ -2,6 +2,10 @@
 
 export type MessageRole = "system" | "user" | "assistant";
 export type MessageStatus = "complete" | "streaming" | "cancelled" | "error";
+// How a turn entered the conversation: typed text ("chat") or a Voice Live
+// exchange persisted back into the same session ("voice"). Provenance only —
+// voice turns are ordinary messages and feed model context like any other.
+export type MessageSource = "chat" | "voice";
 
 export interface DeploymentOption {
   region: string;
@@ -60,6 +64,13 @@ export interface Message {
   agent: string | null;
   createdAt: string;
   attachments?: MessageAttachment[];
+  source?: MessageSource;
+}
+
+// A finalized Voice Live turn the web persists back into the shared session.
+export interface VoiceTurnInput {
+  role: "user" | "assistant";
+  text: string;
 }
 
 export interface AgentSummary {

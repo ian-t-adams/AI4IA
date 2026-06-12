@@ -12,6 +12,7 @@ import type {
   UserAgent,
   UserAgentCreate,
   UserAgentUpdate,
+  VoiceTurnInput,
   Workflow,
   WorkflowCreate,
   WorkflowRunResult,
@@ -317,6 +318,21 @@ export async function deleteSession(id: string): Promise<void> {
 export async function listMessages(sessionId: string): Promise<Message[]> {
   return jsonOrThrow(
     await apiFetch(`/api/sessions/${sessionId}/messages`, { cache: "no-store" }),
+  );
+}
+
+// Persists a finalized Voice Live exchange back into a session's transcript so
+// text chat and live voice share one conversation. Returns the created messages.
+export async function appendVoiceTurns(
+  sessionId: string,
+  turns: VoiceTurnInput[],
+): Promise<Message[]> {
+  return jsonOrThrow(
+    await apiFetch(`/api/sessions/${sessionId}/voice-turns`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ turns }),
+    }),
   );
 }
 

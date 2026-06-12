@@ -8,7 +8,7 @@
 // connecting / live / ending / error states. It reuses the `useVoiceLive` audio
 // engine unchanged — this component only renders its structured state.
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentSummary } from "@/lib/types";
+import type { AgentSummary, VoiceTurnInput } from "@/lib/types";
 import {
   useVoiceLive,
   DEFAULT_VOICE,
@@ -16,6 +16,7 @@ import {
   isRealtimeVoice,
   type LiveTurn,
   type VoiceLiveConfig,
+  type VoiceSeedTurn,
 } from "@/lib/voiceLive";
 
 // Where the chosen live-voice persona / agent are remembered across reloads (shared
@@ -146,12 +147,20 @@ export function VoiceLivePanel({
   agents,
   onClose,
   onError,
+  history = [],
+  onConversation,
 }: {
   config: VoiceLiveConfig;
   model: string | null;
   agents: AgentSummary[];
   onClose: () => void;
   onError?: (message: string) => void;
+  // Recent text-chat turns to seed the live session so voice continues the same
+  // conversation. When non-empty the panel shows it's joined to an active chat.
+  history?: VoiceSeedTurn[];
+  // Called once when a live session ends, with the finalized voice turns, so the
+  // host can persist them back into the shared session's transcript.
+  onConversation?: (turns: VoiceTurnInput[]) => void;
 }) {
   // Chosen voice persists across reloads and locks for a session once live (the
   // model fixes the voice after its first audio reply), so the picker is disabled
@@ -204,7 +213,29 @@ export function VoiceLivePanel({
     liveVoice,
     (msg) => onError?.(msg),
     liveAgent || null,
+    history,
   );
+
+  // Persist the finalized voice turns back into the shared session when a live
+  // session ends (the active -> inactive edge). teardown() keeps ``turns`` intact
+  // after stop, so the snapshot here is the full exchange. Refs avoid re-running
+  // this on every turn/ prop change — it fires only on the end edge.
+  const turnsRef = useRef(live.turns);
+  turnsRef.current = live.turns;
+  const onConversationRef = useRef(onConversation);
+  useEffect(() => {
+    onConversationRef.current = onConversation;
+  }, [onConversation]);
+  const wasActiveRef = useRef(false);
+  useEffect(() => {
+    if (wasActiveRef.current && !live.active) {
+      const finalized: VoiceTurnInput[] = turnsRef.current
+        .filter((t) => !t.pending && !t.streaming && t.text.trim())
+        .map((t) => ({ role: t.role, text: t.text.trim() }));
+      if (finalized.length > 0) onConversationRef.current?.(finalized);
+    }
+    wasActiveRef.current = live.active;
+  }, [live.active]);
 
   const agentLabel = liveAgent
     ? enabledAgents.find((a) => a.name === liveAgent)?.displayName ?? liveAgent
@@ -282,7 +313,9 @@ export function VoiceLivePanel({
           <div style={{ display: "flex", flexDirection: "column" }}>
             <strong style={{ fontSize: "1.05em" }}>🎧 Voice Live</strong>
             <span style={{ fontSize: "0.78em", color: "var(--fg-muted)" }}>
-              Real-time speech-to-speech — talk naturally and the assistant talks back.
+              {history.length > 0
+                ? "Continuing your chat — what you say joins the same conversation."
+                : "Real-time speech-to-speech — talk naturally and the assistant talks back."}
             </span>
           </div>
           <button

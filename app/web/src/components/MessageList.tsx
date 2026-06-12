@@ -13,6 +13,7 @@ interface DisplayMessage {
   agent?: string | null;
   pending?: boolean;
   attachments?: MessageAttachment[];
+  source?: Message["source"];
 }
 
 // Renders one tool-generated image. The bytes live behind an authenticated
@@ -393,6 +394,15 @@ function Bubble({
           }}
         >
           <span>{label}</span>
+          {msg.source === "voice" && (
+            <span
+              title="From a Voice Live conversation"
+              aria-label="from voice"
+              style={{ textTransform: "none", letterSpacing: 0 }}
+            >
+              🎧
+            </span>
+          )}
           {msg.agent && (
             <span
               style={{
