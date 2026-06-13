@@ -210,6 +210,26 @@ class Settings(BaseSettings):
     # Max documents retained per user in the library (0 = unlimited).
     document_max_per_user: int = 200
 
+    # --- Custom tools / bring-your-own MCP servers (Phase 12A) ---
+    # Feature-flagged and default-OFF. With custom_tools_enabled=False the
+    # per-user MCP-server registry is never constructed and the
+    # ``/api/agents/mcp-servers`` API refuses (404), so the app's default
+    # behavior is byte-for-byte unchanged. When enabled, a user can register
+    # remote MCP (Streamable HTTP) servers; we connect behind a strict SSRF
+    # egress guard, cache the tools they advertise, and project each onto the
+    # existing tool-governance seam (external risk, host-scoped egress, approval
+    # required unless the server is marked trusted). Secrets are never persisted
+    # in this slice; per-turn execution + durable Key-Vault secrets are a later
+    # sub-phase. Caps are generous defaults the owner can tighten via the
+    # override below.
+    custom_tools_enabled: bool = False
+    # Per-user MCP-server cap (0 = use the module default). The owner wanted the
+    # ability to cap, not tight limits, so this defaults to the generous module
+    # constant unless overridden.
+    custom_tools_max_servers_per_user: int = 0
+    # Discovery connect/handshake timeout (seconds) for the MCP client.
+    custom_tools_discovery_timeout_seconds: float = 15.0
+
     # --- Azure AI Search (indexing/retrieval) ---
     # Endpoint of the provisioned search service, e.g.
     # ``https://<svc>.search.windows.net``. Reached via the api managed identity
@@ -624,6 +644,21 @@ class Settings(BaseSettings):
                 "AI4IA_CODE_INTERPRETER_AUTH_MODE=api_key. Set the key, switch to "
                 "bearer (managed identity), or disable compute with "
                 "AI4IA_DOCUMENT_COMPUTE_ENABLED=false."
+            )
+        if (
+            self.custom_tools_enabled
+            and self.env != Environment.local
+            and self.session_store != SessionStoreKind.cosmos
+        ):
+            # The per-user MCP-server registry is durable cross-session storage; in
+            # a deployed env the in-memory store would silently lose every
+            # registered server on restart/scale. Require the Cosmos store so the
+            # registry is durable, or keep the feature disabled. Local/dev may use
+            # the in-memory store freely.
+            raise RuntimeError(
+                "Custom tools (BYO MCP) require the cosmos session store outside "
+                "local (set AI4IA_SESSION_STORE=cosmos), or disable it with "
+                "AI4IA_CUSTOM_TOOLS_ENABLED=false."
             )
 
 

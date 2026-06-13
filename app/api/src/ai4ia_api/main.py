@@ -12,6 +12,10 @@ from fastapi.responses import JSONResponse
 from .auth.factory import build_auth_provider
 from .agents.agent_catalog import load_agent_catalog
 from .agents.factory import build_user_agent_store
+from .agents.mcp_client import HttpxMcpConnector
+from .agents.mcp_servers import MAX_MCP_SERVERS_PER_USER
+from .agents.mcp_service import McpServerService
+from .agents.mcp_store import build_user_mcp_server_store
 from .agents.service import AgentService
 from .agents.tool_exec import attachable_tool_names, build_tools
 from .catalog import load_catalog
@@ -45,6 +49,7 @@ from .routers import entitlements as entitlements_router
 from .routers import health as health_router
 from .routers import images as images_router
 from .routers import library as library_router
+from .routers import mcp_servers as mcp_servers_router
 from .routers import realtime as realtime_router
 from .routers import sessions as sessions_router
 from .routers import usage as usage_router
@@ -111,6 +116,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # surface, so a workflow and an agent may share a name. Not on the chat hot
         # path, so reads do NOT fail open — a store error surfaces to the caller.
         app.state.workflow_service = WorkflowService(build_workflow_store(settings))
+        # User-registered MCP servers / BYO custom tools (Phase 12A). Feature-
+        # flagged + default-OFF: when settings.custom_tools_enabled is false the
+        # service is None, so the ``/api/agents/mcp-servers`` API refuses (404) and
+        # nothing is constructed — zero regression by default. When enabled, the
+        # service owns the per-user registry (durable in Cosmos), the strict SSRF
+        # egress guard on every endpoint, and tool discovery via the MCP client.
+        if settings.custom_tools_enabled:
+            connector = HttpxMcpConnector(
+                timeout_s=settings.custom_tools_discovery_timeout_seconds
+            )
+            max_servers = (
+                settings.custom_tools_max_servers_per_user
+                if settings.custom_tools_max_servers_per_user > 0
+                else MAX_MCP_SERVERS_PER_USER
+            )
+            app.state.mcp_service = McpServerService(
+                build_user_mcp_server_store(settings),
+                connector=connector,
+                max_servers=max_servers,
+            )
+        else:
+            app.state.mcp_service = None
         # Per-user memory (Phase 5). Disabled by default -> NoopMemoryService, so
         # the chat path can call it unconditionally with no behavior change.
         app.state.memory = build_memory_service(
@@ -225,6 +252,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.workflow_service.close()
             except Exception:  # noqa: BLE001
                 logger.warning("workflow service close failed", exc_info=True)
+            mcp_service = getattr(app.state, "mcp_service", None)
+            if mcp_service is not None:
+                try:
+                    await mcp_service.close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("mcp service close failed", exc_info=True)
             repo = app.state.session_repo
             close = getattr(repo, "close", None)
             if close is not None:
@@ -331,6 +364,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router.router)
     app.include_router(catalog_router.router)
     app.include_router(agents_router.router)
+    app.include_router(mcp_servers_router.router)
     app.include_router(workflows_router.router)
     app.include_router(sessions_router.router)
     app.include_router(chat_router.router)
