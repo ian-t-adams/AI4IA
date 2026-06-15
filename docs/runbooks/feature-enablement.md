@@ -25,8 +25,10 @@ Already **on and usable** (for contrast): chat, push-to-talk STT + TTS, image ge
 > env flips several of these ON: `imageGenerationEnabled`, `videoGenerationEnabled`,
 > `documentUnderstandingEnabled`, `documentComputeEnabled`, `searchEnabled` (Search in
 > `eastus`), `voiceLiveEnabled` + `voiceLiveToolsEnabled` (origin
-> `https://ai4ia.nomad-analytics.com`), and **`postgresLocation=eastus2`** — which derives
+> `https://ai4ia.nomad-analytics.com`), and **`postgresLocation=centralus`** — which derives
 > `memoryStore='mem0'` and provisions the Postgres Flexible Server (real per-user memory).
+> (`centralus` rather than the `eastus2` app region because the `slurmfactory` subscription is
+> offer-restricted from provisioning Postgres Flexible Server in `eastus2`/`eastus`/`westus2`.)
 > The "default" columns above are the **code/bicep** defaults — not the live env.
 
 ---
@@ -137,7 +139,7 @@ snippets, 500 chars each, 2000 total). The store kind **both selects the backend
 feature** — there is no separate enable flag.
 
 **Enable (live env / IaC):** set `postgresLocation` (param `AI4IA_POSTGRES_LOCATION`, default
-`eastus2`) to a region. A non-empty value flips `postgresEnabled` in `main.bicep`, which:
+`centralus`) to a region. A non-empty value flips `postgresEnabled` in `main.bicep`, which:
 - provisions a **Postgres Flexible Server** (`Standard_B2s` Burstable) with the api managed
   identity as its **Entra admin** (no SQL passwords), the `vector` extension allowlisted, and a
   `mem0` database;
@@ -147,8 +149,11 @@ feature** — there is no separate enable flag.
 The mem0 fact-extraction (`memory_extraction_model`, a **non-reasoning** model) and embedding
 (`memory_embedding_model`) calls resolve through the existing model gateway — no extra endpoint.
 The server name embeds its region, so a later region change yields a fresh resource (ARM enforces
-per-`resourceId` location immutability); override `AI4IA_POSTGRES_LOCATION` only if `eastus2` lacks
-Postgres capacity.
+per-`resourceId` location immutability). The default is `centralus`: the live `slurmfactory`
+subscription is **offer-restricted** from provisioning Postgres Flexible Server in the `eastus2`
+app region (and `eastus`/`westus2`), so Postgres lives in the nearest unrestricted region. Override
+`AI4IA_POSTGRES_LOCATION` if a different region is needed (verify it is unrestricted first, e.g.
+`az postgres flexible-server list-skus --location <region>`).
 
 **Enable (manual / dev):** set `AI4IA_MEMORY_STORE` directly to one of:
 - `pgvector` — custom store; requires `postgres_host` + `postgres_user` (AAD role; no SQL passwords).
