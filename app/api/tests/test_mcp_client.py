@@ -11,12 +11,17 @@ import json
 import httpx
 import pytest
 
-from ai4ia_api.agents.mcp_client import HttpxMcpConnector, McpAuth
+from ai4ia_api.agents.mcp_client import (
+    HttpxMcpConnector,
+    McpAuth,
+    _PinnedHttpsTransport,
+)
 from ai4ia_api.agents.mcp_servers import (
     MAX_TOOLS_PER_SERVER,
     McpAuthMode,
     McpConnectionError,
 )
+from ai4ia_api.agents.ssrf import validate_public_https_url
 
 _ENDPOINT = "https://mcp.example.com/rpc"
 
@@ -343,3 +348,77 @@ async def test_call_tool_sends_auth_header():
         arguments={},
     )
     assert captured["authorization"] == "Bearer tok"
+
+
+# --- Transport-owned IP pinning (Phase 12B Increment B) ----------------------
+
+
+class _SpyTransport(httpx.AsyncBaseTransport):
+    """Records the request it receives and returns a canned 200."""
+
+    def __init__(self) -> None:
+        self.requests: list[httpx.Request] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    async def aclose(self) -> None:  # pragma: no cover - nothing to close
+        return None
+
+
+async def test_pinned_transport_rewrites_to_ip_preserving_host_and_sni():
+    spy = _SpyTransport()
+    transport = _PinnedHttpsTransport(_only_resolver(["93.184.216.34"]), inner=spy)
+    async with httpx.AsyncClient(transport=transport) as client:
+        resp = await client.post(_ENDPOINT, json={"hi": 1})
+
+    assert resp.status_code == 200
+    sent = spy.requests[0]
+    # The socket connects to the validated IP, but the Host header and TLS SNI
+    # stay bound to the real hostname so cert verification still works.
+    assert sent.url.host == "93.184.216.34"
+    assert sent.headers.get("Host") == "mcp.example.com"
+    assert sent.extensions.get("sni_hostname") == "mcp.example.com"
+
+
+async def test_pinned_transport_rejects_non_https():
+    spy = _SpyTransport()
+    transport = _PinnedHttpsTransport(_only_resolver(["93.184.216.34"]), inner=spy)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(Exception):  # SsrfError propagates through the client
+            await client.post("http://mcp.example.com/rpc", json={})
+    assert spy.requests == []
+
+
+async def test_call_tool_rejects_dns_rebind_at_socket_layer():
+    # A resolver that is public the first time (so an up-front validate passes)
+    # then private on the next resolution — a classic DNS rebind between validate
+    # and connect.
+    calls = {"n": 0}
+
+    def rebinding_resolver(_host: str) -> list[str]:
+        calls["n"] += 1
+        return ["93.184.216.34"] if calls["n"] == 1 else ["127.0.0.1"]
+
+    # Up-front host validation passes: the name is public at validate time.
+    assert (
+        validate_public_https_url(_ENDPOINT, resolver=rebinding_resolver)
+        == "mcp.example.com"
+    )
+
+    # The connector uses its OWN client (no injected transport), so the
+    # transport-owned guard re-resolves at connect time and refuses the now-private
+    # address before any bytes leave the process.
+    connector = HttpxMcpConnector(resolver=rebinding_resolver)
+    with pytest.raises(McpConnectionError, match="permitted egress"):
+        await connector.call_tool(
+            endpoint=_ENDPOINT, auth=McpAuth(), tool="t", arguments={}
+        )
+    # validate consumed resolution #1; the connect-time re-resolve was #2 and was
+    # rejected before a socket opened (no further resolutions).
+    assert calls["n"] == 2
+
+
+def _only_resolver(addr: list[str]):
+    return lambda _host: list(addr)

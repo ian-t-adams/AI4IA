@@ -33,6 +33,7 @@ from .mcp_servers import (
     McpAuthMode,
     McpConnectionError,
 )
+from .ssrf import Resolver, SsrfError, resolve_pinned_ip
 
 # The MCP protocol revision we advertise. Servers negotiate down if needed; this
 # is sent both in the initialize params and as a header on later requests.
@@ -80,6 +81,44 @@ class McpConnector(Protocol):
     ) -> McpToolResult: ...
 
 
+class _PinnedHttpsTransport(httpx.AsyncBaseTransport):
+    """Pins each outbound request to a re-validated public IP at connect time.
+
+    The high-level :func:`~ai4ia_api.agents.ssrf.validate_public_https_url` check
+    happens once, before a turn runs; the address a hostname resolves to can change
+    before the socket actually connects (DNS rebinding). This transport closes that
+    window: just before delegating to the real transport it re-resolves the request
+    host through the injected resolver, rejects any non-public address, and rewrites
+    the URL to the pinned IP — while preserving the original ``Host`` header (set
+    when the request was built) and the TLS SNI/cert hostname (via the
+    ``sni_hostname`` request extension). The guard runs *before* any bytes leave the
+    process, so a rebind to a private/loopback/link-local address is refused at the
+    socket layer no matter which loop drives the call.
+    """
+
+    def __init__(
+        self, resolver: Resolver | None, *, inner: httpx.AsyncBaseTransport
+    ) -> None:
+        self._resolver = resolver
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        url = request.url
+        if url.scheme != "https":
+            raise SsrfError("Endpoint URL must use https://.")
+        original_host = url.host
+        pinned = resolve_pinned_ip(original_host, resolver=self._resolver)
+        if pinned != original_host:
+            # Connect to the validated IP, but keep TLS SNI + certificate
+            # verification (and the already-set Host header) bound to the real host.
+            request.url = url.copy_with(host=pinned)
+            request.extensions = {**request.extensions, "sni_hostname": original_host}
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
 class HttpxMcpConnector:
     """Live MCP Streamable-HTTP connector.
 
@@ -87,6 +126,13 @@ class HttpxMcpConnector:
     otherwise a short-lived client is created per call with redirects disabled
     (a redirect could otherwise bounce an already-validated host to an internal
     one — SSRF defense in depth on top of the URL guard).
+
+    When the connector creates its own client (the production path), every request
+    is routed through :class:`_PinnedHttpsTransport`, which re-resolves the host and
+    pins the socket to a re-validated **public** IP at connect time. This is a
+    transport-owned SSRF guard: it survives a DNS rebind between an up-front
+    :func:`~ai4ia_api.agents.ssrf.validate_public_https_url` and the actual connect,
+    and it protects the egress path regardless of which loop drives invocation.
     """
 
     def __init__(
@@ -95,17 +141,31 @@ class HttpxMcpConnector:
         client: httpx.AsyncClient | None = None,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         max_bytes: int = _DEFAULT_MAX_BYTES,
+        resolver: Resolver | None = None,
     ) -> None:
         self._client = client
         self._timeout_s = timeout_s
         self._max_bytes = max_bytes
+        self._resolver = resolver
+
+    def _new_client(self) -> httpx.AsyncClient:
+        """Build a short-lived client whose socket connects are IP-pinned.
+
+        Redirects stay disabled and the transport re-resolves + re-validates the
+        host at connect time, so the egress target can never drift to a private
+        address between validation and connect.
+        """
+        transport = _PinnedHttpsTransport(
+            self._resolver, inner=httpx.AsyncHTTPTransport()
+        )
+        return httpx.AsyncClient(
+            timeout=self._timeout_s, follow_redirects=False, transport=transport
+        )
 
     async def discover(self, *, endpoint: str, auth: McpAuth) -> list[DiscoveredTool]:
         if self._client is not None:
             return await self._discover_with(self._client, endpoint, auth)
-        async with httpx.AsyncClient(
-            timeout=self._timeout_s, follow_redirects=False
-        ) as client:
+        async with self._new_client() as client:
             return await self._discover_with(client, endpoint, auth)
 
     async def call_tool(
@@ -113,9 +173,7 @@ class HttpxMcpConnector:
     ) -> McpToolResult:
         if self._client is not None:
             return await self._call_with(self._client, endpoint, auth, tool, arguments)
-        async with httpx.AsyncClient(
-            timeout=self._timeout_s, follow_redirects=False
-        ) as client:
+        async with self._new_client() as client:
             return await self._call_with(client, endpoint, auth, tool, arguments)
 
     async def _open_session(
@@ -197,6 +255,12 @@ class HttpxMcpConnector:
         body = {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params}
         try:
             resp = await client.post(endpoint, headers=headers, json=body)
+        except SsrfError as exc:
+            # The transport-owned pin re-resolved the host to a non-public address
+            # (DNS rebind) and refused to connect — surface as a connection error.
+            raise McpConnectionError(
+                f"{method}: endpoint is not a permitted egress target: {exc}"
+            ) from exc
         except httpx.HTTPError as exc:
             raise McpConnectionError(f"{method}: request failed: {exc}") from exc
         if resp.status_code >= 400:
@@ -222,8 +286,14 @@ class HttpxMcpConnector:
         body = {"jsonrpc": "2.0", "method": method}
         try:
             await client.post(endpoint, headers=headers, json=body)
+        except SsrfError as exc:
+            # A rebind that flips after the session opened must still fail closed,
+            # even on a fire-and-forget notification.
+            raise McpConnectionError(
+                f"{method}: endpoint is not a permitted egress target: {exc}"
+            ) from exc
         except httpx.HTTPError:
-            # A notification has no response; a failure here shouldn't abort
+            # A notification has no response; a transport hiccup here shouldn't abort
             # discovery (the subsequent tools/list call will surface real issues).
             return
 

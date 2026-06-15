@@ -120,6 +120,55 @@ def validate_public_https_url(url: str, *, resolver: Resolver | None = None) -> 
     return host
 
 
+def resolve_pinned_ip(host: str, *, resolver: Resolver | None = None) -> str:
+    """Resolve ``host`` to a public IP that an outbound socket can be pinned to.
+
+    This is the *transport-owned* half of the SSRF defense. :func:`validate_public_https_url`
+    checks a host string up front, but the address a name resolves to can change
+    between that check and the actual ``connect()`` (DNS rebinding). The transport
+    calls this immediately before connecting: the host is re-resolved through the
+    injected ``resolver``, **every** returned address must be a public unicast
+    address, and the first address is returned so the caller can connect to that
+    exact IP (while preserving the original ``Host`` header + TLS SNI). A name that
+    was public at validate time but flips to a private/loopback/link-local address
+    before connect is therefore rejected at the socket layer.
+
+    Raises :class:`SsrfError` if the host is missing, unresolvable, or resolves to
+    any non-public address. A literal IP host is judged directly and returned as-is.
+    """
+    if not host:
+        raise SsrfError("Endpoint host is required.")
+    host = host.lower()
+
+    literal_ip = _parse_ip_literal(host)
+    if literal_ip is not None:
+        if _is_blocked_ip(literal_ip):
+            raise SsrfError("Endpoint resolves to a non-public address.")
+        return host
+
+    resolve = resolver or _default_resolver
+    try:
+        addresses = resolve(host)
+    except (OSError, socket.gaierror) as exc:
+        raise SsrfError(f"Endpoint host could not be resolved: {host}.") from exc
+    if not addresses:
+        raise SsrfError(f"Endpoint host did not resolve to any address: {host}.")
+
+    pinned: str | None = None
+    for raw in addresses:
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError as exc:
+            raise SsrfError(f"Endpoint host resolved to an invalid address: {raw}.") from exc
+        if _is_blocked_ip(ip):
+            # Reject the whole host if any record is internal (rebinding defense).
+            raise SsrfError("Endpoint resolves to a non-public address.")
+        if pinned is None:
+            pinned = raw
+    assert pinned is not None  # non-empty list with every address public
+    return pinned
+
+
 def _parse_ip_literal(host: str) -> ipaddress._BaseAddress | None:
     """Return the IP if ``host`` is an IPv4/IPv6 literal, else ``None``.
 

@@ -12,6 +12,7 @@ import pytest
 from ai4ia_api.agents.ssrf import (
     MAX_URL_LEN,
     SsrfError,
+    resolve_pinned_ip,
     validate_public_https_url,
 )
 
@@ -119,3 +120,44 @@ def test_rejects_unresolvable_host():
 def test_rejects_host_that_resolves_to_nothing():
     with pytest.raises(SsrfError):
         validate_public_https_url("https://empty.example/rpc", resolver=_only([]))
+
+
+# --- resolve_pinned_ip (transport-owned connect-time guard, Phase 12B) --------
+
+
+def test_pinned_ip_returns_first_public_address():
+    pinned = resolve_pinned_ip(
+        "mcp.example.com", resolver=_only(["93.184.216.34", "93.184.216.35"])
+    )
+    assert pinned == "93.184.216.34"
+
+
+def test_pinned_ip_returns_literal_ip_without_resolving():
+    def explode(_host):  # pragma: no cover - must never run
+        raise AssertionError("resolver should not be called for an IP literal")
+
+    assert resolve_pinned_ip("93.184.216.34", resolver=explode) == "93.184.216.34"
+
+
+def test_pinned_ip_rejects_private_literal():
+    with pytest.raises(SsrfError):
+        resolve_pinned_ip("127.0.0.1", resolver=_only(_PUBLIC))
+
+
+def test_pinned_ip_rejects_any_private_record():
+    # A rebind that returns one internal record must fail the whole host even if
+    # another record is public — the socket could land on the internal one.
+    with pytest.raises(SsrfError):
+        resolve_pinned_ip(
+            "rebind.example", resolver=_only(["93.184.216.34", "10.0.0.1"])
+        )
+
+
+def test_pinned_ip_rejects_unresolvable_and_empty():
+    def boom(_host):
+        raise OSError("nxdomain")
+
+    with pytest.raises(SsrfError):
+        resolve_pinned_ip("nope.example", resolver=boom)
+    with pytest.raises(SsrfError):
+        resolve_pinned_ip("empty.example", resolver=_only([]))
