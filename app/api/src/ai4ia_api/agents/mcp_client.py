@@ -82,24 +82,22 @@ class McpConnector(Protocol):
 
 
 class _PinnedHttpsTransport(httpx.AsyncBaseTransport):
-    """Pins each outbound request to a re-validated public IP at connect time.
+    """Pins every outbound request to a single pre-validated public IP.
 
-    The high-level :func:`~ai4ia_api.agents.ssrf.validate_public_https_url` check
-    happens once, before a turn runs; the address a hostname resolves to can change
-    before the socket actually connects (DNS rebinding). This transport closes that
-    window: just before delegating to the real transport it re-resolves the request
-    host through the injected resolver, rejects any non-public address, and rewrites
-    the URL to the pinned IP — while preserving the original ``Host`` header (set
-    when the request was built) and the TLS SNI/cert hostname (via the
-    ``sni_hostname`` request extension). The guard runs *before* any bytes leave the
-    process, so a rebind to a private/loopback/link-local address is refused at the
-    socket layer no matter which loop drives the call.
+    The connector resolves the endpoint host **once** (through the injected
+    resolver) and validates that every returned address is public, then constructs
+    this transport bound to that one pinned IP. For each request it rewrites the URL
+    host to the pinned IP — so the OS-level ``connect()`` dials exactly that address
+    and httpx/httpcore has no hostname left to re-resolve — while preserving the
+    original ``Host`` header (set when the request was built) and the TLS SNI/cert
+    hostname (via the ``sni_hostname`` request extension). Because the IP was fixed
+    by a single up-front resolve+validate, there is no second, independent
+    resolution between validation and connect for a DNS rebind to exploit; cert
+    verification still runs against the real hostname, never the IP.
     """
 
-    def __init__(
-        self, resolver: Resolver | None, *, inner: httpx.AsyncBaseTransport
-    ) -> None:
-        self._resolver = resolver
+    def __init__(self, pinned_ip: str, *, inner: httpx.AsyncBaseTransport) -> None:
+        self._pinned_ip = pinned_ip
         self._inner = inner
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
@@ -107,11 +105,10 @@ class _PinnedHttpsTransport(httpx.AsyncBaseTransport):
         if url.scheme != "https":
             raise SsrfError("Endpoint URL must use https://.")
         original_host = url.host
-        pinned = resolve_pinned_ip(original_host, resolver=self._resolver)
-        if pinned != original_host:
-            # Connect to the validated IP, but keep TLS SNI + certificate
-            # verification (and the already-set Host header) bound to the real host.
-            request.url = url.copy_with(host=pinned)
+        if original_host != self._pinned_ip:
+            # Connect to the pinned IP, but keep TLS SNI + certificate verification
+            # (and the already-set Host header) bound to the real hostname.
+            request.url = url.copy_with(host=self._pinned_ip)
             request.extensions = {**request.extensions, "sni_hostname": original_host}
         return await self._inner.handle_async_request(request)
 
@@ -127,12 +124,15 @@ class HttpxMcpConnector:
     (a redirect could otherwise bounce an already-validated host to an internal
     one — SSRF defense in depth on top of the URL guard).
 
-    When the connector creates its own client (the production path), every request
-    is routed through :class:`_PinnedHttpsTransport`, which re-resolves the host and
-    pins the socket to a re-validated **public** IP at connect time. This is a
-    transport-owned SSRF guard: it survives a DNS rebind between an up-front
-    :func:`~ai4ia_api.agents.ssrf.validate_public_https_url` and the actual connect,
-    and it protects the egress path regardless of which loop drives invocation.
+    When the connector creates its own client (the production path), it resolves the
+    endpoint host **once** through :func:`~ai4ia_api.agents.ssrf.resolve_pinned_ip`
+    (rejecting any non-public address) and routes every request through
+    :class:`_PinnedHttpsTransport` bound to that one IP. This is a transport-owned
+    SSRF guard with a single resolve->validate->pin shared by ``discover`` and
+    ``call_tool``: the socket connects to exactly the validated IP, so a DNS rebind
+    cannot slip a private address in between validation and connect, and TLS SNI +
+    cert verification stay bound to the real hostname regardless of which loop drives
+    invocation.
     """
 
     def __init__(
@@ -148,24 +148,48 @@ class HttpxMcpConnector:
         self._max_bytes = max_bytes
         self._resolver = resolver
 
-    def _new_client(self) -> httpx.AsyncClient:
-        """Build a short-lived client whose socket connects are IP-pinned.
+    def _new_client(self, pinned_ip: str) -> httpx.AsyncClient:
+        """Build a short-lived client whose socket connects are pinned to ``pinned_ip``.
 
-        Redirects stay disabled and the transport re-resolves + re-validates the
-        host at connect time, so the egress target can never drift to a private
-        address between validation and connect.
+        Redirects stay disabled and every request is rewritten to the pre-validated
+        IP, so the egress target is fixed by the single up-front resolve+validate and
+        can never drift to a private address before connect.
         """
-        transport = _PinnedHttpsTransport(
-            self._resolver, inner=httpx.AsyncHTTPTransport()
-        )
+        transport = _PinnedHttpsTransport(pinned_ip, inner=httpx.AsyncHTTPTransport())
         return httpx.AsyncClient(
             timeout=self._timeout_s, follow_redirects=False, transport=transport
         )
 
+    def _pin_for(self, endpoint: str) -> str:
+        """Resolve+validate the endpoint host ONCE and return the public IP to pin.
+
+        The single chokepoint for the transport-owned guard: the scheme must be
+        https and the host must resolve to only public addresses (see
+        :func:`~ai4ia_api.agents.ssrf.resolve_pinned_ip`). The returned IP is what
+        the per-call client's socket connects to — there is no later, independent
+        resolution for a DNS rebind to exploit.
+        """
+        url = httpx.URL(endpoint)
+        if url.scheme != "https":
+            raise SsrfError("Endpoint URL must use https://.")
+        host = url.host
+        if not host:
+            raise SsrfError("Endpoint URL must include a host.")
+        return resolve_pinned_ip(host, resolver=self._resolver)
+
+    def _pin_or_raise(self, endpoint: str, method_label: str) -> str:
+        try:
+            return self._pin_for(endpoint)
+        except SsrfError as exc:
+            raise McpConnectionError(
+                f"{method_label}: endpoint is not a permitted egress target: {exc}"
+            ) from exc
+
     async def discover(self, *, endpoint: str, auth: McpAuth) -> list[DiscoveredTool]:
         if self._client is not None:
             return await self._discover_with(self._client, endpoint, auth)
-        async with self._new_client() as client:
+        pinned_ip = self._pin_or_raise(endpoint, "tools/list")
+        async with self._new_client(pinned_ip) as client:
             return await self._discover_with(client, endpoint, auth)
 
     async def call_tool(
@@ -173,7 +197,8 @@ class HttpxMcpConnector:
     ) -> McpToolResult:
         if self._client is not None:
             return await self._call_with(self._client, endpoint, auth, tool, arguments)
-        async with self._new_client() as client:
+        pinned_ip = self._pin_or_raise(endpoint, "tools/call")
+        async with self._new_client(pinned_ip) as client:
             return await self._call_with(client, endpoint, auth, tool, arguments)
 
     async def _open_session(
@@ -256,8 +281,9 @@ class HttpxMcpConnector:
         try:
             resp = await client.post(endpoint, headers=headers, json=body)
         except SsrfError as exc:
-            # The transport-owned pin re-resolved the host to a non-public address
-            # (DNS rebind) and refused to connect — surface as a connection error.
+            # Defense in depth: the pinned transport refused the target (e.g. a
+            # non-https URL slipped through). The primary rebind rejection happens
+            # up front in _pin_for, before this client is even built.
             raise McpConnectionError(
                 f"{method}: endpoint is not a permitted egress target: {exc}"
             ) from exc
@@ -287,8 +313,9 @@ class HttpxMcpConnector:
         try:
             await client.post(endpoint, headers=headers, json=body)
         except SsrfError as exc:
-            # A rebind that flips after the session opened must still fail closed,
-            # even on a fire-and-forget notification.
+            # Defense in depth: the pinned transport refused the target. The primary
+            # rebind rejection happens up front in _pin_for; a notification must still
+            # fail closed if it somehow reaches here.
             raise McpConnectionError(
                 f"{method}: endpoint is not a permitted egress target: {exc}"
             ) from exc

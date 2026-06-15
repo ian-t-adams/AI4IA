@@ -403,16 +403,37 @@ def _real_inner_with_backend(backend: _CapturingBackend) -> httpx.AsyncHTTPTrans
     return inner
 
 
+class _MockInnerConnector(HttpxMcpConnector):
+    """Connector that keeps the real resolve+pin but mocks the inner transport.
+
+    Exercises the own-client path (single resolve->validate->pin) against canned
+    MCP responses, so a test can assert the pin was resolved exactly once and that
+    every request in the session was rewritten to the pinned IP — without a socket.
+    """
+
+    def __init__(self, handler, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._handler = handler
+
+    def _new_client(self, pinned_ip: str) -> httpx.AsyncClient:  # type: ignore[override]
+        transport = _PinnedHttpsTransport(
+            pinned_ip, inner=httpx.MockTransport(self._handler)
+        )
+        return httpx.AsyncClient(
+            timeout=self._timeout_s, follow_redirects=False, transport=transport
+        )
+
+
 async def test_pinned_transport_rewrites_to_ip_preserving_host_and_sni():
     spy = _SpyTransport()
-    transport = _PinnedHttpsTransport(_only_resolver(["93.184.216.34"]), inner=spy)
+    transport = _PinnedHttpsTransport("93.184.216.34", inner=spy)
     async with httpx.AsyncClient(transport=transport) as client:
         resp = await client.post(_ENDPOINT, json={"hi": 1})
 
     assert resp.status_code == 200
     sent = spy.requests[0]
-    # The socket connects to the validated IP, but the Host header and TLS SNI
-    # stay bound to the real hostname so cert verification still works.
+    # The socket connects to the pinned IP, but the Host header and TLS SNI stay
+    # bound to the real hostname so cert verification still works.
     assert sent.url.host == "93.184.216.34"
     assert sent.headers.get("Host") == "mcp.example.com"
     assert sent.extensions.get("sni_hostname") == "mcp.example.com"
@@ -427,7 +448,7 @@ async def test_pinned_transport_tcp_connects_to_pinned_ip_not_hostname():
     # connect_tcp boundary: the OS-level connect must target the pinned IP.
     backend = _CapturingBackend()
     transport = _PinnedHttpsTransport(
-        _only_resolver(["93.184.216.34"]), inner=_real_inner_with_backend(backend)
+        "93.184.216.34", inner=_real_inner_with_backend(backend)
     )
     async with httpx.AsyncClient(transport=transport) as client:
         with pytest.raises(httpx.ConnectError):
@@ -438,40 +459,81 @@ async def test_pinned_transport_tcp_connects_to_pinned_ip_not_hostname():
 
 async def test_pinned_transport_rejects_non_https():
     spy = _SpyTransport()
-    transport = _PinnedHttpsTransport(_only_resolver(["93.184.216.34"]), inner=spy)
+    transport = _PinnedHttpsTransport("93.184.216.34", inner=spy)
     async with httpx.AsyncClient(transport=transport) as client:
-        with pytest.raises(Exception):  # SsrfError propagates through the client
+        with pytest.raises(SsrfError):  # transport refuses a non-https target
             await client.post("http://mcp.example.com/rpc", json={})
     assert spy.requests == []
 
 
-async def test_pinned_transport_rebind_rejected_before_any_tcp_connect():
-    # The canonical rebind: a name that is PUBLIC at validate time but PRIVATE at
-    # connect time must be refused at the socket layer, before any connect_tcp.
+async def test_call_tool_resolves_once_and_pins_every_request():
+    # Fail-closed single resolution: the host is resolved+validated exactly once for
+    # the whole session (initialize + notify + tools/call), and every request is
+    # rewritten to that one pinned IP — no per-request re-resolution to rebind.
+    calls = {"n": 0}
+
+    def counting_public(_host: str) -> list[str]:
+        calls["n"] += 1
+        return ["93.184.216.34"]
+
+    seen_hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_hosts.append(request.url.host)
+        method = json.loads(request.content)["method"]
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return _json(_call_result([{"type": "text", "text": "ok"}]))
+
+    connector = _MockInnerConnector(handler, resolver=counting_public)
+    result = await connector.call_tool(
+        endpoint=_ENDPOINT, auth=McpAuth(), tool="t", arguments={}
+    )
+
+    assert result.content == "ok"
+    # One resolve+validate for the entire session, not a fresh lookup per request.
+    assert calls["n"] == 1
+    # Every request was pinned to the validated IP (no hostname reached connect).
+    assert set(seen_hosts) == {"93.184.216.34"}
+
+
+async def test_call_tool_rebind_rejected_before_client_built():
+    # The hard rebind: PUBLIC at validate time, PRIVATE at the connector's single pin
+    # resolution -> rejected before any client (hence any socket) is constructed.
     calls = {"n": 0}
 
     def rebinding(_host: str) -> list[str]:
         calls["n"] += 1
         return ["93.184.216.34"] if calls["n"] == 1 else ["127.0.0.1"]
 
-    # Validate-time resolution (#1) is public, so an up-front guard would pass.
+    # An up-front validate (resolution #1) sees the public address and passes.
     assert validate_public_https_url(_ENDPOINT, resolver=rebinding) == "mcp.example.com"
 
-    backend = _CapturingBackend()
-    transport = _PinnedHttpsTransport(
-        rebinding, inner=_real_inner_with_backend(backend)
-    )
-    async with httpx.AsyncClient(transport=transport) as client:
-        with pytest.raises(SsrfError):
-            await client.post(_ENDPOINT, json={})
-    # The connect-time re-resolution (#2) returned a private IP and was rejected
-    # *before* the transport ever attempted a TCP connect.
+    built = {"n": 0}
+
+    class _NoBuild(HttpxMcpConnector):
+        def _new_client(self, pinned_ip: str) -> httpx.AsyncClient:  # type: ignore[override]
+            built["n"] += 1
+            raise AssertionError("client must not be built once the pin rejects")
+
+    connector = _NoBuild(resolver=rebinding)
+    with pytest.raises(McpConnectionError, match="permitted egress"):
+        await connector.call_tool(
+            endpoint=_ENDPOINT, auth=McpAuth(), tool="t", arguments={}
+        )
+    # The connector's single pin resolution (#2) returned a private address and was
+    # rejected; no client (hence no socket) was ever constructed.
     assert calls["n"] == 2
-    assert backend.hosts == []
+    assert built["n"] == 0
 
 
 async def test_call_tool_rejects_dns_rebind_at_socket_layer():
-    # End-to-end through the connector: same rebind, surfaced as McpConnectionError.
+    # End-to-end through the connector on its REAL own-client path (real
+    # AsyncHTTPTransport): same rebind, surfaced as McpConnectionError. Because the
+    # connector resolves+validates ONCE at session setup and would pin the socket to
+    # that IP, a private result there is refused before any bytes leave the process.
     calls = {"n": 0}
 
     def rebinding_resolver(_host: str) -> list[str]:
@@ -484,18 +546,11 @@ async def test_call_tool_rejects_dns_rebind_at_socket_layer():
         == "mcp.example.com"
     )
 
-    # The connector uses its OWN client (no injected transport), so the
-    # transport-owned guard re-resolves at connect time and refuses the now-private
-    # address before any bytes leave the process.
     connector = HttpxMcpConnector(resolver=rebinding_resolver)
     with pytest.raises(McpConnectionError, match="permitted egress"):
         await connector.call_tool(
             endpoint=_ENDPOINT, auth=McpAuth(), tool="t", arguments={}
         )
-    # validate consumed resolution #1; the connect-time re-resolve was #2 and was
-    # rejected before a socket opened (no further resolutions).
+    # validate consumed resolution #1; the connector's single pin resolve was #2 and
+    # was rejected before a socket opened (no further resolutions).
     assert calls["n"] == 2
-
-
-def _only_resolver(addr: list[str]):
-    return lambda _host: list(addr)
