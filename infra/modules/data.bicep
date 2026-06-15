@@ -121,6 +121,10 @@ var containers = [
     partitionKey: '/userId'
   }
   {
+    name: 'mcpServers'
+    partitionKey: '/userId'
+  }
+  {
     name: 'usage'
     partitionKey: '/userId'
   }
