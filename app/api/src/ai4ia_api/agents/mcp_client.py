@@ -11,8 +11,11 @@ live :class:`HttpxMcpConnector`'s framing/auth/error handling is unit-tested
 with ``httpx.MockTransport`` (no live server required).
 
 Discovery performs the minimal MCP flow: ``initialize`` → ``notifications/
-initialized`` → ``tools/list``. Execution of a discovered tool per chat turn is
-a later sub-phase; this module only lists what a server offers.
+initialized`` → ``tools/list``. Per-turn *execution* (Phase 12B Increment B) adds
+:meth:`McpConnector.call_tool`, which reuses the same handshake then issues a
+``tools/call`` request and parses the returned content blocks into a bounded
+string — so a governed :class:`~ai4ia_api.agents.tool_exec.ToolDefinition` can run
+a remote tool through the exact same registry/redaction machinery as the built-ins.
 """
 from __future__ import annotations
 
@@ -55,8 +58,26 @@ class McpAuth:
         return {}
 
 
+@dataclass(frozen=True)
+class McpToolResult:
+    """The outcome of one ``tools/call`` invocation.
+
+    ``content`` is the server's textual content blocks flattened into a single,
+    size-bounded string (binary/non-text blocks are noted by type, never inlined);
+    ``is_error`` mirrors the MCP ``result.isError`` flag so the caller can surface a
+    remote tool error as a structured tool result rather than a transport failure.
+    """
+
+    content: str
+    is_error: bool = False
+
+
 class McpConnector(Protocol):
     async def discover(self, *, endpoint: str, auth: McpAuth) -> list[DiscoveredTool]: ...
+
+    async def call_tool(
+        self, *, endpoint: str, auth: McpAuth, tool: str, arguments: dict[str, Any]
+    ) -> McpToolResult: ...
 
 
 class HttpxMcpConnector:
@@ -87,9 +108,22 @@ class HttpxMcpConnector:
         ) as client:
             return await self._discover_with(client, endpoint, auth)
 
-    async def _discover_with(
+    async def call_tool(
+        self, *, endpoint: str, auth: McpAuth, tool: str, arguments: dict[str, Any]
+    ) -> McpToolResult:
+        if self._client is not None:
+            return await self._call_with(self._client, endpoint, auth, tool, arguments)
+        async with httpx.AsyncClient(
+            timeout=self._timeout_s, follow_redirects=False
+        ) as client:
+            return await self._call_with(client, endpoint, auth, tool, arguments)
+
+    async def _open_session(
         self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth
-    ) -> list[DiscoveredTool]:
+    ) -> dict[str, str]:
+        """Run ``initialize`` + ``notifications/initialized`` and return the
+        headers (protocol version + any negotiated session id) to use for the
+        follow-up request (``tools/list`` or ``tools/call``)."""
         base_headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
@@ -108,21 +142,45 @@ class HttpxMcpConnector:
                 "clientInfo": _CLIENT_INFO,
             },
         )
-        session_id = init.session_id
         self._raise_for_rpc_error(init.payload, "initialize")
 
         post_init = {**base_headers, "MCP-Protocol-Version": PROTOCOL_VERSION}
-        if session_id:
-            post_init["Mcp-Session-Id"] = session_id
+        if init.session_id:
+            post_init["Mcp-Session-Id"] = init.session_id
 
         # ``notifications/initialized`` is a fire-and-forget notification (no id).
         await self._notify(client, endpoint, post_init, method="notifications/initialized")
+        return post_init
 
+    async def _discover_with(
+        self, client: httpx.AsyncClient, endpoint: str, auth: McpAuth
+    ) -> list[DiscoveredTool]:
+        post_init = await self._open_session(client, endpoint, auth)
         listed = await self._rpc(
             client, endpoint, post_init, rpc_id=2, method="tools/list", params={}
         )
         self._raise_for_rpc_error(listed.payload, "tools/list")
         return self._parse_tools(listed.payload)
+
+    async def _call_with(
+        self,
+        client: httpx.AsyncClient,
+        endpoint: str,
+        auth: McpAuth,
+        tool: str,
+        arguments: dict[str, Any],
+    ) -> McpToolResult:
+        post_init = await self._open_session(client, endpoint, auth)
+        called = await self._rpc(
+            client,
+            endpoint,
+            post_init,
+            rpc_id=2,
+            method="tools/call",
+            params={"name": tool, "arguments": arguments or {}},
+        )
+        self._raise_for_rpc_error(called.payload, "tools/call")
+        return self._parse_tool_result(called.payload, self._max_bytes)
 
     # --- transport helpers ----------------------------------------------------
 
@@ -204,6 +262,44 @@ class HttpxMcpConnector:
             )
         return tools
 
+    @classmethod
+    def _parse_tool_result(
+        cls, payload: dict[str, Any], max_bytes: int
+    ) -> McpToolResult:
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise McpConnectionError("tools/call: malformed result.")
+        is_error = bool(result.get("isError"))
+        content = cls._content_to_text(result.get("content"), max_bytes)
+        return McpToolResult(content=content, is_error=is_error)
+
+    @staticmethod
+    def _content_to_text(content: Any, max_bytes: int) -> str:
+        """Flatten MCP ``result.content`` blocks into one bounded string.
+
+        MCP returns a list of typed content blocks; ``{"type":"text","text":...}``
+        is the common case. Non-text blocks (image/audio/resource) are noted by
+        type rather than inlined so a large/binary payload can never blow up the
+        context window or the step trace.
+        """
+        parts: list[str] = []
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text" and isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+                else:
+                    parts.append(f"[{btype or 'unknown'} content]")
+        elif isinstance(content, str):
+            parts.append(content)
+        joined = "\n".join(parts)
+        encoded = joined.encode("utf-8")
+        if len(encoded) > max_bytes:
+            return encoded[:max_bytes].decode("utf-8", "ignore") + "...[truncated]"
+        return joined
+
 
 @dataclass(frozen=True)
 class _RpcResult:
@@ -277,13 +373,30 @@ class FakeMcpConnector:
         tools: list[DiscoveredTool] | None = None,
         *,
         error: Exception | None = None,
+        call_results: dict[str, McpToolResult] | None = None,
+        call_error: Exception | None = None,
     ) -> None:
         self._tools = tools or []
         self._error = error
+        # Per-tool canned results for ``call_tool`` (keyed by tool name); a missing
+        # key yields a benign echo so a test need only set what it asserts on.
+        self._call_results = call_results or {}
+        self._call_error = call_error
         self.calls: list[tuple[str, McpAuth]] = []
+        self.tool_calls: list[tuple[str, str, dict[str, Any], McpAuth]] = []
 
     async def discover(self, *, endpoint: str, auth: McpAuth) -> list[DiscoveredTool]:
         self.calls.append((endpoint, auth))
         if self._error is not None:
             raise self._error
         return list(self._tools)
+
+    async def call_tool(
+        self, *, endpoint: str, auth: McpAuth, tool: str, arguments: dict[str, Any]
+    ) -> McpToolResult:
+        self.tool_calls.append((endpoint, tool, dict(arguments or {}), auth))
+        if self._call_error is not None:
+            raise self._call_error
+        if tool in self._call_results:
+            return self._call_results[tool]
+        return McpToolResult(content=f"ok:{tool}", is_error=False)

@@ -12,12 +12,15 @@ can't break the menu.
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..agents.agent_catalog import AgentCatalog, AgentSummary
+from ..agents.mcp_servers import namespaced_tool_name
 from ..agents.service import AgentService
 from ..agents.user_agents import (
     AgentConflictError,
@@ -27,6 +30,8 @@ from ..agents.user_agents import (
     UserAgentCreate,
     UserAgentUpdate,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["agents"])
 
@@ -45,6 +50,29 @@ def _service(request: Request) -> AgentService:
 
 def _curated(request: Request) -> AgentCatalog:
     return request.app.state.agents
+
+
+async def _owned_mcp_tool_names(request: Request, user_id: str) -> set[str]:
+    """The caller's own discovered MCP tool names (``mcp:<server>/<tool>``).
+
+    Empty when custom tools are disabled (``app.state.mcp_service`` is ``None``),
+    so MCP tool names are rejected by agent validation exactly as before. A store
+    error fails closed (empty set) so a Cosmos blip can only narrow what a user may
+    attach, never widen it; the management write surfaces the validation error.
+    """
+    mcp_service = getattr(request.app.state, "mcp_service", None)
+    if mcp_service is None:
+        return set()
+    try:
+        servers = await mcp_service.list_for(user_id)
+    except Exception:  # noqa: BLE001 - validation must not 500 on a store blip
+        logger.warning("mcp tool-name resolution failed", exc_info=True)
+        return set()
+    return {
+        namespaced_tool_name(s.name, t.name)
+        for s in servers
+        for t in s.discoveredTools
+    }
 
 
 @router.get("/agents", response_model=AgentListResponse)
@@ -74,9 +102,13 @@ async def create_my_agent(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> UserAgent:
     reserved = {a.name for a in _curated(request).agents}
+    mcp_tools = await _owned_mcp_tool_names(request, user.internal_user_id)
     try:
         return await _service(request).create(
-            user.internal_user_id, payload, reserved_names=reserved
+            user.internal_user_id,
+            payload,
+            reserved_names=reserved,
+            mcp_tool_names=mcp_tools,
         )
     except AgentValidationError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
@@ -91,8 +123,11 @@ async def update_my_agent(
     payload: UserAgentUpdate,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> UserAgent:
+    mcp_tools = await _owned_mcp_tool_names(request, user.internal_user_id)
     try:
-        return await _service(request).update(user.internal_user_id, name, payload)
+        return await _service(request).update(
+            user.internal_user_id, name, payload, mcp_tool_names=mcp_tools
+        )
     except AgentValidationError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except AgentNotFoundError as exc:

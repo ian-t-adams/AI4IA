@@ -169,6 +169,11 @@ def namespaced_tool_name(server_name: str, tool_name: str) -> str:
     return f"{TOOL_NAME_PREFIX}:{server_name}/{tool_name}"
 
 
+def is_mcp_tool_name(name: str) -> bool:
+    """True if ``name`` is a namespaced MCP tool (``mcp:<server>/<tool>``)."""
+    return name.startswith(f"{TOOL_NAME_PREFIX}:")
+
+
 def discovered_tool_to_spec(server: UserMcpServer, tool: DiscoveredTool) -> ToolSpec:
     """Map one discovered remote tool onto a governed :class:`ToolSpec`.
 

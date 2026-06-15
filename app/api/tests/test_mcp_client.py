@@ -37,9 +37,22 @@ def _tools_result(tools: list[dict]) -> dict:
     return {"jsonrpc": "2.0", "id": 2, "result": {"tools": tools}}
 
 
+def _call_result(content: list[dict], *, is_error: bool = False) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {"content": content, "isError": is_error},
+    }
+
+
 def _connector(handler) -> HttpxMcpConnector:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return HttpxMcpConnector(client=client)
+
+
+def _connector_maxbytes(handler, max_bytes: int) -> HttpxMcpConnector:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return HttpxMcpConnector(client=client, max_bytes=max_bytes)
 
 
 async def test_discovers_tools_over_json():
@@ -170,3 +183,163 @@ async def test_malformed_tools_result_raises():
 
     with pytest.raises(McpConnectionError):
         await _connector(handler).discover(endpoint=_ENDPOINT, auth=McpAuth())
+
+
+# --- Execution: tools/call (Phase 12B Increment B) ---------------------------
+
+
+async def test_call_tool_returns_flattened_text_content():
+    seen: list[str] = []
+    captured_params: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        method = body.get("method")
+        seen.append(method)
+        if method == "initialize":
+            return _json(_init_result(), headers={"Mcp-Session-Id": "s1"})
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        if method == "tools/call":
+            assert request.headers.get("Mcp-Session-Id") == "s1"
+            captured_params.update(body.get("params") or {})
+            return _json(
+                _call_result(
+                    [
+                        {"type": "text", "text": "Sunny, 72F"},
+                        {"type": "text", "text": "No alerts"},
+                    ]
+                )
+            )
+        raise AssertionError(f"unexpected method {method}")
+
+    result = await _connector(handler).call_tool(
+        endpoint=_ENDPOINT, auth=McpAuth(), tool="get_forecast", arguments={"city": "SEA"}
+    )
+    assert result.content == "Sunny, 72F\nNo alerts"
+    assert result.is_error is False
+    assert seen == ["initialize", "notifications/initialized", "tools/call"]
+    # The tools/call request carried the MCP {name, arguments} envelope.
+    assert captured_params == {"name": "get_forecast", "arguments": {"city": "SEA"}}
+
+
+async def test_call_tool_non_text_block_is_noted_by_type():
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return _json(
+            _call_result(
+                [{"type": "text", "text": "see image"}, {"type": "image", "data": "b64"}]
+            )
+        )
+
+    result = await _connector(handler).call_tool(
+        endpoint=_ENDPOINT, auth=McpAuth(), tool="render", arguments={}
+    )
+    # Binary/non-text blocks are noted by type, never inlined.
+    assert result.content == "see image\n[image content]"
+    assert result.is_error is False
+
+
+async def test_call_tool_surfaces_is_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return _json(
+            _call_result([{"type": "text", "text": "boom"}], is_error=True)
+        )
+
+    result = await _connector(handler).call_tool(
+        endpoint=_ENDPOINT, auth=McpAuth(), tool="explode", arguments={}
+    )
+    assert result.is_error is True
+    assert result.content == "boom"
+
+
+async def test_call_tool_over_sse():
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            payload = json.dumps(_init_result())
+            return httpx.Response(
+                200,
+                content=f"event: message\ndata: {payload}\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        payload = json.dumps(_call_result([{"type": "text", "text": "streamed"}]))
+        return httpx.Response(
+            200,
+            content=f"event: message\ndata: {payload}\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    result = await _connector(handler).call_tool(
+        endpoint=_ENDPOINT, auth=McpAuth(), tool="t", arguments={}
+    )
+    assert result.content == "streamed"
+    assert result.is_error is False
+
+
+async def test_call_tool_oversized_response_raises():
+    big = "x" * 5000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return _json(_call_result([{"type": "text", "text": big}]))
+
+    # max_bytes large enough for the tiny initialize body, small enough that the
+    # tools/call response trips the bounded-size guard.
+    with pytest.raises(McpConnectionError):
+        await _connector_maxbytes(handler, 1000).call_tool(
+            endpoint=_ENDPOINT, auth=McpAuth(), tool="t", arguments={}
+        )
+
+
+async def test_call_tool_jsonrpc_error_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return _json(
+            {"jsonrpc": "2.0", "id": 2, "error": {"code": -32602, "message": "no such tool"}}
+        )
+
+    with pytest.raises(McpConnectionError):
+        await _connector(handler).call_tool(
+            endpoint=_ENDPOINT, auth=McpAuth(), tool="missing", arguments={}
+        )
+
+
+async def test_call_tool_sends_auth_header():
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        captured["authorization"] = request.headers.get("authorization", "")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return _json(_call_result([{"type": "text", "text": "ok"}]))
+
+    await _connector(handler).call_tool(
+        endpoint=_ENDPOINT,
+        auth=McpAuth(mode=McpAuthMode.bearer, secret="tok"),
+        tool="t",
+        arguments={},
+    )
+    assert captured["authorization"] == "Bearer tok"

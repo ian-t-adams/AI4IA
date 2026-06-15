@@ -18,6 +18,7 @@ break chat — but *writes* surface errors to the caller.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 
 from ..catalog import ModelCatalog
 from .agent_catalog import AgentCatalog
@@ -92,7 +93,12 @@ class AgentService:
     # --- Mutations ------------------------------------------------------------
 
     async def create(
-        self, user_id: str, req: UserAgentCreate, *, reserved_names: set[str]
+        self,
+        user_id: str,
+        req: UserAgentCreate,
+        *,
+        reserved_names: set[str],
+        mcp_tool_names: Collection[str] | None = None,
     ) -> UserAgent:
         # Check-then-write: validate, then ensure the name is free and the per-user
         # cap isn't reached, then upsert. This is not transactional, so two
@@ -123,12 +129,18 @@ class AgentService:
             tools=req.tools,
             links=req.links,
             enabled=req.enabled,
+            mcp_tool_names=mcp_tool_names,
         )
         await self._store.put(agent)
         return agent
 
     async def update(
-        self, user_id: str, name: str, req: UserAgentUpdate
+        self,
+        user_id: str,
+        name: str,
+        req: UserAgentUpdate,
+        *,
+        mcp_tool_names: Collection[str] | None = None,
     ) -> UserAgent:
         key = (name or "").strip().lower()
         current = await self._store.get(user_id, key)
@@ -145,6 +157,7 @@ class AgentService:
             links=req.links,
             enabled=req.enabled,
             created_at=current.createdAt,
+            mcp_tool_names=mcp_tool_names,
         )
         await self._store.put(agent)
         return agent
@@ -178,6 +191,7 @@ class AgentService:
         links: list[str],
         enabled: bool,
         created_at=None,
+        mcp_tool_names: Collection[str] | None = None,
     ) -> UserAgent:
         display = (display_name or name).strip()
         if not display:
@@ -201,7 +215,7 @@ class AgentService:
         model = (default_model or "").strip() or None
         if model is not None and self._catalog.get(model) is None:
             raise AgentValidationError(f"Unknown model: {model}.")
-        clean_tools = self._validate_tools(tools)
+        clean_tools = self._validate_tools(tools, mcp_tool_names)
         clean_links = self._validate_links(name, links)
 
         now = _now()
@@ -220,21 +234,30 @@ class AgentService:
             updatedAt=now,
         )
 
-    def _validate_tools(self, tools: list[str]) -> list[str]:
+    def _validate_tools(
+        self, tools: list[str], mcp_tool_names: Collection[str] | None = None
+    ) -> list[str]:
         if not tools:
             return []
         if len(tools) > MAX_TOOLS:
             raise AgentValidationError(f"An agent may use at most {MAX_TOOLS} tools.")
+        # The caller's own discovered MCP tool names (``mcp:<server>/<tool>``) are
+        # admitted in addition to the static built-in/synthetic allowlist. The
+        # router only supplies these when custom tools are enabled, so when the
+        # feature is off ``mcp:*`` names fall through to the rejection below exactly
+        # as before.
+        allowed_mcp = set(mcp_tool_names or ())
         seen: set[str] = set()
         clean: list[str] = []
         for raw in tools:
             tool = (raw or "").strip()
             if tool in seen:
                 raise AgentValidationError(f"Duplicate tool: {tool}.")
-            if tool not in self._attachable:
+            if tool not in self._attachable and tool not in allowed_mcp:
+                allowed = sorted(self._attachable | allowed_mcp)
                 raise AgentValidationError(
                     f"Tool '{tool}' is not available for user agents. "
-                    f"Allowed: {', '.join(sorted(self._attachable)) or '(none)'}."
+                    f"Allowed: {', '.join(allowed) or '(none)'}."
                 )
             seen.add(tool)
             clean.append(tool)

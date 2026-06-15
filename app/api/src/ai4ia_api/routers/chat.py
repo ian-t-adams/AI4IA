@@ -35,6 +35,8 @@ from ..agents.command_service import (
 )
 from ..agents.commands import CommandKind, parse_input
 from ..agents.runtime import run_agent_turn
+from ..agents.mcp_execution import build_mcp_turn_tools
+from ..agents.mcp_servers import is_mcp_tool_name
 from ..agents.orchestration import build_delegate_capability
 from ..agents.tool_exec import (
     SELECTABLE_SYNTHETIC_TOOL_NAMES,
@@ -631,6 +633,11 @@ async def chat(
     # model path below, which keeps true token streaming.
     if agent is not None and (agent.tools or agent.links):
         ctx = ToolContext(correlation_id=correlation_id)
+        # The registry/executor used for THIS turn. Default to the shared app
+        # singletons; replaced below with a merged (built-ins + per-user MCP tools)
+        # pair when the agent attaches any owned MCP tools and the feature is on.
+        turn_registry = registry
+        turn_executor = executor
         extra_tools, extra_handlers, usage_sink = build_delegate_capability(
             orchestrator=agent,
             composed=agents,
@@ -760,13 +767,39 @@ async def chat(
                 extra_handlers = {**extra_handlers, **p_handlers}
             except Exception:  # noqa: BLE001 - doc tool must never break a turn
                 logger.warning("document processing capability build failed", exc_info=True)
+        # Phase 12B Increment B: when the agent attaches any of the caller's own
+        # MCP tools (``mcp:<server>/<tool>``) and the feature is on, build a merged
+        # registry/executor (built-ins + governed MCP ToolDefinitions) plus the
+        # approvals-bearing context, and run THIS turn against them. MCP tools go
+        # through the same registry/executor governance as the built-ins (NOT the
+        # synthetic extra_tools path), so authorization + redaction apply. Best-
+        # effort like every other capability: any failure leaves the agent running
+        # with its built-in/synthetic tools — MCP must never break a turn. When the
+        # feature is off, ``mcp_service`` is None and this block is skipped, so the
+        # turn is byte-for-byte unchanged.
+        mcp_service = getattr(request.app.state, "mcp_service", None)
+        if mcp_service is not None and any(is_mcp_tool_name(t) for t in agent.tools):
+            try:
+                mcp_servers = await mcp_service.list_for(user.internal_user_id)
+                built = build_mcp_turn_tools(
+                    servers=mcp_servers,
+                    attached_tool_names=agent.tools,
+                    secrets=mcp_service,
+                    connector=mcp_service.connector,
+                    resolver=mcp_service.resolver,
+                    correlation_id=correlation_id,
+                )
+                if built is not None:
+                    turn_registry, turn_executor, ctx = built
+            except Exception:  # noqa: BLE001 - MCP must never break a turn
+                logger.warning("mcp capability build failed", exc_info=True)
         run = await run_agent_turn(
             deployment=deployment.deploymentName,
             messages=payload_messages,
             tool_names=agent.tools,
             gateway=gateway,
-            registry=registry,
-            executor=executor,
+            registry=turn_registry,
+            executor=turn_executor,
             ctx=ctx,
             params=body.params,
             extra_tools=extra_tools or None,
