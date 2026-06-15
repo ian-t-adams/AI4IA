@@ -64,6 +64,9 @@
     },
     "voiceLiveToolsEnabled": {
       "value": true
+    },
+    "customToolsEnabled": {
+      "value": false
     }
   }
 }

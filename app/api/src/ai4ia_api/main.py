@@ -13,6 +13,7 @@ from .auth.factory import build_auth_provider
 from .agents.agent_catalog import load_agent_catalog
 from .agents.factory import build_user_agent_store
 from .agents.mcp_client import HttpxMcpConnector
+from .agents.mcp_secrets import build_mcp_secret_store
 from .agents.mcp_servers import MAX_MCP_SERVERS_PER_USER
 from .agents.mcp_service import McpServerService
 from .agents.mcp_store import build_user_mcp_server_store
@@ -134,6 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.mcp_service = McpServerService(
                 build_user_mcp_server_store(settings),
                 connector=connector,
+                secret_store=build_mcp_secret_store(settings),
                 max_servers=max_servers,
             )
         else:

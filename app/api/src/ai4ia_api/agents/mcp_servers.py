@@ -110,6 +110,11 @@ class UserMcpServer(BaseModel):
     authMode: McpAuthMode = McpAuthMode.none
     trusted: bool = False
     enabled: bool = True
+    # Opaque pointer to the durable connection secret in the secret store (Phase
+    # 12B). ``None`` for public (``authMode=none``) servers. The raw secret is
+    # NEVER stored on this record — only its reference; the value is resolved from
+    # the secret store at connect/execute time.
+    secretRef: str | None = None
     discoveredTools: list[DiscoveredTool] = Field(default_factory=list)
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)

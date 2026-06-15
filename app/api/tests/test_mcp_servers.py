@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from ai4ia_api.agents.mcp_client import FakeMcpConnector, McpAuth
+from ai4ia_api.agents.mcp_secrets import InMemoryMcpSecretStore
 from ai4ia_api.agents.mcp_servers import (
     MAX_MCP_SERVERS_PER_USER,
     DiscoveredTool,
@@ -33,10 +34,18 @@ _TOOLS = [
 ]
 
 
-def _service(*, tools=None, error=None, resolver=None, max_servers=MAX_MCP_SERVERS_PER_USER):
+def _service(
+    *,
+    tools=None,
+    error=None,
+    resolver=None,
+    max_servers=MAX_MCP_SERVERS_PER_USER,
+    secret_store=None,
+):
     return McpServerService(
         InMemoryUserMcpServerStore(),
         connector=FakeMcpConnector(tools if tools is not None else list(_TOOLS), error=error),
+        secret_store=secret_store or InMemoryMcpSecretStore(),
         max_servers=max_servers,
         resolver=resolver or _PUBLIC_RESOLVER,
     )
@@ -149,10 +158,14 @@ async def test_create_requires_secret_for_authed_server():
         await svc.create("u1", _create(authMode=McpAuthMode.bearer))
 
 
-async def test_create_passes_secret_to_connector_but_does_not_store_it():
+async def test_create_persists_secret_durably_not_on_record():
     connector = FakeMcpConnector(list(_TOOLS))
+    secret_store = InMemoryMcpSecretStore()
     svc = McpServerService(
-        InMemoryUserMcpServerStore(), connector=connector, resolver=_PUBLIC_RESOLVER
+        InMemoryUserMcpServerStore(),
+        connector=connector,
+        secret_store=secret_store,
+        resolver=_PUBLIC_RESOLVER,
     )
     server = await svc.create(
         "u1", _create(authMode=McpAuthMode.api_key, secret="s3cr3t")
@@ -162,9 +175,21 @@ async def test_create_passes_secret_to_connector_but_does_not_store_it():
     _endpoint, auth = connector.calls[-1]
     assert isinstance(auth, McpAuth)
     assert auth.secret == "s3cr3t"
-    # ...but it is nowhere on the persisted record.
+    # ...the raw secret is nowhere on the persisted record...
     assert "s3cr3t" not in server.model_dump_json()
     assert server.authMode is McpAuthMode.api_key
+    # ...but it is durably stored under an opaque reference and resolvable.
+    assert server.secretRef
+    assert await secret_store.get_secret(server.secretRef) == "s3cr3t"
+    assert await svc.secret_for(server) == "s3cr3t"
+
+
+async def test_create_public_server_stores_no_secret():
+    secret_store = InMemoryMcpSecretStore()
+    svc = _service(secret_store=secret_store)
+    server = await svc.create("u1", _create())
+    assert server.secretRef is None
+    assert await svc.secret_for(server) is None
 
 
 async def test_create_connection_failure_raises_and_persists_nothing():
@@ -206,6 +231,90 @@ async def test_update_missing_raises_not_found():
         )
 
 
+async def test_update_reuses_stored_secret_without_reentry():
+    connector = FakeMcpConnector(list(_TOOLS))
+    secret_store = InMemoryMcpSecretStore()
+    svc = McpServerService(
+        InMemoryUserMcpServerStore(),
+        connector=connector,
+        secret_store=secret_store,
+        resolver=_PUBLIC_RESOLVER,
+    )
+    created = await svc.create(
+        "u1", _create(authMode=McpAuthMode.bearer, secret="t0ken")
+    )
+    # Update without re-supplying the secret: it is reused to reconnect, and the
+    # reference is preserved.
+    updated = await svc.update(
+        "u1",
+        "weather",
+        UserMcpServerUpdate(
+            endpoint="https://mcp.example.com/rpc",
+            authMode=McpAuthMode.bearer,
+            description="new",
+        ),
+    )
+    assert updated.description == "new"
+    assert updated.secretRef == created.secretRef
+    _endpoint, auth = connector.calls[-1]
+    assert auth.secret == "t0ken"
+    assert await secret_store.get_secret(updated.secretRef) == "t0ken"
+
+
+async def test_update_rotates_secret_when_resupplied():
+    secret_store = InMemoryMcpSecretStore()
+    svc = _service(secret_store=secret_store)
+    created = await svc.create(
+        "u1", _create(authMode=McpAuthMode.bearer, secret="old")
+    )
+    updated = await svc.update(
+        "u1",
+        "weather",
+        UserMcpServerUpdate(
+            endpoint="https://mcp.example.com/rpc",
+            authMode=McpAuthMode.bearer,
+            secret="new",
+        ),
+    )
+    assert updated.secretRef == created.secretRef  # reference is stable across rotation
+    assert await secret_store.get_secret(updated.secretRef) == "new"
+
+
+async def test_update_to_public_clears_stored_secret():
+    secret_store = InMemoryMcpSecretStore()
+    svc = _service(secret_store=secret_store)
+    created = await svc.create(
+        "u1", _create(authMode=McpAuthMode.bearer, secret="t0ken")
+    )
+    ref = created.secretRef
+    updated = await svc.update(
+        "u1",
+        "weather",
+        UserMcpServerUpdate(
+            endpoint="https://mcp.example.com/rpc", authMode=McpAuthMode.none
+        ),
+    )
+    assert updated.secretRef is None
+    assert await secret_store.get_secret(ref) is None
+
+
+async def test_update_first_time_secret_is_persisted():
+    secret_store = InMemoryMcpSecretStore()
+    svc = _service(secret_store=secret_store)
+    await svc.create("u1", _create())  # public, no secret
+    updated = await svc.update(
+        "u1",
+        "weather",
+        UserMcpServerUpdate(
+            endpoint="https://mcp.example.com/rpc",
+            authMode=McpAuthMode.bearer,
+            secret="fresh",
+        ),
+    )
+    assert updated.secretRef
+    assert await secret_store.get_secret(updated.secretRef) == "fresh"
+
+
 async def test_delete_is_idempotent():
     svc = _service()
     await svc.create("u1", _create())
@@ -214,6 +323,18 @@ async def test_delete_is_idempotent():
         await svc.get("u1", "weather")
     # Deleting again does not raise.
     await svc.delete("u1", "weather")
+
+
+async def test_delete_removes_stored_secret():
+    secret_store = InMemoryMcpSecretStore()
+    svc = _service(secret_store=secret_store)
+    created = await svc.create(
+        "u1", _create(authMode=McpAuthMode.bearer, secret="t0ken")
+    )
+    ref = created.secretRef
+    assert await secret_store.get_secret(ref) == "t0ken"
+    await svc.delete("u1", "weather")
+    assert await secret_store.get_secret(ref) is None
 
 
 async def test_list_is_per_user():
@@ -230,7 +351,10 @@ async def test_list_is_per_user():
 async def test_test_refreshes_tools():
     connector = FakeMcpConnector(list(_TOOLS))
     svc = McpServerService(
-        InMemoryUserMcpServerStore(), connector=connector, resolver=_PUBLIC_RESOLVER
+        InMemoryUserMcpServerStore(),
+        connector=connector,
+        secret_store=InMemoryMcpSecretStore(),
+        resolver=_PUBLIC_RESOLVER,
     )
     await svc.create("u1", _create())
     connector._tools = [DiscoveredTool(name="new_tool")]  # server now offers a new tool
@@ -239,17 +363,29 @@ async def test_test_refreshes_tools():
     assert refreshed.lastError is None
 
 
-async def test_test_authed_server_requires_secret():
-    svc = _service()
-    await svc.create("u1", _create(authMode=McpAuthMode.bearer, secret="t"))
-    with pytest.raises(McpValidationError):
-        await svc.test("u1", "weather")  # no secret re-supplied
+async def test_test_reuses_stored_secret_for_authed_server():
+    connector = FakeMcpConnector(list(_TOOLS))
+    svc = McpServerService(
+        InMemoryUserMcpServerStore(),
+        connector=connector,
+        secret_store=InMemoryMcpSecretStore(),
+        resolver=_PUBLIC_RESOLVER,
+    )
+    await svc.create("u1", _create(authMode=McpAuthMode.bearer, secret="t0ken"))
+    # No secret re-supplied: the durably stored one is resolved and reused.
+    refreshed = await svc.test("u1", "weather")
+    assert refreshed.lastError is None
+    _endpoint, auth = connector.calls[-1]
+    assert auth.secret == "t0ken"
 
 
 async def test_test_connection_failure_records_last_error():
     connector = FakeMcpConnector(list(_TOOLS))
     svc = McpServerService(
-        InMemoryUserMcpServerStore(), connector=connector, resolver=_PUBLIC_RESOLVER
+        InMemoryUserMcpServerStore(),
+        connector=connector,
+        secret_store=InMemoryMcpSecretStore(),
+        resolver=_PUBLIC_RESOLVER,
     )
     await svc.create("u1", _create())
     connector._error = McpConnectionError("down")

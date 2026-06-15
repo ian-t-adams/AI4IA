@@ -17,6 +17,11 @@ param uniqueSuffix string
 @description('Principal IDs granted Key Vault Secrets User + App Config Data Reader (app identities).')
 param readerPrincipalIds array = []
 
+@description('''Principal IDs granted Key Vault Secrets Officer (read/write secrets).
+The api managed identity gets this only when custom tools / BYO MCP is enabled, so
+it can persist per-user MCP connection secrets at runtime (Phase 12B).''')
+param secretsOfficerPrincipalIds array = []
+
 @description('''Enable Key Vault purge protection. Default false so the wipe-and-rebuild
 workflow can purge + recreate the vault with the same name. Set true for production.''')
 param enablePurgeProtection bool = false
@@ -56,6 +61,7 @@ resource appConfig 'Microsoft.AppConfiguration/configurationStores@2024-05-01' =
 
 // Built-in role IDs
 var kvSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6' // Key Vault Secrets User
+var kvSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee7-eedf52cb1bb0' // Key Vault Secrets Officer
 var appConfigDataReaderRoleId = '516239f1-63e1-4d78-a4de-a74fb236a071' // App Configuration Data Reader
 
 resource kvRoleAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in readerPrincipalIds: {
@@ -63,6 +69,16 @@ resource kvRoleAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   scope: keyVault
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsUserRoleId)
+    principalId: pid
+    principalType: 'ServicePrincipal'
+  }
+}]
+
+resource kvSecretsOfficerAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in secretsOfficerPrincipalIds: {
+  name: guid(keyVault.id, pid, kvSecretsOfficerRoleId)
+  scope: keyVault
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsOfficerRoleId)
     principalId: pid
     principalType: 'ServicePrincipal'
   }
