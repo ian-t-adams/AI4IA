@@ -18,7 +18,7 @@
       "value": "${AI4IA_COST_CENTER=genai-demo}"
     },
     "postgresLocation": {
-      "value": "${AI4IA_POSTGRES_LOCATION=eastus2}"
+      "value": "${AI4IA_POSTGRES_LOCATION=centralus}"
     },
     "adminSubjects": {
       "value": "${AI4IA_ADMIN_SUBJECTS=}"

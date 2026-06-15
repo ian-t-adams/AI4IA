@@ -179,3 +179,31 @@ azd deploy
 
 Container Apps keeps prior revisions; you can also shift traffic back to a previous revision in the
 portal/CLI while a fix is prepared.
+
+## 6. Troubleshooting
+
+### `Provision infrastructure` fails with `LocationIsOfferRestricted` (Postgres)
+
+Symptom — the deploy job fails in **Provision infrastructure** with:
+
+```
+(x) Failed: Azure Database for PostgreSQL flexible server: psql-...
+LocationIsOfferRestricted: Subscriptions are restricted from provisioning in location '<region>'.
+```
+
+Cause — the Postgres Flexible Server (mem0/pgvector home, Phase 5) is being provisioned in a region
+where **this subscription is offer-restricted** for that resource. It is a subscription-level
+policy, not a quota/capacity issue, and it surfaces only at provision time — `az bicep build` and the
+other resources (Cosmos, Container Apps, Foundry) succeed in the same region. The `slurmfactory`
+subscription is restricted in `eastus2`, `eastus`, and `westus2`.
+
+Fix — point `postgresLocation` at an **unrestricted** region. The default is `centralus`
+(`infra/main.parameters.json` → `AI4IA_POSTGRES_LOCATION`). The server name embeds its region, so
+changing it yields a fresh `resourceId` (no ARM location-immutability conflict with a prior attempt).
+Verify a candidate region before switching:
+
+```powershell
+$sub = (az account show --query id -o tsv)
+az rest --method get --url "https://management.azure.com/subscriptions/$sub/providers/Microsoft.DBforPostgreSQL/locations/<region>/capabilities?api-version=2024-08-01" --query "value[0].{restricted:restricted, reason:reason}" -o json
+# restricted: "Disabled" (with reason: null) means the region is usable.
+```
