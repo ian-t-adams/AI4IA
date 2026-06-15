@@ -6,8 +6,10 @@ response decoding, auth-header shaping, the tool cap, and error mapping.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 
+import httpcore
 import httpx
 import pytest
 
@@ -21,7 +23,7 @@ from ai4ia_api.agents.mcp_servers import (
     McpAuthMode,
     McpConnectionError,
 )
-from ai4ia_api.agents.ssrf import validate_public_https_url
+from ai4ia_api.agents.ssrf import SsrfError, validate_public_https_url
 
 _ENDPOINT = "https://mcp.example.com/rpc"
 
@@ -367,6 +369,40 @@ class _SpyTransport(httpx.AsyncBaseTransport):
         return None
 
 
+class _CapturingBackend(httpcore.AsyncNetworkBackend):
+    """An httpcore network backend that records the host of every TCP connect.
+
+    Injected into a *real* ``httpx.AsyncHTTPTransport`` pool so a test can observe
+    the exact host handed to the OS-level ``connect_tcp`` — i.e. the socket the
+    process would actually open — without any real network. The connect is aborted
+    right after the host is captured (before TLS), so nothing leaves the box.
+    """
+
+    def __init__(self) -> None:
+        self.hosts: list[str] = []
+
+    async def connect_tcp(  # type: ignore[override]
+        self, host, port, timeout=None, local_address=None, socket_options=None
+    ):
+        self.hosts.append(host)
+        raise httpcore.ConnectError("captured at socket layer; not really connecting")
+
+    async def connect_unix_socket(  # pragma: no cover - never used
+        self, path, timeout=None, local_address=None, socket_options=None
+    ):
+        raise NotImplementedError
+
+    async def sleep(self, seconds: float) -> None:  # pragma: no cover
+        return None
+
+
+def _real_inner_with_backend(backend: _CapturingBackend) -> httpx.AsyncHTTPTransport:
+    inner = httpx.AsyncHTTPTransport()
+    # Swap the pool's network backend so connect_tcp is observable but inert.
+    inner._pool._network_backend = backend  # noqa: SLF001 - test seam
+    return inner
+
+
 async def test_pinned_transport_rewrites_to_ip_preserving_host_and_sni():
     spy = _SpyTransport()
     transport = _PinnedHttpsTransport(_only_resolver(["93.184.216.34"]), inner=spy)
@@ -380,6 +416,24 @@ async def test_pinned_transport_rewrites_to_ip_preserving_host_and_sni():
     assert sent.url.host == "93.184.216.34"
     assert sent.headers.get("Host") == "mcp.example.com"
     assert sent.extensions.get("sni_hostname") == "mcp.example.com"
+    # The host handed downstream is a *literal IP*, so no hostname survives to the
+    # connect layer for httpx to re-resolve (the pin is real, not a pre-flight check).
+    ipaddress.ip_address(sent.url.host)  # raises if it were still a hostname
+    assert sent.url.host != "mcp.example.com"
+
+
+async def test_pinned_transport_tcp_connects_to_pinned_ip_not_hostname():
+    # Drive a real httpx.AsyncHTTPTransport so the assertion is at the actual
+    # connect_tcp boundary: the OS-level connect must target the pinned IP.
+    backend = _CapturingBackend()
+    transport = _PinnedHttpsTransport(
+        _only_resolver(["93.184.216.34"]), inner=_real_inner_with_backend(backend)
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(httpx.ConnectError):
+            await client.post(_ENDPOINT, json={})
+    # httpx had no hostname left to resolve at connect time — it dialed the IP.
+    assert backend.hosts == ["93.184.216.34"]
 
 
 async def test_pinned_transport_rejects_non_https():
@@ -391,10 +445,33 @@ async def test_pinned_transport_rejects_non_https():
     assert spy.requests == []
 
 
+async def test_pinned_transport_rebind_rejected_before_any_tcp_connect():
+    # The canonical rebind: a name that is PUBLIC at validate time but PRIVATE at
+    # connect time must be refused at the socket layer, before any connect_tcp.
+    calls = {"n": 0}
+
+    def rebinding(_host: str) -> list[str]:
+        calls["n"] += 1
+        return ["93.184.216.34"] if calls["n"] == 1 else ["127.0.0.1"]
+
+    # Validate-time resolution (#1) is public, so an up-front guard would pass.
+    assert validate_public_https_url(_ENDPOINT, resolver=rebinding) == "mcp.example.com"
+
+    backend = _CapturingBackend()
+    transport = _PinnedHttpsTransport(
+        rebinding, inner=_real_inner_with_backend(backend)
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(SsrfError):
+            await client.post(_ENDPOINT, json={})
+    # The connect-time re-resolution (#2) returned a private IP and was rejected
+    # *before* the transport ever attempted a TCP connect.
+    assert calls["n"] == 2
+    assert backend.hosts == []
+
+
 async def test_call_tool_rejects_dns_rebind_at_socket_layer():
-    # A resolver that is public the first time (so an up-front validate passes)
-    # then private on the next resolution — a classic DNS rebind between validate
-    # and connect.
+    # End-to-end through the connector: same rebind, surfaced as McpConnectionError.
     calls = {"n": 0}
 
     def rebinding_resolver(_host: str) -> list[str]:
