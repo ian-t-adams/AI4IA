@@ -14,9 +14,15 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
 
-from ai4ia_api.agents.mcp_client import FakeMcpConnector, McpAuth, McpToolResult
+from ai4ia_api.agents.mcp_client import (
+    FakeMcpConnector,
+    HttpxMcpConnector,
+    McpAuth,
+    McpToolResult,
+)
 from ai4ia_api.agents.mcp_execution import (
     MAX_MCP_TOOL_CALLS_PER_TURN,
     build_mcp_tool_definitions,
@@ -505,3 +511,85 @@ async def test_disabled_server_tool_is_denied():
     denied = [s for s in result.steps if s.kind == "tool_denied"]
     assert denied and denied[0].detail == DenyReason.disabled.value
     assert connector.tool_calls == []
+
+
+# --- Executed redaction + 8KB-truncation seam over a real content array ------
+#
+# The other end-to-end tests use FakeMcpConnector (canned McpToolResult), which
+# bypasses the wire-level content-block parsing. This one drives a REAL MCP
+# ``tools/call`` JSON-RPC response (a ``result.content`` array, NOT ``result.tools``)
+# through HttpxMcpConnector + httpx.MockTransport and the REAL run_agent_turn, so the
+# full chain is exercised: transport -> _parse_tool_result/_content_to_text ->
+# handler {content,isError} -> runtime redact_obj (trace) + _truncate (model turn).
+# It proves both governance controls actually fire on parsed remote content.
+
+_REDACTABLE_TOKEN = "abcdEFGH1234567890abcdEFGH1234567890"  # 36 chars -> matches _LONG_TOKEN_RE
+_TRUNCATE_SUFFIX = "...[truncated]"
+_RUNTIME_RESULT_CAP = 8192
+
+
+def _httpx_call_tool_connector(content_blocks: list[dict]) -> HttpxMcpConnector:
+    """HttpxMcpConnector whose MockTransport answers the handshake then returns a
+    ``tools/call`` result carrying ``content_blocks`` (a real MCP content array)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+                headers={"Mcp-Session-Id": "sess"},
+            )
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        if method == "tools/call":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": {"content": content_blocks, "isError": False},
+                },
+            )
+        raise AssertionError(f"unexpected method {method}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return HttpxMcpConnector(client=client)
+
+
+async def test_tools_call_content_is_redacted_and_truncated_through_runtime():
+    # A content array with (a) a redactable high-entropy token and (b) an oversized
+    # text block that pushes the JSON-encoded result well past the 8KB runtime cap.
+    oversized = "X" * (_RUNTIME_RESULT_CAP * 2)
+    connector = _httpx_call_tool_connector(
+        [
+            {"type": "text", "text": f"token={_REDACTABLE_TOKEN}"},
+            {"type": "text", "text": oversized},
+        ]
+    )
+    servers = [_server("weather", trusted=True, tools=[_tool("forecast")])]
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_calls([("c1", "mcp:weather/forecast", "{}")]),
+            _assistant_text("done"),
+        ]
+    )
+
+    result = await _run_turn(servers, ["mcp:weather/forecast"], connector, gateway)
+
+    # Redaction fired: the trace step's result ran through redact_obj, so the raw
+    # token never appears and the redaction placeholder is present.
+    step = next(s for s in result.steps if s.kind == "tool_result")
+    trace_blob = json.dumps(step.result)
+    assert _REDACTABLE_TOKEN not in trace_blob
+    assert "***REDACTED***" in step.result["content"]
+
+    # 8KB truncation applied: the tool message fed back to the model (seen by the
+    # gateway on the follow-up completion) is capped and flagged as truncated.
+    final_messages = gateway.calls[-1]["messages"]
+    tool_msg = next(m for m in final_messages if m.get("role") == "tool")
+    content = tool_msg["content"]
+    assert content.endswith(_TRUNCATE_SUFFIX)
+    assert len(content.encode("utf-8")) <= _RUNTIME_RESULT_CAP + len(_TRUNCATE_SUFFIX)
+    # The original oversized payload was far larger than the cap.
+    assert len(oversized) > _RUNTIME_RESULT_CAP
