@@ -53,6 +53,13 @@ dependencies = [
     # app/tests run without it wired; the in-memory chunk store covers local/dev +
     # unit tests, and the unit tests inject fake clients.
     "azure-search-documents>=11.5",
+    # Durable storage for user-registered MCP server connection secrets (Phase
+    # 12B): authenticated servers' credentials live in Azure Key Vault and only an
+    # opaque reference is kept on the Cosmos record. Async client
+    # (azure.keyvault.secrets.aio) reached via the api managed identity (RBAC: Key
+    # Vault Secrets Officer); imported lazily so the app/tests run without it wired
+    # (the in-memory secret store covers local/dev + unit tests).
+    "azure-keyvault-secrets>=4.8",
 ]
 
 [project.optional-dependencies]

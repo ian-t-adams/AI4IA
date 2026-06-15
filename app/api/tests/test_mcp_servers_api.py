@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from ai4ia_api.agents.mcp_client import FakeMcpConnector
+from ai4ia_api.agents.mcp_secrets import InMemoryMcpSecretStore
 from ai4ia_api.agents.mcp_servers import DiscoveredTool
 from ai4ia_api.agents.mcp_service import McpServerService
 from ai4ia_api.agents.mcp_store import InMemoryUserMcpServerStore
@@ -30,6 +31,7 @@ def _enabled_client(*, tools=None, error=None) -> TestClient:
     c.app.state.mcp_service = McpServerService(
         InMemoryUserMcpServerStore(),
         connector=FakeMcpConnector(tools if tools is not None else list(_TOOLS), error=error),
+        secret_store=InMemoryMcpSecretStore(),
         resolver=_PUBLIC_RESOLVER,
     )
     return c

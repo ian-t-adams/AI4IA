@@ -97,6 +97,9 @@ param searchSku string = 'basic'
 @description('Region for the Azure AI Search service. Empty => use the primary location. Provided as a separate knob because Search SKU capacity is region-constrained: eastus2 returned InsufficientResourcesAvailable, so Search is placed in a region with capacity (overridable via AI4IA_SEARCH_LOCATION). The service is reached over its global *.search.windows.net endpoint, so a different region from the rest of the stack is fine.')
 param searchLocation string = ''
 
+@description('Enable custom tools / bring-your-own MCP servers (Phase 12). Default OFF: the per-user MCP registry is never built and /api/agents/mcp-servers refuses (404), so app behavior is unchanged. When on, the api managed identity is granted Key Vault Secrets Officer (to persist per-user MCP connection secrets) and the flag + vault URI are emitted to the api.')
+param customToolsEnabled bool = false
+
 @description('Comma-separated admin subjects for the entitlement-management API.')
 param adminSubjects string = ''
 
@@ -205,6 +208,10 @@ module keyvault 'modules/keyvault.bicep' = {
     environmentName: environmentName
     uniqueSuffix: uniqueSuffix
     readerPrincipalIds: allPrincipalIds
+    // Custom tools / BYO MCP (Phase 12B): the api MI writes per-user MCP
+    // connection secrets at runtime, which needs Secrets Officer (write), not the
+    // read-only Secrets User above. Granted only when the feature is enabled.
+    secretsOfficerPrincipalIds: customToolsEnabled ? [apiIdentity.principalId] : []
   }
 }
 
@@ -401,6 +408,11 @@ module api 'modules/api.bicep' = {
     // env only when the service is provisioned (searchEnabled); the api reaches it
     // via managed identity (no keys). Empty string when off -> env var not set.
     searchEndpoint: search.outputs.searchEndpoint
+    // Custom tools / BYO MCP (Phase 12). Default OFF. When on, the flag is emitted
+    // and durable MCP connection secrets are stored in the shared Key Vault (the
+    // api MI holds Secrets Officer on it); only a secret reference lands in Cosmos.
+    customToolsEnabled: customToolsEnabled
+    customToolsKeyVaultUri: customToolsEnabled ? keyvault.outputs.keyVaultUri : ''
   }
 }
 

@@ -154,6 +154,12 @@ param videoBlobContainer string = 'videos'
 @description('Azure AI Search endpoint (e.g. https://<svc>.search.windows.net). Empty unless a search service is provisioned; when set, emitted as AI4IA_SEARCH_ENDPOINT so the api can index/query via managed identity.')
 param searchEndpoint string = ''
 
+@description('Enable custom tools / bring-your-own MCP servers (Phase 12). Default OFF: the per-user MCP registry is never constructed and /api/agents/mcp-servers refuses (404). When on, users register remote MCP servers behind the SSRF guard.')
+param customToolsEnabled bool = false
+
+@description('Key Vault URI backing durable MCP connection secrets (Phase 12B). Set only when custom tools is enabled; the api managed identity holds Key Vault Secrets Officer on this vault. Empty leaves the api on its in-memory secret store.')
+param customToolsKeyVaultUri string = ''
+
 var entraEnv = authProvider == 'entra' ? [
   {
     name: 'AI4IA_ENTRA_TENANT_ID'
@@ -352,6 +358,23 @@ var searchEnv = !empty(searchEndpoint) ? [
   }
 ] : []
 
+// Phase 12 custom tools / BYO MCP. Default OFF: nothing is emitted, so the api
+// keeps the feature dormant (404). When enabled, emit the flag and — for durable
+// connection secrets (12B) — the Key Vault URI; the api MI holds Secrets Officer
+// on that vault. An empty URI leaves the api on its in-memory secret store.
+var customToolsVaultEnv = !empty(customToolsKeyVaultUri) ? [
+  {
+    name: 'AI4IA_CUSTOM_TOOLS_SECRET_VAULT_URI'
+    value: customToolsKeyVaultUri
+  }
+] : []
+var customToolsEnv = customToolsEnabled ? concat([
+  {
+    name: 'AI4IA_CUSTOM_TOOLS_ENABLED'
+    value: 'true'
+  }
+], customToolsVaultEnv) : []
+
 var apiEnv = concat([
   {
     name: 'PORT'
@@ -397,7 +420,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, computeEnv, imageEnv, videoEnv, searchEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, computeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: 'ca-api-${environmentName}'

@@ -218,10 +218,9 @@ class Settings(BaseSettings):
     # remote MCP (Streamable HTTP) servers; we connect behind a strict SSRF
     # egress guard, cache the tools they advertise, and project each onto the
     # existing tool-governance seam (external risk, host-scoped egress, approval
-    # required unless the server is marked trusted). Secrets are never persisted
-    # in this slice; per-turn execution + durable Key-Vault secrets are a later
-    # sub-phase. Caps are generous defaults the owner can tighten via the
-    # override below.
+    # required unless the server is marked trusted). Per-turn execution + durable
+    # Key-Vault secrets land in Phase 12B. Caps are generous defaults the owner
+    # can tighten via the override below.
     custom_tools_enabled: bool = False
     # Per-user MCP-server cap (0 = use the module default). The owner wanted the
     # ability to cap, not tight limits, so this defaults to the generous module
@@ -229,6 +228,12 @@ class Settings(BaseSettings):
     custom_tools_max_servers_per_user: int = 0
     # Discovery connect/handshake timeout (seconds) for the MCP client.
     custom_tools_discovery_timeout_seconds: float = 15.0
+    # Azure Key Vault URI backing durable MCP connection secrets (Phase 12B). When
+    # set, authenticated servers' credentials are stored here (only an opaque
+    # reference is kept on the Cosmos record) and resolved at connect/execute
+    # time; when empty the service falls back to a process-local store (local/dev
+    # only — see ``validate_runtime``).
+    custom_tools_secret_vault_uri: str | None = None
 
     # --- Azure AI Search (indexing/retrieval) ---
     # Endpoint of the provisioned search service, e.g.
@@ -659,6 +664,20 @@ class Settings(BaseSettings):
                 "Custom tools (BYO MCP) require the cosmos session store outside "
                 "local (set AI4IA_SESSION_STORE=cosmos), or disable it with "
                 "AI4IA_CUSTOM_TOOLS_ENABLED=false."
+            )
+        if (
+            self.custom_tools_enabled
+            and self.env != Environment.local
+            and not self.custom_tools_secret_vault_uri
+        ):
+            # Authenticated MCP servers persist their connection secret to Key
+            # Vault; the process-local fallback store would lose every credential
+            # on restart/scale, breaking per-turn execution of authed servers.
+            # Require a vault outside local, or keep the feature disabled.
+            raise RuntimeError(
+                "Custom tools (BYO MCP) require a Key Vault for durable secrets "
+                "outside local (set AI4IA_CUSTOM_TOOLS_SECRET_VAULT_URI), or "
+                "disable it with AI4IA_CUSTOM_TOOLS_ENABLED=false."
             )
 
 
