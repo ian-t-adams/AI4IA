@@ -449,6 +449,10 @@ module web 'modules/web.bicep' = {
     // API ingest/retrieval path so the browser shows the library UI only when the
     // feature is on. Default OFF -> no control, no change.
     documentLibraryEnabled: documentUnderstandingEnabled
+    // Custom tools / BYO remote-MCP (Phase 12B): surface the same feature flag that
+    // drives the API's MCP-server CRUD + per-turn execution so the browser shows the
+    // custom-tools UI only when the feature is on. Default OFF -> no control, no change.
+    customToolsEnabled: customToolsEnabled
   }
 }
 
