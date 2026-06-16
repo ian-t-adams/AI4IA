@@ -10,8 +10,9 @@ infra:
   path: infra
   module: main
 
-# Deployable services. The MAF agents library runs in-process inside `api`
-# for v1; it can be promoted to its own Container App later.
+# Deployable services. The in-process agent runtime (app/api
+# `ai4ia_api/agents`) runs inside `api` for v1; it can be promoted to
+# its own Container App later.
 services:
   web:
     project: ./app/web
