@@ -61,6 +61,20 @@ class McpServerService:
         await self._store.close()
         await self._secret_store.close()
 
+    @property
+    def connector(self) -> McpConnector:
+        """The MCP connector (shared by discovery and per-turn execution)."""
+        return self._connector
+
+    @property
+    def resolver(self) -> Resolver | None:
+        """The DNS resolver used for SSRF egress validation (``None`` = system).
+
+        Exposed so the per-turn execution path can re-validate a server's host at
+        call time with the *same* resolver discovery used (DNS-rebinding defense).
+        """
+        return self._resolver
+
     # --- Reads ----------------------------------------------------------------
 
     async def list_for(self, user_id: str) -> list[UserMcpServer]:

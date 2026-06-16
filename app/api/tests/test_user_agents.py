@@ -230,6 +230,76 @@ async def test_attachable_tool_accepted_and_deduped():
         )
 
 
+async def test_owned_mcp_tool_name_is_attachable_when_supplied():
+    """When the router supplies the caller's own discovered MCP tool names (the
+    feature is on), an agent may attach an ``mcp:<server>/<tool>`` name."""
+    service, _ = _service()
+    agent = await service.create(
+        "u1",
+        UserAgentCreate(
+            name="weatherbot",
+            systemPrompt="You report the weather.",
+            tools=["calculator", "mcp:weather/forecast"],
+        ),
+        reserved_names=_curated_names(),
+        mcp_tool_names={"mcp:weather/forecast"},
+    )
+    assert agent.tools == ["calculator", "mcp:weather/forecast"]
+
+
+async def test_unowned_mcp_tool_name_is_rejected():
+    """An ``mcp:*`` name the caller does not own is rejected even when the feature
+    is on (the router only lists the caller's own servers)."""
+    service, _ = _service()
+    with pytest.raises(AgentValidationError):
+        await service.create(
+            "u1",
+            UserAgentCreate(
+                name="weatherbot",
+                systemPrompt="hi",
+                tools=["mcp:someone-else/secret"],
+            ),
+            reserved_names=_curated_names(),
+            mcp_tool_names={"mcp:weather/forecast"},
+        )
+
+
+async def test_mcp_tool_name_rejected_when_feature_off():
+    """When custom tools are off the router supplies no MCP names, so an
+    ``mcp:*`` name falls through to the rejection exactly as before."""
+    service, _ = _service()
+    with pytest.raises(AgentValidationError):
+        await service.create(
+            "u1",
+            UserAgentCreate(
+                name="weatherbot",
+                systemPrompt="hi",
+                tools=["mcp:weather/forecast"],
+            ),
+            reserved_names=_curated_names(),
+            # mcp_tool_names omitted (None) -> behaves like the feature being off.
+        )
+
+
+async def test_update_admits_owned_mcp_tool_name():
+    service, _ = _service()
+    await service.create(
+        "u1",
+        UserAgentCreate(name="weatherbot", systemPrompt="hi"),
+        reserved_names=_curated_names(),
+    )
+    updated = await service.update(
+        "u1",
+        "weatherbot",
+        UserAgentUpdate(
+            systemPrompt="now with tools",
+            tools=["mcp:weather/forecast"],
+        ),
+        mcp_tool_names={"mcp:weather/forecast"},
+    )
+    assert updated.tools == ["mcp:weather/forecast"]
+
+
 async def test_update_replaces_fields_and_keeps_created_at():
     service, _ = _service()
     created = await service.create(
