@@ -4,13 +4,15 @@ import { useState } from "react";
 import type { AgentSummary, ModelEntry } from "@/lib/types";
 import { AgentBuilder } from "./AgentBuilder";
 import { WorkflowBuilder } from "./WorkflowBuilder";
+import { McpServerBuilder } from "./McpServerBuilder";
 
-type Tab = "agents" | "workflows";
+type Tab = "agents" | "workflows" | "tools";
 
 export function StudioPanel({
   models,
   agents,
   runModel,
+  customToolsEnabled = false,
   onAgentsChanged,
   onRun,
   onClose,
@@ -18,6 +20,7 @@ export function StudioPanel({
   models: ModelEntry[];
   agents: AgentSummary[];
   runModel: string | null;
+  customToolsEnabled?: boolean;
   onAgentsChanged: () => Promise<void>;
   onRun: (sessionId: string) => void;
   onClose: () => void;
@@ -73,6 +76,11 @@ export function StudioPanel({
             <button onClick={() => setTab("workflows")} aria-pressed={tab === "workflows"} style={tabBtn("workflows", "Workflows")}>
               Workflows
             </button>
+            {customToolsEnabled && (
+              <button onClick={() => setTab("tools")} aria-pressed={tab === "tools"} style={tabBtn("tools", "Custom tools")}>
+                Custom tools
+              </button>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -85,7 +93,14 @@ export function StudioPanel({
 
         <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
           {tab === "agents" ? (
-            <AgentBuilder agents={agents} models={models} onChanged={onAgentsChanged} />
+            <AgentBuilder
+              agents={agents}
+              models={models}
+              customToolsEnabled={customToolsEnabled}
+              onChanged={onAgentsChanged}
+            />
+          ) : tab === "tools" ? (
+            <McpServerBuilder />
           ) : (
             <WorkflowBuilder agents={agents} runModel={runModel} onRun={onRun} />
           )}

@@ -28,6 +28,12 @@ import type {
   ShareState,
   ShareVisibility,
 } from "./library";
+import type {
+  UserMcpServer,
+  UserMcpServerCreate,
+  UserMcpServerTest,
+  UserMcpServerUpdate,
+} from "./customTools";
 import { apiFetch } from "./auth";
 
 async function jsonOrThrow<T>(resp: Response): Promise<T> {
@@ -160,6 +166,69 @@ export async function runWorkflow(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
+    }),
+  );
+}
+
+// --- Custom tools: bring-your-own remote MCP servers (Phase 12B) ---
+//
+// All endpoints are flag-gated server-side: when custom tools are disabled the
+// whole surface 404s, so these are only ever called from the (inert-when-off)
+// custom-tools UI. They go through the same-origin Next proxy like every other call.
+
+export async function listMcpServers(): Promise<UserMcpServer[]> {
+  const data = await jsonOrThrow<{ servers: UserMcpServer[] }>(
+    await apiFetch("/api/agents/mcp-servers", { cache: "no-store" }),
+  );
+  return data.servers;
+}
+
+export async function createMcpServer(
+  input: UserMcpServerCreate,
+): Promise<UserMcpServer> {
+  return jsonOrThrow(
+    await apiFetch("/api/agents/mcp-servers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+export async function updateMcpServer(
+  name: string,
+  patch: UserMcpServerUpdate,
+): Promise<UserMcpServer> {
+  return jsonOrThrow(
+    await apiFetch(`/api/agents/mcp-servers/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  );
+}
+
+export async function deleteMcpServer(name: string): Promise<void> {
+  const resp = await apiFetch(
+    `/api/agents/mcp-servers/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+  if (!resp.ok && resp.status !== 204) {
+    throw new Error(`${resp.status}: failed to delete MCP server`);
+  }
+}
+
+// Re-connects to a saved server and refreshes its cached tools / lastError. An
+// authed server may re-use its stored secret; pass one only to override it.
+export async function testMcpServer(
+  name: string,
+  payload?: UserMcpServerTest,
+): Promise<UserMcpServer> {
+  return jsonOrThrow(
+    await apiFetch(`/api/agents/mcp-servers/${encodeURIComponent(name)}/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
     }),
   );
 }

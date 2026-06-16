@@ -12,6 +12,14 @@ import {
   MAX_TOOLS,
   nameError,
 } from "@/lib/studio";
+import {
+  approvalPosture,
+  attachableMcpTools,
+  isMcpToolName,
+  parseMcpToolName,
+  type AttachableMcpTool,
+  type UserMcpServer,
+} from "@/lib/customTools";
 
 const labelStyle: React.CSSProperties = {
   fontSize: "0.8em",
@@ -78,13 +86,16 @@ function formFrom(a: UserAgent): AgentForm {
 export function AgentBuilder({
   agents,
   models,
+  customToolsEnabled = false,
   onChanged,
 }: {
   agents: AgentSummary[];
   models: ModelEntry[];
+  customToolsEnabled?: boolean;
   onChanged: () => Promise<void>;
 }) {
   const [mine, setMine] = useState<UserAgent[]>([]);
+  const [mcpServers, setMcpServers] = useState<UserMcpServer[]>([]);
   const [editing, setEditing] = useState<string | null>(null); // name, or null = new
   const [form, setForm] = useState<AgentForm>(blankForm);
   const [busy, setBusy] = useState(false);
@@ -98,6 +109,20 @@ export function AgentBuilder({
     () => agents.filter((a) => a.name !== form.name),
     [agents, form.name],
   );
+  // Attachable MCP tools grouped by server (only when the feature is on). Each
+  // carries its namespaced name + governance posture so the user understands the
+  // stance before attaching.
+  const mcpTools = useMemo(
+    () => (customToolsEnabled ? attachableMcpTools(mcpServers) : []),
+    [customToolsEnabled, mcpServers],
+  );
+  const mcpByServer = useMemo(() => groupByServer(mcpTools), [mcpTools]);
+  // MCP tools still attached to this agent whose server/tool no longer exists, so
+  // the user can detach them even though there's no checkbox to render otherwise.
+  const orphanMcpTools = useMemo(() => {
+    const known = new Set(mcpTools.map((t) => t.namespacedName));
+    return form.tools.filter((t) => isMcpToolName(t) && !known.has(t));
+  }, [form.tools, mcpTools]);
 
   const refreshMine = useCallback(async () => {
     try {
@@ -107,9 +132,24 @@ export function AgentBuilder({
     }
   }, []);
 
+  const refreshMcp = useCallback(async () => {
+    if (!customToolsEnabled) return;
+    try {
+      setMcpServers(await api.listMcpServers());
+    } catch {
+      // A custom-tools store blip must never break agent editing; just show no
+      // MCP tools to attach (the built-in tools still work).
+      setMcpServers([]);
+    }
+  }, [customToolsEnabled]);
+
   useEffect(() => {
     void refreshMine();
   }, [refreshMine]);
+
+  useEffect(() => {
+    void refreshMcp();
+  }, [refreshMcp]);
 
   const startNew = useCallback(() => {
     setEditing(null);
@@ -320,6 +360,73 @@ export function AgentBuilder({
           ))}
         </fieldset>
 
+        {customToolsEnabled && (
+          <fieldset style={fieldset}>
+            <legend style={labelStyle}>Custom tools (MCP)</legend>
+            {mcpByServer.length === 0 && orphanMcpTools.length === 0 && (
+              <p style={{ ...labelStyle, margin: 0 }}>
+                No MCP tools yet. Register a server in the Custom tools tab, then its
+                tools appear here to attach.
+              </p>
+            )}
+            {mcpByServer.map((g) => {
+              const posture = approvalPosture({ trusted: g.trusted, host: g.host });
+              return (
+                <div key={g.serverName} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <strong style={{ fontSize: "0.82em" }}>
+                      {g.serverDisplayName}
+                      {!g.enabled && <span style={{ color: "var(--fg-muted)" }}> (server off)</span>}
+                    </strong>
+                    <span
+                      style={{
+                        fontSize: "0.7em",
+                        padding: "1px 7px",
+                        borderRadius: 999,
+                        border: "1px solid var(--border)",
+                        color: posture.requiresApproval ? "var(--fg-muted)" : "#15803d",
+                      }}
+                      title={posture.detail}
+                    >
+                      {posture.label}
+                    </span>
+                  </div>
+                  {g.tools.map((t) => (
+                    <label key={t.namespacedName} style={checkRow} title={t.description || undefined}>
+                      <input
+                        type="checkbox"
+                        checked={form.tools.includes(t.namespacedName)}
+                        onChange={() => toggleIn("tools", t.namespacedName)}
+                      />
+                      {t.toolName}
+                    </label>
+                  ))}
+                </div>
+              );
+            })}
+            {orphanMcpTools.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <strong style={{ fontSize: "0.82em", color: "var(--fg-muted)" }}>
+                  Unavailable (server removed)
+                </strong>
+                {orphanMcpTools.map((name) => {
+                  const parsed = parseMcpToolName(name);
+                  return (
+                    <label key={name} style={{ ...checkRow, color: "var(--fg-muted)" }}>
+                      <input
+                        type="checkbox"
+                        checked
+                        onChange={() => toggleIn("tools", name)}
+                      />
+                      {parsed ? `${parsed.server} / ${parsed.tool}` : name}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </fieldset>
+        )}
+
         <fieldset style={fieldset}>
           <legend style={labelStyle}>Delegate to (links, max {MAX_LINKS})</legend>
           {linkOptions.length === 0 && (
@@ -360,6 +467,39 @@ export function AgentBuilder({
       </div>
     </div>
   );
+}
+
+interface McpServerGroup {
+  serverName: string;
+  serverDisplayName: string;
+  trusted: boolean;
+  enabled: boolean;
+  host: string;
+  tools: AttachableMcpTool[];
+}
+
+// Groups flat attachable MCP tools by their server, preserving first-seen order so
+// the builder can render one posture badge + a tool checklist per server.
+function groupByServer(tools: AttachableMcpTool[]): McpServerGroup[] {
+  const order: string[] = [];
+  const byName = new Map<string, McpServerGroup>();
+  for (const t of tools) {
+    let g = byName.get(t.serverName);
+    if (!g) {
+      g = {
+        serverName: t.serverName,
+        serverDisplayName: t.serverDisplayName,
+        trusted: t.trusted,
+        enabled: t.enabled,
+        host: t.host,
+        tools: [],
+      };
+      byName.set(t.serverName, g);
+      order.push(t.serverName);
+    }
+    g.tools.push(t);
+  }
+  return order.map((n) => byName.get(n)!);
 }
 
 const primaryBtn: React.CSSProperties = {

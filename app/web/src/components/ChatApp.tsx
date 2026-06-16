@@ -19,6 +19,7 @@ import { Composer } from "./Composer";
 import { UserMenu } from "./UserMenu";
 import { useVoiceLiveConfig } from "./VoiceLiveProvider";
 import { useLibraryConfig } from "./LibraryProvider";
+import { useCustomToolsConfig } from "./CustomToolsProvider";
 
 function pickDefaultModel(models: ModelEntry[]): string | null {
   // Never default to a capability model: prefer a plain "chat" model, then any
@@ -34,6 +35,8 @@ function pickDefaultModel(models: ModelEntry[]): string | null {
 export function ChatApp() {
   const voiceLiveConfig = useVoiceLiveConfig();
   const libraryConfig = useLibraryConfig();
+  const customToolsConfig = useCustomToolsConfig();
+  const customToolsEnabled = customToolsConfig.enabled;
   // The document library (Phase 11B-2). When on, the Composer paperclip routes
   // uploads through the per-user library CU-ingest pipeline instead of the
   // session-scoped local-extract path, so the doc is parsed, surfaced to the
@@ -787,6 +790,7 @@ export function ChatApp() {
           models={models}
           agents={agents}
           runModel={selectedModel}
+          customToolsEnabled={customToolsEnabled}
           onAgentsChanged={refreshAgents}
           onRun={openWorkflowRun}
           onClose={() => setStudioOpen(false)}

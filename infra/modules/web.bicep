@@ -71,6 +71,9 @@ param apiPublicUrl string = ''
 @description('Enable the document-library (Phase 11B-2) browser UI. Default OFF (no library control is surfaced).')
 param documentLibraryEnabled bool = false
 
+@description('Enable the custom-tools / BYO remote-MCP (Phase 12B) browser UI. Default OFF (no custom-tools control is surfaced).')
+param customToolsEnabled bool = false
+
 // Entra sign-in is only wired when the provider is entra AND all three values are
 // present; otherwise the web stays in dev mode (matching the frontend's fail-open
 // default), so a partial config can never half-enable the sign-in gate.
@@ -131,6 +134,18 @@ var documentLibraryEnv = documentLibraryEnabled ? [
   }
 ] : []
 
+// The custom-tools / BYO remote-MCP (Phase 12B) UI is only surfaced to the browser
+// when the flag is on. The MCP-server API goes through the same-origin Next proxy
+// (no public URL needed, like the library). Default OFF -> no env, no control, no
+// change to the chat UI. Driven by the same infra flag as the API's
+// AI4IA_CUSTOM_TOOLS_ENABLED.
+var customToolsEnv = customToolsEnabled ? [
+  {
+    name: 'CUSTOM_TOOLS_ENABLED'
+    value: 'true'
+  }
+] : []
+
 var webEnv = concat([
   {
     name: 'PORT'
@@ -144,7 +159,7 @@ var webEnv = concat([
     name: 'API_BASE_URL'
     value: apiBaseUrl
   }
-], entraEnv, devUserEnv, voiceLiveEnv, documentLibraryEnv)
+], entraEnv, devUserEnv, voiceLiveEnv, documentLibraryEnv, customToolsEnv)
 
 // Custom-domain binding. The Azure-managed cert lives at the environment scope and
 // is referenced from the app ingress so `azd provision` keeps the binding durable
