@@ -34,15 +34,19 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection, Sequence
+from datetime import datetime
 from typing import Protocol
 
+from . import mcp_observability as obs
 from .mcp_client import McpAuth, McpConnector
+from .mcp_health import is_quarantined, quarantine_reason
 from .mcp_servers import (
     DiscoveredTool,
     UserMcpServer,
     discovered_tool_to_spec,
     is_mcp_tool_name,
     namespaced_tool_name,
+    tool_requires_approval,
 )
 from .ssrf import Resolver, SsrfError, validate_public_https_url
 from .tool_exec import (
@@ -71,6 +75,37 @@ class SecretResolver(Protocol):
     async def secret_for(self, server: UserMcpServer) -> str | None: ...
 
 
+class HealthReporter(Protocol):
+    """The slice of the service the execution path needs to report tool-call
+    health (Phase 12B Increment D), so repeated failures can quarantine a server.
+
+    ``ok`` records a reachable server (even if the tool itself returned an error);
+    a transport/connection failure records ``ok=False`` with the raised error so
+    the durable failure count advances (and may quarantine). Implementations must
+    persist only on a material change and must never raise.
+    """
+
+    async def record_health(
+        self, server: UserMcpServer, *, ok: bool, error: object | None = None
+    ) -> None: ...
+
+
+async def _safe_report(
+    health: HealthReporter | None,
+    server: UserMcpServer,
+    *,
+    ok: bool,
+    error: object | None = None,
+) -> None:
+    """Report health best-effort: a telemetry/persistence failure never breaks a turn."""
+    if health is None:
+        return
+    try:
+        await health.record_health(server, ok=ok, error=error)
+    except Exception:  # noqa: BLE001 - health reporting must never break a turn
+        logger.warning("mcp health report failed", exc_info=True)
+
+
 def _make_handler(
     server: UserMcpServer,
     tool: DiscoveredTool,
@@ -80,6 +115,7 @@ def _make_handler(
     resolver: Resolver | None,
     budget: dict[str, int],
     max_calls: int,
+    health: HealthReporter | None = None,
 ):
     """Build the async handler for one (server, tool), closure-bound to one endpoint."""
     endpoint = server.endpoint
@@ -90,23 +126,53 @@ def _make_handler(
             raise ToolExecutionError("MCP tool-call budget exhausted for this turn.")
         budget["used"] += 1
 
-        # DNS-rebinding defense: re-validate the server host at call time with the
-        # same resolver discovery used. A host that resolved public at registration
-        # could now resolve to an internal address.
+        timer = obs.Timer()
         try:
-            validate_public_https_url(endpoint, resolver=resolver)
-        except SsrfError as exc:
-            raise ToolExecutionError(
-                f"MCP endpoint is not a permitted egress target: {exc}"
-            ) from exc
+            # DNS-rebinding defense: re-validate the server host at call time with
+            # the same resolver discovery used. A host that resolved public at
+            # registration could now resolve to an internal address.
+            try:
+                validate_public_https_url(endpoint, resolver=resolver)
+            except SsrfError as exc:
+                raise ToolExecutionError(
+                    f"MCP endpoint is not a permitted egress target: {exc}"
+                ) from exc
 
-        secret = await secrets.secret_for(server)
-        auth = McpAuth(mode=server.authMode, secret=secret)
-        result = await connector.call_tool(
-            endpoint=endpoint,
-            auth=auth,
+            secret = await secrets.secret_for(server)
+            auth = McpAuth(mode=server.authMode, secret=secret)
+            result = await connector.call_tool(
+                endpoint=endpoint,
+                auth=auth,
+                tool=tool_name,
+                arguments=args or {},
+            )
+        except Exception as exc:  # noqa: BLE001 - record health, then re-raise mapped
+            # A reachable host that re-validates internal, a transport failure, or a
+            # protocol error: all count against the server's health so a persistently
+            # failing server gets quarantined instead of retried every turn.
+            await _safe_report(health, server, ok=False, error=exc)
+            obs.emit(
+                event=obs.EVENT_TOOL_CALL,
+                server=server.name,
+                host=server.host,
+                tool=tool_name,
+                outcome=obs.OUTCOME_ERROR,
+                latency_ms=timer.ms,
+                detail=str(exc),
+            )
+            raise
+
+        # Reachable: the server connected and responded. ``isError`` is a tool-level
+        # result (e.g. bad arguments), NOT a connectivity failure, so it does NOT
+        # count against health — only transport failures quarantine a server.
+        await _safe_report(health, server, ok=True)
+        obs.emit(
+            event=obs.EVENT_TOOL_CALL,
+            server=server.name,
+            host=server.host,
             tool=tool_name,
-            arguments=args or {},
+            outcome=obs.OUTCOME_TOOL_ERROR if result.is_error else obs.OUTCOME_OK,
+            latency_ms=timer.ms,
         )
         return {"content": result.content, "isError": result.is_error}
 
@@ -122,6 +188,8 @@ def build_mcp_tool_definitions(
     resolver: Resolver | None = None,
     budget: dict[str, int],
     max_calls: int = MAX_MCP_TOOL_CALLS_PER_TURN,
+    health: HealthReporter | None = None,
+    now: datetime | None = None,
 ) -> list[ToolDefinition]:
     """Governed :class:`ToolDefinition`s for the attached, owned MCP tools.
 
@@ -131,6 +199,10 @@ def build_mcp_tool_definitions(
     are de-duplicated defensively so a malformed server record can never raise on
     double registration. ``budget`` is shared across all returned handlers to cap
     total MCP calls for the turn.
+
+    A **quarantined** server is skipped wholesale (its tools are not built, so the
+    model never sees them and the turn does not pay its connect timeout) until the
+    quarantine window elapses; the skip is logged with a clear reason.
     """
     attached = {n for n in attached_tool_names if is_mcp_tool_name(n)}
     if not attached:
@@ -138,6 +210,13 @@ def build_mcp_tool_definitions(
     defs: list[ToolDefinition] = []
     seen: set[str] = set()
     for server in servers:
+        if is_quarantined(server, now=now):
+            obs.emit_skip(
+                server=server.name,
+                host=server.host,
+                reason=quarantine_reason(server, now=now) or "quarantined",
+            )
+            continue
         for tool in server.discoveredTools:
             name = namespaced_tool_name(server.name, tool.name)
             if name not in attached or name in seen:
@@ -155,27 +234,30 @@ def build_mcp_tool_definitions(
                         resolver=resolver,
                         budget=budget,
                         max_calls=max_calls,
+                        health=health,
                     ),
                 )
             )
     return defs
 
 
-def trusted_tool_names(
+def auto_approved_tool_names(
     servers: Sequence[UserMcpServer], attached_tool_names: Collection[str]
 ) -> frozenset[str]:
-    """Attached MCP tool names whose server is marked ``trusted``.
+    """Attached MCP tool names that run WITHOUT a human-approval gate.
 
-    These go into ``ToolContext.approvals`` so a trusted server's tools run without
-    a human-approval gate (untrusted servers' tools stay approval-gated)."""
+    A tool is pre-approved when :func:`~ai4ia_api.agents.mcp_servers.tool_requires_approval`
+    is false for it — i.e. its server is ``trusted`` (and the tool is not overridden
+    to ``always``), or the tool is explicitly overridden to ``never``. These go into
+    ``ToolContext.approvals`` so the runtime skips the approval gate for exactly
+    those; every other attached MCP tool stays approval-gated.
+    """
     attached = {n for n in attached_tool_names if is_mcp_tool_name(n)}
     out: set[str] = set()
     for server in servers:
-        if not server.trusted:
-            continue
         for tool in server.discoveredTools:
             name = namespaced_tool_name(server.name, tool.name)
-            if name in attached:
+            if name in attached and not tool_requires_approval(server, tool.name):
                 out.add(name)
     return frozenset(out)
 
@@ -190,6 +272,8 @@ def build_mcp_turn_tools(
     correlation_id: str | None = None,
     approved: Collection[str] = (),
     max_calls: int = MAX_MCP_TOOL_CALLS_PER_TURN,
+    health: HealthReporter | None = None,
+    now: datetime | None = None,
 ) -> tuple[ToolRegistry, ToolExecutor, ToolContext] | None:
     """Build a merged (registry, executor, ctx) for a turn that attaches MCP tools.
 
@@ -200,8 +284,12 @@ def build_mcp_turn_tools(
 
     * ``target_hosts = frozenset()`` — skip the registry egress check (see the module
       docstring; real egress is enforced per-handler via the SSRF re-validation), and
-    * ``approvals`` = trusted servers' attached tool names (plus any explicitly
-      ``approved`` names supplied by the caller, e.g. a future per-turn approval UI).
+    * ``approvals`` = pre-approved attached tool names (trusted/``never`` per
+      :func:`auto_approved_tool_names`, plus any explicitly ``approved`` names
+      supplied by the caller, e.g. a per-turn approval UI).
+
+    Quarantined servers are skipped (see :func:`build_mcp_tool_definitions`); if that
+    leaves no runnable tools the function returns ``None``.
     """
     budget: dict[str, int] = {"used": 0}
     defs = build_mcp_tool_definitions(
@@ -212,11 +300,13 @@ def build_mcp_turn_tools(
         resolver=resolver,
         budget=budget,
         max_calls=max_calls,
+        health=health,
+        now=now,
     )
     if not defs:
         return None
     registry, executor = build_tools(extra=defs)
-    approvals = trusted_tool_names(servers, attached_tool_names) | set(approved)
+    approvals = auto_approved_tool_names(servers, attached_tool_names) | set(approved)
     ctx = ToolContext(
         approvals=frozenset(approvals),
         target_hosts=frozenset(),

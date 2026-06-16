@@ -15,9 +15,12 @@ import {
 import {
   approvalPosture,
   attachableMcpTools,
+  healthBadge,
   isMcpToolName,
   parseMcpToolName,
+  quarantineReason,
   type AttachableMcpTool,
+  type HealthBadge,
   type UserMcpServer,
 } from "@/lib/customTools";
 
@@ -117,6 +120,11 @@ export function AgentBuilder({
     [customToolsEnabled, mcpServers],
   );
   const mcpByServer = useMemo(() => groupByServer(mcpTools), [mcpTools]);
+  // Server records keyed by name so a group can surface its health/quarantine badge.
+  const mcpServerByName = useMemo(
+    () => new Map(mcpServers.map((s) => [s.name, s])),
+    [mcpServers],
+  );
   // MCP tools still attached to this agent whose server/tool no longer exists, so
   // the user can detach them even though there's no checkbox to render otherwise.
   const orphanMcpTools = useMemo(() => {
@@ -371,6 +379,9 @@ export function AgentBuilder({
             )}
             {mcpByServer.map((g) => {
               const posture = approvalPosture({ trusted: g.trusted, host: g.host });
+              const serverRec = mcpServerByName.get(g.serverName);
+              const health = serverRec ? healthBadge(serverRec) : null;
+              const quarantineMsg = serverRec ? quarantineReason(serverRec) : null;
               return (
                 <div key={g.serverName} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -378,6 +389,20 @@ export function AgentBuilder({
                       {g.serverDisplayName}
                       {!g.enabled && <span style={{ color: "var(--fg-muted)" }}> (server off)</span>}
                     </strong>
+                    {health && health.tone !== "ok" && (
+                      <span
+                        style={{
+                          fontSize: "0.7em",
+                          padding: "1px 7px",
+                          borderRadius: 999,
+                          border: "1px solid var(--border)",
+                          color: mcpHealthToneColor(health.tone),
+                        }}
+                        title={health.detail ?? undefined}
+                      >
+                        {health.label}
+                      </span>
+                    )}
                     <span
                       style={{
                         fontSize: "0.7em",
@@ -391,6 +416,11 @@ export function AgentBuilder({
                       {posture.label}
                     </span>
                   </div>
+                  {quarantineMsg && (
+                    <p role="alert" style={{ color: "var(--danger)", fontSize: "0.75em", margin: 0 }}>
+                      {quarantineMsg}
+                    </p>
+                  )}
                   {g.tools.map((t) => (
                     <label key={t.namespacedName} style={checkRow} title={t.description || undefined}>
                       <input
@@ -399,6 +429,20 @@ export function AgentBuilder({
                         onChange={() => toggleIn("tools", t.namespacedName)}
                       />
                       {t.toolName}
+                      <span
+                        style={{
+                          fontSize: "0.72em",
+                          color: t.requiresApproval ? "var(--fg-muted)" : "#15803d",
+                        }}
+                      >
+                        {t.requiresApproval
+                          ? t.approval === "always"
+                            ? "· approval (forced)"
+                            : "· approval"
+                          : t.approval === "never"
+                            ? "· pre-approved"
+                            : "· auto"}
+                      </span>
                     </label>
                   ))}
                 </div>
@@ -500,6 +544,20 @@ function groupByServer(tools: AttachableMcpTool[]): McpServerGroup[] {
     g.tools.push(t);
   }
   return order.map((n) => byName.get(n)!);
+}
+
+// Maps a health badge tone onto the shared palette (mirrors the McpServerBuilder).
+function mcpHealthToneColor(tone: HealthBadge["tone"]): string {
+  switch (tone) {
+    case "ok":
+      return "#15803d";
+    case "warn":
+      return "#b45309";
+    case "error":
+      return "var(--danger)";
+    default:
+      return "var(--fg-muted)";
+  }
 }
 
 const primaryBtn: React.CSSProperties = {

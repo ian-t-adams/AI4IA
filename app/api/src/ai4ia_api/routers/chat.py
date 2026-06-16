@@ -788,6 +788,7 @@ async def chat(
                     connector=mcp_service.connector,
                     resolver=mcp_service.resolver,
                     correlation_id=correlation_id,
+                    health=mcp_service,
                 )
                 if built is not None:
                     turn_registry, turn_executor, ctx = built

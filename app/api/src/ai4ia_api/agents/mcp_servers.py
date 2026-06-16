@@ -58,6 +58,20 @@ class McpTransport(str, Enum):
     streamable_http = "streamable_http"
 
 
+class McpToolApproval(str, Enum):
+    """Per-tool human-approval posture, overriding the server-level default.
+
+    ``default`` inherits the server's posture (approval required unless the server
+    is *trusted*); ``always`` forces approval even on a trusted server; ``never``
+    pre-approves the tool even on an untrusted server. The default keeps the
+    established *approval-unless-trusted* behavior byte-for-byte.
+    """
+
+    default = "default"
+    always = "always"
+    never = "never"
+
+
 class McpServerError(Exception):
     """Base class for MCP-server service errors."""
 
@@ -116,10 +130,25 @@ class UserMcpServer(BaseModel):
     # the secret store at connect/execute time.
     secretRef: str | None = None
     discoveredTools: list[DiscoveredTool] = Field(default_factory=list)
+    # Per-tool human-approval overrides, keyed by the *bare* discovered tool name
+    # (not the namespaced name). Absent/``default`` -> inherit the server posture.
+    # Persisted independently of ``discoveredTools`` so it survives re-discovery.
+    toolApprovals: dict[str, McpToolApproval] = Field(default_factory=dict)
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
     lastConnectedAt: datetime | None = None
     lastError: str | None = None
+    # --- Health / quarantine (Phase 12B Increment D) -------------------------
+    # Per-server health used to skip a persistently failing server instead of
+    # hammering it every turn. ``consecutiveFailures`` counts connect/execute
+    # transport failures since the last success; ``quarantinedUntil`` (when set
+    # and in the future) means the server is skipped until it elapses (auto
+    # recovery); ``lastHealthCheck`` is when health was last observed and
+    # ``lastHealthError`` is a bounded, redacted summary of the latest failure.
+    consecutiveFailures: int = 0
+    quarantinedUntil: datetime | None = None
+    lastHealthCheck: datetime | None = None
+    lastHealthError: str | None = None
 
     def tool_specs(self) -> list[ToolSpec]:
         """Project the cached discovered tools onto the governance seam."""
@@ -155,6 +184,10 @@ class UserMcpServerUpdate(BaseModel):
     secret: str | None = None
     trusted: bool = False
     enabled: bool = True
+    # Per-tool approval overrides (bare tool name -> posture). Omitted (``None``)
+    # leaves the stored overrides unchanged; an explicit map (possibly empty)
+    # replaces them. Unknown tool names are pruned against the rediscovered set.
+    toolApprovals: dict[str, McpToolApproval] | None = None
 
 
 class UserMcpServerTest(BaseModel):
@@ -174,20 +207,46 @@ def is_mcp_tool_name(name: str) -> bool:
     return name.startswith(f"{TOOL_NAME_PREFIX}:")
 
 
+def effective_tool_approval(server: UserMcpServer, tool_name: str) -> McpToolApproval:
+    """The per-tool approval posture in force for ``tool_name`` on ``server``.
+
+    Falls back to :attr:`McpToolApproval.default` (inherit the server posture) when
+    the user has set no explicit override for that tool.
+    """
+    posture = server.toolApprovals.get(tool_name)
+    return posture if posture is not None else McpToolApproval.default
+
+
+def tool_requires_approval(server: UserMcpServer, tool_name: str) -> bool:
+    """Whether a remote tool needs human approval on each use.
+
+    ``always`` -> required; ``never`` -> not required; ``default`` -> the existing
+    rule (required unless the server is marked *trusted*). This is the single
+    source of truth shared by the governance projection and the per-turn
+    pre-approval set, so the schema the model sees and the runtime gate agree.
+    """
+    posture = effective_tool_approval(server, tool_name)
+    if posture is McpToolApproval.always:
+        return True
+    if posture is McpToolApproval.never:
+        return False
+    return not server.trusted
+
+
 def discovered_tool_to_spec(server: UserMcpServer, tool: DiscoveredTool) -> ToolSpec:
     """Map one discovered remote tool onto a governed :class:`ToolSpec`.
 
     Remote tools are always ``external`` risk and egress-scoped to the server's
-    single host. They require human approval unless the owner explicitly marked
-    the server *trusted* (and destructive-risk tools always require approval via
-    :attr:`ToolSpec.needs_approval`, but remote tools are classified external,
-    not destructive, since we cannot know their side effects).
+    single host. They require human approval per :func:`tool_requires_approval`
+    — i.e. unless the owner marked the server *trusted*, with an optional per-tool
+    override (``always``/``never``). Remote tools are classified external, not
+    destructive, since we cannot know their side effects.
     """
     return ToolSpec(
         name=namespaced_tool_name(server.name, tool.name),
         description=tool.description or f"{tool.name} (via MCP server '{server.name}')",
         risk=ToolRisk.external,
-        requires_approval=not server.trusted,
+        requires_approval=tool_requires_approval(server, tool.name),
         egress_allowlist=frozenset({server.host}),
         enabled=server.enabled,
     )
