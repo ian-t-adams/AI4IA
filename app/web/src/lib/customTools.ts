@@ -30,6 +30,12 @@ export function parseEnabledFlag(raw: string | undefined | null): boolean {
 export type McpAuthMode = "none" | "api_key" | "bearer";
 export type McpTransport = "streamable_http";
 
+// Per-tool human-approval posture, overriding the server-level default. Mirrors
+// the backend McpToolApproval enum: `default` inherits the server posture
+// (approval-unless-trusted), `always` forces approval even on a trusted server,
+// `never` pre-approves the tool even on an untrusted server.
+export type McpToolApproval = "default" | "always" | "never";
+
 // A tool advertised by a remote MCP server, as cached on the record.
 export interface DiscoveredTool {
   name: string;
@@ -53,10 +59,23 @@ export interface UserMcpServer {
   enabled: boolean;
   secretRef: string | null;
   discoveredTools: DiscoveredTool[];
+  // Per-tool approval overrides, keyed by the *bare* discovered tool name.
+  // Absent / `default` -> inherit the server posture. Mirrors the backend record.
+  toolApprovals: Record<string, McpToolApproval>;
   createdAt: string;
   updatedAt: string;
   lastConnectedAt: string | null;
   lastError: string | null;
+  // --- Health / quarantine (Phase 12B Increment D) -------------------------
+  // Per-server health surfaced for badges. `consecutiveFailures` counts
+  // connect/execute transport failures since the last success; `quarantinedUntil`
+  // (when set and in the future) means the server is skipped until it elapses;
+  // `lastHealthCheck` is when health was last observed; `lastHealthError` is a
+  // bounded, redacted summary of the latest failure.
+  consecutiveFailures: number;
+  quarantinedUntil: string | null;
+  lastHealthCheck: string | null;
+  lastHealthError: string | null;
 }
 
 // Create payload — carries `name`; `secret` is transient (used only to connect).
@@ -81,6 +100,10 @@ export interface UserMcpServerUpdate {
   secret?: string | null;
   trusted: boolean;
   enabled: boolean;
+  // Per-tool approval overrides (bare tool name -> posture). Omitted (`undefined`)
+  // leaves the stored overrides unchanged; an explicit map (possibly empty)
+  // replaces them. Unknown tool names are pruned by the backend on re-discovery.
+  toolApprovals?: Record<string, McpToolApproval> | null;
 }
 
 // Optional payload for the /test endpoint: an authed re-discovery may re-supply
@@ -108,6 +131,26 @@ export const MCP_AUTH_MODES: { value: McpAuthMode; label: string; hint: string }
   { value: "none", label: "None (public)", hint: "No credential is sent." },
   { value: "api_key", label: "API key", hint: "Sent to the server as an X-API-Key header." },
   { value: "bearer", label: "Bearer token", hint: "Sent as an Authorization: Bearer header." },
+];
+
+// Per-tool approval options for the builder select. `default` inherits the server
+// posture; `always`/`never` override it. Mirrors the backend McpToolApproval enum.
+export const MCP_TOOL_APPROVALS: { value: McpToolApproval; label: string; hint: string }[] = [
+  {
+    value: "default",
+    label: "Default (inherit server)",
+    hint: "Approval required unless the server is trusted.",
+  },
+  {
+    value: "always",
+    label: "Always require approval",
+    hint: "Prompt for approval on every use, even on a trusted server.",
+  },
+  {
+    value: "never",
+    label: "Never require approval",
+    hint: "Pre-approve this tool, even on an untrusted server.",
+  },
 ];
 
 // Returns a human-readable reason the server name is invalid, or null if valid.
@@ -207,6 +250,138 @@ export function approvalPosture(server: {
   };
 }
 
+// --- Per-tool approval (mirror mcp_servers.effective_tool_approval / _requires) ---
+
+// The per-tool approval posture in force for `toolName` on `server`, falling back
+// to `default` (inherit the server posture) when no override is set.
+export function effectiveToolApproval(
+  server: { toolApprovals?: Record<string, McpToolApproval> | null },
+  toolName: string,
+): McpToolApproval {
+  return server.toolApprovals?.[toolName] ?? "default";
+}
+
+// Whether a remote tool needs human approval on each use: `always` -> true,
+// `never` -> false, `default` -> the existing rule (required unless trusted).
+// Single source of truth shared by the badge + the attach projection, mirroring
+// the backend tool_requires_approval so the UI matches the runtime gate.
+export function toolRequiresApproval(
+  server: { trusted: boolean; toolApprovals?: Record<string, McpToolApproval> | null },
+  toolName: string,
+): boolean {
+  const posture = effectiveToolApproval(server, toolName);
+  if (posture === "always") return true;
+  if (posture === "never") return false;
+  return !server.trusted;
+}
+
+// Compact, badge-ready posture for a single discovered tool: the resolved
+// approval requirement plus a short label/detail describing why.
+export function toolApprovalPosture(
+  server: { trusted: boolean; host: string; toolApprovals?: Record<string, McpToolApproval> | null },
+  toolName: string,
+): ApprovalPosture & { posture: McpToolApproval } {
+  const posture = effectiveToolApproval(server, toolName);
+  const requiresApproval = toolRequiresApproval(server, toolName);
+  let label: string;
+  if (posture === "always") label = "Always requires approval";
+  else if (posture === "never") label = "Pre-approved — runs without approval";
+  else if (requiresApproval) label = "Requires approval on each use";
+  else label = "Trusted — runs without approval";
+  return {
+    posture,
+    requiresApproval,
+    label,
+    detail: `External tool; network access limited to ${server.host}.`,
+  };
+}
+
+// --- Health / quarantine (mirror mcp_health) -------------------------------
+
+export type McpHealthStatus = "healthy" | "degraded" | "quarantined" | "unknown";
+
+// Minimal slice of the record the health helpers read (so the badges can be fed
+// either a full UserMcpServer or a lighter shape in tests).
+export interface McpHealthFields {
+  consecutiveFailures: number;
+  quarantinedUntil: string | null;
+  lastHealthCheck: string | null;
+  lastHealthError: string | null;
+  lastConnectedAt: string | null;
+}
+
+function parseTime(value: string | null): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+// True if the server is currently quarantined (window not yet elapsed). `now`
+// (ms) is injectable for deterministic tests; defaults to wall-clock.
+export function isQuarantined(server: McpHealthFields, now: number = Date.now()): boolean {
+  const until = parseTime(server.quarantinedUntil);
+  return until !== null && now < until;
+}
+
+// Derive the coarse health status from the tracked state, mirroring the backend
+// mcp_health.health_status precedence (quarantined > degraded > unknown > healthy).
+export function healthStatus(
+  server: McpHealthFields,
+  now: number = Date.now(),
+): McpHealthStatus {
+  if (isQuarantined(server, now)) return "quarantined";
+  if ((server.consecutiveFailures ?? 0) > 0) return "degraded";
+  if (server.lastHealthCheck === null && server.lastConnectedAt === null) return "unknown";
+  return "healthy";
+}
+
+// A short, human-readable reason a server is being skipped, or null if it is not
+// quarantined. Mirrors mcp_health.quarantine_reason for the badge tooltip.
+export function quarantineReason(
+  server: McpHealthFields,
+  now: number = Date.now(),
+): string | null {
+  const until = parseTime(server.quarantinedUntil);
+  if (until === null || now >= until) return null;
+  const secs = Math.max(0, Math.round((until - now) / 1000));
+  const when = secs >= 60 ? `${Math.floor(secs / 60)}m` : `${secs}s`;
+  const why = server.lastHealthError || "repeated connection failures";
+  return `quarantined for ~${when} after ${server.consecutiveFailures} failures: ${why}`;
+}
+
+// A compact label + tone for the health badge. `tone` maps to the existing status
+// pill classes used by the C components.
+export interface HealthBadge {
+  status: McpHealthStatus;
+  label: string;
+  tone: "ok" | "warn" | "error" | "muted";
+  detail: string | null;
+}
+
+export function healthBadge(server: McpHealthFields, now: number = Date.now()): HealthBadge {
+  const status = healthStatus(server, now);
+  switch (status) {
+    case "quarantined":
+      return {
+        status,
+        label: "Quarantined",
+        tone: "error",
+        detail: quarantineReason(server, now),
+      };
+    case "degraded":
+      return {
+        status,
+        label: "Degraded",
+        tone: "warn",
+        detail: server.lastHealthError || "Recent connection failures.",
+      };
+    case "unknown":
+      return { status, label: "Unknown", tone: "muted", detail: "Not checked yet." };
+    default:
+      return { status, label: "Healthy", tone: "ok", detail: null };
+  }
+}
+
 // One attachable MCP tool, flattened with its namespaced name + governance posture
 // so the agent builder can render it as a checkbox grouped under its server.
 export interface AttachableMcpTool {
@@ -218,6 +393,10 @@ export interface AttachableMcpTool {
   trusted: boolean;
   enabled: boolean;
   host: string;
+  // Resolved per-tool approval requirement + posture (mirrors the runtime gate),
+  // so the agent builder can show whether attaching the tool will prompt.
+  requiresApproval: boolean;
+  approval: McpToolApproval;
 }
 
 // Groups a list of servers into their attachable MCP tools (namespaced), skipping
@@ -238,6 +417,8 @@ export function attachableMcpTools(
         trusted: s.trusted,
         enabled: s.enabled,
         host: s.host,
+        requiresApproval: toolRequiresApproval(s, t.name),
+        approval: effectiveToolApproval(s, t.name),
       });
     }
   }

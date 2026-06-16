@@ -2,13 +2,20 @@ import { describe, expect, it } from "vitest";
 import {
   approvalPosture,
   attachableMcpTools,
+  effectiveToolApproval,
+  healthBadge,
+  healthStatus,
   isMcpToolName,
+  isQuarantined,
   mcpEndpointError,
   mcpSecretError,
   mcpServerNameError,
   namespacedToolName,
   parseEnabledFlag,
   parseMcpToolName,
+  quarantineReason,
+  toolApprovalPosture,
+  toolRequiresApproval,
   type UserMcpServer,
 } from "./customTools";
 
@@ -157,10 +164,15 @@ function makeServer(overrides: Partial<UserMcpServer> = {}): UserMcpServer {
     enabled: true,
     secretRef: null,
     discoveredTools: [],
+    toolApprovals: {},
     createdAt: "",
     updatedAt: "",
     lastConnectedAt: null,
     lastError: null,
+    consecutiveFailures: 0,
+    quarantinedUntil: null,
+    lastHealthCheck: null,
+    lastHealthError: null,
     ...overrides,
   };
 }
@@ -209,5 +221,112 @@ describe("attachableMcpTools", () => {
 
   it("returns an empty list when there are no discovered tools", () => {
     expect(attachableMcpTools([makeServer()])).toEqual([]);
+  });
+});
+
+
+describe("per-tool approval", () => {
+  it("inherits the server posture by default", () => {
+    expect(effectiveToolApproval(makeServer(), "forecast")).toBe("default");
+    expect(toolRequiresApproval(makeServer({ trusted: false }), "forecast")).toBe(true);
+    expect(toolRequiresApproval(makeServer({ trusted: true }), "forecast")).toBe(false);
+  });
+
+  it("honors an `always` override even on a trusted server", () => {
+    const s = makeServer({ trusted: true, toolApprovals: { forecast: "always" } });
+    expect(toolRequiresApproval(s, "forecast")).toBe(true);
+    const p = toolApprovalPosture(s, "forecast");
+    expect(p.posture).toBe("always");
+    expect(p.requiresApproval).toBe(true);
+    expect(p.label).toMatch(/always/i);
+  });
+
+  it("honors a `never` override even on an untrusted server", () => {
+    const s = makeServer({ trusted: false, toolApprovals: { forecast: "never" } });
+    expect(toolRequiresApproval(s, "forecast")).toBe(false);
+    const p = toolApprovalPosture(s, "forecast");
+    expect(p.posture).toBe("never");
+    expect(p.requiresApproval).toBe(false);
+    expect(p.label).toMatch(/pre-approved/i);
+  });
+
+  it("only overrides the named tool", () => {
+    const s = makeServer({ trusted: false, toolApprovals: { forecast: "never" } });
+    expect(toolRequiresApproval(s, "forecast")).toBe(false);
+    expect(toolRequiresApproval(s, "alerts")).toBe(true);
+  });
+
+  it("threads per-tool posture into attachableMcpTools", () => {
+    const servers = [
+      makeServer({
+        name: "weather",
+        trusted: false,
+        toolApprovals: { forecast: "never" },
+        discoveredTools: [
+          { name: "forecast", description: "", inputSchema: {} },
+          { name: "alerts", description: "", inputSchema: {} },
+        ],
+      }),
+    ];
+    const tools = attachableMcpTools(servers);
+    expect(tools[0]).toMatchObject({ toolName: "forecast", requiresApproval: false, approval: "never" });
+    expect(tools[1]).toMatchObject({ toolName: "alerts", requiresApproval: true, approval: "default" });
+  });
+});
+
+describe("health / quarantine", () => {
+  const NOW = Date.parse("2025-01-01T12:00:00Z");
+
+  it("reports unknown before any check, healthy after a successful connect", () => {
+    expect(healthStatus(makeServer(), NOW)).toBe("unknown");
+    expect(healthStatus(makeServer({ lastConnectedAt: "2025-01-01T11:00:00Z" }), NOW)).toBe(
+      "healthy",
+    );
+  });
+
+  it("reports degraded with failures below quarantine", () => {
+    const s = makeServer({ consecutiveFailures: 1, lastHealthCheck: "2025-01-01T11:59:00Z" });
+    expect(healthStatus(s, NOW)).toBe("degraded");
+    expect(isQuarantined(s, NOW)).toBe(false);
+  });
+
+  it("reports quarantined while the window is in the future and recovers after", () => {
+    const future = makeServer({
+      consecutiveFailures: 3,
+      quarantinedUntil: "2025-01-01T12:05:00Z",
+      lastHealthError: "connection refused",
+    });
+    expect(isQuarantined(future, NOW)).toBe(true);
+    expect(healthStatus(future, NOW)).toBe("quarantined");
+    const reason = quarantineReason(future, NOW);
+    expect(reason).toMatch(/quarantined/i);
+    expect(reason).toContain("connection refused");
+    expect(reason).toContain("3 failures");
+
+    // Auto-recovery: once `now` passes the window it is no longer quarantined.
+    const past = Date.parse("2025-01-01T12:06:00Z");
+    expect(isQuarantined(future, past)).toBe(false);
+    expect(quarantineReason(future, past)).toBeNull();
+  });
+
+  it("produces badge tone + label per status", () => {
+    expect(healthBadge(makeServer(), NOW)).toMatchObject({ status: "unknown", tone: "muted" });
+    expect(
+      healthBadge(makeServer({ lastConnectedAt: "2025-01-01T11:00:00Z" }), NOW),
+    ).toMatchObject({ status: "healthy", tone: "ok" });
+    expect(
+      healthBadge(makeServer({ consecutiveFailures: 2, lastHealthCheck: "x" }), NOW),
+    ).toMatchObject({ status: "degraded", tone: "warn" });
+    expect(
+      healthBadge(
+        makeServer({ consecutiveFailures: 3, quarantinedUntil: "2025-01-01T12:05:00Z" }),
+        NOW,
+      ),
+    ).toMatchObject({ status: "quarantined", tone: "error" });
+  });
+
+  it("treats a missing/blank quarantinedUntil as not quarantined", () => {
+    expect(isQuarantined(makeServer({ quarantinedUntil: null }), NOW)).toBe(false);
+    expect(quarantineReason(makeServer({ quarantinedUntil: null }), NOW)).toBeNull();
   });
 });

@@ -13,6 +13,7 @@ results and a stub resolver yields a public IP unless a test simulates a rebind.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -25,14 +26,15 @@ from ai4ia_api.agents.mcp_client import (
 )
 from ai4ia_api.agents.mcp_execution import (
     MAX_MCP_TOOL_CALLS_PER_TURN,
+    auto_approved_tool_names,
     build_mcp_tool_definitions,
     build_mcp_turn_tools,
-    trusted_tool_names,
 )
 from ai4ia_api.agents.mcp_secrets import InMemoryMcpSecretStore
 from ai4ia_api.agents.mcp_servers import (
     DiscoveredTool,
     McpAuthMode,
+    McpToolApproval,
     UserMcpServer,
     UserMcpServerCreate,
 )
@@ -180,12 +182,12 @@ def test_build_only_includes_attached_owned_tools():
     assert [d.spec.name for d in defs] == ["mcp:weather/forecast"]
 
 
-def test_trusted_tool_names_only_for_trusted_servers():
+def test_auto_approved_tool_names_only_for_trusted_servers():
     servers = [
         _server("a", trusted=True, tools=[_tool("x")]),
         _server("b", trusted=False, tools=[_tool("y")]),
     ]
-    names = trusted_tool_names(servers, ["mcp:a/x", "mcp:b/y"])
+    names = auto_approved_tool_names(servers, ["mcp:a/x", "mcp:b/y"])
     assert names == frozenset({"mcp:a/x"})
 
 
@@ -593,3 +595,201 @@ async def test_tools_call_content_is_redacted_and_truncated_through_runtime():
     assert len(content.encode("utf-8")) <= _RUNTIME_RESULT_CAP + len(_TRUNCATE_SUFFIX)
     # The original oversized payload was far larger than the cap.
     assert len(oversized) > _RUNTIME_RESULT_CAP
+
+
+
+# --- Increment D: quarantine gate, per-tool approval, health recording -------
+
+
+def _quarantined(server: UserMcpServer, *, until: datetime) -> UserMcpServer:
+    """Return ``server`` mutated into a quarantined state until ``until``."""
+    server.consecutiveFailures = 3
+    server.quarantinedUntil = until
+    server.lastHealthError = "connection refused"
+    return server
+
+
+class _HealthSpy:
+    """Records :meth:`record_health` calls so a test can assert what was reported."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool, object | None]] = []
+
+    async def record_health(self, server, *, ok, error=None) -> None:
+        self.calls.append((server.name, ok, error))
+
+
+def test_quarantined_server_tools_are_skipped():
+    future = datetime.now(timezone.utc) + timedelta(minutes=5)
+    servers = [_quarantined(_server("weather", tools=[_tool("forecast")]), until=future)]
+    defs = build_mcp_tool_definitions(
+        servers,
+        attached_tool_names=["mcp:weather/forecast"],
+        secrets=_Secrets(),
+        connector=FakeMcpConnector(),
+        budget={"used": 0},
+    )
+    # The quarantine GATE removed the server's tools wholesale.
+    assert defs == []
+
+
+def test_build_turn_tools_returns_none_when_only_server_quarantined():
+    future = datetime.now(timezone.utc) + timedelta(minutes=5)
+    servers = [_quarantined(_server("weather", tools=[_tool("forecast")]), until=future)]
+    built = build_mcp_turn_tools(
+        servers=servers,
+        attached_tool_names=["mcp:weather/forecast"],
+        secrets=_Secrets(),
+        connector=FakeMcpConnector(),
+    )
+    assert built is None
+
+
+def test_quarantine_auto_recovers_after_window():
+    past = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    servers = [_quarantined(_server("weather", tools=[_tool("forecast")]), until=past)]
+    # ``now`` is well past the quarantine window -> the server is reachable again.
+    defs = build_mcp_tool_definitions(
+        servers,
+        attached_tool_names=["mcp:weather/forecast"],
+        secrets=_Secrets(),
+        connector=FakeMcpConnector(),
+        budget={"used": 0},
+        now=datetime(2025, 6, 1, tzinfo=timezone.utc),
+    )
+    assert [d.spec.name for d in defs] == ["mcp:weather/forecast"]
+
+
+def test_per_tool_never_override_pre_approves_on_untrusted_server():
+    server = _server("weather", trusted=False, tools=[_tool("forecast")])
+    server.toolApprovals = {"forecast": McpToolApproval.never}
+    names = auto_approved_tool_names([server], ["mcp:weather/forecast"])
+    assert names == frozenset({"mcp:weather/forecast"})
+    # And the projected spec agrees: no approval required.
+    defs = build_mcp_tool_definitions(
+        [server],
+        attached_tool_names=["mcp:weather/forecast"],
+        secrets=_Secrets(),
+        connector=FakeMcpConnector(),
+        budget={"used": 0},
+    )
+    assert defs[0].spec.requires_approval is False
+
+
+def test_per_tool_always_override_forces_approval_on_trusted_server():
+    server = _server("weather", trusted=True, tools=[_tool("forecast")])
+    server.toolApprovals = {"forecast": McpToolApproval.always}
+    # A trusted server would normally pre-approve; the per-tool ``always`` overrides.
+    names = auto_approved_tool_names([server], ["mcp:weather/forecast"])
+    assert names == frozenset()
+    defs = build_mcp_tool_definitions(
+        [server],
+        attached_tool_names=["mcp:weather/forecast"],
+        secrets=_Secrets(),
+        connector=FakeMcpConnector(),
+        budget={"used": 0},
+    )
+    assert defs[0].spec.requires_approval is True
+
+
+async def test_handler_reports_healthy_on_success():
+    health = _HealthSpy()
+    servers = [_server("weather", tools=[_tool("forecast")])]
+    defs = build_mcp_tool_definitions(
+        servers,
+        attached_tool_names=["mcp:weather/forecast"],
+        secrets=_Secrets(),
+        connector=FakeMcpConnector(),
+        resolver=_PUBLIC_RESOLVER,
+        budget={"used": 0},
+        health=health,
+    )
+    await _run_handler(defs[0], {})
+    assert health.calls == [("weather", True, None)]
+
+
+async def test_handler_reports_healthy_even_on_tool_error():
+    # A reachable server returning isError is a tool-level error, NOT a connectivity
+    # failure: it must still count as healthy so it is never quarantined for it.
+    health = _HealthSpy()
+    servers = [_server("weather", tools=[_tool("forecast")])]
+    connector = FakeMcpConnector(
+        call_results={"forecast": McpToolResult(content="bad args", is_error=True)}
+    )
+    defs = build_mcp_tool_definitions(
+        servers,
+        attached_tool_names=["mcp:weather/forecast"],
+        secrets=_Secrets(),
+        connector=connector,
+        resolver=_PUBLIC_RESOLVER,
+        budget={"used": 0},
+        health=health,
+    )
+    out = await _run_handler(defs[0], {})
+    assert out["isError"] is True
+    assert health.calls == [("weather", True, None)]
+
+
+async def test_handler_reports_unhealthy_on_transport_failure():
+    health = _HealthSpy()
+    servers = [_server("weather", tools=[_tool("forecast")])]
+    boom = RuntimeError("connection refused")
+    connector = FakeMcpConnector(call_error=boom)
+    defs = build_mcp_tool_definitions(
+        servers,
+        attached_tool_names=["mcp:weather/forecast"],
+        secrets=_Secrets(),
+        connector=connector,
+        resolver=_PUBLIC_RESOLVER,
+        budget={"used": 0},
+        health=health,
+    )
+    with pytest.raises(RuntimeError):
+        await _run_handler(defs[0], {})
+    assert len(health.calls) == 1
+    name, ok, error = health.calls[0]
+    assert (name, ok) == ("weather", False)
+    assert error is boom
+
+
+async def test_handler_reports_unhealthy_on_dns_rebind():
+    # An SSRF re-validation failure at call time counts against health too.
+    health = _HealthSpy()
+    servers = [_server("weather", tools=[_tool("forecast")])]
+    connector = FakeMcpConnector()
+    defs = build_mcp_tool_definitions(
+        servers,
+        attached_tool_names=["mcp:weather/forecast"],
+        secrets=_Secrets(),
+        connector=connector,
+        resolver=_REBIND_RESOLVER,
+        budget={"used": 0},
+        health=health,
+    )
+    with pytest.raises(ToolExecutionError):
+        await _run_handler(defs[0], {})
+    assert connector.tool_calls == []
+    assert len(health.calls) == 1 and health.calls[0][1] is False
+
+
+async def test_health_report_failure_never_breaks_a_successful_call():
+    class _BoomHealth:
+        async def record_health(self, server, *, ok, error=None):
+            raise RuntimeError("store down")
+
+    servers = [_server("weather", tools=[_tool("forecast")])]
+    connector = FakeMcpConnector(
+        call_results={"forecast": McpToolResult(content="ok")}
+    )
+    defs = build_mcp_tool_definitions(
+        servers,
+        attached_tool_names=["mcp:weather/forecast"],
+        secrets=_Secrets(),
+        connector=connector,
+        resolver=_PUBLIC_RESOLVER,
+        budget={"used": 0},
+        health=_BoomHealth(),
+    )
+    # A health-store failure is swallowed; the tool result is returned normally.
+    out = await _run_handler(defs[0], {})
+    assert out == {"content": "ok", "isError": False}

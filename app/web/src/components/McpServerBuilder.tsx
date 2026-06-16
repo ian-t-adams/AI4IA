@@ -4,13 +4,19 @@ import { useCallback, useEffect, useState } from "react";
 import * as api from "@/lib/api";
 import {
   approvalPosture,
+  healthBadge,
   MCP_AUTH_MODES,
   MCP_MAX_DESCRIPTION_LEN,
   MCP_MAX_DISPLAY_NAME_LEN,
+  MCP_TOOL_APPROVALS,
   mcpEndpointError,
   mcpSecretError,
   mcpServerNameError,
+  quarantineReason,
+  toolApprovalPosture,
+  type HealthBadge,
   type McpAuthMode,
+  type McpToolApproval,
   type UserMcpServer,
 } from "@/lib/customTools";
 
@@ -205,6 +211,41 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
     [editing, refreshMine, startNew, onChanged],
   );
 
+  // Persist a per-tool approval override. The update path re-connects (reusing the
+  // stored credential, secret left null) and prunes overrides for vanished tools,
+  // mirroring the backend; a `default` choice clears the override.
+  const setToolApproval = useCallback(
+    async (server: UserMcpServer, toolName: string, posture: McpToolApproval) => {
+      setError(null);
+      setNotice(null);
+      const nextApprovals: Record<string, McpToolApproval> = { ...server.toolApprovals };
+      if (posture === "default") delete nextApprovals[toolName];
+      else nextApprovals[toolName] = posture;
+      setBusy(true);
+      try {
+        const saved = await api.updateMcpServer(server.name, {
+          displayName: server.displayName || null,
+          description: server.description,
+          endpoint: server.endpoint,
+          authMode: server.authMode,
+          secret: null, // reuse the durably stored credential
+          trusted: server.trusted,
+          enabled: server.enabled,
+          toolApprovals: nextApprovals,
+        });
+        await refreshMine();
+        setForm(formFrom(saved));
+        setNotice(`Approval for ${toolName} updated.`);
+        onChanged?.();
+      } catch (e) {
+        setError((e as Error).message);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [refreshMine, onChanged],
+  );
+
   return (
     <div style={{ display: "flex", gap: 20, minHeight: 0, flex: 1 }}>
       <div style={{ width: 210, flexShrink: 0, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -241,6 +282,12 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
                 <span style={{ display: "block", fontSize: "0.72em", color: "var(--fg-muted)" }}>
                   {s.trusted ? "trusted · " : ""}
                   {s.discoveredTools.length} tool{s.discoveredTools.length === 1 ? "" : "s"}
+                  {(() => {
+                    const b = healthBadge(s);
+                    return b.tone === "ok" ? null : (
+                      <span style={{ color: healthToneColor(b.tone) }}> · {b.label.toLowerCase()}</span>
+                    );
+                  })()}
                 </span>
               </button>
               <button
@@ -399,7 +446,11 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
         </div>
 
         {current && (
-          <DiscoverySection server={current} />
+          <DiscoverySection
+            server={current}
+            busy={busy || testing}
+            onSetToolApproval={setToolApproval}
+          />
         )}
       </div>
     </div>
@@ -407,31 +458,55 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
 }
 
 // Discovery results + governance posture for a saved server, so the user can see
-// exactly which tools they'll be able to attach and how each is governed.
-function DiscoverySection({ server }: { server: UserMcpServer }) {
+// exactly which tools they'll be able to attach, how each is governed, and the
+// server's health/quarantine state. Per-tool approval can be set inline.
+function DiscoverySection({
+  server,
+  busy,
+  onSetToolApproval,
+}: {
+  server: UserMcpServer;
+  busy: boolean;
+  onSetToolApproval: (
+    server: UserMcpServer,
+    toolName: string,
+    posture: McpToolApproval,
+  ) => void;
+}) {
   const posture = approvalPosture(server);
+  const health = healthBadge(server);
+  const quarantineMsg = quarantineReason(server);
   return (
     <div style={fieldset}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <strong style={{ fontSize: "0.85em" }}>
           Discovered tools ({server.discoveredTools.length})
         </strong>
-        <span
-          style={{
-            fontSize: "0.72em",
-            padding: "2px 8px",
-            borderRadius: 999,
-            border: "1px solid var(--border)",
-            background: "var(--bg)",
-            color: posture.requiresApproval ? "var(--fg)" : "#15803d",
-            whiteSpace: "nowrap",
-          }}
-          title={posture.detail}
-        >
-          {posture.label}
-        </span>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <HealthPill badge={health} />
+          <span
+            style={{
+              fontSize: "0.72em",
+              padding: "2px 8px",
+              borderRadius: 999,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+              color: posture.requiresApproval ? "var(--fg)" : "#15803d",
+              whiteSpace: "nowrap",
+            }}
+            title={posture.detail}
+          >
+            {posture.label}
+          </span>
+        </div>
       </div>
       <p style={{ ...labelStyle, margin: 0 }}>{posture.detail}</p>
+
+      {quarantineMsg && (
+        <p role="alert" style={{ color: "var(--danger)", fontSize: "0.8em", margin: "4px 0 0" }}>
+          {quarantineMsg}
+        </p>
+      )}
 
       {server.lastError && (
         <p role="alert" style={{ color: "var(--danger)", fontSize: "0.8em", margin: "4px 0 0" }}>
@@ -444,21 +519,84 @@ function DiscoverySection({ server }: { server: UserMcpServer }) {
           No tools discovered. Use Test to reconnect once the server advertises tools.
         </p>
       ) : (
-        <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-          {server.discoveredTools.map((t) => (
-            <li key={t.name} style={{ fontSize: "0.82em" }}>
-              <code style={{ color: "var(--fg)" }}>{t.name}</code>
-              {t.description && (
-                <span style={{ color: "var(--fg-muted)" }}> — {t.description}</span>
-              )}
-            </li>
-          ))}
+        <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+          {server.discoveredTools.map((t) => {
+            const tp = toolApprovalPosture(server, t.name);
+            return (
+              <li key={t.name} style={{ fontSize: "0.82em", display: "flex", flexDirection: "column", gap: 4 }}>
+                <div>
+                  <code style={{ color: "var(--fg)" }}>{t.name}</code>
+                  {t.description && (
+                    <span style={{ color: "var(--fg-muted)" }}> — {t.description}</span>
+                  )}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <label style={{ ...labelStyle, margin: 0 }} htmlFor={`approval-${t.name}`}>
+                    Approval
+                  </label>
+                  <select
+                    id={`approval-${t.name}`}
+                    value={tp.posture}
+                    disabled={busy}
+                    onChange={(e) =>
+                      onSetToolApproval(server, t.name, e.target.value as McpToolApproval)
+                    }
+                    style={{ ...inputStyle, width: "auto", padding: "4px 8px", fontSize: "0.82em" }}
+                  >
+                    {MCP_TOOL_APPROVALS.map((a) => (
+                      <option key={a.value} value={a.value}>{a.label}</option>
+                    ))}
+                  </select>
+                  <span
+                    style={{ color: tp.requiresApproval ? "var(--fg-muted)" : "#15803d", fontSize: "0.78em" }}
+                    title={tp.detail}
+                  >
+                    {tp.label}
+                  </span>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
       <p style={{ ...labelStyle, margin: 0 }}>
         Attach these tools to an agent from the Agents tab.
       </p>
     </div>
+  );
+}
+
+// Maps a health badge tone onto the palette the rest of the surface already uses.
+function healthToneColor(tone: HealthBadge["tone"]): string {
+  switch (tone) {
+    case "ok":
+      return "#15803d";
+    case "warn":
+      return "#b45309";
+    case "error":
+      return "var(--danger)";
+    default:
+      return "var(--fg-muted)";
+  }
+}
+
+// Small status pill mirroring the approval-posture pill, colored by health tone.
+function HealthPill({ badge }: { badge: HealthBadge }) {
+  return (
+    <span
+      style={{
+        fontSize: "0.72em",
+        padding: "2px 8px",
+        borderRadius: 999,
+        border: "1px solid var(--border)",
+        background: "var(--bg)",
+        color: healthToneColor(badge.tone),
+        whiteSpace: "nowrap",
+      }}
+      title={badge.detail ?? undefined}
+    >
+      {badge.label}
+    </span>
   );
 }
 

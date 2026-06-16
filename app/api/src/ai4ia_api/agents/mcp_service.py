@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 
+from . import mcp_health
+from . import mcp_observability as obs
 from .mcp_client import McpAuth, McpConnector
 from .mcp_secrets import McpSecretStore, new_secret_ref
 from .mcp_servers import (
@@ -29,6 +31,7 @@ from .mcp_servers import (
     McpConnectionError,
     McpNotFoundError,
     McpServerError,
+    McpToolApproval,
     McpValidationError,
     UserMcpServer,
     UserMcpServerCreate,
@@ -39,6 +42,24 @@ from .mcp_store import UserMcpServerStore
 from .ssrf import Resolver, SsrfError, validate_public_https_url
 
 logger = logging.getLogger(__name__)
+
+
+def _prune_tool_approvals(
+    approvals: dict[str, McpToolApproval] | None, discovered_names: set[str]
+) -> dict[str, McpToolApproval]:
+    """Keep only overrides for tools that still exist and are non-``default``.
+
+    Re-discovery can drop tools; an override for a vanished tool is dead weight, and
+    a ``default`` override is the implicit baseline, so both are pruned to keep the
+    record minimal.
+    """
+    if not approvals:
+        return {}
+    return {
+        name: posture
+        for name, posture in approvals.items()
+        if name in discovered_names and posture is not McpToolApproval.default
+    }
 
 
 class McpServerService:
@@ -195,6 +216,14 @@ class McpServerService:
             await self._secret_store.set_secret(secret_ref, req.secret)
 
         now = _now()
+        discovered_names = {t.name for t in tools}
+        # Carry over per-tool approval overrides: an explicit map in the request
+        # replaces them, otherwise the stored ones are kept; either way pruned to
+        # the rediscovered tool set. A successful reconnect resets health.
+        incoming = (
+            req.toolApprovals if req.toolApprovals is not None else current.toolApprovals
+        )
+        tool_approvals = _prune_tool_approvals(incoming, discovered_names)
         server = UserMcpServer(
             id=current.name,
             userId=user_id,
@@ -208,10 +237,12 @@ class McpServerService:
             enabled=bool(req.enabled),
             secretRef=secret_ref,
             discoveredTools=tools,
+            toolApprovals=tool_approvals,
             createdAt=current.createdAt,
             updatedAt=now,
             lastConnectedAt=now,
             lastError=None,
+            lastHealthCheck=now,
         )
         await self._store.put(server)
         return server
@@ -247,14 +278,61 @@ class McpServerService:
         except McpConnectionError as exc:
             current.lastError = str(exc)
             current.updatedAt = _now()
+            # A user-initiated reconnect that fails counts against health; repeated
+            # failures here can quarantine the server just like execution failures.
+            mcp_health.record_failure(current, exc)
+            self._emit_quarantine_if_any(current)
             await self._store.put(current)
             raise
         current.discoveredTools = tools
         current.lastConnectedAt = _now()
         current.updatedAt = current.lastConnectedAt
         current.lastError = None
+        # Prune dead per-tool overrides against the freshly discovered tools and
+        # reset health — the server just answered.
+        current.toolApprovals = _prune_tool_approvals(
+            current.toolApprovals, {t.name for t in tools}
+        )
+        mcp_health.record_success(current)
         await self._store.put(current)
         return current
+
+    async def record_health(
+        self, server: UserMcpServer, *, ok: bool, error: object | None = None
+    ) -> None:
+        """Record a per-turn tool-call outcome against a server's durable health.
+
+        Called from the execution seam (Phase 12B Increment D). Persists only when
+        the health state materially changed (so a healthy server's hot path stays
+        write-free) and emits a structured event on a quarantine transition. Best-
+        effort: a store failure is logged, never raised, so a tool call's own result
+        is unaffected.
+        """
+        try:
+            was_quarantined = server.quarantinedUntil is not None
+            changed = (
+                mcp_health.record_success(server)
+                if ok
+                else mcp_health.record_failure(server, error)
+            )
+            if not changed:
+                return
+            if not ok and not was_quarantined:
+                self._emit_quarantine_if_any(server)
+            await self._store.put(server)
+        except Exception:  # noqa: BLE001 - health persistence must never break a turn
+            logger.warning("mcp record_health failed", exc_info=True)
+
+    @staticmethod
+    def _emit_quarantine_if_any(server: UserMcpServer) -> None:
+        """Emit the quarantine-transition event if the server is now quarantined."""
+        if mcp_health.is_quarantined(server):
+            obs.emit_quarantine(
+                server=server.name,
+                host=server.host,
+                consecutive_failures=server.consecutiveFailures,
+                reason=mcp_health.quarantine_reason(server),
+            )
 
     async def secret_for(self, server: UserMcpServer) -> str | None:
         """Resolve a server's durable connection secret (``None`` if public).
@@ -331,14 +409,50 @@ class McpServerService:
             raise McpValidationError("Secret is too long.")
 
     async def _discover(self, endpoint: str, auth: McpAuth):
+        host = _host_of(endpoint)
+        timer = obs.Timer()
         try:
-            return await self._connector.discover(endpoint=endpoint, auth=auth)
-        except McpServerError:
+            tools = await self._connector.discover(endpoint=endpoint, auth=auth)
+        except McpServerError as exc:
+            obs.emit(
+                event=obs.EVENT_DISCOVER,
+                server=host or endpoint,
+                host=host,
+                outcome=obs.OUTCOME_ERROR,
+                latency_ms=timer.ms,
+                detail=str(exc),
+            )
             raise
         except Exception as exc:  # noqa: BLE001 - normalize any transport error
             logger.warning("mcp discovery failed", exc_info=True)
+            obs.emit(
+                event=obs.EVENT_DISCOVER,
+                server=host or endpoint,
+                host=host,
+                outcome=obs.OUTCOME_ERROR,
+                latency_ms=timer.ms,
+                detail=str(exc),
+            )
             raise McpConnectionError(f"Could not connect to the MCP server: {exc}") from exc
+        obs.emit(
+            event=obs.EVENT_DISCOVER,
+            server=host or endpoint,
+            host=host,
+            outcome=obs.OUTCOME_OK,
+            latency_ms=timer.ms,
+        )
+        return tools
 
 
 def _norm(name: str) -> str:
     return (name or "").strip().lower()
+
+
+def _host_of(endpoint: str) -> str | None:
+    """Best-effort host extraction for telemetry only (never raises)."""
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(endpoint).hostname
+    except Exception:  # noqa: BLE001 - telemetry helper must never raise
+        return None

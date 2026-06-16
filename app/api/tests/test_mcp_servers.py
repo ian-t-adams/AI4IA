@@ -9,6 +9,7 @@ import pytest
 
 from ai4ia_api.agents.mcp_client import FakeMcpConnector, McpAuth
 from ai4ia_api.agents.mcp_secrets import InMemoryMcpSecretStore
+from ai4ia_api.agents.mcp_health import QUARANTINE_THRESHOLD, is_quarantined
 from ai4ia_api.agents.mcp_servers import (
     MAX_MCP_SERVERS_PER_USER,
     DiscoveredTool,
@@ -16,6 +17,7 @@ from ai4ia_api.agents.mcp_servers import (
     McpConflictError,
     McpConnectionError,
     McpNotFoundError,
+    McpToolApproval,
     McpValidationError,
     UserMcpServer,
     UserMcpServerCreate,
@@ -393,3 +395,149 @@ async def test_test_connection_failure_records_last_error():
         await svc.test("u1", "weather")
     stored = await svc.get("u1", "weather")
     assert stored.lastError == "down"
+
+
+
+# --- Increment D: per-tool approval persistence + health/quarantine ----------
+
+
+class _CountingStore(InMemoryUserMcpServerStore):
+    """In-memory store that counts ``put`` calls (to prove write-free hot paths)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.put_count = 0
+
+    async def put(self, server: UserMcpServer) -> None:
+        self.put_count += 1
+        await super().put(server)
+
+
+def _service_with_store(store, *, tools=None, error=None):
+    return McpServerService(
+        store,
+        connector=FakeMcpConnector(tools if tools is not None else list(_TOOLS), error=error),
+        secret_store=InMemoryMcpSecretStore(),
+        resolver=_PUBLIC_RESOLVER,
+    )
+
+
+async def test_update_persists_and_prunes_tool_approvals():
+    svc = _service()
+    await svc.create("u1", _create())  # discovers get_forecast + get_alerts
+    updated = await svc.update(
+        "u1",
+        "weather",
+        UserMcpServerUpdate(
+            endpoint="https://mcp.example.com/rpc",
+            toolApprovals={
+                "get_forecast": McpToolApproval.never,
+                "get_alerts": McpToolApproval.default,  # baseline -> pruned
+                "ghost": McpToolApproval.always,  # vanished tool -> pruned
+            },
+        ),
+    )
+    # Only the real, non-default override survives.
+    assert updated.toolApprovals == {"get_forecast": McpToolApproval.never}
+    # And it round-trips through the store.
+    stored = await svc.get("u1", "weather")
+    assert stored.toolApprovals == {"get_forecast": McpToolApproval.never}
+
+
+async def test_update_without_tool_approvals_keeps_existing():
+    svc = _service()
+    await svc.create("u1", _create())
+    await svc.update(
+        "u1",
+        "weather",
+        UserMcpServerUpdate(
+            endpoint="https://mcp.example.com/rpc",
+            toolApprovals={"get_forecast": McpToolApproval.always},
+        ),
+    )
+    # A later update that omits toolApprovals (None) leaves the stored overrides intact.
+    updated = await svc.update(
+        "u1", "weather", UserMcpServerUpdate(endpoint="https://mcp.example.com/rpc")
+    )
+    assert updated.toolApprovals == {"get_forecast": McpToolApproval.always}
+
+
+async def test_record_health_failure_persists_and_quarantines():
+    store = _CountingStore()
+    svc = _service_with_store(store)
+    server = await svc.create("u1", _create())
+    base = store.put_count
+    for _ in range(QUARANTINE_THRESHOLD):
+        await svc.record_health(server, ok=False, error="connection refused")
+    # Every failure advanced the count, so every failure persisted.
+    assert store.put_count == base + QUARANTINE_THRESHOLD
+    stored = await svc.get("u1", "weather")
+    assert stored.consecutiveFailures == QUARANTINE_THRESHOLD
+    assert is_quarantined(stored) is True
+    assert stored.lastHealthError and "connection refused" in stored.lastHealthError
+
+
+async def test_record_health_healthy_is_write_free():
+    store = _CountingStore()
+    svc = _service_with_store(store)
+    server = await svc.create("u1", _create())
+    base = store.put_count
+    await svc.record_health(server, ok=True)
+    # A healthy report on an already-healthy server forces no durable write.
+    assert store.put_count == base
+
+
+async def test_record_health_recovery_clears_quarantine_and_persists():
+    store = _CountingStore()
+    svc = _service_with_store(store)
+    server = await svc.create("u1", _create())
+    for _ in range(QUARANTINE_THRESHOLD):
+        await svc.record_health(server, ok=False, error="boom")
+    assert is_quarantined(server) is True
+    before = store.put_count
+    await svc.record_health(server, ok=True)
+    assert store.put_count == before + 1  # the recovery is a material change
+    stored = await svc.get("u1", "weather")
+    assert stored.consecutiveFailures == 0
+    assert stored.quarantinedUntil is None
+    assert is_quarantined(stored) is False
+
+
+async def test_repeated_test_failures_quarantine_the_server():
+    connector = FakeMcpConnector(list(_TOOLS))
+    svc = McpServerService(
+        InMemoryUserMcpServerStore(),
+        connector=connector,
+        secret_store=InMemoryMcpSecretStore(),
+        resolver=_PUBLIC_RESOLVER,
+    )
+    await svc.create("u1", _create())
+    connector._error = McpConnectionError("down")
+    for _ in range(QUARANTINE_THRESHOLD):
+        with pytest.raises(McpConnectionError):
+            await svc.test("u1", "weather")
+    stored = await svc.get("u1", "weather")
+    assert stored.consecutiveFailures == QUARANTINE_THRESHOLD
+    assert is_quarantined(stored) is True
+
+
+async def test_successful_test_resets_health():
+    connector = FakeMcpConnector(list(_TOOLS))
+    svc = McpServerService(
+        InMemoryUserMcpServerStore(),
+        connector=connector,
+        secret_store=InMemoryMcpSecretStore(),
+        resolver=_PUBLIC_RESOLVER,
+    )
+    await svc.create("u1", _create())
+    connector._error = McpConnectionError("down")
+    for _ in range(QUARANTINE_THRESHOLD):
+        with pytest.raises(McpConnectionError):
+            await svc.test("u1", "weather")
+    assert is_quarantined(await svc.get("u1", "weather")) is True
+    # The server comes back: a successful re-discovery clears health.
+    connector._error = None
+    refreshed = await svc.test("u1", "weather")
+    assert refreshed.consecutiveFailures == 0
+    assert refreshed.quarantinedUntil is None
+    assert refreshed.lastHealthError is None
