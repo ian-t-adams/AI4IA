@@ -26,6 +26,24 @@
     "adminApiSecret": {
       "value": "${AI4IA_ADMIN_API_SECRET=}"
     },
+    "appEnvironment": {
+      "value": "${AI4IA_APP_ENVIRONMENT=dev}"
+    },
+    "apiAuthProvider": {
+      "value": "${AI4IA_AUTH_PROVIDER=dev}"
+    },
+    "entraTenantId": {
+      "value": "${AI4IA_ENTRA_TENANT_ID=}"
+    },
+    "entraAudience": {
+      "value": "${AI4IA_ENTRA_AUDIENCE=}"
+    },
+    "entraWebClientId": {
+      "value": "${AI4IA_ENTRA_WEB_CLIENT_ID=}"
+    },
+    "entraApiScope": {
+      "value": "${AI4IA_ENTRA_API_SCOPE=}"
+    },
     "webCustomDomain": {
       "value": "${AI4IA_WEB_CUSTOM_DOMAIN=}"
     },
