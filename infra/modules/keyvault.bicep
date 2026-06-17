@@ -61,7 +61,7 @@ resource appConfig 'Microsoft.AppConfiguration/configurationStores@2024-05-01' =
 
 // Built-in role IDs
 var kvSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6' // Key Vault Secrets User
-var kvSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee7-eedf52cb1bb0' // Key Vault Secrets Officer
+var kvSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7' // Key Vault Secrets Officer (built-in role GUID as defined in this Azure environment)
 var appConfigDataReaderRoleId = '516239f1-63e1-4d78-a4de-a74fb236a071' // App Configuration Data Reader
 
 resource kvRoleAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in readerPrincipalIds: {
