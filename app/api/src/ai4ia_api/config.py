@@ -679,6 +679,21 @@ class Settings(BaseSettings):
                 "outside local (set AI4IA_CUSTOM_TOOLS_SECRET_VAULT_URI), or "
                 "disable it with AI4IA_CUSTOM_TOOLS_ENABLED=false."
             )
+        if (
+            self.custom_tools_enabled
+            and self.auth_provider == AuthProviderKind.dev
+            and self.env != Environment.local
+        ):
+            # Per-user custom tools (BYO MCP) scope the registry and connection
+            # secrets to the signed-in tenant user. Spoofable dev auth (even with
+            # allow_dev_auth) would let any caller assume any identity in a
+            # deployed env, breaking that isolation. Require real Entra auth, or
+            # keep the feature disabled.
+            raise RuntimeError(
+                "Custom tools require real authentication in a deployed "
+                "environment: set AI4IA_AUTH_PROVIDER=entra, or disable them with "
+                "AI4IA_CUSTOM_TOOLS_ENABLED=false."
+            )
 
 
 @lru_cache

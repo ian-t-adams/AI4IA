@@ -53,11 +53,64 @@ def test_enabled_deployed_without_vault_is_rejected():
 
 
 def test_enabled_deployed_with_cosmos_and_vault_is_allowed():
+    # A deployed env with custom tools on must use real (entra) auth — see the
+    # auth guard below — so this storage-invariant case uses entra to stay valid.
     s = _settings(
+        env="dev",
+        auth_provider="entra",
+        entra_tenant_id="t1",
+        entra_audience="api://ai4ia",
+        custom_tools_enabled=True,
+        session_store="cosmos",
+        cosmos_endpoint="https://cosmos.example/",
+        custom_tools_secret_vault_uri="https://vault.example.net/",
+    )
+    s.validate_runtime()  # no raise
+
+
+# --- Auth guard: custom tools require real auth in a deployed env -------------
+# Per-user custom tools scope the registry + secrets to the signed-in tenant
+# user, so spoofable dev auth must not be used once deployed. This guard is
+# inert today (custom tools are default-OFF). Cases (a)-(d) below isolate it by
+# satisfying the cosmos/vault storage invariants so the auth check is what fires.
+
+
+def _deployed_custom_tools(**overrides) -> Settings:
+    base = dict(
         env="dev",
         custom_tools_enabled=True,
         session_store="cosmos",
         cosmos_endpoint="https://cosmos.example/",
         custom_tools_secret_vault_uri="https://vault.example.net/",
     )
+    base.update(overrides)
+    return _settings(**base)
+
+
+def test_enabled_dev_auth_deployed_is_rejected():
+    # (a) enabled + dev auth + deployed -> raises, even with allow_dev_auth=True
+    # (the spoofable-identity case the owner wants closed for custom tools).
+    s = _deployed_custom_tools(auth_provider="dev", allow_dev_auth=True)
+    with pytest.raises(RuntimeError, match="real authentication"):
+        s.validate_runtime()
+
+
+def test_enabled_entra_auth_deployed_is_allowed():
+    # (b) enabled + entra auth + deployed -> ok.
+    s = _deployed_custom_tools(
+        auth_provider="entra",
+        entra_tenant_id="t1",
+        entra_audience="api://ai4ia",
+    )
+    s.validate_runtime()  # no raise
+
+
+def test_enabled_dev_auth_local_is_allowed():
+    # (c) enabled + dev auth + local -> ok (local is exempt; in-memory stores fine).
+    _settings(custom_tools_enabled=True, auth_provider="dev").validate_runtime()
+
+
+def test_disabled_dev_auth_deployed_is_allowed():
+    # (d) disabled + dev auth + deployed -> ok (guard is gated on custom tools).
+    s = _settings(env="dev", custom_tools_enabled=False, auth_provider="dev")
     s.validate_runtime()  # no raise
