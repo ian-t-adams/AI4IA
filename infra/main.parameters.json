@@ -84,7 +84,7 @@
       "value": true
     },
     "customToolsEnabled": {
-      "value": false
+      "value": true
     }
   }
 }
