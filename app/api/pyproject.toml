@@ -60,6 +60,11 @@ dependencies = [
     # Vault Secrets Officer); imported lazily so the app/tests run without it wired
     # (the in-memory secret store covers local/dev + unit tests).
     "azure-keyvault-secrets>=4.8",
+    # Official Microsoft Web IQ SDK (async client) backing the default-OFF web
+    # search capability (ai4ia_api.websearch). Imported lazily (only when
+    # AI4IA_WEB_SEARCH_ENABLED=true and a search actually runs) so the app/tests
+    # boot without it wired and the default-OFF path constructs nothing.
+    "webiq>=0.1",
 ]
 
 [project.optional-dependencies]

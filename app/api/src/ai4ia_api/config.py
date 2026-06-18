@@ -412,6 +412,24 @@ class Settings(BaseSettings):
     document_processing_max_output_chars: int = 100000
     document_processing_inline_max_chars: int = 6000
 
+    # --- Web IQ search (default-OFF). Exposes Microsoft Web IQ (web / news /
+    # videos / images / browse) as synthetic tools to ANY tool-enabled agent + the
+    # main chat, via the official ``webiq`` SDK (lazy-imported; see
+    # ai4ia_api.websearch). Default OFF: when off the factory returns None, NO SDK
+    # client is constructed, and NO web tool is ever advertised, so the chat hot
+    # path is byte-for-byte unchanged. When enabled outside local, an
+    # ``webiq_api_key`` OR ``webiq_use_entra`` (EntraID DefaultAzureCredential) is
+    # required (enforced fail-closed in validate_runtime), since every search is a
+    # billed Web IQ network call. ``webiq_base_url`` overrides the API endpoint.
+    # The two caps bound the synthetic tools' fan-out (results per search) and the
+    # browse-content length returned to the model.
+    web_search_enabled: bool = False
+    webiq_api_key: str | None = None
+    webiq_base_url: str | None = None
+    webiq_use_entra: bool = False
+    web_search_max_results: int = 5
+    web_search_max_content_chars: int = 6000
+
     # --- Memory (Phase 5): per-user semantic recall ---
     # Single source of truth: the store kind both selects the backend AND gates
     # the feature (``disabled`` == off). No separate enable flag, so the two can
@@ -687,6 +705,20 @@ class Settings(BaseSettings):
                 "Inline document compute requires AI4IA_CODE_INTERPRETER_BASE_URL "
                 "and AI4IA_CODE_INTERPRETER_MODEL outside local, or disable it with "
                 "AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED=false."
+            )
+        if (
+            self.web_search_enabled
+            and self.env != Environment.local
+            and not (self.webiq_api_key or self.webiq_use_entra)
+        ):
+            # Every Web IQ search is a billed network call that needs auth: an API
+            # key OR an EntraID DefaultAzureCredential. A deployed enable without
+            # either would advertise web tools whose every call 401s — fail closed.
+            # Local/dev may enable with an injected/fake client and no real auth.
+            raise RuntimeError(
+                "Web search requires AI4IA_WEBIQ_API_KEY or "
+                "AI4IA_WEBIQ_USE_ENTRA=true outside local, or disable it with "
+                "AI4IA_WEB_SEARCH_ENABLED=false."
             )
         if (
             self.custom_tools_enabled

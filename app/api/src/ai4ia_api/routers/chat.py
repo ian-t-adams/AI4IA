@@ -64,6 +64,7 @@ from ..documents.analyze_factory import InlineAttachmentAnalysisService
 from ..memory.service import MemoryServiceProtocol
 from ..usage.models import TokenUsage
 from ..usage.service import UsageService
+from ..websearch.factory import WebSearchService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -317,6 +318,13 @@ async def chat(
     # unchanged.
     inline_analysis: InlineAttachmentAnalysisService | None = getattr(
         request.app.state, "inline_attachment_analysis", None
+    )
+    # Web IQ search consumer (default-OFF). None when the flag is off (default), so
+    # the chat hot path never advertises any web tool and the turn is byte-for-byte
+    # unchanged. When present, the five web tools are offered on every tool-enabled
+    # turn (like the doc tools) so any agent + the main chat can search the web.
+    web_search: WebSearchService | None = getattr(
+        request.app.state, "web_search", None
     )
     # Generated-image artifact store (Phase 11F). Always present; backs the
     # ``generate_image`` capability when an agent attaches that tool.
@@ -829,6 +837,26 @@ async def chat(
                     turn_registry, turn_executor, ctx = built
             except Exception:  # noqa: BLE001 - MCP must never break a turn
                 logger.warning("mcp capability build failed", exc_info=True)
+        # Web IQ search (default-OFF). Offered UNCONDITIONALLY on every tool-enabled
+        # turn when the service is present (like the doc tools, not gated by a
+        # classification) so any agent + the main chat can search the live web /
+        # news / videos / images and browse a URL. The five tools are bound to this
+        # user + session + the turn nonce; their results are nonce-fenced untrusted
+        # data. Disjoint tool names (the runtime asserts no collisions). Best-effort
+        # like its neighbors: a build failure leaves the agent with its other tools
+        # and must never break a turn. When the flag is off, ``web_search`` is None
+        # and this block is skipped, so the turn is byte-for-byte unchanged.
+        if web_search is not None:
+            try:
+                w_tools, w_handlers = web_search.build_capability(
+                    user_id=user.internal_user_id,
+                    session_id=body.sessionId,
+                    nonce=library_nonce,
+                )
+                extra_tools = [*extra_tools, *w_tools]
+                extra_handlers = {**extra_handlers, **w_handlers}
+            except Exception:  # noqa: BLE001 - web search must never break a turn
+                logger.warning("web search capability build failed", exc_info=True)
         run = await run_agent_turn(
             deployment=deployment.deploymentName,
             messages=payload_messages,

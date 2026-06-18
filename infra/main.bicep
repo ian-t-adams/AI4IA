@@ -103,6 +103,16 @@ param searchLocation string = ''
 @description('Enable custom tools / bring-your-own MCP servers (Phase 12). Default OFF: the per-user MCP registry is never built and /api/agents/mcp-servers refuses (404), so app behavior is unchanged. When on, the api managed identity is granted Key Vault Secrets Officer (to persist per-user MCP connection secrets) and the flag + vault URI are emitted to the api.')
 param customToolsEnabled bool = false
 
+@description('Enable the agent-callable Web IQ search tools (web/news/videos/images/browse). Default OFF: no SDK client is constructed and no web tool is advertised, so the chat path is byte-for-byte unchanged. When on, supply webIqApiKey (or rely on the api managed identity for EntraID auth).')
+param webSearchEnabled bool = false
+
+@description('Web IQ API key (only used when webSearchEnabled). Supplied externally like adminApiSecret; flows to the api as a Container App secret. Empty falls back to EntraID (managed identity).')
+@secure()
+param webIqApiKey string = ''
+
+@description('Optional Web IQ base URL override. Emitted to the api only when webSearchEnabled and set; empty uses the SDK default endpoint.')
+param webIqBaseUrl string = ''
+
 @description('Comma-separated admin subjects for the entitlement-management API.')
 param adminSubjects string = ''
 
@@ -426,6 +436,12 @@ module api 'modules/api.bicep' = {
     // api MI holds Secrets Officer on it); only a secret reference lands in Cosmos.
     customToolsEnabled: customToolsEnabled
     customToolsKeyVaultUri: customToolsEnabled ? keyvault.outputs.keyVaultUri : ''
+    // Web IQ search tools (default OFF). The key is supplied externally (mirrors
+    // adminApiSecret) and only flows to the api as a Container App secret when the
+    // feature is on; otherwise nothing is emitted and the path is byte-for-byte inert.
+    webSearchEnabled: webSearchEnabled
+    webIqApiKey: webIqApiKey
+    webIqBaseUrl: webIqBaseUrl
   }
 }
 

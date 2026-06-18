@@ -66,6 +66,7 @@ from .sessions.repository import SessionNotFoundError
 from .usage.factory import build_usage_repository
 from .usage.pricing import load_pricing
 from .usage.service import UsageService
+from .websearch.factory import build_web_search_service
 from .workflows.factory import build_workflow_store
 from .workflows.service import WorkflowService
 from .routers import workflows as workflows_router
@@ -246,6 +247,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             entitlements=app.state.entitlements,
             metering=app.state.usage,
         )
+        # Web IQ search service (default-OFF). None when the flag is off, so the
+        # chat hot path never advertises any web tool and no SDK client is
+        # constructed — zero regression by default. When on, owns a lazily-built
+        # WebIQAsyncClient (closed in finally), the entitlement gate, and the usage
+        # meter.
+        app.state.web_search = build_web_search_service(
+            settings,
+            entitlements=app.state.entitlements,
+            metering=app.state.usage,
+        )
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
         try:
@@ -347,6 +358,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     logger.warning(
                         "inline attachment store close failed", exc_info=True
                     )
+            web_search = getattr(app.state, "web_search", None)
+            if web_search is not None:
+                try:
+                    await web_search.close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("web search service close failed", exc_info=True)
 
     app = FastAPI(title="AI4IA API", version="0.1.0", lifespan=lifespan)
 
