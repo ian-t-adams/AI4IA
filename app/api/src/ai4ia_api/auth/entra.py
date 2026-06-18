@@ -34,6 +34,18 @@ class EntraAuthProvider:
         if not allowed_tenants:
             raise ValueError("at least one allowed tenant is required")
         self._audience = audience
+        # An app registration with requestedAccessTokenVersion=2 issues v2.0
+        # access tokens whose ``aud`` is the bare client-ID GUID, while the v1
+        # audience shape is ``api://<guid>``. Both are canonical identifiers for
+        # the SAME app registration, so accept either form regardless of which
+        # was configured. This is not a security loosening — any other audience
+        # is still rejected below.
+        accepted = {audience}
+        if audience.startswith("api://"):
+            accepted.add(audience[len("api://"):])
+        else:
+            accepted.add(f"api://{audience}")
+        self._accepted_audiences = accepted
         self._allowed_tenants = {t.lower() for t in allowed_tenants}
         self._user_ids = user_ids or InternalUserIdProvider()
         self._http = http_client
@@ -72,16 +84,24 @@ class EntraAuthProvider:
         keys = await self._jwks(tenant_id)
         issuer = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
         try:
+            # python-jose's ``audience`` only accepts a single string, so we
+            # disable its check (verify_aud=False) and validate the audience
+            # ourselves against the set of accepted forms below. Signature,
+            # issuer, exp and iat checks are unchanged.
             claims = jwt.decode(
                 token,
                 keys,
                 algorithms=list(_ALLOWED_ALGS),
-                audience=self._audience,
                 issuer=issuer,
-                options={"require_exp": True, "require_iat": True},
+                options={"require_exp": True, "require_iat": True, "verify_aud": False},
             )
         except JWTError as exc:
             raise AuthError(f"Token validation failed: {exc}") from exc
+
+        aud = claims.get("aud")
+        token_auds = [aud] if isinstance(aud, str) else list(aud or [])
+        if not any(a in self._accepted_audiences for a in token_auds):
+            raise AuthError("Token validation failed: Invalid audience")
 
         subject = str(claims.get("oid") or claims.get("sub") or "")
         if not subject:
