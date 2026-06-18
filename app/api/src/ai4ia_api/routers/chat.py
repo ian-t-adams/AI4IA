@@ -169,6 +169,31 @@ def _local_reply_response(session_id: str, assistant: Message, stream: bool):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+def _merge_disjoint_tools(
+    tools: list[dict],
+    handlers: dict,
+    new_tools: list,
+    new_handlers: dict,
+) -> None:
+    """Append one capability's tools + handlers onto the plain-chat tool set,
+    asserting tool-name disjointness.
+
+    The plain-chat tool loop composes independent capabilities — compute
+    (``run_code`` / ``export_document``), document retrieval (``fetch_document``),
+    and Web IQ search (``web_search`` / ``news_search`` / ``video_search`` /
+    ``image_search`` / ``browse_url``) — whose tool names are distinct by design. A
+    future name collision would otherwise be silently swallowed by the ``dict``
+    merge (a handler dropped while its schema is still advertised). Raise instead so
+    it fails loudly: the caller's best-effort guard logs it and falls through to the
+    normal answer rather than running a turn with a missing handler.
+    """
+    collisions = set(new_handlers) & set(handlers)
+    if collisions:
+        raise ValueError(f"plain-chat tool-name collision: {sorted(collisions)}")
+    tools.extend(new_tools)
+    handlers.update(new_handlers)
+
+
 async def _persist_local_reply(
     *,
     repo: SessionRepository,
@@ -899,76 +924,104 @@ async def chat(
         )
         return _local_reply_response(body.sessionId, assistant, body.stream)
 
-    # Plain-chat compute / "adjust & return" turn (Phase 11C, best-effort,
-    # flag-gated). When the deterministic router classified a *non-agent* turn as
-    # compute/transform and a Code Interpreter / export path is available, run a
-    # governed tool loop that offers run_code + export_document (plus fetch_document
-    # to read the ready source). The model decides whether to use them; each call is
-    # budget-bounded and its untrusted output is nonce-fenced inside the handler.
+    # Plain-chat tool loop (best-effort, flag-gated). Engages on a *non-agent* turn
+    # when EITHER the deterministic router classified it as compute/transform
+    # (Phase 11C — offers run_code + export_document, plus fetch_document to read the
+    # ready source) OR Web IQ search is enabled (default-OFF — offers the five
+    # web_search / news_search / video_search / image_search / browse_url tools so
+    # the MAIN CHAT, not just @mentioned agents, can search the live web). The tool
+    # set is assembled from whichever capabilities are active and the model decides
+    # whether to call them; each call is budget-bounded and its untrusted output is
+    # nonce-fenced inside the handler.
+    #
+    # TRADE-OFF (opt-in, default-OFF): offering web tools on the main chat routes a
+    # plain chat-completions turn through this internally non-streaming tool loop —
+    # the resolved answer returns as a single delta, the same trade the compute path
+    # already makes — so the model can call web tools. When ``web_search`` is None
+    # AND no compute classification fired, this is inert: the condition and the tool
+    # set reduce byte-for-byte to today's compute-only behavior, and a plain turn
+    # falls through to the true-streaming answer below.
+    #
     # Only chat-completions models can tool-call here, so Responses-API models fall
     # through. ANY failure — or an empty answer — falls through to the normal RAG
-    # path below: compute never breaks a turn and is never the forced front door.
-    if (
+    # path below: this loop never breaks a turn and is never the forced front door.
+    plain_compute_active = (
         compute is not None
         and compute_decision is not None
         and compute_decision.offers_compute
-        and api == "chat"
-    ):
+    )
+    if (plain_compute_active or web_search is not None) and api == "chat":
         try:
             ctx = ToolContext(correlation_id=correlation_id)
-            c_tools, c_handlers = compute.build_capability(
-                user_id=user.internal_user_id, nonce=library_nonce,
-                email=user.email,
-            )
-            if retrieval is not None:
-                doc_tools, doc_handlers = build_document_capability(
-                    service=retrieval,
-                    user_id=user.internal_user_id,
-                    nonce=library_nonce,
+            plain_tools: list[dict] = []
+            plain_handlers: dict = {}
+            if plain_compute_active:
+                c_tools, c_handlers = compute.build_capability(
+                    user_id=user.internal_user_id, nonce=library_nonce,
                     email=user.email,
                 )
-                c_tools = [*c_tools, *doc_tools]
-                c_handlers = {**c_handlers, **doc_handlers}
-            run = await run_agent_turn(
-                deployment=deployment.deploymentName,
-                messages=payload_messages,
-                tool_names=[],
-                gateway=gateway,
-                registry=registry,
-                executor=executor,
-                ctx=ctx,
-                params=body.params,
-                extra_tools=c_tools or None,
-                extra_handlers=c_handlers or None,
-            )
-            if run.text.strip():
-                assistant = Message(
-                    sessionId=body.sessionId,
-                    userId=user.internal_user_id,
-                    role=MessageRole.assistant,
-                    content=run.text,
-                    status=MessageStatus.complete,
-                    model=deployment.deploymentName,
-                    agent=agent_name,
-                )
-                await repo.add_message(user.internal_user_id, assistant)
-                await memory.remember(
-                    user.internal_user_id, body.sessionId, content_for_model
-                )
-                await metering.record_completion(
+                _merge_disjoint_tools(plain_tools, plain_handlers, c_tools, c_handlers)
+                if retrieval is not None:
+                    doc_tools, doc_handlers = build_document_capability(
+                        service=retrieval,
+                        user_id=user.internal_user_id,
+                        nonce=library_nonce,
+                        email=user.email,
+                    )
+                    _merge_disjoint_tools(
+                        plain_tools, plain_handlers, doc_tools, doc_handlers
+                    )
+            if web_search is not None:
+                w_tools, w_handlers = web_search.build_capability(
                     user_id=user.internal_user_id,
                     session_id=body.sessionId,
-                    model_id=model_id,
-                    deployment=deployment,
-                    usage=run.usage,
-                    status="complete",
-                    agent=agent_name,
-                    correlation_id=correlation_id,
+                    nonce=library_nonce,
                 )
-                return _local_reply_response(body.sessionId, assistant, body.stream)
-        except Exception:  # noqa: BLE001 - compute must never break a turn
+                _merge_disjoint_tools(plain_tools, plain_handlers, w_tools, w_handlers)
+            if plain_tools:
+                run = await run_agent_turn(
+                    deployment=deployment.deploymentName,
+                    messages=payload_messages,
+                    tool_names=[],
+                    gateway=gateway,
+                    registry=registry,
+                    executor=executor,
+                    ctx=ctx,
+                    params=body.params,
+                    extra_tools=plain_tools or None,
+                    extra_handlers=plain_handlers or None,
+                )
+                if run.text.strip():
+                    assistant = Message(
+                        sessionId=body.sessionId,
+                        userId=user.internal_user_id,
+                        role=MessageRole.assistant,
+                        content=run.text,
+                        status=MessageStatus.complete,
+                        model=deployment.deploymentName,
+                        agent=agent_name,
+                    )
+                    await repo.add_message(user.internal_user_id, assistant)
+                    await memory.remember(
+                        user.internal_user_id, body.sessionId, content_for_model
+                    )
+                    await metering.record_completion(
+                        user_id=user.internal_user_id,
+                        session_id=body.sessionId,
+                        model_id=model_id,
+                        deployment=deployment,
+                        usage=run.usage,
+                        status="complete",
+                        agent=agent_name,
+                        correlation_id=correlation_id,
+                    )
+                    return _local_reply_response(
+                        body.sessionId, assistant, body.stream
+                    )
+        except Exception:  # noqa: BLE001 - plain tool loop must never break a turn
             logger.warning(
-                "compute turn failed; falling back to normal answer", exc_info=True
+                "plain tool turn failed; falling back to normal answer",
+                exc_info=True,
             )
 
     if not body.stream:
