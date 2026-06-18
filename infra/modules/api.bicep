@@ -133,6 +133,12 @@ param codeInterpreterBaseUrl string = ''
 @description('Deployment/model name that serves the Responses API code_interpreter tool (e.g. gpt-4.1). Required when enabling document compute in a deployed env.')
 param codeInterpreterModel string = ''
 
+@description('Enable the inline-attachment code interpreter (analyze_attachment): the chat agent can crack/analyze an INLINE composer attachment in the Responses API code_interpreter sandbox, reusing the same endpoint/model as Phase 11C compute. Default OFF: no original bytes retained, the tool is never advertised, no ephemeral container env is emitted — the chat hot path is byte-for-byte unchanged.')
+param inlineDocumentComputeEnabled bool = false
+
+@description('Dedicated short-lived blob container holding inline-attachment original bytes (inline code interpreter). Emitted as AI4IA_INLINE_ATTACHMENT_BLOB_CONTAINER only when the feature is on.')
+param inlineAttachmentBlobContainer string = 'ephemeral-attachments'
+
 @description('Enable the agent-callable generate_image tool (Phase 11F). Default OFF. When on (and an image blob account is provisioned) any agent may attach generate_image; produced images persist to dedicated blob storage and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
 
@@ -273,11 +279,17 @@ var realtimeEnv = realtimeEnabled ? [
 // document stays at `stored` with its instant quick-text summary). The Cosmos
 // containers it uses (userDocuments, analyzers) are created unconditionally by the
 // data module — empty + harmless when the flag is off.
-var documentBlobEnv = (documentUnderstandingEnabled && !empty(documentBlobAccountUrl)) ? [
+// The blob ACCOUNT url is shared infra: it backs both the document library and the
+// inline code interpreter's EPHEMERAL original-byte retention (which writes to a
+// SEPARATE container on the same account), so it is emitted when EITHER feature is
+// on. The library-specific documents container is emitted only under understanding.
+var documentBlobAccountEnv = ((documentUnderstandingEnabled || inlineDocumentComputeEnabled) && !empty(documentBlobAccountUrl)) ? [
   {
     name: 'AI4IA_DOCUMENT_BLOB_ACCOUNT_URL'
     value: documentBlobAccountUrl
   }
+] : []
+var documentBlobEnv = (documentUnderstandingEnabled && !empty(documentBlobAccountUrl)) ? [
   {
     name: 'AI4IA_DOCUMENT_BLOB_CONTAINER'
     value: documentBlobContainer
@@ -300,10 +312,11 @@ var documentEnv = documentUnderstandingEnabled ? concat([
   }
 ], documentBlobEnv, documentCuEnv) : []
 
-// Phase 11C compute: only emitted when documentComputeEnabled (which itself
-// requires documentUnderstandingEnabled). Base url + model are emitted only when
-// non-empty so the default-OFF posture leaves no compute config behind.
-var computeCiEnv = (documentComputeEnabled && !empty(codeInterpreterBaseUrl)) ? [
+// Code interpreter endpoint (base url + model) is shared by Phase 11C library
+// compute AND the inline-attachment code interpreter, so it is emitted when EITHER
+// is on (and a base url is supplied). Emitted once here to avoid duplicate env keys
+// when both features are enabled; non-empty gating keeps the default-OFF posture.
+var computeCiEnv = (((documentUnderstandingEnabled && documentComputeEnabled) || inlineDocumentComputeEnabled) && !empty(codeInterpreterBaseUrl)) ? [
   {
     name: 'AI4IA_CODE_INTERPRETER_BASE_URL'
     value: codeInterpreterBaseUrl
@@ -313,12 +326,26 @@ var computeCiEnv = (documentComputeEnabled && !empty(codeInterpreterBaseUrl)) ? 
     value: codeInterpreterModel
   }
 ] : []
-var computeEnv = (documentUnderstandingEnabled && documentComputeEnabled) ? concat([
+var computeEnv = (documentUnderstandingEnabled && documentComputeEnabled) ? [
   {
     name: 'AI4IA_DOCUMENT_COMPUTE_ENABLED'
     value: 'true'
   }
-], computeCiEnv) : []
+] : []
+
+// Inline-attachment code interpreter (default OFF). Emits its enable flag + the
+// dedicated ephemeral container name only when on; the code_interpreter endpoint it
+// uses comes from computeCiEnv above, and the blob account from documentBlobAccountEnv.
+var inlineComputeEnv = inlineDocumentComputeEnabled ? [
+  {
+    name: 'AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED'
+    value: 'true'
+  }
+  {
+    name: 'AI4IA_INLINE_ATTACHMENT_BLOB_CONTAINER'
+    value: inlineAttachmentBlobContainer
+  }
+] : []
 
 // Phase 11F image tool: the durable blob account/container are emitted only when
 // image generation is enabled AND an account is provisioned; otherwise the api
@@ -420,7 +447,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, computeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: 'ca-api-${environmentName}'

@@ -68,6 +68,9 @@
     "documentComputeEnabled": {
       "value": true
     },
+    "inlineDocumentComputeEnabled": {
+      "value": false
+    },
     "searchEnabled": {
       "value": true
     },

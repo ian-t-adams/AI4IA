@@ -14,8 +14,12 @@ import { useVoiceRecorder } from "@/lib/voice";
 
 // Mirrors the backend cap (routers/documents.py MAX_DOCS_PER_SESSION).
 const MAX_DOCS = 8;
-// Hint shown next to the file control; mirrors the chat-context budget.
-const DOC_BUDGET_HINT = "up to ~12K chars/turn";
+// Hint shown next to the file control. The plain-text preview of an attachment is
+// injected into chat context up to ~12K chars/turn; heavier or binary files
+// (PDFs, spreadsheets, images) can instead be cracked/analyzed in a sandbox when
+// the agent needs their real layout/cells/pixels.
+const DOC_BUDGET_HINT =
+  "text up to ~12K chars/turn; PDFs, sheets & images analyzed in a sandbox";
 // Hint for the file picker; the backend accepts the text family + pdf/docx/pptx.
 const FILE_ACCEPT =
   ".txt,.md,.markdown,.csv,.tsv,.json,.log,.xml,.yaml,.yml,.html,.htm,.pdf,.docx,.pptx,text/plain,application/pdf";
