@@ -7,7 +7,7 @@ client. **All model calls go through the gateway** (`/proxy`), never directly to
 - **Phase 2:** MSAL auth + B2B invite/onboarding; canonical internal user ID (decoupled from
   Entra OID) + IdP mapping; chat endpoint via the model gateway; per-user sessions/history in
   Cosmos; model picker + parameters; per-user/per-model request + token limits; feature flags.
-- **Phase 4:** MAF agents + workflows; Foundry toolbox + BYO MCP tools; custom tools behind a
+- **Phase 4:** in-house agents runtime (gateway-native tool loop); Foundry toolbox + BYO MCP tools; custom tools behind a
   tool-safety registry (allowlist, scopes, per-tool secrets, human-approval for destructive
   actions); agent-step tracing + a small regression eval set.
 - **Phase 5:** mem0 + pgvector memory; erase/clear (tombstone + async purge + verify); long-chat
@@ -19,7 +19,7 @@ client. **All model calls go through the gateway** (`/proxy`), never directly to
 - Correlation IDs propagate to the gateway and into traces.
 
 ## Stack
-- FastAPI + Pydantic, `azure-identity`, MAF (`agent-framework`), Cosmos + Postgres clients.
+- FastAPI + Pydantic, `azure-identity`, in-house `ai4ia_api/agents` runtime, Cosmos + Postgres clients.
   Packaged with `pyproject.toml`; containerized (`Dockerfile`) → Azure Container Apps.
 
 ## Local dev (to be added in Phase 2)

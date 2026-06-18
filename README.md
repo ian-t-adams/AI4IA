@@ -29,7 +29,7 @@ phase arc: [`docs/architecture.md`](docs/architecture.md).
 /infra      Bicep + main.bicep + models.json (azd targets)
 /app/web    Next.js + TypeScript (chat UI, theming, a11y, @/ commands)
 /app/api    Python FastAPI (auth, sessions, agents, memory, tools)
-/app/agents Microsoft Agent Framework agents + workflows + custom tools
+/app/agents In-process agents library (gateway-native tool loop) + custom tools
 /proxy      SimpleL7Proxy model gateway + config
 /scripts    teardown, purge, inventory, seed-models, azd hooks
 /docs       architecture, region map, naming/tagging, runbooks
@@ -38,7 +38,7 @@ azure.yaml  azd service map
 
 ## Key decisions
 - **IaC:** Bicep + Azure Developer CLI (`azd`).
-- **Stack:** Next.js/TypeScript web + Python FastAPI API + Microsoft Agent Framework.
+- **Stack:** Next.js/TypeScript web + Python FastAPI API + in-house gateway-native agents runtime.
 - **Model gateway from day one** — the backend always calls models through SimpleL7Proxy/APIM.
 - **Data-driven catalog** — `infra/models.json` is the single source of truth for deployments,
   generated/validated from live Azure model availability.

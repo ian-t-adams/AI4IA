@@ -9,16 +9,16 @@ customer demos, defined entirely as Infrastructure-as-Code in this repo.
 flowchart TB
   User[Browser] -->|Entra MSAL| Web[Next.js Web<br/>Container Apps]
   Web --> API[FastAPI Backend<br/>Container Apps]
-  API --> MAF[Microsoft Agent Framework<br/>agents + workflows]
+  API --> Agents[Agents runtime<br/>gateway-native tool loop]
   API --> Mem[mem0 service<br/>+ pgvector]
   API --> Cosmos[(Cosmos DB<br/>sessions/history/agents)]
-  MAF --> Foundry[Foundry Agent Service<br/>+ toolbox + MCP tools]
+  Agents --> Foundry[Foundry Agent Service<br/>+ toolbox + MCP tools]
   API -->|all model calls| GW[Model Gateway<br/>SimpleL7Proxy + APIM]
   GW --> F1[Foundry East US 2]
   GW --> F2[Foundry Sweden Central]
   GW --> F3[Foundry West US]
   GW --> EH[Event Hubs] --> Obs[App Insights / Azure Monitor]
-  MAF --> Bing[Bing Grounding]
+  Agents --> Bing[Bing Grounding]
   API --> Voice[Foundry Voice Live]
   API --> CU[Content Understanding]
   User -.->|Voice Live WS · Phase 10<br/>default off| API
@@ -93,7 +93,7 @@ See [region-capability-matrix.md](./region-capability-matrix.md). v1 deploys:
 |---|---|---|
 | Web | Next.js + TypeScript | Container Apps |
 | API | Python FastAPI | Container Apps |
-| Agents | Microsoft Agent Framework (in-process w/ API for v1) | Container Apps |
+| Agents | In-house gateway-native runtime + ToolExecutor (in-process w/ API) | Container Apps |
 | Model gateway | SimpleL7Proxy (.NET) + APIM | Container Apps + APIM |
 | Memory | mem0 (OSS) + Postgres Flexible (pgvector) | Container Apps + PaaS |
 | App data | Cosmos DB (NoSQL) | PaaS |
@@ -106,7 +106,7 @@ See [region-capability-matrix.md](./region-capability-matrix.md). v1 deploys:
 /infra      Bicep modules + main.bicep + models.json (azd targets)
 /app/web    Next.js + TS (chat UI, theming, a11y, @/ commands)
 /app/api    FastAPI (agents, sessions, memory, tools, auth)
-/app/agents MAF agent + workflow definitions, custom tools
+/app/agents In-process agents library (gateway-native tool loop), custom tools
 /proxy      SimpleL7Proxy + config
 /scripts    teardown, purge, inventory, seed-models, hooks
 /docs       architecture, runbooks, region map, naming/tagging
