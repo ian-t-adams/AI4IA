@@ -166,6 +166,16 @@ param customToolsEnabled bool = false
 @description('Key Vault URI backing durable MCP connection secrets (Phase 12B). Set only when custom tools is enabled; the api managed identity holds Key Vault Secrets Officer on this vault. Empty leaves the api on its in-memory secret store.')
 param customToolsKeyVaultUri string = ''
 
+@description('Enable the agent-callable Web IQ search tools (web/news/videos/images/browse). Default OFF: no SDK client is constructed and no web tool is advertised. When on, supply webIqApiKey (stored as a Container App secret) or rely on managed-identity EntraID.')
+param webSearchEnabled bool = false
+
+@description('Web IQ API key (only used when webSearchEnabled). Stored as a Container App secret and surfaced as AI4IA_WEBIQ_API_KEY. Empty falls back to EntraID (DefaultAzureCredential).')
+@secure()
+param webIqApiKey string = ''
+
+@description('Optional Web IQ base URL override. Emitted as AI4IA_WEBIQ_BASE_URL only when webSearchEnabled and set; empty uses the SDK default endpoint.')
+param webIqBaseUrl string = ''
+
 var entraEnv = authProvider == 'entra' ? [
   {
     name: 'AI4IA_ENTRA_TENANT_ID'
@@ -191,6 +201,38 @@ var gatewayKeyEnv = hasGatewayKey ? [
     secretRef: 'model-gateway-api-key'
   }
 ] : []
+
+// Web IQ search (default-OFF). The API key is held as a Container App secret and
+// referenced by env only when web search is enabled AND a key is supplied;
+// otherwise the api falls back to EntraID (managed identity) when the feature is
+// on, or stays fully dormant when off (no secret, no env — byte-for-byte inert).
+var hasWebIqKey = webSearchEnabled && !empty(webIqApiKey)
+var webIqSecrets = hasWebIqKey ? [
+  {
+    name: 'webiq-api-key'
+    value: webIqApiKey
+  }
+] : []
+var webSearchEnv = concat(
+  webSearchEnabled ? [
+    {
+      name: 'AI4IA_WEB_SEARCH_ENABLED'
+      value: 'true'
+    }
+  ] : [],
+  hasWebIqKey ? [
+    {
+      name: 'AI4IA_WEBIQ_API_KEY'
+      secretRef: 'webiq-api-key'
+    }
+  ] : [],
+  (webSearchEnabled && !empty(webIqBaseUrl)) ? [
+    {
+      name: 'AI4IA_WEBIQ_BASE_URL'
+      value: webIqBaseUrl
+    }
+  ] : []
+)
 
 // Admin API secret (entitlement management) held as a Container App secret and
 // referenced by env when present. Optional: empty means identity-only admin.
@@ -447,7 +489,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, webSearchEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: 'ca-api-${environmentName}'
@@ -465,7 +507,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
     managedEnvironmentId: containerEnvId
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: concat(gatewaySecrets, adminSecrets)
+      secrets: concat(gatewaySecrets, adminSecrets, webIqSecrets)
       ingress: {
         // External for v1 so the api is directly testable before the web app
         // exists. Flip to internal once web is the only public frontend.

@@ -88,6 +88,12 @@
     },
     "customToolsEnabled": {
       "value": true
+    },
+    "webSearchEnabled": {
+      "value": false
+    },
+    "webIqApiKey": {
+      "value": "${AI4IA_WEBIQ_API_KEY=}"
     }
   }
 }
