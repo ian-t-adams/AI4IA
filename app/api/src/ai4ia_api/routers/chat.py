@@ -60,6 +60,7 @@ from ..docprocessing.service import (
 from ..library.chat_capability import build_document_capability
 from ..library.compute_factory import DocumentComputeService
 from ..library.retrieval import DocumentRetrievalService
+from ..documents.analyze_factory import InlineAttachmentAnalysisService
 from ..memory.service import MemoryServiceProtocol
 from ..usage.models import TokenUsage
 from ..usage.service import UsageService
@@ -309,6 +310,13 @@ async def chat(
     # advertised, and the chat path is byte-for-byte unchanged.
     compute: DocumentComputeService | None = getattr(
         request.app.state, "document_compute", None
+    )
+    # Inline-attachment analysis consumer (inline code-interpreter feature). None
+    # when the flag is off (default), so the chat hot path never advertises the
+    # analyze_attachment tool and the inline-document path is byte-for-byte
+    # unchanged.
+    inline_analysis: InlineAttachmentAnalysisService | None = getattr(
+        request.app.state, "inline_attachment_analysis", None
     )
     # Generated-image artifact store (Phase 11F). Always present; backs the
     # ``generate_image`` capability when an agent attaches that tool.
@@ -679,6 +687,33 @@ async def chat(
                 extra_handlers = {**extra_handlers, **c_handlers}
             except Exception:  # noqa: BLE001 - compute must never break a turn
                 logger.warning("compute capability build failed", exc_info=True)
+        # Inline code-interpreter (default-OFF): when the feature is on AND this
+        # session has inline attachment(s) whose ORIGINAL bytes were retained (the
+        # only docs eligible for sandbox analysis), offer the analyze_attachment
+        # tool over the REAL uploaded files, bound to this user + session + the turn
+        # nonce. Disjoint tool name (the runtime asserts no collisions). Best-effort
+        # like its neighbors: any list/build failure leaves the agent with its other
+        # tools and must never break a turn. When the flag is off (default),
+        # ``inline_analysis`` is None and this whole block is skipped.
+        if inline_analysis is not None:
+            try:
+                docs = await repo.list_documents(user.internal_user_id, body.sessionId)
+                analyzable = [
+                    {"id": d.id, "filename": d.filename}
+                    for d in docs
+                    if getattr(d, "rawRef", None)
+                ]
+                if analyzable:
+                    a_tools, a_handlers = inline_analysis.build_capability(
+                        user_id=user.internal_user_id,
+                        session_id=body.sessionId,
+                        nonce=library_nonce,
+                        attachments=analyzable,
+                    )
+                    extra_tools = [*extra_tools, *a_tools]
+                    extra_handlers = {**extra_handlers, **a_handlers}
+            except Exception:  # noqa: BLE001 - analysis must never break a turn
+                logger.warning("analyze_attachment capability build failed", exc_info=True)
         # Phase 11F: when the agent attaches the ``generate_image`` tool, inject
         # the synthetic image-generation capability. It needs real services (the
         # gateway, catalog, entitlement gate, usage meter, and durable artifact

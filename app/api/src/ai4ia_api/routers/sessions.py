@@ -101,6 +101,12 @@ async def delete_session(
         await _repo(request).delete_session(user.internal_user_id, session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    # Best-effort purge of any inline-attachment original bytes retained for this
+    # session (inline code-interpreter feature). The store no-ops when nothing was
+    # retained and never raises, so it can't break the delete.
+    store = getattr(request.app.state, "inline_attachment_store", None)
+    if store is not None:
+        await store.delete_session(user.internal_user_id, session_id)
 
 
 @router.get("/{session_id}/messages", response_model=list[Message])

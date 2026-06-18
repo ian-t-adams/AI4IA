@@ -377,6 +377,28 @@ class Settings(BaseSettings):
     # original falls back to the parsed-text path rather than uploading. 25 MiB.
     code_interpreter_max_raw_file_bytes: int = 26_214_400
 
+    # --- Inline-attachment code interpreter (default-OFF). Lets the chat agent
+    # crack/analyze an INLINE composer attachment (routers/documents.py, Phase 7C)
+    # with the SAME Code Interpreter sandbox the library ``run_code`` tool uses,
+    # reading the REAL uploaded file (PDF layout / xlsx cells / image) rather than
+    # the cheap local text extract. Augments — does NOT replace — the instant
+    # text-extract path: the local extract still feeds chat context every turn; this
+    # only adds an agent-callable ``analyze_attachment`` tool for heavy/binary files
+    # or compute-needing tasks. Default OFF: when off, NO original bytes are
+    # retained, NO ephemeral store is touched, and the tool is never advertised, so
+    # the inline-document path is byte-for-byte unchanged. Reuses the existing
+    # code_interpreter_* settings + the raw-file size cap above (no second CI config
+    # surface). Requires code_interpreter_base_url + code_interpreter_model when
+    # enabled outside local (enforced in validate_runtime), since every analysis is
+    # a Responses-API CI call.
+    inline_document_compute_enabled: bool = False
+    # Dedicated blob container for the EPHEMERAL retained originals. Reuses the
+    # document blob account/managed-identity wiring (document_blob_account_url); a
+    # separate container keeps the short-lived inline bytes clearly apart from the
+    # durable library corpus and lets infra attach a lifecycle/TTL expiry rule to it
+    # without touching library data. Unset locally/in tests -> an in-memory store.
+    inline_attachment_blob_container: str = "ephemeral-attachments"
+
     # --- Document processing tool (Phase 11H): the agent-callable
     # ``process_document`` tool. Rides the same document_understanding flag and
     # ready library as compute/retrieval (no new flag, no new infra): the tool is
@@ -649,6 +671,22 @@ class Settings(BaseSettings):
                 "AI4IA_CODE_INTERPRETER_AUTH_MODE=api_key. Set the key, switch to "
                 "bearer (managed identity), or disable compute with "
                 "AI4IA_DOCUMENT_COMPUTE_ENABLED=false."
+            )
+        if (
+            self.inline_document_compute_enabled
+            and self.env != Environment.local
+            and (not self.code_interpreter_base_url or not self.code_interpreter_model)
+        ):
+            # The inline-attachment analyzer rides the SAME Responses API Code
+            # Interpreter endpoint + model deployment as library compute. A deployed
+            # enable without them would advertise an analyze_attachment tool whose
+            # every call fails — fail closed. Local/dev may enable it with an
+            # injected/fake CI client. (Unlike library compute this does NOT require
+            # document_understanding: the inline path is independent of the library.)
+            raise RuntimeError(
+                "Inline document compute requires AI4IA_CODE_INTERPRETER_BASE_URL "
+                "and AI4IA_CODE_INTERPRETER_MODEL outside local, or disable it with "
+                "AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED=false."
             )
         if (
             self.custom_tools_enabled

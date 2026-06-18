@@ -32,6 +32,7 @@ from ..documents.extract import (
     extract_text,
 )
 from ..documents.extract import DocumentError
+from ..documents.ephemeral_store import EphemeralAttachmentStore, ci_supports_file
 from ..entitlements.service import EntitlementService
 from ..sessions.models import Document
 from ..sessions.repository import SessionNotFoundError, SessionRepository
@@ -81,6 +82,11 @@ class DocumentSummary(BaseModel):
 
 def _repo(request: Request) -> SessionRepository:
     return request.app.state.session_repo
+
+
+def _ephemeral_store(request: Request) -> EphemeralAttachmentStore | None:
+    """The ephemeral retained-bytes store, or None if it was never constructed."""
+    return getattr(request.app.state, "inline_attachment_store", None)
 
 
 async def _require_session(repo: SessionRepository, user_id: str, session_id: str) -> None:
@@ -185,6 +191,32 @@ async def upload_document(
         truncated=truncated,
         text=text,
     )
+    # Inline code-interpreter retention (default-OFF). When the feature is enabled
+    # AND this is a CI-supported, within-cap file, retain the ORIGINAL bytes
+    # ephemerally so the analyze_attachment tool can hand the real file to the
+    # sandbox later; record the blob path on the document as the gate + reference.
+    # Strictly fail-soft: ANY retention error (store down, oversize, unsupported)
+    # leaves rawRef unset and falls back to today's text-only behavior — it must
+    # never break the upload. When the flag is off, nothing here runs (no bytes
+    # retained, no store touched).
+    settings = request.app.state.settings
+    store = _ephemeral_store(request)
+    if (
+        settings.inline_document_compute_enabled
+        and store is not None
+        and ci_supports_file(document.filename)
+        and len(data) <= max(1, settings.code_interpreter_max_raw_file_bytes)
+    ):
+        try:
+            document.rawRef = await store.put(
+                uid, session_id, document.id, data, document.contentType
+            )
+        except Exception:  # noqa: BLE001 - retention must never break an upload
+            logger.warning(
+                "inline attachment retention failed session=%s id=%s",
+                session_id, document.id, exc_info=True,
+            )
+            document.rawRef = None
     await repo.add_document(uid, document)
     logger.info(
         "document uploaded session=%s id=%s chars=%s truncated=%s",
@@ -220,6 +252,12 @@ async def delete_document(
     uid = user.internal_user_id
     await _require_session(repo, uid, session_id)
     await repo.delete_document(uid, session_id, document_id)
+    # Best-effort purge of any retained original bytes (inline code-interpreter
+    # feature). Always attempted — the store is a no-op when nothing was retained —
+    # and never raises, so it can't break the delete.
+    store = _ephemeral_store(request)
+    if store is not None:
+        await store.delete(uid, session_id, document_id)
 
 
 def _base_contenttype(content_type: str | None) -> str:

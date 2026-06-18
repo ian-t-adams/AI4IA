@@ -135,4 +135,13 @@ class Document(BaseModel):
     # True when the original text exceeded the per-document storage cap.
     truncated: bool = False
     text: str = ""
+    # Blob path of the EPHEMERAL retained original bytes, set only when the inline
+    # code-interpreter feature is on AND this upload was a CI-supported, within-cap
+    # file (see routers/documents.py). ``None`` (the default) means no bytes were
+    # retained — today's text-only behavior — so this also gates whether the
+    # ``analyze_attachment`` tool is offered for the document. The bytes are
+    # session-scoped, ownership-checked, and purged on document/session delete; the
+    # actual fetch path is recomposed from the authenticated identity, never from
+    # this stored value.
+    rawRef: str | None = None
     createdAt: datetime = Field(default_factory=_now)

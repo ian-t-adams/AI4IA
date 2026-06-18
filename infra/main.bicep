@@ -82,6 +82,9 @@ param codeInterpreterBaseUrl string = ''
 @description('Deployment/model name that serves the Responses API code_interpreter tool (Phase 11C, e.g. gpt-4.1). Required when enabling document compute in a deployed env.')
 param codeInterpreterModel string = ''
 
+@description('Enable the inline-attachment code interpreter (analyze_attachment): the chat agent can crack/analyze an INLINE composer attachment (PDF layout / xlsx cells / image) in the Responses API code_interpreter sandbox. Reuses the same code_interpreter endpoint/model as Phase 11C compute. Default OFF: no original bytes are retained, the tool is never advertised, and no ephemeral container is provisioned, so the chat hot path is byte-for-byte unchanged.')
+param inlineDocumentComputeEnabled bool = false
+
 @description('Enable the agent-callable generate_image tool (Phase 11F). Default OFF. When on, a dedicated image blob storage account is provisioned and any agent may attach generate_image; produced images persist durably and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
 
@@ -230,7 +233,13 @@ module data 'modules/data.bicep' = {
     postgresLocation: empty(postgresLocation) ? location : postgresLocation
     // Document library blob storage (Phase 11B). Gated on the feature flag, so the
     // storage account + container + RBAC are created only when enabled — default OFF.
-    deployDocumentStorage: documentUnderstandingEnabled
+    // The inline-attachment code interpreter (default OFF) reuses this same account
+    // for its EPHEMERAL original-byte retention, so the account is also provisioned
+    // when that flag is on; the ephemeral container itself is gated separately below.
+    deployDocumentStorage: documentUnderstandingEnabled || inlineDocumentComputeEnabled
+    // Dedicated short-lived container for inline-attachment original bytes (gated on
+    // the inline code-interpreter flag — default OFF). Carries a blob lifecycle TTL.
+    deployInlineAttachmentStorage: inlineDocumentComputeEnabled
     // Generated-image blob storage (Phase 11F). Dedicated, independent of the
     // library account; gated on the image-generation flag — default OFF.
     deployImageStorage: imageGenerationEnabled
@@ -392,6 +401,10 @@ module api 'modules/api.bicep' = {
     documentComputeEnabled: documentComputeEnabled
     codeInterpreterBaseUrl: effectiveCodeInterpreterBaseUrl
     codeInterpreterModel: effectiveCodeInterpreterModel
+    // Inline-attachment code interpreter (default OFF). Reuses the same code_interpreter
+    // endpoint/model above; emits its enable flag + ephemeral container name only when on.
+    inlineDocumentComputeEnabled: inlineDocumentComputeEnabled
+    inlineAttachmentBlobContainer: data.outputs.inlineAttachmentBlobContainerName
     // Agent-callable image tool (Phase 11F). Default OFF; the dedicated image blob
     // account/container are emitted to the api env only when the feature is on and
     // the data module provisioned an account (else the api uses an in-memory store).

@@ -36,6 +36,12 @@ param deployDocumentStorage bool = false
 @description('Blob container holding the raw + parsed + chunk artifacts of the document library.')
 param documentBlobContainer string = 'documents'
 
+@description('Provision a dedicated, short-lived container on the document storage account for inline-attachment ORIGINAL bytes (inline code interpreter, default OFF). Separate from the durable library container; carries a blob lifecycle TTL so retained originals auto-expire.')
+param deployInlineAttachmentStorage bool = false
+
+@description('Blob container holding inline-attachment original bytes, scoped per-user+session as {userId}/{sessionId}/{documentId}. Short-lived (lifecycle TTL); never the durable corpus.')
+param inlineAttachmentBlobContainer string = 'ephemeral-attachments'
+
 @description('Provision the generated-image blob storage account + container (Phase 11F). Gated on the image-generation flag so nothing is created by default. Independent of the document library storage — zero regression to either.')
 param deployImageStorage bool = false
 
@@ -302,6 +308,56 @@ resource documentContainer 'Microsoft.Storage/storageAccounts/blobServices/conta
   }
 }
 
+// Dedicated EPHEMERAL container for inline-attachment original bytes (inline code
+// interpreter, Phase 11 inline; default OFF). Kept clearly apart from the durable
+// library container so the short-lived originals never mingle with the corpus, and
+// a blob lifecycle rule (below) is the durable TTL backstop in addition to the
+// app's own delete-on-document-delete / purge-on-session-delete cleanup.
+resource inlineAttachmentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = if (deployDocumentStorage && deployInlineAttachmentStorage) {
+  parent: documentBlobService
+  name: inlineAttachmentBlobContainer
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+// Lifecycle TTL: hard-expire anything left in the ephemeral container after 1 day.
+// Belt-and-suspenders behind the app's explicit cleanup — guarantees no inline
+// original lingers even if a delete is missed. Scoped by the container-name prefix
+// so it never touches the durable library container on the same account.
+resource documentBlobLifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = if (deployDocumentStorage && deployInlineAttachmentStorage) {
+  parent: documentStorage
+  name: 'default'
+  properties: {
+    policy: {
+      rules: [
+        {
+          name: 'expire-ephemeral-attachments'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: {
+              blobTypes: [
+                'blockBlob'
+              ]
+              prefixMatch: [
+                inlineAttachmentBlobContainer
+              ]
+            }
+            actions: {
+              baseBlob: {
+                delete: {
+                  daysAfterCreationGreaterThan: 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+
 // Blob data-plane RBAC: the api identity gets Storage Blob Data Contributor on the
 // account (read/write/delete the user library artifacts via AAD; no account keys).
 resource documentStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployDocumentStorage) {
@@ -386,6 +442,7 @@ output postgresFqdn string = postgres.?properties.fullyQualifiedDomainName ?? ''
 output postgresDatabaseName string = deployPostgres ? memoryDb.name : ''
 output documentBlobAccountUrl string = documentStorage.?properties.primaryEndpoints.blob ?? ''
 output documentBlobContainerName string = documentBlobContainer
+output inlineAttachmentBlobContainerName string = inlineAttachmentBlobContainer
 output imageBlobAccountUrl string = imageStorage.?properties.primaryEndpoints.blob ?? ''
 output imageBlobContainerName string = imageBlobContainer
 output videoBlobAccountUrl string = imageStorage.?properties.primaryEndpoints.blob ?? ''

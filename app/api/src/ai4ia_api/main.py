@@ -30,6 +30,11 @@ from .docprocessing.artifacts import (
     DocumentArtifactStore,
     build_document_artifact_blob_store,
 )
+from .documents.analyze_factory import build_inline_attachment_analysis
+from .documents.ephemeral_store import (
+    EphemeralAttachmentStore,
+    build_inline_attachment_blob_store,
+)
 from .routers.realtime import AiohttpRealtimeConnector
 from .library.factory import build_document_library
 from .library.ingest_factory import build_document_ingestor, build_document_retrieval
@@ -221,6 +226,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.document_artifacts = DocumentArtifactStore(
             build_document_artifact_blob_store(settings)
         )
+        # Ephemeral retained-bytes store for inline composer attachments (default-OFF
+        # inline code-interpreter feature). Always built so the cleanup paths
+        # (document/session delete) can call it unconditionally; it reuses the
+        # document blob account on a dedicated ephemeral container, else an
+        # in-memory store. Retention into it only ever happens when the feature flag
+        # is on (routers/documents.py), so when off NO bytes are ever written.
+        app.state.inline_attachment_store = EphemeralAttachmentStore(
+            build_inline_attachment_blob_store(settings)
+        )
+        # Inline-attachment analysis service (default-OFF). None when the flag is
+        # off, so the chat hot path never advertises the analyze_attachment tool and
+        # no Code Interpreter client is constructed — zero regression by default.
+        # When on, reuses the ephemeral store + a Responses API CI client (owned;
+        # closed in finally), the entitlement gate, and the usage meter.
+        app.state.inline_attachment_analysis = build_inline_attachment_analysis(
+            settings,
+            store=app.state.inline_attachment_store,
+            entitlements=app.state.entitlements,
+            metering=app.state.usage,
+        )
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
         try:
@@ -304,6 +329,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await document_artifacts.close()
                 except Exception:  # noqa: BLE001
                     logger.warning("document artifact store close failed", exc_info=True)
+            inline_attachment_analysis = getattr(
+                app.state, "inline_attachment_analysis", None
+            )
+            if inline_attachment_analysis is not None:
+                try:
+                    await inline_attachment_analysis.close()
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "inline attachment analysis close failed", exc_info=True
+                    )
+            inline_attachment_store = getattr(app.state, "inline_attachment_store", None)
+            if inline_attachment_store is not None:
+                try:
+                    await inline_attachment_store.close()
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "inline attachment store close failed", exc_info=True
+                    )
 
     app = FastAPI(title="AI4IA API", version="0.1.0", lifespan=lifespan)
 
