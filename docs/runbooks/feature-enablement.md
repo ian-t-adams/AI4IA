@@ -17,6 +17,9 @@
 | Document compute (11C) | `AI4IA_DOCUMENT_COMPUTE_ENABLED=false` | — | `documentComputeEnabled=false` | above **+** Azure OpenAI Responses/code-interpreter resource | **High** |
 | AI Search chunk store (Phase 11) | `AI4IA_SEARCH_ENDPOINT` (set ⇒ used) | — | `searchEnabled=false` + `searchLocation` | Azure AI Search service | **Med** |
 | Memory / semantic recall (Phase 5) | `AI4IA_MEMORY_STORE=disabled` | — (per-doc save/forget UI) | `postgresLocation` (empty ⇒ `memoryStore='disabled'`) | Postgres Flexible Server (auto-provisioned: pgvector + `mem0` db) | **Med-High** |
+| Custom tools / BYO MCP (Phase 12A–D) | `AI4IA_CUSTOM_TOOLS_ENABLED=false` | `CUSTOM_TOOLS_ENABLED=false` | `customToolsEnabled=false` | Cosmos store + Key Vault (durable secrets) + **real Entra auth** | **Med-High** |
+| Inline-attachment Code Interpreter (Phase 7C) | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED=false` | — | `inlineDocumentComputeEnabled=false` | same Responses-API code-interpreter resource as 11C + ephemeral blob container | **Med** |
+| Web IQ search tools | `AI4IA_WEB_SEARCH_ENABLED=false` | — | `webSearchEnabled=false` + `webIqApiKey` secret | Microsoft Web IQ API key (or Entra managed identity) | **Low-Med** |
 
 Already **on and usable** (for contrast): chat, push-to-talk STT + TTS, image generation
 (Settings → Imagery), agents, workflows, per-session document attach.
@@ -25,10 +28,15 @@ Already **on and usable** (for contrast): chat, push-to-talk STT + TTS, image ge
 > env flips several of these ON: `imageGenerationEnabled`, `videoGenerationEnabled`,
 > `documentUnderstandingEnabled`, `documentComputeEnabled`, `searchEnabled` (Search in
 > `eastus`), `voiceLiveEnabled` + `voiceLiveToolsEnabled` (origin
-> `https://ai4ia.nomad-analytics.com`), and **`postgresLocation=centralus`** — which derives
+> `https://ai4ia.nomad-analytics.com`), `customToolsEnabled` (BYO MCP — live behind the
+> whole-app sign-in below), and **`postgresLocation=centralus`** — which derives
 > `memoryStore='mem0'` and provisions the Postgres Flexible Server (real per-user memory).
 > (`centralus` rather than the `eastus2` app region because the `slurmfactory` subscription is
 > offer-restricted from provisioning Postgres Flexible Server in `eastus2`/`eastus`/`westus2`.)
+> **Web IQ search (`webSearchEnabled`) and the inline-attachment Code Interpreter
+> (`inlineDocumentComputeEnabled`) remain OFF** in the live env. The deployed app is
+> **Entra-gated**: `apiAuthProvider=entra` + `appEnvironment=prod` enforce single-tenant
+> sign-in (no spoofable dev auth) — required for the per-user isolation custom tools depend on.
 > The "default" columns above are the **code/bicep** defaults — not the live env.
 
 ---
@@ -181,6 +189,84 @@ submit→poll→download job, persists the MP4 to a per-user blob, and serves it
 Image generation has both the Imagery Studio tab and an agent-callable `generate_image`; document
 processing has an agent-callable `process_document` — the **image · video · document**
 capability-as-tool triad is complete.
+
+---
+
+## 7. Custom tools / BYO remote MCP (Phase 12A–D)
+
+Lets a signed-in user register their own **remote MCP servers** (Streamable HTTP), discover the
+tools each exposes behind a strict SSRF egress guard, and attach them — by namespaced name — to
+their agents for governed per-turn execution. Server secrets are stored durably in Key Vault;
+the Agent Builder surfaces approval posture + per-server health/quarantine. One IaC param
+(`customToolsEnabled`) drives **both** the API and the web UI.
+
+**Enable:**
+```
+customToolsEnabled = true            # API: AI4IA_CUSTOM_TOOLS_ENABLED=true; web: CUSTOM_TOOLS_ENABLED=true
+```
+Setting the param provisions the `mcpServers` Cosmos container, grants the api managed identity
+**Key Vault Secrets Officer**, and emits `AI4IA_CUSTOM_TOOLS_SECRET_VAULT_URI` to the API +
+`CUSTOM_TOOLS_ENABLED=true` to the web container.
+
+**Fail-closed prerequisites** (`validate_runtime`, enforced outside `local`): enabling custom tools
+requires (a) the **Cosmos** session store (per-user server/secret isolation), (b) a **Key Vault**
+URI for durable secrets, and (c) **real Entra auth** — `auth_provider=dev` is rejected because the
+spoofable dev identity would break per-user tool isolation. The live env satisfies all three
+(Cosmos session store, Key Vault provisioned by the same flag, whole-app Entra sign-in). When off,
+the service is never built, `/api/agents/mcp-servers` returns 404, and behavior is unchanged.
+
+---
+
+## 8. Inline-attachment Code Interpreter (Phase 7C)
+
+An agent-callable **`analyze_attachment`** tool that cracks an **inline composer attachment** in the
+same Responses-API Code Interpreter sandbox as the library `run_code` tool, reading the **real
+uploaded bytes** (PDF layout, xlsx cells, image) rather than the cheap local text extract. It
+**augments** — does not replace — the instant local extract that already feeds small files into
+chat context. To give the sandbox the real file, the inline upload path retains the original bytes
+**ephemerally** (a dedicated blob container with a 1-day lifecycle/TTL; cleaned up on doc-delete and
+session-end).
+
+**Enable:**
+```
+inlineDocumentComputeEnabled = true           # AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED=true
+# reuses the Responses-API code-interpreter resource from §4:
+codeInterpreterBaseUrl       = "https://<resource>.openai.azure.com"
+codeInterpreterModel         = "<deployment>"
+# optional: AI4IA_INLINE_ATTACHMENT_BLOB_CONTAINER (default ephemeral-attachments)
+```
+Turning the flag on provisions the ephemeral-attachments container + its TTL rule (gated on the
+document blob storage). **Fail-closed** (`validate_runtime`, outside `local`): enabling without
+`code_interpreter_base_url` **and** `code_interpreter_model` raises at startup. It reuses the §4
+code-interpreter settings (no second CI surface) but is **independent of the document library** — it
+does not require `documentUnderstandingEnabled`. Default OFF: no original bytes are retained and the
+tool is never advertised, so the inline-document path is byte-for-byte unchanged.
+
+---
+
+## 9. Web IQ search tools
+
+Five agent-callable search tools — **`web_search`**, **`news_search`**, **`video_search`**,
+**`image_search`**, **`browse_url`** — backed by Microsoft **Web IQ** (official `webiq` SDK, lazily
+imported). They are offered on **every tool-enabled turn**, so they reach **any agent and the main
+chat**. Returned web content is attacker-controlled, so every field is sanitized and **nonce-fenced**
+before it reaches the model (prompt-injection defense). A shared per-turn budget caps the number of
+search calls (`MAX_WEB_SEARCHES_PER_TURN=5`, a module constant), `AI4IA_WEB_SEARCH_MAX_RESULTS`
+(default 5) caps results per query, and handling is fail-soft (never raises).
+
+**Enable:**
+```
+webSearchEnabled = true                       # AI4IA_WEB_SEARCH_ENABLED=true
+webIqApiKey      = "<Web IQ API key>"         # → Container App secret webiq-api-key → AI4IA_WEBIQ_API_KEY
+# or, instead of a key:  AI4IA_WEBIQ_USE_ENTRA=true   (managed-identity auth)
+# optional tunables: AI4IA_WEBIQ_BASE_URL, AI4IA_WEB_SEARCH_MAX_RESULTS,
+#                    AI4IA_WEB_SEARCH_MAX_CONTENT_CHARS
+```
+**Fail-closed** (`validate_runtime`, outside `local`): enabling without **either** an API key **or**
+`AI4IA_WEBIQ_USE_ENTRA=true` raises at startup. The secret is wired exactly like the
+model-gateway/admin secrets — emitted only when `webSearchEnabled` **and** a key are present, so the
+compiled ARM is empty when off. Default OFF: the factory returns `None`, no tools are advertised, and
+no SDK client is constructed.
 
 ---
 
