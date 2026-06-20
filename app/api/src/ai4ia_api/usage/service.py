@@ -19,6 +19,7 @@ import logging
 from datetime import datetime
 
 from ..catalog import DeploymentOption
+from ..logging_setup import emit_custom_event
 from .models import TokenUsage, UsageRecord, UsageStatus, UsageSummary, WindowTotals
 from .pricing import PricingBook
 from .repository import UsageRepository
@@ -138,6 +139,39 @@ class UsageService:
             self._emit_log(rec)
         except Exception:  # noqa: BLE001 - telemetry must never break a turn
             logger.warning("usage telemetry emit failed", exc_info=True)
+        try:
+            self._emit_event(rec)
+        except Exception:  # noqa: BLE001 - telemetry must never break a turn
+            logger.warning("usage custom event emit failed", exc_info=True)
+
+    def _emit_event(self, rec: UsageRecord) -> None:
+        """Emit a ``chat_completion`` Application Insights customEvent so per-model
+        / per-user token + cost analytics are queryable in App Insights/KQL
+        alongside the stdout signal. No-op unless telemetry is configured (i.e.
+        an Application Insights connection string is set); best-effort."""
+        emit_custom_event(
+            "chat_completion",
+            {
+                "userId": rec.userId,
+                "sessionId": rec.sessionId,
+                "model": rec.model,
+                "deployment": rec.deployment,
+                "region": rec.region,
+                "agent": rec.agent,
+                "status": rec.status,
+                "billable": rec.billable,
+                "usageKnown": rec.usageKnown,
+                "usageComplete": rec.usageComplete,
+                "calls": rec.calls,
+                "promptTokens": rec.promptTokens,
+                "completionTokens": rec.completionTokens,
+                "totalTokens": rec.totalTokens,
+                "costKnown": rec.costKnown,
+                "estCostUsd": rec.estCostUsd,
+                "currency": rec.currency,
+                "correlationId": rec.correlationId,
+            },
+        )
 
     def _emit_log(self, rec: UsageRecord) -> None:
         """Structured JSON telemetry line (no prompt content). Container stdout is

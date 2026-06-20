@@ -42,6 +42,14 @@ class ModelEntry(BaseModel):
     # gpt-5-codex, o3-pro, which 400 on chat/completions). The gateway routes by
     # this flag; the field is informational to the UI.
     api: str = "chat"
+    # Per-model context window (total prompt+completion tokens the deployment
+    # accepts) and the maximum tokens it will emit in one completion. Both are
+    # OPTIONAL: when absent (``None``) the backend falls back to its fixed
+    # constants, so a model lacking metadata behaves exactly as before. Populated
+    # for conversational models from ``infra/models.json``; serialized so the web
+    # app can show the cap and clamp the max-tokens input from one source of truth.
+    contextWindow: int | None = None
+    maxOutputTokens: int | None = None
     options: list[DeploymentOption]
 
     @computed_field  # type: ignore[prop-decorator]
@@ -112,6 +120,8 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
                 "category": model.get("category", "chat"),
                 "format": model["format"],
                 "api": model.get("api", "chat"),
+                "contextWindow": model.get("contextWindow"),
+                "maxOutputTokens": model.get("maxOutputTokens"),
                 "options": options,
             }
         )

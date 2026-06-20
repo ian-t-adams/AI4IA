@@ -18,6 +18,7 @@ from .agents.mcp_servers import MAX_MCP_SERVERS_PER_USER
 from .agents.mcp_service import McpServerService
 from .agents.mcp_store import build_user_mcp_server_store
 from .agents.service import AgentService
+from .agents.summarization import build_summarization_service
 from .agents.tool_exec import attachable_tool_names, build_tools
 from .catalog import load_catalog
 from .config import Settings, get_settings
@@ -41,12 +42,15 @@ from .library.ingest_factory import build_document_ingestor, build_document_retr
 from .library.compute_factory import build_document_compute
 from .memory.factory import build_memory_service
 from .logging_setup import (
+    annotate_current_span,
     configure_logging,
+    configure_telemetry,
     get_correlation_id,
     new_correlation_id,
     set_correlation_id,
 )
 from .routers import agents as agents_router
+from .routers import admin_usage as admin_usage_router
 from .routers import catalog as catalog_router
 from .routers import chat as chat_router
 from .routers import docprocessing as docprocessing_router
@@ -63,9 +67,11 @@ from .routers import videos as videos_router
 from .routers import voice as voice_router
 from .sessions.factory import build_session_repository
 from .sessions.repository import SessionNotFoundError
+from .usage.aggregate import AdminUsageService
 from .usage.factory import build_usage_repository
 from .usage.pricing import load_pricing
 from .usage.service import UsageService
+from .metrics.service import ResourceMetricsService
 from .websearch.factory import build_web_search_service
 from .workflows.factory import build_workflow_store
 from .workflows.service import WorkflowService
@@ -83,6 +89,12 @@ _MEMORY_WARMUP_TIMEOUT_S = 10.0
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
+    # Initialize Azure Monitor / OpenTelemetry export BEFORE the FastAPI app is
+    # constructed below: the distro instruments FastAPI by patching its class, so
+    # apps built after this call are auto-instrumented. No-op (and zero overhead)
+    # unless an Application Insights connection string is configured, so local/dev
+    # and tests are unaffected.
+    configure_telemetry(settings.applicationinsights_connection_string)
     settings.validate_runtime()
 
     @asynccontextmanager
@@ -155,11 +167,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # completed turn to a per-user ledger and emits structured cost telemetry.
         # Best-effort by construction (record_completion never raises), and shares
         # the session store's durability (Cosmos vs in-memory) via the factory.
+        usage_repo = build_usage_repository(settings)
         app.state.usage = UsageService(
-            build_usage_repository(settings),
+            usage_repo,
             load_pricing(),
             enabled=settings.usage_metering_enabled,
         )
+        # Admin usage aggregation (WS4). Read-only org-level rollups over the SAME
+        # ledger repo, behind require_admin. It shares the repo instance with the
+        # metering service (which owns close()), so this service never closes it.
+        app.state.admin_usage = AdminUsageService(usage_repo)
+        # Admin resource metrics (WS4 Part B). Best-effort Azure Monitor panels for
+        # AI Search / Postgres / Cosmos / Container Apps. Degrades to "unavailable"
+        # when resource ids / the SDK / Monitor data are absent, so it ships before
+        # WS3 wires diagnostics. The querier (and its credential) is built lazily on
+        # first use and closed in finally.
+        app.state.resource_metrics = ResourceMetricsService(settings)
         # Entitlement enforcement (Phase 6B). Ships effectively unlimited: with
         # no per-user override and no global default cap, check() short-circuits
         # to allow with zero ledger IO. The store shares the session store's
@@ -257,6 +280,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             entitlements=app.state.entitlements,
             metering=app.state.usage,
         )
+        # Rolling summarization (Phase WS2-C). Always built; ``enabled`` mirrors
+        # the DEFAULT-OFF ``auto_summarization_enabled`` flag, so the chat router
+        # can consult it unconditionally. When off, the automatic fold path is
+        # never taken and the turn is byte-for-byte unchanged; the manual
+        # ``/summarize`` command still works regardless.
+        app.state.summarizer = build_summarization_service(settings)
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
         try:
@@ -278,6 +307,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.usage.close()
             except Exception:  # noqa: BLE001
                 logger.warning("usage service close failed", exc_info=True)
+            try:
+                await app.state.resource_metrics.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("resource metrics close failed", exc_info=True)
             try:
                 await app.state.entitlements.close()
             except Exception:  # noqa: BLE001
@@ -371,6 +404,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def correlation_middleware(request: Request, call_next):
         incoming = request.headers.get(_CORRELATION_HEADER) or new_correlation_id()
         set_correlation_id(incoming)
+        # Tag the active App Insights request span so traces line up with the
+        # correlation id used in stdout/Log Analytics. No-op when telemetry off.
+        annotate_current_span(incoming)
         response = await call_next(request)
         response.headers[_CORRELATION_HEADER] = get_correlation_id()
         return response
@@ -440,6 +476,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(usage_router.router)
     app.include_router(entitlements_router.self_router)
     app.include_router(entitlements_router.admin_router)
+    app.include_router(admin_usage_router.whoami_router)
+    app.include_router(admin_usage_router.router)
     return app
 
 

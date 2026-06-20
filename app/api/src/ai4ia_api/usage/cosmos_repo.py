@@ -56,3 +56,31 @@ class CosmosUsageRepository:
         return summarize_records(
             user_id, records, since_days=since_days, from_time=since, to_time=now
         )
+
+    async def query_records(
+        self, *, since: datetime, now: datetime, limit: int
+    ) -> list[UsageRecord]:
+        """Admin-only cross-partition window scan, capped at ``limit`` rows.
+
+        ``TOP`` bounds the RU a single dashboard request can consume; ordering
+        newest-first means the cap drops the oldest rows when a window overflows.
+        A missing container degrades to an empty list (best-effort), never a 500.
+        """
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        query = (
+            f"SELECT TOP {int(limit)} * FROM c "
+            "WHERE c.createdAt >= @since AND c.createdAt <= @now "
+            "ORDER BY c.createdAt DESC"
+        )
+        params = [
+            {"name": "@since", "value": since.isoformat()},
+            {"name": "@now", "value": now.isoformat()},
+        ]
+        try:
+            return [
+                UsageRecord.model_validate(doc)
+                async for doc in self._usage.query_items(query=query, parameters=params)
+            ]
+        except CosmosResourceNotFoundError:
+            return []

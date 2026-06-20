@@ -2,6 +2,16 @@
 
 import type { ModelEntry } from "@/lib/types";
 
+function formatWindow(tokens: number): string {
+  // Compact human label for a context window, e.g. 400000 -> "400K", 1047576 -> "1M".
+  if (tokens >= 1_000_000) {
+    const m = tokens / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+  }
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+  return `${tokens}`;
+}
+
 export function ModelPicker({
   models,
   value,
@@ -37,6 +47,9 @@ export function ModelPicker({
             {entries.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.displayName}
+                {m.contextWindow != null
+                  ? ` — ${formatWindow(m.contextWindow)} ctx`
+                  : ""}
               </option>
             ))}
           </optgroup>

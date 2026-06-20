@@ -59,6 +59,8 @@ def build_catalog(models: dict) -> dict:
                 "category": model.get("category", "chat"),
                 "format": model["format"],
                 "api": model.get("api", "chat"),
+                "contextWindow": model.get("contextWindow"),
+                "maxOutputTokens": model.get("maxOutputTokens"),
                 "options": options,
             }
         )

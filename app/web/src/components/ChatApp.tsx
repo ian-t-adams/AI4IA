@@ -12,11 +12,13 @@ import { SettingsPanel } from "./SettingsPanel";
 import { StudioPanel } from "./StudioPanel";
 import { ImageStudioPanel } from "./ImageStudioPanel";
 import { VoiceLivePanel } from "./VoiceLivePanel";
+import { realtimeModels } from "@/lib/voiceLive";
 import { LibraryPanel } from "./LibraryPanel";
 import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import { Composer } from "./Composer";
 import { UserMenu } from "./UserMenu";
+import { AdminLink } from "./AdminLink";
 import { useVoiceLiveConfig } from "./VoiceLiveProvider";
 import { useLibraryConfig } from "./LibraryProvider";
 import { useCustomToolsConfig } from "./CustomToolsProvider";
@@ -533,13 +535,11 @@ export function ChatApp() {
   }, [messages, streaming, streamingText]);
 
   // Live voice is offered only when the runtime flag is on AND the catalog exposes
-  // a realtime model (filtered from the same /api/models the picker uses). When it
-  // is off, the control is never rendered and nothing about the chat UI changes.
-  const realtimeModelId = useMemo(
-    () => models.find((m) => m.category === "realtime")?.id ?? null,
-    [models],
-  );
-  const voiceLiveEnabled = voiceLiveConfig.enabled && realtimeModelId !== null;
+  // at least one realtime model (filtered from the same /api/models the picker
+  // uses). The full realtime list is handed to the panel's model picker; when the
+  // flag is off, the control is never rendered and nothing about the chat UI changes.
+  const realtimeModelList = useMemo(() => realtimeModels(models), [models]);
+  const voiceLiveEnabled = voiceLiveConfig.enabled && realtimeModelList.length > 0;
 
   // Hydrate panel-collapse preferences from localStorage on mount (after SSR).
   useEffect(() => {
@@ -648,6 +648,7 @@ export function ChatApp() {
           <div style={{ marginLeft: "auto", fontSize: "0.8em", color: "var(--fg-muted)" }}>
             {streaming ? "Generating…" : "Ready"}
           </div>
+          <AdminLink />
           <UserMenu />
         </header>
 
@@ -777,7 +778,11 @@ export function ChatApp() {
               »
             </button>
           </div>
-          <ParamControls params={params} onChange={setParams} />
+          <ParamControls
+            params={params}
+            onChange={setParams}
+            model={models.find((m) => m.id === selectedModel) ?? null}
+          />
           <SystemPromptEditor value={systemPrompt} onSave={saveSystemPrompt} />
         </aside>
       )}
@@ -812,7 +817,7 @@ export function ChatApp() {
       {voiceOpen && voiceLiveEnabled && (
         <VoiceLivePanel
           config={voiceLiveConfig}
-          model={realtimeModelId}
+          models={realtimeModelList}
           agents={agents}
           onClose={() => setVoiceOpen(false)}
           onError={setError}

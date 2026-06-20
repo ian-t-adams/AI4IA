@@ -38,6 +38,7 @@ const TOOL_LABELS: Record<string, string> = {
   generate_image: "Generate image",
   generate_video: "Generate video",
   process_document: "Process document",
+  recall_memory: "Recall memory",
 };
 const inputStyle: React.CSSProperties = {
   width: "100%",
