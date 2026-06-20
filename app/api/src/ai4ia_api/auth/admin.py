@@ -44,17 +44,17 @@ def _identity_is_admin(user: AuthenticatedUser, settings: Settings) -> bool:
     return _has_admin_role(user)
 
 
-async def require_admin(
-    request: Request,
-    user: AuthenticatedUser = Depends(get_current_user),
-) -> AuthenticatedUser:
-    settings: Settings = request.app.state.settings
-    secret = settings.admin_api_secret
-    provided_secret = request.headers.get("X-Admin-Secret")
-    forbidden = HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required."
-    )
+def evaluate_admin(
+    user: AuthenticatedUser, settings: Settings, provided_secret: str | None
+) -> bool:
+    """Return whether this request is authorized as admin (never raises).
 
+    Single source of truth for the dev-auth threat model (see module docstring),
+    shared by :func:`require_admin` (which raises on False) and the read-only
+    ``/api/admin/whoami`` probe (which reports the boolean so the UI can hide an
+    admin entry without ever being the security boundary itself).
+    """
+    secret = settings.admin_api_secret
     spoofable = (
         settings.auth_provider == AuthProviderKind.dev
         and settings.env != Environment.local
@@ -62,14 +62,25 @@ async def require_admin(
 
     if spoofable:
         # Identity can't be trusted here; only the shared secret authorizes.
-        if not secret or not _secret_ok(provided_secret, secret):
-            raise forbidden
-        return user
+        return bool(secret) and _secret_ok(provided_secret, secret)
 
     # Trustworthy identity (entra) or local dev: allowlist/role governs...
     if not _identity_is_admin(user, settings):
-        raise forbidden
+        return False
     # ...and the secret, when configured, is required as a second factor.
     if secret and not _secret_ok(provided_secret, secret):
-        raise forbidden
+        return False
+    return True
+
+
+async def require_admin(
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthenticatedUser:
+    settings: Settings = request.app.state.settings
+    provided_secret = request.headers.get("X-Admin-Secret")
+    if not evaluate_admin(user, settings, provided_secret):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required."
+        )
     return user
