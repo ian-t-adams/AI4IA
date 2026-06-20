@@ -37,6 +37,7 @@ from ai4ia_api.routers.realtime import (
     origin_allowed,
     parse_auth_subprotocols,
     parse_function_call_done,
+    parse_tools_opt_in,
     resolve_realtime_deployment,
 )
 from tests.conftest import make_settings
@@ -485,6 +486,45 @@ def test_build_tool_bridge_inert_when_tools_disabled():
     bridge = build_tool_bridge(state, make_settings(realtime_tools_enabled=False), "c")
     assert bridge.enabled is False
     assert bridge.tools == []
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", " 1 ", "On"])
+def test_parse_tools_opt_in_truthy(value):
+    assert parse_tools_opt_in(value) is True
+
+
+@pytest.mark.parametrize("value", [None, "", "0", "false", "no", "off", "maybe"])
+def test_parse_tools_opt_in_falsy(value):
+    assert parse_tools_opt_in(value) is False
+
+
+def test_build_tool_bridge_inert_when_flag_on_but_not_requested():
+    # Server flag ON but the per-session opt-in (``?tools=1``) absent -> inert: no
+    # tools advertised, relay stays a pass-through. This is the default-OFF gate.
+    state = SimpleNamespace()
+    state.tool_registry, state.tool_executor = build_tools()
+    bridge = build_tool_bridge(
+        state,
+        make_settings(realtime_tools_enabled=True),
+        "c",
+        tools_requested=False,
+    )
+    assert bridge.enabled is False
+    assert bridge.tools == []
+
+
+def test_build_tool_bridge_requires_both_flag_and_opt_in():
+    # Both the server flag AND the opt-in are required for tools to be advertised.
+    state = SimpleNamespace()
+    state.tool_registry, state.tool_executor = build_tools()
+    bridge = build_tool_bridge(
+        state,
+        make_settings(realtime_tools_enabled=True),
+        "c",
+        tools_requested=True,
+    )
+    assert bridge.enabled is True
+    assert {t["name"] for t in bridge.tools} >= {"calculator"}
 
 
 def test_build_tool_bridge_advertises_builtins_when_enabled():
