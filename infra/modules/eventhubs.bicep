@@ -22,6 +22,9 @@ param senderPrincipalIds array = []
 @description('Principal IDs granted Event Hubs Data Receiver (consumers of telemetry).')
 param receiverPrincipalIds array = []
 
+@description('Central Log Analytics workspace resource id. Diagnostic settings stream namespace logs/metrics there for the admin observability plane.')
+param logAnalyticsWorkspaceId string
+
 var namespaceName = take('evhns-${workload}-${environmentName}-${uniqueSuffix}', 50)
 
 resource namespace 'Microsoft.EventHub/namespaces@2024-01-01' = {
@@ -71,6 +74,25 @@ resource receiverAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01
     principalType: 'ServicePrincipal'
   }
 }]
+
+// Stream namespace operational logs + all platform metrics to the central Log
+// Analytics workspace. The `telemetry` hub is dormant today, so volume is near
+// zero; `OperationalLogs` is the cost-aware management-plane category (verbose
+// archive/Kafka categories are deliberately excluded). Retention follows the
+// workspace (30 days).
+resource namespaceDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-log-analytics'
+  scope: namespace
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      { category: 'OperationalLogs', enabled: true }
+    ]
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
+  }
+}
 
 output namespaceName string = namespace.name
 output namespaceFqdn string = '${namespace.name}.servicebus.windows.net'

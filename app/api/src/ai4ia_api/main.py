@@ -41,7 +41,9 @@ from .library.ingest_factory import build_document_ingestor, build_document_retr
 from .library.compute_factory import build_document_compute
 from .memory.factory import build_memory_service
 from .logging_setup import (
+    annotate_current_span,
     configure_logging,
+    configure_telemetry,
     get_correlation_id,
     new_correlation_id,
     set_correlation_id,
@@ -83,6 +85,12 @@ _MEMORY_WARMUP_TIMEOUT_S = 10.0
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
+    # Initialize Azure Monitor / OpenTelemetry export BEFORE the FastAPI app is
+    # constructed below: the distro instruments FastAPI by patching its class, so
+    # apps built after this call are auto-instrumented. No-op (and zero overhead)
+    # unless an Application Insights connection string is configured, so local/dev
+    # and tests are unaffected.
+    configure_telemetry(settings.applicationinsights_connection_string)
     settings.validate_runtime()
 
     @asynccontextmanager
@@ -371,6 +379,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def correlation_middleware(request: Request, call_next):
         incoming = request.headers.get(_CORRELATION_HEADER) or new_correlation_id()
         set_correlation_id(incoming)
+        # Tag the active App Insights request span so traces line up with the
+        # correlation id used in stdout/Log Analytics. No-op when telemetry off.
+        annotate_current_span(incoming)
         response = await call_next(request)
         response.headers[_CORRELATION_HEADER] = get_correlation_id()
         return response

@@ -26,6 +26,9 @@ param secretsOfficerPrincipalIds array = []
 workflow can purge + recreate the vault with the same name. Set true for production.''')
 param enablePurgeProtection bool = false
 
+@description('Central Log Analytics workspace resource id. Diagnostic settings stream the vault + app config logs/metrics there for the admin observability plane.')
+param logAnalyticsWorkspaceId string
+
 var keyVaultName = take('kv${replace(workload, '-', '')}${uniqueSuffix}', 24)
 
 resource keyVault 'Microsoft.KeyVault/vaults@2024-11-01' = {
@@ -93,6 +96,39 @@ resource appConfigRoleAssignments 'Microsoft.Authorization/roleAssignments@2022-
     principalType: 'ServicePrincipal'
   }
 }]
+
+// Stream the vault audit log (every secret read/write — the security-critical
+// trail) and all platform metrics to the central Log Analytics workspace.
+// `AzurePolicyEvaluationDetails` is deliberately omitted (noisy, low value here).
+// Retention follows the workspace (30 days).
+resource keyVaultDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-log-analytics'
+  scope: keyVault
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      { category: 'AuditEvent', enabled: true }
+    ]
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
+  }
+}
+
+// App Configuration HTTP request log (control-plane access audit) + all metrics.
+resource appConfigDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-log-analytics'
+  scope: appConfig
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      { category: 'HttpRequest', enabled: true }
+    ]
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
+  }
+}
 
 output keyVaultName string = keyVault.name
 output keyVaultId string = keyVault.id
