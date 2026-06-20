@@ -23,5 +23,21 @@ class InMemoryUsageRepository:
             user_id, records, since_days=since_days, from_time=since, to_time=now
         )
 
+    async def query_records(
+        self, *, since: datetime, now: datetime, limit: int
+    ) -> list[UsageRecord]:
+        """Cross-user, time-bounded scan for admin aggregation. Newest first, and
+        capped at ``limit`` rows to mirror the Cosmos repo's bounded contract."""
+        records = [
+            r
+            for recs in self._by_user.values()
+            for r in recs
+            if since <= r.createdAt <= now
+        ]
+        records.sort(key=lambda r: r.createdAt, reverse=True)
+        if limit >= 0:
+            records = records[:limit]
+        return records
+
     async def close(self) -> None:
         return None

@@ -501,6 +501,21 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Admin resource metrics (WS4 Part B): Azure Monitor platform metrics ---
+    # The admin dashboard's resource panels (AI Search query volume/latency,
+    # Postgres CPU/storage/connections, Cosmos RU, Container Apps replicas/restarts)
+    # are read from Azure Monitor via the api managed identity (RBAC: Monitoring
+    # Reader on each resource). Each value below is a full ARM resource id, e.g.
+    # ``/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Search/searchServices/<name>``.
+    # ALL optional and default OFF: a panel whose id is unset (or whose query fails,
+    # or where the azure-monitor-query SDK is absent) reports ``unavailable`` rather
+    # than erroring, so the dashboard ships before WS3 wires the diagnostics/ids.
+    resource_metrics_enabled: bool = True
+    metrics_search_resource_id: str | None = None
+    metrics_postgres_resource_id: str | None = None
+    metrics_cosmos_resource_id: str | None = None
+    metrics_container_app_resource_id: str | None = None
+
     # Optional path override for the bundled model catalog (tests/dev).
     model_catalog_path: str | None = None
     # Optional path override for the bundled agent catalog (tests/dev).

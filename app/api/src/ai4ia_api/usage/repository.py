@@ -1,9 +1,14 @@
 """UsageRepository protocol + shared error.
 
 The ledger is partitioned by ``userId`` (matching the sessions store), so every
-read is naturally user-scoped and bounded to a single partition. ``record`` is
-fire-and-forget from the caller's perspective (the service shields it); a failing
-ledger write must never break a chat response.
+per-user read is naturally user-scoped and bounded to a single partition.
+``record`` is fire-and-forget from the caller's perspective (the service shields
+it); a failing ledger write must never break a chat response.
+
+``query_records`` is the admin-only exception: a *cross-partition*, time-bounded,
+record-capped scan over the whole ledger used by the admin aggregation API. It is
+read-only and best-effort, and its ``limit`` caps the RU/rows a single dashboard
+request can ever consume.
 """
 from __future__ import annotations
 
@@ -20,5 +25,9 @@ class UsageRepository(Protocol):
     async def summarize(
         self, user_id: str, *, since: datetime, since_days: int, now: datetime
     ) -> UsageSummary: ...
+
+    async def query_records(
+        self, *, since: datetime, now: datetime, limit: int
+    ) -> list[UsageRecord]: ...
 
     async def close(self) -> None: ...
