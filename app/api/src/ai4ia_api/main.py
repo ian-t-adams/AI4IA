@@ -47,6 +47,7 @@ from .logging_setup import (
     set_correlation_id,
 )
 from .routers import agents as agents_router
+from .routers import admin_usage as admin_usage_router
 from .routers import catalog as catalog_router
 from .routers import chat as chat_router
 from .routers import docprocessing as docprocessing_router
@@ -63,9 +64,11 @@ from .routers import videos as videos_router
 from .routers import voice as voice_router
 from .sessions.factory import build_session_repository
 from .sessions.repository import SessionNotFoundError
+from .usage.aggregate import AdminUsageService
 from .usage.factory import build_usage_repository
 from .usage.pricing import load_pricing
 from .usage.service import UsageService
+from .metrics.service import ResourceMetricsService
 from .websearch.factory import build_web_search_service
 from .workflows.factory import build_workflow_store
 from .workflows.service import WorkflowService
@@ -155,11 +158,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # completed turn to a per-user ledger and emits structured cost telemetry.
         # Best-effort by construction (record_completion never raises), and shares
         # the session store's durability (Cosmos vs in-memory) via the factory.
+        usage_repo = build_usage_repository(settings)
         app.state.usage = UsageService(
-            build_usage_repository(settings),
+            usage_repo,
             load_pricing(),
             enabled=settings.usage_metering_enabled,
         )
+        # Admin usage aggregation (WS4). Read-only org-level rollups over the SAME
+        # ledger repo, behind require_admin. It shares the repo instance with the
+        # metering service (which owns close()), so this service never closes it.
+        app.state.admin_usage = AdminUsageService(usage_repo)
+        # Admin resource metrics (WS4 Part B). Best-effort Azure Monitor panels for
+        # AI Search / Postgres / Cosmos / Container Apps. Degrades to "unavailable"
+        # when resource ids / the SDK / Monitor data are absent, so it ships before
+        # WS3 wires diagnostics. The querier (and its credential) is built lazily on
+        # first use and closed in finally.
+        app.state.resource_metrics = ResourceMetricsService(settings)
         # Entitlement enforcement (Phase 6B). Ships effectively unlimited: with
         # no per-user override and no global default cap, check() short-circuits
         # to allow with zero ledger IO. The store shares the session store's
@@ -278,6 +292,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.usage.close()
             except Exception:  # noqa: BLE001
                 logger.warning("usage service close failed", exc_info=True)
+            try:
+                await app.state.resource_metrics.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("resource metrics close failed", exc_info=True)
             try:
                 await app.state.entitlements.close()
             except Exception:  # noqa: BLE001
@@ -440,6 +458,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(usage_router.router)
     app.include_router(entitlements_router.self_router)
     app.include_router(entitlements_router.admin_router)
+    app.include_router(admin_usage_router.whoami_router)
+    app.include_router(admin_usage_router.router)
     return app
 
 

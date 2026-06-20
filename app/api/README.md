@@ -137,3 +137,37 @@ Enabling ingest outside `local` requires **both** a Content Understanding endpoi
 (`AI4IA_CU_BASE_URL`) and a blob account (`AI4IA_DOCUMENT_BLOB_ACCOUNT_URL`);
 `validate_runtime()` fails closed otherwise. See `.env.example` for the
 `AI4IA_CU_*` and `AI4IA_DOCUMENT_BLOB_*` settings.
+
+## Admin usage dashboard (WS4) — org-level rollups + resource panels
+
+The app admin's "how many users / tokens / models / agents / resource usage"
+dashboard, built on the **existing** admin gate (`auth/admin.require_admin`) and
+the per-user usage ledger (no new ledger writes). All endpoints are read-only.
+
+- **Gating** (`routers/admin_usage.py`): every `/api/admin/usage/*` and
+  `/api/admin/metrics/*` route is behind `require_admin` (admin `200` /
+  non-admin `403` / anon `401`). The one exception is `GET /api/admin/whoami`,
+  which only requires authentication and returns an `isAdmin` boolean so the web
+  client can *hide* the admin nav entry — a cosmetic hide; the server gate is the
+  real boundary. `require_admin` now delegates the decision to a non-raising
+  `evaluate_admin()` helper shared with `whoami`.
+- **Aggregation** (`usage/aggregate.py` `AdminUsageService`): bounded,
+  cross-partition reads via `UsageRepository.query_records(since, now, limit)`
+  (time window + `TOP`/row cap, newest-first) feed pure functions producing org
+  totals, by-model, by-day, by-user (top-N paged, joined to entitlement
+  overrides), and per-agent rollups. Token totals count only `usageKnown` turns
+  and cost totals only `costKnown` turns (the Phase 6A honesty model), so they
+  never disagree with the per-user summary. A hit record cap sets `truncated`.
+  Endpoints: `GET /api/admin/usage/summary|by-model|by-day|by-user|agents?days=N`
+  (`days` 1–90, default 30).
+- **Resource metrics** (`metrics/`, `GET /api/admin/metrics/resources`):
+  best-effort Azure Monitor panels for AI Search / PostgreSQL / Cosmos / Container
+  Apps, read via the api managed identity (`azure-monitor-query`, imported
+  lazily). Each panel whose ARM resource id is unset, whose SDK is absent, or
+  whose query fails returns `status: "unavailable"` with a short `detail` rather
+  than an error — so the dashboard ships before diagnostics/resource-ids are
+  wired and lights up panel-by-panel as the ids appear. Configure via the
+  `AI4IA_METRICS_*_RESOURCE_ID` env vars (see `.env.example`);
+  `AI4IA_RESOURCE_METRICS_ENABLED=false` disables all panels.
+
+
