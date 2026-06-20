@@ -110,6 +110,15 @@ class Session(BaseModel):
     title: str = "New chat"
     model: str | None = None
     systemPrompt: str | None = None
+    # Rolling conversation summary (Phase WS2-C). When rolling summarization has
+    # folded older turns, ``summary`` holds the compact running digest of every
+    # turn UP TO AND INCLUDING ``summarizedThroughMessageId``; turns after that
+    # id are still sent verbatim. Both default to ``None`` (no summary yet) and a
+    # session that has never been summarized round-trips byte-for-byte. The full
+    # transcript is ALWAYS retained in the messages container and the UI — these
+    # only change what is sent to the model as context, never what is stored.
+    summary: str | None = None
+    summarizedThroughMessageId: str | None = None
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
 

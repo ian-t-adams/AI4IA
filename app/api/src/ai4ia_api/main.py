@@ -18,6 +18,7 @@ from .agents.mcp_servers import MAX_MCP_SERVERS_PER_USER
 from .agents.mcp_service import McpServerService
 from .agents.mcp_store import build_user_mcp_server_store
 from .agents.service import AgentService
+from .agents.summarization import build_summarization_service
 from .agents.tool_exec import attachable_tool_names, build_tools
 from .catalog import load_catalog
 from .config import Settings, get_settings
@@ -279,6 +280,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             entitlements=app.state.entitlements,
             metering=app.state.usage,
         )
+        # Rolling summarization (Phase WS2-C). Always built; ``enabled`` mirrors
+        # the DEFAULT-OFF ``auto_summarization_enabled`` flag, so the chat router
+        # can consult it unconditionally. When off, the automatic fold path is
+        # never taken and the turn is byte-for-byte unchanged; the manual
+        # ``/summarize`` command still works regardless.
+        app.state.summarizer = build_summarization_service(settings)
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
         try:
