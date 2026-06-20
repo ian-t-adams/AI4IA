@@ -65,6 +65,25 @@ dependencies = [
     # AI4IA_WEB_SEARCH_ENABLED=true and a search actually runs) so the app/tests
     # boot without it wired and the default-OFF path constructs nothing.
     "webiq>=0.1",
+    # Azure Monitor metrics data plane for the admin dashboard's resource panels
+    # (WS4 Part B): AI Search / Postgres / Cosmos / Container Apps platform metrics
+    # read via the api managed identity (RBAC: Monitoring Reader). Imported lazily
+    # (only when a resource id is configured and a panel is requested) so the
+    # app/tests boot without it wired and unconfigured panels degrade to
+    # "unavailable"; unit tests inject a fake querier.
+    "azure-monitor-query>=1.2",
+    # Azure Monitor OpenTelemetry distro: exports request/dependency/exception
+    # traces, metrics, and custom usage events to Application Insights (WS3
+    # observability). Initialized ONCE at startup (logging_setup.configure_telemetry)
+    # ONLY when APPLICATIONINSIGHTS_CONNECTION_STRING is set, so local/dev with no
+    # connection string is a pure no-op and the SDK is never started. Pulls in the
+    # OpenTelemetry API/SDK + the FastAPI/Azure-SDK instrumentations transitively.
+    "azure-monitor-opentelemetry>=1.6",
+    # The distro auto-instruments FastAPI (incoming) + the Azure SDKs, but NOT
+    # httpx — the client the chat path uses for outbound model-gateway calls. Add
+    # it so those outbound calls surface as App Insights dependencies. Activated
+    # only when telemetry is configured (same connection-string gate).
+    "opentelemetry-instrumentation-httpx>=0.48b0",
 ]
 
 [project.optional-dependencies]

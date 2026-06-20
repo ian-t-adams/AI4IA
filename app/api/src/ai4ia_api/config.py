@@ -430,6 +430,31 @@ class Settings(BaseSettings):
     web_search_max_results: int = 5
     web_search_max_content_chars: int = 6000
 
+    # --- Rolling summarization (Phase WS2-C): sustainable long conversations ---
+    # DEFAULT-OFF. When off, the chat path sends today's full history byte-for-byte
+    # and never injects a summary block — the manual ``/summarize`` command still
+    # works and persists a running summary, but it does not alter what subsequent
+    # turns send while this flag is off. When ON, once the assembled transcript
+    # would exceed the model-derived threshold, the oldest turns are folded into
+    # the session's running summary (kept incrementally) and only the newest
+    # ``summarization_recent_turns`` turns are sent verbatim alongside the summary;
+    # the FULL transcript is always retained in storage + the UI scrollback.
+    auto_summarization_enabled: bool = False
+    # How many of the most-recent turns (user/assistant messages) to always keep
+    # verbatim, never folded into the summary.
+    summarization_recent_turns: int = 6
+    # Fraction of the model's context window (token budget, ~4 chars/token) the
+    # live transcript may occupy before older turns are folded. The remainder is
+    # headroom for the system prompt, memory/doc/library blocks, the summary
+    # itself, and the reserved max-output.
+    summarization_threshold_ratio: float = 0.5
+    # Threshold (in characters) used when the active model declares no context
+    # window, so the auto path still has a bound to trigger on.
+    summarization_fallback_threshold_chars: int = 48_000
+    # Cap on the tokens spent generating the summary itself (keeps the digest
+    # compact and the fold cheap).
+    summarization_max_output_tokens: int = 1024
+
     # --- Memory (Phase 5): per-user semantic recall ---
     # Single source of truth: the store kind both selects the backend AND gates
     # the feature (``disabled`` == off). No separate enable flag, so the two can
@@ -500,6 +525,21 @@ class Settings(BaseSettings):
             "APPLICATIONINSIGHTS_CONNECTION_STRING",
         ),
     )
+
+    # --- Admin resource metrics (WS4 Part B): Azure Monitor platform metrics ---
+    # The admin dashboard's resource panels (AI Search query volume/latency,
+    # Postgres CPU/storage/connections, Cosmos RU, Container Apps replicas/restarts)
+    # are read from Azure Monitor via the api managed identity (RBAC: Monitoring
+    # Reader on each resource). Each value below is a full ARM resource id, e.g.
+    # ``/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Search/searchServices/<name>``.
+    # ALL optional and default OFF: a panel whose id is unset (or whose query fails,
+    # or where the azure-monitor-query SDK is absent) reports ``unavailable`` rather
+    # than erroring, so the dashboard ships before WS3 wires the diagnostics/ids.
+    resource_metrics_enabled: bool = True
+    metrics_search_resource_id: str | None = None
+    metrics_postgres_resource_id: str | None = None
+    metrics_cosmos_resource_id: str | None = None
+    metrics_container_app_resource_id: str | None = None
 
     # Optional path override for the bundled model catalog (tests/dev).
     model_catalog_path: str | None = None

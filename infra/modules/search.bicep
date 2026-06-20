@@ -22,6 +22,9 @@ param apiPrincipalId string
 @description('Provision the Azure AI Search service + RBAC. Gated so nothing is created by default — zero regression when off.')
 param deploySearch bool = false
 
+@description('Central Log Analytics workspace resource id. When the service is provisioned, diagnostic settings stream its operation logs/metrics there for the admin observability plane.')
+param logAnalyticsWorkspaceId string
+
 @description('Search service SKU. basic is the smallest tier that supports semantic ranking and is plenty for a single-tenant index.')
 @allowed([
   'free'
@@ -87,6 +90,23 @@ resource apiSearchServiceRole 'Microsoft.Authorization/roleAssignments@2022-04-0
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', searchServiceContributorRoleId)
     principalId: apiPrincipalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+// Stream the service operation logs (query/index admin activity) + all platform
+// metrics (latency, throttled/total queries) to the central Log Analytics
+// workspace. Only created with the service. Retention follows the workspace.
+resource searchDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (deploySearch) {
+  name: 'to-log-analytics'
+  scope: search
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      { category: 'OperationLogs', enabled: true }
+    ]
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
   }
 }
 

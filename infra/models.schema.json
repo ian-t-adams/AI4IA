@@ -36,6 +36,8 @@
           "name": { "type": "string" },
           "format": { "type": "string" },
           "category": { "type": "string" },
+          "contextWindow": { "type": "integer", "minimum": 1 },
+          "maxOutputTokens": { "type": "integer", "minimum": 1 },
           "deployments": {
             "type": "array",
             "minItems": 1,

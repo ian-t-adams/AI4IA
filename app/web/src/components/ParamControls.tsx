@@ -1,6 +1,11 @@
 "use client";
 
-import type { ChatParams } from "@/lib/types";
+import type { ChatParams, ModelEntry } from "@/lib/types";
+
+// Fallback max-output ceiling when the active model declares no metadata
+// (e.g. model-router). Mirrors the previous hardcoded input bound so behavior
+// is unchanged for models without a published max-output.
+const DEFAULT_MAX_OUTPUT = 32000;
 
 function Slider({
   label,
@@ -39,10 +44,17 @@ function Slider({
 export function ParamControls({
   params,
   onChange,
+  model,
 }: {
   params: ChatParams;
   onChange: (p: ChatParams) => void;
+  model?: ModelEntry | null;
 }) {
+  // The active model's published max-output ceiling drives the input bound and
+  // is the single source of truth for clamping. The backend caps too (lower
+  // only), so this is a UX nicety, not the enforcement point.
+  const cap = model?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT;
+  const shown = Math.min(params.max_tokens ?? 1024, cap);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <Slider
@@ -63,16 +75,23 @@ export function ParamControls({
       />
       <label style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         <span style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}>
-          Max tokens
+          Max tokens{" "}
+          {model?.maxOutputTokens != null && (
+            <span style={{ opacity: 0.7 }}>
+              (model max: {model.maxOutputTokens.toLocaleString()})
+            </span>
+          )}
         </span>
         <input
           type="number"
           min={1}
-          max={32000}
-          value={params.max_tokens ?? 1024}
-          onChange={(e) =>
-            onChange({ ...params, max_tokens: Number(e.target.value) })
-          }
+          max={cap}
+          value={shown}
+          onChange={(e) => {
+            const raw = Number(e.target.value);
+            const clamped = Math.max(1, Math.min(raw || 1, cap));
+            onChange({ ...params, max_tokens: clamped });
+          }}
           style={{ padding: "6px 8px" }}
         />
       </label>

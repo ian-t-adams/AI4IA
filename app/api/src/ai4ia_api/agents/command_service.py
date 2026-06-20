@@ -13,9 +13,10 @@ service; when memory is disabled it reports that nothing is stored.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..auth.base import AuthenticatedUser
 from ..catalog import ModelCatalog
@@ -24,6 +25,7 @@ from ..sessions.models import Message, MessageRole, MessageStatus, Session
 from ..sessions.repository import SessionRepository
 from .agent_catalog import AgentCatalog
 from .commands import CommandKind, ParsedInput
+from .summarization import SummarizationService
 from .tool_exec import (
     ToolContext,
     ToolExecutionError,
@@ -32,6 +34,11 @@ from .tool_exec import (
 )
 from .tools import ToolRegistry
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ..gateway.client import ModelGatewayClient
+
+logger = logging.getLogger(__name__)
+
 HELP_TEXT = (
     "Available commands:\n"
     "/help — show this message\n"
@@ -39,7 +46,7 @@ HELP_TEXT = (
     "/system <prompt> — set the system prompt (no args shows the current one)\n"
     "/model <model-id> — switch the model for this conversation\n"
     "/agents — list the agents you can mention\n"
-    "/summarize — summarize the conversation (coming soon)\n"
+    "/summarize — condense this conversation into a running summary\n"
     "/forget [session|me] — erase stored memories for this chat (default) or "
     "all of yours\n"
     "/<tool> [args] — run a tool directly (e.g. /calculator (2+3)*4, "
@@ -74,6 +81,8 @@ async def execute_command(
     catalog: ModelCatalog,
     agents: AgentCatalog,
     memory: MemoryServiceProtocol | None = None,
+    summarizer: SummarizationService | None = None,
+    gateway: "ModelGatewayClient | None" = None,
 ) -> Message:
     """Run the parsed command, persist its effects, and return the reply message."""
     command = parsed.command
@@ -85,6 +94,10 @@ async def execute_command(
     if command.kind is CommandKind.clear:
         await repo.clear_messages(user_id, session.id)
         reply = "Conversation cleared."
+        # Clearing history makes any prior rolling summary stale; drop it so a
+        # fresh conversation never inherits a summary of erased turns.
+        session.summary = None
+        session.summarizedThroughMessageId = None
     else:
         await repo.add_message(
             user_id,
@@ -99,6 +112,10 @@ async def execute_command(
         )
         if command.kind is CommandKind.forget:
             reply = await _forget_reply(memory, user_id, session.id, command.args)
+        elif command.kind is CommandKind.summarize:
+            reply = await _summarize_reply(
+                summarizer, gateway, repo, catalog, user_id, session
+            )
         else:
             reply = await _reply_for(
                 command.kind, command.name, command.args, session, catalog, agents
@@ -240,11 +257,54 @@ async def _reply_for(
         session.model = args
         return f"Model switched to {args}."
 
-    if kind is CommandKind.summarize:
-        return f"/{name} isn't available yet — long-chat summarize is coming soon."
-
     # Unknown command.
     return f"Unknown command: /{name}. Type /help to see what's available."
+
+
+async def _summarize_reply(
+    summarizer: SummarizationService | None,
+    gateway: "ModelGatewayClient | None",
+    repo: SessionRepository,
+    catalog: ModelCatalog,
+    user_id: str,
+    session: Session,
+) -> str:
+    """Manual ``/summarize``: condense the conversation into a running summary,
+    persist it on the session (mutated in place; the caller's update_session
+    commits it), and show the digest. Fail-soft: any model/store error degrades
+    to a friendly message and never raises out of the command path."""
+    if summarizer is None or gateway is None:
+        return "Summarizing long chats isn't available in this environment yet."
+    if not session.model:
+        return (
+            "Choose a model for this conversation first (use /model <model-id> "
+            "or the model menu), then run /summarize."
+        )
+    deployment = catalog.resolve_deployment(session.model)
+    if deployment is None:
+        return f"Can't summarize: '{session.model}' is not an available model."
+    entry = catalog.get(session.model)
+    api = entry.api if entry is not None else "chat"
+    prior = await repo.list_messages(user_id, session.id)
+    try:
+        summary = await summarizer.summarize_now(
+            gateway=gateway,
+            repo=repo,
+            session=session,
+            user_id=user_id,
+            deployment=deployment.deploymentName,
+            prior=prior,
+            api=api,
+        )
+    except Exception:  # noqa: BLE001 - a command must never crash the turn
+        logger.warning("manual /summarize failed", exc_info=True)
+        return (
+            "Sorry — I couldn't summarize the conversation just now. "
+            "Please try again in a moment."
+        )
+    if not summary:
+        return "There's not enough conversation here to summarize yet."
+    return f"Here's a running summary of the conversation so far:\n\n{summary}"
 
 
 async def _forget_reply(

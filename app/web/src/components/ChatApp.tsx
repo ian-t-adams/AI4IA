@@ -18,6 +18,7 @@ import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import { Composer } from "./Composer";
 import { UserMenu } from "./UserMenu";
+import { AdminLink } from "./AdminLink";
 import { useVoiceLiveConfig } from "./VoiceLiveProvider";
 import { useLibraryConfig } from "./LibraryProvider";
 import { useCustomToolsConfig } from "./CustomToolsProvider";
@@ -647,6 +648,7 @@ export function ChatApp() {
           <div style={{ marginLeft: "auto", fontSize: "0.8em", color: "var(--fg-muted)" }}>
             {streaming ? "Generating…" : "Ready"}
           </div>
+          <AdminLink />
           <UserMenu />
         </header>
 
@@ -776,7 +778,11 @@ export function ChatApp() {
               »
             </button>
           </div>
-          <ParamControls params={params} onChange={setParams} />
+          <ParamControls
+            params={params}
+            onChange={setParams}
+            model={models.find((m) => m.id === selectedModel) ?? null}
+          />
           <SystemPromptEditor value={systemPrompt} onSave={saveSystemPrompt} />
         </aside>
       )}
