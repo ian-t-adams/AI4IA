@@ -9,7 +9,12 @@
 // the app's default behavior is unchanged.
 import type { VoiceLiveConfig } from "./voiceLive";
 
-const DISABLED: VoiceLiveConfig = { enabled: false, wsUrl: "", devUser: "" };
+const DISABLED: VoiceLiveConfig = {
+  enabled: false,
+  wsUrl: "",
+  devUser: "",
+  toolsAvailable: false,
+};
 
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
 
@@ -35,5 +40,11 @@ export function getVoiceLiveConfig(): VoiceLiveConfig {
     // proxy-stamped with X-Dev-User, so it carries the dev id in a subprotocol).
     // Ignored under Entra, where a real bearer token is used instead.
     devUser: process.env.DEV_USER || "",
+    // Whether the API advertises governed tools for live sessions (mirrors the
+    // API's AI4IA_REALTIME_TOOLS_ENABLED; infra emits both from one param). Default
+    // OFF: when unset the panel never offers the tools opt-in.
+    toolsAvailable: TRUTHY.has(
+      (process.env.VOICE_LIVE_TOOLS_ENABLED || "").toLowerCase(),
+    ),
   };
 }

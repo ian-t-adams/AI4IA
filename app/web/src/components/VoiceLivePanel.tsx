@@ -7,22 +7,31 @@
 // in the engine and reflected here), governed-tool badges, and graceful
 // connecting / live / ending / error states. It reuses the `useVoiceLive` audio
 // engine unchanged — this component only renders its structured state.
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentSummary, VoiceTurnInput } from "@/lib/types";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import type { AgentSummary, ModelEntry, VoiceTurnInput } from "@/lib/types";
 import {
   useVoiceLive,
   DEFAULT_VOICE,
+  DEFAULT_VOICE_SETTINGS,
   REALTIME_VOICES,
+  VAD_TYPES,
   isRealtimeVoice,
+  isVadType,
+  realtimeModels,
   type LiveTurn,
+  type VadType,
   type VoiceLiveConfig,
   type VoiceSeedTurn,
+  type VoiceSessionSettings,
 } from "@/lib/voiceLive";
 
-// Where the chosen live-voice persona / agent are remembered across reloads (shared
-// with the prior Composer affordance so a returning user keeps their selection).
+// Where the chosen live-voice persona / agent / model / tools opt-in are remembered
+// across reloads (shared with the prior Composer affordance so a returning user
+// keeps their selection).
 const VOICE_STORAGE_KEY = "ai4ia.voiceLive.voice";
 const AGENT_STORAGE_KEY = "ai4ia.voiceLive.agent";
+const MODEL_STORAGE_KEY = "ai4ia.voiceLive.model";
+const TOOLS_STORAGE_KEY = "ai4ia.voiceLive.tools";
 
 type Phase =
   | "idle"
@@ -141,9 +150,27 @@ function TurnBubble({ turn }: { turn: LiveTurn }) {
   );
 }
 
+// Parse a numeric settings input: blank => null (omit from payload, model default).
+function numOrNull(raw: string): number | null {
+  const t = raw.trim();
+  if (t === "") return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
+const fieldStyle: CSSProperties = {
+  minHeight: 36,
+  padding: "0 8px",
+  borderRadius: 8,
+  border: "1px solid var(--border)",
+  background: "var(--bg)",
+  color: "var(--fg)",
+  fontSize: "0.95em",
+};
+
 export function VoiceLivePanel({
   config,
-  model,
+  models,
   agents,
   onClose,
   onError,
@@ -151,7 +178,9 @@ export function VoiceLivePanel({
   onConversation,
 }: {
   config: VoiceLiveConfig;
-  model: string | null;
+  // The realtime-category models the user can pick among (filtered upstream from
+  // the same /api/models the chat picker uses). The panel defensively re-filters.
+  models: ModelEntry[];
   agents: AgentSummary[];
   onClose: () => void;
   onError?: (message: string) => void;
@@ -167,6 +196,21 @@ export function VoiceLivePanel({
   // while a session is active.
   const [liveVoice, setLiveVoice] = useState<string>(DEFAULT_VOICE);
   const [liveAgent, setLiveAgent] = useState<string>("");
+  // Chosen realtime model persists across reloads. Empty => fall back to the first
+  // available realtime model (which is what the host auto-resolved before this
+  // picker existed, so the default is unchanged).
+  const [liveModel, setLiveModel] = useState<string>("");
+  // Per-session opt-in to governed tool calls in voice. Only offered when the API
+  // advertises tools (config.toolsAvailable); default OFF so behavior is unchanged.
+  const [toolsAllowed, setToolsAllowed] = useState<boolean>(false);
+  // Optional session-setting overrides. Defaults equal today's hardcoded values, so
+  // an untouched panel produces a byte-for-byte identical session.update.
+  const [settings, setSettings] = useState<VoiceSessionSettings>(DEFAULT_VOICE_SETTINGS);
+  const [showSettings, setShowSettings] = useState<boolean>(false);
+
+  // Realtime-only models for the picker (defensive re-filter even though the host
+  // already passes a filtered list).
+  const availableModels = useMemo(() => realtimeModels(models), [models]);
 
   useEffect(() => {
     try {
@@ -174,6 +218,10 @@ export function VoiceLivePanel({
       if (v && isRealtimeVoice(v)) setLiveVoice(v);
       const a = window.localStorage.getItem(AGENT_STORAGE_KEY);
       if (a) setLiveAgent(a);
+      const m = window.localStorage.getItem(MODEL_STORAGE_KEY);
+      if (m) setLiveModel(m);
+      const t = window.localStorage.getItem(TOOLS_STORAGE_KEY);
+      if (t === "1") setToolsAllowed(true);
     } catch {
       /* storage unavailable -> defaults */
     }
@@ -188,6 +236,18 @@ export function VoiceLivePanel({
       setLiveAgent("");
     }
   }, [enabledAgents, liveAgent]);
+
+  // Drop a remembered model that is no longer a valid realtime model.
+  useEffect(() => {
+    if (!liveModel) return;
+    if (availableModels.length > 0 && !availableModels.some((m) => m.id === liveModel)) {
+      setLiveModel("");
+    }
+  }, [availableModels, liveModel]);
+
+  // The id actually sent to the host: the chosen model, or the first available as a
+  // fallback (matches the previous auto-resolved behavior).
+  const effectiveModel = liveModel || availableModels[0]?.id || null;
 
   const onPickVoice = (value: string) => {
     setLiveVoice(value);
@@ -206,14 +266,37 @@ export function VoiceLivePanel({
       /* best effort */
     }
   };
+  const onPickModel = (value: string) => {
+    setLiveModel(value);
+    try {
+      if (value) window.localStorage.setItem(MODEL_STORAGE_KEY, value);
+      else window.localStorage.removeItem(MODEL_STORAGE_KEY);
+    } catch {
+      /* best effort */
+    }
+  };
+  const onToggleTools = (value: boolean) => {
+    setToolsAllowed(value);
+    try {
+      if (value) window.localStorage.setItem(TOOLS_STORAGE_KEY, "1");
+      else window.localStorage.removeItem(TOOLS_STORAGE_KEY);
+    } catch {
+      /* best effort */
+    }
+  };
+
+  // Tools are only effective when the server advertises them AND the user opted in.
+  const toolsRequested = config.toolsAvailable && toolsAllowed;
 
   const live = useVoiceLive(
     config,
-    model,
+    effectiveModel,
     liveVoice,
     (msg) => onError?.(msg),
     liveAgent || null,
     history,
+    settings,
+    toolsRequested,
   );
 
   // Persist the finalized voice turns back into the shared session when a live
@@ -366,6 +449,34 @@ export function VoiceLivePanel({
               </select>
             </label>
           )}
+          {availableModels.length > 0 && (
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.75em" }}>
+              <span style={{ color: "var(--fg-muted)" }}>Model</span>
+              <select
+                aria-label="Live voice model"
+                value={effectiveModel ?? ""}
+                disabled={live.active}
+                onChange={(e) => onPickModel(e.target.value)}
+                style={{
+                  minHeight: 40,
+                  padding: "0 8px",
+                  borderRadius: 10,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                  color: "var(--fg)",
+                  fontSize: "1em",
+                  cursor: live.active ? "not-allowed" : "pointer",
+                  opacity: live.active ? 0.6 : 1,
+                }}
+              >
+                {availableModels.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.displayName || m.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.75em" }}>
             <span style={{ color: "var(--fg-muted)" }}>Voice</span>
             <select
@@ -427,6 +538,214 @@ export function VoiceLivePanel({
                 : "Start conversation"}
           </button>
         </div>
+
+        {/* Settings disclosure + per-session tools opt-in. Everything here defaults
+            to today's behavior; an untouched panel sends the same session.update. */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
+          <button
+            type="button"
+            onClick={() => setShowSettings((s) => !s)}
+            aria-expanded={showSettings}
+            style={{
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+              color: "var(--fg-muted)",
+              borderRadius: 8,
+              padding: "6px 12px",
+              fontSize: "0.78em",
+              cursor: "pointer",
+            }}
+          >
+            {showSettings ? "▾" : "▸"} Session settings
+          </button>
+          {config.toolsAvailable && (
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: "0.78em",
+                color: "var(--fg-muted)",
+                cursor: live.active ? "not-allowed" : "pointer",
+              }}
+            >
+              <input
+                type="checkbox"
+                aria-label="Allow tools in voice"
+                checked={toolsAllowed}
+                disabled={live.active}
+                onChange={(e) => onToggleTools(e.target.checked)}
+              />
+              Allow tools in voice
+            </label>
+          )}
+        </div>
+
+        {showSettings && (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+              gap: 12,
+              padding: 14,
+              borderRadius: 10,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+            }}
+          >
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+                fontSize: "0.75em",
+                gridColumn: "1 / -1",
+              }}
+            >
+              <span style={{ color: "var(--fg-muted)" }}>
+                Instructions {liveAgent ? "(ignored while an agent is selected)" : ""}
+              </span>
+              <textarea
+                aria-label="Voice instructions"
+                value={settings.instructions}
+                disabled={live.active}
+                rows={2}
+                onChange={(e) =>
+                  setSettings((s) => ({ ...s, instructions: e.target.value }))
+                }
+                style={{ ...fieldStyle, minHeight: 52, padding: 8, resize: "vertical" }}
+              />
+            </label>
+
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.75em" }}>
+              <span style={{ color: "var(--fg-muted)" }}>Temperature (blank = default)</span>
+              <input
+                type="number"
+                aria-label="Voice temperature"
+                inputMode="decimal"
+                step={0.1}
+                min={0}
+                max={2}
+                value={settings.temperature ?? ""}
+                disabled={live.active}
+                onChange={(e) =>
+                  setSettings((s) => ({ ...s, temperature: numOrNull(e.target.value) }))
+                }
+                style={fieldStyle}
+              />
+            </label>
+
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.75em" }}>
+              <span style={{ color: "var(--fg-muted)" }}>Turn detection</span>
+              <select
+                aria-label="Voice turn detection"
+                value={settings.vadType}
+                disabled={live.active}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    vadType: isVadType(e.target.value) ? e.target.value : s.vadType,
+                  }))
+                }
+                style={{ ...fieldStyle, cursor: live.active ? "not-allowed" : "pointer" }}
+              >
+                {VAD_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t === "server_vad" ? "Server VAD" : "Semantic VAD"}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {settings.vadType === "server_vad" && (
+              <>
+                <label
+                  style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.75em" }}
+                >
+                  <span style={{ color: "var(--fg-muted)" }}>VAD threshold (blank = default)</span>
+                  <input
+                    type="number"
+                    aria-label="Voice VAD threshold"
+                    inputMode="decimal"
+                    step={0.05}
+                    min={0}
+                    max={1}
+                    value={settings.vadThreshold ?? ""}
+                    disabled={live.active}
+                    onChange={(e) =>
+                      setSettings((s) => ({ ...s, vadThreshold: numOrNull(e.target.value) }))
+                    }
+                    style={fieldStyle}
+                  />
+                </label>
+                <label
+                  style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.75em" }}
+                >
+                  <span style={{ color: "var(--fg-muted)" }}>Silence ms (blank = default)</span>
+                  <input
+                    type="number"
+                    aria-label="Voice VAD silence duration"
+                    inputMode="numeric"
+                    step={50}
+                    min={0}
+                    value={settings.vadSilenceMs ?? ""}
+                    disabled={live.active}
+                    onChange={(e) =>
+                      setSettings((s) => ({ ...s, vadSilenceMs: numOrNull(e.target.value) }))
+                    }
+                    style={fieldStyle}
+                  />
+                </label>
+              </>
+            )}
+
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.75em" }}>
+              <span style={{ color: "var(--fg-muted)" }}>Transcription model</span>
+              <input
+                type="text"
+                aria-label="Voice transcription model"
+                value={settings.transcriptionModel}
+                disabled={live.active}
+                onChange={(e) =>
+                  setSettings((s) => ({ ...s, transcriptionModel: e.target.value }))
+                }
+                style={fieldStyle}
+              />
+            </label>
+
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.75em" }}>
+              <span style={{ color: "var(--fg-muted)" }}>Language hint (blank = auto)</span>
+              <input
+                type="text"
+                aria-label="Voice language hint"
+                placeholder="e.g. en"
+                value={settings.language}
+                disabled={live.active}
+                onChange={(e) => setSettings((s) => ({ ...s, language: e.target.value }))}
+                style={fieldStyle}
+              />
+            </label>
+
+            <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                onClick={() => setSettings(DEFAULT_VOICE_SETTINGS)}
+                disabled={live.active}
+                style={{
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-elevated)",
+                  color: "var(--fg-muted)",
+                  borderRadius: 8,
+                  padding: "6px 12px",
+                  fontSize: "0.75em",
+                  cursor: live.active ? "not-allowed" : "pointer",
+                }}
+              >
+                Reset to defaults
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Status indicator */}
         <div

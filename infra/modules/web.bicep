@@ -65,6 +65,9 @@ param entraApiScope string = ''
 @description('Enable the Voice Live (Phase 10) browser control. Default OFF (no live-voice UI is surfaced).')
 param voiceLiveEnabled bool = false
 
+@description('Advertise governed tool calling for live-voice sessions to the browser (mirrors the API realtimeToolsEnabled). Default OFF: the panel never offers the tools opt-in.')
+param voiceLiveToolsEnabled bool = false
+
 @description('Public URL of the API external ingress the browser opens the live-voice WebSocket against (converted to wss in the browser). Required when voiceLiveEnabled.')
 param apiPublicUrl string = ''
 
@@ -123,7 +126,16 @@ var voiceLiveEnv = voiceLiveReady ? [
   }
 ] : []
 
-// The document library (Phase 11B-2) UI is only surfaced to the browser when the
+// Governed live-voice tools are advertised to the browser only when live voice is
+// itself surfaced AND the tools flag is on (mirrors the API's realtimeToolsEnabled,
+// driven from the same root param). Default OFF -> no env -> the panel never offers
+// the opt-in, and the relay stays tool-free even if a client forces ?tools=1.
+var voiceLiveToolsEnv = (voiceLiveReady && voiceLiveToolsEnabled) ? [
+  {
+    name: 'VOICE_LIVE_TOOLS_ENABLED'
+    value: 'true'
+  }
+] : []
 // flag is on. The library API itself goes through the same-origin Next proxy (no
 // public URL needed, unlike the live-voice WebSocket). Default OFF -> no env, no
 // control, no change to the chat UI.
@@ -159,7 +171,7 @@ var webEnv = concat([
     name: 'API_BASE_URL'
     value: apiBaseUrl
   }
-], entraEnv, devUserEnv, voiceLiveEnv, documentLibraryEnv, customToolsEnv)
+], entraEnv, devUserEnv, voiceLiveEnv, voiceLiveToolsEnv, documentLibraryEnv, customToolsEnv)
 
 // Custom-domain binding. The Azure-managed cert lives at the environment scope and
 // is referenced from the app ingress so `azd provision` keeps the binding durable

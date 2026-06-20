@@ -21,6 +21,9 @@ param apiPrincipalId string
 @description('Resource name of the api identity (used as the Postgres AAD admin login name).')
 param apiPrincipalName string
 
+@description('Central Log Analytics workspace resource id. Diagnostic settings stream data-store logs/metrics there for the admin observability plane.')
+param logAnalyticsWorkspaceId string
+
 @description('Tenant ID for Entra auth on Postgres.')
 param tenantId string = subscription().tenantId
 
@@ -182,6 +185,26 @@ resource cosmosDataRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignment
   }
 }
 
+// Stream Cosmos control-plane operations (config/RBAC/firewall changes — the
+// security audit trail) and all platform metrics (RU consumption, latency,
+// availability) to the central Log Analytics workspace. The very-high-volume
+// `DataPlaneRequests` category is deliberately excluded to keep ingestion
+// cost-aware; per-request signal is already carried by the api's own structured
+// usage telemetry. Retention follows the workspace (30 days).
+resource cosmosDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-log-analytics'
+  scope: cosmos
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      { category: 'ControlPlaneRequests', enabled: true }
+    ]
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
+  }
+}
+
 // ---------------- Postgres Flexible Server (pgvector) ----------------
 // Name includes the location so a region change yields a fresh resourceId (ARM
 // enforces location-immutability per resourceId; a prior eastus2 attempt otherwise
@@ -260,6 +283,25 @@ resource postgresAllowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallR
   properties: {
     startIpAddress: '0.0.0.0'
     endIpAddress: '0.0.0.0'
+  }
+}
+
+// Stream the Postgres server log (errors/connections/checkpoints — the standard
+// operational signal, and the cheapest-to-export log category) plus all platform
+// metrics (CPU/memory/storage/connections) to the central Log Analytics
+// workspace. Verbose query-store/session categories are deliberately excluded for
+// cost. Only created with the server. Retention follows the workspace (30 days).
+resource postgresDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (deployPostgres) {
+  name: 'to-log-analytics'
+  scope: postgres
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      { category: 'PostgreSQLLogs', enabled: true }
+    ]
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
   }
 }
 
@@ -370,6 +412,26 @@ resource documentStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01
   }
 }
 
+// Stream blob-service mutation logs (write/delete — the audit-worthy operations)
+// + all blob metrics (transactions, latency, availability, capacity) to the
+// central Log Analytics workspace. Storage data-plane logs live on the blob
+// service sub-resource, not the account. The very-high-volume `StorageRead`
+// category is deliberately excluded for cost. Only created with the account.
+resource documentStorageDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (deployDocumentStorage) {
+  name: 'to-log-analytics'
+  scope: documentBlobService
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      { category: 'StorageWrite', enabled: true }
+      { category: 'StorageDelete', enabled: true }
+    ]
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
+  }
+}
+
 // ---------------- Generated-media blob storage (Phase 11F/11G) ----------------
 // A single dedicated media account backs both the generate_image (Phase 11F) and
 // generate_video (Phase 11G) tools, fully independent of the document library so
@@ -431,6 +493,23 @@ resource imageStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' =
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
     principalId: apiPrincipalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+// Same cost-aware blob diagnostics as the document account, for the shared
+// generated-media account (images + videos). Created when either media tool is on.
+resource imageStorageDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (deployMediaStorage) {
+  name: 'to-log-analytics'
+  scope: imageBlobService
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      { category: 'StorageWrite', enabled: true }
+      { category: 'StorageDelete', enabled: true }
+    ]
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
   }
 }
 
