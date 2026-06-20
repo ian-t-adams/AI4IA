@@ -221,6 +221,7 @@ module keyvault 'modules/keyvault.bicep' = {
     environmentName: environmentName
     uniqueSuffix: uniqueSuffix
     readerPrincipalIds: allPrincipalIds
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     // Custom tools / BYO MCP (Phase 12B): the api MI writes per-user MCP
     // connection secrets at runtime, which needs Secrets Officer (write), not the
     // read-only Secrets User above. Granted only when the feature is enabled.
@@ -239,6 +240,7 @@ module data 'modules/data.bicep' = {
     uniqueSuffix: uniqueSuffix
     apiPrincipalId: apiIdentity.principalId
     apiPrincipalName: apiIdentity.name
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     deployPostgres: postgresEnabled
     postgresLocation: empty(postgresLocation) ? location : postgresLocation
     // Document library blob storage (Phase 11B). Gated on the feature flag, so the
@@ -273,6 +275,7 @@ module search 'modules/search.bicep' = {
     apiPrincipalId: apiIdentity.principalId
     deploySearch: searchEnabled
     sku: searchSku
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
   }
 }
 
@@ -303,6 +306,7 @@ module eventhubs 'modules/eventhubs.bicep' = {
     receiverPrincipalIds: [
       apiIdentity.principalId
     ]
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
   }
 }
 
@@ -502,6 +506,7 @@ module foundry 'modules/foundry.bicep' = [for r in regionList: {
     accountName: take('mf-${foundryToken}-${environmentName}-${r.name}', 60)
     projectName: take('proj-default-${foundryToken}-${environmentName}-${r.name}', 60)
     dataPlanePrincipalIds: dataPlanePrincipalIds
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
   }
 }]
 

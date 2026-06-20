@@ -17,6 +17,9 @@ param disableLocalAuth bool = false
 @description('Principal IDs granted data-plane access (Cognitive Services OpenAI User + User).')
 param dataPlanePrincipalIds array = []
 
+@description('Central Log Analytics workspace resource id. Diagnostic settings stream account logs/metrics there for the admin observability plane.')
+param logAnalyticsWorkspaceId string
+
 resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
   name: accountName
   location: location
@@ -103,6 +106,26 @@ resource cognitiveUserAssignments 'Microsoft.Authorization/roleAssignments@2022-
     principalType: 'ServicePrincipal'
   }
 }]
+
+// Stream the account's audit + request/response logs and all platform metrics to
+// the central Log Analytics workspace (the model data plane: who called which
+// model, content-safety annotations, latency/throttling). Deliberately omits the
+// high-volume `Trace` category to keep ingestion cost-aware; retention follows the
+// workspace (30 days), so no per-setting retention policy is configured.
+resource accountDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-log-analytics'
+  scope: account
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      { category: 'Audit', enabled: true }
+      { category: 'RequestResponse', enabled: true }
+    ]
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
+  }
+}
 
 output accountId string = account.id
 output accountName string = account.name
