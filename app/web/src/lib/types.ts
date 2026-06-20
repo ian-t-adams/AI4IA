@@ -24,6 +24,10 @@ export interface ModelEntry {
   // voice models (realtime, audio), reached through their own surfaces/tools.
   // Mirrors the backend ModelEntry.conversational computed field.
   conversational: boolean;
+  // Per-model context budget metadata. Null when the catalog does not specify
+  // it for a model (e.g. model-router); callers fall back to fixed defaults.
+  contextWindow: number | null;
+  maxOutputTokens: number | null;
   options: DeploymentOption[];
 }
 

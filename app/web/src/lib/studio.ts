@@ -28,6 +28,7 @@ export const ATTACHABLE_TOOLS = [
   "generate_image",
   "generate_video",
   "process_document",
+  "recall_memory",
 ] as const;
 
 // Returns a human-readable reason the name is invalid, or null if it's valid.

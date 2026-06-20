@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
-from ..catalog import ModelCatalog
+from ..catalog import ModelCatalog, ModelEntry
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..logging_setup import get_correlation_id
 from ..sessions.models import Message, MessageAttachment, MessageRole, MessageStatus, Session
@@ -35,6 +35,7 @@ from ..agents.command_service import (
 )
 from ..agents.commands import CommandKind, parse_input
 from ..agents.runtime import run_agent_turn
+from ..agents.summarization import SummarizationService
 from ..agents.mcp_execution import build_mcp_turn_tools
 from ..agents.mcp_servers import is_mcp_tool_name
 from ..agents.orchestration import build_delegate_capability
@@ -61,6 +62,7 @@ from ..library.chat_capability import build_document_capability
 from ..library.compute_factory import DocumentComputeService
 from ..library.retrieval import DocumentRetrievalService
 from ..documents.analyze_factory import InlineAttachmentAnalysisService
+from ..memory.recall_capability import RECALL_TOOL_NAME, build_recall_capability
 from ..memory.service import MemoryServiceProtocol
 from ..usage.models import TokenUsage
 from ..usage.service import UsageService
@@ -93,8 +95,67 @@ def _history(messages: list[Message], system_prompt: str | None) -> list[dict]:
 
 
 # Total chars of uploaded-document text injected into a single turn. Kept below
-# MAX_DOC_CHARS so multiple small docs fit while one large doc is bounded.
+# MAX_DOC_CHARS so multiple small docs fit while one large doc is bounded. Used
+# as the FALLBACK budget when the active model exposes no context-window
+# metadata; otherwise the budget scales from the window (see ``_doc_budget_for``).
 DOC_CONTEXT_BUDGET = 12_000
+
+# Hard ceiling on the scaled document budget regardless of how large a model's
+# context window is, so a huge-window model can't push an unbounded amount of
+# untrusted document text (and cost) into a single turn.
+DOC_CONTEXT_BUDGET_MAX = 48_000
+
+# The web app's global default max-output value (mirrors ChatApp/ParamControls).
+# A request still carrying exactly this value is treated as "user didn't choose",
+# so a high-capacity model can adopt its own max-output ceiling instead of being
+# pinned to the lowest-common-denominator default.
+GLOBAL_DEFAULT_MAX_TOKENS = 1024
+
+
+def _doc_budget_for(entry: ModelEntry | None) -> int:
+    """Scale the uploaded-document char budget from the model's context window.
+
+    Falls back to :data:`DOC_CONTEXT_BUDGET` when the model has no metadata, so a
+    model lacking a declared window keeps today's fixed bound byte-for-byte.
+    When a window is known, allow documents to use roughly a tenth of it
+    (≈4 chars/token), clamped to ``[DOC_CONTEXT_BUDGET, DOC_CONTEXT_BUDGET_MAX]``
+    so the budget never shrinks below today's value nor grows unbounded.
+    """
+    if entry is None or entry.contextWindow is None:
+        return DOC_CONTEXT_BUDGET
+    scaled = int(entry.contextWindow * 4 * 0.10)
+    return max(DOC_CONTEXT_BUDGET, min(scaled, DOC_CONTEXT_BUDGET_MAX))
+
+
+def _effective_params(params: dict, entry: ModelEntry | None) -> dict:
+    """Adapt request params to the chosen model's max-output ceiling.
+
+    The cap only ever *lowers* a too-high request. When the model exposes
+    ``maxOutputTokens``:
+
+    * if the caller left the global default (or sent nothing), adopt the model's
+      own max-output as the per-turn ceiling, so a high-capacity model isn't
+      pinned to the 1024-token default; and
+    * otherwise clamp the requested value DOWN to that ceiling (never up).
+
+    When the model has no metadata (e.g. ``model-router``) the original params
+    are returned unchanged, so the turn is byte-for-byte identical to before.
+    This runs BEFORE the gateway, so it composes with the gateway's reasoning /
+    Responses param translation (which then maps ``max_tokens`` onward).
+    """
+    model_max = entry.maxOutputTokens if entry is not None else None
+    if model_max is None:
+        return params
+    out = dict(params)
+    requested = out.get("max_tokens")
+    if requested is None or requested == GLOBAL_DEFAULT_MAX_TOKENS:
+        out["max_tokens"] = model_max
+    else:
+        try:
+            out["max_tokens"] = min(int(requested), model_max)
+        except (TypeError, ValueError):
+            out["max_tokens"] = model_max
+    return out
 
 
 def _doc_label(filename: str) -> str:
@@ -103,10 +164,14 @@ def _doc_label(filename: str) -> str:
 
 
 async def _document_context(
-    repo: SessionRepository, user_id: str, session_id: str
+    repo: SessionRepository,
+    user_id: str,
+    session_id: str,
+    budget: int = DOC_CONTEXT_BUDGET,
 ) -> str:
     """Build a delimited, untrusted reference block from a session's uploaded
-    documents, bounded by :data:`DOC_CONTEXT_BUDGET`. Best-effort: any store
+    documents, bounded by ``budget`` (defaults to :data:`DOC_CONTEXT_BUDGET`;
+    callers scale it from the model's context window). Best-effort: any store
     error (e.g. a missing container) yields no context and never breaks chat."""
     try:
         docs = await repo.list_documents(user_id, session_id)
@@ -118,7 +183,7 @@ async def _document_context(
     if not docs:
         return ""
 
-    budget = DOC_CONTEXT_BUDGET
+    # ``budget`` already chosen by the caller (model-scaled or the fallback).
     # Per-turn random fence id so a crafted document body can't forge the closing
     # marker to "escape" the untrusted block (it can't predict the nonce).
     nonce = secrets.token_hex(4)
@@ -231,6 +296,11 @@ _TOOL_AGENT_PROMPTS: dict[str, str] = {
         "tool over their library to satisfy the request, then summarize the result. "
         "Do not ask clarifying questions unless the request is empty."
     ),
+    RECALL_TOOL_NAME: (
+        "The user invoked memory recall directly. Call the recall_memory tool with "
+        "their request as the query, then report the relevant memories you found. "
+        "Do not ask clarifying questions unless the request is empty."
+    ),
 }
 
 _TOOL_COMMAND_USAGE: dict[str, str] = {
@@ -246,6 +316,10 @@ _TOOL_COMMAND_USAGE: dict[str, str] = {
         "Usage: /process_document <what to do> — e.g. /process_document summarize "
         "the latest contract in my library"
     ),
+    RECALL_TOOL_NAME: (
+        "Usage: /recall_memory <what to look for> — e.g. /recall_memory my "
+        "preferred programming language"
+    ),
 }
 
 
@@ -256,6 +330,7 @@ def _capability_tool_available(
     video_artifacts: VideoArtifactStore | None,
     document_artifacts: DocumentArtifactStore | None,
     retrieval: DocumentRetrievalService | None,
+    memory: MemoryServiceProtocol | None = None,
 ) -> bool:
     """Whether a capability tool's backing services are present this turn.
 
@@ -269,6 +344,8 @@ def _capability_tool_available(
         return video_artifacts is not None
     if name == PROCESS_DOCUMENT_TOOL_NAME:
         return document_artifacts is not None and retrieval is not None
+    if name == RECALL_TOOL_NAME:
+        return memory is not None and memory.enabled
     return False
 
 
@@ -301,6 +378,11 @@ async def chat(
     memory: MemoryServiceProtocol = request.app.state.memory
     metering: UsageService = request.app.state.usage
     entitlements: EntitlementService = request.app.state.entitlements
+    # Rolling summarization (Phase WS2-C). Always present; ``enabled`` reflects
+    # the DEFAULT-OFF auto flag. Used by the manual /summarize command and, when
+    # enabled, the automatic fold below. When the flag is off the auto path is
+    # never taken, so the turn is byte-for-byte unchanged.
+    summarizer: SummarizationService = request.app.state.summarizer
     # Document retrieval consumer (Phase 11B-2). None when document understanding
     # is off, so plain chat is byte-for-byte unchanged by default.
     retrieval: DocumentRetrievalService | None = getattr(
@@ -388,6 +470,7 @@ async def chat(
             video_artifacts=video_artifacts,
             document_artifacts=document_artifacts,
             retrieval=retrieval,
+            memory=memory,
         ):
             assistant = await _persist_local_reply(
                 repo=repo,
@@ -454,6 +537,8 @@ async def chat(
                 catalog=catalog,
                 agents=agents,
                 memory=memory,
+                summarizer=summarizer,
+                gateway=gateway,
             )
             return _local_reply_response(body.sessionId, assistant, body.stream)
 
@@ -502,6 +587,15 @@ async def chat(
     # Which Azure surface serves this model (chat completions vs Responses API).
     entry = catalog.get(model_id)
     api = entry.api if entry is not None else "chat"
+
+    # Per-model generation scaling (Phase WS2-B). Cap the requested max-output to
+    # this model's declared ceiling (lower-only) and, when the user left the
+    # global default, adopt the model's own max-output. Computed once here and
+    # threaded through EVERY gateway/agent path below so a single source of truth
+    # governs the turn; composes with the gateway's reasoning/Responses param
+    # translation. When the model has no metadata this returns body.params
+    # unchanged, so the turn is byte-for-byte identical to before.
+    effective_params = _effective_params(body.params, entry)
 
     # Capability models (image, video, tts, transcription, embedding, rerank) and
     # voice models (realtime, audio) aren't chat targets — they're driven through
@@ -568,6 +662,37 @@ async def chat(
     payload_messages = _history(prior, system_prompt)
     correlation_id = get_correlation_id()
 
+    # Rolling summarization (Phase WS2-C, DEFAULT-OFF). When enabled AND the live
+    # transcript would exceed the model-derived threshold, fold the oldest turns
+    # into the session's running summary and send only the newest turns verbatim,
+    # with the summary injected as a system block. The FULL transcript always
+    # stays in storage + the UI scrollback. Fail-soft: any error falls back to the
+    # full history. When the flag is off this whole branch is skipped, so the turn
+    # is byte-for-byte identical to before.
+    summary_block = ""
+    if summarizer.enabled:
+        try:
+            history_messages, rolling_summary = await summarizer.apply(
+                gateway=gateway,
+                repo=repo,
+                session=session,
+                user_id=user.internal_user_id,
+                deployment=deployment.deploymentName,
+                prior=prior,
+                system_prompt=system_prompt,
+                context_window=entry.contextWindow if entry is not None else None,
+                api=api,
+                correlation_id=correlation_id,
+            )
+            payload_messages = _history(history_messages, system_prompt)
+            summary_block = summarizer.format_block(rolling_summary)
+        except Exception:  # noqa: BLE001 - summarization must never break a turn
+            logger.warning(
+                "rolling summarization failed; sending full history", exc_info=True
+            )
+            payload_messages = _history(prior, system_prompt)
+            summary_block = ""
+
     # Per-user memory recall (best-effort, feature-flagged). Injected as a clearly
     # delimited, explicitly-untrusted context block placed AFTER the main system
     # prompt so the agent/session instructions keep top authority. ``recall`` runs
@@ -580,8 +705,11 @@ async def chat(
     # block (NOT the user turn) for two reasons: (1) putting anti-injection
     # framing in the user turn trips Azure's jailbreak/prompt-shield, and (2) a
     # store failure can never break the chat. The STORED user message stays clean
-    # (content_for_model); docs are re-supplied per turn.
-    doc_block = await _document_context(repo, user.internal_user_id, body.sessionId)
+    # (content_for_model); docs are re-supplied per turn. The char budget scales
+    # from the model's context window (fixed fallback when metadata is absent).
+    doc_block = await _document_context(
+        repo, user.internal_user_id, body.sessionId, budget=_doc_budget_for(entry)
+    )
 
     # Per-user document-library context (Phase 11B-2, best-effort, flag-gated).
     # Tiers 1-2 (summary cards + RAG excerpts over the user's *ready* library) are
@@ -602,11 +730,12 @@ async def chat(
             logger.warning("library context build failed", exc_info=True)
             library_block = ""
 
-    # Insert context system blocks after the main system prompt, memory first,
-    # then session documents, then the library, so session/agent instructions
-    # retain top authority.
+    # Insert context system blocks after the main system prompt: the rolling
+    # summary first (it recaps the folded-away turns), then memory, then session
+    # documents, then the library, so session/agent instructions retain top
+    # authority. ``summary_block`` is "" unless auto-summarization folded turns.
     insert_at = 1 if (payload_messages and payload_messages[0]["role"] == "system") else 0
-    for block in (memory_block, doc_block, library_block):
+    for block in (summary_block, memory_block, doc_block, library_block):
         if block:
             payload_messages.insert(insert_at, {"role": "system", "content": block})
             insert_at += 1
@@ -857,6 +986,25 @@ async def chat(
                 extra_handlers = {**extra_handlers, **w_handlers}
             except Exception:  # noqa: BLE001 - web search must never break a turn
                 logger.warning("web search capability build failed", exc_info=True)
+        # WS2-D: when the agent attaches ``recall_memory`` and memory is enabled,
+        # inject the synthetic recall capability — same closure-bound pattern as
+        # the library/web tools. It is bound to THIS user (so it can only ever
+        # search the caller's own mem0 store) + this session (for ``scope=session``)
+        # and the turn nonce. Only offered when memory is on; otherwise skipped, so
+        # the turn is byte-for-byte unchanged. Best-effort: a build failure leaves
+        # the agent with its other tools.
+        if RECALL_TOOL_NAME in agent.tools and memory.enabled:
+            try:
+                r_tools, r_handlers = build_recall_capability(
+                    memory=memory,
+                    user_id=user.internal_user_id,
+                    nonce=library_nonce,
+                    session_id=body.sessionId,
+                )
+                extra_tools = [*extra_tools, *r_tools]
+                extra_handlers = {**extra_handlers, **r_handlers}
+            except Exception:  # noqa: BLE001 - recall must never break a turn
+                logger.warning("recall capability build failed", exc_info=True)
         run = await run_agent_turn(
             deployment=deployment.deploymentName,
             messages=payload_messages,
@@ -865,7 +1013,7 @@ async def chat(
             registry=turn_registry,
             executor=turn_executor,
             ctx=ctx,
-            params=body.params,
+            params=effective_params,
             extra_tools=extra_tools or None,
             extra_handlers=extra_handlers or None,
         )
@@ -979,7 +1127,7 @@ async def chat(
                     registry=registry,
                     executor=executor,
                     ctx=ctx,
-                    params=body.params,
+                    params=effective_params,
                     extra_tools=plain_tools or None,
                     extra_handlers=plain_handlers or None,
                 )
@@ -1021,7 +1169,7 @@ async def chat(
             result = await gateway.complete(
                 deployment=deployment.deploymentName,
                 messages=payload_messages,
-                params=body.params,
+                params=effective_params,
                 correlation_id=correlation_id,
                 api=api,
             )
@@ -1075,7 +1223,7 @@ async def chat(
             async for chunk in gateway.stream(
                 deployment=deployment.deploymentName,
                 messages=payload_messages,
-                params=body.params,
+                params=effective_params,
                 correlation_id=correlation_id,
                 api=api,
             ):

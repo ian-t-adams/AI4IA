@@ -21,19 +21,20 @@ const ACTION_COMMANDS: SlashCommand[] = [
   { name: "system", label: "System prompt", hint: "Set the system prompt for this chat" },
   { name: "model", label: "Model", hint: "Switch the model for this chat" },
   { name: "agents", label: "Agents", hint: "List the agents you can mention" },
-  { name: "summarize", label: "Summarize", hint: "Summarize the conversation (coming soon)" },
+  { name: "summarize", label: "Summarize", hint: "Condense the conversation into a running summary" },
   { name: "forget", label: "Forget", hint: "Erase stored memories (session | me)" },
 ];
 
 // Tools runnable directly as a slash command. Calculator/current-time run
-// instantly; the generate_* / process_document tools drive the matching
-// capability through a normal turn.
+// instantly; the generate_* / process_document / recall_memory tools drive the
+// matching capability through a normal turn.
 const TOOL_COMMANDS: SlashCommand[] = [
   { name: "calculator", label: "Calculator", hint: "Evaluate an arithmetic expression" },
   { name: "get_current_time", label: "Current time", hint: "Show the current UTC time" },
   { name: "generate_image", label: "Generate image", hint: "Create an image from a description" },
   { name: "generate_video", label: "Generate video", hint: "Create a short video from a description" },
   { name: "process_document", label: "Process document", hint: "Analyze a document in your library" },
+  { name: "recall_memory", label: "Recall memory", hint: "Search your saved memories" },
 ];
 
 export const SLASH_COMMANDS: SlashCommand[] = [...ACTION_COMMANDS, ...TOOL_COMMANDS];

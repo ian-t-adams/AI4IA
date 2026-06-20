@@ -776,7 +776,11 @@ export function ChatApp() {
               »
             </button>
           </div>
-          <ParamControls params={params} onChange={setParams} />
+          <ParamControls
+            params={params}
+            onChange={setParams}
+            model={models.find((m) => m.id === selectedModel) ?? null}
+          />
           <SystemPromptEditor value={systemPrompt} onSave={saveSystemPrompt} />
         </aside>
       )}

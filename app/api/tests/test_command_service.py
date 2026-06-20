@@ -106,10 +106,48 @@ async def test_model_no_args_shows_usage():
     assert msg.content == "Usage: /model <model-id>"
 
 
-async def test_summarize_reports_not_available():
+async def test_summarize_reports_not_available_without_service():
     repo, user, session = await _setup()
+    # No summarizer/gateway wired through _run, so /summarize degrades gracefully.
     summarize = await _run(repo, user, session, "/summarize")
-    assert "isn't available yet" in summarize.content
+    assert "isn't available in this environment" in summarize.content
+
+
+async def test_summarize_folds_and_persists_running_summary():
+    repo, user, session = await _setup()
+    await repo.add_message(
+        user.internal_user_id,
+        Message(
+            sessionId=session.id,
+            userId=user.internal_user_id,
+            role=MessageRole.user,
+            content="a real conversation turn worth summarizing",
+            status=MessageStatus.complete,
+        ),
+    )
+
+    class _FakeGateway:
+        async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
+            return {"choices": [{"message": {"content": "RUNNING SUMMARY"}}]}
+
+    from ai4ia_api.agents.summarization import SummarizationService
+
+    parsed = parse_input("/summarize")
+    msg = await execute_command(
+        parsed=parsed,
+        session=session,
+        user=user,
+        repo=repo,
+        catalog=load_catalog(),
+        agents=load_agent_catalog(),
+        summarizer=SummarizationService(),
+        gateway=_FakeGateway(),
+    )
+    assert "running summary" in msg.content.lower()
+    assert "RUNNING SUMMARY" in msg.content
+    stored = await repo.get_session(user.internal_user_id, session.id)
+    assert stored.summary == "RUNNING SUMMARY"
+    assert stored.summarizedThroughMessageId is not None
 
 
 async def test_forget_without_memory_reports_nothing_stored():
