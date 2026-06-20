@@ -172,6 +172,21 @@ def resolve_realtime_deployment(
     return model_id, deployment
 
 
+# Truthy spellings accepted for the per-session ``?tools=`` opt-in, matching the
+# browser's parseEnabledFlag / the server feature-flag env parsing.
+_TOOLS_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def parse_tools_opt_in(value: str | None) -> bool:
+    """Whether the browser opted into governed tools for this session (``?tools=``).
+
+    Default OFF: an absent/empty/unrecognized value means tools are NOT requested,
+    so even with the server ``realtime_tools_enabled`` flag on the relay stays a
+    transparent pump until the user explicitly enables tools in the live panel.
+    """
+    return bool(value) and value.strip().lower() in _TOOLS_TRUTHY
+
+
 def _to_ws_scheme(url: str) -> str:
     if url.startswith("https://"):
         return "wss://" + url[len("https://") :]
@@ -534,6 +549,7 @@ def build_tool_bridge(
     *,
     tool_names: Sequence[str] | None = None,
     instructions: str | None = None,
+    tools_requested: bool = True,
 ) -> ToolBridge:
     """Construct the relay's tool bridge from app state.
 
@@ -546,13 +562,20 @@ def build_tool_bridge(
     tools); when ``None`` every registered builtin is offered (generic-assistant
     behavior). ``instructions`` binds a server-authoritative agent persona that the
     relay injects into the session.update regardless of the tools gate.
+
+    ``tools_requested`` is the per-session client opt-in (the browser's "Allow tools
+    in voice" toggle, carried as ``?tools=1``). Tools are advertised only when BOTH
+    the server ``realtime_tools_enabled`` flag AND this opt-in are set, so the
+    default is OFF even when an operator has enabled the feature. The persona
+    ``instructions`` are independent of this gate (a persona-only session never
+    advertises tools but still binds its instructions).
     """
     registry: ToolRegistry = state.tool_registry
     executor: ToolExecutor = state.tool_executor
     ctx = ToolContext(correlation_id=correlation_id)
     names = executor.names() if tool_names is None else list(tool_names)
     tools: list[dict] = []
-    if settings.realtime_tools_enabled:
+    if settings.realtime_tools_enabled and tools_requested:
         # schema_for already drops any tool not authorized for this empty context
         # (and any name not in ``names``), so the model only ever sees tools it can
         # actually run AND that the bound agent is allowed to use.
@@ -593,6 +616,7 @@ async def build_session_bridge(
     *,
     user,
     agent_name: str | None,
+    tools_requested: bool = True,
 ) -> ToolBridge:
     """Build the relay bridge for a live session, agent-aware when ``agent_name`` is set.
 
@@ -602,6 +626,9 @@ async def build_session_bridge(
     allowlist (so a voice turn has the SAME persona + tools as a chat @mention).
     Otherwise the session falls back to the generic assistant with every authorized
     builtin — the original Phase 10 behavior.
+
+    ``tools_requested`` is the per-session client opt-in; it gates tool advertisement
+    (combined with the server flag) without affecting the bound agent's persona.
     """
     if agent_name:
         spec = await resolve_live_agent(state, user, agent_name)
@@ -612,8 +639,11 @@ async def build_session_bridge(
                 correlation_id,
                 tool_names=spec.tools,
                 instructions=spec.systemPrompt,
+                tools_requested=tools_requested,
             )
-    return build_tool_bridge(state, settings, correlation_id)
+    return build_tool_bridge(
+        state, settings, correlation_id, tools_requested=tools_requested
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -816,13 +846,15 @@ async def voice_live(websocket: WebSocket) -> None:
     )
     connector: RealtimeConnector = state.realtime_connector
     # Agent-aware live voice: when the browser names an agent (?agent=), bind that
-    # agent's persona + tool allowlist into the session (server-authoritative).
+    # agent's persona + tool allowlist into the session (server-authoritative). The
+    # ?tools= opt-in gates tool advertisement per session (default OFF).
     bridge = await build_session_bridge(
         state,
         settings,
         correlation_id,
         user=user,
         agent_name=websocket.query_params.get("agent"),
+        tools_requested=parse_tools_opt_in(websocket.query_params.get("tools")),
     )
 
     try:

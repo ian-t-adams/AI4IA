@@ -282,7 +282,9 @@ def test_live_tool_call_executed_and_returned_upstream():
         connector = ToolFakeConnector()
         c.app.state.realtime_connector = connector
         with c.websocket_connect(
-            "/api/voice/live", subprotocols=[DEV_SUBPROTOCOL, "tooluser"], headers=_origin()
+            "/api/voice/live?tools=1",
+            subprotocols=[DEV_SUBPROTOCOL, "tooluser"],
+            headers=_origin(),
         ) as ws:
             ws.send_text('{"type":"session.update","session":{"voice":"verse"}}')
             # The browser still observes the model's function-call event (forwarded).
@@ -334,6 +336,31 @@ def test_live_tools_disabled_does_not_inject_or_execute():
         c.__exit__(None, None, None)
 
 
+def test_live_tools_flag_on_but_no_opt_in_stays_passthrough():
+    # The server flag is ON, but the browser did NOT opt in (?tools= absent). The
+    # per-session opt-in defaults OFF, so the relay stays a transparent pump: the
+    # session.update is forwarded byte-for-byte and no tool frames are injected.
+    # This is the default-OFF safety guarantee for tools in voice.
+    import json
+
+    c = _client(realtime_enabled=True, realtime_tools_enabled=True)
+    try:
+        connector = ToolFakeConnector()
+        c.app.state.realtime_connector = connector
+        with c.websocket_connect(
+            "/api/voice/live", subprotocols=[DEV_SUBPROTOCOL, "u"], headers=_origin()
+        ) as ws:
+            ws.send_text('{"type":"session.update","session":{"voice":"verse"}}')
+            assert json.loads(ws.receive_text())["type"] == (
+                "response.function_call_arguments.done"
+            )
+
+        sent = connector.upstream.sent_text
+        assert sent == ['{"type":"session.update","session":{"voice":"verse"}}']
+    finally:
+        c.__exit__(None, None, None)
+
+
 # --------------------------------------------------------------------------- #
 # Agent-aware live voice end to end: ?agent= binds persona + scoped tools.
 # --------------------------------------------------------------------------- #
@@ -350,7 +377,7 @@ def test_live_agent_binds_persona_and_scopes_tools():
         connector = FakeRealtimeConnector()
         c.app.state.realtime_connector = connector
         with c.websocket_connect(
-            "/api/voice/live?agent=analyst",
+            "/api/voice/live?agent=analyst&tools=1",
             subprotocols=[DEV_SUBPROTOCOL, "u"],
             headers=_origin(),
         ) as ws:

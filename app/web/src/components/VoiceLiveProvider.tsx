@@ -8,7 +8,12 @@
 import { createContext, useContext } from "react";
 import type { VoiceLiveConfig } from "@/lib/voiceLive";
 
-const DISABLED: VoiceLiveConfig = { enabled: false, wsUrl: "", devUser: "" };
+const DISABLED: VoiceLiveConfig = {
+  enabled: false,
+  wsUrl: "",
+  devUser: "",
+  toolsAvailable: false,
+};
 
 const VoiceLiveContext = createContext<VoiceLiveConfig>(DISABLED);
 

@@ -52,6 +52,10 @@ export interface VoiceLiveConfig {
   wsUrl: string;
   // Dev-auth fallback identity (ignored under Entra).
   devUser: string;
+  // Whether the server advertises governed tool calling for live sessions (the
+  // API's realtime_tools_enabled, surfaced to the browser). Only when true does
+  // the panel offer the opt-in "Allow tools in voice" toggle. Default false.
+  toolsAvailable: boolean;
 }
 
 export type VoiceLiveStatus = "idle" | "connecting" | "live" | "closing";
@@ -215,20 +219,92 @@ function makeAudioContext(): AudioContext {
 const DEFAULT_INSTRUCTIONS =
   "You are a helpful, concise voice assistant. Keep spoken replies brief and natural.";
 
-function sessionUpdate(voice: string): string {
+// The default input-audio transcription model (Azure realtime supports whisper-1).
+const DEFAULT_TRANSCRIPTION_MODEL = "whisper-1";
+
+// The voice-activity-detection modes Azure realtime understands. ``server_vad``
+// is the energy-threshold default; ``semantic_vad`` ends a turn on semantic
+// completeness (no threshold/silence knobs).
+export const VAD_TYPES = ["server_vad", "semantic_vad"] as const;
+export type VadType = (typeof VAD_TYPES)[number];
+
+// User-tunable live-session settings, surfaced in the panel's settings disclosure
+// and threaded into the session.update. Every field DEFAULTS to the value the relay
+// has always sent, so an untouched session is byte-for-byte identical to before.
+// ``null``/empty fields are omitted from the payload entirely (the model applies
+// its own default), which is how today's payload omits e.g. temperature.
+export interface VoiceSessionSettings {
+  // System instructions. Ignored by the relay when an agent persona is bound (the
+  // agent's prompt is server-authoritative), as today.
+  instructions: string;
+  // Sampling temperature, or null to omit (model default — today's behavior).
+  temperature: number | null;
+  vadType: VadType;
+  // server_vad energy threshold (0–1), or null to omit (model default).
+  vadThreshold: number | null;
+  // server_vad trailing-silence cutoff in ms, or null to omit (model default).
+  vadSilenceMs: number | null;
+  // Input-audio transcription model.
+  transcriptionModel: string;
+  // Optional transcription language hint (ISO-639-1, e.g. "en"), or "" to omit.
+  language: string;
+}
+
+export const DEFAULT_VOICE_SETTINGS: VoiceSessionSettings = {
+  instructions: DEFAULT_INSTRUCTIONS,
+  temperature: null,
+  vadType: "server_vad",
+  vadThreshold: null,
+  vadSilenceMs: null,
+  transcriptionModel: DEFAULT_TRANSCRIPTION_MODEL,
+  language: "",
+};
+
+export function isVadType(value: string): value is VadType {
+  return (VAD_TYPES as readonly string[]).includes(value);
+}
+
+// The realtime-category models offered in the voice model picker. The voice panel
+// (and its model picker) only ever deals with realtime models; chat/capability
+// models are reached through their own surfaces. Pure + structural so it is unit
+// testable without the full ModelEntry type.
+export function realtimeModels<T extends { category: string }>(models: T[]): T[] {
+  return models.filter((m) => m.category === "realtime");
+}
+
+// Builds the session.update frame the browser sends on connect. With the default
+// settings this is byte-for-byte the original Phase 10 payload: optional fields
+// (temperature, VAD threshold/silence, language) are only added when explicitly
+// set, so the relay's transparent-pump behavior is preserved until a user opts in.
+export function sessionUpdate(
+  voice: string,
+  settings: VoiceSessionSettings = DEFAULT_VOICE_SETTINGS,
+): string {
   // Guard against a stale/invalid stored value reaching the upstream model.
   const selected = isRealtimeVoice(voice) ? voice : DEFAULT_VOICE;
-  return JSON.stringify({
-    type: "session.update",
-    session: {
-      instructions: DEFAULT_INSTRUCTIONS,
-      voice: selected,
-      input_audio_format: "pcm16",
-      output_audio_format: "pcm16",
-      turn_detection: { type: "server_vad" },
-      input_audio_transcription: { model: "whisper-1" },
-    },
-  });
+  const turnDetection: Record<string, unknown> = { type: settings.vadType };
+  // threshold / silence are server_vad knobs; semantic_vad ignores them, so only
+  // attach them for server_vad (and only when explicitly set).
+  if (settings.vadType === "server_vad") {
+    if (settings.vadThreshold != null) turnDetection.threshold = settings.vadThreshold;
+    if (settings.vadSilenceMs != null) {
+      turnDetection.silence_duration_ms = settings.vadSilenceMs;
+    }
+  }
+  const transcription: Record<string, unknown> = {
+    model: settings.transcriptionModel || DEFAULT_TRANSCRIPTION_MODEL,
+  };
+  if (settings.language) transcription.language = settings.language;
+  const session: Record<string, unknown> = {
+    instructions: settings.instructions,
+    voice: selected,
+    input_audio_format: "pcm16",
+    output_audio_format: "pcm16",
+    turn_detection: turnDetection,
+    input_audio_transcription: transcription,
+  };
+  if (settings.temperature != null) session.temperature = settings.temperature;
+  return JSON.stringify({ type: "session.update", session });
 }
 
 // A readable label for a server-executed tool name (e.g. "get_current_time" ->
@@ -313,6 +389,8 @@ export function useVoiceLive(
   onError: (message: string) => void,
   agent: string | null = null,
   history: VoiceSeedTurn[] = [],
+  settings: VoiceSessionSettings = DEFAULT_VOICE_SETTINGS,
+  tools: boolean = false,
 ): VoiceLiveController {
   const [status, setStatus] = useState<VoiceLiveStatus>("idle");
   const [supported, setSupported] = useState(false);
@@ -346,6 +424,17 @@ export function useVoiceLive(
   useEffect(() => {
     historyRef.current = history;
   }, [history]);
+
+  // Session settings + the per-session tools opt-in are read at connect time only,
+  // so refs keep ``start`` stable while the user edits them in the panel.
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+  const toolsRef = useRef(tools);
+  useEffect(() => {
+    toolsRef.current = tools;
+  }, [tools]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -448,6 +537,9 @@ export function useVoiceLive(
       const params = new URLSearchParams();
       if (model) params.set("model", model);
       if (agent) params.set("agent", agent);
+      // Per-session governed-tools opt-in. The relay also requires the server flag,
+      // so this only matters when tools are advertised available.
+      if (toolsRef.current) params.set("tools", "1");
       const qs = params.toString();
       const wsUrl = qs ? `${config.wsUrl}?${qs}` : config.wsUrl;
       const ws = new WebSocket(wsUrl, subprotocols);
@@ -653,7 +745,7 @@ export function useVoiceLive(
       };
 
       ws.onopen = () => {
-        ws.send(sessionUpdate(voiceRef.current));
+        ws.send(sessionUpdate(voiceRef.current, settingsRef.current));
         // Seed the session with recent text history so voice continues the same
         // conversation. Sent after session.update; passes through the relay as-is.
         for (const frame of seedFrames(historyRef.current)) ws.send(frame);

@@ -473,6 +473,10 @@ module web 'modules/web.bicep' = {
     // can open the live-voice WebSocket directly against the API ingress (the web
     // proxy can't proxy WebSockets). Emitted only when enabled; default OFF.
     voiceLiveEnabled: voiceLiveEnabled
+    // Advertise governed live-voice tools to the browser only when the same root
+    // flag that arms them on the API is on (and voice itself is enabled, gated in
+    // the web module). Default OFF -> the panel never offers the tools opt-in.
+    voiceLiveToolsEnabled: voiceLiveToolsEnabled
     apiPublicUrl: api.outputs.apiUrl
     // Document library (Phase 11B-2): surface the same feature flag that drives the
     // API ingest/retrieval path so the browser shows the library UI only when the
