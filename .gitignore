@@ -10,6 +10,8 @@
 azd.local.*
 *.pem
 *.key
+# Local MCP client config: machine-specific server paths + bearer tokens
+.mcp.json
 
 # --- Node / Next.js ---
 node_modules/
