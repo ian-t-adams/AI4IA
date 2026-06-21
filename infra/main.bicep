@@ -145,6 +145,12 @@ var tags = {
   costCenter: costCenter
   owner: owner
   managedBy: 'azd-bicep'
+  // Exempts this demo deployment from Defender for Cloud network-exposure
+  // recommendations. The data tier (Cosmos/Storage/Key Vault) keeps public
+  // network access enabled because the Container Apps environment is not
+  // VNet-injected, but every service is identity-gated (no local/shared-key
+  // auth), so the exposure is accepted. Propagates to the RG and all modules.
+  SecurityControl: 'Ignore'
 }
 
 var resourceGroupName = 'rg-${workload}-${environmentName}'
