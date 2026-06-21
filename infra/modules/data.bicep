@@ -57,6 +57,17 @@ param deployVideoStorage bool = false
 @description('Blob container holding tool-generated videos, scoped per-user as {userId}/generated/{id}.mp4.')
 param videoBlobContainer string = 'videos'
 
+@description('''Public network access for the data tier (Cosmos + both storage
+accounts). 'Enabled' (default) keeps today's public + identity-gated posture.
+'Disabled' is the Phase-2 lockdown of the network-isolation pass: only valid once
+the private endpoints exist AND the deployer has a VNet path, or azd loses the
+ability to manage these resources. Driven by main.bicep's `dataTierPrivate` flag.''')
+@allowed([
+  'Enabled'
+  'Disabled'
+])
+param dataPublicNetworkAccess string = 'Enabled'
+
 // ---------------- Cosmos DB (NoSQL) ----------------
 var cosmosAccountName = take('cosmos-${workload}-${environmentName}-${uniqueSuffix}', 44)
 
@@ -90,10 +101,10 @@ resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
     // assigned below). NOTE: a tenant policy remediation (`CosmosDB_LocalAuth_Modify`,
     // which enforces disableLocalAuth) can issue a control-plane PATCH that drifts this
     // to 'Disabled', which severs the api from Cosmos (every Cosmos-backed endpoint 500s
-    // while the static model catalog stays up). Re-running `azd provision` re-asserts
+    // when VNet isolation is enabled (Phase 2). Re-running `azd provision` re-asserts
     // 'Enabled'. To be drift-proof / policy-compliant instead, move to a VNet-integrated
     // Container Apps environment + a Cosmos private endpoint (a later hardening pass).
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: dataPublicNetworkAccess
   }
 }
 
@@ -328,9 +339,9 @@ resource documentStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (de
     allowSharedKeyAccess: false
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: dataPublicNetworkAccess
     networkAcls: {
-      defaultAction: 'Allow'
+      defaultAction: dataPublicNetworkAccess == 'Disabled' ? 'Deny' : 'Allow'
       bypass: 'AzureServices'
     }
   }
@@ -456,9 +467,9 @@ resource imageStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (deplo
     allowSharedKeyAccess: false
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: dataPublicNetworkAccess
     networkAcls: {
-      defaultAction: 'Allow'
+      defaultAction: dataPublicNetworkAccess == 'Disabled' ? 'Deny' : 'Allow'
       bypass: 'AzureServices'
     }
   }
@@ -526,3 +537,10 @@ output imageBlobAccountUrl string = imageStorage.?properties.primaryEndpoints.bl
 output imageBlobContainerName string = imageBlobContainer
 output videoBlobAccountUrl string = imageStorage.?properties.primaryEndpoints.blob ?? ''
 output videoBlobContainerName string = videoBlobContainer
+
+// Resource IDs consumed by the private-endpoint module (network-isolation pass).
+// Conditional storage accounts return '' when not deployed; main.bicep filters
+// empty IDs before building the PE target array.
+output cosmosId string = cosmos.id
+output documentStorageId string = deployDocumentStorage ? documentStorage.id : ''
+output imageStorageId string = deployMediaStorage ? imageStorage.id : ''

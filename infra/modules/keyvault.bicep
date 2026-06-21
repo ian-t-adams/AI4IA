@@ -29,6 +29,16 @@ param enablePurgeProtection bool = false
 @description('Central Log Analytics workspace resource id. Diagnostic settings stream the vault + app config logs/metrics there for the admin observability plane.')
 param logAnalyticsWorkspaceId string
 
+@description('''Public network access for the Key Vault. 'Enabled' (default) keeps
+today's public + RBAC-gated posture. 'Disabled' is the Phase-2 lockdown of the
+network-isolation pass (reachable only via the vault private endpoint). Driven by
+main.bicep's `dataTierPrivate` flag. App Configuration is left public on purpose.''')
+@allowed([
+  'Enabled'
+  'Disabled'
+])
+param publicNetworkAccess string = 'Enabled'
+
 var keyVaultName = take('kv${replace(workload, '-', '')}${uniqueSuffix}', 24)
 
 resource keyVault 'Microsoft.KeyVault/vaults@2024-11-01' = {
@@ -45,7 +55,11 @@ resource keyVault 'Microsoft.KeyVault/vaults@2024-11-01' = {
     enableSoftDelete: true
     softDeleteRetentionInDays: 7
     enablePurgeProtection: enablePurgeProtection ? true : null
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: publicNetworkAccess
+    networkAcls: publicNetworkAccess == 'Disabled' ? {
+      defaultAction: 'Deny'
+      bypass: 'AzureServices'
+    } : null
   }
 }
 
