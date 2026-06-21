@@ -1,4 +1,4 @@
-"""WorkflowService (Phase 8 inc 3): owns user-workflow CRUD + validation.
+"""WorkflowService: owns user-workflow CRUD + validation.
 
 Validation mirrors the user-agents service: a strict name grammar (so a step can
 always be resolved by the same ``@``-mention rules), bounded field lengths, a

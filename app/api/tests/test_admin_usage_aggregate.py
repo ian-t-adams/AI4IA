@@ -1,7 +1,7 @@
-"""WS4 admin aggregation math over a seeded ledger (no HTTP).
+"""Admin aggregation math over a seeded ledger (no HTTP).
 
 Asserts the pure aggregation functions and ``AdminUsageService`` produce correct
-org-level rollups, honour the Phase 6A honesty model (token totals count only
+org-level rollups, honour the usage-honesty model (token totals count only
 ``usageKnown`` turns; cost totals only ``costKnown`` turns), and stay bounded
 (window + record cap -> ``truncated``).
 """

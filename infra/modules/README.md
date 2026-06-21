@@ -1,9 +1,10 @@
 # Bicep modules
 
-Composable modules consumed by [`../main.bicep`](../main.bicep). Added incrementally in
-Phase 1+ — see [`../README.md`](../README.md) for the module map. Each module:
+Composable modules consumed by [`../main.bicep`](../main.bicep). Each module:
 
-- targets `resourceGroup` scope (the RG created by `main.bicep`),
-- accepts a `tags` object and applies it to every resource,
-- exposes typed `output`s consumed by downstream modules,
-- avoids inline secrets (managed identity + Key Vault/App Config only).
+- targets `resourceGroup` scope unless it must operate at subscription scope,
+- accepts and applies shared `tags`,
+- exposes typed outputs consumed by downstream modules,
+- uses managed identity, Key Vault, or Container App secrets instead of inline
+  secrets,
+- wires diagnostic settings to the shared Log Analytics workspace where supported.

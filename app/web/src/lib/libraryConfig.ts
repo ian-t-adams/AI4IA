@@ -1,7 +1,7 @@
-// Server-only: resolves the document-library (Phase 11B-2) runtime configuration
+// Server-only: resolves the document-library runtime configuration
 // from environment variables. Read in the root layout (a server component) and
-// passed as a plain prop into the client LibraryProvider, exactly like the Phase
-// 9 auth config and the Phase 10 voice-live config — so the value is evaluated at
+// passed as a plain prop into the client LibraryProvider, exactly like the auth
+// and voice-live configs — so the value is evaluated at
 // request time in the container, NOT inlined at build time the way NEXT_PUBLIC_*
 // vars are.
 //

@@ -6,7 +6,7 @@ user's own saved agents* — this drives the frontend's ``@``-mention menu, so a
 user sees both the shared personas and their own.
 
 ``/api/agents/mine`` + POST/PUT/DELETE manage the caller's user-defined agents
-(Phase 8). All write paths translate the service's typed errors to HTTP codes;
+All write paths translate the service's typed errors to HTTP codes;
 reads fail open to the curated catalog (handled in the service) so a store blip
 can't break the menu.
 """
@@ -111,7 +111,7 @@ async def create_my_agent(
             mcp_tool_names=mcp_tools,
         )
     except AgentValidationError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except AgentConflictError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
@@ -129,7 +129,7 @@ async def update_my_agent(
             user.internal_user_id, name, payload, mcp_tool_names=mcp_tools
         )
     except AgentValidationError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except AgentNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 

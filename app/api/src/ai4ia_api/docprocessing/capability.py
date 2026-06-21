@@ -1,4 +1,4 @@
-"""The ``process_document`` synthetic capability (Phase 11H).
+"""The ``process_document`` synthetic capability.
 
 Mirrors the ``generate_image`` / ``generate_video`` capabilities
 (:mod:`ai4ia_api.images.capability`, :mod:`ai4ia_api.videos.capability`): a

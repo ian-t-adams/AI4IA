@@ -75,7 +75,7 @@ export async function listAgents(): Promise<AgentSummary[]> {
   return data.agents;
 }
 
-// --- Studio: user-defined agents & workflows (Phase 8) ---
+// --- Studio: user-defined agents & workflows ---
 
 export async function listMyAgents(): Promise<UserAgent[]> {
   const data = await jsonOrThrow<{ agents: UserAgent[] }>(
@@ -170,7 +170,7 @@ export async function runWorkflow(
   );
 }
 
-// --- Custom tools: bring-your-own remote MCP servers (Phase 12B) ---
+// --- Custom tools: bring-your-own remote MCP servers ---
 //
 // All endpoints are flag-gated server-side: when custom tools are disabled the
 // whole surface 404s, so these are only ever called from the (inert-when-off)
@@ -233,7 +233,7 @@ export async function testMcpServer(
   );
 }
 
-// --- Voice (Phase 7B) ---
+// --- Voice ---
 
 export interface TranscriptionResult {
   text: string;
@@ -319,7 +319,7 @@ export async function fetchDocumentArtifact(artifactId: string): Promise<string>
   return await resp.text();
 }
 
-// Phase 11D deep-link player: fetches the ORIGINAL audio/video bytes of a ready
+// Deep-link player: fetches the ORIGINAL audio/video bytes of a ready
 // library document (owner + ready gated server-side). Fetched via apiFetch so the
 // bearer token rides along — a raw <video src> URL could not carry it — then the
 // caller wraps the Blob in an object URL, which also gives client-side seeking.
@@ -333,7 +333,7 @@ export async function fetchLibraryMedia(documentId: string): Promise<Blob> {
   return await resp.blob();
 }
 
-// Phase 11D: the scene/keyframe timeline for an audio/video document, used to draw
+// The scene/keyframe timeline for an audio/video document, used to draw
 // clickable deep-link markers on the player. A missing analyzer sidecar degrades to
 // an empty segments list server-side rather than erroring.
 export async function fetchLibraryTimeline(
@@ -405,7 +405,7 @@ export async function appendVoiceTurns(
   );
 }
 
-// --- Documents (Phase 7C) ---
+// --- Documents ---
 
 // Uploads a file to a session. The browser sets the multipart boundary, so we
 // never set Content-Type ourselves. The backend extracts plain text locally and
@@ -446,7 +446,7 @@ export async function deleteDocument(
   }
 }
 
-// --- Document library (Phase 11B-2): the user's cross-session library. These go
+// --- Document library: the user's cross-session library. These go
 // through the same Next HTTP proxy as the rest of the API; they 404 when the
 // feature is disabled (the UI is hidden in that case, so they are never called).
 
@@ -483,7 +483,7 @@ export async function listLibraryAnalyzers(): Promise<LibraryAnalyzer[]> {
   );
 }
 
-// Phase 11E-1: explicitly promote a ready document's gist into the caller's
+// Explicitly promote a ready document's gist into the caller's
 // durable memory so the assistant can recall it across sessions. 409 when the
 // memory store is disabled, 409 when the document is not yet ready.
 export async function saveLibraryDocumentToMemory(
@@ -496,7 +496,7 @@ export async function saveLibraryDocumentToMemory(
   );
 }
 
-// Phase 11E-3: the explicit undo of saveLibraryDocumentToMemory. Erases exactly
+// The explicit undo of saveLibraryDocumentToMemory. Erases exactly
 // the memories saved from this document, leaving chat-sourced and other
 // documents' memories intact. 404 when the library is off, 409 when the memory
 // store is disabled. Idempotent — forgetting a document with nothing saved
@@ -511,7 +511,7 @@ export async function forgetLibraryDocumentFromMemory(
   );
 }
 
-// Phase 11E-2: owner-private annotations pinned to a library document. These notes
+// Owner-private annotations pinned to a library document. These notes
 // are presentation-only metadata — they are deliberately never surfaced to the
 // model's retrieval/prompt context, and every operation is owner-only.
 export async function listLibraryAnnotations(
@@ -568,7 +568,7 @@ export async function deleteLibraryAnnotation(
   }
 }
 
-// --- Document-level sharing (Phase 11F). Grants are keyed on grantee EMAIL; the
+// --- Document-level sharing. Grants are keyed on grantee EMAIL; the
 // owner-only endpoints below set/read/revoke who a document is shared with. A
 // non-owner gets a generic 404 from the API (never leaks existence). Annotations
 // and saved memories deliberately do NOT travel with a shared document.

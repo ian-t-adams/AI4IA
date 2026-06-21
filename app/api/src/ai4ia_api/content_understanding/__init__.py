@@ -1,4 +1,4 @@
-"""Azure AI Content Understanding (CU) integration (Phase 11B).
+"""Azure AI Content Understanding (CU) integration.
 
 CU is its own async REST surface (``POST …:analyzeBinary`` → ``Operation-Location``
 → ``GET`` poll), not an OpenAI deployment. This package holds a thin, governed

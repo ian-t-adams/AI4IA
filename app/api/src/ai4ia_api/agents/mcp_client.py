@@ -1,4 +1,4 @@
-"""MCP client adapter (Phase 12A) — tool *discovery* over Streamable HTTP.
+"""MCP client adapter for tool discovery over Streamable HTTP.
 
 We speak the Model Context Protocol's JSON-RPC handshake directly over
 ``httpx`` (already a dependency) rather than pulling in a heavier SDK: the
@@ -11,7 +11,7 @@ live :class:`HttpxMcpConnector`'s framing/auth/error handling is unit-tested
 with ``httpx.MockTransport`` (no live server required).
 
 Discovery performs the minimal MCP flow: ``initialize`` → ``notifications/
-initialized`` → ``tools/list``. Per-turn *execution* (Phase 12B Increment B) adds
+initialized`` → ``tools/list``. Per-turn execution adds
 :meth:`McpConnector.call_tool`, which reuses the same handshake then issues a
 ``tools/call`` request and parses the returned content blocks into a bounded
 string — so a governed :class:`~ai4ia_api.agents.tool_exec.ToolDefinition` can run

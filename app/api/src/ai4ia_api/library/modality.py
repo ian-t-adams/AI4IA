@@ -1,4 +1,4 @@
-"""Modality classification from content-type / filename (Phase 11A).
+"""Modality classification from content-type / filename.
 
 Chooses the broad media class for a library document so the right analyzer set
 and (later) ingest pipeline are selected. MIME type wins; the filename extension

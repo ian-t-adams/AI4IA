@@ -1,4 +1,4 @@
-"""Tests for the SSRF egress guard (Phase 12A).
+"""Tests for the SSRF egress guard.
 
 The guard is the single chokepoint deciding whether a user-supplied endpoint may
 leave our trust boundary, so it is tested exhaustively against the classic SSRF
@@ -122,7 +122,7 @@ def test_rejects_host_that_resolves_to_nothing():
         validate_public_https_url("https://empty.example/rpc", resolver=_only([]))
 
 
-# --- resolve_pinned_ip (transport-owned connect-time guard, Phase 12B) --------
+# --- resolve_pinned_ip: transport-owned connect-time guard --------------------
 
 
 def test_pinned_ip_returns_first_public_address():

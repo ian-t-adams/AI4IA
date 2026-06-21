@@ -1,4 +1,4 @@
-"""Admin resource metrics (WS4 Part B): Azure Monitor platform metrics.
+"""Admin resource metrics: Azure Monitor platform metrics.
 
 Read-only, best-effort panels for the admin dashboard (AI Search, Postgres,
 Cosmos, Container Apps). Everything degrades to ``unavailable`` rather than

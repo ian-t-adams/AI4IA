@@ -1,4 +1,4 @@
-"""Selects and constructs the document ingest pipeline (Phase 11B).
+"""Selects and constructs the document ingest pipeline.
 
 Returns ``None`` when document understanding is disabled (or the library repo was
 not built), so the upload endpoint refuses and nothing is constructed — the
@@ -106,7 +106,7 @@ def build_document_retrieval(
     *,
     ingestor: DocumentIngestor | None,
 ) -> DocumentRetrievalService | None:
-    """Construct the retrieval consumer (Phase 11B-2) that surfaces a user's
+    """Construct the retrieval consumer that surfaces a user's
     *ready* library in chat.
 
     Returns ``None`` when document understanding is disabled (no ingestor was

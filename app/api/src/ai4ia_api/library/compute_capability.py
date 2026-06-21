@@ -1,4 +1,4 @@
-"""The ``run_code`` + ``export_document`` synthetic capabilities (Phase 11C).
+"""The ``run_code`` + ``export_document`` synthetic capabilities.
 
 Mirrors the ``fetch_document`` capability (:mod:`ai4ia_api.library.chat_capability`):
 function schemas + async handlers injected into
@@ -103,7 +103,7 @@ def build_compute_capability(
     Returns ``(extra_tools, extra_handlers)`` ready to merge into
     :func:`run_agent_turn`. Handlers are bound to ``user_id`` and fence untrusted
     payloads with ``nonce`` (the same fence the turn's library context uses).
-    ``email`` is the caller's identity for sharing (Phase 11F): ``run_code`` may
+    ``email`` is the caller's identity for sharing: ``run_code`` may
     compute over a document shared with that email (read via the owner's storage),
     consistent with the read/RAG paths. ``export_document`` stays owner-only — a
     grantee never writes a new version onto someone else's document.

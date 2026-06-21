@@ -19,7 +19,7 @@ param readerPrincipalIds array = []
 
 @description('''Principal IDs granted Key Vault Secrets Officer (read/write secrets).
 The api managed identity gets this only when custom tools / BYO MCP is enabled, so
-it can persist per-user MCP connection secrets at runtime (Phase 12B).''')
+it can persist per-user MCP connection secrets at runtime.''')
 param secretsOfficerPrincipalIds array = []
 
 @description('''Enable Key Vault purge protection. Default false so the wipe-and-rebuild
@@ -30,8 +30,8 @@ param enablePurgeProtection bool = false
 param logAnalyticsWorkspaceId string
 
 @description('''Public network access for the Key Vault. 'Enabled' (default) keeps
-today's public + RBAC-gated posture. 'Disabled' is the Phase-2 lockdown of the
-network-isolation pass (reachable only via the vault private endpoint). Driven by
+today's public + RBAC-gated posture. 'Disabled' makes the vault reachable only
+via the private endpoint. Driven by
 main.bicep's `dataTierPrivate` flag. App Configuration is left public on purpose.''')
 @allowed([
   'Enabled'

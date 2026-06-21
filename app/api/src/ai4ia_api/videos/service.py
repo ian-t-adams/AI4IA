@@ -1,4 +1,4 @@
-"""Shared video-generation core (Phase 11G, Sora 2).
+"""Shared video-generation core.
 
 The agent-callable ``generate_video`` tool (:mod:`ai4ia_api.videos.capability`)
 goes through :class:`VideoGenerationService` so the model/size/duration

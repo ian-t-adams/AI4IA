@@ -1,9 +1,9 @@
-"""Document ingest orchestrator (Phase 11B producer path).
+"""Document ingest orchestrator.
 
 Turns an upload into a manifest + retrievable chunks, governed and fail-soft:
 
 1. :meth:`ingest` (sync, on the request path) — hash + content-dedupe, persist the
-   raw bytes to blob, derive an instant quick-text summary (Phase 7C extractor,
+   raw bytes to blob, derive an instant quick-text summary (inline extractor,
    best-effort), and create the manifest at status ``stored``. Returns immediately
    so the upload feels fast; if the same bytes+analyzer were ingested before it
    returns the existing manifest (no re-crack).
@@ -381,7 +381,7 @@ class DocumentIngestor:
             doc.summary = summary
 
         modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
-        # Phase 11D leftover: surface the analyzer's scene/keyframe boundaries for
+        # Surface the analyzer's scene/keyframe boundaries for
         # audio/video as a media.json sidecar so the web player can deep-link to
         # scenes. Independent of chunking/embedding (persisted before the early
         # return below) and best-effort — absent scene detail simply means no

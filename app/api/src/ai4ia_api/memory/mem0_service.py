@@ -333,8 +333,7 @@ class Mem0MemoryService:
 
         When ``document_id`` is given the excerpts are tagged with it
         (``metadata``) and any prior generation for that document is removed
-        first, so a re-save is idempotent rather than duplicating (Phase
-        11E-3)."""
+        first, so a re-save is idempotent rather than duplicating."""
         texts = [t.strip() for t in items if t and t.strip()]
         if not texts:
             return 0
@@ -390,8 +389,7 @@ class Mem0MemoryService:
 
         mem0's ``delete_all`` only scopes by entity (user/run), not by custom
         metadata, so document-scoped deletion lists the user's memories and
-        removes by id the ones whose ``metadata.document_id`` matches (Phase
-        11E-3)."""
+        removes by id the ones whose ``metadata.document_id`` matches."""
         mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
         return await self._forget_document(mem, user_id, document_id)
 

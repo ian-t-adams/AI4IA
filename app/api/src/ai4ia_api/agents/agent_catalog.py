@@ -1,4 +1,4 @@
-"""Curated, data-driven **agent catalog** (Phase 4).
+"""Curated, data-driven **agent catalog**.
 
 An *agent* is a named persona the chat layer can route a turn to via an
 ``@mention``. Each agent carries a server-side ``systemPrompt`` (its persona), an
@@ -36,7 +36,7 @@ class AgentSpec(BaseModel):
     defaultModel: str | None = None
     tools: list[str] = []
     # Names of other agents this agent may delegate sub-tasks to at runtime
-    # (supervisor / agent-as-tool pattern, Phase 8 inc 2). Empty for a leaf agent.
+    # (supervisor / agent-as-tool pattern). Empty for a leaf agent.
     links: list[str] = []
     enabled: bool = True
 

@@ -1,4 +1,4 @@
-"""Per-user semantic memory (Phase 5).
+"""Per-user semantic memory.
 
 Recall relevant snippets before a model call and remember durable user
 utterances after a successful turn. Disabled by default — the factory returns a

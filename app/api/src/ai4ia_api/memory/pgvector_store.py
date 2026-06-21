@@ -1,6 +1,6 @@
 """Durable per-user vector store on Azure Postgres Flexible Server + pgvector.
 
-Design notes (see the Phase 5 increment-B review):
+Design notes:
 
 - **AAD-only auth.** The server has password auth disabled; the api managed
   identity is registered as a Postgres AAD role. We authenticate by passing a

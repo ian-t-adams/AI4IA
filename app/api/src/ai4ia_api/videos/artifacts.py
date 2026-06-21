@@ -1,4 +1,4 @@
-"""Durable storage for generated videos (Phase 11G, Sora 2).
+"""Durable storage for generated videos.
 
 A generated MP4 is far too large to flow back through the agent tool-result
 channel (the runtime caps a tool result at 8 KB, and even a short clip is several

@@ -1,6 +1,6 @@
 "use client";
 
-// Phase 11B-2 document-library panel. Lets a signed-in user upload documents to
+// Document-library panel. Lets a signed-in user upload documents to
 // their cross-session library, watch ingest status, pick an analyzer, and delete.
 // Rendered only when the DOCUMENT_LIBRARY_ENABLED flag is on (gated by ChatApp),
 // so it is inert by default.
@@ -23,7 +23,7 @@ import { MediaPlayer } from "./MediaPlayer";
 import AnnotationsPanel from "./AnnotationsPanel";
 import SharePanel from "./SharePanel";
 
-// Per-document "save to memory" UI state (Phase 11E-1, forget added 11E-3).
+// Per-document "save to memory" UI state, including forget.
 // Keyed by document id.
 type MemorySave =
   | { status: "saving" }
@@ -71,10 +71,10 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
   const [memorySaves, setMemorySaves] = useState<Record<string, MemorySave>>(
     {},
   );
-  // Phase 11D: the audio/video document currently open in the deep-link player.
+  // The audio/video document currently open in the deep-link player.
   const [playing, setPlaying] = useState<LibraryDocument | null>(null);
   const [annotating, setAnnotating] = useState<LibraryDocument | null>(null);
-  // Phase 11F: the document whose sharing dialog is open, and the documents
+  // The document whose sharing dialog is open, and the documents
   // others have shared with this user.
   const [sharing, setSharing] = useState<LibraryDocument | null>(null);
   const [sharedWithMe, setSharedWithMe] = useState<LibraryDocument[]>([]);
@@ -186,7 +186,7 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
     }
   }
 
-  // Phase 11F: reflect a sharing change on the document's badge without refetch.
+  // Reflect a sharing change on the document's badge without refetch.
   function onShareChanged(docId: string, visibility: ShareVisibility) {
     setDocs((prev) =>
       prev.map((d) => (d.id === docId ? { ...d, visibility } : d)),

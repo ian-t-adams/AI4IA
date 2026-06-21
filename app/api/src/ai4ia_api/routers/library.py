@@ -1,4 +1,4 @@
-"""Per-user document library API (Phase 11A storage spine).
+"""Per-user document library API.
 
 Feature-flagged and default-OFF: when ``document_understanding_enabled`` is
 false the library repository is never constructed (``app.state.document_library``
@@ -150,7 +150,7 @@ def _ingestor(request: Request) -> DocumentIngestor:
 def _compute(request: Request) -> "DocumentComputeService":
     """Return the document compute service or 404 when compute is disabled.
 
-    Gates the version-download endpoints behind the Phase 11C flag: when document
+    Gates the version-download endpoints behind the document compute flag: when document
     compute is off (default) there is no export path and no versions, so these
     routes refuse exactly like the library routes do when understanding is off."""
     compute = getattr(request.app.state, "document_compute", None)
@@ -165,7 +165,7 @@ def _compute(request: Request) -> "DocumentComputeService":
 def _retrieval(request: Request):
     """Return the document retrieval service or 404 when understanding is disabled.
 
-    Gates the Phase 11D media endpoints (timeline + original-media stream): when the
+    Gates the media endpoints (timeline + original-media stream): when the
     library is off the retrieval service is never constructed, so these routes refuse
     exactly like the other library routes."""
     retrieval = getattr(request.app.state, "document_retrieval", None)
@@ -178,7 +178,7 @@ def _retrieval(request: Request):
 
 
 async def _block_disabled(request: Request, user_id: str) -> None:
-    """Block only *disabled* accounts (403), mirroring the Phase 7C upload path:
+    """Block only *disabled* accounts (403), mirroring the upload path:
     library bookkeeping is local work, so rate/budget limits don't apply here."""
     entitlements: EntitlementService = request.app.state.entitlements
     decision = await entitlements.check(user_id)
@@ -189,7 +189,7 @@ async def _block_disabled(request: Request, user_id: str) -> None:
 async def _accessible_document(
     request: Request, user: AuthenticatedUser, document_id: str
 ) -> UserDocument:
-    """Load a document the caller may *access* (Phase 11F sharing), or raise 404.
+    """Load a document the caller may *access*, or raise 404.
 
     Resolves the caller's own document first; if they don't own it, falls back to
     a cross-owner lookup gated by :func:`can_access`, so a document shared with the
@@ -254,7 +254,7 @@ async def upload_document(
         try:
             if int(content_length) > max_bytes * 2:
                 raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                     detail="File is too large.",
                 )
         except ValueError:
@@ -286,12 +286,12 @@ async def upload_document(
     data = await file.read(max_bytes + 1)
     if len(data) > max_bytes:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="File is too large.",
         )
     if not data:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="File is empty."
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="File is empty."
         )
 
     content_type = file.content_type or ""
@@ -340,7 +340,7 @@ async def list_document_versions(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[DocumentVersionSummary]:
-    """List the "adjust & return" versions of a ready document (Phase 11C).
+    """List the "adjust & return" versions of a ready document.
 
     Gated behind document compute (404 when off) and the export service's own
     ownership + ready-status gate; a missing, cross-user, or non-ready document
@@ -369,7 +369,7 @@ async def download_document_version(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> Response:
-    """Download a version's bytes (Phase 11C), ownership- + ready-status-gated.
+    """Download a version's bytes, ownership- + ready-status-gated.
 
     The original raw/parsed artifacts are never exposed here — only the additive
     versioned export blobs. A missing/cross-user/non-ready document or unknown
@@ -389,8 +389,8 @@ async def download_document_version(
 
 
 class MediaTimelineSegment(BaseModel):
-    """One analyzed audio/video segment's deep-link grounding (Phase 11D): its time
-    span plus the analyzer's keyframe and camera-shot boundaries (milliseconds)."""
+    """One analyzed audio/video segment's deep-link grounding: its time span plus
+    the analyzer's keyframe and camera-shot boundaries (milliseconds)."""
 
     index: int
     startMs: int | None = None
@@ -416,7 +416,7 @@ async def get_media_timeline(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> MediaTimeline:
-    """Deep-link scene timeline for a ready audio/video document (Phase 11D).
+    """Deep-link scene timeline for a ready audio/video document.
 
     Access- + ready-status-gated and restricted to audio/video: the owner, a
     grantee the document is shared with, or any authenticated user for a
@@ -497,7 +497,7 @@ async def delete_document(
         await ingestor.cancel_enrich(uid, document_id)
         await ingestor.purge(uid, document_id)
     # Complete the erase: also forget anything this document contributed to the
-    # owner's durable memory (Phase 11E-1 save-to-memory). Delete already cascades
+    # owner's durable memory (save-to-memory). Delete already cascades
     # to the document's other derived artifacts (blobs + indexed chunks above), so
     # leaving its saved memories behind is the inconsistency; forgetting them here
     # makes "delete" a complete erase with no derived trace left. Best-effort and
@@ -585,7 +585,7 @@ async def save_document_to_memory(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> SaveToMemoryResult:
-    """Promote a ready document's gist into the caller's durable memory (Phase 11E-1).
+    """Promote a ready document's gist into the caller's durable memory.
 
     The explicit "save to memory and get it back" action: stores the document
     summary plus a bounded set of leading excerpts as ``kind="document"``
@@ -619,7 +619,7 @@ async def save_document_to_memory(
     items = await _document_memory_items(request, uid, doc)
     if not items:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Document has no content to remember.",
         )
     try:
@@ -690,7 +690,7 @@ async def forget_document_from_memory(
     return ForgetFromMemoryResult(forgotten=forgotten)
 
 
-# --- sharing (Phase 11F) ---
+# --- sharing ---
 _MAX_GRANTEES = 100
 
 
@@ -742,14 +742,14 @@ def _normalize_grantees(raw: list[str], owner_email: str | None) -> list[str]:
             continue
         if not _valid_email(principal):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"'{entry}' is not a valid email address.",
             )
         seen.add(principal)
         out.append(principal)
     if len(out) > _MAX_GRANTEES:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"A document can be shared with at most {_MAX_GRANTEES} people.",
         )
     return out
@@ -760,7 +760,7 @@ async def list_shared_with_me(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[UserDocumentSummary]:
-    """List documents explicitly shared *with* the caller (Phase 11F).
+    """List documents explicitly shared *with* the caller.
 
     Scoped to ``visibility == shared`` documents whose ACL contains the caller's
     email — tenant-public documents are openable by id but deliberately not
@@ -785,7 +785,7 @@ async def get_document_shares(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ShareState:
-    """Read a document's sharing posture (owner-only, Phase 11F).
+    """Read a document's sharing posture (owner-only).
 
     A missing or non-owned document returns a generic 404 (never leaks existence):
     only the owner can see or change who a document is shared with."""
@@ -807,7 +807,7 @@ async def set_document_shares(
     payload: ShareUpdate,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ShareState:
-    """Replace a document's sharing posture (owner-only, Phase 11F).
+    """Replace a document's sharing posture (owner-only).
 
     Sets ``visibility`` and, for ``shared``, the grantee email ACL (normalized,
     validated, de-duped, owner-skipped, capped). For ``private``/``public`` the ACL
@@ -843,7 +843,7 @@ async def revoke_document_share(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ShareState:
-    """Revoke one grantee's access to a shared document (owner-only, Phase 11F).
+    """Revoke one grantee's access to a shared document (owner-only).
 
     Idempotent: revoking an email that isn't on the ACL is a no-op that returns the
     current state. Leaves ``visibility`` untouched (the owner flips that via PUT);
@@ -867,7 +867,7 @@ async def revoke_document_share(
     return ShareState.of(doc)
 
 
-# --- annotations (Phase 11E-2) ---
+# --- annotations ---
 _MAX_ANNOTATION_BODY = 4000
 _MAX_ANNOTATION_ANCHOR = 200
 
@@ -967,7 +967,7 @@ async def create_annotation(
     text = _clean_body(body.body)
     if not text:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Annotation body must not be empty.",
         )
     annotation = DocumentAnnotation(body=text, anchor=_clean_anchor(body.anchor))
@@ -1002,7 +1002,7 @@ async def update_annotation(
         text = _clean_body(body.body)
         if not text:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Annotation body must not be empty.",
             )
         annotation.body = text

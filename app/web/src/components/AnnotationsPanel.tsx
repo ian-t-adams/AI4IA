@@ -1,6 +1,6 @@
 "use client";
 
-// Phase 11E-2: owner-private notes pinned to a library document. These annotations
+// Owner-private notes pinned to a library document. These annotations
 // are presentation-only — the API deliberately keeps them out of the model's
 // retrieval/prompt context, so they are a safe, private place for the owner to jot
 // reminders, page references, or timestamps. Rendered as its own modal launched

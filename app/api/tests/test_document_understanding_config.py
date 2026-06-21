@@ -1,4 +1,4 @@
-"""Config fail-closed checks for document understanding (Phase 11A).
+"""Config fail-closed checks for document understanding.
 
 The feature is durable cross-session storage, so enabling it in a deployed env
 with the in-memory session store would silently drop every manifest on restart.

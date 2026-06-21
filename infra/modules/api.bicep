@@ -1,4 +1,4 @@
-// Phase 2: the FastAPI backend (app/api) running on Container Apps.
+// FastAPI backend (app/api) running on Container Apps.
 // azd builds app/api/Dockerfile, pushes to ACR, and deploys into this app
 // (matched by the `azd-service-name: api` tag).
 @description('Location for the api container app.')
@@ -22,7 +22,7 @@ param apiIdentityClientId string
 @description('ACR login server the api image is pulled from.')
 param acrLoginServer string
 
-@description('Container image for the api (placeholder until azd deploys app/api).')
+@description('Container image for the api; azd replaces the default with the built app/api image.')
 param apiImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
 @description('Model gateway base URL (APIM front door + /openai).')
@@ -97,7 +97,7 @@ param adminSubjects string = ''
 @secure()
 param adminApiSecret string = ''
 
-@description('Enable the Voice Live (Phase 10) realtime WebSocket relay. Default OFF (the /api/voice/live route refuses, so the app is inert).')
+@description('Enable the Voice Live realtime WebSocket relay. Default OFF (the /api/voice/live route refuses, so the app is inert).')
 param realtimeEnabled bool = false
 
 @description('Azure OpenAI realtime api-version the relay uses for the upstream WebSocket.')
@@ -109,7 +109,7 @@ param realtimeAllowedOrigins string = ''
 @description('Enable governed tool calling inside a live session (the relay injects the safe built-in tools and executes the model\'s function calls in-process). Inert unless realtimeEnabled is also true.')
 param realtimeToolsEnabled bool = true
 
-@description('Enable the per-user document library (Phase 11A). Default OFF (the /api/library API refuses with 404 and nothing is constructed, so the app is inert).')
+@description('Enable the per-user document library and multimodal understanding. Default OFF (the /api/library API refuses with 404 and nothing is constructed, so the app is inert).')
 param documentUnderstandingEnabled bool = false
 
 @description('Blob account URL backing the document library raw + parsed + chunk artifacts (empty until document storage is provisioned).')
@@ -124,7 +124,7 @@ param cuBaseUrl string = ''
 @description('Content Understanding REST api-version the ingest worker uses.')
 param cuApiVersion string = '2025-11-01'
 
-@description('Enable compute over the library (Phase 11C): intent router + code_interpreter + "adjust & return" export. Layered ON TOP of documentUnderstandingEnabled. Default OFF (the chat hot path is byte-for-byte unchanged; neither synthetic tool is advertised).')
+@description('Enable compute over the library: intent router + code_interpreter + "adjust & return" export. Layered ON TOP of documentUnderstandingEnabled. Default OFF (the chat hot path is byte-for-byte unchanged; neither synthetic tool is advertised).')
 param documentComputeEnabled bool = false
 
 @description('Azure OpenAI resource endpoint (e.g. https://<resource>.openai.azure.com) that serves the Responses API code_interpreter tool. Required when enabling document compute in a deployed env; the api fails closed at startup otherwise.')
@@ -133,13 +133,13 @@ param codeInterpreterBaseUrl string = ''
 @description('Deployment/model name that serves the Responses API code_interpreter tool (e.g. gpt-4.1). Required when enabling document compute in a deployed env.')
 param codeInterpreterModel string = ''
 
-@description('Enable the inline-attachment code interpreter (analyze_attachment): the chat agent can crack/analyze an INLINE composer attachment in the Responses API code_interpreter sandbox, reusing the same endpoint/model as Phase 11C compute. Default OFF: no original bytes retained, the tool is never advertised, no ephemeral container env is emitted — the chat hot path is byte-for-byte unchanged.')
+@description('Enable the inline-attachment code interpreter (analyze_attachment): the chat agent can crack/analyze an INLINE composer attachment in the Responses API code_interpreter sandbox, reusing the same endpoint/model as document compute. Default OFF: no original bytes retained, the tool is never advertised, no ephemeral container env is emitted — the chat hot path is byte-for-byte unchanged.')
 param inlineDocumentComputeEnabled bool = false
 
 @description('Dedicated short-lived blob container holding inline-attachment original bytes (inline code interpreter). Emitted as AI4IA_INLINE_ATTACHMENT_BLOB_CONTAINER only when the feature is on.')
 param inlineAttachmentBlobContainer string = 'ephemeral-attachments'
 
-@description('Enable the agent-callable generate_image tool (Phase 11F). Default OFF. When on (and an image blob account is provisioned) any agent may attach generate_image; produced images persist to dedicated blob storage and serve through an authenticated endpoint.')
+@description('Enable the agent-callable generate_image tool. Default OFF. When on (and an image blob account is provisioned) any agent may attach generate_image; produced images persist to dedicated blob storage and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
 
 @description('Blob account URL backing tool-generated images (empty until image storage is provisioned). When empty the api falls back to an in-memory store.')
@@ -148,7 +148,7 @@ param imageBlobAccountUrl string = ''
 @description('Blob container tool-generated images are written to.')
 param imageBlobContainer string = 'images'
 
-@description('Enable the agent-callable generate_video tool (Phase 11G, Sora 2). Default OFF. When on (and a video blob account is provisioned) any agent may attach generate_video; produced clips persist to blob storage and serve through an authenticated endpoint.')
+@description('Enable the agent-callable generate_video tool. Default OFF. When on (and a video blob account is provisioned) any agent may attach generate_video; produced clips persist to blob storage and serve through an authenticated endpoint.')
 param videoGenerationEnabled bool = false
 
 @description('Blob account URL backing tool-generated videos (empty until video storage is provisioned). When empty the api falls back to an in-memory store.')
@@ -160,10 +160,10 @@ param videoBlobContainer string = 'videos'
 @description('Azure AI Search endpoint (e.g. https://<svc>.search.windows.net). Empty unless a search service is provisioned; when set, emitted as AI4IA_SEARCH_ENDPOINT so the api can index/query via managed identity.')
 param searchEndpoint string = ''
 
-@description('Enable custom tools / bring-your-own MCP servers (Phase 12). Default OFF: the per-user MCP registry is never constructed and /api/agents/mcp-servers refuses (404). When on, users register remote MCP servers behind the SSRF guard.')
+@description('Enable custom tools / bring-your-own MCP servers. Default OFF: the per-user MCP registry is never constructed and /api/agents/mcp-servers refuses (404). When on, users register remote MCP servers behind the SSRF guard.')
 param customToolsEnabled bool = false
 
-@description('Key Vault URI backing durable MCP connection secrets (Phase 12B). Set only when custom tools is enabled; the api managed identity holds Key Vault Secrets Officer on this vault. Empty leaves the api on its in-memory secret store.')
+@description('Key Vault URI backing durable MCP connection secrets. Set only when custom tools is enabled; the api managed identity holds Key Vault Secrets Officer on this vault. Empty leaves the api on its in-memory secret store.')
 param customToolsKeyVaultUri string = ''
 
 @description('Enable the agent-callable Web IQ search tools (web/news/videos/images/browse). Default OFF: no SDK client is constructed and no web tool is advertised. When on, supply webIqApiKey (stored as a Container App secret) or rely on managed-identity EntraID.')
@@ -289,7 +289,7 @@ var memoryEnv = concat([
   }
 ], pgEnv, mem0Env)
 
-// Voice Live (Phase 10) realtime relay settings. Default OFF: with the flag unset
+// Voice Live realtime relay settings. Default OFF: with the flag unset
 // the /api/voice/live WebSocket refuses immediately, so the relay is inert and the
 // app's default behavior is unchanged. When enabled, the relay reuses the same
 // model-gateway URL + credential as chat for the upstream realtime socket; only
@@ -313,7 +313,7 @@ var realtimeEnv = realtimeEnabled ? [
   }
 ] : []
 
-// Document understanding (Phase 11A/11B) settings. Default OFF: the library repo
+// Document understanding settings. Default OFF: the library repo
 // + ingest pipeline are not constructed and the /api/library API refuses (404),
 // so the feature is inert. When enabled, the blob env points the ingest path at
 // the provisioned (AAD-only) storage account; the CU env is emitted only when a
@@ -354,7 +354,7 @@ var documentEnv = documentUnderstandingEnabled ? concat([
   }
 ], documentBlobEnv, documentCuEnv) : []
 
-// Code interpreter endpoint (base url + model) is shared by Phase 11C library
+// Code interpreter endpoint (base url + model) is shared by library
 // compute AND the inline-attachment code interpreter, so it is emitted when EITHER
 // is on (and a base url is supplied). Emitted once here to avoid duplicate env keys
 // when both features are enabled; non-empty gating keeps the default-OFF posture.
@@ -389,7 +389,7 @@ var inlineComputeEnv = inlineDocumentComputeEnabled ? [
   }
 ] : []
 
-// Phase 11F image tool: the durable blob account/container are emitted only when
+// Image tool: the durable blob account/container are emitted only when
 // image generation is enabled AND an account is provisioned; otherwise the api
 // falls back to its in-memory artifact store (fine for local/dev, but ephemeral).
 var imageEnv = (imageGenerationEnabled && !empty(imageBlobAccountUrl)) ? [
@@ -403,7 +403,7 @@ var imageEnv = (imageGenerationEnabled && !empty(imageBlobAccountUrl)) ? [
   }
 ] : []
 
-// Phase 11G video tool: same pattern as images — the durable blob account/container
+// Video tool: same pattern as images — the durable blob account/container
 // are emitted only when video generation is enabled AND an account is provisioned;
 // otherwise the api falls back to its in-memory artifact store (ephemeral).
 var videoEnv = (videoGenerationEnabled && !empty(videoBlobAccountUrl)) ? [
@@ -427,7 +427,7 @@ var searchEnv = !empty(searchEndpoint) ? [
   }
 ] : []
 
-// Phase 12 custom tools / BYO MCP. Default OFF: nothing is emitted, so the api
+// Custom tools / BYO MCP. Default OFF: nothing is emitted, so the api
 // keeps the feature dormant (404). When enabled, emit the flag and — for durable
 // connection secrets (12B) — the Key Vault URI; the api MI holds Secrets Officer
 // on that vault. An empty URI leaves the api on its in-memory secret store.

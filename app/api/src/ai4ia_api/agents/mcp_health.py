@@ -1,4 +1,4 @@
-"""MCP server health + quarantine (Phase 12B Increment D) — pure state machine.
+"""MCP server health + quarantine state machine.
 
 A user-registered MCP server can become unreachable (the host goes down, a
 credential is revoked, DNS rebinds to an internal address). Without a circuit
@@ -26,8 +26,8 @@ from .tools import redact
 # Consecutive transport failures tolerated before a server is quarantined.
 QUARANTINE_THRESHOLD = 3
 # Quarantine window grows with each failure past the threshold (exponential
-# backoff) so a flapping server is retried sparingly, capped so it always
-# eventually auto-recovers.
+# backoff) so a flapping server is retried sparingly, capped so it can
+# auto-recover after the window elapses.
 QUARANTINE_BASE_SECONDS = 300  # 5 minutes
 QUARANTINE_MAX_SECONDS = 3600  # 1 hour
 # Bound on the stored, redacted error summary.

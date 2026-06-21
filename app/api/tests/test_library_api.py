@@ -1,4 +1,4 @@
-"""Per-user document library API (Phase 11A): default-OFF refusal, the analyzer
+"""Per-user document library API: default-OFF refusal, the analyzer
 registry CRUD, ownership isolation across users, and document read/delete.
 
 The library has no upload endpoint in 11A (CU ingest lands in 11B), so documents

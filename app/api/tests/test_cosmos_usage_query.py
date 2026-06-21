@@ -1,4 +1,4 @@
-"""WS4 cosmos ``query_records`` construction + memory/cosmos parity.
+"""Cosmos ``query_records`` construction + memory/cosmos parity.
 
 The admin aggregation reads the ledger cross-partition through ``query_records``.
 This asserts the Cosmos repo issues a bounded (``TOP``), time-windowed,

@@ -45,14 +45,14 @@ namespace SimpleL7Proxy.Async.BlobStorage
         public async Task<string> GenerateSasTokenAsync(string containerName, string blobName, TimeSpan expiryTime)
         {
             await Task.CompletedTask;
-            // Return a placeholder SAS token instead of throwing
-            // This allows async processing to complete even though blobs aren't stored
+            // Return an inert URI instead of throwing so async processing can
+            // complete even though blobs are not stored.
             return "null://blob-storage-disabled";
         }
 
         public string GetBlobUri(string containerName, string blobName)
         {
-            // Return a placeholder URI for disabled blob storage
+            // Return an inert URI for disabled blob storage.
             return "null://blob-storage-disabled";
         }
 

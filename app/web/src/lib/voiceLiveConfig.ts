@@ -1,8 +1,8 @@
-// Server-only: resolves the Voice Live (Phase 10) runtime configuration from
+// Server-only: resolves the Voice Live runtime configuration from
 // environment variables. Read in the root layout (a server component) and passed
-// as plain props into the client VoiceLiveProvider, exactly like the Phase 9 auth
-// config — so values are evaluated at request time in the container, NOT inlined
-// at build time the way NEXT_PUBLIC_* vars are.
+// as plain props into the client VoiceLiveProvider, exactly like the auth config,
+// so values are evaluated at request time in the container, NOT inlined at build
+// time the way NEXT_PUBLIC_* vars are.
 //
 // Default OFF: unless VOICE_LIVE_ENABLED is truthy AND API_PUBLIC_URL is set, this
 // returns a disabled config and the browser never surfaces any live-voice UI, so

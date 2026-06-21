@@ -1,10 +1,9 @@
-"""Rolling conversation summarization (Phase WS2-C).
+"""Rolling conversation summarization.
 
-Long chats eventually overflow a model's context window because AI4IA sends the
-ENTIRE transcript every turn. This service condenses the OLDEST turns into a
-compact running summary so a conversation stays within budget while the FULL
-transcript is always retained in storage and the UI scrollback — summarization
-only changes what the *model* receives, never what is stored or shown.
+This service condenses older turns into a compact running summary so a
+conversation can stay within a model's context budget while the complete
+transcript remains in storage and UI scrollback. Summarization changes only what
+the model receives.
 
 Two entry points share one generation routine:
 
@@ -12,7 +11,7 @@ Two entry points share one generation routine:
   Folds every not-yet-summarized turn into the running summary, persists it on
   the session, and returns the digest text to show the user.
 * :meth:`SummarizationService.apply` — the automatic path, gated behind the
-  DEFAULT-OFF ``auto_summarization_enabled`` flag. When the live transcript would
+  default-OFF ``auto_summarization_enabled`` flag. When the live transcript would
   exceed a model-derived threshold it folds the oldest turns incrementally and
   returns the verbatim window the chat router should send (plus the summary).
 
@@ -95,7 +94,7 @@ class SummarizationService:
 
     @property
     def enabled(self) -> bool:
-        """Whether the AUTOMATIC fold path is on. Manual ``/summarize`` ignores
+        """Whether the automatic fold path is on. Manual ``/summarize`` ignores
         this — it works regardless so a user can always condense on demand."""
         return self._enabled
 
@@ -285,7 +284,7 @@ class SummarizationService:
 
 def build_summarization_service(settings) -> SummarizationService:
     """Construct the service from settings. Always built; ``enabled`` reflects the
-    DEFAULT-OFF ``auto_summarization_enabled`` flag so the chat router can consult
+    default-OFF ``auto_summarization_enabled`` flag so the chat router can consult
     it unconditionally."""
     return SummarizationService(
         enabled=settings.auto_summarization_enabled,

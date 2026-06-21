@@ -1,4 +1,4 @@
-"""Deterministic intent router for the library compute path (Phase 11C).
+"""Deterministic intent router for the library compute path.
 
 Classifies a single chat turn against three branches the design doc's "arc" calls
 out for a ready document library:

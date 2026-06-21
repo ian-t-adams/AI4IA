@@ -33,7 +33,7 @@ param deployPostgres bool = true
 @description('Location for the Postgres Flexible Server (may differ from `location` due to subscription offer restrictions).')
 param postgresLocation string = location
 
-@description('Provision the document library blob storage account + container (Phase 11B). Gated on the document-understanding flag so nothing is created by default — zero regression.')
+@description('Provision the document library blob storage account + container. Gated on the document-understanding flag so nothing is created by default — zero regression.')
 param deployDocumentStorage bool = false
 
 @description('Blob container holding the raw + parsed + chunk artifacts of the document library.')
@@ -45,13 +45,13 @@ param deployInlineAttachmentStorage bool = false
 @description('Blob container holding inline-attachment original bytes, scoped per-user+session as {userId}/{sessionId}/{documentId}. Short-lived (lifecycle TTL); never the durable corpus.')
 param inlineAttachmentBlobContainer string = 'ephemeral-attachments'
 
-@description('Provision the generated-image blob storage account + container (Phase 11F). Gated on the image-generation flag so nothing is created by default. Independent of the document library storage — zero regression to either.')
+@description('Provision the generated-image blob storage account + container. Gated on the image-generation flag so nothing is created by default. Independent of the document library storage — zero regression to either.')
 param deployImageStorage bool = false
 
 @description('Blob container holding tool-generated images, scoped per-user as {userId}/generated/{id}.png.')
 param imageBlobContainer string = 'images'
 
-@description('Provision the generated-video blob container (Phase 11G). Gated on the video-generation flag. Reuses the generated-media storage account (shared with images) and adds a dedicated videos container — the account-scoped RBAC already covers it.')
+@description('Provision the generated-video blob container. Gated on the video-generation flag. Reuses the generated-media storage account (shared with images) and adds a dedicated videos container — the account-scoped RBAC already covers it.')
 param deployVideoStorage bool = false
 
 @description('Blob container holding tool-generated videos, scoped per-user as {userId}/generated/{id}.mp4.')
@@ -59,7 +59,7 @@ param videoBlobContainer string = 'videos'
 
 @description('''Public network access for the data tier (Cosmos + both storage
 accounts). 'Enabled' (default) keeps today's public + identity-gated posture.
-'Disabled' is the Phase-2 lockdown of the network-isolation pass: only valid once
+'Disabled' makes the data tier private-only: only valid once
 the private endpoints exist AND the deployer has a VNet path, or azd loses the
 ability to manage these resources. Driven by main.bicep's `dataTierPrivate` flag.''')
 @allowed([
@@ -101,7 +101,7 @@ resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
     // assigned below). NOTE: a tenant policy remediation (`CosmosDB_LocalAuth_Modify`,
     // which enforces disableLocalAuth) can issue a control-plane PATCH that drifts this
     // to 'Disabled', which severs the api from Cosmos (every Cosmos-backed endpoint 500s
-    // when VNet isolation is enabled (Phase 2). Re-running `azd provision` re-asserts
+    // when VNet isolation is enabled. Re-running `azd provision` re-asserts
     // 'Enabled'. To be drift-proof / policy-compliant instead, move to a VNet-integrated
     // Container Apps environment + a Cosmos private endpoint (a later hardening pass).
     publicNetworkAccess: dataPublicNetworkAccess
@@ -316,7 +316,7 @@ resource postgresDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-p
   }
 }
 
-// ---------------- Document library blob storage (Phase 11B) ----------------
+// ---------------- Document library blob storage ----------------
 // Provisioned only when document understanding is enabled (deployDocumentStorage).
 // AAD-only (no account keys), private container, TLS 1.2+. Raw uploads and the
 // parsed/chunk artifacts live under {userId}/{documentId}/... — the userId prefix
@@ -362,7 +362,7 @@ resource documentContainer 'Microsoft.Storage/storageAccounts/blobServices/conta
 }
 
 // Dedicated EPHEMERAL container for inline-attachment original bytes (inline code
-// interpreter, Phase 11 inline; default OFF). Kept clearly apart from the durable
+// interpreter; default OFF). Kept clearly apart from the durable
 // library container so the short-lived originals never mingle with the corpus, and
 // a blob lifecycle rule (below) is the durable TTL backstop in addition to the
 // app's own delete-on-document-delete / purge-on-session-delete cleanup.
@@ -443,9 +443,9 @@ resource documentStorageDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-
   }
 }
 
-// ---------------- Generated-media blob storage (Phase 11F/11G) ----------------
-// A single dedicated media account backs both the generate_image (Phase 11F) and
-// generate_video (Phase 11G) tools, fully independent of the document library so
+// ---------------- Generated-media blob storage ----------------
+// A single dedicated media account backs both the generate_image and
+// generate_video tools, fully independent of the document library so
 // enabling either tool never touches the library's storage. Provisioned when
 // EITHER tool is enabled; each tool's container is created only when its own flag
 // is on. Same hardening: AAD-only (no account keys), private containers, TLS 1.2+.

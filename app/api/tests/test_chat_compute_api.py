@@ -1,4 +1,4 @@
-"""Chat hot-path integration for the compute path (Phase 11C).
+"""Chat hot-path integration for the compute path.
 
 End-to-end through the chat endpoint:
 

@@ -1,4 +1,4 @@
-"""Multi-agent orchestration (Phase 8 inc 2): the ``delegate_to_agent`` capability.
+"""Multi-agent orchestration: the ``delegate_to_agent`` capability.
 
 An agent may declare ``links`` — names of other agents it is allowed to hand a
 self-contained sub-task to. This module turns those links into a single synthetic
@@ -54,7 +54,7 @@ def sanitize_links(orchestrator_name: str, links: list[str] | None) -> list[str]
     grammar, de-duplicated, never the agent itself, and capped at
     :data:`~ai4ia_api.agents.user_agents.MAX_LINKS`. Mirrors the write-time
     validation in :class:`~ai4ia_api.agents.service.AgentService` so that curated
-    agents (which skip that path) and any legacy records are still safe — a
+    agents (which skip that path) and any older records are still safe — a
     malformed or oversized ``agents.json`` entry can never inflate the synthetic
     tool schema."""
     self_name = (orchestrator_name or "").strip().lower()

@@ -1,4 +1,4 @@
-"""The ``generate_image`` synthetic capability (Phase 11F).
+"""The ``generate_image`` synthetic capability.
 
 Mirrors the document ``run_code`` / ``export_document`` capabilities
 (:mod:`ai4ia_api.library.compute_capability`): a function schema + an async

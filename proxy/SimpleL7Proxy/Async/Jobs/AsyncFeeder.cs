@@ -262,7 +262,7 @@ namespace SimpleL7Proxy.Async.Jobs
         private async Task MessageHandler(ProcessMessageEventArgs args)
         {
             var handlerId = Guid.NewGuid();
-            _activeHandlers.TryAdd(handlerId, Task.CompletedTask); // placeholder
+            _activeHandlers.TryAdd(handlerId, Task.CompletedTask);
 
             try
             {

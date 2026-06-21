@@ -1,4 +1,4 @@
-"""DocumentLibraryRepository protocol + shared errors (Phase 11A).
+"""DocumentLibraryRepository protocol and shared errors.
 
 Every method takes the authenticated ``user_id`` and MUST enforce ownership.
 Documents and custom analyzers are partitioned by ``/userId``; ownership is still
@@ -37,7 +37,7 @@ class DocumentLibraryRepository(Protocol):
 
     async def list_documents(self, user_id: str) -> list[UserDocument]: ...
 
-    # Sharing lookups (Phase 11F). These intentionally cross partitions: a grantee
+    # Sharing lookups intentionally cross partitions: a grantee
     # finds documents owned by *others*. ``list_shared_with`` returns the ``shared``
     # documents whose ``acl`` contains ``email``; ``get_by_id`` resolves a single
     # document by id regardless of owner (callers MUST gate the result with

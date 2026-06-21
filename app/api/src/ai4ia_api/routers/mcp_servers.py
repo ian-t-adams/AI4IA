@@ -1,4 +1,4 @@
-"""User MCP-server management endpoints (Phase 12A) — "bring your own" tools.
+"""User MCP-server management endpoints — "bring your own" tools.
 
 ``/api/agents/mcp-servers`` lets a user register, inspect, re-test, and remove
 remote MCP servers whose tools they can later attach to their agents. Every
@@ -62,7 +62,7 @@ async def create_server(
     try:
         return await _service(request).create(user.internal_user_id, payload)
     except McpValidationError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except McpConflictError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except McpConnectionError as exc:
@@ -91,7 +91,7 @@ async def update_server(
     try:
         return await _service(request).update(user.internal_user_id, name, payload)
     except McpValidationError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except McpNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except McpConnectionError as exc:
@@ -119,7 +119,7 @@ async def test_server(
     try:
         return await _service(request).test(user.internal_user_id, name, secret)
     except McpValidationError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except McpNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except McpConnectionError as exc:

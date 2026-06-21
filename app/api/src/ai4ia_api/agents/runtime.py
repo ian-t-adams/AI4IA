@@ -1,4 +1,4 @@
-"""Agent **runtime** (Phase 4): a gateway-native tool-calling loop.
+"""Agent **runtime**: a gateway-native tool-calling loop.
 
 Given a fully-built message list and an agent's allowlisted tool names, this runs
 the standard tool-calling protocol against the model gateway:

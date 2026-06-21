@@ -156,7 +156,7 @@ async def test_warmup_and_close_are_noops_for_plain_store():
     assert await svc.close() is None
 
 
-# --- remember_document (Phase 11E-1: save-to-memory) ---
+# --- remember_document: save-to-memory ---
 async def test_remember_document_stores_kind_document_records():
     embedder = FakeEmbedder(
         {
@@ -228,7 +228,7 @@ async def test_remember_document_with_document_id_is_idempotent():
 
 
 async def test_remember_document_without_id_still_accumulates():
-    # Backwards-compatible: no document_id means no dedupe (legacy behavior).
+    # Backwards-compatible: no document_id means no dedupe.
     embedder = FakeEmbedder({"a gist": [1.0, 0.0, 0.0], "query": [1.0, 0.0, 0.0]})
     svc = _service(embedder, min_score=0.1)
     await svc.remember_document("u1", items=["a gist"])

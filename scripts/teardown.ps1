@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Tear down the existing aiforia/AI4IA resource groups (Phase 0b -> wipe).
+  Tear down the existing aiforia/AI4IA resource groups.
 
 .DESCRIPTION
   Deletes the target resource group(s) and purges soft-deleted Cognitive/Key Vault

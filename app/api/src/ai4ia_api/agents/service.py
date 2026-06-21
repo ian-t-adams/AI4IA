@@ -1,4 +1,4 @@
-"""AgentService (Phase 8): composes the curated catalog with a user's saved agents
+"""AgentService: composes the curated catalog with a user's saved agents
 and owns user-agent CRUD + validation.
 
 Resolution stays uniform: :meth:`catalog_for` returns a plain

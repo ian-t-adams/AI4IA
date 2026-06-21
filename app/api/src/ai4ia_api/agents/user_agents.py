@@ -1,4 +1,4 @@
-"""User-defined agents (Phase 8): a per-user, durable counterpart to the curated
+"""User-defined agents: a per-user, durable counterpart to the curated
 :class:`~ai4ia_api.agents.agent_catalog.AgentSpec` catalog.
 
 A *user agent* is a persona a single user authors and saves (name, display name,

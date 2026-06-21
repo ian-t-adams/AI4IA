@@ -1,4 +1,4 @@
-"""Cosmos repo parity (Phase 11A/11B): ``update_document`` must raise on a
+"""Cosmos repo parity for document library: ``update_document`` must raise on a
 missing or cross-user id rather than silently create/resurrect it — matching the
 in-memory repo contract that the 11B ingest worker relies on when driving status
 transitions (stored -> ready/failed). The write is an ETag-conditional
@@ -112,7 +112,7 @@ async def test_in_memory_update_missing_id_raises():
         await repo.update_document(_doc(user="alice"))
 
 
-# --- sharing-lookup parity (Phase 11F): the Cosmos repo issues the right
+# --- sharing-lookup parity: the Cosmos repo issues the right
 # cross-partition query and marshals rows into UserDocument. A fake container
 # captures the query/params and yields preset rows (Cosmos's SQL engine isn't
 # exercised here — only the repo's query construction + result marshalling). ---

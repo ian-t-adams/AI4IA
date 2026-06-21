@@ -1,114 +1,105 @@
 # AI4IA Architecture
 
-AI4IA is a multi-model, multi-region **agentic chat application** for personal use and
-customer demos, defined entirely as Infrastructure-as-Code in this repo.
+AI4IA is a governed, multi-model chat and agent app on Azure Container Apps. The
+web frontend calls the FastAPI backend; the backend owns auth, session state,
+tools, memory, document/library access, usage metering, and all model routing.
 
-## High-level diagram
+Editable visual: [`architecture-overview.excalidraw`](./architecture-overview.excalidraw).
+
+## High-level flow
 
 ```mermaid
 flowchart TB
-  User[Browser] -->|Entra MSAL| Web[Next.js Web<br/>Container Apps]
-  Web --> API[FastAPI Backend<br/>Container Apps]
-  API --> Agents[Agents runtime<br/>gateway-native tool loop]
-  API --> Mem[mem0 service<br/>+ pgvector]
-  API --> Cosmos[(Cosmos DB<br/>sessions/history/agents)]
-  Agents --> Foundry[Foundry Agent Service<br/>+ toolbox + MCP tools]
-  API -->|all model calls| GW[Model Gateway<br/>SimpleL7Proxy + APIM]
-  GW --> F1[Foundry East US 2]
-  GW --> F2[Foundry Sweden Central]
-  GW --> F3[Foundry West US]
-  GW --> EH[Event Hubs] --> Obs[App Insights / Azure Monitor]
-  Agents --> Bing[Bing Grounding]
-  API --> Voice[Foundry Voice Live]
+  User[Browser] -->|MSAL or dev auth| Web[Next.js web<br/>Container App]
+  Web --> API[FastAPI API<br/>Container App]
+  User -. Voice Live WS .-> API
+  API --> Cosmos[(Cosmos DB<br/>sessions, usage, agents, docs)]
+  API --> Pg[(Postgres + pgvector<br/>memory and doc chunks)]
+  API --> Blob[(Blob Storage<br/>documents, media artifacts)]
+  API --> Search[Azure AI Search<br/>optional doc retrieval]
+  API --> Monitor[Azure Monitor / App Insights]
   API --> CU[Content Understanding]
-  User -.->|Voice Live WS · Phase 10<br/>default off| API
+  API --> Tools[Built-in tools + BYO MCP]
+  API --> GW[APIM + SimpleL7Proxy<br/>model gateway]
+  GW --> EUS2[Foundry East US 2]
+  GW --> SWC[Foundry Sweden Central]
+  GW --> WUS[Foundry West US]
 ```
 
-> **Voice Live (Phase 10, default OFF).** Real-time speech-to-speech uses a
-> WebSocket the browser opens **directly to the API's external ingress**
-> (`/api/voice/live`) — the dashed edge above — because the Next.js HTTP proxy
-> can't proxy WebSockets. The API relay still enforces all governance (auth via a
-> WS subprotocol, the entitlement gate, usage metering, and `Origin` validation)
-> and opens the upstream realtime socket through the **same model gateway** as
-> every other model call, so the "all model traffic through the gateway" principle
-> holds. The browser owns the conversation shape (it sends `session.update`), so it
-> picks the **voice** from the model's supported set; the relay can additionally run
-> **governed tool calling** in-session (flag `AI4IA_REALTIME_TOOLS_ENABLED`,
-> inert unless realtime is on): it injects the safe built-in tools into the
-> client's `session.update` and executes the model's function calls in-process
-> through the **same registry/executor as chat** (authorize → validate → run), so
-> live voice never gains a capability the gateway didn't authorize. When the
-> feature flag is off, the route refuses and no live-voice UI is shown — the
-> default behavior is unchanged.
->
-> **Shared text ↔ voice conversation.** Voice Live and text chat operate on **one**
-> session. On connect the relay is seeded (verbatim, passively) with the recent text
-> turns, so a live session opens with the chat's memory; when a live session ends, the
-> finalized voice turns are persisted back as ordinary messages (tagged
-> `source=voice`) via `POST /api/sessions/{id}/voice-turns`, so the user can flow
-> between typing and talking in the same transcript. The relay itself stays
-> byte-for-byte transparent — seeding and persistence happen on the web client and the
-> new HTTP endpoint.
+Voice Live connects directly from the browser to the API because the Next.js HTTP
+proxy cannot proxy WebSockets. The API relay still enforces auth, Origin checks,
+entitlements, metering, deployment resolution, and optional governed tool calling.
+
+## Request lifecycle
+
+1. The browser authenticates through Entra/MSAL or local dev identity and calls the
+   Next.js app.
+2. The web app forwards API requests server-side with the current identity context
+   and feature visibility from runtime environment variables.
+3. The FastAPI service normalizes the user id, enforces admin/feature/tool gates,
+   loads session state, and builds the governed model/tool plan.
+4. Model calls route through APIM and SimpleL7Proxy to the selected Foundry
+   deployment. Native Azure service planes such as Content Understanding, Azure
+   Monitor, Key Vault, Blob Storage, Cosmos, and AI Search are called directly with
+   managed identity or configured service auth.
+5. Durable state is written to Cosmos and Blob Storage; derived memory/search/chunk
+   stores are updated best-effort and can be rebuilt.
 
 ## Core principles
-1. **Model gateway from day one.** The backend never calls Foundry models directly — every
-   model call flows through the gateway (SimpleL7Proxy + APIM), so governance, cost telemetry,
-   routing, and entitlements are wired once. A minimal gateway path ships in Phase 1.5; the
-   full capacity-sharing/entitlement layer arrives in Phase 6.
-2. **Data-driven model catalog.** `infra/models.json` is the single source of truth for which
-   models deploy to which regions/SKUs. Bicep iterates over it; no hand-maintained per-model
-   resources. The catalog is generated/validated from live Azure availability. Each model carries
-   a `category`; the catalog derives a `conversational` flag from it (chat, chat-fast, reasoning,
-   reasoning-oss, router, research) so the chat/agent model pickers only offer text-chat targets.
-   Capability models (image, video, tts, transcription, embedding, rerank) and voice models
-   (realtime, audio) are reached through their own surfaces/tools — the chat API rejects them
-   with a 422 rather than running them down the chat-completions path. Surfacing image/video/speech
-   models as invokable agent tools (or a dedicated "Generate" tab) is future work.
-3. **Identity decoupled from IdP.** Users carry a canonical internal ID independent of the
-   Entra object ID, with an IdP-mapping table. This lets us add Entra External ID (CIAM)
-   later without rewriting data.
-4. **Cosmos is canonical; memory is rebuildable.** Chat sessions/history/agents/workflows live
-   in Cosmos DB. mem0 + pgvector hold derived memory that can be rebuilt from Cosmos. Deletion
-   is tombstone + async purge + cross-store verification. The per-user document library
-   (Phase 11A; `userDocuments` + `analyzers` containers, partitioned by `/userId`) is likewise
-   canonical in Cosmos. It is feature-flagged **default-OFF** (`AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`):
-   when off, the `/api/library` API refuses (404) and nothing is constructed, so there is no
-   behavior change. Content Understanding ingest, chunking, and retrieval build on this spine in
-   later Phase 11 sub-phases (11B–11F — CU ingest, tiered retrieval, intent router +
-   code-interpreter, audio/video grounding with a citation-linked media player,
-   save-to-memory, owner-private annotations, and document-level email sharing — all
-   merged, all default-OFF). See
-   [`phase-11-document-understanding.md`](./phase-11-document-understanding.md).
-5. **Least privilege.** Managed identities + Key Vault/App Configuration for all secrets; no
-   secrets in code or images.
 
-## Regions
-See [region-capability-matrix.md](./region-capability-matrix.md). v1 deploys:
-- **East US 2** (US data zone) — full chat/voice/image/video + evaluations.
-- **Sweden Central** (EU data zone) — feature parity incl. voice + tts/tts-hd.
-- **West US** — targeted for MAI-Image-2.x and o3-deep-research (exclusive to it).
+1. **Gateway-first model calls.** Chat, agents, embeddings, image/video generation,
+   speech, and realtime models route through APIM/SimpleL7Proxy. Non-chat Azure
+   service planes such as Content Understanding and Azure Monitor use their native
+   endpoints with managed identity or configured service auth.
+2. **Catalog-driven deployments.** `infra/models.json` is the deployment source of
+   truth and generates the packaged API model catalog. Capability models stay out
+   of chat pickers unless their category is explicitly allowed.
+3. **Feature-gated advanced surfaces.** Voice Live, document understanding,
+   document compute, inline attachment compute, custom MCP tools, Web IQ, search,
+   image/video generation, and memory all have explicit config gates and
+   fail-closed prerequisites.
+4. **Cosmos is canonical; derived stores are rebuildable.** Sessions, messages,
+   usage, user agents/workflows, MCP server records, and document manifests live in
+   Cosmos. Memory vectors, document chunks, search indexes, and parsed artifacts
+   can be regenerated from canonical records and blobs.
+5. **Per-user isolation.** User ids are normalized at the API boundary. Cosmos
+   partitions, blob prefixes, vector filters, memory records, and MCP secrets are
+   scoped to the authenticated user; document sharing widens reads through a
+   single access gate.
+6. **Telemetry without blocking the hot path.** Usage writes, custom events,
+   resource metrics, and optional App Insights export are best-effort and never
+   break a chat turn.
 
 ## Components
-| Layer | Tech | Host |
-|---|---|---|
-| Web | Next.js + TypeScript | Container Apps |
-| API | Python FastAPI | Container Apps |
-| Agents | In-house gateway-native runtime + ToolExecutor (in-process w/ API) | Container Apps |
-| Model gateway | SimpleL7Proxy (.NET) + APIM | Container Apps + APIM |
-| Memory | mem0 (OSS) + Postgres Flexible (pgvector) | Container Apps + PaaS |
-| App data | Cosmos DB (NoSQL) | PaaS |
-| AI | Foundry (Cognitive) accounts/projects + deployments | PaaS, 3 regions |
-| Observability | App Insights + Log Analytics + Azure Monitor + Event Hubs | PaaS |
-| Identity | Entra (MSAL workforce + B2B guests; External ID later) | Entra |
 
-## Repo layout
-```
-/infra      Bicep modules + main.bicep + models.json (azd targets)
-/app/web    Next.js + TS (chat UI, theming, a11y, @/ commands)
-/app/api    FastAPI (agents, sessions, memory, tools, auth)
-/app/agents In-process agents library (gateway-native tool loop), custom tools
-/proxy      SimpleL7Proxy + config
-/scripts    teardown, purge, inventory, seed-models, hooks
-/docs       architecture, runbooks, region map, naming/tagging
-azure.yaml  azd service map
-```
+| Layer | Tech | Notes |
+|---|---|---|
+| Web | Next.js + TypeScript | Chat, voice, library/media, admin, auth runtime config |
+| API | FastAPI + Pydantic | Auth, chat, agents, tools, documents, usage, metrics |
+| Agent runtime | In-process Python | Gateway-native tool loop and user-defined agents |
+| Model gateway | APIM + SimpleL7Proxy | Routing, managed identity to Foundry, telemetry |
+| App data | Cosmos DB | Sessions, messages, usage, agents, workflows, documents |
+| Memory/chunks | Postgres + pgvector / mem0 | Per-user semantic recall and document chunks |
+| Search | Azure AI Search | Optional hybrid/semantic document retrieval backend |
+| Storage | Blob Storage | Raw documents, parsed artifacts, generated media |
+| AI services | Foundry + Content Understanding | Models, realtime, speech, image/video, CU ingest |
+| Observability | Log Analytics + App Insights + Monitor | Logs, traces, metrics, admin resource panels |
+
+## Regions
+
+See [region-capability-matrix.md](./region-capability-matrix.md). The default
+strategy uses:
+
+- **East US 2** for the primary US model set, realtime, image/video, router, and
+  evaluations.
+- **Sweden Central** for EU-resident model parity where available.
+- **West US** for targeted models such as MAI Image and deep research.
+
+## Current gaps
+
+- External ID/CIAM is not wired; current auth is Entra workforce/B2B.
+- Folder-level document sharing and unauthenticated public links are not
+  implemented; `public` documents are tenant-walled.
+- The library UI does not yet expose custom analyzer authoring or first-class
+  non-document modality uploads.
+- Memory lacks a global user-facing toggle and recalled-memory indicator.

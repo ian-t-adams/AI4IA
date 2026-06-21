@@ -1,4 +1,4 @@
-"""Rolling summarization (WS2 part C).
+"""Rolling summarization.
 
 Unit tests for :class:`SummarizationService` plus end-to-end tests through
 ``POST /api/chat`` proving: the DEFAULT-OFF flag makes the turn byte-for-byte

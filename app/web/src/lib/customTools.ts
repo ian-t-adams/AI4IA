@@ -1,9 +1,9 @@
-// Custom tools / bring-your-own remote MCP servers (Phase 12B) — shared types
+// Custom tools / bring-your-own remote MCP servers: shared types
 // and pure helpers for the web UI.
 //
 // The runtime feature flag is surfaced to the browser via the same server-env ->
-// provider-prop pattern as the Phase 9 auth / Phase 10 voice / Phase 11 library
-// configs (see customToolsConfig.ts + CustomToolsProvider.tsx), NOT a NEXT_PUBLIC_*
+// provider-prop pattern as the auth, voice, and library configs (see
+// customToolsConfig.ts + CustomToolsProvider.tsx), NOT a NEXT_PUBLIC_*
 // var, so it is evaluated at request time. When disabled the whole surface is inert
 // and the app behaves exactly as before.
 //
@@ -66,7 +66,7 @@ export interface UserMcpServer {
   updatedAt: string;
   lastConnectedAt: string | null;
   lastError: string | null;
-  // --- Health / quarantine (Phase 12B Increment D) -------------------------
+  // --- Health / quarantine -------------------------------------------------
   // Per-server health surfaced for badges. `consecutiveFailures` counts
   // connect/execute transport failures since the last success; `quarantinedUntil`
   // (when set and in the future) means the server is skipped until it elapses;

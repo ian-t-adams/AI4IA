@@ -1,1 +1,1 @@
-"""User-defined workflows (Phase 8 inc 3)."""
+"""User-defined workflows."""

@@ -18,7 +18,7 @@ def test_agents_endpoint_returns_public_summaries(client):
     assert "tools" not in sample
 
 
-# --- User-defined agents (Phase 8) -------------------------------------------
+# --- User-defined agents ------------------------------------------------------
 
 
 class _CapturingGateway:
@@ -151,7 +151,7 @@ def test_other_user_cannot_mention_my_agent(client):
     assert "Unknown agent" in resp.json()["message"]["content"]
 
 
-# --- Agent links / delegation validation (Phase 8 inc 2) ---------------------
+# --- Agent links / delegation validation -------------------------------------
 
 
 def test_create_accepts_links_roundtrip(client):

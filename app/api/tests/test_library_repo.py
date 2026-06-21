@@ -1,4 +1,4 @@
-"""In-memory DocumentLibraryRepository (Phase 11A): ownership isolation, dedupe
+"""In-memory DocumentLibraryRepository: ownership isolation, dedupe
 lookup, and the analyzer registry (built-in merge + custom CRUD + conflicts)."""
 from __future__ import annotations
 
@@ -133,7 +133,7 @@ async def test_builtin_analyzer_not_deletable(repo):
     assert (await repo.get_analyzer("alice", builtin_id)).id == builtin_id
 
 
-# --- sharing lookups (Phase 11F) ---
+# --- sharing lookups ---
 async def test_list_shared_with_returns_only_explicit_shares(repo):
     from ai4ia_api.library.models import Visibility
 

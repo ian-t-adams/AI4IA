@@ -1,4 +1,4 @@
-"""Deterministic, heading-aware Markdown chunker for retrieval (Phase 11B).
+"""Deterministic, heading-aware Markdown chunker for retrieval.
 
 Content Understanding returns Markdown; we split it into bounded, overlapping
 chunks for embedding into the ``doc_chunks`` vector store. The splitter packs
@@ -8,7 +8,7 @@ small ``overlap`` tail from the previous chunk so a span that straddles a bounda
 is still retrievable. Pure and deterministic — same input always yields the same
 chunks — so it is exercised entirely by unit tests.
 
-Phase 11D adds :func:`chunk_audiovisual`, the time-grounded analogue for audio /
+The :func:`chunk_audiovisual` helper is the time-grounded analogue for audio /
 video: Content Understanding returns ``contents[]`` segments carrying
 ``transcriptPhrases`` (speaker + start/end ms). We pack phrases up to
 ``max_chars`` and ground each chunk on its time span + speaker so retrieval can
@@ -69,7 +69,7 @@ def chunk_markdown(
     max_chars = max(1, int(max_chars))
     overlap = max(0, min(int(overlap), max_chars - 1))
 
-    # Phase 1: build primary spans (start, end, heading), packing paragraphs up to
+    # Step 1: build primary spans (start, end, heading), packing paragraphs up to
     # max_chars and hard-wrapping any oversized paragraph (no internal overlap;
     # phase 2 adds the cross-chunk overlap uniformly).
     spans: list[tuple[int, int, str | None]] = []
@@ -106,7 +106,7 @@ def chunk_markdown(
             cur_start, cur_end, cur_heading = s, e, heading
     flush()
 
-    # Phase 2: materialize chunks, prepending the previous chunk's overlap tail.
+    # Step 2: materialize chunks, prepending the previous chunk's overlap tail.
     chunks: list[Chunk] = []
     prev_primary = ""
     for s, e, h in spans:
@@ -234,7 +234,7 @@ def media_timeline(contents: Sequence[Any]) -> dict[str, Any]:
     """Extract a deep-link scene timeline from audio/video CU ``contents[]``.
 
     Surfaces each segment's time span plus the analyzer's ``keyFrameTimesMs`` and
-    ``cameraShotTimesMs`` (Phase 11D leftover: keyframe / scene surfacing) so the UI
+    ``cameraShotTimesMs`` (keyframe / scene surfacing) so the UI
     can deep-link a media player to scene boundaries. Returns::
 
         {"durationMs": int | None,

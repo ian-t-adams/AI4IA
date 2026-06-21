@@ -1,173 +1,56 @@
-# app/api — AI4IA Backend (Python FastAPI)
+# app/api — AI4IA Backend
 
-The application backend: auth, sessions, chat, agents, memory, tools, and the model-gateway
-client. **All model calls go through the gateway** (`/proxy`), never directly to Foundry.
+FastAPI service for auth, sessions, chat, agents, tools, memory, documents,
+usage, admin analytics, and model-gateway access. Model calls use the configured
+gateway except for Azure service control/data planes that are not OpenAI chat
+surfaces.
 
-## Responsibilities (phased)
-- **Phase 2:** MSAL auth + B2B invite/onboarding; canonical internal user ID (decoupled from
-  Entra OID) + IdP mapping; chat endpoint via the model gateway; per-user sessions/history in
-  Cosmos; model picker + parameters; per-user/per-model request + token limits; feature flags.
-- **Phase 4:** in-house agents runtime (gateway-native tool loop); Foundry toolbox + BYO MCP tools; custom tools behind a
-  tool-safety registry (allowlist, scopes, per-tool secrets, human-approval for destructive
-  actions); agent-step tracing + a small regression eval set.
-- **Phase 5:** mem0 + pgvector memory; erase/clear (tombstone + async purge + verify); long-chat
-  summarize & continue.
+## Responsibilities
 
-## Key principles
-- Cosmos DB is canonical for sessions/messages/agents/workflows; memory stores are rebuildable.
-- Secrets come from Key Vault / App Configuration via managed identity — never from code.
-- Correlation IDs propagate to the gateway and into traces.
+- Auth: dev mode for local work, Entra validation for deployed environments,
+  canonical internal user ids, and admin gates.
+- Chat: sessions/history, streaming persistence, model selection, per-model token
+  caps, optional rolling summarization, `@agent` routing, and slash commands.
+- Agents/tools: curated agents, user-defined agents, workflows, governed built-in
+  tools, generated image/video/document artifacts, Web IQ search tools when
+  enabled, and user-registered remote MCP servers.
+- Memory: disabled/in-memory/pgvector/mem0 backends, automatic recall, explicit
+  forget, and document save/forget.
+- Documents: per-session attachments plus the feature-gated cross-session library,
+  Content Understanding ingest, retrieval, code interpreter, annotations, sharing,
+  media playback metadata, and processing/export tools.
+- Operations: usage ledger, entitlements, admin usage rollups, Azure Monitor
+  resource panels, structured logs, correlation ids, and Application Insights
+  export when configured.
 
-## Stack
-- FastAPI + Pydantic, `azure-identity`, in-house `ai4ia_api/agents` runtime, Cosmos + Postgres clients.
-  Packaged with `pyproject.toml`; containerized (`Dockerfile`) → Azure Container Apps.
+## Local dev
 
-## Local dev (to be added in Phase 2)
-```
-python -m venv .venv && . .venv/Scripts/Activate.ps1
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -e ".[dev]"
 uvicorn ai4ia_api.main:app --reload
 ```
 
-## Voice Live (Phase 10) — real-time speech-to-speech relay
+Run checks from this folder:
 
-A **feature-flagged, default-OFF** governed WebSocket relay at `WebSocket
-/api/voice/live` (`routers/realtime.py`). With `AI4IA_REALTIME_ENABLED=false` (the
-default) the route refuses immediately, so the API is inert and unchanged. The
-existing turn-based REST voice (`routers/voice.py`: transcription + speech) is
-distinct and untouched.
+```powershell
+ruff check .
+pytest -q
+```
 
-When enabled, the browser connects **directly to the API's external ingress** (the
-web HTTP proxy can't proxy WebSockets) and the relay:
+## Configuration posture
 
-1. refuses if the feature flag is off;
-2. validates the browser `Origin` against `AI4IA_REALTIME_ALLOWED_ORIGINS` (WS
-   handshakes aren't CORS-preflighted, so the relay checks Origin itself; empty
-   reflects only in `local`, else rejects — fail-closed);
-3. extracts + validates the caller's token from a **WebSocket subprotocol**
-   (`ai4ia-bearer` for Entra, `ai4ia-dev` for dev) via the auth provider directly,
-   since a browser-direct WS can't set `Authorization` / be proxy-stamped;
-4. resolves the realtime deployment from the catalog (browser never sees it);
-5. runs the **entitlement gate** before opening the upstream socket;
-6. opens the upstream Azure realtime WS through the **same model gateway** + key as
-   chat, **meters one unknown call** per session (`session_id="voice-live"`), then
-   pumps text+binary frames both ways until either side closes (with an optional
-   `AI4IA_REALTIME_MAX_SESSION_SECONDS` clamp).
+Feature flags are fail-closed in `ai4ia_api.config.Settings.validate_runtime`.
+Local can use in-memory stores and fake clients; deployed environments must wire
+durable stores, credentials, Origin allowlists, and real auth for the features
+they enable. The authoritative flag list is
+[`../../docs/runbooks/feature-enablement.md`](../../docs/runbooks/feature-enablement.md).
 
-The event protocol stays client-driven (the relay is a mostly-transparent pump);
-the relay owns only the connection, governance, and metering. See `.env.example`
-for the `AI4IA_REALTIME_*` settings.
+## Current gaps
 
-## Document library (Phase 11A) — per-user storage spine
-
-A **feature-flagged, default-OFF** per-user document library under `/api/library`
-(`routers/library.py`). With `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=false` (the
-default) the library repository is never constructed and every route refuses with
-404, so the API is inert and unchanged. The existing per-session Phase 7C uploads
-(`routers/documents.py`, `/api/sessions/{id}/documents`) are distinct and untouched.
-
-11A ships only the storage spine so the data model and governance are settled
-before any model calls:
-
-- **Manifest** (`library/models.py` `UserDocument`): the user's cross-session
-  library, partitioned by `/userId` (`userDocuments` Cosmos container). Forward-
-  looking fields (CU `summary`, blob artifact paths, `chunkCount`) are present but
-  inert until ingest (11B). **Sharing shipped in 11F** (document-level, email-keyed):
-  `visibility` ∈ `private`/`shared`/`public` and `acl` holds grantee emails, so
-  `library/access.py:can_access(user, doc, email=…)` admits the owner, tenant-`public`
-  docs, and shared grantees — owner-only mutations stay on `require_owner`.
-- **Analyzer registry** (`analyzers` container, PK `/userId`): per-user custom
-  analyzers selectable at upload, merged with built-in descriptors
-  (`BUILTIN_ANALYZERS`). Built-ins are never persisted and can't be shadowed or
-  deleted by a user.
-- **Dedupe** (`library/hashing.py`): sha256 of the bytes + analyzer id is the
-  cache key, so re-uploading identical bytes reuses the manifest instead of
-  re-cracking.
-- **Repository** mirrors the session store: in-memory for local/dev/tests,
-  Cosmos (AAD/managed-identity) when `AI4IA_SESSION_STORE=cosmos`. Ownership is
-  enforced on every operation (partition + explicit check).
-
-Enabling the feature outside `local` requires the cosmos session store (the
-library is durable cross-session storage); `validate_runtime()` fails closed
-otherwise. Content Understanding ingest, chunking, and retrieval (11B), the intent
-router + code-interpreter (11C), audio/video time-grounding + media player (11D),
-save-to-memory + owner-private annotations + erase cascade (11E), and document-level
-email sharing (11F) all build on this spine — all merged, all on the same flag. See
-`.env.example` for the `AI4IA_DOCUMENT_*` settings.
-
-## Document ingest (Phase 11B-1) — the producer path
-
-Builds on the 11A spine to turn an upload into a manifest + retrievable chunks.
-Still **feature-flagged, default-OFF** (same `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`
-flag): with it off nothing here is constructed and `POST /api/library/documents`
-404s, so the API is byte-for-byte unchanged. The retrieval *consumer* (wiring into
-chat's `_document_context` + the `fetch_document` tool + web UI) is deliberately
-deferred to **11B-2** to isolate the chat-hot-path regression risk.
-
-- **Upload** (`POST /api/library/documents`, `routers/library.py`): persists the
-  bytes + creates the manifest synchronously (status `stored`) with an instant
-  local-text summary (Phase 7C extractor, best-effort), then schedules Content
-  Understanding enrichment as a FastAPI background task. Caps fail fast: `413` over
-  `document_max_upload_bytes`, `409` over `document_max_per_user`, `422` empty,
-  `404` unknown analyzer. Identical re-uploads (same bytes + analyzer) return the
-  existing manifest without re-cracking.
-- **Ingest orchestrator** (`library/ingest.py` `DocumentIngestor`): `ingest()` is
-  the sync request-path half; `enrich()` is the background half — it runs CU,
-  writes `parsed.md`, chunks + embeds into the per-user `doc_chunks` vector store,
-  writes a `chunks.jsonl` sidecar, and flips the manifest to `ready` (or `failed`
-  with the quick-text fallback kept). `enrich()` **never raises** (it runs detached)
-  and is a **no-op when CU is not configured** (a document then stays at `stored`).
-- **Content Understanding client** (`content_understanding/`): the async REST
-  surface (`:analyzeBinary` submit → poll `Operation-Location` until terminal),
-  gateway-style auth (bearer managed-identity on the Cognitive Services scope, or
-  `api_key`). Verified against api-version `2025-11-01` (GA).
-- **Blob store** (`library/blob_store.py`): raw + parsed + chunk artifacts under
-  `{userId}/{documentId}/...` in a private, AAD-only container — the browser never
-  receives a blob URL. In-memory locally; Azure Blob when configured.
-- **Chunk store** (`library/doc_chunks.py`): per-user `doc_chunks` pgvector table
-  (exact cosine; the 3072-dim embeddings exceed pgvector's ANN ceiling), filtered
-  by `user_id` and an optional `document_id` set. In-memory locally.
-- **Governance**: the upload runs the entitlement gate (disabled-account 403); each
-  enrich meters exactly one CU operation against a synthetic deployment with
-  `TokenUsage(known=False, calls=1)` — counted but never priced, mirroring the
-  voice "unknown call" convention. Deleting a manifest best-effort purges its blob
-  artifacts + indexed chunks.
-
-Enabling ingest outside `local` requires **both** a Content Understanding endpoint
-(`AI4IA_CU_BASE_URL`) and a blob account (`AI4IA_DOCUMENT_BLOB_ACCOUNT_URL`);
-`validate_runtime()` fails closed otherwise. See `.env.example` for the
-`AI4IA_CU_*` and `AI4IA_DOCUMENT_BLOB_*` settings.
-
-## Admin usage dashboard (WS4) — org-level rollups + resource panels
-
-The app admin's "how many users / tokens / models / agents / resource usage"
-dashboard, built on the **existing** admin gate (`auth/admin.require_admin`) and
-the per-user usage ledger (no new ledger writes). All endpoints are read-only.
-
-- **Gating** (`routers/admin_usage.py`): every `/api/admin/usage/*` and
-  `/api/admin/metrics/*` route is behind `require_admin` (admin `200` /
-  non-admin `403` / anon `401`). The one exception is `GET /api/admin/whoami`,
-  which only requires authentication and returns an `isAdmin` boolean so the web
-  client can *hide* the admin nav entry — a cosmetic hide; the server gate is the
-  real boundary. `require_admin` now delegates the decision to a non-raising
-  `evaluate_admin()` helper shared with `whoami`.
-- **Aggregation** (`usage/aggregate.py` `AdminUsageService`): bounded,
-  cross-partition reads via `UsageRepository.query_records(since, now, limit)`
-  (time window + `TOP`/row cap, newest-first) feed pure functions producing org
-  totals, by-model, by-day, by-user (top-N paged, joined to entitlement
-  overrides), and per-agent rollups. Token totals count only `usageKnown` turns
-  and cost totals only `costKnown` turns (the Phase 6A honesty model), so they
-  never disagree with the per-user summary. A hit record cap sets `truncated`.
-  Endpoints: `GET /api/admin/usage/summary|by-model|by-day|by-user|agents?days=N`
-  (`days` 1–90, default 30).
-- **Resource metrics** (`metrics/`, `GET /api/admin/metrics/resources`):
-  best-effort Azure Monitor panels for AI Search / PostgreSQL / Cosmos / Container
-  Apps, read via the api managed identity (`azure-monitor-query`, imported
-  lazily). Each panel whose ARM resource id is unset, whose SDK is absent, or
-  whose query fails returns `status: "unavailable"` with a short `detail` rather
-  than an error — so the dashboard ships before diagnostics/resource-ids are
-  wired and lights up panel-by-panel as the ids appear. Configure via the
-  `AI4IA_METRICS_*_RESOURCE_ID` env vars (see `.env.example`);
-  `AI4IA_RESOURCE_METRICS_ENABLED=false` disables all panels.
-
-
+- Web IQ and inline-attachment Code Interpreter are implemented but disabled in
+  the checked-in live parameters.
+- Memory has no global user-facing consent/toggle or recalled-memory indicator.
+- Custom analyzer authoring and non-document library upload UI are not surfaced.

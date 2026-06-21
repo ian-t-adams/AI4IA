@@ -1,4 +1,4 @@
-"""SSRF egress guard for user-supplied MCP server endpoints (Phase 12A).
+"""SSRF egress guard for user-supplied MCP server endpoints.
 
 A user registering a "bring your own" MCP server hands us a URL we will later
 make outbound requests to. Left unguarded, that is a classic **Server-Side

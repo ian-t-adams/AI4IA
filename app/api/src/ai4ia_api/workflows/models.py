@@ -1,4 +1,4 @@
-"""User-defined workflows (Phase 8 inc 3): a per-user, durable, ordered pipeline
+"""User-defined workflows: a per-user, durable, ordered pipeline
 of agent steps.
 
 A *workflow* is a named sequence of steps a single user authors and saves. Each

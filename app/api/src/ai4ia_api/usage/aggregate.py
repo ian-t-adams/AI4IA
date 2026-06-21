@@ -13,7 +13,7 @@ Design:
   ``list[UsageRecord]`` so it is trivially unit-testable against a seeded store;
   :class:`AdminUsageService` only adds the bounded fetch + windowing.
 - **Honest counts.** Token totals count only ``usageKnown`` turns and cost totals
-  only ``costKnown`` turns (the Phase 6A honesty model), mirroring the per-user
+  only ``costKnown`` turns (the honesty model), mirroring the per-user
   summary so the two never disagree.
 - **Read-only.** Nothing here mutates the ledger.
 """

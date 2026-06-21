@@ -1,4 +1,4 @@
-"""Responses API Code Interpreter client (Phase 11C).
+"""Responses API Code Interpreter client.
 
 All IO is injected (a fake ``httpx``-like async client + a fake token provider),
 so these exercise URL building, auth-header construction for each mode, the

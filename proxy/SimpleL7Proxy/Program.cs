@@ -498,7 +498,7 @@ public class Program
             {
                 backendOptions.LogToFile ? "file" : "eventhub"
             };
-            startupLogger.LogInformation("[CONFIGS] EVENT_LOGGERS not set, falling back to legacy: {EventLoggers}", string.Join(", ", enabledLoggers));
+            startupLogger.LogInformation("[CONFIGS] EVENT_LOGGERS not set, falling back to configured defaults: {EventLoggers}", string.Join(", ", enabledLoggers));
         }
 
         foreach (var loggername in enabledLoggers)

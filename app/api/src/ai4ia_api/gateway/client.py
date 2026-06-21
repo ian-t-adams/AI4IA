@@ -437,7 +437,7 @@ class ModelGatewayClient:
             if owned:
                 await client.aclose()
 
-    # --- Video generation (Sora 2, Phase 11G) ---------------------------------
+    # --- Video generation ------------------------------------------------------
     # Sora is an async job API (NOT a single round-trip like images): create a
     # job, poll it to completion, then download the generation's MP4 bytes. The
     # three primitives below are intentionally thin; the submit -> poll ->

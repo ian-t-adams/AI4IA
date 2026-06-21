@@ -1,6 +1,6 @@
 "use client";
 
-// Phase 9 auth boundary. In the default `dev` provider this is a pure passthrough
+// Auth boundary. In the default `dev` provider this is a pure passthrough
 // (no MSAL, existing behavior). Under `entra` it constructs/initializes the MSAL
 // singleton on the client, wires the active account, and wraps the app in
 // MsalProvider + SignInGate so nothing renders until the user is signed in.

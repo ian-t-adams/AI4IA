@@ -861,7 +861,6 @@ public class ProxyWorker : IConfigChangeSubscriber
         // Try the request on each active host, stop if it worked
         // Use helper method to abstract over shared vs per-request iterators
 
-        // TODO: Replace dummy parameters with request header lookup (e.g. request.Headers["x-S7P-IterationMode"])
         bool loop_once = true;
         bool loop_for_max_attempts = false;
 
@@ -1369,8 +1368,6 @@ public class ProxyWorker : IConfigChangeSubscriber
 
         if (request.AsyncTriggered)
         {
-            // TODO: Unify async error path to flow through WriteResponseAsync/StreamResponseAsync
-            // like the non-async path below. For now, write directly via WriteExhaustedHostsErrorAsync.
             await WriteExhaustedHostsErrorAsync(request, lastStatusCode, errorBodyStr).ConfigureAwait(false);
 
             return new ProxyData

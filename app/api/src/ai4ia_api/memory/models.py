@@ -1,4 +1,4 @@
-"""Memory data model (Phase 5).
+"""Memory data model.
 
 A :class:`MemoryRecord` is one durable, per-user snippet of recallable context.
 Records are always scoped to an ``internal_user_id`` so isolation is enforced by
@@ -24,7 +24,7 @@ class MemoryRecord:
     similarity of a search hit and is unset on stored records.
 
     ``document_id`` ties a memory back to the library document it was saved from
-    (Phase 11E-3), so a re-save can replace the prior generation instead of
+    so a re-save can replace the prior generation instead of
     duplicating it, and a single document's memories can be forgotten on their
     own. ``None`` for chat-sourced memories.
     """

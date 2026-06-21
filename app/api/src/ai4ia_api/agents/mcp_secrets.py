@@ -1,6 +1,6 @@
-"""Durable secret storage for user-registered MCP servers (Phase 12B).
+"""Durable secret storage for user-registered MCP servers.
 
-Phase 12A used MCP connection secrets *transiently*: a credential was supplied on
+MCP connection secrets can be supplied transiently: a credential is supplied on
 each request, used to connect, and never stored. That is fine for discovery but
 cannot back **per-turn execution** (a chat turn can't re-prompt the user for an
 API key). This module adds a durable secret seam so an authenticated server's

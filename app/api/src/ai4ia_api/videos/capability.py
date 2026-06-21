@@ -1,4 +1,4 @@
-"""The ``generate_video`` synthetic capability (Phase 11G, Sora 2).
+"""The ``generate_video`` synthetic capability.
 
 Mirrors the ``generate_image`` capability (:mod:`ai4ia_api.images.capability`): a
 function schema + an async handler injected into

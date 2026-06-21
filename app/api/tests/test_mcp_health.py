@@ -1,5 +1,4 @@
-"""Tests for the pure MCP health/quarantine state machine + observability hooks
-(Phase 12B Increment D).
+"""Tests for the pure MCP health/quarantine state machine + observability hooks.
 
 These cover ``mcp_health`` (a dependency-free state machine over the durable
 :class:`UserMcpServer` record) and ``mcp_observability`` (structured, redacted

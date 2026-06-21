@@ -1,4 +1,4 @@
-"""Content Understanding client (Phase 11B): request shaping, Operation-Location
+"""Content Understanding client: request shaping, Operation-Location
 parsing, the submit→poll loop with terminal states + timeout, auth header
 construction, and result normalization. The upstream is faked with
 ``httpx.MockTransport`` so no network is required.

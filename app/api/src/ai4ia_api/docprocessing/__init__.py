@@ -1,4 +1,4 @@
-"""Agent-callable document processing (Phase 11H).
+"""Agent-callable document processing.
 
 The third leg of the "capability-as-tool" triad (images, video, documents): a
 synthetic ``process_document`` tool that runs an LLM analysis/extraction over a

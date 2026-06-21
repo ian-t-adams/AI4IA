@@ -1,4 +1,4 @@
-"""Chat-context injection for the document library (Phase 11B-2).
+"""Chat-context injection for the document library.
 
 End-to-end through the chat endpoint: when document understanding is enabled, a
 *ready* library document is injected as a nonce-fenced SYSTEM block (Tier 1

@@ -13,7 +13,7 @@ Design goals (see package docstring):
   concurrent turns can overshoot a limit slightly. This is intentional for a
   personal/demo app; it is not a strict quota.
 - **Budgets are only as strong as the ledger.** Token totals count only
-  usage-known turns and cost totals only price-known turns (Phase 6A honesty
+  usage-known turns and cost totals only price-known turns (honesty
   model), so a model that stops reporting usage, or a missing price, makes
   token/cost budgets under-count (fail open). Rate limits (request counts) and
   ``disabled`` do not depend on usage/pricing completeness. The startup guard in

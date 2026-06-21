@@ -1,4 +1,4 @@
-"""The ``recall_memory`` synthetic capability (WS2 part D).
+"""The ``recall_memory`` synthetic capability.
 
 Proves the tool is user-scoped (closure-bound, never spoofable from args),
 nonce-fenced, budget-bounded, fail-soft, and registered as a user-selectable

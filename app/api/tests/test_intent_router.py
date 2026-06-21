@@ -1,4 +1,4 @@
-"""Deterministic intent router (Phase 11C).
+"""Deterministic intent router.
 
 The router decides *whether to offer* the compute/export tools. The load-bearing
 invariant is that Code Interpreter is **never the default**: only an explicit

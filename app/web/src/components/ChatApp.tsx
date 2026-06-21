@@ -39,7 +39,7 @@ export function ChatApp() {
   const libraryConfig = useLibraryConfig();
   const customToolsConfig = useCustomToolsConfig();
   const customToolsEnabled = customToolsConfig.enabled;
-  // The document library (Phase 11B-2). When on, the Composer paperclip routes
+  // The document library. When on, the Composer paperclip routes
   // uploads through the per-user library CU-ingest pipeline instead of the
   // session-scoped local-extract path, so the doc is parsed, surfaced to the
   // agent (retrieval tiers + fetch_document) and runnable via run_code.
@@ -77,7 +77,7 @@ export function ChatApp() {
   // mount to avoid a hydration mismatch.
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
-  // Phase 11D citation deep-link: the audio/video doc a clicked chat citation
+  // Citation deep-link: the audio/video doc a clicked chat citation
   // resolved to, plus the moment to seek. Opens the same MediaPlayer modal the
   // LibraryPanel uses. Null when no citation is open.
   const [citationTarget, setCitationTarget] = useState<{
@@ -357,7 +357,7 @@ export function ChatApp() {
     [libraryDocs],
   );
 
-  // Phase 11D: resolve a clicked chat citation to a ready audio/video library
+  // Resolve a clicked chat citation to a ready audio/video library
   // document and open the player at the cited moment. Citations name a file by
   // its filename (what the model is given + told to cite), so we match
   // case-insensitively against the user's ready media; the first match wins on the

@@ -844,8 +844,7 @@ namespace SimpleL7Proxy.Async.BlobStorage
                     continue;
                 }
 
-                // Coarse, human-scannable summary. Lifetime totals are emitted on shutdown;
-                // detailed time-series should go to App Insights metrics (TODO: metrics eventType).
+                // Coarse, human-scannable summary. Lifetime totals are emitted on shutdown.
                 _logger.LogInformation(
                     "[BlobWr-Q] Wr ( 10s:{B10s}  1m:{B1m}  10m:{B10m} )  Bch ( 10s:{Bch10s}  1m:{Bch1m}  10m:{Bch10m} )  Q:{QSize}  InFlight:{InFlight}  Fail:{Failed}  Dup:{Dedup}",
                     blobs10s, _bucket1m, _bucket10m,

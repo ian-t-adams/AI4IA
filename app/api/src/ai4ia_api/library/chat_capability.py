@@ -1,4 +1,4 @@
-"""The ``fetch_document`` synthetic capability (Phase 11B-2, Tier 3).
+"""The ``fetch_document`` synthetic capability.
 
 Exposes a single tool that lets a tool-enabled agent read the full parsed text of
 one of the user's *ready* library documents, windowed. It mirrors the
@@ -50,7 +50,7 @@ def build_document_capability(
     Returns ``(extra_tools, extra_handlers)`` ready to merge into
     :func:`run_agent_turn`. The handler is bound to ``user_id`` and fences the
     returned text with ``nonce`` (the same fence the turn's library context uses).
-    ``email`` is the caller's identity for sharing (Phase 11F): when present,
+    ``email`` is the caller's identity for sharing: when present,
     documents shared with that email (or tenant-public) are readable too, keyed on
     the owner's storage. ``None`` keeps the prior owner-only behavior.
     """

@@ -1,4 +1,4 @@
-"""Tool-safety registry (Phase 4b foundation).
+"""Tool-safety registry.
 
 Every tool an agent can call is declared here with explicit safety metadata:
 the scopes a caller must hold, whether the tool is destructive or reaches

@@ -1,10 +1,10 @@
-"""McpServerService (Phase 12A): per-user MCP-server CRUD + discovery.
+"""Per-user MCP-server CRUD and discovery service.
 
 Owns validation, the SSRF egress check on every endpoint, tool discovery via an
 injected :class:`~ai4ia_api.agents.mcp_client.McpConnector`, the per-user cap,
 and the projection of a saved server's cached tools onto the governance seam.
 
-Secrets are durable (Phase 12B): an authenticated server's credential is supplied
+Secrets are durable: an authenticated server's credential is supplied
 on the create/update/test request, used to connect, and — on success — persisted
 to an injected :class:`~ai4ia_api.agents.mcp_secrets.McpSecretStore` (Azure Key
 Vault in deployments). Only an opaque ``secretRef`` is stored on the record; the
@@ -302,7 +302,7 @@ class McpServerService:
     ) -> None:
         """Record a per-turn tool-call outcome against a server's durable health.
 
-        Called from the execution seam (Phase 12B Increment D). Persists only when
+        Called from the execution seam. Persists only when
         the health state materially changed (so a healthy server's hot path stays
         write-free) and emits a structured event on a quarantine transition. Best-
         effort: a store failure is logged, never raised, so a tool call's own result
@@ -337,8 +337,8 @@ class McpServerService:
     async def secret_for(self, server: UserMcpServer) -> str | None:
         """Resolve a server's durable connection secret (``None`` if public).
 
-        Shared by per-turn execution (Phase 12B Increment B) so a tool call can
-        connect with the same credential discovery used.
+        Shared by per-turn execution so a tool call can connect with the same
+        credential discovery used.
         """
         if server.authMode is McpAuthMode.none or not server.secretRef:
             return None

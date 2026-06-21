@@ -87,9 +87,6 @@ public static class IteratorFactory
             return new EmptyBackendHostIterator();
         }
 
-        // TODO: Store or use modifiedPath - it needs to be passed to the iterator or stored somewhere
-        // For now, you'll need to decide where to use the modifiedPath
-
         return loadBalanceMode switch
         {
             Constants.RoundRobin => new RoundRobinHostIterator(filteredHosts, mode, maxAttempts),

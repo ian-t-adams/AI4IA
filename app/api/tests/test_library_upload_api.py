@@ -1,4 +1,4 @@
-"""Library upload endpoint (Phase 11B): default-OFF refusal, the stored-then-enrich
+"""Library upload endpoint: default-OFF refusal, the stored-then-enrich
 happy path, dedupe, caps (413/409/422), and analyzer validation. CU is not
 configured in these settings, so enrichment is an inert background no-op and the
 document settles at ``stored`` — exactly the local/default posture."""

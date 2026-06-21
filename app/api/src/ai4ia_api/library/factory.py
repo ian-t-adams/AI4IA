@@ -1,4 +1,4 @@
-"""Selects and constructs the document-library repository (Phase 11A).
+"""Selects and constructs the document-library repository.
 
 Returns ``None`` when the feature is disabled so the app constructs nothing and
 the router refuses (404) — the default-OFF, zero-regression posture. When

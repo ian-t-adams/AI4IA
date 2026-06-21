@@ -1,11 +1,10 @@
-"""Domain models for the per-user document library (Phase 11A).
+"""Domain models for the per-user document library.
 
-Forward-looking but stable: the manifest carries the fields the later sub-phases
-populate (Content Understanding summary, blob artifact paths, chunk count) so
-adding them is never a breaking migration. 11A only writes the identity/dedupe
-fields; the rest keep their inert defaults until ingest (11B) fills them.
+The manifest carries fields populated by ingest, retrieval, compute, media,
+sharing, annotations, and memory save/forget so those features can evolve without
+container migrations.
 
-Sharing is enabled in Phase 11F: ``visibility`` may be ``shared`` (read access to
+Sharing: ``visibility`` may be ``shared`` (read access to
 the principals in ``acl``, by email) or ``public`` (every authenticated user in
 the tenant). Mutations remain owner-only, and annotations/memories never travel
 with a shared document. The fields are additive with inert defaults, so enabling
@@ -58,7 +57,7 @@ class Modality(str, Enum):
 class Visibility(str, Enum):
     # Owner-only (the default).
     private = "private"
-    # Owner plus the principals listed in ``acl`` (Phase 11F sharing).
+    # Owner plus the principals listed in ``acl``.
     shared = "shared"
     # Owner plus every authenticated user. The app authenticates against a single
     # Entra tenant (and dev auth is local), so "public" is tenant-walled by
@@ -79,8 +78,8 @@ class Analyzer(BaseModel):
 
     Built-ins are constants (see :data:`BUILTIN_ANALYZERS`) returned to every
     user and never persisted. Custom analyzers are stored per-user (PK
-    ``/userId``) and selectable at upload. 11A only manages the registry; the CU
-    config is consumed by the ingest worker in 11B.
+    ``/userId``) and selectable at upload. The CU config is consumed by the ingest
+    worker.
     """
 
     id: str = Field(default_factory=_new_id)
@@ -105,10 +104,9 @@ class Analyzer(BaseModel):
         return self.kind == AnalyzerKind.builtin
 
 
-# Built-in analyzers surfaced to every user. Logical descriptors only in 11A —
-# the concrete CU prebuilt-analyzer ids + field configs are wired in 11B against
-# the verified Content Understanding api-version, so nothing unverified is
-# hardcoded here. ``id`` is stable and safe to reference from the manifest.
+# Built-in analyzers surfaced to every user. These are logical descriptors; the
+# concrete CU prebuilt-analyzer ids are configured in Settings so deployments can
+# override them without changing manifests.
 BUILTIN_ANALYZERS: tuple[Analyzer, ...] = (
     Analyzer(
         id="builtin-document",
@@ -149,7 +147,7 @@ BUILTIN_ANALYZER_IDS: frozenset[str] = frozenset(a.id for a in BUILTIN_ANALYZERS
 
 
 class DocumentAnnotation(BaseModel):
-    """An owner's note attached to a library document (Phase 11E-2).
+    """An owner's note attached to a library document.
 
     Annotations are additive, owner-private metadata: free-form notes the owner
     pins to a document, optionally anchored to a location (a page label, an
@@ -175,7 +173,7 @@ class DocumentAnnotation(BaseModel):
 
 
 class DocumentVersion(BaseModel):
-    """An "adjust & return" derived artifact of a library document (Phase 11C).
+    """An "adjust & return" derived artifact of a library document.
 
     Each export writes a **new** versioned blob under
     ``{userId}/{documentId}/versions/{n}/...`` and appends one of these to the
@@ -235,7 +233,7 @@ class UserDocument(BaseModel):
     chunkCount: int = 0
     # Failure reason when ``status == failed``.
     error: str | None = None
-    # --- Sharing (Phase 11F) ---
+    # --- Sharing ---
     # ``visibility`` governs who may *read* this document; mutations always stay
     # owner-only. ``acl`` is the grant list for ``visibility == shared``: it holds
     # normalized grantee *emails* (lowercased), not internal user ids — sharing is
@@ -248,12 +246,12 @@ class UserDocument(BaseModel):
     acl: list[str] = Field(default_factory=list)
     # Sessions that reference this library document (for cascade/usage views).
     sessionLinks: list[str] = Field(default_factory=list)
-    # "Adjust & return" derived artifacts (Phase 11C). Additive, default empty so
+    # "Adjust & return" derived artifacts. Additive, default empty so
     # the manifest contract is unchanged for documents that were never exported.
     # The original raw/parsed artifacts are never mutated; each export appends one
     # dense, 1-based entry here.
     versions: list[DocumentVersion] = Field(default_factory=list)
-    # Owner-private notes pinned to this document (Phase 11E-2). Additive, default
+    # Owner-private notes pinned to this document. Additive, default
     # empty so the manifest contract is unchanged for un-annotated documents, and
     # deliberately excluded from the model-facing summary so notes never leak into
     # the retrieval/prompt context.

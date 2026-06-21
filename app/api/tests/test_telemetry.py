@@ -1,6 +1,6 @@
 """Telemetry (Azure Monitor / OpenTelemetry) wiring.
 
-Covers the WS3 observability contract: export is a strict no-op without an
+Covers the observability contract: export is a strict no-op without an
 Application Insights connection string (local/dev unaffected), and the chat
 path emits a ``chat_completion`` customEvent best-effort (never raising).
 """

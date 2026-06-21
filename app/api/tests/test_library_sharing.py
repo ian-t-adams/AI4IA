@@ -1,4 +1,4 @@
-"""Document-level sharing spine (Phase 11F): owner-only grant/revoke endpoints,
+"""Document-level sharing spine: owner-only grant/revoke endpoints,
 the "shared with me" listing, cross-owner read access for grantees, and the
 privacy guarantees (non-owners can't see/alter shares; private docs never leak;
 owner-private artifacts don't travel).

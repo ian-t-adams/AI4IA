@@ -1,4 +1,4 @@
-// Admin dashboard client (WS4). Types mirror the FastAPI admin usage/metrics
+// Admin dashboard client. Types mirror the FastAPI admin usage/metrics
 // responses; the API helpers go through `apiFetch` (same-origin proxy, Entra
 // bearer when enabled). The pure transforms/formatters at the bottom carry all
 // the display logic so they can be unit-tested without a DOM (see admin.test.ts).

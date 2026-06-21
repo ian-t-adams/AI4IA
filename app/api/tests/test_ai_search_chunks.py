@@ -1,4 +1,4 @@
-"""Azure AI Search doc-chunk store (Phase 11I): index bootstrap, document mapping,
+"""Azure AI Search doc-chunk store: index bootstrap, document mapping,
 filter construction, vector query shaping, hybrid + semantic ranking (with graceful
 fallback), result mapping, and delete-by-filter.
 

@@ -1,4 +1,4 @@
-"""Normalized result of a Responses API Code Interpreter call (Phase 11C).
+"""Normalized result of a Responses API Code Interpreter call.
 
 The Responses API returns ``{id, status, output_text?, output:[...]}``. ``output``
 is a heterogeneous list of items: assistant ``message`` items carry

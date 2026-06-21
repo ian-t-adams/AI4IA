@@ -227,7 +227,7 @@ async def test_remember_document_without_id_does_not_list_or_delete():
     mem = FakeAsyncMemory(get_all_results=[{"id": "x", "metadata": {"document_id": "d"}}])
     svc = _service(mem)
     await svc.remember_document("u1", items=["a gist"])
-    # No document_id -> no idempotent replace path (legacy accumulate behavior).
+    # No document_id -> no idempotent replace path.
     assert mem.get_all_calls == []
     assert mem.delete_by_id_calls == []
     assert "metadata" not in mem.add_calls[0]["kwargs"]

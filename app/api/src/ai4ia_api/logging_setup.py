@@ -3,7 +3,7 @@
 The correlation id is propagated to the model gateway (``x-correlation-id``)
 so a request can be traced across the app, APIM, the proxy, and Foundry.
 
-This module also owns Azure Monitor / OpenTelemetry export (WS3 observability).
+This module also owns Azure Monitor / OpenTelemetry export.
 ``configure_telemetry`` is a strict no-op unless an Application Insights
 connection string is supplied, so local/dev runs never start the SDK.
 """

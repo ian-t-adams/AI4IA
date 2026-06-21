@@ -1,4 +1,4 @@
-"""Shared image-generation core (Phase 11F).
+"""Shared image-generation core.
 
 Both the HTTP endpoint (:mod:`ai4ia_api.routers.images`) and the agent-callable
 ``generate_image`` tool (:mod:`ai4ia_api.images.capability`) go through

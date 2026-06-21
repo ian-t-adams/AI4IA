@@ -1,6 +1,6 @@
 "use client";
 
-// Phase 11F: document-level sharing dialog. Lets the owner of a library document
+// Document-level sharing dialog. Lets the owner of a library document
 // choose its visibility (private / shared with specific people / anyone in the
 // tenant) and, for "shared", manage the grantee email list. Launched as its own
 // modal from LibraryPanel; owner-only on the server, inert unless the document

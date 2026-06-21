@@ -1,6 +1,6 @@
-"""Per-turn MCP tool **execution** (Phase 12B Increment B).
+"""Per-turn MCP tool **execution**.
 
-Phase 12A discovered a user's remote MCP tools and projected each onto the tool
+A user's remote MCP tools are discovered and projected onto the tool
 governance seam (:class:`~ai4ia_api.agents.tools.ToolSpec`). This module makes those
 projected tools *runnable* inside a chat turn — but governed identically to the
 built-ins: each attached MCP tool becomes a :class:`~ai4ia_api.agents.tool_exec.ToolDefinition`
@@ -77,7 +77,7 @@ class SecretResolver(Protocol):
 
 class HealthReporter(Protocol):
     """The slice of the service the execution path needs to report tool-call
-    health (Phase 12B Increment D), so repeated failures can quarantine a server.
+    health, so repeated failures can quarantine a server.
 
     ``ok`` records a reachable server (even if the tool itself returned an error);
     a transport/connection failure records ``ok=False`` with the raised error so

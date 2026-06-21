@@ -191,7 +191,7 @@ Symptom — the deploy job fails in **Provision infrastructure** with:
 LocationIsOfferRestricted: Subscriptions are restricted from provisioning in location '<region>'.
 ```
 
-Cause — the Postgres Flexible Server (mem0/pgvector home, Phase 5) is being provisioned in a region
+Cause — the Postgres Flexible Server (mem0/pgvector home) is being provisioned in a region
 where **this subscription is offer-restricted** for that resource. It is a subscription-level
 policy, not a quota/capacity issue, and it surfaces only at provision time — `az bicep build` and the
 other resources (Cosmos, Container Apps, Foundry) succeed in the same region. The `slurmfactory`

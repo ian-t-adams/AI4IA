@@ -1,6 +1,6 @@
 "use client";
 
-// Phase 10 Voice Live — the dedicated live-conversation surface. A modal (mirroring
+// Voice Live — the dedicated live-conversation surface. A modal (mirroring
 // the Imagery Studio pattern) that turns the governed `/api/voice/live` relay into a
 // genuinely usable voice assistant: a turn-by-turn timeline with live partial
 // transcripts, a clear listening / thinking / speaking indicator (barge-in is wired

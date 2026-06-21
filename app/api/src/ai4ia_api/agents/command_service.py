@@ -6,9 +6,9 @@ command and returns the assistant reply message, which the router then streams
 or returns. Keeping it here (rather than in the router) makes command behavior
 unit-testable against the in-memory repository.
 
-Commands that depend on later phases (``/summarize``) return a friendly "not
-available yet" message instead of failing. ``/forget`` is wired to the memory
-service; when memory is disabled it reports that nothing is stored.
+``/summarize`` uses the rolling-summary service when a gateway-backed summarizer
+is available. ``/forget`` is wired to the memory service; when memory is disabled
+it reports that nothing is stored.
 """
 from __future__ import annotations
 

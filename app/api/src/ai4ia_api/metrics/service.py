@@ -3,8 +3,8 @@
 Maps each configured ARM resource id to a small set of platform metrics and reads
 them from Azure Monitor. Best-effort by construction: a panel whose id is unset,
 whose SDK is missing, or whose query fails is returned as ``unavailable`` with a
-short reason — never an error. This lets the dashboard ship before WS3 wires the
-diagnostics/resource-ids; panels light up as the ids appear.
+short reason — never an error. Panels light up as diagnostics/resource ids
+appear.
 """
 from __future__ import annotations
 

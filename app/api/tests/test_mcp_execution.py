@@ -1,4 +1,4 @@
-"""Tests for per-turn MCP tool execution (Phase 12B Increment B).
+"""Tests for per-turn MCP tool execution.
 
 Covers the governed :class:`ToolDefinition` builder (:mod:`ai4ia_api.agents.mcp_execution`)
 both in isolation (handler success/error, secret resolution, SSRF re-validation, the
@@ -598,7 +598,7 @@ async def test_tools_call_content_is_redacted_and_truncated_through_runtime():
 
 
 
-# --- Increment D: quarantine gate, per-tool approval, health recording -------
+# --- Quarantine gate, per-tool approval, health recording ---------------------
 
 
 def _quarantined(server: UserMcpServer, *, until: datetime) -> UserMcpServer:

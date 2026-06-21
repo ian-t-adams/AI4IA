@@ -43,7 +43,7 @@ class MemoryStore(Protocol):
         ...
 
     async def erase_document(self, user_id: str, document_id: str) -> int:
-        """Delete a user's memories saved from one document; return how many
-        were removed. Enables idempotent re-save (replace) and forget-by-document
-        (Phase 11E-3)."""
+        """Delete a user's memories saved from one document; return how many were
+        removed. Enables idempotent re-save (replace) and forget-by-document.
+        """
         ...

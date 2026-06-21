@@ -14,11 +14,9 @@ public class S7PRequeueException: Exception, IDisposable
 
     public void Dispose()
     {
-        // Dispose of unmanaged resources here
     }
     void IDisposable.Dispose()
     {
-        // TODO: Dispose of unmanaged resources here
     }
 
     public ValueTask DisposeAsync()
