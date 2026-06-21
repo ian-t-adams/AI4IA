@@ -1,4 +1,4 @@
-"""The "adjust & return" export service (Phase 11C).
+"""The "adjust & return" export service.
 
 Writes a model-produced adjustment of a *ready* library document as a **new
 versioned blob** under ``{userId}/{documentId}/versions/{n}/...`` and appends a

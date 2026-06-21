@@ -1,4 +1,4 @@
-"""Durable storage for over-cap document-processing results (Phase 11H).
+"""Durable storage for over-cap document-processing results.
 
 Most ``process_document`` results are small and return inline through the tool
 result, but an extraction can exceed the runtime's 8 KB tool-result cap (e.g. a

@@ -1,4 +1,4 @@
-"""Durable storage for generated images (Phase 11F).
+"""Durable storage for generated images.
 
 A generated image is too large to flow back through the agent tool-result channel
 (the runtime caps a tool result at 8 KB, and a 1024² PNG is ~1–3 MB base64), so

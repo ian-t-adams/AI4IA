@@ -169,7 +169,7 @@ class MemoryService:
         Embeds the items as a batch, stores one record each, and returns how many
         were stored (blank items and zero vectors are skipped).
 
-        When ``document_id`` is given the save is *idempotent* (Phase 11E-3): any
+        When ``document_id`` is given the save is *idempotent*: any
         prior generation saved from the same document is replaced, so clicking
         "save to memory" twice does not accumulate duplicates. Embedding runs
         before the erase so a failed embed surfaces without first deleting the
@@ -207,7 +207,7 @@ class MemoryService:
         """Erase a user's memories saved from one document (NOT swallowed).
 
         The explicit counterpart to :meth:`remember_document` — lets a user undo
-        a save-to-memory for one document (Phase 11E-3)."""
+        a save-to-memory for one document."""
         return await self._store.erase_document(user_id, document_id)
 
     def format_context(self, records: list[MemoryRecord]) -> str | None:

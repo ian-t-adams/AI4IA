@@ -1,4 +1,4 @@
-"""Workflow **runner** (Phase 8 inc 3): executes a saved pipeline of agent steps.
+"""Workflow **runner**: executes a saved pipeline of agent steps.
 
 Steps run strictly in order on a **single** model deployment (resolved once by the
 caller, already past the Responses-API guard) so the whole run meters to one

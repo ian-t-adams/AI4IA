@@ -1,6 +1,6 @@
-// Phase 1.5 minimal model gateway: SimpleL7Proxy (Container App) behind APIM.
+// Model gateway: SimpleL7Proxy (Container App) behind APIM.
 // The backend always calls models through this single front door so model wiring
-// isn't duplicated; capacity-sharing/entitlements/quotas layer on in Phase 6.
+// isn't duplicated; capacity-sharing/entitlements/quotas layer on above it.
 @description('Location for the gateway resources.')
 param location string
 
@@ -25,13 +25,13 @@ param proxyIdentityClientId string
 @description('ACR login server the proxy image is pulled from.')
 param acrLoginServer string
 
-@description('Container image for the proxy (placeholder until azd deploys /proxy).')
+@description('Container image for the proxy; azd replaces the default with the built /proxy image.')
 param proxyImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
 @description('Foundry account endpoints the proxy routes model traffic to.')
 param foundryEndpoints array
 
-@description('Primary Foundry account endpoint APIM routes model traffic to (minimal Phase 1.5 gateway, before SimpleL7Proxy is vendored).')
+@description('Primary Foundry account endpoint APIM routes model traffic to.')
 param primaryFoundryEndpoint string
 
 @description('Primary Foundry account name (role-assignment scope for the APIM managed identity).')
@@ -160,10 +160,9 @@ resource proxyApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
 
 var proxyUrl = 'https://${proxyApp.properties.configuration.ingress.fqdn}'
 
-// Until SimpleL7Proxy is vendored (Phase 6), APIM routes model traffic straight
-// to the primary Foundry account's Azure OpenAI data plane. The endpoint output
-// always carries a trailing slash, but guard anyway so the `/openai` suffix is
-// never doubled or fused.
+// APIM routes model traffic to the primary Foundry account's Azure OpenAI data
+// plane. The endpoint output always carries a trailing slash, but guard anyway
+// so the `/openai` suffix is never doubled or fused.
 var foundryBase = endsWith(primaryFoundryEndpoint, '/') ? primaryFoundryEndpoint : '${primaryFoundryEndpoint}/'
 var foundryServiceUrl = '${foundryBase}openai'
 
@@ -228,7 +227,7 @@ resource proxyOperation 'Microsoft.ApiManagement/service/apis/operations@2023-05
 
 // Single API-scoped subscription whose key the backend presents as
 // Ocp-Apim-Subscription-Key. This keeps the gateway from being an unauthenticated
-// open relay to real models. Richer per-user entitlements arrive in Phase 6.
+// open relay to real models.
 resource gatewaySubscription 'Microsoft.ApiManagement/service/subscriptions@2023-05-01-preview' = {
   parent: apim
   name: 'ai4ia-gateway'

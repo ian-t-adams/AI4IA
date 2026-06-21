@@ -1,4 +1,4 @@
-"""Tests for the MCP-server models, governance mapping, and service (Phase 12A).
+"""Tests for the MCP-server models, governance mapping, and service.
 
 Uses the in-memory store + the deterministic ``FakeMcpConnector`` + a stub
 resolver so nothing touches real DNS or a live server.
@@ -398,7 +398,7 @@ async def test_test_connection_failure_records_last_error():
 
 
 
-# --- Increment D: per-tool approval persistence + health/quarantine ----------
+# --- Per-tool approval persistence + health/quarantine ------------------------
 
 
 class _CountingStore(InMemoryUserMcpServerStore):

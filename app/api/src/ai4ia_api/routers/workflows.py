@@ -1,4 +1,4 @@
-"""User-defined workflow management + execution endpoints (Phase 8 inc 3).
+"""User-defined workflow management + execution endpoints.
 
 CRUD (``/api/workflows``) manages the caller's saved workflows; typed service
 errors map to HTTP codes (422 validation / 409 conflict / 404 missing). The run
@@ -94,7 +94,7 @@ async def create_workflow(
     try:
         return await _service(request).create(user.internal_user_id, payload)
     except WorkflowValidationError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except WorkflowConflictError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
@@ -109,7 +109,7 @@ async def update_workflow(
     try:
         return await _service(request).update(user.internal_user_id, name, payload)
     except WorkflowValidationError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except WorkflowNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
@@ -155,10 +155,10 @@ async def run_workflow_endpoint(
 
     run_input = (body.input or "").strip()
     if not run_input:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Input is required.")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Input is required.")
     if len(run_input) > MAX_RUN_INPUT_LEN:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"Input must be at most {MAX_RUN_INPUT_LEN} characters.",
         )
 
@@ -183,7 +183,7 @@ async def run_workflow_endpoint(
     entry = catalog.get(model_id)
     if entry is not None and entry.api == "responses":
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             (
                 f"Model '{model_id}' is served through the Responses API, which "
                 "AI4IA does not yet support for workflow steps (they use the "

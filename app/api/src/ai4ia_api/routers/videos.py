@@ -1,4 +1,4 @@
-"""Authenticated serve endpoint for tool-generated videos (Phase 11G, Sora 2).
+"""Authenticated serve endpoint for tool-generated videos.
 
 The ``generate_video`` agent tool persists each MP4 to per-user blob storage and
 returns only a small reference; the browser fetches the bytes here. Mirrors the

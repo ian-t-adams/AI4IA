@@ -1,4 +1,4 @@
-"""Voice endpoints (Phase 7B): speech-to-text and text-to-speech.
+"""Voice endpoints: speech-to-text and text-to-speech.
 
 Both ride the same model gateway as chat and share its governance: the caller is
 authenticated, the entitlement gate runs (a disabled user is blocked; an admin

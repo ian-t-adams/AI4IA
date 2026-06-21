@@ -1,7 +1,7 @@
 """Ownership / access resolution for the document library.
 
 Reads are governed by :func:`can_access`; mutations stay owner-only via
-:func:`require_owner`. Sharing (Phase 11F) is keyed on the grantee's *email*: a
+:func:`require_owner`. Sharing is keyed on the grantee's *email*: a
 ``shared`` document grants read access to every email in its ``acl``, while a
 ``public`` document grants read access to every authenticated user (the app
 authenticates against a single tenant, so "public" is tenant-walled — there is no
@@ -45,4 +45,3 @@ def require_owner(user_id: str, doc: UserDocument) -> bool:
     owner-private features (annotations, save-to-memory) stay owner-only even with
     read-sharing enabled, so they use this rather than ``can_access``."""
     return doc.userId == user_id
-

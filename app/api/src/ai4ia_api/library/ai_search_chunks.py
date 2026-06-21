@@ -1,4 +1,4 @@
-"""Azure AI Search backend for the per-user document chunk index (Phase 11I).
+"""Azure AI Search backend for the per-user document chunk index.
 
 A drop-in :class:`~ai4ia_api.library.doc_chunks.DocChunkStore` implementation that
 indexes the library's CU-parsed chunks into an Azure AI Search index instead of

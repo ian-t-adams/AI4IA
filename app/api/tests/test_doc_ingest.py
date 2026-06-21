@@ -1,4 +1,4 @@
-"""Document ingest orchestrator (Phase 11B): dedupe, status transitions, the
+"""Document ingest orchestrator: dedupe, status transitions, the
 CU-success enrichment (parsed.md + chunks + metering), CU-failure degrade, and
 the CU-disabled no-op. All IO is injected (in-memory stores + fakes)."""
 from __future__ import annotations
@@ -370,7 +370,7 @@ async def test_enrich_caps_chunks_and_batches_embed():
     assert embedder.batches == 3  # batch size 1 → one embed round-trip per chunk
 
 
-# --- audio/video time-grounded enrich (Phase 11D) ---
+# --- audio/video time-grounded enrich ---
 def _succeeded_av(contents: list[dict], markdown: str = "WEBVTT transcript") -> CUResult:
     return CUResult(
         status="Succeeded",

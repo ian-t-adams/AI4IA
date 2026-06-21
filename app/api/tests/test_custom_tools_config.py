@@ -1,4 +1,4 @@
-"""Config fail-closed checks for custom tools / BYO MCP (Phase 12A + 12B).
+"""Config fail-closed checks for custom tools / BYO MCP.
 
 The feature needs durable cross-session storage (the per-user MCP registry) and,
 once secrets are durable (12B), a Key Vault to hold connection credentials.

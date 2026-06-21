@@ -169,7 +169,7 @@ async def append_voice_turns(
 
     if len(body.turns) > MAX_VOICE_TURNS:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"too many turns (max {MAX_VOICE_TURNS})",
         )
 

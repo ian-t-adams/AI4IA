@@ -1,4 +1,4 @@
-"""Async Code Interpreter client over the Azure OpenAI Responses API (Phase 11C).
+"""Async Code Interpreter client over the Azure OpenAI Responses API.
 
 Verified against Microsoft Learn (Azure OpenAI Responses, v1 surface):
 

@@ -1,4 +1,4 @@
-"""Phase 6A — usage metering + cost ledger.
+"""Usage metering + cost ledger.
 
 Observational governance: every chat completion is metered (token usage + an
 estimated cost) and written to a per-user ledger so cost and traffic can be

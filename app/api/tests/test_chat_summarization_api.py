@@ -1,4 +1,4 @@
-"""End-to-end summarization behavior through POST /api/chat (WS2 part C).
+"""End-to-end summarization behavior through POST /api/chat.
 
 Proves the three contract-level guarantees:
 * DEFAULT-OFF inertness — with the flag off, the model receives the full history

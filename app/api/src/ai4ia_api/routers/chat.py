@@ -378,17 +378,17 @@ async def chat(
     memory: MemoryServiceProtocol = request.app.state.memory
     metering: UsageService = request.app.state.usage
     entitlements: EntitlementService = request.app.state.entitlements
-    # Rolling summarization (Phase WS2-C). Always present; ``enabled`` reflects
+    # Rolling summarization. Always present; ``enabled`` reflects
     # the DEFAULT-OFF auto flag. Used by the manual /summarize command and, when
     # enabled, the automatic fold below. When the flag is off the auto path is
     # never taken, so the turn is byte-for-byte unchanged.
     summarizer: SummarizationService = request.app.state.summarizer
-    # Document retrieval consumer (Phase 11B-2). None when document understanding
+    # Document retrieval consumer. None when document understanding
     # is off, so plain chat is byte-for-byte unchanged by default.
     retrieval: DocumentRetrievalService | None = getattr(
         request.app.state, "document_retrieval", None
     )
-    # Document compute consumer (Phase 11C). None when document compute is off
+    # Document compute consumer. None when document compute is off
     # (default), so the intent router never runs, neither compute tool is
     # advertised, and the chat path is byte-for-byte unchanged.
     compute: DocumentComputeService | None = getattr(
@@ -408,17 +408,17 @@ async def chat(
     web_search: WebSearchService | None = getattr(
         request.app.state, "web_search", None
     )
-    # Generated-image artifact store (Phase 11F). Always present; backs the
+    # Generated-image artifact store. Always present; backs the
     # ``generate_image`` capability when an agent attaches that tool.
     image_artifacts: ImageArtifactStore | None = getattr(
         request.app.state, "image_artifacts", None
     )
-    # Generated-video artifact store (Phase 11G). Always present; backs the
+    # Generated-video artifact store. Always present; backs the
     # ``generate_video`` capability when an agent attaches that tool.
     video_artifacts: VideoArtifactStore | None = getattr(
         request.app.state, "video_artifacts", None
     )
-    # Processed-document artifact store (Phase 11H). Always present; backs the
+    # Processed-document artifact store. Always present; backs the
     # ``process_document`` capability's over-cap results when an agent attaches
     # that tool. The capability itself only runs when ``retrieval`` is also
     # present (i.e. document understanding is enabled).
@@ -588,7 +588,7 @@ async def chat(
     entry = catalog.get(model_id)
     api = entry.api if entry is not None else "chat"
 
-    # Per-model generation scaling (Phase WS2-B). Cap the requested max-output to
+    # Per-model generation scaling. Cap the requested max-output to
     # this model's declared ceiling (lower-only) and, when the user left the
     # global default, adopt the model's own max-output. Computed once here and
     # threaded through EVERY gateway/agent path below so a single source of truth
@@ -631,7 +631,7 @@ async def chat(
             ),
         )
 
-    # Entitlement enforcement (Phase 6B). Placed here so it gates only true
+    # Entitlement enforcement. Placed here so it gates only true
     # model-consuming turns: /commands and @mention errors already returned
     # above (a rate-limited or disabled user can still run /help, /usage, etc.).
     # Runs before the user message is persisted so a refused turn leaves no
@@ -662,7 +662,7 @@ async def chat(
     payload_messages = _history(prior, system_prompt)
     correlation_id = get_correlation_id()
 
-    # Rolling summarization (Phase WS2-C, DEFAULT-OFF). When enabled AND the live
+    # Rolling summarization (default OFF). When enabled and the live
     # transcript would exceed the model-derived threshold, fold the oldest turns
     # into the session's running summary and send only the newest turns verbatim,
     # with the summary injected as a system block. The FULL transcript always
@@ -711,7 +711,7 @@ async def chat(
         repo, user.internal_user_id, body.sessionId, budget=_doc_budget_for(entry)
     )
 
-    # Per-user document-library context (Phase 11B-2, best-effort, flag-gated).
+    # Per-user document-library context (best-effort, flag-gated).
     # Tiers 1-2 (summary cards + RAG excerpts over the user's *ready* library) are
     # injected as a SYSTEM block for every turn (plain chat and agents alike), so
     # the library is universally available without changing the streaming path.
@@ -742,7 +742,7 @@ async def chat(
 
     payload_messages.append({"role": "user", "content": content_for_model})
 
-    # Intent routing (Phase 11C, best-effort, flag-gated). Deterministically
+    # Intent routing (best-effort, flag-gated). Deterministically
     # classify the turn against the user's library into Q&A / compute / transform.
     # CU/RAG stays the front door; this only *offers* the run_code + export_document
     # tools when the ask is genuinely compute/tabular or an "adjust & return" — it
@@ -804,8 +804,8 @@ async def chat(
             )
             extra_tools = [*extra_tools, *doc_tools]
             extra_handlers = {**extra_handlers, **doc_handlers}
-        # Phase 11C: when the router classifies this turn as compute/transform,
-        # additionally offer the run_code + export_document capability over the
+        # When the router classifies this turn as compute/transform, additionally
+        # offer the run_code + export_document capability over the
         # user's ready library, bound to this user + the turn's library nonce.
         # Disjoint tool names (the runtime asserts no collisions), so an agent can
         # delegate, read, compute, and export in one turn. Best-effort: a build
@@ -851,7 +851,7 @@ async def chat(
                     extra_handlers = {**extra_handlers, **a_handlers}
             except Exception:  # noqa: BLE001 - analysis must never break a turn
                 logger.warning("analyze_attachment capability build failed", exc_info=True)
-        # Phase 11F: when the agent attaches the ``generate_image`` tool, inject
+        # When the agent attaches the ``generate_image`` tool, inject
         # the synthetic image-generation capability. It needs real services (the
         # gateway, catalog, entitlement gate, usage meter, and durable artifact
         # store), so it cannot run through the registry executor like a builtin —
@@ -877,7 +877,7 @@ async def chat(
                 extra_handlers = {**extra_handlers, **i_handlers}
             except Exception:  # noqa: BLE001 - image tool must never break a turn
                 logger.warning("image capability build failed", exc_info=True)
-        # Phase 11G: when the agent attaches the ``generate_video`` tool, inject
+        # When the agent attaches the ``generate_video`` tool, inject
         # the synthetic video-generation (Sora) capability — same closure-bound
         # pattern as the image tool. Produced clips are collected in
         # ``video_sink`` and attached to the assistant message below.
@@ -905,7 +905,7 @@ async def chat(
                 extra_handlers = {**extra_handlers, **v_handlers}
             except Exception:  # noqa: BLE001 - video tool must never break a turn
                 logger.warning("video capability build failed", exc_info=True)
-        # Phase 11H: when the agent attaches the ``process_document`` tool, inject
+        # When the agent attaches the ``process_document`` tool, inject
         # the synthetic document-processing capability — same closure-bound pattern
         # as the image/video tools. It reuses the user's ready library (via
         # ``retrieval``) and runs one analysis call on THIS turn's deployment, so it
@@ -939,8 +939,8 @@ async def chat(
                 extra_handlers = {**extra_handlers, **p_handlers}
             except Exception:  # noqa: BLE001 - doc tool must never break a turn
                 logger.warning("document processing capability build failed", exc_info=True)
-        # Phase 12B Increment B: when the agent attaches any of the caller's own
-        # MCP tools (``mcp:<server>/<tool>``) and the feature is on, build a merged
+        # When the agent attaches any of the caller's own MCP tools
+        # (``mcp:<server>/<tool>``) and the feature is on, build a merged
         # registry/executor (built-ins + governed MCP ToolDefinitions) plus the
         # approvals-bearing context, and run THIS turn against them. MCP tools go
         # through the same registry/executor governance as the built-ins (NOT the
@@ -986,7 +986,7 @@ async def chat(
                 extra_handlers = {**extra_handlers, **w_handlers}
             except Exception:  # noqa: BLE001 - web search must never break a turn
                 logger.warning("web search capability build failed", exc_info=True)
-        # WS2-D: when the agent attaches ``recall_memory`` and memory is enabled,
+        # When the agent attaches ``recall_memory`` and memory is enabled,
         # inject the synthetic recall capability — same closure-bound pattern as
         # the library/web tools. It is bound to THIS user (so it can only ever
         # search the caller's own mem0 store) + this session (for ``scope=session``)
@@ -1047,7 +1047,7 @@ async def chat(
         )
         return _local_reply_response(body.sessionId, assistant, body.stream)
 
-    # Plain-chat tool loop (Phase 11C compute + Web IQ search) — the MAIN chat's
+    # Plain-chat tool loop (document compute + Web IQ search) — the MAIN chat's
     # coverage. The main chat (no @mentioned agent) has ``agent is None`` and never
     # enters the agent tool path above, so this agent-less loop is where it gets
     # synthetic tools. It runs when EITHER the deterministic router classified this

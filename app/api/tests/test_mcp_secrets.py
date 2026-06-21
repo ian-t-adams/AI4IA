@@ -1,4 +1,4 @@
-"""Tests for the durable MCP secret store (Phase 12B Increment A).
+"""Tests for the durable MCP secret store.
 
 Covers the in-memory store, the Key-Vault-safe reference generator, the factory's
 store selection (+ the loud out-of-local warning), and the Key Vault store driven

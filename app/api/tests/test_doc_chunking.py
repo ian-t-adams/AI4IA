@@ -1,6 +1,5 @@
-"""Markdown chunker (Phase 11B): determinism, paragraph packing, heading
-grounding, overlap, and oversized-paragraph hard-wrap. Phase 11D adds the
-time-grounded audio/video chunker and the timestamp formatter."""
+"""Markdown and audiovisual chunkers: determinism, grounding, overlap,
+oversized-paragraph hard-wrap, timestamp formatting, and media timelines."""
 from __future__ import annotations
 
 from ai4ia_api.library.chunking import (
@@ -75,7 +74,7 @@ def test_oversized_paragraph_is_hard_wrapped():
     assert chunks[2].text == "x" * 5
 
 
-# --- format_timestamp (Phase 11D) ---
+# --- format_timestamp ---
 def test_format_timestamp_minutes_seconds():
     assert format_timestamp(0) == "0:00"
     assert format_timestamp(2480) == "0:02"
@@ -92,7 +91,7 @@ def test_format_timestamp_absent_or_invalid():
     assert format_timestamp("nope") == ""  # type: ignore[arg-type]
 
 
-# --- chunk_audiovisual (Phase 11D) ---
+# --- chunk_audiovisual ---
 def _phrase(text, start, end, speaker="Speaker 1"):
     return {"text": text, "startTimeMs": start, "endTimeMs": end, "speaker": speaker}
 
@@ -221,7 +220,7 @@ def test_audiovisual_is_deterministic():
     assert first == second
 
 
-# --- Phase 11D: media_timeline scene/keyframe surfacing ---
+# --- media_timeline scene/keyframe surfacing ---
 def test_media_timeline_extracts_keyframes_and_shots():
     contents = [
         {

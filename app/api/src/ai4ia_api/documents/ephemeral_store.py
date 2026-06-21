@@ -1,6 +1,6 @@
 """Ephemeral retention of inline-attachment ORIGINAL bytes (default-OFF feature).
 
-The instant inline-attachment path (:mod:`ai4ia_api.routers.documents`, Phase 7C)
+The instant inline-attachment path (:mod:`ai4ia_api.routers.documents`)
 stores only *extracted text* and discards the uploaded bytes. The inline
 code-interpreter feature needs the REAL file (PDF layout / xlsx cells / image), so
 when it is enabled the upload path RETAINS the original bytes here, briefly, so the

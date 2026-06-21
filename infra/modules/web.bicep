@@ -1,4 +1,4 @@
-// Phase 3: the Next.js frontend (app/web) running on Container Apps.
+// Next.js frontend (app/web) running on Container Apps.
 // azd builds app/web/Dockerfile, pushes to ACR, and deploys into this app
 // (matched by the `azd-service-name: web` tag). The web server proxies
 // browser calls to the api same-origin (see app/web/src/app/api/[...path]),
@@ -21,7 +21,7 @@ param webIdentityResourceId string
 @description('ACR login server the web image is pulled from.')
 param acrLoginServer string
 
-@description('Container image for the web app (placeholder until azd deploys app/web).')
+@description('Container image for the web app; azd replaces the default with the built app/web image.')
 param webImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
 @description('Base URL of the api the web server proxies to (no trailing /api).')
@@ -62,7 +62,7 @@ param entraTenantId string = ''
 @description('API scope the SPA requests (e.g. api://<api-app-id>/.default; required when authProvider == entra).')
 param entraApiScope string = ''
 
-@description('Enable the Voice Live (Phase 10) browser control. Default OFF (no live-voice UI is surfaced).')
+@description('Enable the Voice Live browser control. Default OFF (no live-voice UI is surfaced).')
 param voiceLiveEnabled bool = false
 
 @description('Advertise governed tool calling for live-voice sessions to the browser (mirrors the API realtimeToolsEnabled). Default OFF: the panel never offers the tools opt-in.')
@@ -71,10 +71,10 @@ param voiceLiveToolsEnabled bool = false
 @description('Public URL of the API external ingress the browser opens the live-voice WebSocket against (converted to wss in the browser). Required when voiceLiveEnabled.')
 param apiPublicUrl string = ''
 
-@description('Enable the document-library (Phase 11B-2) browser UI. Default OFF (no library control is surfaced).')
+@description('Enable the document-library browser UI. Default OFF (no library control is surfaced).')
 param documentLibraryEnabled bool = false
 
-@description('Enable the custom-tools / BYO remote-MCP (Phase 12B) browser UI. Default OFF (no custom-tools control is surfaced).')
+@description('Enable the custom-tools / BYO remote-MCP browser UI. Default OFF (no custom-tools control is surfaced).')
 param customToolsEnabled bool = false
 
 // Entra sign-in is only wired when the provider is entra AND all three values are
@@ -110,7 +110,7 @@ var devUserEnv = injectDevUser ? [
   }
 ] : []
 
-// Voice Live (Phase 10) is only surfaced to the browser when the flag is on AND a
+// Voice Live is only surfaced to the browser when the flag is on AND a
 // public API URL is supplied (the browser opens the WS directly against the API
 // ingress). Both are emitted together or not at all, so a half-config can never
 // half-enable the live-voice control. Default OFF -> no env, no UI, no change.
@@ -146,7 +146,7 @@ var documentLibraryEnv = documentLibraryEnabled ? [
   }
 ] : []
 
-// The custom-tools / BYO remote-MCP (Phase 12B) UI is only surfaced to the browser
+// The custom-tools / BYO remote-MCP UI is only surfaced to the browser
 // when the flag is on. The MCP-server API goes through the same-origin Next proxy
 // (no public URL needed, like the library). Default OFF -> no env, no control, no
 // change to the chat UI. Driven by the same infra flag as the API's

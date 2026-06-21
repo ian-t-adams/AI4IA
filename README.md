@@ -1,76 +1,87 @@
 # AI4IA
 
-A multi-model, multi-region **agentic chat application** for personal use and customer demos —
-with all Azure infrastructure defined as code in this repository (monorepo).
+AI4IA is a multi-model, multi-region **agentic chat application** for personal use
+and customer demos. The repo is a monorepo: application code, model gateway, and
+Azure infrastructure all live here and deploy through `azd`.
 
-It mirrors the Azure AI Foundry chat experience (pick a model, tune parameters, upload
-documents, talk to it, edit system prompts) and adds multi-agent orchestration, workflows,
-custom tools, per-user memory/history, theming + accessibility, and **governed model traffic**
-through SimpleL7Proxy + APIM across multiple Foundry regions.
+## Current state
 
-## Status
-✅ **Phases 0–11 implemented.** Foundations + IaC, model gateway, web chat, agents & workflows
-(Studio builder), per-user memory, usage/cost metering & entitlements, imagery, voice (STT/TTS +
-agent-aware Voice Live), Entra/MSAL sign-in, and the document & multimodal understanding pipeline
-(library, Content Understanding ingest, intent router + code-interpreter, audio/video grounding
-with a citation-linked media player, save-to-memory, owner-private annotations, and document-level
-email sharing) are all merged. Text chat and Voice Live also share **one** conversation, so users
-can move between typing and talking in the same transcript. Advanced capabilities ship
-**default-OFF** and are turned on per environment — see
-[`docs/runbooks/feature-enablement.md`](docs/runbooks/feature-enablement.md). Architecture and the
-phase arc: [`docs/architecture.md`](docs/architecture.md).
+Implemented: governed chat through SimpleL7Proxy + APIM, Entra/MSAL auth, agents
+and workflows, per-user memory, usage metering and entitlements, voice/STT/TTS +
+Voice Live, image/video generation, document and multimodal understanding,
+custom remote MCP tools, admin usage/resource dashboards, and Azure Monitor /
+Application Insights telemetry.
 
-> **Deploying:** merges to `main` are validated by CI and (once the one-time OIDC setup is done)
-> deployed by [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml). See the
-> [deployment runbook](docs/runbooks/deployment.md).
+Advanced capabilities are feature-gated. Code defaults stay safe and mostly OFF;
+the deployed environment is controlled by `infra/main.parameters.json` and azd
+environment values. See
+[`docs/runbooks/feature-enablement.md`](docs/runbooks/feature-enablement.md).
+
+Known gaps to keep visible:
+
+- Web IQ search tools and inline-attachment Code Interpreter are implemented but
+  OFF in the checked-in live parameters.
+- The document library UI is still document-centric; custom analyzer authoring,
+  folder-level sharing, and unauthenticated public links are not implemented.
+- Memory has save/forget APIs and automatic recall, but no global user-facing
+  memory toggle or recalled-memory indicator in chat.
 
 ## Repository layout
-```
-/infra      Bicep + main.bicep + models.json (azd targets)
-/app/web    Next.js + TypeScript (chat UI, theming, a11y, @/ commands)
-/app/api    Python FastAPI (auth, sessions, agents, memory, tools)
-/app/agents In-process agents library (gateway-native tool loop) + custom tools
-/proxy      SimpleL7Proxy model gateway + config
-/scripts    teardown, purge, inventory, seed-models, azd hooks
-/docs       architecture, region map, naming/tagging, runbooks
-azure.yaml  azd service map
+
+```text
+/infra      Bicep modules, main.bicep, parameters, and model catalog
+/app/web    Next.js web app: chat, admin dashboard, document/media UI, auth
+/app/api    FastAPI backend: auth, chat, agents, tools, memory, documents, usage
+/proxy      Vendored SimpleL7Proxy model gateway plus AI4IA Dockerfile/notes
+/scripts    Catalog, inventory, teardown, purge, and azd hook scripts
+/docs       Architecture, capability map, naming/tagging, and runbooks
+azure.yaml  Azure Developer CLI service map
 ```
 
 ## Key decisions
-- **IaC:** Bicep + Azure Developer CLI (`azd`).
-- **Stack:** Next.js/TypeScript web + Python FastAPI API + in-house gateway-native agents runtime.
-- **Model gateway from day one** — the backend always calls models through SimpleL7Proxy/APIM.
-- **Data-driven catalog** — `infra/models.json` is the single source of truth for deployments,
-  generated/validated from live Azure model availability.
-- **Regions (v1):** East US 2 (US) + Sweden Central (EU) for full feature parity incl. voice;
-  West US for MAI-Image-2.x and o3-deep-research. See
-  [`docs/region-capability-matrix.md`](docs/region-capability-matrix.md).
-- **Identity:** Entra MSAL (workforce + B2B guests now; External ID/CIAM later) with a canonical
-  internal user ID decoupled from the IdP.
 
-## Getting started (infra)
+- **IaC:** Bicep + Azure Developer CLI (`azd`).
+- **Stack:** Next.js/TypeScript web, Python FastAPI API, .NET SimpleL7Proxy.
+- **Model gateway:** backend model calls go through APIM/SimpleL7Proxy; direct
+  Foundry calls are reserved for non-OpenAI control planes such as Content
+  Understanding and Azure Monitor where required.
+- **Catalog-driven models:** `infra/models.json` is the deployment source of truth
+  and generates the packaged API model catalog.
+- **Regions:** East US 2 and Sweden Central are the primary US/EU regions; West US
+  carries targeted models such as MAI Image and deep research. See
+  [`docs/region-capability-matrix.md`](docs/region-capability-matrix.md).
+- **Identity:** Entra workforce/B2B now, with an internal user id decoupled from
+  the identity provider.
+
+## Deploy
+
 ```powershell
 az login
 azd env new ai4ia-dev
 azd up
 ```
-> Validate in a parallel resource group before tearing down the existing stack —
-> [`docs/runbooks/teardown.md`](docs/runbooks/teardown.md).
+
+Merges to `main` deploy only after the one-time GitHub OIDC setup is complete.
+See [`docs/runbooks/deployment.md`](docs/runbooks/deployment.md).
 
 ## Documentation
+
+- [User guide](docs/user-guide.md)
 - [Architecture](docs/architecture.md)
+- [Editable architecture visual](docs/architecture-overview.excalidraw)
 - [Region & capability map](docs/region-capability-matrix.md)
 - [Naming & tagging](docs/naming-and-tagging.md)
-- [Deployment (CI/CD) runbook](docs/runbooks/deployment.md)
+- [Deployment runbook](docs/runbooks/deployment.md)
 - [Feature enablement runbook](docs/runbooks/feature-enablement.md)
 - [Teardown & rebuild runbook](docs/runbooks/teardown.md)
+- [Document & multimodal understanding](docs/document-multimodal-understanding.md)
 
 ## Branding
+
 ![AI4IA lettermark](assets/branding/ai4ia-lettermark.png)
 
-The mark above is the official **AI4IA** project lettermark. Brand assets live in
-[`assets/branding/`](assets/branding/):
+Brand assets live in [`assets/branding/`](assets/branding/):
 
-- `ai4ia-lettermark.png` — primary lettermark (1024×1024, opaque background).
-- `ai4ia-icon-1024.png` — 1024×1024 icon with a transparent, rounded-corner background.
-- `ai4ia-icon.ico` — multi-size Windows icon (16–256px) for app/favicon use.
+- `ai4ia-lettermark.png` — primary lettermark (1024x1024, opaque background).
+- `ai4ia-icon-1024.png` — 1024x1024 icon with transparent rounded corners.
+- `ai4ia-icon.ico` — multi-size Windows icon (16-256px).

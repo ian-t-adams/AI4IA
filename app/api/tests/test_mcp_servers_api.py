@@ -1,4 +1,4 @@
-"""API tests for the MCP-server management router (Phase 12A).
+"""API tests for the MCP-server management router.
 
 The feature is flag-gated: with ``custom_tools_enabled`` off the whole surface
 404s (zero regression). With it on, the router drives the service's CRUD + the

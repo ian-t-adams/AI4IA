@@ -84,7 +84,7 @@ export interface AgentSummary {
   enabled: boolean;
 }
 
-// --- User-defined agents & workflows (Phase 8 Studio) ---
+// --- User-defined agents & workflows ---
 
 // Durable user-authored agent persona. `id === name`; `name` is immutable.
 export interface UserAgent {
@@ -171,7 +171,7 @@ export interface ChatParams {
   max_tokens?: number;
 }
 
-// --- Image generation (Phase 7A) ---
+// --- Image generation ---
 
 export interface ImageRequest {
   prompt: string;
@@ -201,7 +201,7 @@ export type BackgroundConfig =
   | { kind: "preset"; id: string }
   | { kind: "generated"; dataUrl: string };
 
-// --- Document upload (Phase 7C) ---
+// --- Document upload ---
 
 // Summary of an uploaded document (never carries the full extracted text).
 export interface DocumentSummary {

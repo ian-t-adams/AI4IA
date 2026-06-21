@@ -1,4 +1,4 @@
-"""Tests for HttpxMcpConnector (Phase 12A) via httpx.MockTransport.
+"""Tests for HttpxMcpConnector via httpx.MockTransport.
 
 Exercises the MCP Streamable-HTTP discovery handshake (initialize ->
 notifications/initialized -> tools/list) without a live server: JSON and SSE
@@ -192,7 +192,7 @@ async def test_malformed_tools_result_raises():
         await _connector(handler).discover(endpoint=_ENDPOINT, auth=McpAuth())
 
 
-# --- Execution: tools/call (Phase 12B Increment B) ---------------------------
+# --- Execution: tools/call ----------------------------------------------------
 
 
 async def test_call_tool_returns_flattened_text_content():
@@ -352,7 +352,7 @@ async def test_call_tool_sends_auth_header():
     assert captured["authorization"] == "Bearer tok"
 
 
-# --- Transport-owned IP pinning (Phase 12B Increment B) ----------------------
+# --- Transport-owned IP pinning ----------------------------------------------
 
 
 class _SpyTransport(httpx.AsyncBaseTransport):

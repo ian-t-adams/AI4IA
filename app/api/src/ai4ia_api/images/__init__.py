@@ -1,4 +1,4 @@
-"""Image generation domain (Phase 11F).
+"""Image generation domain.
 
 The shared generation core (:mod:`service`), durable artifact storage
 (:mod:`artifacts`), and the agent-callable ``generate_image`` synthetic

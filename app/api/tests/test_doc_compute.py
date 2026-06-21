@@ -1,4 +1,4 @@
-"""Document compute path governance (Phase 11C): the ``run_code`` + ``export_document``
+"""Document compute path governance: the ``run_code`` + ``export_document``
 capabilities and the versioned-blob export service.
 
 Mirrors the retrieval consumer's posture (status-gating to ``ready``, per-user
@@ -40,7 +40,7 @@ class FakeCI:
         self.raise_exc = raise_exc
         self.calls: list[dict] = []
         self.closed = False
-        # Raw-file upload plumbing (Phase 11H follow-up): record uploads/deletes so
+        # Raw-file upload plumbing: record uploads/deletes so
         # raw-files-path tests can assert the file went to the interpreter.
         self.uploads: list[dict] = []
         self.deletes: list[str] = []

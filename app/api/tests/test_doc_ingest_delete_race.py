@@ -1,4 +1,4 @@
-"""Delete-during-enrich must not resurrect a deleted document (Phase 11B).
+"""Delete-during-enrich must not resurrect a deleted document.
 
 When document understanding is enabled + CU configured, a long-running ``enrich``
 runs concurrently with the request loop. If the user deletes the document while

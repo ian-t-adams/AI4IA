@@ -1,4 +1,4 @@
-"""Voice Live (Phase 10) pure-logic unit tests.
+"""Voice Live pure-logic unit tests.
 
 Covers the IO-free helpers in ``routers/realtime.py`` that make the relay
 governable: subprotocol credential parsing, the Origin allowlist decision,

@@ -1,4 +1,4 @@
-"""End-to-end ``/recall_memory`` behavior through POST /api/chat (WS2 part D).
+"""End-to-end ``/recall_memory`` behavior through POST /api/chat.
 
 The slash command becomes an ephemeral single-tool agent (mirroring
 ``/generate_image``). It only lights up when memory is enabled; otherwise it

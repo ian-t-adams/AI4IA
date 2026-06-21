@@ -1,4 +1,4 @@
-"""Repository document methods + ownership + delete-session cascade (Phase 7C).
+"""Repository document methods + ownership + delete-session cascade.
 
 Exercises the in-memory repository (behaviorally identical to Cosmos) for
 add/list/get/delete_document, per-user ownership enforcement, deterministic

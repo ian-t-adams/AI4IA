@@ -1,4 +1,4 @@
-"""Azure OpenAI **Responses API** Code Interpreter integration (Phase 11C).
+"""Azure OpenAI **Responses API** Code Interpreter integration.
 
 Code Interpreter is a built-in tool of the Azure OpenAI Responses API that runs
 model-authored Python in a sandboxed, Azure-managed container. It is reached at

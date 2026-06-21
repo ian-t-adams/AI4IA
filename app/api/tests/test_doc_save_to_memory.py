@@ -1,5 +1,4 @@
-"""POST /api/library/documents/{id}/memory (Phase 11E-1): the explicit
-save-to-memory action.
+"""POST /api/library/documents/{id}/memory: the explicit save-to-memory action.
 
 A real :class:`MemoryService` (fake embedder + in-memory store) is attached to
 ``app.state.memory`` so we can assert the 201 happy path stores ``kind="document"``

@@ -1,4 +1,4 @@
-"""Content-hash dedupe helpers for the document library (Phase 11A).
+"""Content-hash dedupe helpers for the document library.
 
 Re-uploading identical bytes should reuse the existing manifest rather than
 re-running the (slow, metered) Content Understanding crack. The dedupe key is the

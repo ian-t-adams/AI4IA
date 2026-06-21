@@ -1,4 +1,4 @@
-"""Document retrieval consumer (Phase 11B-2).
+"""Document retrieval consumer.
 
 Turns a user's *ready* library into chat context, governed and fail-soft. Three
 tiers, mirroring the design doc's retrieval ladder:
@@ -470,7 +470,7 @@ class DocumentRetrievalService:
     async def read_media_timeline(
         self, user_id: str, document_id: str, *, email: str | None = None
     ) -> dict:
-        """Read a ready audio/video document's deep-link scene timeline (Phase 11D).
+        """Read a ready audio/video document's deep-link scene timeline.
 
         Same access + ``ready`` gate as the other reads, restricted to
         audio/video. Returns ``{"document_id","modality","durationMs","segments"}``

@@ -1,4 +1,4 @@
-"""MCP observability hooks (Phase 12B Increment D) — structured, redacted events.
+"""MCP observability hooks: structured, redacted events.
 
 A tiny, framework-agnostic helper that emits one structured log line per MCP
 boundary event (discovery, per-tool execution, quarantine transitions) carrying

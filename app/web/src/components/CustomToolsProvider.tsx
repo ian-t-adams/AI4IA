@@ -1,7 +1,7 @@
 "use client";
 
-// Phase 12B custom-tools config boundary. Mirrors the Phase 9 AuthProvider /
-// Phase 10 VoiceLiveProvider / Phase 11B-2 LibraryProvider pattern: the root layout
+// Custom-tools config boundary. Mirrors the AuthProvider, VoiceLiveProvider, and
+// LibraryProvider pattern: the root layout
 // (server) reads the runtime env and passes a plain config object in as a prop; this
 // client provider exposes it via context to the chat UI. In the default (disabled)
 // config this is an inert passthrough — no custom-tools control is ever rendered, so

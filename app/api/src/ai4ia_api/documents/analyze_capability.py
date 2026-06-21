@@ -2,7 +2,7 @@
 
 Mirrors the library ``run_code`` capability
 (:mod:`ai4ia_api.library.compute_capability`) but over an INLINE composer
-attachment (:mod:`ai4ia_api.routers.documents`, Phase 7C) instead of a ready
+attachment (:mod:`ai4ia_api.routers.documents`) instead of a ready
 library document. A function schema + an async handler are injected into
 :func:`~ai4ia_api.agents.runtime.run_agent_turn` as ``extra_tools`` /
 ``extra_handlers``, so any tool-enabled agent can crack/extract/analyze the REAL

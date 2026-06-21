@@ -1,6 +1,6 @@
 "use client";
 
-// Phase 10 Voice Live: a real-time speech-to-speech client. The browser captures
+// Voice Live: a real-time speech-to-speech client. The browser captures
 // mic audio as 24 kHz mono PCM16 (via an AudioWorklet), base64-encodes it, and
 // streams it over a WebSocket to the API's governed relay (`/api/voice/live`),
 // which proxies to the upstream Azure realtime model. Inbound `response.audio.delta`
@@ -273,7 +273,7 @@ export function realtimeModels<T extends { category: string }>(models: T[]): T[]
 }
 
 // Builds the session.update frame the browser sends on connect. With the default
-// settings this is byte-for-byte the original Phase 10 payload: optional fields
+// settings this is byte-for-byte the original payload: optional fields
 // (temperature, VAD threshold/silence, language) are only added when explicitly
 // set, so the relay's transparent-pump behavior is preserved until a user opts in.
 export function sessionUpdate(

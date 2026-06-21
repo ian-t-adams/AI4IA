@@ -1,4 +1,4 @@
-"""Blob storage for the document library (Phase 11B).
+"""Blob storage for the document library.
 
 Raw uploads and parsed artifacts live under ``{userId}/{documentId}/{name}`` in a
 single private container. Reached ONLY through the api managed identity (AAD) — the
@@ -20,12 +20,12 @@ logger = logging.getLogger(__name__)
 RAW_NAME = "original"
 PARSED_NAME = "parsed.md"
 CHUNKS_NAME = "chunks.jsonl"
-# Audio/video deep-link timeline (Phase 11D): per-segment scene/keyframe markers
+# Audio/video deep-link timeline: per-segment scene/keyframe markers
 # extracted from the CU result, served to the media player. Optional sidecar —
 # absent for documents and for AV without scene detail.
 MEDIA_NAME = "media.json"
 # Subdirectory under a document's prefix holding "adjust & return" exports
-# (Phase 11C): each export writes ``{userId}/{documentId}/versions/{n}/{name}``,
+# Each export writes ``{userId}/{documentId}/versions/{n}/{name}``,
 # leaving the original raw/parsed artifacts immutable.
 VERSIONS_DIR = "versions"
 

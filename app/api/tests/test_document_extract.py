@@ -1,4 +1,4 @@
-"""Unit tests for document text extraction (Phase 7C).
+"""Unit tests for document text extraction.
 
 Covers each supported format (text, docx, pptx, pdf), magic-byte vs extension
 routing, truncation, control-byte stripping, and the unsupported/empty/corrupt

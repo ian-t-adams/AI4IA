@@ -1,4 +1,4 @@
-"""Shared document-processing core (Phase 11H).
+"""Shared document-processing core.
 
 The agent-callable ``process_document`` tool
 (:mod:`ai4ia_api.docprocessing.capability`) goes through

@@ -1,5 +1,4 @@
-"""End-to-end tests for per-turn MCP tool execution through POST /api/chat
-(Phase 12B Increment B).
+"""End-to-end tests for per-turn MCP tool execution through POST /api/chat.
 
 These exercise the *flag-gated, best-effort* wiring in the chat router: with the
 feature ON, a user who has registered an MCP server and attached one of its tools

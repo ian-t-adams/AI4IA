@@ -56,11 +56,9 @@ Verify the proxy in isolation **before** cutover by POSTing directly to its exte
 the proxy injects MI auth). A real completion confirms proxy → Foundry works end-to-end. Only
 then flip `serviceUrl`; re-run a live chat turn through the api; revert if it breaks.
 
-## Plan
+## Current scope
 
-- **Phase 1.5 (minimal gateway):** SimpleL7Proxy + minimal APIM in front of the Foundry
-  endpoints with a `models.json`-derived allowlist, auth, routing, request IDs, token/cost
-  telemetry. Backend targets this from the start so model calls aren't wired twice.
-- **Phase 6 (advanced governance):** multi-region capacity sharing, priority queues, richer cost
-  analytics to Event Hubs/App Insights, and user entitlements (App Configuration + `auth.json`).
-- Custom domain: `genaiproxy.nomad-analytics.com` (public, governed) — not fully private for v1.
+- SimpleL7Proxy + APIM front the Foundry endpoints with a `models.json`-derived allowlist, auth,
+  routing, request IDs, token/cost telemetry, multi-region capacity sharing, priority queues,
+  Event Hubs/App Insights analytics, and user entitlements.
+- Custom domain: `genaiproxy.nomad-analytics.com` (public, governed).

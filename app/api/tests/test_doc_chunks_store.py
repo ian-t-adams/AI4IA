@@ -1,4 +1,4 @@
-"""In-memory doc-chunk store (Phase 11B): per-user + per-document isolation,
+"""In-memory doc-chunk store: per-user + per-document isolation,
 cosine ranking, the document_ids filter, deletion, and dimension guards."""
 from __future__ import annotations
 

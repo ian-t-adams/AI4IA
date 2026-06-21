@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Snapshot the existing AI4IA / aiforia Azure footprint before teardown (Phase 0b).
+  Snapshot the existing AI4IA / aiforia Azure footprint before teardown.
 
 .DESCRIPTION
   Captures Foundry (Cognitive Services) accounts, model deployments, projects,

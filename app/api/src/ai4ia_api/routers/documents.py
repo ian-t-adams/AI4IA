@@ -1,4 +1,4 @@
-"""Per-session document upload, listing, and deletion (Phase 7C).
+"""Per-session document upload, listing, and deletion.
 
 Uploaded files are parsed to plain text locally (no model call) and stored as
 session-scoped, ownership-checked documents. Their text is later injected
@@ -135,7 +135,7 @@ async def upload_document(
         try:
             if int(content_length) > HARD_BODY_CEILING:
                 raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                     detail="File is too large (max 10 MB).",
                 )
         except ValueError:
@@ -154,12 +154,12 @@ async def upload_document(
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="File is too large (max 10 MB).",
         )
     if not data:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="File is empty.",
         )
 
@@ -173,12 +173,12 @@ async def upload_document(
         )
     except EmptyDocumentError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         )
     except DocumentError as exc:
         # Corrupt / mismatched-type files.
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         )
 
     document = Document(

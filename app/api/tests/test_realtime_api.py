@@ -1,4 +1,4 @@
-"""Voice Live (Phase 10) WebSocket relay contract + governance.
+"""Voice Live WebSocket relay contract + governance.
 
 Exercises the ``/api/voice/live`` route end to end with a fake upstream socket
 (no network): the disabled-by-default refusal, Origin/auth/entitlement denials,
@@ -435,4 +435,3 @@ def test_live_unknown_agent_falls_back_to_generic_passthrough():
         assert connector.upstream.sent_text == ['{"type":"session.update"}']
     finally:
         c.__exit__(None, None, None)
-

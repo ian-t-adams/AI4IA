@@ -1,6 +1,5 @@
-// AI4IA root deployment (subscription scope).
-// Phase 0: creates the resource group + tags and wires the model catalog input.
-// Phase 1+ adds modules (foundry, models, containerapps, cosmos, postgres, apim, proxy, ...).
+// AI4IA root deployment (subscription scope). Creates the resource group and
+// wires all application, data, gateway, observability, and feature modules.
 targetScope = 'subscription'
 
 @minLength(3)
@@ -58,7 +57,7 @@ param entraWebClientId string = ''
 @description('API scope the web SPA requests (empty derives <entraAudience>/.default when an audience is set).')
 param entraApiScope string = ''
 
-@description('Enable Voice Live (Phase 10) end to end: the API realtime relay and the browser live-voice control. Default OFF (no behavior change).')
+@description('Enable Voice Live end to end: the API realtime relay and the browser live-voice control. Default OFF (no behavior change).')
 param voiceLiveEnabled bool = false
 
 @description('Comma-separated browser Origin allowlist for the live-voice relay handshake (required when voiceLiveEnabled in a deployed env; the relay fails closed otherwise).')
@@ -67,28 +66,28 @@ param realtimeAllowedOrigins string = ''
 @description('Enable governed tool calling inside a live voice session (calculator, current time). Inert unless voiceLiveEnabled is also true. Default OFF in bicep (matches the image/video feature pattern); set TRUE in main.parameters.json so enabling Voice Live in the live env gives the assistant tools.')
 param voiceLiveToolsEnabled bool = false
 
-@description('Enable the per-user document library (Phase 11A storage spine). Default OFF: the /api/library API refuses (404) and nothing is constructed, so there is no behavior change.')
+@description('Enable the per-user document library and multimodal understanding. Default OFF: the /api/library API refuses (404) and nothing is constructed, so there is no behavior change.')
 param documentUnderstandingEnabled bool = false
 
-@description('Content Understanding endpoint base URL (Phase 11B). Required when enabling document understanding in a deployed env; the api fails closed at startup otherwise. Empty by default (feature off).')
+@description('Content Understanding endpoint base URL. Required when enabling document understanding in a deployed env; the api fails closed at startup otherwise. Empty by default (feature off).')
 param cuBaseUrl string = ''
 
-@description('Enable compute over the library (Phase 11C): intent router + code_interpreter + "adjust & return" export. Layered ON TOP of documentUnderstandingEnabled. Default OFF (the chat hot path is byte-for-byte unchanged).')
+@description('Enable compute over the library: intent router + code_interpreter + "adjust & return" export. Layered ON TOP of documentUnderstandingEnabled. Default OFF (the chat hot path is byte-for-byte unchanged).')
 param documentComputeEnabled bool = false
 
-@description('Azure OpenAI resource endpoint (e.g. https://<resource>.openai.azure.com) that serves the Responses API code_interpreter tool (Phase 11C). Required when enabling document compute in a deployed env; the api fails closed at startup otherwise. Empty by default (feature off).')
+@description('Azure OpenAI resource endpoint (e.g. https://<resource>.openai.azure.com) that serves the Responses API code_interpreter tool. Required when enabling document compute in a deployed env; the api fails closed at startup otherwise. Empty by default (feature off).')
 param codeInterpreterBaseUrl string = ''
 
-@description('Deployment/model name that serves the Responses API code_interpreter tool (Phase 11C, e.g. gpt-4.1). Required when enabling document compute in a deployed env.')
+@description('Deployment/model name that serves the Responses API code_interpreter tool (e.g. gpt-4.1). Required when enabling document compute in a deployed env.')
 param codeInterpreterModel string = ''
 
-@description('Enable the inline-attachment code interpreter (analyze_attachment): the chat agent can crack/analyze an INLINE composer attachment (PDF layout / xlsx cells / image) in the Responses API code_interpreter sandbox. Reuses the same code_interpreter endpoint/model as Phase 11C compute. Default OFF: no original bytes are retained, the tool is never advertised, and no ephemeral container is provisioned, so the chat hot path is byte-for-byte unchanged.')
+@description('Enable the inline-attachment code interpreter (analyze_attachment): the chat agent can crack/analyze an INLINE composer attachment (PDF layout / xlsx cells / image) in the Responses API code_interpreter sandbox. Reuses the same code_interpreter endpoint/model as document compute. Default OFF: no original bytes are retained, the tool is never advertised, and no ephemeral container is provisioned, so the chat hot path is byte-for-byte unchanged.')
 param inlineDocumentComputeEnabled bool = false
 
-@description('Enable the agent-callable generate_image tool (Phase 11F). Default OFF. When on, a dedicated image blob storage account is provisioned and any agent may attach generate_image; produced images persist durably and serve through an authenticated endpoint.')
+@description('Enable the agent-callable generate_image tool. Default OFF. When on, a dedicated image blob storage account is provisioned and any agent may attach generate_image; produced images persist durably and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
 
-@description('Enable the agent-callable generate_video tool (Phase 11G, Sora 2). Default OFF. When on, a videos container is provisioned on the shared generated-media account and any agent may attach generate_video; produced clips persist durably and serve through an authenticated endpoint.')
+@description('Enable the agent-callable generate_video tool. Default OFF. When on, a videos container is provisioned on the shared generated-media account and any agent may attach generate_video; produced clips persist durably and serve through an authenticated endpoint.')
 param videoGenerationEnabled bool = false
 
 @description('Provision an Azure AI Search service (for indexing/retrieval). Default OFF: nothing is created. When on, the api identity gets data-plane RBAC (Index Data Contributor + Service Contributor) and AI4IA_SEARCH_ENDPOINT is emitted to the api.')
@@ -100,7 +99,7 @@ param searchSku string = 'basic'
 @description('Region for the Azure AI Search service. Empty => use the primary location. Provided as a separate knob because Search SKU capacity is region-constrained: eastus2 returned InsufficientResourcesAvailable, so Search is placed in a region with capacity (overridable via AI4IA_SEARCH_LOCATION). The service is reached over its global *.search.windows.net endpoint, so a different region from the rest of the stack is fine.')
 param searchLocation string = ''
 
-@description('Enable custom tools / bring-your-own MCP servers (Phase 12). Default OFF: the per-user MCP registry is never built and /api/agents/mcp-servers refuses (404), so app behavior is unchanged. When on, the api managed identity is granted Key Vault Secrets Officer (to persist per-user MCP connection secrets) and the flag + vault URI are emitted to the api.')
+@description('Enable custom tools / bring-your-own MCP servers. Default OFF: the per-user MCP registry is never built and /api/agents/mcp-servers refuses (404), so app behavior is unchanged. When on, the api managed identity is granted Key Vault Secrets Officer (to persist per-user MCP connection secrets) and the flag + vault URI are emitted to the api.')
 param customToolsEnabled bool = false
 
 @description('Enable the agent-callable Web IQ search tools (web/news/videos/images/browse). Default OFF: no SDK client is constructed and no web tool is advertised, so the chat path is byte-for-byte unchanged. When on, supply webIqApiKey (or rely on the api managed identity for EntraID auth).')
@@ -135,10 +134,10 @@ param proxyCustomDomain string = ''
 @description('Existing Azure-managed cert name the proxy adopts (empty derives a stable name).')
 param proxyManagedCertName string = ''
 
-@description('Deploy the Postgres Flexible Server (pgvector home for mem0). Derived from postgresLocation: empty location => skip. Disable where the subscription is offer-restricted for Postgres; mem0/pgvector is a Phase 5 dependency the MVP api/web do not consume.')
+@description('Deploy the Postgres Flexible Server (pgvector home for mem0). Derived from postgresLocation: empty location => skip. Disable where the subscription is offer-restricted for Postgres; mem0/pgvector is optional for the MVP api/web.')
 param postgresLocation string = ''
 
-@description('''Network-isolation pass — Phase 1. When true, provisions a VNet +
+@description('''Network isolation foundation. When true, provisions a VNet +
 private DNS, creates the Container Apps environment VNet-injected (a NEW env under
 a `-vnet` name), and stands up private endpoints for the data tier (Cosmos, both
 storage accounts, Key Vault). Default false = today's public + identity-gated
@@ -147,9 +146,9 @@ injection is creation-time only, so the apps must be redeployed onto the new env
 (see the apply runbook in the PR).''')
 param vnetIsolationEnabled bool = false
 
-@description('''Network-isolation pass — Phase 2. When true, flips the data tier
+@description('''Private-only data tier. When true, flips the data tier
 (Cosmos + both storage accounts + Key Vault) to `publicNetworkAccess: Disabled`,
-so they are reachable only over the Phase-1 private endpoints. Only valid once
+so they are reachable only over the private endpoints. Only valid once
 `vnetIsolationEnabled` is true, the private endpoints resolve, AND the deployer has
 a VNet path (temp IP allow or a jumpbox) — otherwise azd, which runs off-VNet,
 loses the ability to manage these resources. Default false.''')
@@ -172,7 +171,7 @@ var tags = {
 
 var resourceGroupName = 'rg-${workload}-${environmentName}'
 
-@description('Foundry legacy naming token kept per the approved convention.')
+@description('Foundry naming token kept per the approved convention.')
 var foundryToken = 'aiforia'
 
 @description('Subscription token used in deployment names (region/datazone notation).')
@@ -245,11 +244,11 @@ module keyvault 'modules/keyvault.bicep' = {
     uniqueSuffix: uniqueSuffix
     readerPrincipalIds: allPrincipalIds
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
-    // Custom tools / BYO MCP (Phase 12B): the api MI writes per-user MCP
+    // Custom tools / BYO MCP: the api MI writes per-user MCP
     // connection secrets at runtime, which needs Secrets Officer (write), not the
     // read-only Secrets User above. Granted only when the feature is enabled.
     secretsOfficerPrincipalIds: customToolsEnabled ? [apiIdentity.principalId] : []
-    // Phase 2 of the network-isolation pass: lock the vault to private-only.
+    // Network-isolation mode: lock the vault to private-only.
     publicNetworkAccess: dataTierPrivate ? 'Disabled' : 'Enabled'
   }
 }
@@ -268,7 +267,7 @@ module data 'modules/data.bicep' = {
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     deployPostgres: postgresEnabled
     postgresLocation: empty(postgresLocation) ? location : postgresLocation
-    // Document library blob storage (Phase 11B). Gated on the feature flag, so the
+    // Document library blob storage. Gated on the feature flag, so the
     // storage account + container + RBAC are created only when enabled — default OFF.
     // The inline-attachment code interpreter (default OFF) reuses this same account
     // for its EPHEMERAL original-byte retention, so the account is also provisioned
@@ -277,13 +276,13 @@ module data 'modules/data.bicep' = {
     // Dedicated short-lived container for inline-attachment original bytes (gated on
     // the inline code-interpreter flag — default OFF). Carries a blob lifecycle TTL.
     deployInlineAttachmentStorage: inlineDocumentComputeEnabled
-    // Generated-image blob storage (Phase 11F). Dedicated, independent of the
+    // Generated-image blob storage. Dedicated, independent of the
     // library account; gated on the image-generation flag — default OFF.
     deployImageStorage: imageGenerationEnabled
-    // Generated-video container (Phase 11G) on the same shared media account;
+    // Generated-video container on the same shared media account;
     // gated on the video-generation flag — default OFF.
     deployVideoStorage: videoGenerationEnabled
-    // Phase 2 of the network-isolation pass: lock the data tier to private-only.
+    // Network-isolation mode: lock the data tier to private-only.
     dataPublicNetworkAccess: dataTierPrivate ? 'Disabled' : 'Enabled'
   }
 }
@@ -306,7 +305,7 @@ module search 'modules/search.bicep' = {
   }
 }
 
-// Network-isolation pass (Phase 1): VNet + private DNS. Provisioned only when the
+// Network isolation: VNet + private DNS. Provisioned only when the
 // flag is on; nothing here exists by default. The Container Apps env binds to
 // snet-infra and the data-tier private endpoints land in snet-pep.
 module network 'modules/network.bicep' = if (vnetIsolationEnabled) {
@@ -331,7 +330,7 @@ module platform 'modules/containerapps.bicep' = {
     uniqueSuffix: uniqueSuffix
     logAnalyticsName: monitoring.outputs.logAnalyticsName
     acrPullPrincipalIds: allPrincipalIds
-    // VNet injection (Phase 1). Empty when the flag is off => env name + posture
+    // VNet injection. Empty when the flag is off => env name + posture
     // unchanged. Non-empty => a NEW VNet-injected env under a `-vnet` name.
     // network is deployed under the same flag, so the guarded access is safe.
     #disable-next-line BCP318
@@ -339,7 +338,7 @@ module platform 'modules/containerapps.bicep' = {
   }
 }
 
-// Data-tier private endpoints (Phase 1). Targets are filtered to drop any
+// Data-tier private endpoints. Targets are filtered to drop any
 // conditionally-deployed storage account that isn't present (empty serviceId).
 var privateEndpointTargets = vnetIsolationEnabled ? filter([
   {
@@ -411,17 +410,17 @@ module cost 'modules/cost.bicep' = {
   }
 }
 
-// --- Phase 1.5: minimal model gateway (SimpleL7Proxy + APIM front door) ---
+// --- Model gateway (SimpleL7Proxy + APIM front door) ---
 // APIM routes the model data plane straight to the primary Foundry account (the
-// one co-located with the shared resources / `location`) until SimpleL7Proxy is
-// vendored in Phase 6. The index is start-computable from the catalog; the
-// Foundry outputs are referenced inline in the module params (deferred), exactly
-// like `foundryEndpoints` below, so no new dependency cycle is introduced.
+// one co-located with the shared resources / `location`). The index is
+// start-computable from the catalog; the Foundry outputs are referenced inline in
+// the module params (deferred), exactly like `foundryEndpoints` below, so no new
+// dependency cycle is introduced.
 var regionNames = map(regionList, r => r.name)
 var primaryFoundryIndex = filter(range(0, length(regionList)), i => regionNames[i] == location)[0]
 
-// Content Understanding (Phase 11B) and the code_interpreter Responses API (Phase
-// 11C) reach the Foundry data plane directly — the api identity already holds
+// Content Understanding and the code_interpreter Responses API reach the Foundry
+// data plane directly — the api identity already holds
 // "Cognitive Services User" + "Cognitive Services OpenAI User" on every Foundry
 // account (see foundry.bicep). When an explicit endpoint isn't supplied, default
 // both to the primary Foundry account so enabling the document flags "just works"
@@ -455,7 +454,7 @@ module gateway 'modules/gateway.bicep' = {
   }
 }
 
-// --- Phase 2: backend API (FastAPI) Container App ---
+// --- Backend API (FastAPI) Container App ---
 module api 'modules/api.bicep' = {
   name: 'api'
   scope: rg
@@ -473,7 +472,7 @@ module api 'modules/api.bicep' = {
     cosmosEndpoint: data.outputs.cosmosEndpoint
     cosmosDatabase: data.outputs.cosmosDatabaseName
     // Per-user memory: real mem0 (LLM extraction + pgvector) when Postgres is
-    // deployed, else disabled. The legacy custom 'pgvector' store remains
+    // deployed, else disabled. The custom 'pgvector' store remains
     // available as a one-value revert (its table is untouched and coexists).
     memoryStore: postgresEnabled ? 'mem0' : 'disabled'
     postgresHost: data.outputs.postgresFqdn
@@ -488,20 +487,20 @@ module api 'modules/api.bicep' = {
     entraAudience: entraAudience
     adminSubjects: adminSubjects
     adminApiSecret: adminApiSecret
-    // Voice Live (Phase 10) realtime relay. Default OFF; the Origin allowlist is
+    // Voice Live realtime relay. Default OFF; the Origin allowlist is
     // required (non-empty) when enabling in a deployed env or the relay fails closed.
     realtimeEnabled: voiceLiveEnabled
     realtimeAllowedOrigins: realtimeAllowedOrigins
     realtimeToolsEnabled: voiceLiveToolsEnabled
-    // Document library (Phase 11A). Default OFF; the /api/library API refuses (404).
+    // Document library. Default OFF; the /api/library API refuses (404).
     documentUnderstandingEnabled: documentUnderstandingEnabled
-    // Document ingest (Phase 11B): the blob account/container the data module
+    // Document ingest: the blob account/container the data module
     // provisions when enabled, and the Content Understanding endpoint. Emitted to
     // the api env only when the feature is on (and CU only when a base URL is set).
     documentBlobAccountUrl: data.outputs.documentBlobAccountUrl
     documentBlobContainer: data.outputs.documentBlobContainerName
     cuBaseUrl: effectiveCuBaseUrl
-    // Compute over the library (Phase 11C). Default OFF; layered on top of
+    // Compute over the library. Default OFF; layered on top of
     // documentUnderstandingEnabled. Base url + model emitted only when non-empty.
     documentComputeEnabled: documentComputeEnabled
     codeInterpreterBaseUrl: effectiveCodeInterpreterBaseUrl
@@ -510,13 +509,13 @@ module api 'modules/api.bicep' = {
     // endpoint/model above; emits its enable flag + ephemeral container name only when on.
     inlineDocumentComputeEnabled: inlineDocumentComputeEnabled
     inlineAttachmentBlobContainer: data.outputs.inlineAttachmentBlobContainerName
-    // Agent-callable image tool (Phase 11F). Default OFF; the dedicated image blob
+    // Agent-callable image tool. Default OFF; the dedicated image blob
     // account/container are emitted to the api env only when the feature is on and
     // the data module provisioned an account (else the api uses an in-memory store).
     imageGenerationEnabled: imageGenerationEnabled
     imageBlobAccountUrl: data.outputs.imageBlobAccountUrl
     imageBlobContainer: data.outputs.imageBlobContainerName
-    // Agent-callable video tool (Phase 11G). Default OFF; the videos container on
+    // Agent-callable video tool. Default OFF; the videos container on
     // the shared media account is emitted to the api env only when on and the data
     // module provisioned it (else the api uses an in-memory store).
     videoGenerationEnabled: videoGenerationEnabled
@@ -526,7 +525,7 @@ module api 'modules/api.bicep' = {
     // env only when the service is provisioned (searchEnabled); the api reaches it
     // via managed identity (no keys). Empty string when off -> env var not set.
     searchEndpoint: search.outputs.searchEndpoint
-    // Custom tools / BYO MCP (Phase 12). Default OFF. When on, the flag is emitted
+    // Custom tools / BYO MCP. Default OFF. When on, the flag is emitted
     // and durable MCP connection secrets are stored in the shared Key Vault (the
     // api MI holds Secrets Officer on it); only a secret reference lands in Cosmos.
     customToolsEnabled: customToolsEnabled
@@ -540,7 +539,7 @@ module api 'modules/api.bicep' = {
   }
 }
 
-// --- Phase 3: frontend web (Next.js) Container App ---
+// --- Frontend web (Next.js) Container App ---
 module web 'modules/web.bicep' = {
   name: 'web'
   scope: rg
@@ -564,7 +563,7 @@ module web 'modules/web.bicep' = {
     entraClientId: entraWebClientId
     entraTenantId: entraTenantId
     entraApiScope: !empty(entraApiScope) ? entraApiScope : (empty(entraAudience) ? '' : '${entraAudience}/.default')
-    // Voice Live (Phase 10): surface the flag + the API's public URL so the browser
+    // Voice Live: surface the flag + the API's public URL so the browser
     // can open the live-voice WebSocket directly against the API ingress (the web
     // proxy can't proxy WebSockets). Emitted only when enabled; default OFF.
     voiceLiveEnabled: voiceLiveEnabled
@@ -573,11 +572,11 @@ module web 'modules/web.bicep' = {
     // the web module). Default OFF -> the panel never offers the tools opt-in.
     voiceLiveToolsEnabled: voiceLiveToolsEnabled
     apiPublicUrl: api.outputs.apiUrl
-    // Document library (Phase 11B-2): surface the same feature flag that drives the
+    // Document library: surface the same feature flag that drives the
     // API ingest/retrieval path so the browser shows the library UI only when the
     // feature is on. Default OFF -> no control, no change.
     documentLibraryEnabled: documentUnderstandingEnabled
-    // Custom tools / BYO remote-MCP (Phase 12B): surface the same feature flag that
+    // Custom tools / BYO remote-MCP: surface the same feature flag that
     // drives the API's MCP-server CRUD + per-turn execution so the browser shows the
     // custom-tools UI only when the feature is on. Default OFF -> no control, no change.
     customToolsEnabled: customToolsEnabled
@@ -585,8 +584,8 @@ module web 'modules/web.bicep' = {
 }
 
 // --- Foundry accounts + projects per region ---
-// Account/project names are environment-scoped so parallel-RG validation (Phase 0b)
-// and multi-env deploys don't collide on the globally-unique Cognitive Services subdomain.
+// Account/project names are environment-scoped so parallel-RG validation and
+// multi-env deploys don't collide on the globally-unique Cognitive Services subdomain.
 // Deployment (model endpoint) names keep the region/datazone notation via subscriptionToken.
 module foundry 'modules/foundry.bicep' = [for r in regionList: {
   name: 'foundry-${r.name}'

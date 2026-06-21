@@ -1,4 +1,4 @@
-// Phase 11D citation parsing. The document-retrieval layer asks the model to cite
+// Citation parsing. The document-retrieval layer asks the model to cite
 // a specific moment in an audio/video library document with an exact token,
 // `[[cite:FILENAME@MM:SS]]` (see api `library/retrieval.py`). This module turns an
 // assistant message into renderable segments so the UI can show those tokens as

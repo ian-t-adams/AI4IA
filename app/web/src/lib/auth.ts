@@ -1,6 +1,6 @@
 "use client";
 
-// Browser-side auth singleton (Phase 9). Holds the single MSAL instance and the
+// Browser-side auth singleton. Holds the single MSAL instance and the
 // resolved web auth config, and exposes `apiFetch` — a fetch wrapper that
 // attaches the API bearer token to same-origin /api/* calls when Entra sign-in
 // is enabled. In the default `dev` provider this module is inert: no MSAL is

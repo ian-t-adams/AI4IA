@@ -1,0 +1,125 @@
+# AI4IA User Guide
+
+AI4IA is a governed chat, agent, and document workbench. Use it to talk to
+multiple models, run agent tools, work with documents and media, generate
+artifacts, and review usage. The API enforces identity, feature gates, ownership,
+and tool safety; the web app is the user interface.
+
+## Start
+
+1. Open the web app URL for the environment.
+2. Sign in with Entra when prompted. Local/dev environments may use a configured
+   dev identity instead.
+3. Start a chat session or reopen an existing session from the sidebar.
+4. Pick a model only when the default is not right for the task. The app clamps
+   model parameters to catalog limits.
+
+## Chat well
+
+- Put goals and constraints in the message. Mention files, models, regions, or
+  customer context when they matter.
+- Use attachments for one-off context in the current session.
+- Use the document library for reusable material that should be searchable across
+  sessions.
+- Treat cited document snippets and tool output as grounded context, not as
+  permission to skip review.
+
+## Agents and workflows
+
+- Use built-in agents for common jobs.
+- Create a user agent when you repeatedly need a specific role, instruction set,
+  model, or tool bundle.
+- Use workflows for repeatable multi-step work. Workflows run through the same
+  governed tool path as chat.
+- Attach only the tools an agent needs. Tool output is metered, logged, bounded,
+  and redacted where applicable.
+
+## Documents and media
+
+AI4IA has two document paths:
+
+- **Session attachments** add bounded text to the current chat only.
+- **Document library** uploads a reusable, user-owned document, enriches it,
+  indexes chunks for retrieval, and makes it available to library tools.
+
+Library documents move through ingest states. Only `ready` documents contribute to
+RAG, media deep-links, save-to-memory, sharing, `fetch_document`, `run_code`,
+`export_document`, or `process_document`.
+
+Sharing is tenant-scoped:
+
+- `private` means owner-only.
+- `shared` grants read access by email.
+- `public` means tenant-authenticated users can read it. It is not an anonymous
+  internet link.
+
+## Voice
+
+- Turn-based speech uses the normal API path.
+- Voice Live uses a browser WebSocket directly to the API ingress because the
+  Next.js proxy does not proxy WebSockets.
+- The API still enforces auth, Origin checks, entitlements, metering, deployment
+  selection, and optional governed tools.
+
+If Voice Live controls are hidden, the feature is disabled for that environment.
+
+## Generated artifacts
+
+Image, video, document-processing, and export tools return durable artifacts when
+the relevant feature and storage are configured. Artifacts are served through
+authenticated API routes rather than public blob URLs.
+
+## Memory
+
+When memory is enabled, AI4IA can recall prior user context and can save ready
+document summaries to memory. You can forget saved document memories through the
+document controls. Current gap: there is no global memory toggle or recalled-memory
+indicator in the chat UI.
+
+## Custom tools and web search
+
+Custom MCP servers and Web IQ search tools are feature-gated. When enabled:
+
+- MCP server credentials are stored in Key Vault outside local development.
+- Remote MCP endpoints pass an SSRF guard before discovery and each use.
+- Search and browse output is bounded and treated as untrusted model context.
+
+If the controls are hidden, the feature is disabled for that environment.
+
+## Admin views
+
+Admins can open usage and resource dashboards. The API enforces admin access; the
+web app only hides the navigation for non-admin users. Resource panels degrade to
+unavailable when an Azure resource id, SDK dependency, or RBAC permission is
+missing.
+
+## Data boundaries
+
+- User identity is normalized at the API boundary.
+- Sessions, messages, usage, agents, workflows, MCP server records, and document
+  manifests are canonical in Cosmos DB.
+- Derived memory vectors, search indexes, chunks, parsed artifacts, and media
+  sidecars can be rebuilt from canonical records and blob storage.
+- Model calls route through the configured gateway unless a native Azure service
+  control plane is required.
+
+## Known gaps
+
+- Web IQ search tools and inline-attachment Code Interpreter are implemented but
+  disabled in the checked-in live parameters.
+- The library UI is document-centric; backend support for image, audio, and video
+  exists, but uploads are not first-class in the picker.
+- Custom analyzer authoring, folder-level sharing, and anonymous public links are
+  not implemented.
+- Memory has save/forget and automatic recall, but no global user-facing toggle or
+  recalled-memory indicator.
+
+## Troubleshooting
+
+| Symptom | What it usually means |
+| --- | --- |
+| Feature controls are missing | The web feature flag is off or the API feature is disabled. |
+| A library route returns disabled/not found | Document understanding is not enabled or prerequisites failed startup validation. |
+| A document does not appear in chat | It is not `ready`, not accessible to you, or retrieval is capped for the turn. |
+| Voice Live fails to connect | API public URL, Origin allowlist, auth, or realtime deployment routing is misconfigured. |
+| Admin resource panel is unavailable | The resource id is empty, the API identity lacks Monitoring Reader, or Azure Monitor data is unavailable. |

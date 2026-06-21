@@ -1,6 +1,6 @@
-"""Phase 6B — per-user entitlement enforcement.
+"""Per-user entitlement enforcement.
 
-Layered on the Phase 6A usage ledger, this turns *observation* into *governance*:
+Layered on the usage ledger, this turns *observation* into *governance*:
 a chat turn can be refused (HTTP 429) when a user is over a configured rate limit
 or token/cost budget, or blocked (HTTP 403) when their account is disabled.
 

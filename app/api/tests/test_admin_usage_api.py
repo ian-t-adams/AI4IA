@@ -1,4 +1,4 @@
-"""WS4 admin usage/metrics HTTP surface: gating + correctness + graceful degrade.
+"""Admin usage/metrics HTTP surface: gating + correctness + graceful degrade.
 
 The security contract: EVERY ``/api/admin/usage/*`` and ``/api/admin/metrics/*``
 route is behind ``require_admin`` (admin 200 / non-admin 403 / anon 401). The one

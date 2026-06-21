@@ -1,6 +1,6 @@
 "use client";
 
-// Phase 10 Voice Live config boundary. Mirrors the Phase 9 AuthProvider pattern:
+// Voice Live config boundary. Mirrors the AuthProvider pattern:
 // the root layout (server) reads the runtime env and passes a plain config object
 // in as a prop; this client provider exposes it via context to the chat UI. In the
 // default (disabled) config this is an inert passthrough — no live-voice control is

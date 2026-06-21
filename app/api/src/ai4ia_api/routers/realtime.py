@@ -1,4 +1,4 @@
-"""Voice Live (Phase 10): a governed WebSocket relay for real-time speech-to-speech.
+"""Voice Live: a governed WebSocket relay for real-time speech-to-speech.
 
 The browser cannot reach the upstream Azure realtime endpoint directly without
 either leaking the gateway credential or bypassing the model gateway (and with it
@@ -320,7 +320,7 @@ class AiohttpRealtimeConnector:
 
 
 # --------------------------------------------------------------------------- #
-# Governed tool calling + agent persona inside a live session (Phase 10 / 11).
+# Governed tool calling + agent persona inside a live session.
 #
 # When realtime tools are enabled the relay stops being a pure pump for exactly
 # two narrow frame kinds and owns governed function calling, reusing the SAME
@@ -337,7 +337,7 @@ class AiohttpRealtimeConnector:
 # turn carries the same persona as a chat @mention, and the browser can't spoof a
 # different one). Every other frame (audio, transcripts, all other events) is
 # forwarded verbatim, and with no tools and no agent persona the bridge is an
-# inert pass-through so the relay's byte-for-byte Phase 10 behavior is preserved.
+# inert pass-through so the relay's byte-for-byte transparent-pump behavior is preserved.
 # --------------------------------------------------------------------------- #
 
 SESSION_UPDATE_TYPE = "session.update"
@@ -480,7 +480,7 @@ class ToolBridge:
     Holds the same registry/executor as chat plus the flat realtime tool schemas
     advertised to the model and, optionally, the server-authoritative ``instructions``
     for a bound agent persona. With no tools and no instructions it is a pure
-    pass-through, so the relay keeps its byte-for-byte Phase 10 (transparent-pump)
+    pass-through, so the relay keeps its byte-for-byte transparent-pump
     behavior. Tools drive in-process governed execution; ``instructions`` only
     rewrites the session.update (no execution), so a persona-only bridge has
     ``enabled is False`` yet still injects the persona.
@@ -625,7 +625,7 @@ async def build_session_bridge(
     session instructions and the advertised tools are scoped to the agent's own
     allowlist (so a voice turn has the SAME persona + tools as a chat @mention).
     Otherwise the session falls back to the generic assistant with every authorized
-    builtin — the original Phase 10 behavior.
+    builtin — the original transparent-pump behavior.
 
     ``tools_requested`` is the per-session client opt-in; it gates tool advertisement
     (combined with the server flag) without affecting the bound agent's persona.

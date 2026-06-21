@@ -1,6 +1,6 @@
 "use client";
 
-// Phase 11D deep-link media player. Plays a ready audio/video library document and
+// Deep-link media player. Plays a ready audio/video library document and
 // renders the analyzer's scene timeline (camera shots + keyframes) as clickable
 // deep-links that seek the player. Rendered as a modal from the LibraryPanel, only
 // for ready documents whose modality is audio or video — so it is inert otherwise.

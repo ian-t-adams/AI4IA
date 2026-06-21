@@ -1,7 +1,7 @@
 "use client";
 
-// Phase 11B-2 document-library config boundary. Mirrors the Phase 9 AuthProvider /
-// Phase 10 VoiceLiveProvider pattern: the root layout (server) reads the runtime
+// Document-library config boundary. Mirrors the AuthProvider and
+// VoiceLiveProvider pattern: the root layout (server) reads the runtime
 // env and passes a plain config object in as a prop; this client provider exposes
 // it via context to the chat UI. In the default (disabled) config this is an inert
 // passthrough — no library control is ever rendered, so the app behaves exactly as

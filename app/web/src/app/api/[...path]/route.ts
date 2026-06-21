@@ -84,20 +84,20 @@ async function forward(req: NextRequest, path: string[]): Promise<Response> {
   });
 }
 
-type Ctx = { params: { path: string[] } };
+type Ctx = { params: Promise<{ path: string[] }> };
 
 export async function GET(req: NextRequest, { params }: Ctx) {
-  return forward(req, params.path);
+  return forward(req, (await params).path);
 }
 export async function POST(req: NextRequest, { params }: Ctx) {
-  return forward(req, params.path);
+  return forward(req, (await params).path);
 }
 export async function PATCH(req: NextRequest, { params }: Ctx) {
-  return forward(req, params.path);
+  return forward(req, (await params).path);
 }
 export async function PUT(req: NextRequest, { params }: Ctx) {
-  return forward(req, params.path);
+  return forward(req, (await params).path);
 }
 export async function DELETE(req: NextRequest, { params }: Ctx) {
-  return forward(req, params.path);
+  return forward(req, (await params).path);
 }

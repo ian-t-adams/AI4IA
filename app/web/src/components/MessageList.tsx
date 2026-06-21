@@ -277,7 +277,7 @@ function DocumentAttachmentView({ attachment }: { attachment: MessageAttachment 
 }
 
 // Renders an assistant message, turning `[[cite:FILENAME@MM:SS]]` tokens into
-// clickable chips that deep-link the media player (Phase 11D). When there are no
+// clickable chips that deep-link the media player. When there are no
 // tokens this is just the text, so non-cited answers are byte-for-byte unchanged.
 // The chip is only interactive when an `onCitation` handler is supplied (i.e. the
 // library is enabled); otherwise the citation renders as a static label so a stray

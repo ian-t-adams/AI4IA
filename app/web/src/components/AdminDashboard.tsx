@@ -1,6 +1,6 @@
 "use client";
 
-// Admin usage dashboard (WS4, Part C). Client component that:
+// Admin usage dashboard. Client component that:
 //  1. Confirms the viewer is an admin via /api/admin/whoami (cosmetic — the API
 //     still enforces require_admin, so a non-admin only ever sees the forbidden
 //     view and empty 403s).
@@ -10,6 +10,7 @@
 // All display logic lives in pure helpers in lib/admin.ts (unit-tested); this file
 // is presentation only. Charts are inline SVG (no charting dependency).
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 
 import {
   type AdminUsageSummary,
@@ -292,9 +293,9 @@ export function AdminDashboard() {
             This dashboard is restricted to application administrators. If you believe you should have
             access, contact the app owner.
           </p>
-          <a href="/" style={{ color: "var(--accent)" }}>
+          <Link href="/" style={{ color: "var(--accent)" }}>
             ← Back to chat
-          </a>
+          </Link>
         </div>
       </Shell>
     );
@@ -326,9 +327,9 @@ export function AdminDashboard() {
             </option>
           ))}
         </select>
-        <a href="/" style={{ ...muted, color: "var(--accent)", textDecoration: "none" }}>
+        <Link href="/" style={{ ...muted, color: "var(--accent)", textDecoration: "none" }}>
           ← Chat
-        </a>
+        </Link>
       </div>
 
       {error ? (

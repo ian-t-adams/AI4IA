@@ -103,13 +103,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = settings
         app.state.auth_provider = build_auth_provider(settings)
         app.state.session_repo = build_session_repository(settings)
-        # Per-user document library (Phase 11A). Feature-flagged + default-OFF:
+        # Per-user document library. Feature-flagged + default-OFF:
         # build_document_library returns None unless
         # settings.document_understanding_enabled, so the ``/api/library`` API
         # refuses (404) and nothing is constructed by default — zero regression.
         app.state.document_library = build_document_library(settings)
         app.state.gateway = ModelGatewayClient(settings, http_client=http)
-        # Voice Live (Phase 10): the upstream realtime-WS connector. Default OFF,
+        # Voice Live: the upstream realtime-WS connector. Default OFF,
         # so this is unused unless settings.realtime_enabled is true. Swappable in
         # tests (a fake socket) the same way app.state.gateway is.
         app.state.realtime_connector = AiohttpRealtimeConnector()
@@ -120,7 +120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         registry, executor = build_tools()
         app.state.tool_registry = registry
         app.state.tool_executor = executor
-        # User-defined agents (Phase 8). The service composes the curated catalog
+        # User-defined agents. The service composes the curated catalog
         # with each user's saved personas (per-user, durable in Cosmos) and owns
         # CRUD + validation. Reads fail open to the curated catalog so a store
         # blip can never break chat. Tools a user may attach are an explicit
@@ -130,12 +130,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             catalog=app.state.catalog,
             attachable_tools=attachable_tool_names(registry, executor),
         )
-        # User-defined workflows (Phase 8 inc 3): saved, ordered pipelines of agent
+        # User-defined workflows: saved, ordered pipelines of agent
         # steps. Own Cosmos container ("workflows", PK /userId) + own invocation
         # surface, so a workflow and an agent may share a name. Not on the chat hot
         # path, so reads do NOT fail open — a store error surfaces to the caller.
         app.state.workflow_service = WorkflowService(build_workflow_store(settings))
-        # User-registered MCP servers / BYO custom tools (Phase 12A). Feature-
+        # User-registered MCP servers / BYO custom tools. Feature-
         # flagged + default-OFF: when settings.custom_tools_enabled is false the
         # service is None, so the ``/api/agents/mcp-servers`` API refuses (404) and
         # nothing is constructed — zero regression by default. When enabled, the
@@ -158,12 +158,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         else:
             app.state.mcp_service = None
-        # Per-user memory (Phase 5). Disabled by default -> NoopMemoryService, so
+        # Per-user memory. Disabled by default -> NoopMemoryService, so
         # the chat path can call it unconditionally with no behavior change.
         app.state.memory = build_memory_service(
             settings, gateway=app.state.gateway, catalog=app.state.catalog
         )
-        # Usage metering / cost ledger (Phase 6). Observational: records each
+        # Usage metering / cost ledger. Observational: records each
         # completed turn to a per-user ledger and emits structured cost telemetry.
         # Best-effort by construction (record_completion never raises), and shares
         # the session store's durability (Cosmos vs in-memory) via the factory.
@@ -173,17 +173,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             load_pricing(),
             enabled=settings.usage_metering_enabled,
         )
-        # Admin usage aggregation (WS4). Read-only org-level rollups over the SAME
+        # Admin usage aggregation. Read-only org-level rollups over the same
         # ledger repo, behind require_admin. It shares the repo instance with the
         # metering service (which owns close()), so this service never closes it.
         app.state.admin_usage = AdminUsageService(usage_repo)
-        # Admin resource metrics (WS4 Part B). Best-effort Azure Monitor panels for
+        # Admin resource metrics. Best-effort Azure Monitor panels for
         # AI Search / Postgres / Cosmos / Container Apps. Degrades to "unavailable"
         # when resource ids / the SDK / Monitor data are absent, so it ships before
-        # WS3 wires diagnostics. The querier (and its credential) is built lazily on
+        # diagnostics/resource ids exist. The querier (and its credential) is built lazily on
         # first use and closed in finally.
         app.state.resource_metrics = ResourceMetricsService(settings)
-        # Entitlement enforcement (Phase 6B). Ships effectively unlimited: with
+        # Entitlement enforcement. Ships effectively unlimited: with
         # no per-user override and no global default cap, check() short-circuits
         # to allow with zero ledger IO. The store shares the session store's
         # durability; the usage service supplies rolling-window totals.
@@ -194,7 +194,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             enabled=settings.entitlements_enabled,
             cache_ttl_seconds=settings.entitlement_cache_ttl_seconds,
         )
-        # Document ingest pipeline (Phase 11B). Built only when document
+        # Document ingest pipeline. Built only when document
         # understanding is enabled (else None), so the upload endpoint refuses
         # and no blob/CU/pgvector IO is constructed by default — zero regression.
         # Owns its blob store + CU client + chunk store; closed in finally.
@@ -213,14 +213,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.document_ingestor.recover_interrupted()
             except Exception:  # noqa: BLE001 - startup sweep must not block boot
                 logger.warning("document recovery sweep failed", exc_info=True)
-        # Document retrieval consumer (Phase 11B-2). Reuses the ingestor's backing
+        # Document retrieval consumer. Reuses the ingestor's backing
         # IO so a document indexed by the producer is visible to chat retrieval.
         # None when document understanding is off (no library context, no
         # fetch_document tool) — zero regression by default.
         app.state.document_retrieval = build_document_retrieval(
             settings, ingestor=app.state.document_ingestor
         )
-        # Document compute consumer (Phase 11C): intent router + Code Interpreter
+        # Document compute consumer: intent router + Code Interpreter
         # + "adjust & return" export. Layered on top of retrieval and reusing the
         # ingestor's IO. None when document compute is off (default), so the chat
         # hot path never classifies intent, advertises neither tool, and the
@@ -231,17 +231,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ingestor=app.state.document_ingestor,
             retrieval=app.state.document_retrieval,
         )
-        # Durable store for tool-generated images (Phase 11F). Shared (single
+        # Durable store for tool-generated images. Shared (single
         # instance) so the byte written during a tool turn is readable by the
         # later authenticated serve request. Durable AzureBlobStore when
         # image_blob_account_url is set; an in-memory store locally/in tests.
         # Independent of the document library (image generation ships live).
         app.state.image_artifacts = ImageArtifactStore(build_image_blob_store(settings))
-        # Durable store for tool-generated videos (Phase 11G, Sora 2). Same
+        # Durable store for tool-generated videos. Same
         # shared-instance rationale as images; durable AzureBlobStore when
         # video_blob_account_url is set, else an in-memory store.
         app.state.video_artifacts = VideoArtifactStore(build_video_blob_store(settings))
-        # Durable store for over-cap ``process_document`` results (Phase 11H).
+        # Durable store for over-cap ``process_document`` results.
         # Same shared-instance rationale as images/video; reuses the document
         # library's blob account (document_blob_account_url) when configured, else
         # an in-memory store. The backing capability only runs when document
@@ -280,7 +280,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             entitlements=app.state.entitlements,
             metering=app.state.usage,
         )
-        # Rolling summarization (Phase WS2-C). Always built; ``enabled`` mirrors
+        # Rolling summarization. Always built; ``enabled`` mirrors
         # the DEFAULT-OFF ``auto_summarization_enabled`` flag, so the chat router
         # can consult it unconditionally. When off, the automatic fold path is
         # never taken and the turn is byte-for-byte unchanged; the manual

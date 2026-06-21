@@ -52,7 +52,7 @@ class MessageSource(str, Enum):
 
 class MessageAttachment(BaseModel):
     """A non-text artifact produced during a turn and rendered alongside the
-    message text (Phase 11F).
+    message text.
 
     ``kind="image"`` is a generated image persisted by the ``generate_image``
     tool; ``kind="video"`` is a generated MP4 persisted by the ``generate_video``
@@ -110,7 +110,7 @@ class Session(BaseModel):
     title: str = "New chat"
     model: str | None = None
     systemPrompt: str | None = None
-    # Rolling conversation summary (Phase WS2-C). When rolling summarization has
+    # When rolling summarization has
     # folded older turns, ``summary`` holds the compact running digest of every
     # turn UP TO AND INCLUDING ``summarizedThroughMessageId``; turns after that
     # id are still sent verbatim. Both default to ``None`` (no summary yet) and a

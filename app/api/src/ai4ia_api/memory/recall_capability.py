@@ -1,4 +1,4 @@
-"""The ``recall_memory`` synthetic capability (WS2-D).
+"""The ``recall_memory`` synthetic capability.
 
 Gives a tool-enabled agent (and the main chat) an *explicit* way to semantically
 search the authenticated user's durable mem0 store on demand, beyond the small

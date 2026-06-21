@@ -1,8 +1,8 @@
-// Server-only: resolves the custom-tools / bring-your-own-MCP (Phase 12B) runtime
+// Server-only: resolves the custom-tools / bring-your-own-MCP runtime
 // configuration from environment variables. Read in the root layout (a server
 // component) and passed as a plain prop into the client CustomToolsProvider,
-// exactly like the Phase 9 auth config, the Phase 10 voice-live config, and the
-// Phase 11B-2 library config — so the value is evaluated at request time in the
+// exactly like the auth, voice-live, and library configs — so the value is
+// evaluated at request time in the
 // container, NOT inlined at build time the way NEXT_PUBLIC_* vars are.
 //
 // Default OFF: unless CUSTOM_TOOLS_ENABLED is truthy this returns a disabled config

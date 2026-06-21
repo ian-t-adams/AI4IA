@@ -1,4 +1,4 @@
-"""Document upload/list/delete API + chat-context injection (Phase 7C).
+"""Document upload/list/delete API + chat-context injection.
 
 Covers the CRUD contract (multipart upload, summary shape, list, delete),
 guard rails (unsupported type, empty file, per-session count cap, wrong

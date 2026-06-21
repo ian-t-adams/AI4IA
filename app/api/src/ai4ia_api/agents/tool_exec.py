@@ -1,4 +1,4 @@
-"""Tool **execution** layer (Phase 4) — the counterpart to the safety registry.
+"""Tool **execution** layer — the counterpart to the safety registry.
 
 ``agents/tools.py`` *governs* tools (scopes, risk, approval, egress, redaction);
 this module *executes* them. The two are joined only by a tool ``name`` so the

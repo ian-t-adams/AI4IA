@@ -1,4 +1,4 @@
-"""Phase 11D media endpoints: GET /api/library/documents/{id}/media (original
+"""Media endpoints: GET /api/library/documents/{id}/media (original
 audio/video byte stream for the deep-link player) and .../timeline (scene/keyframe
 markers). Default-OFF refusal, the ready-AV happy paths, the non-AV refusal, and
 cross-user isolation. All IO is in-memory; no network."""

@@ -1,4 +1,4 @@
-"""Selects and constructs the document compute path (Phase 11C).
+"""Selects and constructs the document compute path.
 
 Returns ``None`` when document compute is disabled (or its prerequisites were not
 built), so the chat hot path never classifies intent, never advertises the
@@ -92,7 +92,7 @@ def build_document_compute(
     retrieval: DocumentRetrievalService | None,
     code_interpreter: CodeInterpreterClient | None = None,
 ) -> DocumentComputeService | None:
-    """Construct the compute consumer (Phase 11C).
+    """Construct the compute consumer.
 
     Returns ``None`` when document compute is disabled, or when its prerequisites
     (the ingestor's IO and the retrieval consumer) were not built — the

@@ -1,4 +1,4 @@
-"""Per-model metadata + scaling (WS2 parts A & B).
+"""Per-model metadata + scaling.
 
 Covers: catalog metadata round-trips catalog -> API -> serialization; a model
 without metadata falls back to the fixed constants; the request max-output is

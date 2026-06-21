@@ -1,4 +1,4 @@
-"""Unit tests for the multi-agent delegation capability (Phase 8 inc 2).
+"""Unit tests for the multi-agent delegation capability.
 
 These exercise :mod:`ai4ia_api.agents.orchestration` directly (no HTTP), driving
 the ``delegate_to_agent`` handler against a scripted gateway and the real tool

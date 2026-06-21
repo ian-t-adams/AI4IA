@@ -1,4 +1,4 @@
-"""Authenticated serve endpoint for ``process_document`` results (Phase 11H).
+"""Authenticated serve endpoint for ``process_document`` results.
 
 The ``process_document`` agent tool persists each over-cap result to per-user blob
 storage and returns only a small reference; the browser fetches the text here.

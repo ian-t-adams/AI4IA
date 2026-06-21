@@ -1,4 +1,4 @@
-"""CRUD for /api/library/documents/{id}/annotations (Phase 11E-2).
+"""CRUD for /api/library/documents/{id}/annotations.
 
 Annotations are owner-private notes pinned to a library document. These tests
 exercise the flag gate, ownership gate, body sanitization/validation, and the

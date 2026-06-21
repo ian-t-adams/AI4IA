@@ -1,4 +1,4 @@
-"""Document retrieval consumer (Phase 11B-2): Tier 1 summary cards, Tier 2 RAG
+"""Document retrieval consumer: Tier 1 summary cards, Tier 2 RAG
 excerpts, and the Tier 3 fetch_document capability — all status-gated to ``ready``
 documents, nonce-fenced, and best-effort. All IO is injected (in-memory stores +
 a fake embedder); no network."""
@@ -503,7 +503,7 @@ async def test_read_raw_blank_document_id_errors():
     assert "error" in res
 
 
-# --- Phase 11D: deep-link media (original-bytes stream + scene timeline) ---
+# --- deep-link media (original-bytes stream + scene timeline) ---
 async def _seed_media(
     library,
     blob,
@@ -658,7 +658,7 @@ async def test_read_media_timeline_cross_user_is_not_found():
     assert "No document found" in res["error"]
 
 
-# --- Phase 11F: document-level sharing (read/RAG/fetch widened to grantees) ---
+# --- document-level sharing (read/RAG/fetch widened to grantees) ---
 # A grantee is identified by EMAIL; chunks/blobs stay partitioned on the OWNER's
 # id, so every shared read keys on ``doc.userId``, not the caller's id. The
 # grantee's own internal_user_id is arbitrary here ("bob-uid") — only the email

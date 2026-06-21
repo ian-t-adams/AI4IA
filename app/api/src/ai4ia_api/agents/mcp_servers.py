@@ -1,4 +1,4 @@
-"""User-registered MCP servers (Phase 12A) — "bring your own" tools.
+"""User-registered MCP servers — "bring your own" tools.
 
 A *user MCP server* is a durable, per-user record pointing at a remote
 Model-Context-Protocol server (Streamable HTTP transport) the user owns or
@@ -124,8 +124,8 @@ class UserMcpServer(BaseModel):
     authMode: McpAuthMode = McpAuthMode.none
     trusted: bool = False
     enabled: bool = True
-    # Opaque pointer to the durable connection secret in the secret store (Phase
-    # 12B). ``None`` for public (``authMode=none``) servers. The raw secret is
+    # Opaque pointer to the durable connection secret in the secret store.
+    # ``None`` for public (``authMode=none``) servers. The raw secret is
     # NEVER stored on this record — only its reference; the value is resolved from
     # the secret store at connect/execute time.
     secretRef: str | None = None
@@ -138,7 +138,7 @@ class UserMcpServer(BaseModel):
     updatedAt: datetime = Field(default_factory=_now)
     lastConnectedAt: datetime | None = None
     lastError: str | None = None
-    # --- Health / quarantine (Phase 12B Increment D) -------------------------
+    # --- Health / quarantine -----------------------------------------------
     # Per-server health used to skip a persistently failing server instead of
     # hammering it every turn. ``consecutiveFailures`` counts connect/execute
     # transport failures since the last success; ``quarantinedUntil`` (when set

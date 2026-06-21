@@ -1,4 +1,4 @@
-"""Async Content Understanding REST client (Phase 11B).
+"""Async Content Understanding REST client.
 
 Verified against Microsoft Learn (api-version 2025-11-01, GA):
 

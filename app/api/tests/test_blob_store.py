@@ -1,4 +1,4 @@
-"""In-memory blob store + path helpers (Phase 11B)."""
+"""In-memory blob store + path helpers."""
 from __future__ import annotations
 
 import pytest

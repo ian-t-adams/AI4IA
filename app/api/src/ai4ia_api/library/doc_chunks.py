@@ -1,4 +1,4 @@
-"""Per-user document chunk vector store (Phase 11B).
+"""Per-user document chunk vector store.
 
 Mirrors :mod:`ai4ia_api.memory.pgvector_store`: AAD-only Postgres + pgvector, exact
 cosine KNN (the 3072-dim embeddings exceed pgvector's ANN ceiling), lazy idempotent
@@ -51,7 +51,7 @@ _DDL_USER_INDEX = "CREATE INDEX IF NOT EXISTS doc_chunks_user_idx ON doc_chunks 
 _DDL_DOC_INDEX = (
     "CREATE INDEX IF NOT EXISTS doc_chunks_doc_idx ON doc_chunks (user_id, document_id)"
 )
-# Additive migrations so a doc_chunks table created before Phase 11D gains the
+# Additive migrations so an older doc_chunks table gains the
 # audio/video time-grounding columns without a destructive recreate.
 _DDL_ALTERS = (
     "ALTER TABLE doc_chunks ADD COLUMN IF NOT EXISTS start_ms int",
@@ -93,7 +93,7 @@ class DocChunkRecord:
     heading: str | None = None
     char_start: int | None = None
     char_end: int | None = None
-    # Audio/video time grounding (Phase 11D): the chunk's media start/end offset
+    # Audio/video time grounding: the chunk's media start/end offset
     # in milliseconds and its speaker label, when known. ``None`` for documents.
     start_ms: int | None = None
     end_ms: int | None = None

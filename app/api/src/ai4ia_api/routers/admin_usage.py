@@ -1,4 +1,4 @@
-"""Admin usage + resource-metrics API (WS4).
+"""Admin usage + resource-metrics API.
 
 Org-level aggregation over the existing per-user usage ledger, plus best-effort
 Azure Monitor resource panels — for the app admin's "how many users, tokens,

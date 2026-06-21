@@ -1,4 +1,4 @@
-"""Library domain models + pure helpers (Phase 11A): can_access, hashing,
+"""Library domain models + pure helpers: can_access, hashing,
 modality classification, and the built-in analyzer registry shape."""
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def test_non_owner_denied_in_v1():
 
 
 def test_reserved_sharing_paths():
-    # Phase 11F sharing semantics: ``public`` is tenant-walled (any authenticated
+    # Sharing semantics: ``public`` is tenant-walled (any authenticated
     # user reads, mutations stay owner-only); ``shared`` grants read by the
     # grantee's *email* (the acl holds normalized emails, never user ids).
     public = _doc(userId="alice", visibility=Visibility.public)

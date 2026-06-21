@@ -1,5 +1,5 @@
-"""Image generation endpoint (Phase 7A): custom imagery & backgrounds, plus the
-authenticated serve endpoint for tool-generated images (Phase 11F).
+"""Image generation endpoint: custom imagery & backgrounds, plus the
+authenticated serve endpoint for tool-generated images.
 
 Generation governance lives in :class:`~ai4ia_api.images.service.ImageGenerationService`
 (shared with the ``generate_image`` agent tool): only ``image``-category catalog
@@ -76,7 +76,7 @@ async def generate_images(
     entitlements: EntitlementService = request.app.state.entitlements
     metering: UsageService = request.app.state.usage
 
-    # Entitlement gate (Phase 6B): blocks disabled users and applies any admin-set
+    # Entitlement gate: blocks disabled users and applies any admin-set
     # rate/budget limit. Ships unlimited; short-circuits with no ledger IO.
     decision = await entitlements.check(user.internal_user_id)
     if not decision.allowed:

@@ -21,13 +21,13 @@ dependencies = [
     # Async azure SDKs (azure.cosmos.aio + azure.identity.aio) require an async
     # HTTP transport at runtime; azure-core selects aiohttp by default.
     "aiohttp>=3.10",
-    # Async Postgres driver for the pgvector memory store (Phase 5 increment B).
+    # Async Postgres driver for the pgvector memory store.
     # Imported lazily so the app/tests run without a live database.
     "asyncpg>=0.29",
     # Multipart form parser: required by FastAPI for the voice transcription
-    # endpoint's audio file upload (Phase 7B).
+    # endpoint's audio file upload.
     "python-multipart>=0.0.9",
-    # PDF text extraction for the document-upload feature (Phase 7C). docx/pptx
+    # PDF text extraction for the document-upload feature. docx/pptx
     # are parsed with the stdlib (zipfile + ElementTree); only PDF needs a dep.
     "pypdf>=4.0",
     # Real mem0 OSS memory backend (memory_store=mem0): LLM fact-extraction +
@@ -41,20 +41,20 @@ dependencies = [
     # lazily (only when memory_store=mem0) so the app/tests run without them wired.
     "psycopg[binary]>=3.2",
     "psycopg-pool>=3.2",
-    # Blob storage for the document library (Phase 11B): raw uploads + parsed
+    # Blob storage for the document library: raw uploads + parsed
     # artifacts. Async client (azure.storage.blob.aio) reached via the api managed
     # identity; imported lazily so the app/tests run without it wired (the
     # in-memory blob store covers local/dev + unit tests).
     "azure-storage-blob>=12.20",
-    # Azure AI Search data + index plane for the document chunk index (Phase 11I).
+    # Azure AI Search data + index plane for the document chunk index.
     # Reached over the global *.search.windows.net endpoint via the api managed
     # identity (RBAC: Search Index Data Contributor + Service Contributor) — no
     # admin keys. Imported lazily (only when search_endpoint is configured) so the
     # app/tests run without it wired; the in-memory chunk store covers local/dev +
     # unit tests, and the unit tests inject fake clients.
     "azure-search-documents>=11.5",
-    # Durable storage for user-registered MCP server connection secrets (Phase
-    # 12B): authenticated servers' credentials live in Azure Key Vault and only an
+    # Durable storage for user-registered MCP server connection secrets:
+    # authenticated servers' credentials live in Azure Key Vault and only an
     # opaque reference is kept on the Cosmos record. Async client
     # (azure.keyvault.secrets.aio) reached via the api managed identity (RBAC: Key
     # Vault Secrets Officer); imported lazily so the app/tests run without it wired
@@ -66,15 +66,15 @@ dependencies = [
     # boot without it wired and the default-OFF path constructs nothing.
     "webiq>=0.1",
     # Azure Monitor metrics data plane for the admin dashboard's resource panels
-    # (WS4 Part B): AI Search / Postgres / Cosmos / Container Apps platform metrics
+    # for AI Search / Postgres / Cosmos / Container Apps platform metrics,
     # read via the api managed identity (RBAC: Monitoring Reader). Imported lazily
     # (only when a resource id is configured and a panel is requested) so the
     # app/tests boot without it wired and unconfigured panels degrade to
     # "unavailable"; unit tests inject a fake querier.
     "azure-monitor-query>=1.2",
     # Azure Monitor OpenTelemetry distro: exports request/dependency/exception
-    # traces, metrics, and custom usage events to Application Insights (WS3
-    # observability). Initialized ONCE at startup (logging_setup.configure_telemetry)
+    # traces, metrics, and custom usage events to Application Insights. Initialized
+    # ONCE at startup (logging_setup.configure_telemetry)
     # ONLY when APPLICATIONINSIGHTS_CONNECTION_STRING is set, so local/dev with no
     # connection string is a pure no-op and the SDK is never started. Pulls in the
     # OpenTelemetry API/SDK + the FastAPI/Azure-SDK instrumentations transitively.

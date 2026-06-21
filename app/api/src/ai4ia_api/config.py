@@ -90,13 +90,13 @@ class Settings(BaseSettings):
     gateway_provider_style: GatewayProviderStyle = GatewayProviderStyle.azure_openai_native
     gateway_api_version: str = "2025-04-01-preview"
     gateway_timeout_seconds: float = 120.0
-    # Image generation (Phase 7A) has its own api-version + timeout: image models
+    # Image generation has its own api-version + timeout: image models
     # (gpt-image-2 etc.) can take much longer than a chat turn and may track a
     # different supported api-version than chat. 2024-10-21 (GA) is verified
     # against the deployed gpt-image-2 deployment.
     gateway_image_api_version: str = "2024-10-21"
     gateway_image_timeout_seconds: float = 180.0
-    # Video generation (Phase 11G, Sora 2) is an async job: create -> poll ->
+    # Video generation (Sora 2) is an async job: create -> poll ->
     # download. The Sora REST surface tracks the ``preview`` api-version. Each
     # individual HTTP call uses ``gateway_video_timeout_seconds``; the service
     # polls every ``gateway_video_poll_interval_seconds`` up to a hard
@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     gateway_video_timeout_seconds: float = 60.0
     gateway_video_poll_interval_seconds: float = 5.0
     gateway_video_max_wait_seconds: float = 240.0
-    # Voice (Phase 7B) — speech-to-text (whisper) and text-to-speech
+    # Voice — speech-to-text (whisper) and text-to-speech
     # (gpt-4o-mini-tts / tts-hd) ride the same gateway/auth path as chat. They
     # track their own api-version and a generous timeout (audio synthesis /
     # transcription can exceed a chat turn). gpt-4o-mini-tts speech is only
@@ -113,7 +113,7 @@ class Settings(BaseSettings):
     # api-version also serves whisper transcription, so both share one version.
     gateway_audio_api_version: str = "2025-03-01-preview"
     gateway_audio_timeout_seconds: float = 120.0
-    # --- Voice Live (Phase 10): real-time speech-to-speech relay ---
+    # --- Voice Live: real-time speech-to-speech relay ---
     # Feature-flagged and default-OFF: with realtime_enabled=False the
     # ``/api/voice/live`` WebSocket refuses (closes immediately), so the app's
     # default behavior is byte-for-byte unchanged. When enabled, the browser
@@ -150,7 +150,7 @@ class Settings(BaseSettings):
     # client's ``session.update`` and executes the model's function calls in-process
     # through the same governed registry/executor as chat (authorize -> validate ->
     # run), so the browser never gains a new capability surface. Disabling this
-    # leaves the relay a transparent pump (the merged Phase 10 behavior).
+    # leaves the relay a transparent pump.
     realtime_tools_enabled: bool = False
     # Override the chat-completions path template (placeholders: {deployment}).
     # When unset, a sensible default is derived from the provider style.
@@ -160,12 +160,12 @@ class Settings(BaseSettings):
     # stream once without it, so this can stay on safely.
     gateway_stream_include_usage: bool = True
 
-    # --- Usage metering (Phase 6): observational cost/traffic ledger ---
+    # --- Usage metering: observational cost/traffic ledger ---
     # When true, each completed chat turn is metered and written to a per-user
     # ledger. Best-effort: a ledger write failure never breaks a chat response.
     usage_metering_enabled: bool = True
 
-    # --- Entitlement enforcement (Phase 6B) ---
+    # --- Entitlement enforcement ---
     # The mechanism is present but ships effectively UNLIMITED: with no per-user
     # override and no global default_* cap below, every user is unlimited. An
     # admin sets a per-user limit to govern a specific user. Set false to bypass
@@ -195,13 +195,13 @@ class Settings(BaseSettings):
     cosmos_endpoint: str | None = None
     cosmos_database: str = "ai4ia"
 
-    # --- Document & multimodal understanding (Phase 11A): storage spine ---
+    # --- Document & multimodal understanding: per-user library ---
     # Feature-flagged and default-OFF. With document_understanding_enabled=False
     # the per-user document library is never constructed and the ``/api/library``
-    # API refuses (404), so the app's default behavior is unchanged. 11A ships
-    # only the storage spine (per-user manifest + analyzers registry + ownership/
-    # dedupe helpers); Content Understanding ingest, chunking, and retrieval land
-    # in later sub-phases. The existing per-session Phase 7C upload path
+    # API refuses (404), so the app's default behavior is unchanged. The library
+    # includes manifest/analyzer storage, Content Understanding ingest, chunking,
+    # retrieval, compute/export, annotations, sharing, media timelines, and
+    # memory save/forget. The existing per-session upload path
     # (``/api/sessions/{id}/documents``) is independent and always available.
     document_understanding_enabled: bool = False
     # Max bytes accepted for a single library upload (bound resource use). Reused
@@ -210,7 +210,7 @@ class Settings(BaseSettings):
     # Max documents retained per user in the library (0 = unlimited).
     document_max_per_user: int = 200
 
-    # --- Custom tools / bring-your-own MCP servers (Phase 12A) ---
+    # --- Custom tools / bring-your-own MCP servers ---
     # Feature-flagged and default-OFF. With custom_tools_enabled=False the
     # per-user MCP-server registry is never constructed and the
     # ``/api/agents/mcp-servers`` API refuses (404), so the app's default
@@ -218,8 +218,8 @@ class Settings(BaseSettings):
     # remote MCP (Streamable HTTP) servers; we connect behind a strict SSRF
     # egress guard, cache the tools they advertise, and project each onto the
     # existing tool-governance seam (external risk, host-scoped egress, approval
-    # required unless the server is marked trusted). Per-turn execution + durable
-    # Key-Vault secrets land in Phase 12B. Caps are generous defaults the owner
+    # required unless the server is marked trusted). Authenticated server secrets
+    # are stored in Key Vault outside local. Caps are generous defaults the owner
     # can tighten via the override below.
     custom_tools_enabled: bool = False
     # Per-user MCP-server cap (0 = use the module default). The owner wanted the
@@ -228,7 +228,7 @@ class Settings(BaseSettings):
     custom_tools_max_servers_per_user: int = 0
     # Discovery connect/handshake timeout (seconds) for the MCP client.
     custom_tools_discovery_timeout_seconds: float = 15.0
-    # Azure Key Vault URI backing durable MCP connection secrets (Phase 12B). When
+    # Azure Key Vault URI backing durable MCP connection secrets. When
     # set, authenticated servers' credentials are stored here (only an opaque
     # reference is kept on the Cosmos record) and resolved at connect/execute
     # time; when empty the service falls back to a process-local store (local/dev
@@ -254,7 +254,7 @@ class Settings(BaseSettings):
     # semantic ranking); set ``AI4IA_SEARCH_SEMANTIC_RANKING=false`` to force hybrid.
     search_semantic_ranking: bool = True
 
-    # --- Content Understanding ingest (Phase 11B) ---
+    # --- Content Understanding ingest ---
     # CU is its own async REST surface (PUT analyzer / POST :analyzeBinary / GET
     # poll), NOT an OpenAI deployment. Reached at
     # ``{cu_base_url}/contentunderstanding/...``. Default empty/OFF; only used when
@@ -280,7 +280,7 @@ class Settings(BaseSettings):
     cu_audio_analyzer: str = "prebuilt-audioSearch"
     cu_video_analyzer: str = "prebuilt-videoSearch"
 
-    # --- Document blob storage (Phase 11B) ---
+    # --- Document blob storage ---
     # Blob account endpoint, e.g. ``https://<acct>.blob.core.windows.net``. Raw
     # uploads + parsed artifacts live here under ``{userId}/{documentId}/...`` and
     # are reached ONLY via the api managed identity (AAD) — the browser never gets
@@ -299,7 +299,7 @@ class Settings(BaseSettings):
     document_max_chunks: int = 5000
     document_embed_batch: int = 128
 
-    # --- Generated-image blob storage (Phase 11F) ---
+    # --- Generated-image blob storage ---
     # Durable home for images produced by the ``generate_image`` agent tool. Each
     # artifact lives under ``{userId}/generated/{id}.png`` and is reached ONLY via
     # the api managed identity (AAD) — the browser fetches it through an
@@ -310,7 +310,7 @@ class Settings(BaseSettings):
     image_blob_account_url: str | None = None
     image_blob_container: str = "images"
 
-    # --- Generated-video blob storage (Phase 11G) ---
+    # --- Generated-video blob storage ---
     # Durable home for MP4 clips produced by the ``generate_video`` agent tool.
     # Each artifact lives under ``{userId}/generated/{id}.mp4`` and is reached
     # ONLY via the api managed identity (AAD) through an authenticated serve
@@ -320,7 +320,7 @@ class Settings(BaseSettings):
     video_blob_account_url: str | None = None
     video_blob_container: str = "videos"
 
-    # --- Retrieval consumer (Phase 11B-2): how the ready library surfaces in chat.
+    # --- Retrieval consumer: how the ready library surfaces in chat.
     # Tier 1 (always-injected summary cards) + Tier 2 (top-k RAG chunks) are bounded
     # so the library context can never crowd out the conversation. Tier 3 is the
     # fetch_document tool, whose single read is capped by document_fetch_max_chars.
@@ -331,7 +331,7 @@ class Settings(BaseSettings):
     document_context_max_chars: int = 8000
     document_fetch_max_chars: int = 12000
 
-    # --- Compute over the library (Phase 11C): intent router + code_interpreter
+    # --- Compute over the library: intent router + code_interpreter
     # + "adjust & return" export. Layered ON TOP of document_understanding: a
     # second default-OFF flag so the highest-regression-risk surface (the chat hot
     # path) is inert unless explicitly enabled. When off, the intent router never
@@ -378,7 +378,7 @@ class Settings(BaseSettings):
     code_interpreter_max_raw_file_bytes: int = 26_214_400
 
     # --- Inline-attachment code interpreter (default-OFF). Lets the chat agent
-    # crack/analyze an INLINE composer attachment (routers/documents.py, Phase 7C)
+    # crack/analyze an INLINE composer attachment (routers/documents.py)
     # with the SAME Code Interpreter sandbox the library ``run_code`` tool uses,
     # reading the REAL uploaded file (PDF layout / xlsx cells / image) rather than
     # the cheap local text extract. Augments — does NOT replace — the instant
@@ -399,7 +399,7 @@ class Settings(BaseSettings):
     # without touching library data. Unset locally/in tests -> an in-memory store.
     inline_attachment_blob_container: str = "ephemeral-attachments"
 
-    # --- Document processing tool (Phase 11H): the agent-callable
+    # --- Document processing tool: the agent-callable
     # ``process_document`` tool. Rides the same document_understanding flag and
     # ready library as compute/retrieval (no new flag, no new infra): the tool is
     # only injected when the retrieval consumer is constructed. These bound how
@@ -430,8 +430,8 @@ class Settings(BaseSettings):
     web_search_max_results: int = 5
     web_search_max_content_chars: int = 6000
 
-    # --- Rolling summarization (Phase WS2-C): sustainable long conversations ---
-    # DEFAULT-OFF. When off, the chat path sends today's full history byte-for-byte
+    # --- Rolling summarization: sustainable long conversations ---
+    # Default OFF. When off, the chat path sends today's full history byte-for-byte
     # and never injects a summary block — the manual ``/summarize`` command still
     # works and persists a running summary, but it does not alter what subsequent
     # turns send while this flag is off. When ON, once the assembled transcript
@@ -455,7 +455,7 @@ class Settings(BaseSettings):
     # compact and the fold cheap).
     summarization_max_output_tokens: int = 1024
 
-    # --- Memory (Phase 5): per-user semantic recall ---
+    # --- Memory: per-user semantic recall ---
     # Single source of truth: the store kind both selects the backend AND gates
     # the feature (``disabled`` == off). No separate enable flag, so the two can
     # never disagree.
@@ -476,7 +476,7 @@ class Settings(BaseSettings):
     memory_max_total_chars: int = 2000
     # Don't store trivially short user utterances ("ok", "thanks").
     memory_min_chars_to_store: int = 12
-    # Save-to-memory (Phase 11E-1): an explicit "remember this document" action
+    # Save-to-memory: an explicit "remember this document" action
     # promotes a library document's gist into durable memory. Bound how many
     # memory records one save creates (the summary plus leading excerpts) and how
     # large each excerpt is, so a big document can neither flood recall nor blow
@@ -526,7 +526,7 @@ class Settings(BaseSettings):
         ),
     )
 
-    # --- Admin resource metrics (WS4 Part B): Azure Monitor platform metrics ---
+    # --- Admin resource metrics: Azure Monitor platform metrics ---
     # The admin dashboard's resource panels (AI Search query volume/latency,
     # Postgres CPU/storage/connections, Cosmos RU, Container Apps replicas/restarts)
     # are read from Azure Monitor via the api managed identity (RBAC: Monitoring
@@ -534,7 +534,7 @@ class Settings(BaseSettings):
     # ``/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Search/searchServices/<name>``.
     # ALL optional and default OFF: a panel whose id is unset (or whose query fails,
     # or where the azure-monitor-query SDK is absent) reports ``unavailable`` rather
-    # than erroring, so the dashboard ships before WS3 wires the diagnostics/ids.
+    # than erroring, so the dashboard ships before diagnostics/resource ids exist.
     resource_metrics_enabled: bool = True
     metrics_search_resource_id: str | None = None
     metrics_postgres_resource_id: str | None = None
