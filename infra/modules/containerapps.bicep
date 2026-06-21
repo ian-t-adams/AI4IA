@@ -22,7 +22,20 @@ param logAnalyticsName string
 @description('Principal IDs granted AcrPull (app identities that run images).')
 param acrPullPrincipalIds array = []
 
+@description('''Infrastructure subnet ID for VNet injection (network-isolation pass).
+Empty (default) => the env stays on the shared/public network with its current
+name (no change). Non-empty => the env is created VNet-injected under a `-vnet`
+name. VNet injection is creation-time only, so enabling this provisions a NEW
+environment; the apps must be redeployed onto it (see the apply runbook).''')
+param infrastructureSubnetId string = ''
+
 var acrName = take('acr${replace(workload, '-', '')}${uniqueSuffix}', 50)
+
+var vnetInjected = !empty(infrastructureSubnetId)
+
+// New resource name when VNet-injected so ARM creates a fresh, injectable env
+// instead of attempting an (illegal) in-place vnetConfiguration update.
+var containerEnvName = vnetInjected ? 'cae-${workload}-${environmentName}-vnet' : 'cae-${workload}-${environmentName}'
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = {
   name: logAnalyticsName
@@ -54,7 +67,7 @@ resource acrPullAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01'
 }]
 
 resource containerEnv 'Microsoft.App/managedEnvironments@2024-10-02-preview' = {
-  name: 'cae-${workload}-${environmentName}'
+  name: containerEnvName
   location: location
   tags: tags
   properties: {
@@ -71,6 +84,14 @@ resource containerEnv 'Microsoft.App/managedEnvironments@2024-10-02-preview' = {
         workloadProfileType: 'Consumption'
       }
     ]
+    // VNet injection (creation-time only). `internal: false` keeps a public
+    // ingress load balancer so users still reach the apps over the internet,
+    // while egress flows through snet-infra so the data-tier private endpoints
+    // resolve. Omitted entirely when no subnet is supplied (default = unchanged).
+    vnetConfiguration: vnetInjected ? {
+      infrastructureSubnetId: infrastructureSubnetId
+      internal: false
+    } : null
   }
 }
 

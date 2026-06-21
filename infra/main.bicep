@@ -138,6 +138,23 @@ param proxyManagedCertName string = ''
 @description('Deploy the Postgres Flexible Server (pgvector home for mem0). Derived from postgresLocation: empty location => skip. Disable where the subscription is offer-restricted for Postgres; mem0/pgvector is a Phase 5 dependency the MVP api/web do not consume.')
 param postgresLocation string = ''
 
+@description('''Network-isolation pass — Phase 1. When true, provisions a VNet +
+private DNS, creates the Container Apps environment VNet-injected (a NEW env under
+a `-vnet` name), and stands up private endpoints for the data tier (Cosmos, both
+storage accounts, Key Vault). Default false = today's public + identity-gated
+posture, byte-for-byte unchanged. Enabling requires a maintenance window: VNet
+injection is creation-time only, so the apps must be redeployed onto the new env
+(see the apply runbook in the PR).''')
+param vnetIsolationEnabled bool = false
+
+@description('''Network-isolation pass — Phase 2. When true, flips the data tier
+(Cosmos + both storage accounts + Key Vault) to `publicNetworkAccess: Disabled`,
+so they are reachable only over the Phase-1 private endpoints. Only valid once
+`vnetIsolationEnabled` is true, the private endpoints resolve, AND the deployer has
+a VNet path (temp IP allow or a jumpbox) — otherwise azd, which runs off-VNet,
+loses the ability to manage these resources. Default false.''')
+param dataTierPrivate bool = false
+
 var tags = {
   workload: workload
   env: environmentName
@@ -232,6 +249,8 @@ module keyvault 'modules/keyvault.bicep' = {
     // connection secrets at runtime, which needs Secrets Officer (write), not the
     // read-only Secrets User above. Granted only when the feature is enabled.
     secretsOfficerPrincipalIds: customToolsEnabled ? [apiIdentity.principalId] : []
+    // Phase 2 of the network-isolation pass: lock the vault to private-only.
+    publicNetworkAccess: dataTierPrivate ? 'Disabled' : 'Enabled'
   }
 }
 
@@ -264,6 +283,8 @@ module data 'modules/data.bicep' = {
     // Generated-video container (Phase 11G) on the same shared media account;
     // gated on the video-generation flag — default OFF.
     deployVideoStorage: videoGenerationEnabled
+    // Phase 2 of the network-isolation pass: lock the data tier to private-only.
+    dataPublicNetworkAccess: dataTierPrivate ? 'Disabled' : 'Enabled'
   }
 }
 
@@ -285,6 +306,20 @@ module search 'modules/search.bicep' = {
   }
 }
 
+// Network-isolation pass (Phase 1): VNet + private DNS. Provisioned only when the
+// flag is on; nothing here exists by default. The Container Apps env binds to
+// snet-infra and the data-tier private endpoints land in snet-pep.
+module network 'modules/network.bicep' = if (vnetIsolationEnabled) {
+  name: 'network'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    workload: workload
+    environmentName: environmentName
+  }
+}
+
 module platform 'modules/containerapps.bicep' = {
   name: 'platform'
   scope: rg
@@ -296,6 +331,56 @@ module platform 'modules/containerapps.bicep' = {
     uniqueSuffix: uniqueSuffix
     logAnalyticsName: monitoring.outputs.logAnalyticsName
     acrPullPrincipalIds: allPrincipalIds
+    // VNet injection (Phase 1). Empty when the flag is off => env name + posture
+    // unchanged. Non-empty => a NEW VNet-injected env under a `-vnet` name.
+    // network is deployed under the same flag, so the guarded access is safe.
+    #disable-next-line BCP318
+    infrastructureSubnetId: vnetIsolationEnabled ? network.outputs.infraSubnetId : ''
+  }
+}
+
+// Data-tier private endpoints (Phase 1). Targets are filtered to drop any
+// conditionally-deployed storage account that isn't present (empty serviceId).
+var privateEndpointTargets = vnetIsolationEnabled ? filter([
+  {
+    name: 'cosmos'
+    serviceId: data.outputs.cosmosId
+    groupId: 'Sql'
+    #disable-next-line BCP318
+    dnsZoneId: network.outputs.cosmosDnsZoneId
+  }
+  {
+    name: 'docstorage'
+    serviceId: data.outputs.documentStorageId
+    groupId: 'blob'
+    #disable-next-line BCP318
+    dnsZoneId: network.outputs.blobDnsZoneId
+  }
+  {
+    name: 'imgstorage'
+    serviceId: data.outputs.imageStorageId
+    groupId: 'blob'
+    #disable-next-line BCP318
+    dnsZoneId: network.outputs.blobDnsZoneId
+  }
+  {
+    name: 'keyvault'
+    serviceId: keyvault.outputs.keyVaultId
+    groupId: 'vault'
+    #disable-next-line BCP318
+    dnsZoneId: network.outputs.vaultDnsZoneId
+  }
+], t => !empty(t.serviceId)) : []
+
+module privateEndpoints 'modules/privateendpoints.bicep' = if (vnetIsolationEnabled) {
+  name: 'privateEndpoints'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    #disable-next-line BCP318
+    pepSubnetId: network.outputs.pepSubnetId
+    targets: privateEndpointTargets
   }
 }
 
