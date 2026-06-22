@@ -27,7 +27,7 @@ export function StudioPanel({
 }) {
   const [tab, setTab] = useState<Tab>("agents");
 
-  const tabBtn = (id: Tab, label: string): React.CSSProperties => ({
+  const tabBtn = (id: Tab): React.CSSProperties => ({
     padding: "8px 16px",
     borderRadius: 8,
     border: "1px solid var(--border)",
@@ -70,14 +70,14 @@ export function StudioPanel({
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => setTab("agents")} aria-pressed={tab === "agents"} style={tabBtn("agents", "Agents")}>
+            <button onClick={() => setTab("agents")} aria-pressed={tab === "agents"} style={tabBtn("agents")}>
               Agents
             </button>
-            <button onClick={() => setTab("workflows")} aria-pressed={tab === "workflows"} style={tabBtn("workflows", "Workflows")}>
+            <button onClick={() => setTab("workflows")} aria-pressed={tab === "workflows"} style={tabBtn("workflows")}>
               Workflows
             </button>
             {customToolsEnabled && (
-              <button onClick={() => setTab("tools")} aria-pressed={tab === "tools"} style={tabBtn("tools", "Custom tools")}>
+              <button onClick={() => setTab("tools")} aria-pressed={tab === "tools"} style={tabBtn("tools")}>
                 Custom tools
               </button>
             )}
