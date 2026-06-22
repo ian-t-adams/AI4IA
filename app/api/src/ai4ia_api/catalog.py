@@ -52,7 +52,7 @@ class ModelEntry(BaseModel):
     maxOutputTokens: int | None = None
     options: list[DeploymentOption]
 
-    @computed_field  # type: ignore[prop-decorator]
+    @computed_field
     @property
     def conversational(self) -> bool:
         """Whether this model is offered in the chat/agent model pickers.

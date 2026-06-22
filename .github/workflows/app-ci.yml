@@ -56,5 +56,7 @@ jobs:
         run: python scripts/gen-model-catalog.py --check
       - name: Lint (ruff)
         run: ruff check .
+      - name: Type check (pyright)
+        run: pyright
       - name: Test (pytest)
         run: pytest -q

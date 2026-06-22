@@ -33,7 +33,7 @@ class AzureMonitorQuerier:
 
     def __init__(self) -> None:
         from azure.identity.aio import DefaultAzureCredential
-        from azure.monitor.query.aio import MetricsQueryClient
+        from azure.monitor.query.aio import MetricsQueryClient  # pyright: ignore[reportAttributeAccessIssue]
 
         self._credential = DefaultAzureCredential()
         self._client = MetricsQueryClient(self._credential)
@@ -46,7 +46,7 @@ class AzureMonitorQuerier:
         window_minutes: int,
         granularity_minutes: int,
     ) -> list[MetricPoint]:
-        from azure.monitor.query import MetricAggregationType
+        from azure.monitor.query import MetricAggregationType  # pyright: ignore[reportAttributeAccessIssue]
 
         # Request every aggregation the panel needs once; read the configured one
         # off each metric's latest non-null datapoint below.

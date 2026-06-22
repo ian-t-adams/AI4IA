@@ -244,16 +244,16 @@ class _AadTokenProvider:
 
     async def __call__(self) -> str:
         if self._fresh():
-            return self._token.token  # type: ignore[union-attr]
+            return self._token.token  # pyright: ignore[reportOptionalMemberAccess]
         async with self._lock:
             if self._fresh():
-                return self._token.token  # type: ignore[union-attr]
+                return self._token.token  # pyright: ignore[reportOptionalMemberAccess]
             if self._credential is None:
                 from azure.identity.aio import DefaultAzureCredential
 
                 self._credential = DefaultAzureCredential()
             self._token = await self._credential.get_token(_PG_SCOPE)
-            return self._token.token
+            return self._token.token  # pyright: ignore[reportOptionalMemberAccess]
 
     async def close(self) -> None:
         if self._owns_credential and self._credential is not None:
@@ -386,7 +386,7 @@ class PgDocChunkStore:
             )
             for record, vector in zip(records, vectors)
         ]
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn:  # pyright: ignore[reportOptionalMemberAccess]
             await conn.executemany(_INSERT, rows)
 
     async def search(
@@ -403,7 +403,7 @@ class PgDocChunkStore:
         await self.ensure_ready()
         literal = self._vector_literal(query_vector)
         doc_filter = list(document_ids) if document_ids is not None else None
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn:  # pyright: ignore[reportOptionalMemberAccess]
             rows = await conn.fetch(_SEARCH, user_id, literal, max(0, top_k), doc_filter)
         return [
             DocChunkRecord(
@@ -426,7 +426,7 @@ class PgDocChunkStore:
 
     async def delete_document(self, user_id: str, document_id: str) -> int:
         await self.ensure_ready()
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn:  # pyright: ignore[reportOptionalMemberAccess]
             count = await conn.fetchval(_DELETE_DOCUMENT, user_id, document_id)
         return int(count or 0)
 

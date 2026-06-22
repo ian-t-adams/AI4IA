@@ -92,6 +92,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "anyio>=4.4",
     "ruff>=0.5",
+    "pyright>=1.1.400",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -111,3 +112,24 @@ asyncio_mode = "auto"
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
+
+[tool.pyright]
+# Static type gate for the shipping package. A realistic "basic" baseline catches
+# genuine defects (None access, wrong args, missing attributes) without the
+# strict-mode noise that untyped third-party SDKs generate. Tests are excluded —
+# their fakes/fixtures are intentionally loose and would only add noise. Scoped
+# relaxations for known Azure-SDK stub limitations live as `# pyright:` directives
+# at the top of the affected modules so each suppression is auditable, not global.
+include = ["src"]
+extraPaths = ["src"]
+exclude = ["**/__pycache__", ".venv", "tests"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+# Most Azure SDKs (cosmos, search, identity, monitor, storage, keyvault) and mem0
+# ship without complete type stubs/`py.typed`; missing-stub findings are not real
+# defects, so they should not fail the gate.
+reportMissingTypeStubs = false
+# Surface (but don't fail on) ignore comments that no longer suppress anything, so
+# the cargo-culted `# type: ignore` problem this gate was added to fix can't silently
+# creep back in. Warnings don't affect pyright's exit code, so the gate stays green.
+reportUnnecessaryTypeIgnoreComment = "warning"

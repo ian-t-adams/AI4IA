@@ -1,3 +1,9 @@
+# pyright: reportArgumentType=false, reportCallIssue=false
+# ^ Azure Cosmos SDK typing friction, not real defects: container.query_items's
+#   `parameters` is typed list[dict[str, object]], but our list[dict[str, str]]
+#   literals are rejected by list/dict invariance, which also makes the query_items
+#   overloads fail to resolve. The queries are correct at runtime. Scoped to this
+#   Cosmos store module so the rules stay active everywhere else.
 """Cosmos DB (NoSQL) WorkflowStore using AAD (managed identity) auth.
 
 Container ``workflows`` (PK ``/userId``) is created by infra/modules/data.bicep

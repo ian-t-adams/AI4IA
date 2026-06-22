@@ -82,16 +82,16 @@ class SyncAadTokenProvider:
 
     def get_token(self) -> str:
         if self._fresh():
-            return self._token.token  # type: ignore[union-attr]
+            return self._token.token  # pyright: ignore[reportOptionalMemberAccess]
         with self._lock:
             if self._fresh():
-                return self._token.token  # type: ignore[union-attr]
+                return self._token.token  # pyright: ignore[reportOptionalMemberAccess]
             if self._credential is None:
                 from azure.identity import DefaultAzureCredential
 
                 self._credential = DefaultAzureCredential()
             self._token = self._credential.get_token(_PG_SCOPE)
-            return self._token.token
+            return self._token.token  # pyright: ignore[reportOptionalMemberAccess]
 
     def close(self) -> None:
         if self._owns_credential and self._credential is not None:
@@ -107,9 +107,9 @@ def _build_connection_class(provider: SyncAadTokenProvider) -> type:
     """A psycopg ``Connection`` subclass that injects a fresh token per connect."""
     import psycopg
 
-    class _AadConnection(psycopg.Connection):  # type: ignore[type-arg]
+    class _AadConnection(psycopg.Connection):
         @classmethod
-        def connect(cls, conninfo: str = "", **kwargs: Any):  # type: ignore[override]
+        def connect(cls, conninfo: str = "", **kwargs: Any):
             kwargs["password"] = provider.get_token()
             kwargs.setdefault("sslmode", "require")
             return super().connect(conninfo, **kwargs)

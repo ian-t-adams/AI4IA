@@ -44,10 +44,10 @@ def _default_resolver(host: str) -> list[str]:
     # getaddrinfo returns 5-tuples; the address is the first element of sockaddr.
     # AF_UNSPEC yields both A (IPv4) and AAAA (IPv6) records.
     infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
-    return [info[4][0] for info in infos]
+    return [str(info[4][0]) for info in infos]
 
 
-def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """True if ``ip`` is anything other than a global, public unicast address."""
     # An IPv4-mapped IPv6 address (``::ffff:127.0.0.1``) must be judged on its
     # embedded v4 address, or a loopback target could slip through as "global".
@@ -169,7 +169,7 @@ def resolve_pinned_ip(host: str, *, resolver: Resolver | None = None) -> str:
     return pinned
 
 
-def _parse_ip_literal(host: str) -> ipaddress._BaseAddress | None:
+def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     """Return the IP if ``host`` is an IPv4/IPv6 literal, else ``None``.
 
     A bracketed IPv6 literal from a URL (``[::1]``) arrives unbracketed from
