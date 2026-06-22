@@ -15,6 +15,9 @@ param environmentName string
 @description('Container Apps managed environment resource ID.')
 param containerEnvId string
 
+@description('Central Log Analytics workspace resource ID for diagnostic settings.')
+param logAnalyticsWorkspaceId string
+
 @description('Resource ID of the web user-assigned identity.')
 param webIdentityResourceId string
 
@@ -250,6 +253,21 @@ resource webApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
         maxReplicas: 3
       }
     }
+  }
+}
+
+// Per-app metrics for the web container app. Console/system logs already stream to
+// LA via the managed environment's appLogsConfiguration (container-app logs are
+// env-scoped only); this adds the per-app metric signal (HTTP 5xx, replica restarts,
+// CPU/memory) into the same workspace for correlation.
+resource webDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-log-analytics'
+  scope: webApp
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
   }
 }
 
