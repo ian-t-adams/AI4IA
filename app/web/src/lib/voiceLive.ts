@@ -133,7 +133,7 @@ export function floatTo16BitPCM(input: Float32Array): Int16Array {
   return out;
 }
 
-export function int16ToFloat32(input: Int16Array): Float32Array {
+export function int16ToFloat32(input: Int16Array): Float32Array<ArrayBuffer> {
   const out = new Float32Array(input.length);
   for (let i = 0; i < input.length; i++) {
     out[i] = input[i] / (input[i] < 0 ? 0x8000 : 0x7fff);
