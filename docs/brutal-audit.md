@@ -55,3 +55,22 @@ enough that an operator had to play archaeology with `main.bicep`,
 3. Add at least one DOM/component test harness for the web chat path.
 4. Replace the post-provision reminder script with smoke tests that fail loudly.
 5. Add custom-domain deploy validation that refuses to proceed when a live vanity hostname is expected but missing from CI variables.
+
+## Second pass: supply-chain & security hardening
+
+A later sweep focused on the CI/CD supply chain and the web edge — the parts that
+were "fine" only because nothing had gone wrong yet.
+
+| Problem | Why it matters | Fix |
+| --- | --- | --- |
+| GitHub Actions were referenced by mutable tags (`@v4`, `@v2`). | A moved tag (compromised or just changed) silently runs new code with repo/OIDC access. | Pinned every `uses:` to a full commit SHA, with the version in a trailing comment. |
+| No automated dependency or action updates. | Patches (including security fixes) landed only when someone remembered. | Added `.github/dependabot.yml` for npm, pip, github-actions, and Docker base images (weekly, grouped). |
+| No SAST. | A repo with auth, a proxy, and file uploads had zero static analysis. | Added `.github/workflows/codeql.yml` (python + javascript-typescript, weekly + PR). |
+| CI jobs had no timeouts or concurrency control. | A hung job could run for 6 hours; superseded PR pushes stacked redundant runs. | Added `timeout-minutes` to every job and `cancel-in-progress` concurrency to the validate workflows. |
+| The web app set no security response headers. | No clickjacking, MIME-sniffing, referrer, or HSTS protection at the edge. | Added a conservative `headers()` in `next.config.mjs` (nosniff, frame-ancestors/X-Frame-Options DENY, Referrer-Policy, HSTS, scoped Permissions-Policy, plus the non-breaking CSP directives). A full nonce-based script CSP is deliberately left as a separate app-aware change. |
+| No ownership map. | Reviews were not routed; no record of who owns what. | Added `.github/CODEOWNERS`. |
+
+Deliberately **not** changed in this pass (flagged as cost/reliability decisions for
+the owner, not silent edits): APIM token-limit/metric policies, proxy `minReplicas`
+cold-start, Cosmos PITR / Key Vault purge protection / Postgres HA, container image
+scanning, and app-layer rate limiting / upload quotas.
