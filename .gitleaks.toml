@@ -1,0 +1,52 @@
+# gitleaks configuration for AI4IA
+#
+# We EXTEND the upstream default ruleset (useDefault = true) and only ADD
+# narrowly-scoped allowlist entries for findings that were manually reviewed and
+# confirmed to be FALSE POSITIVES (test fixtures, public identifiers, vendored
+# upstream source). Every entry is justified inline. No real credential is
+# allowlisted here.
+#
+# Validated locally with gitleaks v8.30.1: `gitleaks dir .` => 0 findings.
+
+title = "AI4IA gitleaks config"
+
+[extend]
+useDefault = true
+
+# 1) Secret-redaction unit-test fixtures.
+#    These are deliberately-crafted dummy "long tokens" whose only purpose is to
+#    prove the API's redaction logic masks high-entropy strings. Scoped to the
+#    exact test files AND the exact literal fixture values (condition = AND), so
+#    a genuine secret added to these files would still be flagged.
+[[allowlists]]
+description = "Dummy token fixtures for secret-redaction unit tests (not real credentials)."
+condition = "AND"
+paths = [
+  '''app/api/tests/test_mcp_execution\.py''',
+  '''app/api/tests/test_tools_registry\.py''',
+]
+regexes = [
+  '''abcdEFGH1234567890abcdEFGH1234567890''',
+  '''abcdef0123456789abcdef0123456789xx''',
+]
+
+# 2) Azure built-in RBAC role-definition GUIDs.
+#    These are public, well-known Azure identifiers (e.g. "Key Vault Secrets User"
+#    = 4633458b-17de-408a-b874-0445c86b69e6), not secrets: they grant no access on
+#    their own and are documented at
+#    learn.microsoft.com/azure/role-based-access-control/built-in-roles. Scoped to
+#    the keyvault module line AND the specific role-id variable names.
+[[allowlists]]
+description = "Public Azure built-in role-definition GUIDs (identifiers, not secrets)."
+condition = "AND"
+regexTarget = "line"
+paths = ['''infra/modules/keyvault\.bicep''']
+regexes = ['''kvSecrets(User|Officer)RoleId''']
+
+# 3) Vendored microsoft/SimpleL7Proxy upstream source.
+#    proxy/SimpleL7Proxy/** is vendored OSS (MIT) that we must not modify. Its
+#    default config strings (e.g. "mode=key, header=S7P-KEY") are option names,
+#    not credentials. Excluded from secret scanning by path.
+[[allowlists]]
+description = "Vendored microsoft/SimpleL7Proxy upstream source; not modifiable in this repo."
+paths = ['''proxy/SimpleL7Proxy/.*''']
