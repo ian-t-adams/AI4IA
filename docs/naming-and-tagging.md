@@ -46,7 +46,7 @@ Every resource group and resource carries these tags (applied via Bicep):
 | `env` | Environment | `dev` / `demo` / `prod` |
 | `azd-env-name` | azd environment binding | `ai4ia-dev` |
 | `costCenter` | Chargeback | `genai-demo` |
-| `owner` | Accountable owner | `ian-t-adams` |
+| `owner` | Accountable owner | `ai4ia-operator` or the owning team/person |
 | `dataZone` | Data residency of the resource | `US` / `EU` |
 | `managedBy` | Provisioning system | `azd-bicep` |
 

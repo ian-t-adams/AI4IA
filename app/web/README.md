@@ -26,6 +26,10 @@ npm install
 npm run dev
 ```
 
+Use Node 22 locally. CI and the production Docker image use Node 22, and
+`package.json` declares that engine range so local drift fails early instead of
+surprising you in GitHub Actions.
+
 Run checks from this folder:
 
 ```powershell

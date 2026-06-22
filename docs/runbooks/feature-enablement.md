@@ -4,6 +4,9 @@ Most advanced AI4IA surfaces are implemented but gated. Defaults in code/Bicep a
 safe; the live posture is controlled by `infra/main.parameters.json`, azd env
 values, and Container App env. Startup validation in
 `app/api/src/ai4ia_api/config.py` fails closed for half-wired deployed features.
+Use the consolidated parameter/env map in
+[`../configuration-reference.md`](../configuration-reference.md) before changing
+feature posture.
 
 ## Flag inventory
 

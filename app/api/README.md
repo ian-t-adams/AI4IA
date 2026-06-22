@@ -40,6 +40,10 @@ ruff check .
 pytest -q
 ```
 
+The container image runs as non-root UID `10001` and declares a Docker
+`HEALTHCHECK` against `/health/live`. Azure Container Apps probe wiring still
+lives in Bicep, but local Docker runs now have a basic liveness signal too.
+
 ## Configuration posture
 
 Feature flags are fail-closed in `ai4ia_api.config.Settings.validate_runtime`.
