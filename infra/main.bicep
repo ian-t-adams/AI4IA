@@ -28,6 +28,12 @@ param budgetAlertEmails array = []
 @description('APIM publisher email for the model gateway front door. Override per deployment.')
 param apimPublisherEmail string = 'ai4ia@example.com'
 
+@description('Opt-in: deploy a minimal Azure Monitor alerting baseline (action group + metric alerts). Default OFF so existing deployments are byte-for-byte unchanged and no alert can fire without explicit enablement.')
+param enableAlerts bool = false
+
+@description('Email address notified by the alerting baseline action group (empty => action group has no receiver). Only used when enableAlerts is true.')
+param alertEmail string = ''
+
 @description('Application runtime environment for the api (maps to AI4IA_ENV).')
 @allowed([
   'dev'
@@ -440,6 +446,7 @@ module gateway 'modules/gateway.bicep' = {
     workload: workload
     environmentName: environmentName
     containerEnvId: platform.outputs.containerEnvId
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     proxyIdentityResourceId: proxyIdentity.resourceId
     proxyIdentityClientId: proxyIdentity.clientId
     acrLoginServer: platform.outputs.acrLoginServer
@@ -463,6 +470,7 @@ module api 'modules/api.bicep' = {
     tags: tags
     environmentName: environmentName
     containerEnvId: platform.outputs.containerEnvId
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     apiIdentityResourceId: apiIdentity.resourceId
     apiIdentityClientId: apiIdentity.clientId
     acrLoginServer: platform.outputs.acrLoginServer
@@ -548,6 +556,7 @@ module web 'modules/web.bicep' = {
     tags: tags
     environmentName: environmentName
     containerEnvId: platform.outputs.containerEnvId
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     webIdentityResourceId: webIdentity.resourceId
     acrLoginServer: platform.outputs.acrLoginServer
     apiBaseUrl: api.outputs.apiUrl
@@ -580,6 +589,23 @@ module web 'modules/web.bicep' = {
     // drives the API's MCP-server CRUD + per-turn execution so the browser shows the
     // custom-tools UI only when the feature is on. Default OFF -> no control, no change.
     customToolsEnabled: customToolsEnabled
+  }
+}
+
+// --- Optional alerting baseline (opt-in; default OFF) ---
+// Action group + metric alerts (api 5xx, Cosmos 429) wired only when enableAlerts is
+// true. Gated end-to-end so default deployments are unchanged and a missing email
+// never fails a deploy.
+module alerts 'modules/alerts.bicep' = if (enableAlerts) {
+  name: 'alerts'
+  scope: rg
+  params: {
+    tags: tags
+    workload: workload
+    environmentName: environmentName
+    alertEmail: alertEmail
+    apiContainerAppId: api.outputs.apiAppId
+    cosmosAccountId: data.outputs.cosmosId
   }
 }
 

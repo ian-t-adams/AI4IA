@@ -1,0 +1,26 @@
+# Relaxed yamllint config for the operational YAML surface (GitHub Actions
+# workflows + azure.yaml). Goal: catch real structural problems (indentation,
+# duplicate keys, syntax) without false-positiving on well-formed workflow YAML.
+extends: default
+
+rules:
+  # GitHub Actions workflows use `on:` as a mapping key; yamllint otherwise reads
+  # it as the boolean ON. Don't apply truthy checks to keys.
+  truthy:
+    check-keys: false
+  # Workflow YAML embeds long bash one-liners, URLs and pinned-SHA comments;
+  # line length is not a correctness signal here.
+  line-length: disable
+  # Workflows conventionally omit the `---` document-start marker.
+  document-start: disable
+  # SHA-pinned `uses:` lines carry a conventional single-space `# vX.Y.Z` pin
+  # comment; don't demand the default two spaces before inline comments.
+  comments:
+    min-spaces-from-content: 1
+  # Line endings are owned by .editorconfig (end_of_line = lf); checking them
+  # here only produces CRLF/LF cross-platform false positives.
+  new-lines: disable
+
+ignore: |
+  node_modules/
+  proxy/SimpleL7Proxy/

@@ -1,0 +1,18 @@
+# Trivy ignore file for misconfiguration scanning.
+#
+# Each entry is a finding that was manually reviewed and confirmed to be a FALSE
+# POSITIVE, with an inline justification. Path-scoped so the suppression only
+# applies to the specific file reviewed.
+#
+# Validated locally with trivy v0.71.2: `trivy config .` (HIGH,CRITICAL) => 0 failures.
+
+misconfigurations:
+  - id: AVD-DS-0002
+    paths:
+      - "proxy/Dockerfile"
+    statement: >-
+      DS-0002 ("specify a non-root USER") is a false positive here. The base
+      image mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled already defaults
+      to a non-root user (UID 1654:0), so the container does not run as root even
+      though the Dockerfile has no explicit USER line. This Dockerfile is also a
+      vendored-derived file that is out of scope for edits in this PR.

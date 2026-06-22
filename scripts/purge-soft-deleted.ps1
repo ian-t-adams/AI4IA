@@ -5,13 +5,15 @@
 .DESCRIPTION
   `azd down` / `az group delete` leave Cognitive Services accounts and Key Vaults
   in a soft-deleted state, which blocks recreating same-named resources. This purges
-  them. Destructive and irreversible — purged data cannot be recovered.
+  them. Destructive and irreversible - purged data cannot be recovered.
 
 .EXAMPLE
   ./scripts/purge-soft-deleted.ps1 -Subscription ca68cf94-... -NameFilter aiforia -WhatIf
   ./scripts/purge-soft-deleted.ps1 -Subscription ca68cf94-... -NameFilter aiforia -Force
 #>
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = "High")]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'NameFilter',
+    Justification = 'Consumed inside the Match nested function; the analyzer cannot resolve cross-scope use.')]
 param(
     [Parameter(Mandatory)] [string] $Subscription,
     [string] $NameFilter = "",
