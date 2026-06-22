@@ -10,7 +10,21 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
-    "fastapi>=0.115",
+    # Web framework. The upper bounds on fastapi + starlette are deliberate:
+    # FastAPI only requires `starlette>=0.46.0` (no ceiling), so starlette can
+    # silently float up to a new minor that tightens public typing. That is
+    # exactly what broke the pyright gate before — Starlette narrowed
+    # add_exception_handler's handler param, forcing the scoped
+    # `# pyright: ignore[reportArgumentType]` in errors.py (#89). Capping both at
+    # the current-known-good minor turns any future drift into an explicit,
+    # CI-gated dependency bump instead of a silent type-gate break. The bounds
+    # include the installed versions (fastapi 0.138.x, starlette 1.3.x), so
+    # nothing is downgraded; raise them deliberately alongside a green pyright.
+    "fastapi>=0.115,<0.139",
+    # Starlette is FastAPI's ASGI foundation (otherwise pulled in transitively);
+    # pinned directly so its upper bound is enforced independently of FastAPI's
+    # loose `>=0.46.0` floor. See the fastapi note above.
+    "starlette>=1.3,<1.4",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
@@ -35,7 +49,7 @@ dependencies = [
     # (Mem0MemoryService) depends on verified 2.0.4 internals — config keys,
     # azure_openai default_headers, the pgvector connection_pool injection point,
     # and add/search/get_all/delete_all signatures. Bump deliberately with tests.
-    "mem0ai==2.0.4",
+    "mem0ai==2.0.7",
     # mem0's pgvector store uses psycopg3 + its pool. We inject our own AAD-token
     # ConnectionPool (no SQL password), so both are required at runtime. Imported
     # lazily (only when memory_store=mem0) so the app/tests run without them wired.
