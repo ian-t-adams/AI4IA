@@ -51,11 +51,9 @@ export function initAuth(config: WebAuthConfig): PublicClientApplication | null 
       authority: `https://login.microsoftonline.com/${config.tenantId}`,
       redirectUri: config.redirectUri || origin,
       postLogoutRedirectUri: config.redirectUri || origin,
-      navigateToLoginRequestUrl: true,
     },
     cache: {
       cacheLocation: "sessionStorage",
-      storeAuthStateInCookie: false,
     },
   };
   _msal = new PublicClientApplication(msalConfig);
