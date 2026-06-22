@@ -23,7 +23,7 @@ enough that an operator had to play archaeology with `main.bicep`,
 
 | Area | Before | Fixed |
 | --- | --- | --- |
-| Web builds | Docker and CI could fall back from `npm ci` to `npm install`, destroying reproducibility. | Docker and CI now use deterministic `npm ci`; Docker uses Node 22 to match CI. |
+| Web builds | Docker and CI could fall back from `npm ci` to `npm install`, destroying reproducibility. | Docker and CI now use deterministic `npm ci`. (Docker base was later bumped Node 22→26 via #90; see "Known open items" — `engines.node` was not widened to match.) |
 | Web runtime | No route-level error boundary, so a client render crash could dump users into default framework failure UI. | Added `app/web/src/app/error.tsx` with a recoverable error screen. |
 | API image | Non-root runtime existed, but the image had no container-native health check. | Added a Docker `HEALTHCHECK` against `/health/live`. |
 | IaC ownership | Personal owner/email defaults leaked into tags, budgets, and APIM publisher config. | Replaced personal defaults with neutral deployment-owned defaults and wired `AI4IA_APIM_PUBLISHER_EMAIL`. |
@@ -94,4 +94,50 @@ the owner, not silent edits): APIM token-limit/metric policies, proxy `minReplic
 cold-start, Cosmos PITR / Key Vault purge protection / Postgres HA, and app-layer
 rate limiting / upload quotas.
 
-The audit backlog is cleared. The only open items are the accepted cost tradeoffs above.
+## Third pass: dependency currency, edge CSP & API pinning
+
+After the supply-chain scaffolding (Dependabot, CodeQL, SHA pins) was in place, the
+bot immediately started producing PRs — which is the point. This pass triaged the
+full Dependabot backlog and shipped several optional improvements. Everything below
+landed on `main` **except** #92 (genuinely blocked upstream — see open items).
+
+| Update | Disposition | PR |
+| --- | --- | --- |
+| GitHub Actions group (5 actions: checkout, setup-node, setup-python, codeql-action, azure/login). | **Merged.** SHA-pin/comment-only bumps; no input or breaking changes. | #93 |
+| `@types/node` 20→26 (devDep). | **Merged.** No code changes needed. | #97 |
+| `@azure/msal-react` 2→5 + `@azure/msal-browser` 3→5 (coupled). | **Merged** as one. Required two in-scope `src/lib/auth.ts` fixes for msal-browser v5 removals (`navigateToLoginRequestUrl` now per-request; `storeAuthStateInCookie` dropped from `CacheOptions`) — both were default values, so behavior is unchanged. | #95 (#98 closed as superseded) |
+| `typescript` 5→6 (devDep). | **Merged.** Added `src/css.d.ts` (`declare module "*.css"`) for TS6's stricter side-effect import resolution and annotated `int16ToFloat32`'s return for TS6's now-generic `TypedArray`. | #99 |
+| `next` 15→16 (riskiest). | **Merged.** Built/tested clean against `main` with zero app code changes. Surfaced the `middleware`→`proxy` and `next.config` `eslint`-key deprecations (addressed / noted below). | #96 |
+| `python` 3.12-slim → 3.14-slim (API image). | **Merged — with evidence, not faith.** No PR CI job builds this Dockerfile, so green CI was *not* base-image proof. Validated instead with a wheels-only resolution: `uv pip compile --python-version 3.14 --python-platform x86_64-unknown-linux-gnu --no-build` resolved the full 109-package tree (incl. `mem0ai → qdrant-client → grpcio/numpy`) at exit 0, proving every C-extension has a prebuilt cp314 wheel. | #91 |
+| `node` 22-alpine → 26-alpine (web image). | **Merged.** Left `app/web/package.json` `engines.node` at `">=22.0.0 <23"`, contradicting the image — since fixed in #106 (widened to `">=22.0.0 <27"`). | #90 |
+| `mem0ai` bump (API). | **Merged.** | #94 |
+| `eslint` 9→10 (devDep). | **Left open — blocked upstream.** `eslint-config-next@16` (the version that matches Next 16) is incompatible with eslint 10: its base config parses via Next's compiled `@babel/eslint-parser`, whose scope manager lacks eslint 10's required `addGlobals` API (`TypeError: scopeManager.addGlobals is not a function`). Only pre-release config-next builds support it. Hold at eslint 9 until stable upstream support ships. | #92 |
+
+Several optional improvements shipped alongside the triage:
+
+| Improvement | What landed | PR |
+| --- | --- | --- |
+| API dependency pinning. | Pinned `starlette`/`fastapi` (and bounded the version range) so the resolved API runtime stops drifting silently between builds. | #100 |
+| Nonce-based script CSP at the web edge. | Added a per-request nonce CSP (`script-src 'self' 'nonce-<n>' 'strict-dynamic'`, `style-src 'self' 'unsafe-inline'`, plus base-uri/object-src/frame-ancestors/form-action), making this the single authoritative CSP. This is the "deliberately deferred" nonce CSP the second pass flagged. Documented relaxations: `style-src 'unsafe-inline'` (pervasive inline `style={{}}` can't be nonce/hash-covered) and no default/connect/img restriction (preserves the cross-origin Voice Live `wss://` and `data:`/`blob:` backgrounds). | #101 |
+| Next 16 `middleware`→`proxy` migration. | Renamed `app/web/src/middleware.ts` → `src/proxy.ts` and export `middleware`→`proxy` (Next 16 convention; logic byte-identical). Eliminates the deprecation warning and prevents Next 16/17 from silently dropping the CSP. | #102 |
+| Web manifest hygiene. | Widened `engines.node` `">=22.0.0 <23"` → `">=22.0.0 <27"` so the manifest stops lying about the `node:26-alpine` image (lower bound still matches CI's Node 22; upper bound `<27` deliberately trips on a future Node 27 so the constraint stays honest), and fixed the stale `src/middleware.ts` → `src/proxy.ts` doc-comments left by #102. The coupled `eslint-config-next` → `^16` bump was attempted in the same pass and reverted (see open items). | #106 |
+
+## Known open items
+
+These are genuine debt, **not** accepted tradeoffs. Small, real, and worth a
+follow-up spike — documented here so they read as tracked, not forgotten.
+
+| Item | Why it matters | Where to look |
+| --- | --- | --- |
+| `eslint-config-next` can't move to `^16`, and `eslint` 9→10 (#92) is blocked. | Two halves of the same knot. `eslint-config-next` is pinned at `15.5.19` (a major behind `next` 16). Bumping it to `^16` was tried in #106 and reverted: with the current `eslint.config.mjs` `FlatCompat` (`@eslint/eslintrc`) bridge, config-next@16's flat-plugin object throws `Converting circular structure to JSON` and `npm run lint` exits non-zero. Unblocking needs `eslint.config.mjs` reworked to consume config-next's native flat export — which is also the path off the eslint-10 block (#92). Hold both until that rework lands. | `app/web/eslint.config.mjs`, `app/web/package.json`, PR #92 |
+| No PR CI job actually `docker build`s either Dockerfile. | The base-image bumps (#90/#91) and the original `engines.node` mismatch all slipped past PR CI because the Dockerfiles are only built in `deploy.yml` on push-to-main. A PR-time build-only image build would have caught the `EBADENGINE` drift before it reached `main`. | `.github/workflows/*.yml`, `deploy.yml` |
+
+## Bottom line
+
+The original audit backlog is cleared, and the Dependabot backlog is now triaged
+to a single genuinely-blocked PR (#92). The two quick web-manifest fixes —
+`engines.node` honesty and the stale proxy doc-comments — shipped in #106. What
+remains is the coupled `eslint-config-next`/eslint-10 rework and the PR-CI
+Docker-build gap, both tracked above, neither urgent — plus the one accepted cost
+tradeoff. That is a healthy steady state: explicit debt with owners and reasons,
+not silent rot.
