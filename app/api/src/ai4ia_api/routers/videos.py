@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
@@ -35,12 +35,12 @@ async def get_video_artifact(
 ) -> Response:
     """Serve a tool-generated video's bytes to its owner."""
     if not _ARTIFACT_ID_RE.match(artifact_id or ""):
-        raise HTTPException(status_code=404, detail="Not found.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
     store: VideoArtifactStore = request.app.state.video_artifacts
     try:
         data = await store.get(user.internal_user_id, artifact_id)
     except BlobNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Not found.") from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.") from exc
     return Response(
         content=data,
         media_type=VIDEO_CONTENT_TYPE,

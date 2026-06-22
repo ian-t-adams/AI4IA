@@ -6,8 +6,7 @@ import logging
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, status
 
 from .auth.factory import build_auth_provider
 from .agents.agent_catalog import load_agent_catalog
@@ -22,6 +21,7 @@ from .agents.summarization import build_summarization_service
 from .agents.tool_exec import attachable_tool_names, build_tools
 from .catalog import load_catalog
 from .config import Settings, get_settings
+from .errors import error_response, register_error_handlers
 from .entitlements.factory import build_default_entitlement, build_entitlement_store
 from .entitlements.service import EntitlementService
 from .gateway.client import ModelGatewayClient
@@ -399,6 +399,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     logger.warning("web search service close failed", exc_info=True)
 
     app = FastAPI(title="AI4IA API", version="0.1.0", lifespan=lifespan)
+    register_error_handlers(app)
 
     @app.middleware("http")
     async def correlation_middleware(request: Request, call_next):
@@ -413,7 +414,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(SessionNotFoundError)
     async def _session_not_found(_request: Request, _exc: SessionNotFoundError):
-        return JSONResponse(status_code=404, content={"detail": "Session not found"})
+        return error_response(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+        )
 
     # Map unhandled Azure data-plane failures (Cosmos/Blob connectivity, throttling,
     # 5xx, or managed-identity token-acquisition errors) to 503 instead of a raw 500.
@@ -451,12 +454,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 and status_code not in _TRANSIENT_DATA_PLANE_CODES
             ):
                 logger.exception("Unexpected Azure client error")
-                return JSONResponse(
-                    status_code=500, content={"detail": "Internal server error"}
+                return error_response(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error",
                 )
             logger.warning("Azure data-plane unavailable -> 503 (%s)", type(exc).__name__)
-            return JSONResponse(
-                status_code=503, content={"detail": "Service temporarily unavailable"}
+            return error_response(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service temporarily unavailable",
             )
 
     app.include_router(health_router.router)

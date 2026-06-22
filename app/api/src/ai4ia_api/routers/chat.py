@@ -577,12 +577,18 @@ async def chat(
         agent_name = None
 
     if not model_id:
-        raise HTTPException(status_code=400, detail="No model selected for this chat")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No model selected for this chat",
+        )
     deployment = catalog.resolve_deployment(
         model_id, region=body.region, data_zone=body.dataZone
     )
     if deployment is None:
-        raise HTTPException(status_code=400, detail=f"Unknown or unavailable model: {model_id}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown or unavailable model: {model_id}",
+        )
 
     # Which Azure surface serves this model (chat completions vs Responses API).
     entry = catalog.get(model_id)
@@ -605,7 +611,7 @@ async def chat(
     # (which would resolve a deployment and then fail or return garbage).
     if entry is not None and not entry.conversational:
         raise HTTPException(
-            status_code=422,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"'{model_id}' is a {entry.category} model and can't be used for "
                 "chat. Image, video, speech, transcription, embedding and rerank "
@@ -622,7 +628,7 @@ async def chat(
     # can't use for this agent.
     if agent is not None and (agent.tools or agent.links) and api == "responses":
         raise HTTPException(
-            status_code=422,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"Agent @{agent.name} uses tools or agent links, but model "
                 f"'{model_id}' is served through the Responses API, which AI4IA "
@@ -1174,7 +1180,7 @@ async def chat(
                 api=api,
             )
         except ModelGatewayError as exc:
-            raise HTTPException(status_code=502, detail=exc.detail)
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.detail)
         text = _extract_text(result)
         assistant = Message(
             sessionId=body.sessionId,

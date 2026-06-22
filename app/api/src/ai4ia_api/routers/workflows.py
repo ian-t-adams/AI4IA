@@ -94,9 +94,12 @@ async def create_workflow(
     try:
         return await _service(request).create(user.internal_user_id, payload)
     except WorkflowValidationError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     except WorkflowConflictError as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.put("/workflows/{name}", response_model=Workflow)
@@ -109,9 +112,12 @@ async def update_workflow(
     try:
         return await _service(request).update(user.internal_user_id, name, payload)
     except WorkflowValidationError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     except WorkflowNotFoundError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.delete("/workflows/{name}", status_code=status.HTTP_204_NO_CONTENT)
@@ -143,23 +149,30 @@ async def run_workflow_endpoint(
     try:
         session = await repo.get_session(uid, body.sessionId)
     except SessionNotFoundError:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
     workflow = await _service(request).get(uid, name)
     if workflow is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown workflow: {name}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown workflow: {name}",
+        )
     if not workflow.enabled:
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, f"Workflow '{workflow.name}' is disabled."
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Workflow '{workflow.name}' is disabled.",
         )
 
     run_input = (body.input or "").strip()
     if not run_input:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Input is required.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Input is required.",
+        )
     if len(run_input) > MAX_RUN_INPUT_LEN:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"Input must be at most {MAX_RUN_INPUT_LEN} characters.",
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Input must be at most {MAX_RUN_INPUT_LEN} characters.",
         )
 
     # Model precedence: explicit request override, else the session's standing
@@ -170,21 +183,22 @@ async def run_workflow_endpoint(
     model_id = body.model or session.model
     if not model_id:
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "No model selected. Pass 'model' or set a model on the session first.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No model selected. Pass 'model' or set a model on the session first.",
         )
     deployment = catalog.resolve_deployment(
         model_id, region=body.region, data_zone=body.dataZone
     )
     if deployment is None:
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, f"Unknown or unavailable model: {model_id}"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown or unavailable model: {model_id}",
         )
     entry = catalog.get(model_id)
     if entry is not None and entry.api == "responses":
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            (
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
                 f"Model '{model_id}' is served through the Responses API, which "
                 "AI4IA does not yet support for workflow steps (they use the "
                 "chat-completions tool loop). Choose a chat-completions model."
