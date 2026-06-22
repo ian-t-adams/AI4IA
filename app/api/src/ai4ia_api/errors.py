@@ -128,5 +128,8 @@ async def validation_exception_handler(
 
 def register_error_handlers(app: FastAPI) -> None:
     """Wire the shared HTTPException + validation handlers onto ``app``."""
-    app.add_exception_handler(StarletteHTTPException, http_exception_handler)
-    app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    # Starlette types add_exception_handler's handler param as the broad
+    # ExceptionHandler (Callable[[Request, Exception], ...]); our handlers take
+    # narrower exception subtypes, which is correct since dispatch is by type.
+    app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # pyright: ignore[reportArgumentType]
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)  # pyright: ignore[reportArgumentType]
