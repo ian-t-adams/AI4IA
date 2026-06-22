@@ -1,0 +1,119 @@
+// @vitest-environment jsdom
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+
+import { MessageList, type DisplayMessage } from "./MessageList";
+
+// Speech playback owns <audio> + object-URL plumbing and hits the TTS endpoint on
+// toggle. Stub the hook so we can assert the speak button wiring without audio or
+// network, and observe the toggle call.
+const { mockToggle } = vi.hoisted(() => ({ mockToggle: vi.fn() }));
+vi.mock("@/lib/voice", () => ({
+  useSpeechPlayback: () => ({ activeId: null, busyId: null, toggle: mockToggle }),
+}));
+
+// jsdom has no layout engine, so scrollIntoView (called in an effect after every
+// render) is undefined; provide a no-op so rendering doesn't throw.
+beforeAll(() => {
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
+});
+
+afterEach(cleanup);
+beforeEach(() => mockToggle.mockReset());
+
+function msg(over: Partial<DisplayMessage> & Pick<DisplayMessage, "id" | "role">): DisplayMessage {
+  return { content: "", ...over };
+}
+
+describe("MessageList", () => {
+  it("renders the empty-state prompt when there are no messages", () => {
+    render(<MessageList messages={[]} />);
+    expect(screen.getByText("Start a conversation")).toBeInTheDocument();
+    expect(
+      screen.getByRole("log", { name: "Conversation" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders user and assistant bubbles but hides system messages", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({ id: "u1", role: "user", content: "Hello there" }),
+          msg({ id: "a1", role: "assistant", content: "General reply" }),
+          msg({ id: "s1", role: "system", content: "SYSTEM_SECRET" }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("Hello there")).toBeInTheDocument();
+    expect(screen.getByText("General reply")).toBeInTheDocument();
+    expect(screen.getByText("You")).toBeInTheDocument();
+    expect(screen.getByText("Assistant")).toBeInTheDocument();
+    expect(screen.queryByText("SYSTEM_SECRET")).toBeNull();
+  });
+
+  it("shows a generating indicator and no speak button while pending", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({ id: "a2", role: "assistant", content: "streaming…", pending: true }),
+        ]}
+      />,
+    );
+    expect(screen.getByLabelText("Generating")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Read message aloud/i }),
+    ).toBeNull();
+  });
+
+  it("wires the speak button to the playback toggle for finished replies", async () => {
+    const user = userEvent.setup();
+    render(
+      <MessageList
+        messages={[msg({ id: "a3", role: "assistant", content: "Read me aloud" })]}
+      />,
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Read message aloud" }),
+    );
+    expect(mockToggle).toHaveBeenCalledWith("a3", "Read me aloud");
+  });
+
+  it("renders citation tokens as clickable chips when onCitation is supplied", async () => {
+    const user = userEvent.setup();
+    const onCitation = vi.fn();
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "a4",
+            role: "assistant",
+            content: "Listen [[cite:lecture.mp3@12:34]] here",
+          }),
+        ]}
+        onCitation={onCitation}
+      />,
+    );
+    expect(screen.queryByText(/\[\[cite:/)).toBeNull();
+    const chip = screen.getByRole("button", { name: /Play lecture\.mp3/ });
+    await user.click(chip);
+    expect(onCitation).toHaveBeenCalledWith("lecture.mp3", 12 * 60_000 + 34_000);
+  });
+
+  it("renders citation tokens as static labels when no onCitation is supplied", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "a5",
+            role: "assistant",
+            content: "Listen [[cite:lecture.mp3@12:34]] here",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/\[\[cite:/)).toBeNull();
+    expect(screen.getByText(/lecture\.mp3/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Play/ })).toBeNull();
+  });
+});
