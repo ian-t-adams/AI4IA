@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from ..auth.base import AuthenticatedUser
@@ -141,12 +141,12 @@ async def get_image_artifact(
     to a path that does not exist for the caller (404), never a cross-user read.
     """
     if not _ARTIFACT_ID_RE.match(artifact_id or ""):
-        raise HTTPException(status_code=404, detail="Not found.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
     store: ImageArtifactStore = request.app.state.image_artifacts
     try:
         data = await store.get(user.internal_user_id, artifact_id)
     except BlobNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Not found.") from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.") from exc
     return Response(
         content=data,
         media_type=IMAGE_CONTENT_TYPE,

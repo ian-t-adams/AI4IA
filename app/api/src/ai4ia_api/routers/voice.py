@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -96,14 +96,21 @@ def _resolve_model(
     if not model_id:
         first = next((m for m in catalog.models if m.category in categories), None)
         if first is None:
-            raise HTTPException(status_code=400, detail=f"No {kind} models are available.")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"No {kind} models are available.",
+            )
         model_id = first.id
     entry = catalog.get(model_id)
     if entry is None:
-        raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown model: {model_id}",
+        )
     if entry.category not in categories:
         raise HTTPException(
-            status_code=400, detail=f"Model '{model_id}' is not a {kind} model."
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Model '{model_id}' is not a {kind} model.",
         )
     return model_id, entry
 
@@ -125,16 +132,22 @@ def _sanitize_upstream(exc: ModelGatewayError, *, model_id: str, correlation_id:
         what, exc.status_code, model_id, correlation_id,
     )
     if exc.status_code == 400:
-        return HTTPException(status_code=400, detail=_trim(exc.detail) or f"{what} was rejected.")
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_trim(exc.detail) or f"{what} was rejected.",
+        )
     if exc.status_code in (401, 403):
-        return HTTPException(status_code=502, detail=f"{what} provider rejected the request.")
+        return HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"{what} provider rejected the request.",
+        )
     if exc.status_code == 429:
         return HTTPException(
-            status_code=429,
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"{what} provider is rate limited. Try again shortly.",
             headers={"Retry-After": "30"},
         )
-    return HTTPException(status_code=502, detail=f"{what} failed.")
+    return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"{what} failed.")
 
 
 @router.post("/speech")
@@ -150,25 +163,31 @@ async def synthesize_speech(
 
     text = body.input.strip()
     if not text:
-        raise HTTPException(status_code=422, detail="Input must not be empty.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Input must not be empty.",
+        )
 
     voice = (body.voice or DEFAULT_VOICE).lower()
     if voice not in ALLOWED_VOICES:
         raise HTTPException(
-            status_code=422,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Unsupported voice. Allowed: {', '.join(sorted(ALLOWED_VOICES))}.",
         )
     fmt = (body.format or DEFAULT_FORMAT).lower()
     if fmt not in FORMAT_MEDIA_TYPE:
         raise HTTPException(
-            status_code=422,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Unsupported format. Allowed: {', '.join(sorted(FORMAT_MEDIA_TYPE))}.",
         )
 
     model_id, _ = _resolve_model(catalog, body.model, categories=TTS_CATEGORIES, kind="speech")
     deployment = catalog.resolve_deployment(model_id, region=body.region, data_zone=body.dataZone)
     if deployment is None:
-        raise HTTPException(status_code=400, detail=f"Unknown or unavailable model: {model_id}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown or unavailable model: {model_id}",
+        )
 
     await _gate(entitlements, user.internal_user_id)
 
@@ -187,9 +206,15 @@ async def synthesize_speech(
         ) from exc
 
     if not audio:
-        raise HTTPException(status_code=502, detail="Speech synthesis returned no audio.")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Speech synthesis returned no audio.",
+        )
     if len(audio) > MAX_AUDIO_BYTES:
-        raise HTTPException(status_code=502, detail="Synthesized audio was unexpectedly large.")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Synthesized audio was unexpectedly large.",
+        )
 
     await metering.record_completion(
         user_id=user.internal_user_id,
@@ -232,18 +257,27 @@ async def transcribe_audio(
     raw_type = file.content_type or "application/octet-stream"
     content_type = raw_type.split(";", 1)[0].strip().lower()
     if not (content_type.startswith("audio/") or content_type in {"video/webm", "video/mp4"}):
-        raise HTTPException(status_code=422, detail=f"Unsupported content type: {raw_type}.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Unsupported content type: {raw_type}.",
+        )
 
     lang = (language or "").strip() or None
     if lang and len(lang) > MAX_LANGUAGE_LEN:
-        raise HTTPException(status_code=422, detail="Invalid language code.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Invalid language code.",
+        )
 
     model_id, _ = _resolve_model(
         catalog, model, categories=STT_CATEGORIES, kind="transcription"
     )
     deployment = catalog.resolve_deployment(model_id, region=region, data_zone=dataZone)
     if deployment is None:
-        raise HTTPException(status_code=400, detail=f"Unknown or unavailable model: {model_id}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown or unavailable model: {model_id}",
+        )
 
     # Gate BEFORE reading the (potentially large) body so a disabled/rate-limited
     # caller can't force a full read.
@@ -253,9 +287,15 @@ async def transcribe_audio(
     # pulling an unbounded amount into memory.
     audio = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(audio) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="Audio file is too large (max 25 MB).")
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Audio file is too large (max 25 MB).",
+        )
     if not audio:
-        raise HTTPException(status_code=422, detail="Audio file is empty.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Audio file is empty.",
+        )
 
     correlation_id = get_correlation_id()
     try:
@@ -274,7 +314,10 @@ async def transcribe_audio(
 
     text = (result or {}).get("text")
     if not isinstance(text, str):
-        raise HTTPException(status_code=502, detail="Transcription returned no text.")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Transcription returned no text.",
+        )
 
     await metering.record_completion(
         user_id=user.internal_user_id,

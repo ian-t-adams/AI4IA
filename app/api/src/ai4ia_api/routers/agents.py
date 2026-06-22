@@ -111,9 +111,12 @@ async def create_my_agent(
             mcp_tool_names=mcp_tools,
         )
     except AgentValidationError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     except AgentConflictError as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.put("/agents/{name}", response_model=UserAgent)
@@ -129,9 +132,12 @@ async def update_my_agent(
             user.internal_user_id, name, payload, mcp_tool_names=mcp_tools
         )
     except AgentValidationError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     except AgentNotFoundError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.delete("/agents/{name}", status_code=status.HTTP_204_NO_CONTENT)
