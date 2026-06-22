@@ -1,0 +1,132 @@
+name: security-scan
+
+# Additive, report-oriented security scanning. This workflow does not change any
+# application, infrastructure, or deployment behavior — it only reports.
+#
+#   * Dependency vulnerabilities  -> Trivy filesystem scan (HIGH,CRITICAL),
+#                                    report-only (SARIF -> code scanning).
+#   * IaC / Dockerfile misconfig  -> Trivy config scan (HIGH,CRITICAL), BLOCKING.
+#   * Hardcoded secrets           -> gitleaks, BLOCKING.
+#
+# Gating rationale:
+#   - Misconfig and secrets are actionable/fixable in this repo, so they FAIL the
+#     build (fast feedback, fixable before merge).
+#   - Dependency CVEs are frequently unfixable upstream (e.g. an affected library
+#     with no patched version). Blocking on them would permanently wedge merges
+#     and overlaps with Dependabot, which owns the actual version bumps. So the
+#     dependency scan is exit-code 0 (non-blocking) and instead uploads SARIF to
+#     GitHub code scanning for visibility/triage.
+#
+# Every `uses:` is pinned to a commit SHA (with a human-readable version comment).
+# Trivy is pinned to a fixed binary version for reproducibility.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, Mondays 07:17 UTC (off the hour to avoid scheduler contention).
+    - cron: "17 7 * * 1"
+  workflow_dispatch: {}
+
+# Least privilege by default; individual jobs widen only what they need.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned Trivy binary version so CI matches local validation.
+  TRIVY_VERSION: v0.71.2
+  # Silence the VEX informational notice for cleaner logs.
+  TRIVY_DISABLE_VEX_NOTICE: "true"
+
+jobs:
+  dependency-vulnerabilities:
+    name: Dependency vulnerabilities (Trivy fs, report-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # security-events:write is required ONLY to upload SARIF to code scanning.
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Trivy filesystem (dependency) scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-deps.sarif
+          # Report-only: never block on (often unfixable) upstream dependency CVEs.
+          exit-code: "0"
+          # Vendored upstream source (microsoft/SimpleL7Proxy) is out of scope.
+          skip-dirs: proxy/SimpleL7Proxy
+          version: ${{ env.TRIVY_VERSION }}
+
+      - name: Upload dependency SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
+        # Fork PRs run with a read-only token and cannot write code-scanning
+        # results; don't let that fail this report-only job.
+        continue-on-error: true
+        with:
+          sarif_file: trivy-deps.sarif
+          category: trivy-dependencies
+
+  config-misconfiguration:
+    name: IaC & Dockerfile misconfiguration (Trivy config, blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      # Path-scoped, justified false-positive suppressions (YAML format).
+      TRIVY_IGNOREFILE: .trivyignore.yaml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Trivy config (misconfiguration) scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          format: table
+          # Blocking: misconfigurations are actionable and fixable in this repo.
+          exit-code: "1"
+          # Vendored upstream source (microsoft/SimpleL7Proxy) is out of scope.
+          skip-dirs: proxy/SimpleL7Proxy
+          version: ${{ env.TRIVY_VERSION }}
+
+  secret-scan:
+    name: Secret scan (gitleaks, blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # Full history so push/scheduled runs scan the whole commit graph.
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Repo-root allowlist of reviewed false positives.
+          GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
+          # Pin gitleaks to match local validation.
+          GITLEAKS_VERSION: 8.30.1
+          # Disable PR comments so the job needs only `contents: read`.
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_SUMMARY: "true"

@@ -38,6 +38,8 @@
   Linux CI runner. Read-only and idempotent - safe to re-run.
 #>
 [CmdletBinding()]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'RequireApiHealth',
+  Justification = 'Consumed inside the Test-ApiHealth nested function; the analyzer cannot resolve cross-scope use.')]
 param(
   # Promote the API health probe from a warning to a hard failure. Defaults from
   # AI4IA_SMOKE_REQUIRE_API_HEALTH so the azd hook stays argument-free.
@@ -46,7 +48,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 # PS 5.1 can default to TLS 1.0; ARM requires 1.2+. No-op on pwsh 7.
-try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { Write-Verbose "TLS 1.2 enforcement skipped (pwsh 7 already secure): $($_.Exception.Message)" }
 
 # --- result tracking -------------------------------------------------------
 $script:Results = [System.Collections.Generic.List[object]]::new()
@@ -81,7 +83,7 @@ function Get-AzdEnvMap {
         }
       }
     }
-  } catch { }
+  } catch { Write-Verbose "azd env get-values unavailable; relying on process env: $($_.Exception.Message)" }
   return $map
 }
 
@@ -99,23 +101,23 @@ function Get-MgmtToken {
   try {
     $t = & azd auth token --scope 'https://management.azure.com/.default' --output json 2>$null | ConvertFrom-Json
     if ($t -and $t.token) { return $t.token }
-  } catch { }
+  } catch { Write-Verbose "azd auth token unavailable; falling back to az: $($_.Exception.Message)" }
   try {
     $t = & az account get-access-token --resource 'https://management.azure.com' --output json 2>$null | ConvertFrom-Json
     if ($t -and $t.accessToken) { return $t.accessToken }
-  } catch { }
+  } catch { Write-Verbose "az access-token unavailable: $($_.Exception.Message)" }
   return $null
 }
 
 function Invoke-HttpProbe {
   param([Parameter(Mandatory)][string]$Url, [int]$TimeoutSec = 10)
-  try { Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue } catch { }
+  try { Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue } catch { Write-Verbose "System.Net.Http already available: $($_.Exception.Message)" }
   $client = [System.Net.Http.HttpClient]::new()
   try {
     $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
     $resp = $client.GetAsync($Url).GetAwaiter().GetResult()
     $body = ''
-    try { $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult() } catch { }
+    try { $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult() } catch { Write-Verbose "could not read probe response body: $($_.Exception.Message)" }
     return [pscustomobject]@{ Ok = $resp.IsSuccessStatusCode; Status = [int]$resp.StatusCode; Body = $body; Error = $null }
   } catch {
     $ex = $_.Exception
@@ -127,7 +129,7 @@ function Invoke-HttpProbe {
 }
 
 # --- checks ----------------------------------------------------------------
-function Test-ModelDeployments {
+function Test-ModelDeployment {
   # HARD GATE. Foundry accounts + their model deployments are created by provision,
   # so they MUST exist and be Succeeded right now. Read account names straight from
   # the AZURE_FOUNDRY_ENDPOINTS output (never hard-code resource names).
@@ -220,6 +222,9 @@ function Test-ApiHealth {
 }
 
 function Test-CustomDomainDns {
+  [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+    Justification = 'Dns is an acronym, not a plural noun; renaming would obscure intent.')]
+  param()
   $domains = @(
     @{ Var = 'AI4IA_WEB_CUSTOM_DOMAIN'; Value = (Get-EnvValue 'AI4IA_WEB_CUSTOM_DOMAIN') }
     @{ Var = 'AI4IA_PROXY_CUSTOM_DOMAIN'; Value = (Get-EnvValue 'AI4IA_PROXY_CUSTOM_DOMAIN') }
@@ -247,7 +252,7 @@ Write-Host '== AI4IA postprovision smoke tests ==' -ForegroundColor Cyan
 $script:AzdEnv = Get-AzdEnvMap
 
 $checks = @(
-  @{ Label = 'Model deployments (hard gate)'; Fn = { Test-ModelDeployments } }
+  @{ Label = 'Model deployments (hard gate)'; Fn = { Test-ModelDeployment } }
   @{ Label = 'API health'; Fn = { Test-ApiHealth } }
   @{ Label = 'Custom-domain DNS'; Fn = { Test-CustomDomainDns } }
 )
