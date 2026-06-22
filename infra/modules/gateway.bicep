@@ -16,6 +16,9 @@ param environmentName string
 @description('Container Apps managed environment resource ID.')
 param containerEnvId string
 
+@description('Central Log Analytics workspace resource ID for diagnostic settings.')
+param logAnalyticsWorkspaceId string
+
 @description('Resource ID of the proxy user-assigned identity.')
 param proxyIdentityResourceId string
 
@@ -265,6 +268,39 @@ resource apimCognitiveUser 'Microsoft.Authorization/roleAssignments@2022-04-01' 
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveUserRoleId)
     principalId: apim.identity.principalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+// ---------------- Observability (diagnostic settings -> central Log Analytics) ----------------
+// APIM is the model front door, so its gateway request log + metrics are the
+// operational proof for everything routed through the gateway. Consumption SKU
+// supports GatewayLogs; LLM token logs are a separate workstream (not enabled here).
+resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-log-analytics'
+  scope: apim
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      { category: 'GatewayLogs', enabled: true }
+    ]
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
+  }
+}
+
+// Per-app metrics for the proxy (the gateway's compute data path). Console/system
+// logs already stream to LA via the managed environment's appLogsConfiguration;
+// container-app logs are env-scoped only, so this adds the per-app metric signal
+// (5xx rate, replica restarts, CPU/memory) into the same workspace for correlation.
+resource proxyDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-log-analytics'
+  scope: proxyApp
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
   }
 }
 

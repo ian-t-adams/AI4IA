@@ -13,6 +13,9 @@ WORKDIR /app
 # Install dependencies first for better layer caching.
 COPY pyproject.toml README.md ./
 COPY src ./src
+# '.' is this repo's own package (its dependencies are pinned in pyproject.toml),
+# not a PyPI package to version-pin in the Dockerfile.
+# hadolint ignore=DL3013
 RUN pip install --upgrade pip && pip install .
 
 EXPOSE 8080
