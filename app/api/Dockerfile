@@ -1,7 +1,7 @@
 # AI4IA backend image (Python FastAPI on Azure Container Apps).
 # Build context is app/api (see azure.yaml); the model catalog is bundled into
 # the package by scripts/gen-model-catalog.py before build.
-FROM python:3.12-slim AS base
+FROM python:3.14-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
