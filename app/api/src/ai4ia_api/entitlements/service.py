@@ -26,7 +26,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from .models import (
     DAY_SECONDS,
@@ -38,6 +38,9 @@ from .models import (
 )
 from .store import EntitlementStore
 
+if TYPE_CHECKING:
+    from ..usage.models import WindowTotals
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +49,9 @@ class UsageWindowReader(Protocol):
     budgets, so the service depends on a tiny structural interface (and tests can
     pass a fake reader)."""
 
-    async def window_totals(self, user_id: str, *, since: datetime, now: datetime | None = None): ...
+    async def window_totals(
+        self, user_id: str, *, since: datetime, now: datetime | None = None
+    ) -> "WindowTotals": ...
 
 
 def _now() -> datetime:

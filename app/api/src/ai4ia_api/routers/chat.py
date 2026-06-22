@@ -1089,7 +1089,7 @@ async def chat(
             plain_tools: list[dict] = []
             plain_handlers: dict = {}
             if plain_compute_active:
-                c_tools, c_handlers = compute.build_capability(
+                c_tools, c_handlers = compute.build_capability(  # pyright: ignore[reportOptionalMemberAccess]
                     user_id=user.internal_user_id, nonce=library_nonce,
                     email=user.email,
                 )
@@ -1274,7 +1274,7 @@ async def chat(
                         model_id=model_id,
                         deployment=deployment,
                         usage=TokenUsage.parse(stream_usage),
-                        status=_status_map.get(final, "error"),
+                        status=_status_map.get(final, "error"),  # pyright: ignore[reportArgumentType]
                         agent=agent_name,
                         correlation_id=correlation_id,
                     )

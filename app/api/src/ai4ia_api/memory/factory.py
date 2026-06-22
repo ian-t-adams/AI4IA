@@ -71,7 +71,11 @@ def _build_store(kind: MemoryStoreKind, settings: Settings) -> MemoryStore | Non
             # misconfig fails closed (Noop) rather than building a broken store.
             logger.warning("memory disabled: pgvector requires postgres_host + postgres_user")
             return None
-        return PgVectorStore(
+        # PgVectorStore intentionally omits MemoryStore.erase_document: the
+        # ``memories`` table (see pgvector_store.py) has no document_id column to
+        # key an erase on, so implementing it requires a schema migration that is
+        # out of scope here. Flagged (not hidden) so the gap stays visible.
+        return PgVectorStore(  # pyright: ignore[reportReturnType]
             host=settings.postgres_host,
             database=settings.postgres_database,
             user=settings.postgres_user,
@@ -124,9 +128,9 @@ def _build_mem0_service(
 
         provider = SyncAadTokenProvider()
         pool = build_aad_pool(
-            host=settings.postgres_host,  # type: ignore[arg-type]
+            host=settings.postgres_host,  # pyright: ignore[reportArgumentType]
             database=settings.postgres_database,
-            user=settings.postgres_user,  # type: ignore[arg-type]
+            user=settings.postgres_user,  # pyright: ignore[reportArgumentType]
             port=settings.postgres_port,
             provider=provider,
         )

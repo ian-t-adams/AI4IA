@@ -430,7 +430,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     try:
         from azure.core.exceptions import AzureError, HttpResponseError
     except Exception:  # noqa: BLE001 - azure-core is a hard dep in the deployed image
-        AzureError = HttpResponseError = None  # type: ignore[assignment,misc]
+        AzureError = HttpResponseError = None
 
     if AzureError is not None:
 
@@ -442,7 +442,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _TRANSIENT_DATA_PLANE_CODES = frozenset({401, 403, 408, 429})
 
         @app.exception_handler(AzureError)
-        async def _azure_unavailable(_request: Request, exc: AzureError):
+        async def _azure_unavailable(_request: Request, exc: Exception):
             # Preserve 500 semantics for an unexpected non-transient 4xx (a client/code
             # bug); treat connectivity, auth, firewall, throttling and 5xx as transient.
             status_code = getattr(exc, "status_code", None)

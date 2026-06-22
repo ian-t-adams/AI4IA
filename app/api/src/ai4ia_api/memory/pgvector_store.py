@@ -118,17 +118,17 @@ class _AadTokenProvider:
 
     async def __call__(self) -> str:
         if self._fresh():
-            return self._token.token  # type: ignore[union-attr]
+            return self._token.token  # pyright: ignore[reportOptionalMemberAccess]
         async with self._lock:
             # Double-check: another waiter may have refreshed while we blocked.
             if self._fresh():
-                return self._token.token  # type: ignore[union-attr]
+                return self._token.token  # pyright: ignore[reportOptionalMemberAccess]
             if self._credential is None:
                 from azure.identity.aio import DefaultAzureCredential
 
                 self._credential = DefaultAzureCredential()
             self._token = await self._credential.get_token(_PG_SCOPE)
-            return self._token.token
+            return self._token.token  # pyright: ignore[reportOptionalMemberAccess]
 
     async def close(self) -> None:
         if self._owns_credential and self._credential is not None:
@@ -240,7 +240,7 @@ class PgVectorStore:
     async def add(self, record: MemoryRecord, vector: Sequence[float]) -> None:
         await self.ensure_ready()
         literal = self._vector_literal(vector)
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn:  # pyright: ignore[reportOptionalMemberAccess]
             await conn.execute(
                 _INSERT,
                 record.id,
@@ -257,7 +257,7 @@ class PgVectorStore:
     ) -> list[MemoryRecord]:
         await self.ensure_ready()
         literal = self._vector_literal(query_vector)
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn:  # pyright: ignore[reportOptionalMemberAccess]
             rows = await conn.fetch(_SEARCH, user_id, literal, max(0, top_k))
         return [
             MemoryRecord(
@@ -274,13 +274,13 @@ class PgVectorStore:
 
     async def erase_user(self, user_id: str) -> int:
         await self.ensure_ready()
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn:  # pyright: ignore[reportOptionalMemberAccess]
             count = await conn.fetchval(_ERASE_USER, user_id)
         return int(count or 0)
 
     async def erase_session(self, user_id: str, session_id: str) -> int:
         await self.ensure_ready()
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn:  # pyright: ignore[reportOptionalMemberAccess]
             count = await conn.fetchval(_ERASE_SESSION, user_id, session_id)
         return int(count or 0)
 

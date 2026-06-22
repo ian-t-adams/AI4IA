@@ -1,3 +1,8 @@
+# pyright: reportArgumentType=false, reportCallIssue=false
+# ^ Azure AI Search SDK typing friction, not real defects: SearchFieldDataType is
+#   exposed as a plain Enum in the SDK's type stubs, so building SearchField(type=...)
+#   and the SimpleField/SearchableField helpers trip reportArgumentType/reportCallIssue
+#   even though the values are valid at runtime. Scoped to this Search backend module.
 """Azure AI Search backend for the per-user document chunk index.
 
 A drop-in :class:`~ai4ia_api.library.doc_chunks.DocChunkStore` implementation that

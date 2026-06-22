@@ -57,16 +57,16 @@ class _AadTokenProvider:
 
     async def __call__(self) -> str:
         if self._fresh():
-            return self._token.token  # type: ignore[union-attr]
+            return self._token.token  # pyright: ignore[reportOptionalMemberAccess]
         async with self._lock:
             if self._fresh():
-                return self._token.token  # type: ignore[union-attr]
+                return self._token.token  # pyright: ignore[reportOptionalMemberAccess]
             if self._credential is None:
                 from azure.identity.aio import DefaultAzureCredential
 
                 self._credential = DefaultAzureCredential()
             self._token = await self._credential.get_token(_CS_SCOPE)
-            return self._token.token
+            return self._token.token  # pyright: ignore[reportOptionalMemberAccess]
 
     async def close(self) -> None:
         if self._owns_credential and self._credential is not None:
