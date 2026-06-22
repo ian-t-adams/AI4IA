@@ -25,6 +25,7 @@ from typing import Any, Protocol
 import httpx
 
 from ..config import GatewayAuthMode, Settings
+from ..http_retry import request_with_retry
 from .models import TERMINAL_STATES, CUResult, parse_result
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,10 @@ class ContentUnderstandingClient:
         self._timeout = settings.cu_timeout_seconds
         self._poll_interval = settings.cu_poll_interval_seconds
         self._max_poll = settings.cu_max_poll_seconds
+        # Transient-retry policy for the idempotent GET poll only. The submit POST
+        # starts a new analyze operation and is never retried — see
+        # ai4ia_api.http_retry.
+        self._retry_policy = settings.outbound_retry_policy()
         self._http = http_client
         self._token_provider = token_provider
         self._owns_token_provider = token_provider is None
@@ -157,7 +162,11 @@ class ContentUnderstandingClient:
         self, client: httpx.AsyncClient, operation_url: str
     ) -> dict[str, Any]:
         headers = await self._auth_headers()
-        resp = await client.get(operation_url, headers=headers)
+        resp = await request_with_retry(
+            lambda: client.get(operation_url, headers=headers),
+            method="GET",
+            policy=self._retry_policy,
+        )
         if resp.status_code >= 400:
             raise ContentUnderstandingError(resp.status_code, resp.text)
         return resp.json()

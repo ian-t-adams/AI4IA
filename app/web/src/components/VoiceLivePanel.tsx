@@ -19,7 +19,6 @@ import {
   isVadType,
   realtimeModels,
   type LiveTurn,
-  type VadType,
   type VoiceLiveConfig,
   type VoiceSeedTurn,
   type VoiceSessionSettings,

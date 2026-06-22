@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from ..config import GatewayAuthMode, GatewayProviderStyle, Settings
+from ..http_retry import request_with_retry
 
 # Azure OpenAI reasoning models (the GPT-5 family and the o-series) reject the
 # classic Chat Completions sampling/limit parameters: they require
@@ -266,6 +267,10 @@ class ModelGatewayClient:
         self._video_timeout = settings.gateway_video_timeout_seconds
         self._audio_api_version = settings.gateway_audio_api_version
         self._audio_timeout = settings.gateway_audio_timeout_seconds
+        # Transient-retry policy for the idempotent GET reads only (Sora job poll
+        # + content download). Writes on this client (chat/embed/image/audio/job
+        # create) are deliberately NOT retried — see ai4ia_api.http_retry.
+        self._retry_policy = settings.outbound_retry_policy()
         self._http = http_client
 
     def _auth_headers(self, correlation_id: str | None) -> dict[str, str]:
@@ -504,8 +509,14 @@ class ModelGatewayClient:
         else:
             client, owned = httpx.AsyncClient(timeout=self._video_timeout), True
         try:
-            resp = await client.get(
-                url, headers=self._auth_headers(correlation_id), timeout=self._video_timeout
+            resp = await request_with_retry(
+                lambda: client.get(
+                    url,
+                    headers=self._auth_headers(correlation_id),
+                    timeout=self._video_timeout,
+                ),
+                method="GET",
+                policy=self._retry_policy,
             )
             if resp.status_code >= 400:
                 raise ModelGatewayError(resp.status_code, resp.text)
@@ -524,8 +535,14 @@ class ModelGatewayClient:
         else:
             client, owned = httpx.AsyncClient(timeout=self._video_timeout), True
         try:
-            resp = await client.get(
-                url, headers=self._auth_headers(correlation_id), timeout=self._video_timeout
+            resp = await request_with_retry(
+                lambda: client.get(
+                    url,
+                    headers=self._auth_headers(correlation_id),
+                    timeout=self._video_timeout,
+                ),
+                method="GET",
+                policy=self._retry_policy,
             )
             if resp.status_code >= 400:
                 raise ModelGatewayError(resp.status_code, resp.text)
