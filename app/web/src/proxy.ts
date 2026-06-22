@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 
 // Per-request, nonce-based Content-Security-Policy for the App Router.
 //
-// This is the app-aware follow-up to the conservative CSP baseline shipped in
+// Implemented as Next 16's `proxy` convention (the successor to the deprecated
+// `middleware` file/export; the runtime behavior is identical). This is the
+// app-aware follow-up to the conservative CSP baseline shipped in
 // next.config.mjs (#83). It adds the high-value, previously-missing piece: a
 // strict `script-src` that only permits scripts carrying a fresh, unguessable
 // per-request nonce (plus `'strict-dynamic'`, so those trusted scripts may load
@@ -32,7 +34,7 @@ import { NextRequest, NextResponse } from "next/server";
 // are already `export const dynamic = "force-dynamic"`, so this is a no-op for
 // them.
 
-export function middleware(request: NextRequest): NextResponse {
+export function proxy(request: NextRequest): NextResponse {
   const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
   // React uses `eval` for richer error overlays in `next dev`; production builds
   // need neither `unsafe-eval` nor `unsafe-inline` for scripts.
