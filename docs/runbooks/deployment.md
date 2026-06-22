@@ -101,6 +101,8 @@ Settings → Secrets and variables → Actions → **Variables** (these are iden
 | `AZURE_SUBSCRIPTION_ID` | target subscription ID |
 | `AZURE_ENV_NAME` | azd environment name, e.g. `ai4ia-dev` |
 | `AZURE_LOCATION` | primary region, e.g. `eastus2` |
+| `AI4IA_OWNER` | accountable owner tag value for the deployed resources |
+| `AI4IA_APIM_PUBLISHER_EMAIL` | operator-owned APIM publisher mailbox |
 
 The moment `AZURE_CLIENT_ID` is set, the next qualifying push to `main` deploys.
 
@@ -110,6 +112,15 @@ Settings → Environments → `production` → add **Required reviewers** so a h
 and/or restrict to the `main` branch. Until you add protection, the environment exists with no gate.
 
 ### 2.5 Custom domains (vanity hostnames) — **required if you use them**
+
+Pre-deploy checklist:
+
+1. Confirm the DNS `CNAME` and `asuid.<host>` `TXT` records already exist at the
+   DNS provider.
+2. Confirm the target Container Apps managed certificate names if adopting
+   existing certs.
+3. Set all four custom-domain repository variables before `azd provision`.
+4. Treat missing variables as an outage risk, not a harmless omission.
 
 The app is reached at vanity hostnames (`ai4ia.nomad-analytics.com` for the web app,
 `genaiproxy.nomad-analytics.com` for the proxy). The binding + Azure-managed TLS cert are declared in

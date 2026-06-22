@@ -13,8 +13,8 @@ param environmentName string
 @description('Primary location for the resource group and shared resources.')
 param location string = 'eastus2'
 
-@description('Accountable owner tag value.')
-param owner string = 'ian-t-adams'
+@description('Accountable owner tag value. Override per deployment; do not rely on a personal repo default.')
+param owner string = 'ai4ia-operator'
 
 @description('Cost center tag value.')
 param costCenter string = 'genai-demo'
@@ -23,10 +23,10 @@ param costCenter string = 'genai-demo'
 param budgetAmount int = 1500
 
 @description('Emails notified on budget thresholds (empty = tracking only).')
-param budgetAlertEmails array = ['ianadams@microsoft.com']
+param budgetAlertEmails array = []
 
-@description('APIM publisher email for the model gateway front door.')
-param apimPublisherEmail string = 'ianadams@microsoft.com'
+@description('APIM publisher email for the model gateway front door. Override per deployment.')
+param apimPublisherEmail string = 'ai4ia@example.com'
 
 @description('Application runtime environment for the api (maps to AI4IA_ENV).')
 @allowed([

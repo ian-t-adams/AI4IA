@@ -12,7 +12,7 @@
       "value": "${AZURE_LOCATION=eastus2}"
     },
     "owner": {
-      "value": "${AI4IA_OWNER=ian-t-adams}"
+      "value": "${AI4IA_OWNER=ai4ia-operator}"
     },
     "costCenter": {
       "value": "${AI4IA_COST_CENTER=genai-demo}"
@@ -43,6 +43,9 @@
     },
     "entraApiScope": {
       "value": "${AI4IA_ENTRA_API_SCOPE=}"
+    },
+    "apimPublisherEmail": {
+      "value": "${AI4IA_APIM_PUBLISHER_EMAIL=ai4ia@example.com}"
     },
     "webCustomDomain": {
       "value": "${AI4IA_WEB_CUSTOM_DOMAIN=}"

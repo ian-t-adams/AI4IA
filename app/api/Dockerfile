@@ -21,4 +21,7 @@ EXPOSE 8080
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\", \"8080\")}/health/live', timeout=3).read()"
+
 CMD ["sh", "-c", "uvicorn ai4ia_api.main:app --host 0.0.0.0 --port ${PORT}"]
