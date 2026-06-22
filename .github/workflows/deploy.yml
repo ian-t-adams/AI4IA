@@ -94,6 +94,48 @@ jobs:
             --federated-credential-provider "github" \
             --tenant-id "$AZURE_TENANT_ID"
 
+      # az login for the guard step below (azd auth doesn't authenticate the az
+      # CLI). Same OIDC identity, no secrets.
+      - name: Log in to Azure CLI (OIDC)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      # Guard: a provision rewrites the Container App ingress from the bicep, which
+      # sets customDomains to [] when AI4IA_*_CUSTOM_DOMAIN is empty -> it WIPES an
+      # existing vanity-host binding (live site drops to ERR_CONNECTION_CLOSED; see
+      # docs/runbooks/deployment.md). Bicep can't see the live binding to refuse, so
+      # fail fast here when an app already has a domain bound but the matching repo
+      # variable is empty. Names are deterministic: workload `ai4ia` + AZURE_ENV_NAME.
+      - name: Guard custom-domain bindings (prevent silent wipe)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
+        run: |
+          set -euo pipefail
+          rg="rg-ai4ia-${AZURE_ENV_NAME}"
+          rc=0
+          guard() {
+            app="$1"; var_name="$2"; var_val="$3"
+            # Empty when the app/RG doesn't exist yet (greenfield) or has no binding.
+            bound="$(az containerapp show -g "$rg" -n "$app" \
+              --query "properties.configuration.ingress.customDomains[].name" -o tsv 2>/dev/null || true)"
+            if [ -n "$bound" ] && [ -z "$var_val" ]; then
+              echo "::error::$app has custom domain(s) bound [$(echo "$bound" | paste -sd, -)] but $var_name is empty. Provisioning would WIPE the binding. Set $var_name (and its *_MANAGED_CERT_NAME) as a repo variable, then re-run."
+              rc=1
+            elif [ -n "$bound" ]; then
+              echo "OK: $app keeps [$(echo "$bound" | paste -sd, -)] ($var_name is set)."
+            elif [ -n "$var_val" ]; then
+              echo "OK: $app will bind $var_val (no existing binding to protect)."
+            else
+              echo "OK: $app has no binding and $var_name is empty (nothing to protect)."
+            fi
+          }
+          guard "ca-web-${AZURE_ENV_NAME}"   "AI4IA_WEB_CUSTOM_DOMAIN"   "${AI4IA_WEB_CUSTOM_DOMAIN:-}"
+          guard "ca-proxy-${AZURE_ENV_NAME}" "AI4IA_PROXY_CUSTOM_DOMAIN" "${AI4IA_PROXY_CUSTOM_DOMAIN:-}"
+          exit $rc
+
       - name: Provision infrastructure
         # Skipped only when a manual run explicitly opts out; push events always
         # reconcile infra (azd provision is idempotent).
