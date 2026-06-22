@@ -1,0 +1,92 @@
+name: quality
+
+# Static linting of the repo's operational surface: GitHub Actions workflows
+# (actionlint + shellcheck for embedded bash), PowerShell operator scripts
+# (PSScriptAnalyzer), the AI4IA-owned Dockerfiles (hadolint) and YAML (yamllint).
+# Additive/quality only - it builds and deploys nothing.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: these jobs only read the checked-out tree.
+permissions:
+  contents: read
+
+# One in-flight run per workflow+ref; new pushes cancel the previous run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Lint workflows (actionlint + shellcheck)
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          set -euo pipefail
+          curl -sSfLo actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          tar -xzf actionlint.tar.gz actionlint
+          # actionlint auto-detects the shellcheck pre-installed on ubuntu-latest
+          # and uses it to lint the bash inside every workflow's run: blocks.
+          ./actionlint -color
+
+  powershell:
+    name: PSScriptAnalyzer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Analyze scripts (PSScriptAnalyzer)
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+          $results = Invoke-ScriptAnalyzer -Path scripts -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+          if ($results) {
+            $results | Format-Table -AutoSize RuleName, Severity, ScriptName, Line, Message
+            throw "PSScriptAnalyzer found $($results.Count) issue(s) at Warning+ severity."
+          }
+          Write-Host 'PSScriptAnalyzer: no Warning/Error findings.'
+
+  hadolint:
+    name: hadolint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Lint Dockerfiles (hadolint)
+        env:
+          HADOLINT_VERSION: 2.14.0
+        run: |
+          set -euo pipefail
+          curl -sSfLo hadolint \
+            "https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-x86_64"
+          chmod +x hadolint
+          # AI4IA-owned Dockerfiles only; proxy/SimpleL7Proxy/Dockerfile is vendored upstream.
+          ./hadolint app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile
+
+  yamllint:
+    name: yamllint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Lint YAML (yamllint)
+        env:
+          YAMLLINT_VERSION: 1.38.0
+        run: |
+          set -euo pipefail
+          python3 -m pip install --user --quiet "yamllint==${YAMLLINT_VERSION}"
+          python3 -m yamllint -c .yamllint .
