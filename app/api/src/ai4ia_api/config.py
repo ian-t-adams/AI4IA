@@ -11,9 +11,13 @@ from __future__ import annotations
 
 from enum import Enum
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+if TYPE_CHECKING:
+    from .http_retry import RetryPolicy
 
 
 class Environment(str, Enum):
@@ -113,6 +117,17 @@ class Settings(BaseSettings):
     # api-version also serves whisper transcription, so both share one version.
     gateway_audio_api_version: str = "2025-03-01-preview"
     gateway_audio_timeout_seconds: float = 120.0
+    # --- Outbound transient-retry (bespoke httpx clients) ---
+    # Conservative retry for IDEMPOTENT outbound reads (GET) on our own httpx
+    # clients only — the model-gateway video poll/download and the Content
+    # Understanding result poll. Retries only transient failures
+    # (connection/timeout errors, HTTP 429/502/503/504), honoring Retry-After,
+    # with capped exponential backoff + jitter. The two hard caps below bound the
+    # blast radius so a dead dependency fails fast; writes are never retried.
+    # Azure SDK call sites (cosmos/search/blob/keyvault) are excluded — those
+    # SDKs retry internally. See ai4ia_api.http_retry.
+    outbound_retry_max_attempts: int = 3
+    outbound_retry_deadline_seconds: float = 20.0
     # --- Voice Live: real-time speech-to-speech relay ---
     # Feature-flagged and default-OFF: with realtime_enabled=False the
     # ``/api/voice/live`` WebSocket refuses (closes immediately), so the app's
@@ -545,6 +560,21 @@ class Settings(BaseSettings):
     model_catalog_path: str | None = None
     # Optional path override for the bundled agent catalog (tests/dev).
     agent_catalog_path: str | None = None
+
+    def outbound_retry_policy(self) -> "RetryPolicy":
+        """Build the transient-retry policy for our bespoke outbound httpx reads.
+
+        Imported lazily so importing config never pulls in ``http_retry``/httpx
+        at module load. The two configurable hard caps (``max_attempts``,
+        ``deadline_seconds``) are clamped to safe floors; the backoff/jitter and
+        Retry-After cap keep their conservative module defaults.
+        """
+        from .http_retry import RetryPolicy
+
+        return RetryPolicy(
+            max_attempts=max(1, self.outbound_retry_max_attempts),
+            deadline_seconds=max(0.0, self.outbound_retry_deadline_seconds),
+        )
 
     @property
     def allowed_tenants(self) -> list[str]:
