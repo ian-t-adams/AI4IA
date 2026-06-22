@@ -1,0 +1,50 @@
+# Dependabot keeps dependencies and CI actions patched. Updates are grouped to
+# cut PR noise; security updates always come through regardless of grouping.
+# Scope: the code we own (app/web npm, app/api pip), the GitHub Actions we run,
+# and our service container base images. The vendored proxy/SimpleL7Proxy NuGet
+# tree is intentionally pinned to an upstream commit and is left unmanaged here.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /app/web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      web-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: pip
+    directory: /app/api
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      api-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /app/api
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /app/web
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /proxy
+    schedule:
+      interval: weekly

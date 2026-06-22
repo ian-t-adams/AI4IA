@@ -1,0 +1,22 @@
+# Code owners are auto-requested for review on matching paths. This file does
+# not, by itself, *require* their approval — that only happens if branch
+# protection enables "Require review from Code Owners". It documents ownership
+# and routes review requests. Later-matching patterns take precedence.
+
+# Default owner for everything in the repo.
+*                       @ian-t-adams
+
+# Application code
+/app/web/               @ian-t-adams
+/app/api/               @ian-t-adams
+
+# Infrastructure as code
+/infra/                 @ian-t-adams
+
+# CI/CD, automation, and supply-chain config
+/.github/               @ian-t-adams
+/scripts/               @ian-t-adams
+
+# Vendored upstream (microsoft/SimpleL7Proxy) — change deliberately and keep
+# the pinned upstream commit reference in proxy/Dockerfile in sync.
+/proxy/                 @ian-t-adams
