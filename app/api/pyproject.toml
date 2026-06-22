@@ -35,7 +35,7 @@ dependencies = [
     # (Mem0MemoryService) depends on verified 2.0.4 internals — config keys,
     # azure_openai default_headers, the pgvector connection_pool injection point,
     # and add/search/get_all/delete_all signatures. Bump deliberately with tests.
-    "mem0ai==2.0.4",
+    "mem0ai==2.0.7",
     # mem0's pgvector store uses psycopg3 + its pool. We inject our own AAD-token
     # ConnectionPool (no SQL password), so both are required at runtime. Imported
     # lazily (only when memory_store=mem0) so the app/tests run without them wired.
