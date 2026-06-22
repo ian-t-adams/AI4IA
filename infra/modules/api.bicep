@@ -13,6 +13,9 @@ param environmentName string
 @description('Container Apps managed environment resource ID.')
 param containerEnvId string
 
+@description('Central Log Analytics workspace resource ID for diagnostic settings.')
+param logAnalyticsWorkspaceId string
+
 @description('Resource ID of the api user-assigned identity.')
 param apiIdentityResourceId string
 
@@ -543,5 +546,21 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   }
 }
 
+// Per-app metrics for the api container app. Console/system logs already stream to
+// LA via the managed environment's appLogsConfiguration (container-app logs are
+// env-scoped only); this adds the per-app metric signal (HTTP 5xx, replica restarts,
+// CPU/memory) into the same workspace for correlation and alerting.
+resource apiDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-log-analytics'
+  scope: apiApp
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
+  }
+}
+
 output apiAppName string = apiApp.name
+output apiAppId string = apiApp.id
 output apiUrl string = 'https://${apiApp.properties.configuration.ingress.fqdn}'
