@@ -59,3 +59,6 @@ tmp/
 # --- Local Azure snapshots/caches (operational, not source) ---
 .inventory/
 .modelcache/
+
+# --- Impeccable hook cache (local tooling, not source) ---
+.impeccable/
