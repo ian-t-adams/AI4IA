@@ -115,6 +115,9 @@ param realtimeAllowedOrigins string = ''
 @description('Enable governed tool calling inside a live session (the relay injects the safe built-in tools and executes the model\'s function calls in-process). Inert unless realtimeEnabled is also true.')
 param realtimeToolsEnabled bool = true
 
+@description('Enable automatic context summarization (auto-fold). Default OFF: the manual /summarize command still works, but the auto path that folds older turns into the running summary stays dormant, so the default chat path is byte-for-byte unchanged. When ON, once the assembled transcript would exceed the model-derived threshold, the oldest turns are folded into the session\'s running summary and only the newest turns are sent verbatim; the full transcript is always retained in storage + the UI scrollback.')
+param autoSummarizationEnabled bool = false
+
 @description('Enable the per-user document library and multimodal understanding. Default OFF (the /api/library API refuses with 404 and nothing is constructed, so the app is inert).')
 param documentUnderstandingEnabled bool = false
 
@@ -328,6 +331,22 @@ var realtimeEnv = realtimeEnabled ? [
   }
 ] : []
 
+// Auto-summarization (context auto-fold). Default OFF: with the flag unset the
+// chat assembler never folds older turns, so the default chat path is
+// byte-for-byte unchanged and the manual /summarize command is unaffected. When
+// enabled, the api folds the oldest turns into the session's running summary once
+// the assembled transcript would exceed the model-derived threshold; only the
+// newest turns are sent verbatim alongside the summary, while the full transcript
+// is always retained in storage + the UI scrollback. The fold shaping
+// (recent-turns kept, threshold ratio, fallback chars, max output) keeps its
+// config defaults unless separately overridden.
+var summarizationEnv = autoSummarizationEnabled ? [
+  {
+    name: 'AI4IA_AUTO_SUMMARIZATION_ENABLED'
+    value: 'true'
+  }
+] : []
+
 // Document understanding settings. Default OFF: the library repo
 // + ingest pipeline are not constructed and the /api/library API refuses (404),
 // so the feature is inert. When enabled, the blob env points the ingest path at
@@ -538,7 +557,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, webSearchEnv, resourceMetricsEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, webSearchEnv, resourceMetricsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName
