@@ -22,6 +22,9 @@ param apiIdentityResourceId string
 @description('Client ID of the api user-assigned identity (for AZURE_CLIENT_ID / Managed Identity auth).')
 param apiIdentityClientId string
 
+@description('Principal ID (objectId) of the api user-assigned identity, for resource-scoped role assignments (Monitoring Reader on the container app).')
+param apiIdentityPrincipalId string
+
 @description('ACR login server the api image is pulled from.')
 param acrLoginServer string
 
@@ -162,6 +165,15 @@ param videoBlobContainer string = 'videos'
 
 @description('Azure AI Search endpoint (e.g. https://<svc>.search.windows.net). Empty unless a search service is provisioned; when set, emitted as AI4IA_SEARCH_ENDPOINT so the api can index/query via managed identity.')
 param searchEndpoint string = ''
+
+@description('ARM resource id of the Azure AI Search service for the admin Search resource panel (empty when search is not deployed).')
+param metricsSearchResourceId string = ''
+
+@description('ARM resource id of the Postgres flexible server for the admin Postgres resource panel (empty when Postgres is not deployed).')
+param metricsPostgresResourceId string = ''
+
+@description('ARM resource id of the Cosmos DB account for the admin Cosmos resource panel.')
+param metricsCosmosResourceId string = ''
 
 @description('Enable custom tools / bring-your-own MCP servers. Default OFF: the per-user MCP registry is never constructed and /api/agents/mcp-servers refuses (404). When on, users register remote MCP servers behind the SSRF guard.')
 param customToolsEnabled bool = false
@@ -430,6 +442,40 @@ var searchEnv = !empty(searchEndpoint) ? [
   }
 ] : []
 
+// Container-app id is computed (not read off apiApp.id) so it can be emitted as an
+// env value without a self-reference cycle on the apiApp resource. apiAppName is the
+// single source of truth for the resource name below.
+var apiAppName = 'ca-api-${environmentName}'
+var apiAppResourceId = resourceId('Microsoft.App/containerApps', apiAppName)
+
+// Admin dashboard resource-metric panels. The container-app and Cosmos ids always
+// resolve; search/postgres ids are only emitted when those resources are deployed
+// (empty -> the api leaves that env var unset and the panel stays 'unavailable').
+var resourceMetricsEnv = concat(
+  [
+    {
+      name: 'AI4IA_METRICS_CONTAINER_APP_RESOURCE_ID'
+      value: apiAppResourceId
+    }
+    {
+      name: 'AI4IA_METRICS_COSMOS_RESOURCE_ID'
+      value: metricsCosmosResourceId
+    }
+  ],
+  empty(metricsSearchResourceId) ? [] : [
+    {
+      name: 'AI4IA_METRICS_SEARCH_RESOURCE_ID'
+      value: metricsSearchResourceId
+    }
+  ],
+  empty(metricsPostgresResourceId) ? [] : [
+    {
+      name: 'AI4IA_METRICS_POSTGRES_RESOURCE_ID'
+      value: metricsPostgresResourceId
+    }
+  ]
+)
+
 // Custom tools / BYO MCP. Default OFF: nothing is emitted, so the api
 // keeps the feature dormant (404). When enabled, emit the flag and — for durable
 // connection secrets (12B) — the Key Vault URI; the api MI holds Secrets Officer
@@ -492,10 +538,10 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, webSearchEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv, adminEnv, realtimeEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, webSearchEnv, resourceMetricsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
-  name: 'ca-api-${environmentName}'
+  name: apiAppName
   location: location
   tags: union(tags, {
     'azd-service-name': 'api'
@@ -558,6 +604,20 @@ resource apiDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-previe
     metrics: [
       { category: 'AllMetrics', enabled: true }
     ]
+  }
+}
+
+// Monitoring Reader on the api's own container app so its managed identity can read
+// Azure Monitor metrics (HTTP 5xx, replica restarts, CPU/memory) for the admin
+// dashboard container-app resource panel.
+var monitoringReaderRoleId = '43d0d8ad-25c7-4714-9337-8ba259a9fe05' // Monitoring Reader
+resource apiAppMonitoringRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(apiApp.id, apiIdentityPrincipalId, monitoringReaderRoleId)
+  scope: apiApp
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', monitoringReaderRoleId)
+    principalId: apiIdentityPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 
