@@ -51,6 +51,7 @@ var searchName = toLower('srch-${workload}-${uniqueSuffix}')
 // indexers (needed to bootstrap an index from code).
 var searchIndexDataContributorRoleId = '8ebe5a00-799e-43f5-93ac-243d3dce84a7' // Search Index Data Contributor
 var searchServiceContributorRoleId = '7ca78c08-252a-4471-8644-bb5ff32d4ba0' // Search Service Contributor
+var monitoringReaderRoleId = '43d0d8ad-25c7-4714-9337-8ba259a9fe05' // Monitoring Reader
 
 resource search 'Microsoft.Search/searchServices@2023-11-01' = if (deploySearch) {
   name: searchName
@@ -93,6 +94,18 @@ resource apiSearchServiceRole 'Microsoft.Authorization/roleAssignments@2022-04-0
   }
 }
 
+// Monitoring Reader so the api can read Azure Monitor metrics (latency, throttled
+// queries) for the admin dashboard Search resource panel.
+resource apiSearchMonitoringRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deploySearch) {
+  name: guid(search.id, apiPrincipalId, monitoringReaderRoleId)
+  scope: search
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', monitoringReaderRoleId)
+    principalId: apiPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 // Stream the service operation logs (query/index admin activity) + all platform
 // metrics (latency, throttled/total queries) to the central Log Analytics
 // workspace. Only created with the service. Retention follows the workspace.
@@ -112,3 +125,4 @@ resource searchDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-pre
 
 output searchServiceName string = deploySearch ? searchName : ''
 output searchEndpoint string = deploySearch ? 'https://${searchName}.search.windows.net' : ''
+output searchId string = deploySearch ? search.id : ''

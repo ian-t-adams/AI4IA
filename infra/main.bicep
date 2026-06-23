@@ -473,6 +473,7 @@ module api 'modules/api.bicep' = {
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     apiIdentityResourceId: apiIdentity.resourceId
     apiIdentityClientId: apiIdentity.clientId
+    apiIdentityPrincipalId: apiIdentity.principalId
     acrLoginServer: platform.outputs.acrLoginServer
     modelGatewayUrl: gateway.outputs.modelGatewayUrl
     modelGatewayAuthMode: 'api_key'
@@ -533,6 +534,12 @@ module api 'modules/api.bicep' = {
     // env only when the service is provisioned (searchEnabled); the api reaches it
     // via managed identity (no keys). Empty string when off -> env var not set.
     searchEndpoint: search.outputs.searchEndpoint
+    // Admin resource-metric panels: ARM ids of the provisioned resources the api
+    // reads Azure Monitor metrics from (Monitoring Reader granted per-resource).
+    // Empty when a resource is not deployed -> that panel stays 'unavailable'.
+    metricsSearchResourceId: search.outputs.searchId
+    metricsPostgresResourceId: data.outputs.postgresId
+    metricsCosmosResourceId: data.outputs.cosmosId
     // Custom tools / BYO MCP. Default OFF. When on, the flag is emitted
     // and durable MCP connection secrets are stored in the shared Key Vault (the
     // api MI holds Secrets Officer on it); only a secret reference lands in Cosmos.

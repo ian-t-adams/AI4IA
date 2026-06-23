@@ -185,6 +185,7 @@ resource cosmosContainers 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/co
 
 // Cosmos data-plane RBAC: api identity gets the built-in Data Contributor role.
 var cosmosDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
+var monitoringReaderRoleId = '43d0d8ad-25c7-4714-9337-8ba259a9fe05' // Monitoring Reader
 
 resource cosmosDataRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = {
   parent: cosmos
@@ -193,6 +194,18 @@ resource cosmosDataRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignment
     roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/${cosmosDataContributorRoleId}'
     principalId: apiPrincipalId
     scope: cosmos.id
+  }
+}
+
+// Monitoring Reader so the api can read Azure Monitor metrics (RU consumption,
+// latency, availability) for the admin dashboard Cosmos resource panel.
+resource apiCosmosMonitoringRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(cosmos.id, apiPrincipalId, monitoringReaderRoleId)
+  scope: cosmos
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', monitoringReaderRoleId)
+    principalId: apiPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 
@@ -313,6 +326,18 @@ resource postgresDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-p
     metrics: [
       { category: 'AllMetrics', enabled: true }
     ]
+  }
+}
+
+// Monitoring Reader so the api can read Azure Monitor metrics (CPU/memory/storage/
+// connections) for the admin dashboard Postgres resource panel.
+resource apiPostgresMonitoringRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployPostgres) {
+  name: guid(postgres.id, apiPrincipalId, monitoringReaderRoleId)
+  scope: postgres
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', monitoringReaderRoleId)
+    principalId: apiPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 
@@ -542,5 +567,6 @@ output videoBlobContainerName string = videoBlobContainer
 // Conditional storage accounts return '' when not deployed; main.bicep filters
 // empty IDs before building the PE target array.
 output cosmosId string = cosmos.id
+output postgresId string = deployPostgres ? postgres.id : ''
 output documentStorageId string = deployDocumentStorage ? documentStorage.id : ''
 output imageStorageId string = deployMediaStorage ? imageStorage.id : ''
