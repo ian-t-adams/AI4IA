@@ -1,13 +1,13 @@
 // Baseline security response headers applied to every route.
 //
 // The Content-Security-Policy is NOT set here: it is now issued per-request by
-// `src/middleware.ts`, which mints a fresh nonce and ships a strict, nonce-based
+// `src/proxy.ts`, which mints a fresh nonce and ships a strict, nonce-based
 // `script-src` (plus the baseline base-uri / object-src / frame-ancestors /
 // form-action directives that previously lived here). A static header can't
 // carry a per-request nonce, and emitting CSP from both places would produce two
 // conflicting `Content-Security-Policy` headers. The static, request-independent
 // headers below still apply to *every* route (including /api and static assets,
-// which the CSP middleware intentionally skips).
+// which the CSP proxy intentionally skips).
 const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
