@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 // Custom 404. Beyond branding, this exists so the not-found route is rendered
-// dynamically: the nonce-based CSP (src/middleware.ts) is minted per request, so
+// dynamically: the nonce-based CSP (src/proxy.ts) is minted per request, so
 // a *statically* prerendered page would ship framework scripts without the
 // request's nonce and have them blocked by `script-src`. Forcing dynamic
 // rendering lets Next stamp the per-request nonce here too, keeping the page
