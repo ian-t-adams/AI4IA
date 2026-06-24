@@ -69,6 +69,10 @@ export interface UserAgentBucket {
   requests: number;
   totalTokens: number;
   erroredRequests: number;
+  // Admin-only directory enrichment: present going forward once the user signs
+  // in; null/absent -> the UI falls back to the short hash.
+  displayName?: string | null;
+  email?: string | null;
 }
 
 export interface DimensionBucket {
@@ -106,6 +110,10 @@ export interface AdminUserRow {
   costKnown: boolean;
   lastActiveAt?: string | null;
   entitlement?: EntitlementView | null;
+  // Admin-only directory enrichment: present going forward once the user signs
+  // in; null/absent -> the UI falls back to the short hash.
+  displayName?: string | null;
+  email?: string | null;
 }
 
 export interface AdminByModelReport {
@@ -342,11 +350,22 @@ export function entitlementLabel(ent: EntitlementView | null | undefined): strin
   return parts.length ? parts.join(", ") : "Limited";
 }
 
-// Shorten an opaque internal user id for display (keeps it copy-pasteable in a
+// Short, copy-pasteable internal user id for display (keeps the full id for the
 // title attribute, but readable in the table).
 export function shortUserId(userId: string): string {
   if (userId.length <= 12) return userId;
   return `${userId.slice(0, 8)}…${userId.slice(-4)}`;
+}
+
+// The label shown for a user: their captured display name when known, otherwise
+// the short hash. Pure so it can be unit-tested and reused by both admin tables;
+// the full hash stays available for a title/tooltip at the call site.
+export function userLabel(
+  displayName: string | null | undefined,
+  userId: string,
+): string {
+  const name = displayName?.trim();
+  return name ? name : shortUserId(userId);
 }
 
 // "" when there are no errors (so callers can treat it as falsy and skip the
@@ -362,6 +381,10 @@ export interface UserAgentGroup {
   totalRequests: number;
   totalTokens: number;
   erroredRequests: number;
+  // Directory enrichment carried up from the user's rows (same per user); null
+  // when unknown -> the UI shows the short hash.
+  displayName?: string | null;
+  email?: string | null;
 }
 
 // Collapse the flat user×agent cross-tab into per-user groups for a compact
@@ -378,9 +401,14 @@ export function groupUserAgents(rows: UserAgentBucket[]): UserAgentGroup[] {
         totalRequests: 0,
         totalTokens: 0,
         erroredRequests: 0,
+        displayName: row.displayName ?? null,
+        email: row.email ?? null,
       };
       byUser.set(row.userId, group);
     }
+    // Backfill name/email from whichever row first carries them (same per user).
+    if (!group.displayName && row.displayName) group.displayName = row.displayName;
+    if (!group.email && row.email) group.email = row.email;
     group.rows.push(row);
     group.totalRequests += row.requests;
     group.totalTokens += row.totalTokens;

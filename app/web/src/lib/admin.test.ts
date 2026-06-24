@@ -15,6 +15,7 @@ import {
   shortUserId,
   statusLabel,
   sumRequests,
+  userLabel,
   type EntitlementView,
   type UserAgentBucket,
 } from "./admin";
@@ -142,6 +143,20 @@ describe("shortUserId", () => {
   });
 });
 
+describe("userLabel", () => {
+  it("prefers a trimmed display name when present", () => {
+    expect(userLabel("Ada Lovelace", "bff17e95-af43-5ac4-bc00-c9bf624047c7")).toBe(
+      "Ada Lovelace",
+    );
+    expect(userLabel("  Grace Hopper  ", "x")).toBe("Grace Hopper");
+  });
+  it("falls back to the short hash when the name is absent or blank", () => {
+    expect(userLabel(null, "bff17e95-af43-5ac4-bc00-c9bf624047c7")).toBe("bff17e95…47c7");
+    expect(userLabel(undefined, "bff17e95-af43-5ac4-bc00-c9bf624047c7")).toBe("bff17e95…47c7");
+    expect(userLabel("   ", "bff17e95-af43-5ac4-bc00-c9bf624047c7")).toBe("bff17e95…47c7");
+  });
+});
+
 describe("errorLabel", () => {
   it("is empty for zero / null / negative so callers skip danger styling", () => {
     expect(errorLabel(0)).toBe("");
@@ -204,5 +219,20 @@ describe("groupUserAgents", () => {
 
   it("returns an empty list for no rows", () => {
     expect(groupUserAgents([])).toEqual([]);
+  });
+
+  it("carries the display name/email up to the group from its rows", () => {
+    const groups = groupUserAgents([
+      row({ userId: "alice", agent: "research", displayName: "Ada", email: "ada@x.test" }),
+      row({ userId: "alice", agent: "coder" }),
+      row({ userId: "bob", agent: "research" }),
+    ]);
+    const alice = groups.find((g) => g.userId === "alice")!;
+    expect(alice.displayName).toBe("Ada");
+    expect(alice.email).toBe("ada@x.test");
+    // Unknown user degrades to null -> the UI shows the short hash.
+    const bob = groups.find((g) => g.userId === "bob")!;
+    expect(bob.displayName ?? null).toBeNull();
+    expect(bob.email ?? null).toBeNull();
   });
 });

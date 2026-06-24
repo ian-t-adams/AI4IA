@@ -44,6 +44,7 @@ import {
   shortUserId,
   statusLabel,
   sumRequests,
+  userLabel,
 } from "@/lib/admin";
 
 const WINDOWS = [7, 30, 90];
@@ -158,6 +159,35 @@ function DayTrend({ items }: { items: DayUsageBucket[] }) {
   );
 }
 
+function UserCell({
+  displayName,
+  email,
+  userId,
+}: {
+  displayName?: string | null;
+  email?: string | null;
+  userId: string;
+}) {
+  const name = displayName?.trim();
+  // Full hash (and email) stay available on hover; the hash is the stable key.
+  const tooltip = email ? `${userId}\n${email}` : userId;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 1 }} title={tooltip}>
+      <span style={{ fontFamily: name ? "inherit" : "monospace" }}>
+        {userLabel(displayName, userId)}
+      </span>
+      {name ? (
+        <span style={{ fontFamily: "monospace", fontSize: "0.82em", color: "var(--fg-muted)" }}>
+          {shortUserId(userId)}
+        </span>
+      ) : null}
+      {email ? (
+        <span style={{ fontSize: "0.82em", color: "var(--fg-muted)" }}>{email}</span>
+      ) : null}
+    </div>
+  );
+}
+
 function TopUsers({ rows }: { rows: AdminUserRow[] }) {
   if (!rows.length) return <div style={muted}>No usage in this window.</div>;
   return (
@@ -174,8 +204,8 @@ function TopUsers({ rows }: { rows: AdminUserRow[] }) {
       <tbody>
         {rows.map((u) => (
           <tr key={u.userId} style={{ borderTop: "1px solid var(--border)" }}>
-            <td style={{ padding: "4px 8px", fontFamily: "monospace" }} title={u.userId}>
-              {shortUserId(u.userId)}
+            <td style={{ padding: "4px 8px" }}>
+              <UserCell displayName={u.displayName} email={u.email} userId={u.userId} />
             </td>
             <td style={{ padding: "4px 8px", textAlign: "right" }}>{formatTokens(u.totalTokens)}</td>
             <td style={{ padding: "4px 8px", textAlign: "right" }}>
@@ -242,8 +272,10 @@ function UserAgents({ rows }: { rows: UserAgentBucket[] }) {
             const errors = errorLabel(r.erroredRequests);
             return (
               <tr key={`${g.userId}:${r.agent}`} style={{ borderTop: "1px solid var(--border)" }}>
-                <td style={{ padding: "4px 8px", fontFamily: "monospace" }} title={g.userId}>
-                  {i === 0 ? shortUserId(g.userId) : ""}
+                <td style={{ padding: "4px 8px" }}>
+                  {i === 0 ? (
+                    <UserCell displayName={g.displayName} email={g.email} userId={g.userId} />
+                  ) : null}
                 </td>
                 <td style={{ padding: "4px 8px" }}>{r.agent}</td>
                 <td style={{ padding: "4px 8px", textAlign: "right" }}>{formatTokens(r.totalTokens)}</td>

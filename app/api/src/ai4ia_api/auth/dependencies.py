@@ -20,11 +20,22 @@ async def get_current_user(
         headers=dict(request.headers),
     )
     try:
-        return await provider.authenticate(credentials)
+        user = await provider.authenticate(credentials)
     except AuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+    # Best-effort: capture the token's display name/email into the admin-only
+    # user directory so the hashed userId can be resolved to a name later. Guarded
+    # (the service may be absent in tests), deduped + non-blocking inside capture(),
+    # and must NEVER raise into the request path.
+    directory = getattr(request.app.state, "user_directory", None)
+    if directory is not None:
+        try:
+            directory.capture(user)
+        except Exception:  # noqa: BLE001 - capture is strictly best-effort
+            pass
+    return user
 

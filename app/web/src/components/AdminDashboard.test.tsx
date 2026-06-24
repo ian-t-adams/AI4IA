@@ -146,6 +146,115 @@ describe("AdminDashboard new analytics panels", () => {
     expect(within(panel).getAllByText("alice-00…3333")).toHaveLength(1);
   });
 
+  it("shows the directory display name + email in Top users, keeping the hash", async () => {
+    vi.mocked(fetchByUser).mockResolvedValue({
+      sinceDays: 30,
+      fromTime: "",
+      toTime: "",
+      truncated: false,
+      scannedRecords: 2,
+      totalUsers: 2,
+      limit: 20,
+      offset: 0,
+      byUser: [
+        {
+          userId: "alice-0000-1111-2222-3333",
+          requests: 2,
+          erroredRequests: 0,
+          promptTokens: 10,
+          completionTokens: 5,
+          totalTokens: 15,
+          costMicroUsd: 0,
+          costKnown: true,
+          displayName: "Ada Lovelace",
+          email: "ada@example.com",
+        },
+        {
+          userId: "bob-0000-1111-2222-4444",
+          requests: 1,
+          erroredRequests: 0,
+          promptTokens: 1,
+          completionTokens: 1,
+          totalTokens: 2,
+          costMicroUsd: 0,
+          costKnown: true,
+          displayName: null,
+          email: null,
+        },
+      ],
+    });
+    render(<AdminDashboard />);
+    const panel = await panelByHeading("Top users");
+    // Known user: name is primary, email is shown, and the short hash is retained.
+    expect(await within(panel).findByText("Ada Lovelace")).toBeInTheDocument();
+    expect(within(panel).getByText("ada@example.com")).toBeInTheDocument();
+    expect(within(panel).getByText("alice-00…3333")).toBeInTheDocument();
+    // Unknown user degrades to just the short hash (no name/email line).
+    expect(within(panel).getByText("bob-0000…4444")).toBeInTheDocument();
+  });
+
+  it("falls back to the short hash in Top users when no name is known", async () => {
+    vi.mocked(fetchByUser).mockResolvedValue({
+      sinceDays: 30,
+      fromTime: "",
+      toTime: "",
+      truncated: false,
+      scannedRecords: 1,
+      totalUsers: 1,
+      limit: 20,
+      offset: 0,
+      byUser: [
+        {
+          userId: "carol-0000-1111-2222-5555",
+          requests: 1,
+          erroredRequests: 0,
+          promptTokens: 1,
+          completionTokens: 1,
+          totalTokens: 2,
+          costMicroUsd: 0,
+          costKnown: true,
+        },
+      ],
+    });
+    render(<AdminDashboard />);
+    const panel = await panelByHeading("Top users");
+    expect(await within(panel).findByText("carol-00…5555")).toBeInTheDocument();
+  });
+
+  it("shows the display name in the user×agent panel when known", async () => {
+    vi.mocked(fetchUserAgents).mockResolvedValue({
+      sinceDays: 30,
+      truncated: false,
+      scannedRecords: 3,
+      userAgents: [
+        {
+          userId: "alice-0000-1111-2222-3333",
+          agent: "research",
+          requests: 2,
+          totalTokens: 30,
+          erroredRequests: 1,
+          displayName: "Ada Lovelace",
+          email: "ada@example.com",
+        },
+        {
+          userId: "alice-0000-1111-2222-3333",
+          agent: "coder",
+          requests: 1,
+          totalTokens: 5,
+          erroredRequests: 0,
+          displayName: "Ada Lovelace",
+          email: "ada@example.com",
+        },
+      ],
+    });
+    render(<AdminDashboard />);
+    const panel = await panelByHeading("Who uses which agents");
+    // The name renders once for the grouped user, with the hash retained beneath.
+    expect(await within(panel).findByText("Ada Lovelace")).toBeInTheDocument();
+    expect(within(panel).getByText("ada@example.com")).toBeInTheDocument();
+    expect(within(panel).getAllByText("alice-00…3333")).toHaveLength(1);
+  });
+
   it("renders the distribution panels with humanized labels, keys and shares", async () => {
     render(<AdminDashboard />);
     const status = await panelByHeading("Request status mix");
