@@ -88,10 +88,31 @@ If the controls are hidden, the feature is disabled for that environment.
 
 ## Admin views
 
-Admins can open usage and resource dashboards. The API enforces admin access; the
-web app only hides the navigation for non-admin users. Resource panels degrade to
-unavailable when an Azure resource id, SDK dependency, or RBAC permission is
-missing.
+Admins can open usage, analytics, and resource dashboards. The API enforces admin
+access on every endpoint; the web app only hides the navigation for non-admin users.
+
+Usage and analytics panels are read-only over a selectable day window (default 30,
+maximum 90):
+
+- **Tokens by model** and **Tokens by day** — token consumption broken down by model
+  and over time.
+- **Top users** — highest-volume users by requests, tokens, and estimated cost.
+- **Agents in use** — per-agent request counts, with errored and cancelled requests
+  called out so failing agents are easy to spot.
+- **Who uses which agents** — a user-by-agent cross-tab.
+- **Requests by region**, **Requests by data zone**, and **Requests by deployment** —
+  where traffic actually lands across the catalog.
+- **Request status mix** — completed versus cancelled versus errored requests.
+
+Each analytics panel is computed from a single bounded scan of usage records and
+flags when a window was truncated, so large tenants stay responsive. User identities
+are shown as stable internal identifiers; see the troubleshooting note below.
+
+Platform resources shows live Azure Monitor metrics for the deployment's Container
+App (replicas, restarts), Cosmos DB, Azure AI Search, and PostgreSQL (CPU, storage,
+connections). Each tile degrades to unavailable when its Azure resource id, the
+`azure-monitor-query` SDK, or the API identity's Monitoring Reader permission is
+missing; a `—` cell means no data for that metric, not an error.
 
 ## Data boundaries
 
