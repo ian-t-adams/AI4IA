@@ -19,6 +19,7 @@ Design:
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel, Field
@@ -34,6 +35,8 @@ MAX_ADMIN_RECORDS = 50_000
 # Default page size for the by-user (top spenders) view.
 DEFAULT_USER_PAGE_SIZE = 20
 MAX_USER_PAGE_SIZE = 200
+# Placeholder dimension key for records missing an optional dimension value.
+UNKNOWN_DIMENSION = "(unknown)"
 
 
 def _now() -> datetime:
@@ -92,9 +95,41 @@ class UserUsageBucket(BaseModel):
 class AgentUsageBucket(BaseModel):
     agent: str
     requests: int = 0
+    erroredRequests: int = 0
+    cancelledRequests: int = 0
     totalTokens: int = 0
     costMicroUsd: int = 0
     users: int = 0  # distinct users who invoked this agent
+
+
+class UserAgentBucket(BaseModel):
+    """One (user, agent) cell of the user×agent cross-tab.
+
+    ``userId`` is the opaque ledger subject hash (the same id used everywhere in
+    the admin surface); the web client renders it via ``shortUserId``. A later
+    spike will translate it to a display name.
+    """
+
+    userId: str
+    agent: str
+    requests: int = 0
+    totalTokens: int = 0
+    erroredRequests: int = 0
+
+
+class DimensionBucket(BaseModel):
+    """A single value of a categorical dimension (region/dataZone/deployment/status).
+
+    Generic so one rollup helper can serve every distribution panel. ``key`` is the
+    dimension value (with ``UNKNOWN_DIMENSION`` standing in for a missing one).
+    """
+
+    key: str
+    requests: int = 0
+    erroredRequests: int = 0
+    totalTokens: int = 0
+    costMicroUsd: int = 0
+    costKnown: bool = True
 
 
 class AdminByModelReport(AdminUsageWindow):
@@ -114,6 +149,23 @@ class AdminByUserReport(AdminUsageWindow):
 
 class AdminAgentsReport(AdminUsageWindow):
     agents: list[AgentUsageBucket] = Field(default_factory=list)
+
+
+class AdminUserAgentsReport(AdminUsageWindow):
+    userAgents: list[UserAgentBucket] = Field(default_factory=list)
+
+
+class AdminDistributionsReport(AdminUsageWindow):
+    """Distributions of the windowed ledger across categorical dimensions.
+
+    All four rollups come from a single bounded scan (one RU-bounded read, four
+    panels) — mirroring how ``aggregate_summary`` derives many fields from one pass.
+    """
+
+    byRegion: list[DimensionBucket] = Field(default_factory=list)
+    byDataZone: list[DimensionBucket] = Field(default_factory=list)
+    byDeployment: list[DimensionBucket] = Field(default_factory=list)
+    byStatus: list[DimensionBucket] = Field(default_factory=list)
 
 
 # ---- pure aggregation over a record list ----
@@ -230,6 +282,10 @@ def aggregate_agents(records: list[UsageRecord]) -> list[AgentUsageBucket]:
             by_agent[rec.agent] = bucket
             agent_users[rec.agent] = set()
         bucket.requests += 1
+        if rec.status == "error":
+            bucket.erroredRequests += 1
+        elif rec.status == "cancelled":
+            bucket.cancelledRequests += 1
         if rec.usageKnown:
             bucket.totalTokens += rec.totalTokens or 0
         if rec.costKnown and rec.estCostMicroUsd is not None:
@@ -238,6 +294,81 @@ def aggregate_agents(records: list[UsageRecord]) -> list[AgentUsageBucket]:
     for agent, bucket in by_agent.items():
         bucket.users = len(agent_users[agent])
     return sorted(by_agent.values(), key=lambda b: b.totalTokens, reverse=True)
+
+
+def aggregate_user_agents(records: list[UsageRecord]) -> list[UserAgentBucket]:
+    """User×agent cross-tab: one row per (user, agent) that invoked an agent.
+
+    Records with no ``agent`` are skipped (a plain chat turn is not an agent
+    invocation). Heaviest cells first (tokens, then request volume as a tiebreak).
+    """
+    by_key: dict[tuple[str, str], UserAgentBucket] = {}
+    for rec in records:
+        if not rec.agent:
+            continue
+        key = (rec.userId, rec.agent)
+        bucket = by_key.get(key)
+        if bucket is None:
+            bucket = UserAgentBucket(userId=rec.userId, agent=rec.agent)
+            by_key[key] = bucket
+        bucket.requests += 1
+        if rec.status == "error":
+            bucket.erroredRequests += 1
+        if rec.usageKnown:
+            bucket.totalTokens += rec.totalTokens or 0
+    return sorted(
+        by_key.values(), key=lambda b: (b.totalTokens, b.requests), reverse=True
+    )
+
+
+def aggregate_dimension(
+    records: list[UsageRecord],
+    key_of: Callable[[UsageRecord], str | None],
+) -> list[DimensionBucket]:
+    """Generic categorical rollup keyed by ``key_of(record)``.
+
+    A ``None``/empty key folds into :data:`UNKNOWN_DIMENSION` so a missing optional
+    dimension (e.g. ``region``) is surfaced rather than silently dropped. Honours
+    the same usage/cost honesty model as the other rollups (tokens only for
+    ``usageKnown`` turns; cost only for ``costKnown`` turns). Sorted by request
+    volume desc (tokens as a tiebreak).
+    """
+    by_key: dict[str, DimensionBucket] = {}
+    for rec in records:
+        key = key_of(rec) or UNKNOWN_DIMENSION
+        bucket = by_key.get(key)
+        if bucket is None:
+            bucket = DimensionBucket(key=key)
+            by_key[key] = bucket
+        bucket.requests += 1
+        if rec.status == "error":
+            bucket.erroredRequests += 1
+        if rec.usageKnown:
+            bucket.totalTokens += rec.totalTokens or 0
+        if rec.costKnown and rec.estCostMicroUsd is not None:
+            bucket.costMicroUsd += rec.estCostMicroUsd
+        elif rec.billable:
+            bucket.costKnown = False
+    return sorted(
+        by_key.values(), key=lambda b: (b.requests, b.totalTokens), reverse=True
+    )
+
+
+def aggregate_by_region(records: list[UsageRecord]) -> list[DimensionBucket]:
+    return aggregate_dimension(records, lambda r: r.region)
+
+
+def aggregate_by_data_zone(records: list[UsageRecord]) -> list[DimensionBucket]:
+    return aggregate_dimension(records, lambda r: r.dataZone)
+
+
+def aggregate_by_deployment(records: list[UsageRecord]) -> list[DimensionBucket]:
+    return aggregate_dimension(records, lambda r: r.deployment)
+
+
+def aggregate_by_status(records: list[UsageRecord]) -> list[DimensionBucket]:
+    """Status mix: completed vs cancelled vs errored across the window."""
+    return aggregate_dimension(records, lambda r: r.status)
 
 
 # ---- bounded fetch + windowing ----
@@ -322,5 +453,22 @@ class AdminUsageService:
         records, days, since, now, truncated = await self._fetch(days or DEFAULT_ADMIN_DAYS)
         return AdminAgentsReport(
             agents=aggregate_agents(records),
+            **self._meta(days, since, now, records, truncated),
+        )
+
+    async def user_agents(self, *, days: int | None = None) -> AdminUserAgentsReport:
+        records, days, since, now, truncated = await self._fetch(days or DEFAULT_ADMIN_DAYS)
+        return AdminUserAgentsReport(
+            userAgents=aggregate_user_agents(records),
+            **self._meta(days, since, now, records, truncated),
+        )
+
+    async def distributions(self, *, days: int | None = None) -> AdminDistributionsReport:
+        records, days, since, now, truncated = await self._fetch(days or DEFAULT_ADMIN_DAYS)
+        return AdminDistributionsReport(
+            byRegion=aggregate_by_region(records),
+            byDataZone=aggregate_by_data_zone(records),
+            byDeployment=aggregate_by_deployment(records),
+            byStatus=aggregate_by_status(records),
             **self._meta(days, since, now, records, truncated),
         )

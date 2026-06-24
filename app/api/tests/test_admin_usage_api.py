@@ -26,6 +26,8 @@ GATED_ROUTES = [
     "/api/admin/usage/by-model",
     "/api/admin/usage/by-day",
     "/api/admin/usage/agents",
+    "/api/admin/usage/user-agents",
+    "/api/admin/usage/distributions",
     "/api/admin/usage/by-user",
     "/api/admin/metrics/resources",
 ]
@@ -160,6 +162,71 @@ def test_by_model_and_by_user_and_agents(client):
 
     agents = client.get("/api/admin/usage/agents", headers=ADMIN).json()
     assert agents["agents"][0]["agent"] == "research"
+
+
+def test_agents_surface_error_and_cancelled_counts(client):
+    _seed(
+        client,
+        [
+            _rec("alice", agent="research", status="complete", totalTokens=10),
+            _rec("bob", agent="research", status="error", billable=False, totalTokens=0),
+            _rec("bob", agent="research", status="cancelled", billable=False, totalTokens=0),
+        ],
+    )
+    agents = client.get("/api/admin/usage/agents", headers=ADMIN).json()
+    research = next(a for a in agents["agents"] if a["agent"] == "research")
+    assert research["requests"] == 3
+    assert research["erroredRequests"] == 1
+    assert research["cancelledRequests"] == 1
+
+
+def test_user_agents_cross_tab(client):
+    _seed(
+        client,
+        [
+            _rec("alice", agent="research", totalTokens=10),
+            _rec("alice", agent="research", status="error", billable=False, totalTokens=0),
+            _rec("bob", agent="coder", totalTokens=100),
+            _rec("bob", totalTokens=999),  # plain turn -> excluded
+        ],
+    )
+    body = client.get("/api/admin/usage/user-agents", headers=ADMIN).json()
+    cells = {(c["userId"], c["agent"]): c for c in body["userAgents"]}
+    assert set(cells) == {("alice", "research"), ("bob", "coder")}
+    assert cells[("alice", "research")]["requests"] == 2
+    assert cells[("alice", "research")]["erroredRequests"] == 1
+    # Heaviest cell first (bob/coder, 100 tokens).
+    assert (body["userAgents"][0]["userId"], body["userAgents"][0]["agent"]) == ("bob", "coder")
+
+
+def test_distributions_rollups(client):
+    _seed(
+        client,
+        [
+            _rec("alice", region="eastus", dataZone="us", deployment="d1", status="complete", totalTokens=10),
+            _rec("bob", region="eastus", dataZone="us", deployment="d2", status="error", billable=False, totalTokens=0),
+            _rec("carol", region="westus", dataZone="eu", deployment="d1", status="cancelled", billable=False, totalTokens=0),
+        ],
+    )
+    body = client.get("/api/admin/usage/distributions", headers=ADMIN).json()
+    assert {b["key"]: b["requests"] for b in body["byRegion"]} == {"eastus": 2, "westus": 1}
+    assert {b["key"]: b["requests"] for b in body["byDataZone"]} == {"us": 2, "eu": 1}
+    assert {b["key"]: b["requests"] for b in body["byDeployment"]} == {"d1": 2, "d2": 1}
+    assert {b["key"]: b["requests"] for b in body["byStatus"]} == {
+        "complete": 1,
+        "error": 1,
+        "cancelled": 1,
+    }
+    region_eastus = next(b for b in body["byRegion"] if b["key"] == "eastus")
+    assert region_eastus["erroredRequests"] == 1
+
+
+def test_distributions_honours_window(client):
+    body = client.get("/api/admin/usage/distributions?days=7", headers=ADMIN).json()
+    assert body["sinceDays"] == 7
+    # Window is clamped to MAX_ADMIN_DAYS.
+    over = client.get("/api/admin/usage/distributions?days=9999", headers=ADMIN)
+    assert over.status_code == 422
 
 
 def test_by_user_joins_entitlement_override(client):

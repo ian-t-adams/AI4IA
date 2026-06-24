@@ -17,24 +17,33 @@ import {
   type AdminUserRow,
   type AgentUsageBucket,
   type DayUsageBucket,
+  type DimensionBucket,
   type ModelUsageBucket,
   type ResourcePanel,
+  type UserAgentBucket,
   barScale,
   canShowAdmin,
+  dimensionShare,
   entitlementLabel,
+  errorLabel,
   fetchAgents,
   fetchByDay,
   fetchByModel,
   fetchByUser,
+  fetchDistributions,
   fetchResources,
   fetchSummary,
+  fetchUserAgents,
   fetchWhoAmI,
   formatCompact,
   formatPercent,
   formatTokens,
   formatUsd,
+  groupUserAgents,
   linePoints,
   shortUserId,
+  statusLabel,
+  sumRequests,
 } from "@/lib/admin";
 
 const WINDOWS = [7, 30, 90];
@@ -61,6 +70,11 @@ interface DashboardData {
   byDay: DayUsageBucket[];
   byUser: AdminUserRow[];
   agents: AgentUsageBucket[];
+  userAgents: UserAgentBucket[];
+  byRegion: DimensionBucket[];
+  byDataZone: DimensionBucket[];
+  byDeployment: DimensionBucket[];
+  byStatus: DimensionBucket[];
   resources: ResourcePanel[];
   truncated: boolean;
 }
@@ -71,6 +85,11 @@ const EMPTY: DashboardData = {
   byDay: [],
   byUser: [],
   agents: [],
+  userAgents: [],
+  byRegion: [],
+  byDataZone: [],
+  byDeployment: [],
+  byStatus: [],
   resources: [],
   truncated: false,
 };
@@ -185,14 +204,107 @@ function Agents({ items }: { items: AgentUsageBucket[] }) {
   if (!items.length) return <div style={muted}>No agent activity in this window.</div>;
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-      {items.map((a) => (
-        <div key={a.agent} style={{ ...card, padding: "8px 12px" }}>
-          <div style={{ fontWeight: 600 }}>{a.agent}</div>
-          <div style={muted}>
-            {formatTokens(a.totalTokens)} tok · {a.requests} reqs · {a.users} users
+      {items.map((a) => {
+        const errors = errorLabel(a.erroredRequests);
+        return (
+          <div key={a.agent} style={{ ...card, padding: "8px 12px" }}>
+            <div style={{ fontWeight: 600 }}>{a.agent}</div>
+            <div style={muted}>
+              {formatTokens(a.totalTokens)} tok · {a.requests} reqs · {a.users} users
+              {errors ? (
+                <span style={{ color: "var(--danger)" }}> · {errors}</span>
+              ) : null}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
+    </div>
+  );
+}
+
+function UserAgents({ rows }: { rows: UserAgentBucket[] }) {
+  const groups = groupUserAgents(rows);
+  if (!groups.length) return <div style={muted}>No agent activity in this window.</div>;
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85em" }}>
+      <thead>
+        <tr style={{ textAlign: "left", color: "var(--fg-muted)" }}>
+          <th style={{ padding: "4px 8px" }}>User</th>
+          <th style={{ padding: "4px 8px" }}>Agent</th>
+          <th style={{ padding: "4px 8px", textAlign: "right" }}>Tokens</th>
+          <th style={{ padding: "4px 8px", textAlign: "right" }}>Reqs</th>
+          <th style={{ padding: "4px 8px", textAlign: "right" }}>Errors</th>
+        </tr>
+      </thead>
+      <tbody>
+        {groups.map((g) =>
+          g.rows.map((r, i) => {
+            const errors = errorLabel(r.erroredRequests);
+            return (
+              <tr key={`${g.userId}:${r.agent}`} style={{ borderTop: "1px solid var(--border)" }}>
+                <td style={{ padding: "4px 8px", fontFamily: "monospace" }} title={g.userId}>
+                  {i === 0 ? shortUserId(g.userId) : ""}
+                </td>
+                <td style={{ padding: "4px 8px" }}>{r.agent}</td>
+                <td style={{ padding: "4px 8px", textAlign: "right" }}>{formatTokens(r.totalTokens)}</td>
+                <td style={{ padding: "4px 8px", textAlign: "right" }}>{r.requests}</td>
+                <td
+                  style={{
+                    padding: "4px 8px",
+                    textAlign: "right",
+                    color: errors ? "var(--danger)" : "var(--fg-muted)",
+                  }}
+                >
+                  {r.erroredRequests || "—"}
+                </td>
+              </tr>
+            );
+          }),
+        )}
+      </tbody>
+    </table>
+  );
+}
+
+function DimBars({ items, emptyLabel, labelOf }: {
+  items: DimensionBucket[];
+  emptyLabel: string;
+  labelOf?: (key: string) => string;
+}) {
+  if (!items.length) return <div style={muted}>{emptyLabel}</div>;
+  const total = sumRequests(items);
+  const max = Math.max(...items.map((d) => d.requests), 1);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {items.slice(0, 8).map((d) => {
+        const label = labelOf ? labelOf(d.key) : d.key;
+        const errors = errorLabel(d.erroredRequests);
+        return (
+          <div key={d.key} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div
+              style={{ width: 140, fontSize: "0.8em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              title={label}
+            >
+              {label}
+            </div>
+            <div style={{ flex: 1, background: "var(--bg)", borderRadius: 4, height: 18 }}>
+              <div
+                style={{
+                  width: `${barScale(d.requests, max, 100)}%`,
+                  background: "var(--accent)",
+                  height: "100%",
+                  borderRadius: 4,
+                  minWidth: d.requests > 0 ? 2 : 0,
+                }}
+              />
+            </div>
+            <div style={{ width: 110, textAlign: "right", fontSize: "0.8em" }}>
+              {d.requests} · {formatPercent(dimensionShare(d.requests, total))}
+              {errors ? <span style={{ color: "var(--danger)" }}> · {errors}</span> : null}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -250,14 +362,17 @@ export function AdminDashboard() {
   const load = useCallback(async (window: number) => {
     setLoading(true);
     setError(null);
-    const [summary, byModel, byDay, byUser, agents, resources] = await Promise.allSettled([
-      fetchSummary(window),
-      fetchByModel(window),
-      fetchByDay(window),
-      fetchByUser(window, 20, 0),
-      fetchAgents(window),
-      fetchResources(),
-    ]);
+    const [summary, byModel, byDay, byUser, agents, userAgents, distributions, resources] =
+      await Promise.allSettled([
+        fetchSummary(window),
+        fetchByModel(window),
+        fetchByDay(window),
+        fetchByUser(window, 20, 0),
+        fetchAgents(window),
+        fetchUserAgents(window),
+        fetchDistributions(window),
+        fetchResources(),
+      ]);
     const next: DashboardData = { ...EMPTY };
     if (summary.status === "fulfilled") next.summary = summary.value;
     if (byModel.status === "fulfilled") next.byModel = byModel.value.byModel;
@@ -267,6 +382,14 @@ export function AdminDashboard() {
       next.truncated = next.truncated || byUser.value.truncated;
     }
     if (agents.status === "fulfilled") next.agents = agents.value.agents;
+    if (userAgents.status === "fulfilled") next.userAgents = userAgents.value.userAgents;
+    if (distributions.status === "fulfilled") {
+      next.byRegion = distributions.value.byRegion;
+      next.byDataZone = distributions.value.byDataZone;
+      next.byDeployment = distributions.value.byDeployment;
+      next.byStatus = distributions.value.byStatus;
+      next.truncated = next.truncated || distributions.value.truncated;
+    }
     if (resources.status === "fulfilled") next.resources = resources.value.panels;
     if (summary.status === "fulfilled") next.truncated = next.truncated || summary.value.truncated;
     if (summary.status === "rejected") {
@@ -392,6 +515,31 @@ export function AdminDashboard() {
         <section style={card}>
           <h2 style={sectionTitle}>Agents in use</h2>
           <Agents items={data.agents} />
+        </section>
+
+        <section style={card}>
+          <h2 style={sectionTitle}>Who uses which agents</h2>
+          <UserAgents rows={data.userAgents} />
+        </section>
+
+        <section style={card}>
+          <h2 style={sectionTitle}>Requests by region</h2>
+          <DimBars items={data.byRegion} emptyLabel="No region data in this window." />
+        </section>
+
+        <section style={card}>
+          <h2 style={sectionTitle}>Requests by data zone</h2>
+          <DimBars items={data.byDataZone} emptyLabel="No data-zone data in this window." />
+        </section>
+
+        <section style={card}>
+          <h2 style={sectionTitle}>Requests by deployment</h2>
+          <DimBars items={data.byDeployment} emptyLabel="No deployment data in this window." />
+        </section>
+
+        <section style={card}>
+          <h2 style={sectionTitle}>Request status mix</h2>
+          <DimBars items={data.byStatus} emptyLabel="No requests in this window." labelOf={statusLabel} />
         </section>
 
         <section style={card}>

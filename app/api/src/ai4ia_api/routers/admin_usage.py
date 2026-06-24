@@ -31,8 +31,10 @@ from ..usage.aggregate import (
     MAX_ADMIN_DAYS,
     AdminByDayReport,
     AdminByModelReport,
+    AdminDistributionsReport,
     AdminUsageService,
     AdminUsageSummary,
+    AdminUserAgentsReport,
     UserUsageBucket,
 )
 from .entitlements import EntitlementView
@@ -126,6 +128,24 @@ async def usage_agents(
     _admin: AuthenticatedUser = Depends(require_admin),
 ):
     return await _service(request).agents(days=days)
+
+
+@router.get("/usage/user-agents", response_model=AdminUserAgentsReport)
+async def usage_user_agents(
+    request: Request,
+    days: int = _DAYS,
+    _admin: AuthenticatedUser = Depends(require_admin),
+) -> AdminUserAgentsReport:
+    return await _service(request).user_agents(days=days)
+
+
+@router.get("/usage/distributions", response_model=AdminDistributionsReport)
+async def usage_distributions(
+    request: Request,
+    days: int = _DAYS,
+    _admin: AuthenticatedUser = Depends(require_admin),
+) -> AdminDistributionsReport:
+    return await _service(request).distributions(days=days)
 
 
 @router.get("/usage/by-user", response_model=AdminByUserResponse)

@@ -56,9 +56,28 @@ export interface DayUsageBucket {
 export interface AgentUsageBucket {
   agent: string;
   requests: number;
+  erroredRequests: number;
+  cancelledRequests: number;
   totalTokens: number;
   costMicroUsd: number;
   users: number;
+}
+
+export interface UserAgentBucket {
+  userId: string;
+  agent: string;
+  requests: number;
+  totalTokens: number;
+  erroredRequests: number;
+}
+
+export interface DimensionBucket {
+  key: string;
+  requests: number;
+  erroredRequests: number;
+  totalTokens: number;
+  costMicroUsd: number;
+  costKnown: boolean;
 }
 
 export interface EntitlementView {
@@ -108,6 +127,23 @@ export interface AdminAgentsReport {
   truncated: boolean;
   scannedRecords: number;
   agents: AgentUsageBucket[];
+}
+
+export interface AdminUserAgentsReport {
+  sinceDays: number;
+  truncated: boolean;
+  scannedRecords: number;
+  userAgents: UserAgentBucket[];
+}
+
+export interface AdminDistributionsReport {
+  sinceDays: number;
+  truncated: boolean;
+  scannedRecords: number;
+  byRegion: DimensionBucket[];
+  byDataZone: DimensionBucket[];
+  byDeployment: DimensionBucket[];
+  byStatus: DimensionBucket[];
 }
 
 export interface AdminByUserResponse {
@@ -183,6 +219,14 @@ export function fetchByDay(days: number): Promise<AdminByDayReport> {
 
 export function fetchAgents(days: number): Promise<AdminAgentsReport> {
   return getJson<AdminAgentsReport>(`/api/admin/usage/agents?days=${days}`);
+}
+
+export function fetchUserAgents(days: number): Promise<AdminUserAgentsReport> {
+  return getJson<AdminUserAgentsReport>(`/api/admin/usage/user-agents?days=${days}`);
+}
+
+export function fetchDistributions(days: number): Promise<AdminDistributionsReport> {
+  return getJson<AdminDistributionsReport>(`/api/admin/usage/distributions?days=${days}`);
 }
 
 export function fetchByUser(
@@ -303,4 +347,74 @@ export function entitlementLabel(ent: EntitlementView | null | undefined): strin
 export function shortUserId(userId: string): string {
   if (userId.length <= 12) return userId;
   return `${userId.slice(0, 8)}…${userId.slice(-4)}`;
+}
+
+// "" when there are no errors (so callers can treat it as falsy and skip the
+// danger styling), else a compact "N error(s)" label.
+export function errorLabel(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n) || n <= 0) return "";
+  return `${formatCompact(n)} ${n === 1 ? "error" : "errors"}`;
+}
+
+export interface UserAgentGroup {
+  userId: string;
+  rows: UserAgentBucket[];
+  totalRequests: number;
+  totalTokens: number;
+  erroredRequests: number;
+}
+
+// Collapse the flat user×agent cross-tab into per-user groups for a compact
+// grouped table. Users are ordered by total tokens desc (request volume as a
+// tiebreak); each user's agent rows are ordered the same way.
+export function groupUserAgents(rows: UserAgentBucket[]): UserAgentGroup[] {
+  const byUser = new Map<string, UserAgentGroup>();
+  for (const row of rows) {
+    let group = byUser.get(row.userId);
+    if (!group) {
+      group = {
+        userId: row.userId,
+        rows: [],
+        totalRequests: 0,
+        totalTokens: 0,
+        erroredRequests: 0,
+      };
+      byUser.set(row.userId, group);
+    }
+    group.rows.push(row);
+    group.totalRequests += row.requests;
+    group.totalTokens += row.totalTokens;
+    group.erroredRequests += row.erroredRequests;
+  }
+  const groups = [...byUser.values()];
+  for (const group of groups) {
+    group.rows.sort((a, b) => b.totalTokens - a.totalTokens || b.requests - a.requests);
+  }
+  groups.sort((a, b) => b.totalTokens - a.totalTokens || b.totalRequests - a.totalRequests);
+  return groups;
+}
+
+// Human label for a raw record status key (the API emits the raw enum values).
+export function statusLabel(key: string): string {
+  switch (key) {
+    case "complete":
+      return "Completed";
+    case "cancelled":
+      return "Cancelled";
+    case "error":
+      return "Errored";
+    default:
+      return key;
+  }
+}
+
+// Sum the request counts of a set of dimension buckets (panel total / bar max).
+export function sumRequests(buckets: { requests: number }[]): number {
+  return buckets.reduce((acc, b) => acc + (b.requests || 0), 0);
+}
+
+// A bucket's share of the dimension total, as a rate in [0,1] for formatPercent.
+export function dimensionShare(value: number, total: number): number {
+  if (!total || total <= 0 || !Number.isFinite(value) || value <= 0) return 0;
+  return value / total;
 }
