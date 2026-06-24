@@ -84,8 +84,10 @@ dependencies = [
     # read via the api managed identity (RBAC: Monitoring Reader). Imported lazily
     # (only when a resource id is configured and a panel is requested) so the
     # app/tests boot without it wired and unconfigured panels degrade to
-    # "unavailable"; unit tests inject a fake querier.
-    "azure-monitor-query>=1.2",
+    # "unavailable"; unit tests inject a fake querier. Capped <2 because
+    # azure-monitor-query 2.0 removed MetricsQueryClient (the class
+    # metrics/azure_monitor.py imports); 1.4.1 is the last release that ships it.
+    "azure-monitor-query>=1.2,<2",
     # Azure Monitor OpenTelemetry distro: exports request/dependency/exception
     # traces, metrics, and custom usage events to Application Insights. Initialized
     # ONCE at startup (logging_setup.configure_telemetry)
