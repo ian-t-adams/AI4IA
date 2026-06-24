@@ -89,6 +89,9 @@
     "voiceLiveToolsEnabled": {
       "value": true
     },
+    "autoSummarizationEnabled": {
+      "value": true
+    },
     "customToolsEnabled": {
       "value": true
     },

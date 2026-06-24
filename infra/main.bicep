@@ -72,6 +72,9 @@ param realtimeAllowedOrigins string = ''
 @description('Enable governed tool calling inside a live voice session (calculator, current time). Inert unless voiceLiveEnabled is also true. Default OFF in bicep (matches the image/video feature pattern); set TRUE in main.parameters.json so enabling Voice Live in the live env gives the assistant tools.')
 param voiceLiveToolsEnabled bool = false
 
+@description('Enable automatic context summarization (auto-fold) on the API. Default OFF in bicep (no behavior change: the manual /summarize command still works, but the auto-fold path stays dormant and the default chat path is byte-for-byte unchanged). Set TRUE in main.parameters.json to enable it in the live env. No additional infra is required.')
+param autoSummarizationEnabled bool = false
+
 @description('Enable the per-user document library and multimodal understanding. Default OFF: the /api/library API refuses (404) and nothing is constructed, so there is no behavior change.')
 param documentUnderstandingEnabled bool = false
 
@@ -501,6 +504,10 @@ module api 'modules/api.bicep' = {
     realtimeEnabled: voiceLiveEnabled
     realtimeAllowedOrigins: realtimeAllowedOrigins
     realtimeToolsEnabled: voiceLiveToolsEnabled
+    // Auto-summarization (context auto-fold). Default OFF; when on, the api folds
+    // older turns into the session's running summary once the transcript exceeds
+    // the model-derived threshold. No additional infra is required.
+    autoSummarizationEnabled: autoSummarizationEnabled
     // Document library. Default OFF; the /api/library API refuses (404).
     documentUnderstandingEnabled: documentUnderstandingEnabled
     // Document ingest: the blob account/container the data module
