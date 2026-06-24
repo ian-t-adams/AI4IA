@@ -153,6 +153,12 @@ var containers = [
     partitionKey: '/userId'
   }
   {
+    // Admin-only directory mapping the hashed internal userId -> display name +
+    // email, captured from token claims going forward (no historical backfill).
+    name: 'userDirectory'
+    partitionKey: '/userId'
+  }
+  {
     name: 'documents'
     partitionKey: '/sessionId'
   }

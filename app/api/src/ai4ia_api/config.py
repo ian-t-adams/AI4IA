@@ -205,6 +205,16 @@ class Settings(BaseSettings):
     default_tokens_per_month: int | None = None
     default_cost_per_month_micro_usd: int | None = None
 
+    # --- Admin user directory (PII: name/email, admin plane only) ---
+    # When true, the display name + email already on the Entra/dev token are
+    # captured (going forward, deduped) into an admin-only Cosmos ``userDirectory``
+    # keyed by the hashed internal userId, and the admin panels resolve that hash
+    # back to a name. Gates BOTH capture and enrichment. Best-effort throughout: a
+    # directory failure never breaks a chat turn or an admin read. The hashed
+    # userId is irreversible, so names only ever populate for users who sign in
+    # after this ships (no historical backfill).
+    user_directory_enabled: bool = True
+
     # --- Sessions store ---
     session_store: SessionStoreKind = SessionStoreKind.memory
     cosmos_endpoint: str | None = None

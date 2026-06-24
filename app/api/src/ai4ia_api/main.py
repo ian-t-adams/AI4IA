@@ -24,6 +24,8 @@ from .config import Settings, get_settings
 from .errors import error_response, register_error_handlers
 from .entitlements.factory import build_default_entitlement, build_entitlement_store
 from .entitlements.service import EntitlementService
+from .directory.factory import build_user_directory_repository
+from .directory.service import UserDirectoryService
 from .gateway.client import ModelGatewayClient
 from .images.artifacts import ImageArtifactStore, build_image_blob_store
 from .videos.artifacts import VideoArtifactStore, build_video_blob_store
@@ -194,6 +196,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             enabled=settings.entitlements_enabled,
             cache_ttl_seconds=settings.entitlement_cache_ttl_seconds,
         )
+        # Admin user directory. Captures the display name + email already on the
+        # token into an admin-only Cosmos 'userDirectory' (keyed by the hashed
+        # internal userId) so the admin panels can resolve that hash to a name.
+        # PII lives only in the admin plane; capture is deduped + best-effort and
+        # never blocks a request. Default-on; uses the in-memory repo when Cosmos
+        # is not configured (dev). Closed in finally.
+        app.state.user_directory = UserDirectoryService(
+            build_user_directory_repository(settings),
+            enabled=settings.user_directory_enabled,
+        )
         # Document ingest pipeline. Built only when document
         # understanding is enabled (else None), so the upload endpoint refuses
         # and no blob/CU/pgvector IO is constructed by default — zero regression.
@@ -315,6 +327,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.entitlements.close()
             except Exception:  # noqa: BLE001
                 logger.warning("entitlement store close failed", exc_info=True)
+            try:
+                await app.state.user_directory.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("user directory close failed", exc_info=True)
             try:
                 await app.state.agent_service.close()
             except Exception:  # noqa: BLE001
