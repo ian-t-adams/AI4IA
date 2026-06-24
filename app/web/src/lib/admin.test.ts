@@ -2,15 +2,21 @@ import { describe, expect, it } from "vitest";
 import {
   barScale,
   canShowAdmin,
+  dimensionShare,
   entitlementLabel,
+  errorLabel,
   formatCompact,
   formatPercent,
   formatTokens,
   formatUsd,
+  groupUserAgents,
   linePoints,
   microUsdToUsd,
   shortUserId,
+  statusLabel,
+  sumRequests,
   type EntitlementView,
+  type UserAgentBucket,
 } from "./admin";
 
 describe("canShowAdmin", () => {
@@ -133,5 +139,70 @@ describe("shortUserId", () => {
   });
   it("elides the middle of long ids", () => {
     expect(shortUserId("bff17e95-af43-5ac4-bc00-c9bf624047c7")).toBe("bff17e95…47c7");
+  });
+});
+
+describe("errorLabel", () => {
+  it("is empty for zero / null / negative so callers skip danger styling", () => {
+    expect(errorLabel(0)).toBe("");
+    expect(errorLabel(null)).toBe("");
+    expect(errorLabel(undefined)).toBe("");
+    expect(errorLabel(-3)).toBe("");
+    expect(errorLabel(NaN)).toBe("");
+  });
+  it("renders singular vs plural and compacts large counts", () => {
+    expect(errorLabel(1)).toBe("1 error");
+    expect(errorLabel(4)).toBe("4 errors");
+    expect(errorLabel(2500)).toBe("2.5K errors");
+  });
+});
+
+describe("statusLabel", () => {
+  it("humanizes the raw record status enum", () => {
+    expect(statusLabel("complete")).toBe("Completed");
+    expect(statusLabel("cancelled")).toBe("Cancelled");
+    expect(statusLabel("error")).toBe("Errored");
+  });
+  it("passes unknown keys through unchanged", () => {
+    expect(statusLabel("weird")).toBe("weird");
+  });
+});
+
+describe("sumRequests / dimensionShare", () => {
+  it("sums request counts", () => {
+    expect(sumRequests([{ requests: 2 }, { requests: 3 }, { requests: 0 }])).toBe(5);
+    expect(sumRequests([])).toBe(0);
+  });
+  it("computes share as a [0,1] rate and guards div-by-zero", () => {
+    expect(dimensionShare(2, 8)).toBe(0.25);
+    expect(dimensionShare(5, 0)).toBe(0);
+    expect(dimensionShare(0, 8)).toBe(0);
+    expect(formatPercent(dimensionShare(2, 8))).toBe("25%");
+  });
+});
+
+describe("groupUserAgents", () => {
+  function row(over: Partial<UserAgentBucket> & Pick<UserAgentBucket, "userId" | "agent">): UserAgentBucket {
+    return { requests: 0, totalTokens: 0, erroredRequests: 0, ...over };
+  }
+
+  it("collapses cross-tab rows into per-user groups with totals", () => {
+    const groups = groupUserAgents([
+      row({ userId: "alice", agent: "research", totalTokens: 30, requests: 2, erroredRequests: 1 }),
+      row({ userId: "alice", agent: "coder", totalTokens: 5, requests: 1 }),
+      row({ userId: "bob", agent: "research", totalTokens: 100, requests: 1 }),
+    ]);
+    // Heaviest user first (bob 100 > alice 35).
+    expect(groups.map((g) => g.userId)).toEqual(["bob", "alice"]);
+    const alice = groups.find((g) => g.userId === "alice")!;
+    expect(alice.totalTokens).toBe(35);
+    expect(alice.totalRequests).toBe(3);
+    expect(alice.erroredRequests).toBe(1);
+    // Each user's rows are sorted by tokens desc.
+    expect(alice.rows.map((r) => r.agent)).toEqual(["research", "coder"]);
+  });
+
+  it("returns an empty list for no rows", () => {
+    expect(groupUserAgents([])).toEqual([]);
   });
 });

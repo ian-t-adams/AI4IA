@@ -12,12 +12,19 @@ from datetime import datetime, timedelta, timezone
 from ai4ia_api.usage.aggregate import (
     DEFAULT_ADMIN_DAYS,
     MAX_ADMIN_DAYS,
+    UNKNOWN_DIMENSION,
     AdminUsageService,
     aggregate_agents,
+    aggregate_by_data_zone,
     aggregate_by_day,
+    aggregate_by_deployment,
     aggregate_by_model,
+    aggregate_by_region,
+    aggregate_by_status,
     aggregate_by_user,
+    aggregate_dimension,
     aggregate_summary,
+    aggregate_user_agents,
     clamp_days,
 )
 from ai4ia_api.usage.memory_repo import InMemoryUsageRepository
@@ -42,6 +49,8 @@ def rec(
     created: datetime | None = None,
     deployment: str = "dep",
     session: str = "s1",
+    region: str | None = None,
+    data_zone: str | None = None,
 ) -> UsageRecord:
     return UsageRecord(
         userId=user,
@@ -58,6 +67,8 @@ def rec(
         costKnown=cost_known,
         estCostMicroUsd=cost_micro,
         createdAt=created or NOW,
+        region=region,
+        dataZone=data_zone,
     )
 
 
@@ -224,6 +235,112 @@ def test_agents_distinct_users_and_tokens():
     assert research.users == 2  # a and b
 
 
+def test_agents_count_errored_and_cancelled():
+    records = [
+        rec(user="a", agent="research", status="complete", total=10),
+        rec(user="a", agent="research", status="error", billable=False, total=0),
+        rec(user="b", agent="research", status="cancelled", billable=False, total=0),
+        rec(user="b", agent="research", status="error", billable=False, total=0),
+        rec(user="a", agent="coder", status="complete", total=5),
+    ]
+    out = aggregate_agents(records)
+    research = next(b for b in out if b.agent == "research")
+    assert research.requests == 4
+    assert research.erroredRequests == 2
+    assert research.cancelledRequests == 1
+    coder = next(b for b in out if b.agent == "coder")
+    assert coder.erroredRequests == 0
+    assert coder.cancelledRequests == 0
+
+
+# ---- user×agent cross-tab ----
+
+
+def test_user_agents_cross_tab_groups_and_skips_plain_turns():
+    records = [
+        rec(user="alice", agent="research", total=10),
+        rec(user="alice", agent="research", total=20),
+        rec(user="alice", agent="coder", total=5),
+        rec(user="bob", agent="research", total=100),
+        rec(user="bob", agent=None, total=999),  # plain turn -> excluded
+    ]
+    out = aggregate_user_agents(records)
+    # One cell per (user, agent); plain turn dropped -> 3 cells.
+    cells = {(b.userId, b.agent): b for b in out}
+    assert set(cells) == {("alice", "research"), ("alice", "coder"), ("bob", "research")}
+    alice_research = cells[("alice", "research")]
+    assert alice_research.requests == 2
+    assert alice_research.totalTokens == 30
+    # Heaviest cell (bob/research, 100 tokens) ranks first.
+    assert (out[0].userId, out[0].agent) == ("bob", "research")
+
+
+def test_user_agents_counts_errors_per_cell():
+    records = [
+        rec(user="alice", agent="research", status="complete", total=10),
+        rec(user="alice", agent="research", status="error", billable=False, total=0),
+    ]
+    out = aggregate_user_agents(records)
+    assert len(out) == 1
+    assert out[0].requests == 2
+    assert out[0].erroredRequests == 1
+    assert out[0].totalTokens == 10
+
+
+# ---- dimension rollups (region / dataZone / deployment / status) ----
+
+
+def test_dimension_rollup_groups_counts_and_unknown_key():
+    records = [
+        rec(region="eastus", total=10),
+        rec(region="eastus", total=20, status="error", billable=False),
+        rec(region="westus", total=5),
+        rec(region=None, total=7),  # missing -> UNKNOWN_DIMENSION
+    ]
+    out = aggregate_by_region(records)
+    by_key = {b.key: b for b in out}
+    assert by_key["eastus"].requests == 2
+    assert by_key["eastus"].erroredRequests == 1
+    assert by_key["eastus"].totalTokens == 30
+    assert by_key["westus"].requests == 1
+    assert UNKNOWN_DIMENSION in by_key
+    # Sorted by request volume desc -> eastus (2) first.
+    assert out[0].key == "eastus"
+
+
+def test_dimension_rollup_honours_cost_honesty():
+    records = [
+        rec(deployment="d", cost_known=False, cost_micro=None, billable=True, total=10),
+    ]
+    out = aggregate_by_deployment(records)
+    assert out[0].key == "d"
+    assert out[0].costKnown is False
+
+
+def test_aggregate_by_data_zone_and_status_mix():
+    records = [
+        rec(data_zone="us", status="complete", total=10),
+        rec(data_zone="us", status="error", billable=False, total=0),
+        rec(data_zone="eu", status="cancelled", billable=False, total=0),
+    ]
+    zones = {b.key: b for b in aggregate_by_data_zone(records)}
+    assert zones["us"].requests == 2
+    assert zones["eu"].requests == 1
+
+    statuses = {b.key: b for b in aggregate_by_status(records)}
+    assert statuses["complete"].requests == 1
+    assert statuses["error"].requests == 1
+    assert statuses["cancelled"].requests == 1
+    # The error-status bucket's erroredRequests mirrors its request count.
+    assert statuses["error"].erroredRequests == 1
+
+
+def test_aggregate_dimension_generic_custom_key():
+    records = [rec(model="a", total=1), rec(model="a", total=1), rec(model="b", total=1)]
+    out = aggregate_dimension(records, lambda r: r.model)
+    assert {b.key: b.requests for b in out} == {"a": 2, "b": 1}
+
+
 # ---- AdminUsageService (bounded fetch + windowing) ----
 
 
@@ -269,3 +386,40 @@ async def test_service_by_user_paging():
     assert page.byUser[0].userId == "u0"  # highest tokens first
     page2 = await svc.by_user(days=30, limit=2, offset=2)
     assert [b.userId for b in page2.byUser] == ["u2", "u3"]
+
+
+async def test_service_user_agents_windowed():
+    now = datetime.now(timezone.utc)
+    fresh = rec(user="alice", agent="research", created=now, total=10)
+    stale = rec(
+        user="bob",
+        agent="research",
+        created=now - timedelta(days=120),
+        total=999,
+    )
+    svc = await _service_with([fresh, stale])
+    report = await svc.user_agents(days=30)
+    assert report.sinceDays == 30
+    assert report.scannedRecords == 1
+    assert [(c.userId, c.agent) for c in report.userAgents] == [("alice", "research")]
+
+
+async def test_service_distributions_windowed_rollups():
+    now = datetime.now(timezone.utc)
+    records = [
+        rec(user="a", region="eastus", data_zone="us", deployment="d1", status="complete", created=now, total=10),
+        rec(user="b", region="eastus", data_zone="us", deployment="d2", status="error", billable=False, created=now, total=0),
+        rec(user="c", region="westus", data_zone="eu", deployment="d1", status="cancelled", billable=False, created=now, total=0),
+        rec(user="old", region="eastus", created=now - timedelta(days=120), total=999),
+    ]
+    svc = await _service_with(records)
+    report = await svc.distributions(days=30)
+    assert report.scannedRecords == 3  # stale record excluded
+    regions = {b.key: b.requests for b in report.byRegion}
+    assert regions == {"eastus": 2, "westus": 1}
+    zones = {b.key: b.requests for b in report.byDataZone}
+    assert zones == {"us": 2, "eu": 1}
+    deployments = {b.key: b.requests for b in report.byDeployment}
+    assert deployments == {"d1": 2, "d2": 1}
+    statuses = {b.key: b.requests for b in report.byStatus}
+    assert statuses == {"complete": 1, "error": 1, "cancelled": 1}
