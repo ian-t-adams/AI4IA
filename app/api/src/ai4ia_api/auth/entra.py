@@ -7,10 +7,10 @@ signature (RS256), ``aud``, ``iss``, ``tid`` (against an allowed set), and
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import httpx
-from jose import jwt
-from jose.exceptions import JWTError
+import jwt
 
 from .base import AuthCredentials, AuthError, AuthenticatedUser
 from .userid import InternalUserIdProvider
@@ -68,13 +68,25 @@ class EntraAuthProvider:
         self._jwks_cache[tenant_id] = (now + _JWKS_TTL_SECONDS, keys)
         return keys
 
+    def _signing_key(self, token: str, jwks: dict) -> Any:
+        """Resolve the RSA public key for ``token`` from a tenant JWKS by ``kid``.
+
+        Raises a :class:`jwt.PyJWTError` subclass when no key matches, so the
+        caller's ``except jwt.PyJWTError`` maps it to an ``AuthError`` (fail closed).
+        """
+        kid = jwt.get_unverified_header(token).get("kid")
+        for raw in jwks.get("keys", []):
+            if raw.get("kid") == kid:
+                return jwt.PyJWK.from_dict(raw).key
+        raise jwt.InvalidKeyError("no matching signing key for token kid")
+
     async def authenticate(self, credentials: AuthCredentials) -> AuthenticatedUser:
         token = credentials.token
         if not token:
             raise AuthError("Missing bearer token")
         try:
-            unverified = jwt.get_unverified_claims(token)
-        except JWTError as exc:  # malformed token
+            unverified = jwt.decode(token, options={"verify_signature": False})
+        except jwt.PyJWTError as exc:  # malformed token
             raise AuthError(f"Invalid token: {exc}") from exc
 
         tenant_id = str(unverified.get("tid", "")).lower()
@@ -84,18 +96,20 @@ class EntraAuthProvider:
         keys = await self._jwks(tenant_id)
         issuer = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
         try:
-            # python-jose's ``audience`` only accepts a single string, so we
-            # disable its check (verify_aud=False) and validate the audience
-            # ourselves against the set of accepted forms below. Signature,
-            # issuer, exp and iat checks are unchanged.
+            # Select the signing key from the tenant JWKS by the token's ``kid``.
+            signing_key = self._signing_key(token, keys)
+            # PyJWT's ``audience`` only accepts a single string, so we disable its
+            # check (verify_aud=False) and validate the audience ourselves against
+            # the set of accepted forms below. Signature (RS256 only), issuer, and
+            # the presence + validity of exp/iat are enforced here.
             claims = jwt.decode(
                 token,
-                keys,
+                signing_key,
                 algorithms=list(_ALLOWED_ALGS),
                 issuer=issuer,
-                options={"require_exp": True, "require_iat": True, "verify_aud": False},
+                options={"require": ["exp", "iat"], "verify_aud": False},
             )
-        except JWTError as exc:
+        except jwt.PyJWTError as exc:
             raise AuthError(f"Token validation failed: {exc}") from exc
 
         aud = claims.get("aud")
