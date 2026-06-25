@@ -1,0 +1,34 @@
+name: "AI4IA CodeQL config"
+
+# Custom CodeQL configuration for the advanced setup in `.github/workflows/codeql.yml`.
+#
+# Why exclude tests from SAST analysis
+# ------------------------------------
+# Our unit tests deliberately inject *synthetic* secrets to prove that the
+# production redaction path works. For example:
+#   * tests/test_mcp_execution.py  — feeds a fake `api_key` / token into a
+#     scripted gateway response and asserts the value never appears in the trace.
+#   * tests/test_mcp_health.py     — passes a fake secret in an error `detail`
+#     and asserts the emitted log line is redacted.
+#
+# CodeQL's `py/clear-text-logging-sensitive-data` query taint-tracks those fake
+# secrets out of the test fixtures, through the agent runtime, and into the
+# logging calls in `agents/runtime.py` and `agents/mcp_observability.py` — even
+# though those call sites ALREADY sanitize via `redact()` / `redact_obj()`
+# before logging. The result is 8 high-severity false positives whose taint
+# *source* is entirely test code.
+#
+# For interpreted languages analyzed without a build (Python here), `paths-ignore`
+# removes the matched files from analysis, so the synthetic-secret fixtures are
+# no longer treated as taint sources and the false positives clear. Production
+# code remains fully scanned. This does not weaken any runtime control: the
+# redaction in the production logging path is unchanged and still tested.
+paths-ignore:
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/__tests__/**"
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/conftest.py"

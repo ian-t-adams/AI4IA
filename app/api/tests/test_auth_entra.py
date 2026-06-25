@@ -8,12 +8,14 @@ be accepted regardless of which form was configured.
 """
 from __future__ import annotations
 
+import json
 import time
 
+import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from jose import jwk, jwt
+from jwt.algorithms import RSAAlgorithm
 
 from ai4ia_api.auth.base import AuthCredentials, AuthError
 from ai4ia_api.auth.entra import EntraAuthProvider
@@ -36,18 +38,7 @@ def keypair():
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     ).decode()
-    public_pem = (
-        private_key.public_key()
-        .public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-        .decode()
-    )
-    public_jwk = jwk.construct(public_pem, algorithm="RS256").to_dict()
-    public_jwk = {
-        k: (v.decode() if isinstance(v, bytes) else v) for k, v in public_jwk.items()
-    }
+    public_jwk = json.loads(RSAAlgorithm.to_jwk(private_key.public_key()))
     public_jwk["kid"] = KID
     public_jwk["use"] = "sig"
     jwks = {"keys": [public_jwk]}
