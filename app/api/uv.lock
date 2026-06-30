@@ -61,7 +61,7 @@ requires-dist = [
     { name = "azure-storage-blob", specifier = ">=12.20" },
     { name = "fastapi", specifier = ">=0.115,<0.139" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "mem0ai", specifier = "==2.0.7" },
+    { name = "mem0ai", specifier = "==2.0.10" },
     { name = "opentelemetry-instrumentation-httpx", specifier = ">=0.48b0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "psycopg-pool", specifier = ">=3.2" },
@@ -1229,9 +1229,10 @@ wheels = [
 
 [[package]]
 name = "mem0ai"
-version = "2.0.7"
+version = "2.0.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "httpx" },
     { name = "openai" },
     { name = "posthog" },
     { name = "protobuf" },
@@ -1240,9 +1241,9 @@ dependencies = [
     { name = "qdrant-client" },
     { name = "sqlalchemy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ad/e8/813101298d681510a000ae5ddb4a994d78a2e20165fc4acf5fa482630502/mem0ai-2.0.7.tar.gz", hash = "sha256:c254c5b851f9bd95dc1f136a2f14f10a980afa607bff381d775b9846442c44ca", size = 229204, upload-time = "2026-06-17T16:26:19.253Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/43/b71a46ea164dbee57d2b436d60bc446179e5829e51759ee199240552701f/mem0ai-2.0.10.tar.gz", hash = "sha256:0d2afcd51f093c915b7d1e6208e86fbf563340de181e5604ff8af9513f3dffc8", size = 236842, upload-time = "2026-06-27T17:10:02.81Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a4/db/b4492c154e7b7bbde5d763ad53675a1735095681a4c1890f0017880d8819/mem0ai-2.0.7-py3-none-any.whl", hash = "sha256:02bfef7932297d77a8a13ddb4f2232a781a8f827004026586c947b7e3ae0ff24", size = 319881, upload-time = "2026-06-17T16:26:17.709Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/58/9c25e77f06ec3483267f898c42fba783f2dcc411c7234dd34830bef8a372/mem0ai-2.0.10-py3-none-any.whl", hash = "sha256:9a99401c2c57bfbaf6ab780b193e458eb46802b4d75cac42f61eff13c9e34062", size = 329294, upload-time = "2026-06-27T17:10:01.157Z" },
 ]
 
 [[package]]
