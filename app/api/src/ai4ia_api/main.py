@@ -64,6 +64,7 @@ from .routers import health as health_router
 from .routers import images as images_router
 from .routers import library as library_router
 from .routers import mcp_servers as mcp_servers_router
+from .routers import official_mcp_servers as official_mcp_servers_router
 from .routers import realtime as realtime_router
 from .routers import sessions as sessions_router
 from .routers import usage as usage_router
@@ -510,6 +511,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(catalog_router.router)
     app.include_router(agents_router.router)
     app.include_router(mcp_servers_router.router)
+    app.include_router(official_mcp_servers_router.router)
     app.include_router(workflows_router.router)
     app.include_router(sessions_router.router)
     app.include_router(chat_router.router)
