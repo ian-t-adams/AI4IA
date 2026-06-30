@@ -36,7 +36,7 @@ from ..agents.command_service import (
 from ..agents.commands import CommandKind, parse_input
 from ..agents.runtime import run_agent_turn
 from ..agents.summarization import SummarizationService
-from ..agents.mcp_execution import build_mcp_turn_tools
+from ..agents.mcp_execution import McpPlane, build_mcp_turn_tools_multi
 from ..agents.mcp_servers import is_mcp_tool_name
 from ..agents.orchestration import build_delegate_capability
 from ..agents.tool_exec import (
@@ -945,28 +945,55 @@ async def chat(
                 extra_handlers = {**extra_handlers, **p_handlers}
             except Exception:  # noqa: BLE001 - doc tool must never break a turn
                 logger.warning("document processing capability build failed", exc_info=True)
-        # When the agent attaches any of the caller's own MCP tools
-        # (``mcp:<server>/<tool>``) and the feature is on, build a merged
-        # registry/executor (built-ins + governed MCP ToolDefinitions) plus the
-        # approvals-bearing context, and run THIS turn against them. MCP tools go
-        # through the same registry/executor governance as the built-ins (NOT the
-        # synthetic extra_tools path), so authorization + redaction apply. Best-
-        # effort like every other capability: any failure leaves the agent running
-        # with its built-in/synthetic tools — MCP must never break a turn. When the
-        # feature is off, ``mcp_service`` is None and this block is skipped, so the
-        # turn is byte-for-byte unchanged.
+        # When the agent attaches any MCP tool (``mcp:<server>/<tool>``) and at
+        # least one MCP plane is on, build a merged registry/executor (built-ins +
+        # governed MCP ToolDefinitions) plus the approvals-bearing context, and run
+        # THIS turn against them. Two independent planes feed the merge:
+        #   * the **official** plane (curated servers behind the MCP APIM front door,
+        #     app-global subscription key), passed FIRST so a trusted official tool
+        #     wins any namespaced-name collision, and
+        #   * the **BYO** plane (the caller's own per-user servers, per-user secret).
+        # Each plane carries its own secrets/connector/resolver/health seam (their
+        # credentials differ), which is why they cannot be a single build call.
+        # MCP tools go through the same registry/executor governance as the built-ins
+        # (NOT the synthetic extra_tools path), so authorization + redaction apply.
+        # Best-effort like every other capability: any failure leaves the agent
+        # running with its built-in/synthetic tools — MCP must never break a turn.
+        # When both features are off, both services are None and this block is
+        # skipped, so the turn is byte-for-byte unchanged.
         mcp_service = getattr(request.app.state, "mcp_service", None)
-        if mcp_service is not None and any(is_mcp_tool_name(t) for t in agent.tools):
+        official_mcp_service = getattr(request.app.state, "official_mcp_service", None)
+        if (mcp_service is not None or official_mcp_service is not None) and any(
+            is_mcp_tool_name(t) for t in agent.tools
+        ):
             try:
-                mcp_servers = await mcp_service.list_for(user.internal_user_id)
-                built = build_mcp_turn_tools(
-                    servers=mcp_servers,
+                planes: list[McpPlane] = []
+                if official_mcp_service is not None:
+                    official_servers = await official_mcp_service.list_all()
+                    planes.append(
+                        McpPlane(
+                            servers=official_servers,
+                            secrets=official_mcp_service,
+                            connector=official_mcp_service.connector,
+                            resolver=official_mcp_service.resolver,
+                            health=official_mcp_service,
+                        )
+                    )
+                if mcp_service is not None:
+                    byo_servers = await mcp_service.list_for(user.internal_user_id)
+                    planes.append(
+                        McpPlane(
+                            servers=byo_servers,
+                            secrets=mcp_service,
+                            connector=mcp_service.connector,
+                            resolver=mcp_service.resolver,
+                            health=mcp_service,
+                        )
+                    )
+                built = build_mcp_turn_tools_multi(
+                    planes=planes,
                     attached_tool_names=agent.tools,
-                    secrets=mcp_service,
-                    connector=mcp_service.connector,
-                    resolver=mcp_service.resolver,
                     correlation_id=correlation_id,
-                    health=mcp_service,
                 )
                 if built is not None:
                     turn_registry, turn_executor, ctx = built
