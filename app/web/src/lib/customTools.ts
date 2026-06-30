@@ -397,6 +397,10 @@ export interface AttachableMcpTool {
   // so the agent builder can show whether attaching the tool will prompt.
   requiresApproval: boolean;
   approval: McpToolApproval;
+  // True when the tool comes from the curated **official** plane (APIM-fronted),
+  // not a user's own BYO server. Drives the read-only "official" badge and lets
+  // the picker show both planes in one list.
+  official: boolean;
 }
 
 // Groups a list of servers into their attachable MCP tools (namespaced), skipping
@@ -404,7 +408,9 @@ export interface AttachableMcpTool {
 // is unavailable. Stable order: server order, then discovered-tool order.
 export function attachableMcpTools(
   servers: UserMcpServer[],
+  opts: { official?: boolean } = {},
 ): AttachableMcpTool[] {
+  const official = opts.official ?? false;
   const out: AttachableMcpTool[] = [];
   for (const s of servers) {
     for (const t of s.discoveredTools) {
@@ -419,6 +425,7 @@ export function attachableMcpTools(
         host: s.host,
         requiresApproval: toolRequiresApproval(s, t.name),
         approval: effectiveToolApproval(s, t.name),
+        official,
       });
     }
   }
