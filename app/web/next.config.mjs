@@ -29,11 +29,9 @@ const securityHeaders = [
 const nextConfig = {
   output: "standalone",
   reactStrictMode: true,
-  // Lint is run explicitly via `npm run lint` (and in CI) so the production
-  // build is deterministic and not blocked by lint-only findings.
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
+  // Linting runs as a dedicated CI step (`npm run lint`); Next 16 no longer
+  // executes ESLint during `next build`, so the former `eslint` config key
+  // (ignoreDuringBuilds) is removed — it is unsupported in Next 16.
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },
