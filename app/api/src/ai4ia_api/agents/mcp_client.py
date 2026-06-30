@@ -56,6 +56,8 @@ class McpAuth:
             return {"Authorization": f"Bearer {self.secret}"}
         if self.mode is McpAuthMode.api_key and self.secret:
             return {"X-API-Key": self.secret}
+        if self.mode is McpAuthMode.apim_subscription and self.secret:
+            return {"Ocp-Apim-Subscription-Key": self.secret}
         return {}
 
 
