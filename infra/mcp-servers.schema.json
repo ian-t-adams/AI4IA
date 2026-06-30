@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AI4IA official MCP server catalog",
+  "description": "Curated 'official' MCP servers exposed and governed through the dedicated MCP APIM front door (infra/modules/mcpgateway.bicep), gated on an APIM subscription key. Source of truth consumed by Bicep (provisions one APIM MCP server per entry) and projected into the packaged runtime catalog by scripts/gen-mcp-catalog.py.",
+  "type": "object",
+  "required": ["servers"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "_comment": { "type": "string" },
+    "servers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "displayName", "upstreamUrl", "upstreamAuthMode"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$",
+            "description": "Stable slug used as the APIM resource name and route prefix (https://<mcp-apim>/<name>/mcp). Lowercase letter-led alphanumeric + hyphens, 2-40 chars."
+          },
+          "displayName": { "type": "string", "minLength": 1 },
+          "description": { "type": "string" },
+          "upstreamUrl": {
+            "type": "string",
+            "pattern": "^https://",
+            "description": "Full HTTPS Streamable-HTTP MCP endpoint of the upstream server; APIM routes to it as the backend target. The upstream must speak MCP version 2025-06-18 or later."
+          },
+          "upstreamAuthMode": {
+            "type": "string",
+            "enum": ["none", "managed_identity"],
+            "description": "How APIM authenticates OUTBOUND to the upstream server. 'none' = transparent passthrough; 'managed_identity' = inject the MCP APIM system-assigned identity as a bearer token (requires upstreamMiResource). Note: inbound auth from the app to APIM is always the APIM subscription key, independent of this field."
+          },
+          "upstreamMiResource": {
+            "type": "string",
+            "description": "AAD resource / audience URI used to acquire the managed-identity token (e.g. an Entra App ID URI for an Azure-hosted upstream). Required when upstreamAuthMode == 'managed_identity'."
+          }
+        },
+        "if": {
+          "properties": { "upstreamAuthMode": { "const": "managed_identity" } }
+        },
+        "then": {
+          "required": ["upstreamMiResource"]
+        }
+      }
+    }
+  }
+}

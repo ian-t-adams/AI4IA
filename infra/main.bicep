@@ -28,6 +28,9 @@ param budgetAlertEmails array = []
 @description('APIM publisher email for the model gateway front door. Override per deployment.')
 param apimPublisherEmail string = 'ai4ia@example.com'
 
+@description('Opt-in: provision a dedicated APIM (Basic v2) front door for curated "official" MCP servers (infra/mcp-servers.json), so MCP traffic is gated on an APIM subscription key. Default OFF, and the catalog ships empty, so the checked-in deploy provisions no MCP gateway and the app is byte-for-byte unchanged. Basic v2 is required because the native MCP feature is unsupported on the Consumption model gateway.')
+param enableOfficialMcp bool = false
+
 @description('Opt-in: deploy a minimal Azure Monitor alerting baseline (action group + metric alerts). Default OFF so existing deployments are byte-for-byte unchanged and no alert can fire without explicit enablement.')
 param enableAlerts bool = false
 
@@ -464,6 +467,26 @@ module gateway 'modules/gateway.bicep' = {
   }
 }
 
+// --- Official MCP gateway (dedicated APIM Basic v2; opt-in) ---
+// Curated MCP servers (infra/mcp-servers.json) fronted by their own APIM so MCP
+// traffic is gated on an APIM subscription key, isolated from the Consumption
+// model gateway. Default OFF and ships empty: no resources unless explicitly
+// enabled. Phase 2 stands up the front door; the api/runtime wiring lands later.
+var officialMcpServers = loadJsonContent('mcp-servers.json').servers
+module mcpgateway 'modules/mcpgateway.bicep' = if (enableOfficialMcp) {
+  name: 'mcpgateway'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    workload: workload
+    environmentName: environmentName
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
+    apimPublisherEmail: apimPublisherEmail
+    servers: officialMcpServers
+  }
+}
+
 // --- Backend API (FastAPI) Container App ---
 module api 'modules/api.bicep' = {
   name: 'api'
@@ -677,6 +700,10 @@ output AZURE_EVENTHUBS_TELEMETRY_HUB string = eventhubs.outputs.telemetryHubName
 output AZURE_MODEL_GATEWAY_URL string = gateway.outputs.modelGatewayUrl
 output AZURE_APIM_GATEWAY_URL string = gateway.outputs.apimGatewayUrl
 output AZURE_PROXY_URL string = gateway.outputs.proxyUrl
+// Empty unless enableOfficialMcp; subscription key is intentionally NOT output
+// (it is wired module->module to the api during the runtime phase).
+#disable-next-line BCP318
+output AZURE_OFFICIAL_MCP_GATEWAY_URL string = enableOfficialMcp ? mcpgateway.outputs.mcpGatewayBaseUrl : ''
 output AZURE_API_URL string = api.outputs.apiUrl
 output AZURE_API_APP_NAME string = api.outputs.apiAppName
 output AZURE_WEB_URL string = web.outputs.webUrl

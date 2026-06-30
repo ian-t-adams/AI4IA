@@ -123,6 +123,7 @@ packages = ["src/ai4ia_api"]
 "src/ai4ia_api/data/model_catalog.json" = "ai4ia_api/data/model_catalog.json"
 "src/ai4ia_api/data/agents.json" = "ai4ia_api/data/agents.json"
 "src/ai4ia_api/data/pricing.json" = "ai4ia_api/data/pricing.json"
+"src/ai4ia_api/data/official_mcp_catalog.json" = "ai4ia_api/data/official_mcp_catalog.json"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

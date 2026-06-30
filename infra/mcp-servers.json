@@ -1,0 +1,5 @@
+{
+  "$schema": "./mcp-servers.schema.json",
+  "_comment": "Curated 'official' MCP servers fronted by the dedicated MCP APIM (infra/modules/mcpgateway.bicep), gated on an APIM subscription key. SHIPS EMPTY and the feature is default-OFF (main.bicep enableOfficialMcp=false), so the checked-in deploy provisions no MCP gateway and the app behavior is unchanged. To register a server: add an entry below, then set enableOfficialMcp=true. Example entry: { \"name\": \"ms-learn\", \"displayName\": \"Microsoft Learn\", \"description\": \"Official Microsoft Learn MCP server\", \"upstreamUrl\": \"https://learn.microsoft.com/api/mcp\", \"upstreamAuthMode\": \"none\" }",
+  "servers": []
+}
