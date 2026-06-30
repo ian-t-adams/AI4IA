@@ -16,11 +16,13 @@ from .agents.mcp_secrets import build_mcp_secret_store
 from .agents.mcp_servers import MAX_MCP_SERVERS_PER_USER
 from .agents.mcp_service import McpServerService
 from .agents.mcp_store import build_user_mcp_server_store
+from .agents.official_mcp_service import OfficialMcpService
 from .agents.service import AgentService
 from .agents.summarization import build_summarization_service
 from .agents.tool_exec import attachable_tool_names, build_tools
 from .catalog import load_catalog
 from .config import Settings, get_settings
+from .official_mcp_catalog import load_official_mcp_catalog
 from .errors import error_response, register_error_handlers
 from .entitlements.factory import build_default_entitlement, build_entitlement_store
 from .entitlements.service import EntitlementService
@@ -62,6 +64,7 @@ from .routers import health as health_router
 from .routers import images as images_router
 from .routers import library as library_router
 from .routers import mcp_servers as mcp_servers_router
+from .routers import official_mcp_servers as official_mcp_servers_router
 from .routers import realtime as realtime_router
 from .routers import sessions as sessions_router
 from .routers import usage as usage_router
@@ -160,6 +163,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         else:
             app.state.mcp_service = None
+        # Curated "official" MCP plane reached through the dedicated MCP APIM
+        # front door, gated on an app-global subscription key. Feature-flagged +
+        # default-OFF and the catalog ships empty, so by default the service is
+        # None and nothing is wired into a turn. When enabled, ``validate_runtime``
+        # has already guaranteed the gateway URL + key are present (fail-closed).
+        # Its own connector instance keeps the official egress path independent of
+        # the BYO one.
+        if settings.official_mcp_enabled:
+            app.state.official_mcp_service = OfficialMcpService(
+                load_official_mcp_catalog(settings.official_mcp_catalog_path),
+                gateway_url=settings.official_mcp_gateway_url or "",
+                subscription_key=settings.official_mcp_subscription_key or "",
+                connector=HttpxMcpConnector(
+                    timeout_s=settings.official_mcp_discovery_timeout_seconds
+                ),
+            )
+        else:
+            app.state.official_mcp_service = None
         # Per-user memory. Disabled by default -> NoopMemoryService, so
         # the chat path can call it unconditionally with no behavior change.
         app.state.memory = build_memory_service(
@@ -345,6 +366,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await mcp_service.close()
                 except Exception:  # noqa: BLE001
                     logger.warning("mcp service close failed", exc_info=True)
+            official_mcp_service = getattr(app.state, "official_mcp_service", None)
+            if official_mcp_service is not None:
+                try:
+                    await official_mcp_service.close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("official mcp service close failed", exc_info=True)
             repo = app.state.session_repo
             close = getattr(repo, "close", None)
             if close is not None:
@@ -484,6 +511,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(catalog_router.router)
     app.include_router(agents_router.router)
     app.include_router(mcp_servers_router.router)
+    app.include_router(official_mcp_servers_router.router)
     app.include_router(workflows_router.router)
     app.include_router(sessions_router.router)
     app.include_router(chat_router.router)

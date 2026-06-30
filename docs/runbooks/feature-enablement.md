@@ -22,13 +22,14 @@ feature posture.
 | Image generation | `AI4IA_IMAGE_BLOB_ACCOUNT_URL` when provisioned | Settings / imagery UI | `imageGenerationEnabled` | Image-capable model deployment and media blob storage |
 | Video generation | `AI4IA_VIDEO_BLOB_ACCOUNT_URL` when provisioned | inline attachment rendering | `videoGenerationEnabled` | Sora-capable deployment and media blob storage |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | Cosmos, Key Vault URI, Entra auth outside local |
+| Official MCP plane | `AI4IA_OFFICIAL_MCP_ENABLED` | none | `enableOfficialMcp` | Dedicated MCP APIM front door + ≥1 server in `infra/mcp-servers.json`; gateway URL + subscription key auto-wired |
 | Web IQ search tools | `AI4IA_WEB_SEARCH_ENABLED` | none | `webSearchEnabled` | Web IQ API key or Entra managed identity outside local |
 | Admin resource panels | `AI4IA_RESOURCE_METRICS_ENABLED` + resource ids | admin dashboard | resource-id env from modules | Monitoring Reader and ARM resource ids |
 
 The checked-in live parameters currently turn on image/video generation,
 document understanding, document compute, AI Search, Voice Live + tools, custom
-tools, and Postgres-backed memory. Web IQ and inline attachment Code Interpreter
-remain OFF there.
+tools, and Postgres-backed memory. Web IQ, inline attachment Code Interpreter,
+and the official MCP plane remain OFF there.
 
 ## Enablement notes
 
@@ -115,6 +116,40 @@ Outside local, startup requires Cosmos session storage, a Key Vault URI for
 durable MCP secrets, and Entra auth. The API applies the SSRF guard, discovers
 remote tools, stores credentials in Key Vault, and projects selected tools into
 the same governed executor used by built-ins.
+
+### Official MCP plane
+
+A curated, admin-defined set of MCP servers reached **through a dedicated MCP
+APIM front door** (`infra/modules/mcpgateway.bicep`, APIM Basic v2) gated on a
+single app-global subscription key — distinct from per-user BYO MCP, which the
+API calls directly behind the SSRF guard. Ships **empty and OFF**.
+
+To register a server and enable the plane:
+
+1. Add an entry to `infra/mcp-servers.json`:
+
+   ```json
+   { "name": "ms-learn", "displayName": "Microsoft Learn",
+     "description": "Official Microsoft Learn MCP server",
+     "upstreamUrl": "https://learn.microsoft.com/api/mcp",
+     "upstreamAuthMode": "none" }
+   ```
+
+2. Regenerate the packaged runtime catalog (the API image cannot read `infra/`
+   at build time):
+
+   ```text
+   python scripts/gen-mcp-catalog.py
+   ```
+
+3. Set `enableOfficialMcp=true`.
+
+Provision then deploys the MCP APIM, exposes one governed MCP server per entry at
+`https://<mcp-apim>/<name>/mcp`, and wires the gateway URL + subscription key into
+the API (`AI4IA_OFFICIAL_MCP_GATEWAY_URL` plus a Container App secret). Startup
+fails closed if the plane is enabled without both. Official servers are
+**trusted** (pre-approved, no per-call human gate) and merged ahead of BYO tools
+in each turn, sharing one per-turn MCP call budget.
 
 ### Web IQ tools
 

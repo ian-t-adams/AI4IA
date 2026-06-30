@@ -222,6 +222,17 @@ describe("attachableMcpTools", () => {
   it("returns an empty list when there are no discovered tools", () => {
     expect(attachableMcpTools([makeServer()])).toEqual([]);
   });
+
+  it("tags tools with their plane: BYO by default, official when requested", () => {
+    const servers = [
+      makeServer({
+        name: "ms-learn",
+        discoveredTools: [{ name: "search", description: "", inputSchema: {} }],
+      }),
+    ];
+    expect(attachableMcpTools(servers)[0].official).toBe(false);
+    expect(attachableMcpTools(servers, { official: true })[0].official).toBe(true);
+  });
 });
 
 

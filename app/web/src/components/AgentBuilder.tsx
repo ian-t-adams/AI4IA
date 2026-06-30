@@ -100,6 +100,9 @@ export function AgentBuilder({
 }) {
   const [mine, setMine] = useState<UserAgent[]>([]);
   const [mcpServers, setMcpServers] = useState<UserMcpServer[]>([]);
+  const [officialMcpServers, setOfficialMcpServers] = useState<UserMcpServer[]>(
+    [],
+  );
   const [editing, setEditing] = useState<string | null>(null); // name, or null = new
   const [form, setForm] = useState<AgentForm>(blankForm);
   const [busy, setBusy] = useState(false);
@@ -116,15 +119,25 @@ export function AgentBuilder({
   // Attachable MCP tools grouped by server (only when the feature is on). Each
   // carries its namespaced name + governance posture so the user understands the
   // stance before attaching.
-  const mcpTools = useMemo(
-    () => (customToolsEnabled ? attachableMcpTools(mcpServers) : []),
-    [customToolsEnabled, mcpServers],
-  );
+  // Official (curated, APIM-fronted) tools first, then the caller's BYO tools.
+  // Official servers win a name collision (mirrors the backend merge), and BYO is
+  // only surfaced when the custom-tools feature is on; the official plane stands
+  // on its own otherwise. Each carries its namespaced name + governance posture so
+  // the user understands the stance before attaching.
+  const mcpTools = useMemo(() => {
+    const official = attachableMcpTools(officialMcpServers, { official: true });
+    const officialNames = new Set(officialMcpServers.map((s) => s.name));
+    const byo = customToolsEnabled
+      ? attachableMcpTools(mcpServers.filter((s) => !officialNames.has(s.name)))
+      : [];
+    return [...official, ...byo];
+  }, [officialMcpServers, mcpServers, customToolsEnabled]);
   const mcpByServer = useMemo(() => groupByServer(mcpTools), [mcpTools]);
   // Server records keyed by name so a group can surface its health/quarantine badge.
+  // Official records override BYO on a name clash so the surviving group's health shows.
   const mcpServerByName = useMemo(
-    () => new Map(mcpServers.map((s) => [s.name, s])),
-    [mcpServers],
+    () => new Map([...mcpServers, ...officialMcpServers].map((s) => [s.name, s])),
+    [mcpServers, officialMcpServers],
   );
   // MCP tools still attached to this agent whose server/tool no longer exists, so
   // the user can detach them even though there's no checkbox to render otherwise.
@@ -152,6 +165,16 @@ export function AgentBuilder({
     }
   }, [customToolsEnabled]);
 
+  const refreshOfficialMcp = useCallback(async () => {
+    try {
+      setOfficialMcpServers(await api.listOfficialMcpServers());
+    } catch {
+      // The official endpoint returns [] when the plane is off; treat any blip the
+      // same so agent editing is never blocked by it.
+      setOfficialMcpServers([]);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshMine();
   }, [refreshMine]);
@@ -159,6 +182,10 @@ export function AgentBuilder({
   useEffect(() => {
     void refreshMcp();
   }, [refreshMcp]);
+
+  useEffect(() => {
+    void refreshOfficialMcp();
+  }, [refreshOfficialMcp]);
 
   const startNew = useCallback(() => {
     setEditing(null);
@@ -369,9 +396,9 @@ export function AgentBuilder({
           ))}
         </fieldset>
 
-        {customToolsEnabled && (
+        {(customToolsEnabled || mcpByServer.length > 0) && (
           <fieldset style={fieldset}>
-            <legend style={labelStyle}>Custom tools (MCP)</legend>
+            <legend style={labelStyle}>MCP tools</legend>
             {mcpByServer.length === 0 && orphanMcpTools.length === 0 && (
               <p style={{ ...labelStyle, margin: 0 }}>
                 No MCP tools yet. Register a server in the Custom tools tab, then its
@@ -404,18 +431,33 @@ export function AgentBuilder({
                         {health.label}
                       </span>
                     )}
-                    <span
-                      style={{
-                        fontSize: "0.7em",
-                        padding: "1px 7px",
-                        borderRadius: 999,
-                        border: "1px solid var(--border)",
-                        color: posture.requiresApproval ? "var(--fg-muted)" : "#15803d",
-                      }}
-                      title={posture.detail}
-                    >
-                      {posture.label}
-                    </span>
+                    {g.official ? (
+                      <span
+                        style={{
+                          fontSize: "0.7em",
+                          padding: "1px 7px",
+                          borderRadius: 999,
+                          border: "1px solid var(--border)",
+                          color: "#15803d",
+                        }}
+                        title="Curated official server, reached through the MCP APIM front door and managed by your administrator. Its tools are pre-approved."
+                      >
+                        official · curated
+                      </span>
+                    ) : (
+                      <span
+                        style={{
+                          fontSize: "0.7em",
+                          padding: "1px 7px",
+                          borderRadius: 999,
+                          border: "1px solid var(--border)",
+                          color: posture.requiresApproval ? "var(--fg-muted)" : "#15803d",
+                        }}
+                        title={posture.detail}
+                      >
+                        {posture.label}
+                      </span>
+                    )}
                   </div>
                   {quarantineMsg && (
                     <p role="alert" style={{ color: "var(--danger)", fontSize: "0.75em", margin: 0 }}>
@@ -520,6 +562,7 @@ interface McpServerGroup {
   trusted: boolean;
   enabled: boolean;
   host: string;
+  official: boolean;
   tools: AttachableMcpTool[];
 }
 
@@ -537,6 +580,7 @@ function groupByServer(tools: AttachableMcpTool[]): McpServerGroup[] {
         trusted: t.trusted,
         enabled: t.enabled,
         host: t.host,
+        official: t.official,
         tools: [],
       };
       byName.set(t.serverName, g);

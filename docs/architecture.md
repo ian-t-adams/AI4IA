@@ -20,6 +20,9 @@ flowchart TB
   API --> Monitor[Azure Monitor / App Insights]
   API --> CU[Content Understanding]
   API --> Tools[Built-in tools + BYO MCP]
+  API --> OffMCP[Official MCP tools]
+  OffMCP --> MCPGW[MCP APIM front door<br/>Basic v2 + subscription key]
+  MCPGW --> MCPUp[Curated upstream MCP servers]
   API --> GW[APIM + SimpleL7Proxy<br/>model gateway]
   GW --> EUS2[Foundry East US 2]
   GW --> SWC[Foundry Sweden Central]
@@ -55,9 +58,9 @@ entitlements, metering, deployment resolution, and optional governed tool callin
    truth and generates the packaged API model catalog. Capability models stay out
    of chat pickers unless their category is explicitly allowed.
 3. **Feature-gated advanced surfaces.** Voice Live, document understanding,
-   document compute, inline attachment compute, custom MCP tools, Web IQ, search,
-   image/video generation, and memory all have explicit config gates and
-   fail-closed prerequisites.
+   document compute, inline attachment compute, custom (BYO) MCP tools, the
+   official APIM-fronted MCP plane, Web IQ, search, image/video generation, and
+   memory all have explicit config gates and fail-closed prerequisites.
 4. **Cosmos is canonical; derived stores are rebuildable.** Sessions, messages,
    usage, user agents/workflows, MCP server records, and document manifests live in
    Cosmos. Memory vectors, document chunks, search indexes, and parsed artifacts
@@ -84,6 +87,26 @@ entitlements, metering, deployment resolution, and optional governed tool callin
 | Storage | Blob Storage | Raw documents, parsed artifacts, generated media |
 | AI services | Foundry + Content Understanding | Models, realtime, speech, image/video, CU ingest |
 | Observability | Log Analytics + App Insights + Monitor | Logs, traces, metrics, admin resource panels |
+
+## MCP tool planes
+
+Remote MCP tools reach the model through two independent planes that share one
+governed per-turn executor:
+
+- **BYO (bring-your-own).** Per-user servers a signed-in user registers. Called
+  **directly** behind the SSRF guard (DNS-rebind re-validation at call time), with
+  credentials in per-user Key Vault. Untrusted by default, so their tools are
+  approval-gated.
+- **Official (curated).** An admin-defined catalog (`infra/mcp-servers.json`)
+  reached **through a dedicated MCP APIM front door** (`mcpgateway.bicep`, APIM
+  Basic v2) gated on one app-global subscription key. Trusted ⇒ pre-approved. The
+  model gateway stays a separate APIM so model traffic keeps its scale-to-zero
+  economics.
+
+Both planes are **default-OFF**, and the official catalog also ships empty. Each
+turn builds the official plane first and BYO second, then merges them: on a tool
+name collision the **official tool wins**, auto-approvals are unioned, and a
+single per-turn budget caps total MCP calls across both planes.
 
 ## Regions
 

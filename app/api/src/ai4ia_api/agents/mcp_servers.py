@@ -52,6 +52,11 @@ class McpAuthMode(str, Enum):
     none = "none"  # public server, no credential
     api_key = "api_key"  # static key sent as ``X-API-Key``
     bearer = "bearer"  # bearer token (also the seam a future OAuth flow fills)
+    # APIM subscription key sent as ``Ocp-Apim-Subscription-Key``. Used by the
+    # curated "official" MCP plane, whose servers sit behind the dedicated MCP
+    # APIM front door; the key is app-global (not per-user) and supplied by the
+    # runtime, never user-entered. Not selectable for BYO servers.
+    apim_subscription = "apim_subscription"
 
 
 class McpTransport(str, Enum):

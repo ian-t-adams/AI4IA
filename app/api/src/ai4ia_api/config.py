@@ -260,6 +260,30 @@ class Settings(BaseSettings):
     # only — see ``validate_runtime``).
     custom_tools_secret_vault_uri: str | None = None
 
+    # --- Official MCP plane (curated servers behind the dedicated MCP APIM) ---
+    # Distinct from BYO custom tools above. These are admin-curated MCP servers
+    # reached **through the dedicated MCP APIM front door** (provisioned by
+    # ``infra/modules/mcpgateway.bicep``) and gated on an APIM subscription key,
+    # so MCP egress is governed by APIM auth rather than called directly. The
+    # catalog is packaged (``official_mcp_catalog.json``, projected from
+    # ``infra/mcp-servers.json``) and ships **empty**, and this flag defaults
+    # **OFF**, so by default no official server is wired into a turn and the app
+    # is byte-for-byte unchanged. When enabled, ``validate_runtime`` requires both
+    # the gateway URL and the subscription key (fail-closed): an enabled-but-
+    # unconfigured official plane is a misconfiguration, not a silent no-op.
+    official_mcp_enabled: bool = False
+    # Base URL of the MCP APIM gateway, e.g. ``https://apim-mcp-….azure-api.net``.
+    # The per-server endpoint is composed as ``<url>/<catalog path>`` at call time.
+    official_mcp_gateway_url: str | None = None
+    # App-global APIM subscription key sent as ``Ocp-Apim-Subscription-Key`` on
+    # every official-server call. Never per-user; supplied via Container App secret.
+    official_mcp_subscription_key: str | None = None
+    # Optional explicit path to the packaged catalog (tests/overrides). When unset
+    # the loader uses the packaged copy, then the infra dev fallback.
+    official_mcp_catalog_path: str | None = None
+    # Connect/handshake timeout (seconds) for official-server discovery + calls.
+    official_mcp_discovery_timeout_seconds: float = 15.0
+
     # --- Azure AI Search (indexing/retrieval) ---
     # Endpoint of the provisioned search service, e.g.
     # ``https://<svc>.search.windows.net``. Reached via the api managed identity
@@ -843,6 +867,28 @@ class Settings(BaseSettings):
                 "Custom tools require real authentication in a deployed "
                 "environment: set AI4IA_AUTH_PROVIDER=entra, or disable them with "
                 "AI4IA_CUSTOM_TOOLS_ENABLED=false."
+            )
+        if self.official_mcp_enabled and not (
+            self.official_mcp_gateway_url and self.official_mcp_gateway_url.strip()
+        ):
+            # Fail closed: an enabled official MCP plane with no gateway URL cannot
+            # reach any server. Treat it as a misconfiguration rather than silently
+            # doing nothing, so a broken deploy is loud at startup.
+            raise RuntimeError(
+                "Official MCP is enabled but AI4IA_OFFICIAL_MCP_GATEWAY_URL is not "
+                "set. Provide the MCP APIM gateway URL, or disable it with "
+                "AI4IA_OFFICIAL_MCP_ENABLED=false."
+            )
+        if self.official_mcp_enabled and not (
+            self.official_mcp_subscription_key
+            and self.official_mcp_subscription_key.strip()
+        ):
+            # The MCP APIM front door rejects calls without a subscription key, so
+            # an enabled plane without one would 401 every call. Require it.
+            raise RuntimeError(
+                "Official MCP is enabled but AI4IA_OFFICIAL_MCP_SUBSCRIPTION_KEY is "
+                "not set. Provide the MCP APIM subscription key, or disable it with "
+                "AI4IA_OFFICIAL_MCP_ENABLED=false."
             )
 
 

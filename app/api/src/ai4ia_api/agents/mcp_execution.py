@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
@@ -88,6 +89,28 @@ class HealthReporter(Protocol):
     async def record_health(
         self, server: UserMcpServer, *, ok: bool, error: object | None = None
     ) -> None: ...
+
+
+@dataclass(frozen=True)
+class McpPlane:
+    """One independent MCP source for a turn: its servers + how to reach them.
+
+    A *plane* bundles a set of servers with the seam used to execute their tools —
+    its own ``secrets`` resolver, ``connector``, ``resolver`` and ``health``
+    reporter. This exists because the two MCP sources are reached differently and
+    must NOT share a credential resolver: the **BYO** plane resolves a *per-user*
+    secret from Key Vault, while the **official** plane presents one *app-global*
+    APIM subscription key. Since :func:`build_mcp_tool_definitions` binds a single
+    ``secrets`` resolver into every handler it builds, the planes cannot be merged
+    into one call — each is built with its own seam and the results combined by
+    :func:`build_mcp_turn_tools_multi`.
+    """
+
+    servers: Sequence[UserMcpServer]
+    secrets: SecretResolver
+    connector: McpConnector
+    resolver: Resolver | None = None
+    health: HealthReporter | None = None
 
 
 async def _safe_report(
@@ -277,6 +300,9 @@ def build_mcp_turn_tools(
 ) -> tuple[ToolRegistry, ToolExecutor, ToolContext] | None:
     """Build a merged (registry, executor, ctx) for a turn that attaches MCP tools.
 
+    Single-plane convenience wrapper over :func:`build_mcp_turn_tools_multi` (one
+    plane built from the given seam), preserved for the common BYO-only path.
+
     Returns ``None`` when the agent attaches no owned MCP tools, so the caller can
     cheaply keep using the shared app singletons. When tools are present, the
     registry+executor are **fresh** (built-ins + the MCP defs) so the app singletons
@@ -291,22 +317,79 @@ def build_mcp_turn_tools(
     Quarantined servers are skipped (see :func:`build_mcp_tool_definitions`); if that
     leaves no runnable tools the function returns ``None``.
     """
-    budget: dict[str, int] = {"used": 0}
-    defs = build_mcp_tool_definitions(
-        servers,
+    return build_mcp_turn_tools_multi(
+        planes=[
+            McpPlane(
+                servers=servers,
+                secrets=secrets,
+                connector=connector,
+                resolver=resolver,
+                health=health,
+            )
+        ],
         attached_tool_names=attached_tool_names,
-        secrets=secrets,
-        connector=connector,
-        resolver=resolver,
-        budget=budget,
+        correlation_id=correlation_id,
+        approved=approved,
         max_calls=max_calls,
-        health=health,
         now=now,
     )
+
+
+def build_mcp_turn_tools_multi(
+    *,
+    planes: Sequence[McpPlane],
+    attached_tool_names: Collection[str],
+    correlation_id: str | None = None,
+    approved: Collection[str] = (),
+    max_calls: int = MAX_MCP_TOOL_CALLS_PER_TURN,
+    now: datetime | None = None,
+) -> tuple[ToolRegistry, ToolExecutor, ToolContext] | None:
+    """Merge multiple MCP planes into one turn's (registry, executor, ctx).
+
+    Each plane is built with its **own** seam (``secrets``/``connector``/
+    ``resolver``/``health``) via :func:`build_mcp_tool_definitions`, then the defs
+    are unioned. Key invariants:
+
+    * **Precedence / collision = earlier plane wins.** Tool names are de-duplicated
+      across planes in order, so a name registered by an earlier plane is kept and a
+      later plane's same-named tool is dropped. Callers pass the **official plane
+      first** so a curated/trusted official tool can never be shadowed by a
+      user's BYO server reusing its namespaced name.
+    * **Shared budget.** A single :data:`MAX_MCP_TOOL_CALLS_PER_TURN`-bounded budget
+      dict is threaded into every handler across all planes, so the cap is on total
+      MCP calls for the turn, not per-plane.
+    * **Unioned approvals.** Pre-approved names from every plane's
+      :func:`auto_approved_tool_names` are unioned with the caller's ``approved``.
+
+    Returns ``None`` when no plane contributes a runnable tool (none attached, or all
+    quarantined), so the caller keeps the shared app singletons.
+    """
+    budget: dict[str, int] = {"used": 0}
+    defs: list[ToolDefinition] = []
+    seen: set[str] = set()
+    approvals: set[str] = set(approved)
+    for plane in planes:
+        plane_defs = build_mcp_tool_definitions(
+            plane.servers,
+            attached_tool_names=attached_tool_names,
+            secrets=plane.secrets,
+            connector=plane.connector,
+            resolver=plane.resolver,
+            budget=budget,
+            max_calls=max_calls,
+            health=plane.health,
+            now=now,
+        )
+        for d in plane_defs:
+            # Earlier-plane-wins de-dup: keep the first registration of a name.
+            if d.spec.name in seen:
+                continue
+            seen.add(d.spec.name)
+            defs.append(d)
+        approvals |= auto_approved_tool_names(plane.servers, attached_tool_names)
     if not defs:
         return None
     registry, executor = build_tools(extra=defs)
-    approvals = auto_approved_tool_names(servers, attached_tool_names) | set(approved)
     ctx = ToolContext(
         approvals=frozenset(approvals),
         target_hosts=frozenset(),

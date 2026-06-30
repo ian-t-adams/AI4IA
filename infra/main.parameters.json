@@ -47,6 +47,9 @@
     "apimPublisherEmail": {
       "value": "${AI4IA_APIM_PUBLISHER_EMAIL=ai4ia@example.com}"
     },
+    "enableOfficialMcp": {
+      "value": false
+    },
     "webCustomDomain": {
       "value": "${AI4IA_WEB_CUSTOM_DOMAIN=}"
     },

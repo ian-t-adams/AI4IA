@@ -183,6 +183,16 @@ export async function listMcpServers(): Promise<UserMcpServer[]> {
   return data.servers;
 }
 
+// The curated **official** MCP servers (APIM-fronted, app-global). Read-only and
+// always present: the endpoint returns an empty list when the plane is off, so
+// the agent builder can call this unconditionally and simply render nothing.
+export async function listOfficialMcpServers(): Promise<UserMcpServer[]> {
+  const data = await jsonOrThrow<{ servers: UserMcpServer[] }>(
+    await apiFetch("/api/agents/official-mcp-servers", { cache: "no-store" }),
+  );
+  return data.servers;
+}
+
 export async function createMcpServer(
   input: UserMcpServerCreate,
 ): Promise<UserMcpServer> {

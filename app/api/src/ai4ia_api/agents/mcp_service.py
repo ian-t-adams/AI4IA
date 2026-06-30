@@ -383,6 +383,12 @@ class McpServerService:
             raise McpValidationError("Endpoint URL is required.")
         if len(endpoint) > MAX_ENDPOINT_LEN:
             raise McpValidationError("Endpoint URL is too long.")
+        # ``apim_subscription`` is reserved for the curated official MCP plane
+        # (its key is app-global and runtime-supplied). A BYO server must never
+        # select it — that would have no resolvable secret and could imply trust
+        # it does not have.
+        if auth_mode is McpAuthMode.apim_subscription:
+            raise McpValidationError("Unsupported auth mode.")
         host = self._validate_endpoint(endpoint)
         self._validate_secret(auth_mode, secret, optional=secret_optional)
         return display, desc, host, endpoint

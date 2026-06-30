@@ -53,26 +53,44 @@ def _curated(request: Request) -> AgentCatalog:
 
 
 async def _owned_mcp_tool_names(request: Request, user_id: str) -> set[str]:
-    """The caller's own discovered MCP tool names (``mcp:<server>/<tool>``).
+    """The MCP tool names (``mcp:<server>/<tool>``) the caller may attach.
 
-    Empty when custom tools are disabled (``app.state.mcp_service`` is ``None``),
-    so MCP tool names are rejected by agent validation exactly as before. A store
-    error fails closed (empty set) so a Cosmos blip can only narrow what a user may
-    attach, never widen it; the management write surfaces the validation error.
+    The union of two sources:
+
+    * the caller's own **BYO** discovered tools (``app.state.mcp_service``), and
+    * the curated **official** tools (``app.state.official_mcp_service``), which are
+      app-global (identical for every user) and reached through the MCP APIM front
+      door.
+
+    Empty when both features are disabled, so MCP tool names are rejected by agent
+    validation exactly as before. Each source fails closed independently (its error
+    contributes an empty set) so a store/discovery blip can only narrow what a user
+    may attach, never widen it; the management write surfaces the validation error.
     """
+    names: set[str] = set()
     mcp_service = getattr(request.app.state, "mcp_service", None)
-    if mcp_service is None:
-        return set()
-    try:
-        servers = await mcp_service.list_for(user_id)
-    except Exception:  # noqa: BLE001 - validation must not 500 on a store blip
-        logger.warning("mcp tool-name resolution failed", exc_info=True)
-        return set()
-    return {
-        namespaced_tool_name(s.name, t.name)
-        for s in servers
-        for t in s.discoveredTools
-    }
+    if mcp_service is not None:
+        try:
+            servers = await mcp_service.list_for(user_id)
+            names |= {
+                namespaced_tool_name(s.name, t.name)
+                for s in servers
+                for t in s.discoveredTools
+            }
+        except Exception:  # noqa: BLE001 - validation must not 500 on a store blip
+            logger.warning("mcp tool-name resolution failed", exc_info=True)
+    official_mcp_service = getattr(request.app.state, "official_mcp_service", None)
+    if official_mcp_service is not None:
+        try:
+            official = await official_mcp_service.list_all()
+            names |= {
+                namespaced_tool_name(s.name, t.name)
+                for s in official
+                for t in s.discoveredTools
+            }
+        except Exception:  # noqa: BLE001 - validation must not 500 on a discovery blip
+            logger.warning("official mcp tool-name resolution failed", exc_info=True)
+    return names
 
 
 @router.get("/agents", response_model=AgentListResponse)
