@@ -9,7 +9,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   // Use the automatic JSX runtime (react/jsx-runtime) so component test files
   // don't need an explicit `import React`. Next.js applies the same transform.
-  esbuild: { jsx: "automatic" },
+  // Vitest 4 transforms with oxc (Vite 8 dropped esbuild's `jsx` option); oxc
+  // defaults to the automatic runtime, set here explicitly to keep intent clear.
+  oxc: { jsx: { runtime: "automatic" } },
   test: {
     environment: "node",
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
