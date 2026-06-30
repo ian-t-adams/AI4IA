@@ -581,6 +581,19 @@ module api 'modules/api.bicep' = {
     webSearchEnabled: webSearchEnabled
     webIqApiKey: webIqApiKey
     webIqBaseUrl: webIqBaseUrl
+    // Official MCP plane (default OFF). Wires the dedicated MCP APIM front door's
+    // base URL + subscription key (from the conditional mcpgateway module) into the
+    // api so OfficialMcpService can reach curated servers gated on the APIM key.
+    // Guarded by the same flag so the conditional module's outputs are only
+    // referenced when it is deployed; empty strings keep the api path inert.
+    officialMcpEnabled: enableOfficialMcp
+    // Guarded by enableOfficialMcp, but Bicep can't statically tie the ternary to
+    // the conditional module's deploy condition, so suppress BCP318 (matches the
+    // AZURE_OFFICIAL_MCP_GATEWAY_URL output's handling).
+    #disable-next-line BCP318
+    officialMcpGatewayUrl: enableOfficialMcp ? mcpgateway.outputs.mcpGatewayBaseUrl : ''
+    #disable-next-line BCP318
+    officialMcpSubscriptionKey: enableOfficialMcp ? mcpgateway.outputs.mcpGatewaySubscriptionKey : ''
   }
 }
 

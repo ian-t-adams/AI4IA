@@ -194,6 +194,16 @@ param webIqApiKey string = ''
 @description('Optional Web IQ base URL override. Emitted as AI4IA_WEBIQ_BASE_URL only when webSearchEnabled and set; empty uses the SDK default endpoint.')
 param webIqBaseUrl string = ''
 
+@description('Enable the curated "official" MCP plane reached through the dedicated MCP APIM front door. Default OFF: the OfficialMcpService is not constructed and no official tool is advertised. When on, supply officialMcpGatewayUrl + officialMcpSubscriptionKey (config.validate_runtime fails closed without them).')
+param officialMcpEnabled bool = false
+
+@description('Base URL of the MCP APIM gateway (e.g. https://apim-mcp-….azure-api.net). Surfaced as AI4IA_OFFICIAL_MCP_GATEWAY_URL only when officialMcpEnabled.')
+param officialMcpGatewayUrl string = ''
+
+@description('APIM subscription key for the official MCP plane. Stored as a Container App secret and surfaced as AI4IA_OFFICIAL_MCP_SUBSCRIPTION_KEY only when officialMcpEnabled and supplied.')
+@secure()
+param officialMcpSubscriptionKey string = ''
+
 var entraEnv = authProvider == 'entra' ? [
   {
     name: 'AI4IA_ENTRA_TENANT_ID'
@@ -512,6 +522,34 @@ var customToolsEnv = customToolsEnabled ? concat([
   }
 ], customToolsVaultEnv) : []
 
+// Official MCP plane (default-OFF). The APIM subscription key is held as a
+// Container App secret and referenced by env only when the feature is on AND a key
+// is supplied; the gateway URL is a plain env var. config.validate_runtime fails
+// closed if enabled without both, so this only emits the enable flag alongside
+// them. When off, nothing is emitted and the path is byte-for-byte inert.
+var hasOfficialMcpKey = officialMcpEnabled && !empty(officialMcpSubscriptionKey)
+var officialMcpSecrets = hasOfficialMcpKey ? [
+  {
+    name: 'official-mcp-subscription-key'
+    value: officialMcpSubscriptionKey
+  }
+] : []
+var officialMcpEnv = officialMcpEnabled ? concat([
+  {
+    name: 'AI4IA_OFFICIAL_MCP_ENABLED'
+    value: 'true'
+  }
+  {
+    name: 'AI4IA_OFFICIAL_MCP_GATEWAY_URL'
+    value: officialMcpGatewayUrl
+  }
+], hasOfficialMcpKey ? [
+  {
+    name: 'AI4IA_OFFICIAL_MCP_SUBSCRIPTION_KEY'
+    secretRef: 'official-mcp-subscription-key'
+  }
+] : []) : []
+
 var apiEnv = concat([
   {
     name: 'PORT'
@@ -557,7 +595,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, webSearchEnv, resourceMetricsEnv)
+], gatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName
@@ -575,7 +613,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
     managedEnvironmentId: containerEnvId
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: concat(gatewaySecrets, adminSecrets, webIqSecrets)
+      secrets: concat(gatewaySecrets, adminSecrets, webIqSecrets, officialMcpSecrets)
       ingress: {
         // External for v1 so the api is directly testable before the web app
         // exists. Flip to internal once web is the only public frontend.
