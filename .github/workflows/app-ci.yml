@@ -6,8 +6,11 @@ on:
       - "app/**"
       - "infra/models.json"
       - "infra/mcp-servers.json"
+      - "foundry/**"
       - "scripts/gen-model-catalog.py"
       - "scripts/gen-mcp-catalog.py"
+      - "scripts/provision-foundry-toolbox.py"
+      - "scripts/provision-foundry-skills.py"
       - ".github/workflows/app-ci.yml"
   push:
     branches: [main]
@@ -15,8 +18,11 @@ on:
       - "app/**"
       - "infra/models.json"
       - "infra/mcp-servers.json"
+      - "foundry/**"
       - "scripts/gen-model-catalog.py"
       - "scripts/gen-mcp-catalog.py"
+      - "scripts/provision-foundry-toolbox.py"
+      - "scripts/provision-foundry-skills.py"
 
 permissions:
   contents: read

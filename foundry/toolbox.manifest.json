@@ -1,0 +1,9 @@
+{
+  "$schema": "./toolbox.manifest.schema.json",
+  "name": "ai4ia-toolbox",
+  "description": "AI4IA shared Foundry toolbox (INERT by default). Populate tools/skills/connections and run scripts/provision-foundry-toolbox.py to create it; see docs/foundry-toolbox.md.",
+  "raiPolicyName": "ai4ia-annotate-only",
+  "connections": [],
+  "tools": [],
+  "skills": []
+}
