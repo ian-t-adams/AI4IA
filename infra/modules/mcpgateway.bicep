@@ -168,6 +168,9 @@ resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-previ
 output mcpApimName string = apim.name
 output mcpGatewayBaseUrl string = apim.properties.gatewayUrl
 
+@description('System-assigned managed identity principalId of the MCP APIM. Used by main.bicep to grant the gateway the Foundry User role on the primary project when the Foundry-toolbox bridge is enabled, so APIM can mint the AAD bearer the toolbox MCP endpoint requires.')
+output mcpApimPrincipalId string = apim.identity.principalId
+
 @description('All-APIs-scoped subscription key the backend presents to the MCP gateway (Ocp-Apim-Subscription-Key).')
 #disable-next-line outputs-should-not-contain-secrets
 output mcpGatewaySubscriptionKey string = mcpSubscription.listSecrets().primaryKey
