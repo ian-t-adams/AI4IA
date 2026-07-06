@@ -15,6 +15,18 @@ const eslintConfig = [
   ...nextCoreWebVitals,
   ...nextTypescript,
   {
+    // Pin the React version for eslint-plugin-react instead of relying on its
+    // "detect" mode. eslint-config-next sets `settings.react.version = "detect"`,
+    // which routes the bundled eslint-plugin-react@7.37.5 through
+    // `resolveBasedir` -> `context.getFilename()`. ESLint 10 removed the
+    // long-deprecated `context.getFilename()` (use `context.filename`), so
+    // detection throws "contextOrFilename.getFilename is not a function". An
+    // explicit version skips detection entirely, keeping this bump config-only.
+    settings: {
+      react: {
+        version: "19.2.7",
+      },
+    },
     // eslint-config-next 16 bundles react-hooks v6, which enables the new
     // React Compiler static-analysis rules as errors. The existing components
     // predate these checks, so we surface them as warnings (non-blocking) to
