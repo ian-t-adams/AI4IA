@@ -20,7 +20,7 @@ dependencies = [
     # CI-gated dependency bump instead of a silent type-gate break. The bounds
     # include the installed versions (fastapi 0.138.x, starlette 1.3.x), so
     # nothing is downgraded; raise them deliberately alongside a green pyright.
-    "fastapi>=0.115,<0.139",
+    "fastapi>=0.115,<0.140",
     # Starlette is FastAPI's ASGI foundation (otherwise pulled in transitively);
     # pinned directly so its upper bound is enforced independently of FastAPI's
     # loose `>=0.46.0` floor. See the fastapi note above.
