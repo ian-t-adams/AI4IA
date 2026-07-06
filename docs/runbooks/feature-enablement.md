@@ -24,13 +24,15 @@ feature posture.
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | Cosmos, Key Vault URI, Entra auth outside local |
 | Official MCP plane | `AI4IA_OFFICIAL_MCP_ENABLED` | none | `enableOfficialMcp` | Dedicated MCP APIM front door + ≥1 server in `infra/mcp-servers.json`; gateway URL + subscription key auto-wired |
 | Foundry toolbox (bridge) | consumed via the official MCP plane (no dedicated flag) | none | `enableFoundryToolbox` (+ `enableOfficialMcp`) | Provisioned toolbox in the default Foundry project + a `foundry-toolbox` entry in `infra/mcp-servers.json`; grants APIM MI the project "Foundry User" role. See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
+| Private tool catalog (API Center) | admin/IaC only (no app-runtime env) | none | `enablePrivateToolCatalog` | Provisions an Azure API Center to inventory the APIM-fronted MCP servers; asset registration is a documented script step (`scripts/provision-private-tool-catalog.py`). See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
 | Web IQ search tools | `AI4IA_WEB_SEARCH_ENABLED` | none | `webSearchEnabled` | Web IQ API key or Entra managed identity outside local |
 | Admin resource panels | `AI4IA_RESOURCE_METRICS_ENABLED` + resource ids | admin dashboard | resource-id env from modules | Monitoring Reader and ARM resource ids |
 
 The checked-in live parameters currently turn on image/video generation,
 document understanding, document compute, AI Search, Voice Live + tools, custom
 tools, and Postgres-backed memory. Web IQ, inline attachment Code Interpreter,
-the official MCP plane, and the Foundry toolbox bridge remain OFF there.
+the official MCP plane, and the Foundry toolbox bridge remain OFF there. The
+private tool catalog (`enablePrivateToolCatalog`) is also OFF by default.
 
 ## Enablement notes
 
@@ -184,6 +186,33 @@ role on the project (data-plane scope), so APIM's injected bearer for
 `https://ai.azure.com` can invoke the toolbox. `main.bicep` emits the project
 endpoint as `AZURE_FOUNDRY_PROJECT_ENDPOINT` for the provisioning scripts. All
 toolbox/skills/tool-search features are **public preview**.
+
+### Private tool catalog (Azure API Center)
+
+**Default OFF.** `enablePrivateToolCatalog=true` provisions an Azure API Center
+(`infra/modules/apicenter.bicep`) to act as a governed inventory of the
+APIM-fronted MCP servers. It is independent of the MCP plane flags -- it catalogs
+whatever exists -- and has **no app-runtime impact** (admin/IaC concern only).
+
+1. Set `enablePrivateToolCatalog=true` and `azd up`. `main.bicep` emits the service
+   name as `AZURE_API_CENTER_NAME`.
+2. Register the servers as MCP assets (a preview, script-driven step; not baked into
+   Bicep):
+
+   ```bash
+   # dry run
+   python scripts/provision-private-tool-catalog.py \
+     --api-center "$AZURE_API_CENTER_NAME" --gateway-url "$AZURE_OFFICIAL_MCP_GATEWAY_URL"
+   # register via SDK (needs the `foundry` extra)
+   python scripts/provision-private-tool-catalog.py --create \
+     --api-center "$AZURE_API_CENTER_NAME" --gateway-url "$AZURE_OFFICIAL_MCP_GATEWAY_URL" \
+     --resource-group "$AZURE_RESOURCE_GROUP" --subscription-id "$AZURE_SUBSCRIPTION_ID"
+   ```
+
+The script catalogs each server's **APIM consumer URL**
+(`https://<mcp-apim-gateway>/<name>/mcp`), so discovery stays on the proxy and the
+catalog integrates with Microsoft Foundry private tool catalogs. API Center MCP
+asset registration is **public preview**.
 
 ### Web IQ tools
 

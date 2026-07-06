@@ -34,6 +34,9 @@ param enableOfficialMcp bool = false
 @description('Opt-in: enable the Foundry Agent Service toolbox bridge. Grants the official-MCP APIM system-assigned identity the "Foundry User" role on the primary Foundry project so it can mint the AAD bearer the toolbox MCP endpoint requires, and emits AZURE_FOUNDRY_PROJECT_ENDPOINT for the provisioning scripts. Requires enableOfficialMcp=true to have any effect (the toolbox is consumed as an official MCP server fronted by that APIM). Default OFF; no toolbox is created by the deploy itself (provisioning is a documented, opt-in script step).')
 param enableFoundryToolbox bool = false
 
+@description('Opt-in: provision an Azure API Center to act as a private tool catalog that inventories the official MCP servers fronted by the MCP APIM (discoverable/governable, and integratable with Microsoft Foundry private tool catalogs). Default OFF so the checked-in deploy provisions no API Center. Registering each MCP server as an asset is a documented, opt-in script step (scripts/provision-private-tool-catalog.py).')
+param enablePrivateToolCatalog bool = false
+
 @description('Opt-in: deploy a minimal Azure Monitor alerting baseline (action group + metric alerts). Default OFF so existing deployments are byte-for-byte unchanged and no alert can fire without explicit enablement.')
 param enableAlerts bool = false
 
@@ -498,6 +501,22 @@ module mcpgateway 'modules/mcpgateway.bicep' = if (enableOfficialMcp) {
 #disable-next-line BCP318
 var foundryToolboxApimPrincipal = (enableOfficialMcp && enableFoundryToolbox) ? [mcpgateway.outputs.mcpApimPrincipalId] : []
 
+// --- Private tool catalog (Azure API Center; opt-in) ---
+// Inventories the APIM-fronted official MCP servers as a discoverable/governable
+// private catalog (and integrates with Foundry private tool catalogs). Default OFF:
+// no resources unless explicitly enabled. Asset registration is a documented script
+// step (scripts/provision-private-tool-catalog.py), not baked into IaC.
+module apicenter 'modules/apicenter.bicep' = if (enablePrivateToolCatalog) {
+  name: 'apicenter'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    workload: workload
+    environmentName: environmentName
+  }
+}
+
 // --- Backend API (FastAPI) Container App ---
 module api 'modules/api.bicep' = {
   name: 'api'
@@ -734,6 +753,10 @@ output AZURE_OFFICIAL_MCP_GATEWAY_URL string = enableOfficialMcp ? mcpgateway.ou
 // toolbox; the toolbox MCP URL registered in mcp-servers.json is
 // `<this>/toolboxes/<name>/mcp`. Empty otherwise so the default deploy is unchanged.
 output AZURE_FOUNDRY_PROJECT_ENDPOINT string = enableFoundryToolbox ? foundry[primaryFoundryIndex].outputs.projectEndpoint : ''
+// Private tool catalog (API Center) name, emitted only when enabled. The
+// provisioning script reads this to register the APIM-fronted MCP servers as assets.
+#disable-next-line BCP318
+output AZURE_API_CENTER_NAME string = enablePrivateToolCatalog ? apicenter.outputs.apiCenterName : ''
 output AZURE_API_URL string = api.outputs.apiUrl
 output AZURE_API_APP_NAME string = api.outputs.apiAppName
 output AZURE_WEB_URL string = web.outputs.webUrl

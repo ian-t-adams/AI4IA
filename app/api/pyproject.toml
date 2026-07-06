@@ -118,10 +118,12 @@ dev = [
 # Provisioning-only extra for the Foundry toolbox/skills scripts (scripts/provision-foundry-*.py).
 # NOT installed by CI or the runtime container; operators install it at provisioning time:
 #   uv pip install -e "app/api[foundry]"
-# The azure-ai-projects preview SDK carries the toolboxes/skills clients used by --create.
+# The azure-ai-projects preview SDK carries the toolboxes/skills clients used by --create;
+# azure-mgmt-apicenter registers the private-tool-catalog assets (scripts/provision-private-tool-catalog.py --create).
 foundry = [
     "azure-ai-projects>=1.0.0b1",
     "azure-identity>=1.17",
+    "azure-mgmt-apicenter>=1.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]

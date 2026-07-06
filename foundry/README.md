@@ -40,6 +40,11 @@ python scripts/provision-foundry-toolbox.py --create
 
 # 3. Paste the printed entry into infra/mcp-servers.json, set
 #    enableOfficialMcp=true + enableFoundryToolbox=true, and `azd up`.
+
+# 4. (optional) Inventory the APIM-fronted MCP servers in an Azure API Center
+#    private tool catalog (set enablePrivateToolCatalog=true first).
+python scripts/provision-private-tool-catalog.py     # dry run: prints APIM URLs to catalog
+python scripts/provision-private-tool-catalog.py --create
 ```
 
 The scripts default to a **safe offline dry run** and read the project endpoint from

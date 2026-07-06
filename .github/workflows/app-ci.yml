@@ -11,6 +11,7 @@ on:
       - "scripts/gen-mcp-catalog.py"
       - "scripts/provision-foundry-toolbox.py"
       - "scripts/provision-foundry-skills.py"
+      - "scripts/provision-private-tool-catalog.py"
       - ".github/workflows/app-ci.yml"
   push:
     branches: [main]
@@ -23,6 +24,7 @@ on:
       - "scripts/gen-mcp-catalog.py"
       - "scripts/provision-foundry-toolbox.py"
       - "scripts/provision-foundry-skills.py"
+      - "scripts/provision-private-tool-catalog.py"
 
 permissions:
   contents: read

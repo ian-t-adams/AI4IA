@@ -187,13 +187,44 @@ Skill `name` must match `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (max 64). The create p
 To disable: set `enableFoundryToolbox=false` (drops the RBAC grant) and/or remove the entry and
 regenerate the catalog. Setting `enableOfficialMcp=false` tears down the whole MCP plane.
 
+## Private tool catalog (Azure API Center)
+
+`enablePrivateToolCatalog=true` provisions an **Azure API Center** (`infra/modules/apicenter.bicep`,
+`Microsoft.ApiCenter/services@2024-03-01`, Free plan, system-assigned identity, single `default`
+workspace) to act as a private, governed inventory of tools. Default OFF: the checked-in deploy
+provisions no API Center, and the flag is independent of `enableOfficialMcp`/`enableFoundryToolbox`
+(you can catalog whatever official MCP servers exist). When enabled, `azd env get-values` exposes
+`AZURE_API_CENTER_NAME`.
+
+The **catalog container** is IaC; **registering each server as an asset** is a preview, script-driven
+step (MCP is a preview API kind in API Center), so it is intentionally not baked into Bicep:
+
+```bash
+# Dry run: lists each server and the APIM consumer URL that will be cataloged.
+python scripts/provision-private-tool-catalog.py \
+  --api-center "$AZURE_API_CENTER_NAME" \
+  --gateway-url "$AZURE_OFFICIAL_MCP_GATEWAY_URL"
+
+# Print ready-to-run `az apic api create` commands (register via CLI):
+python scripts/provision-private-tool-catalog.py --emit-az \
+  --api-center "$AZURE_API_CENTER_NAME" --gateway-url "$AZURE_OFFICIAL_MCP_GATEWAY_URL" \
+  --resource-group "$AZURE_RESOURCE_GROUP"
+
+# Or register directly via the SDK (needs the `foundry` extra):
+python scripts/provision-private-tool-catalog.py --create \
+  --api-center "$AZURE_API_CENTER_NAME" --gateway-url "$AZURE_OFFICIAL_MCP_GATEWAY_URL" \
+  --resource-group "$AZURE_RESOURCE_GROUP" --subscription-id "$AZURE_SUBSCRIPTION_ID"
+```
+
+The load-bearing detail: the script catalogs the **APIM consumer URL**
+(`https://<mcp-apim-gateway>/<name>/mcp`), not the raw upstream. Discovery and governance stay on
+the proxy, and because API Center private tool catalogs integrate with Microsoft Foundry, Foundry
+agents discover exactly the APIM-fronted URLs the app already consumes -- one governed inventory,
+no second auth path. The shipped `infra/mcp-servers.json` is empty, so the script is a clean no-op
+until servers are registered.
+
 ## Deferred (documented scaffolding, not shipped)
 
-- **P6 — Private tool catalog (Azure API Center).** Register the APIM-fronted MCP URLs
-  (including `foundry-toolbox`) in an Azure API Center so they are discoverable/governed as a
-  private catalog. This is an admin/IaC concern with no app-runtime impact; a thin
-  `apicenter.bicep` + `scripts/provision-private-tool-catalog.py` skeleton is the intended
-  shape. Deferred: needs a live tenant to validate.
 - **P7 — Routines + Agent-to-Agent (A2A) endpoint.** Foundry managed-agent-runtime features.
   The intended pattern mirrors the bridge: enable the A2A endpoint, front it through APIM, and
   optionally consume it via the app's agent `links` (agent-as-tool) seam. Deferred: managed
@@ -208,6 +239,9 @@ regenerate the catalog. Setting `enableOfficialMcp=false` tears down the whole M
   projected entry validates against `infra/mcp-servers.schema.json` (the load-bearing
   cross-seam guarantee) and that both manifests match `toolbox.manifest.schema.json`.
 - `infra-validate` runs `check-jsonschema` on `foundry/toolbox.manifest.json` and builds
-  `infra/main.bicep`.
+  `infra/main.bicep` (which compiles `apicenter.bicep`).
 - `app-ci` runs the pytest suite whenever `app/**`, `foundry/**`, or the provisioning scripts
   change.
+- `app/api/tests/test_private_tool_catalog.py` pins the API Center registration script: each
+  server projects to an MCP asset carrying the **APIM consumer URL**, the emitted
+  `az apic api create` command shape, and fail-closed input resolution.
