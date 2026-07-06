@@ -5,14 +5,18 @@ on:
     paths:
       - "app/**"
       - "infra/models.json"
+      - "infra/mcp-servers.json"
       - "scripts/gen-model-catalog.py"
+      - "scripts/gen-mcp-catalog.py"
       - ".github/workflows/app-ci.yml"
   push:
     branches: [main]
     paths:
       - "app/**"
       - "infra/models.json"
+      - "infra/mcp-servers.json"
       - "scripts/gen-model-catalog.py"
+      - "scripts/gen-mcp-catalog.py"
 
 permissions:
   contents: read
@@ -63,6 +67,9 @@ jobs:
       - name: Model catalog drift check
         working-directory: .
         run: python scripts/gen-model-catalog.py --check
+      - name: MCP catalog drift check
+        working-directory: .
+        run: python scripts/gen-mcp-catalog.py --check
       - name: Lint (ruff)
         run: ruff check .
       - name: Type check (pyright)

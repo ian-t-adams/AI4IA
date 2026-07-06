@@ -36,6 +36,9 @@ jobs:
           python -m pip install --quiet check-jsonschema
           check-jsonschema --schemafile infra/models.schema.json infra/models.json
 
+      - name: Validate mcp-servers.json against schema
+        run: check-jsonschema --schemafile infra/mcp-servers.schema.json infra/mcp-servers.json
+
       - name: Validate catalog consistency (regions / SKUs / names)
         run: python scripts/validate-catalog.py
 

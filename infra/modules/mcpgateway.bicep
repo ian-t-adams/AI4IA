@@ -33,7 +33,8 @@ param apimPublisherName string = 'AI4IA'
 param skuCapacity int = 1
 
 @description('''Curated MCP servers to expose, loaded by main.bicep from infra/mcp-servers.json. Each item:
-{ name: string, displayName: string, description?: string, upstreamUrl: string, upstreamAuthMode: 'none'|'managed_identity', upstreamMiResource?: string }''')
+{ name: string, displayName: string, description?: string, upstreamUrl: string, upstreamAuthMode: 'none'|'managed_identity', upstreamMiResource?: string, upstreamHeaders?: object, upstreamQueryParams?: object }
+upstreamHeaders / upstreamQueryParams are optional string maps of static values APIM injects outbound to the upstream (e.g. a Foundry toolbox needs header Foundry-Features=Toolboxes=V1Preview and query api-version=v1).''')
 param servers array
 
 // ---------------- MCP APIM front door (Basic v2) ----------------
@@ -106,18 +107,31 @@ resource mcpApis 'Microsoft.ApiManagement/service/apis@2024-06-01-preview' = [fo
   }
 }]
 
-// Per-server policy: route to the backend and, for managed_identity upstreams,
-// inject the APIM system identity as a bearer token. The response body is never
-// touched (context.Response.Body) — doing so buffers and breaks MCP streaming.
+// Per-server inbound policy fragments, precomputed so the policy resource stays
+// readable. Each server's inbound = (optional managed-identity bearer) + (optional
+// static upstream headers) + (optional static query params) + route to the backend.
+// items()/map()/join()/concat() resolve at compile time because `servers` originates
+// from loadJsonContent() in main.bicep. The response body is never touched
+// (context.Response.Body) — buffering it breaks MCP streaming.
+var serverInboundPolicies = [for s in servers: join(concat(
+  s.upstreamAuthMode == 'managed_identity' ? [
+    '<authentication-managed-identity resource="${s.?upstreamMiResource ?? ''}" output-token-variable-name="msi-access-token" ignore-error="false" />'
+    '<set-header name="Authorization" exists-action="override"><value>@("Bearer " + (string)context.Variables["msi-access-token"])</value></set-header>'
+  ] : [],
+  map(items(s.?upstreamHeaders ?? {}), h => '<set-header name="${h.key}" exists-action="override"><value>${h.value}</value></set-header>'),
+  map(items(s.?upstreamQueryParams ?? {}), q => '<set-query-parameter name="${q.key}" exists-action="override"><value>${q.value}</value></set-query-parameter>'),
+  [
+    '<set-backend-service backend-id="${s.name}-backend" />'
+  ]
+), '')]
+
 @batchSize(1)
 resource mcpPolicies 'Microsoft.ApiManagement/service/apis/policies@2024-06-01-preview' = [for (s, i) in servers: {
   parent: mcpApis[i]
   name: 'policy'
   properties: {
     format: 'rawxml'
-    value: s.upstreamAuthMode == 'managed_identity'
-      ? '<policies><inbound><base /><authentication-managed-identity resource="${s.?upstreamMiResource ?? ''}" output-token-variable-name="msi-access-token" ignore-error="false" /><set-header name="Authorization" exists-action="override"><value>@("Bearer " + (string)context.Variables["msi-access-token"])</value></set-header><set-backend-service backend-id="${s.name}-backend" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>'
-      : '<policies><inbound><base /><set-backend-service backend-id="${s.name}-backend" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>'
+    value: '<policies><inbound><base />${serverInboundPolicies[i]}</inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>'
   }
 }]
 
