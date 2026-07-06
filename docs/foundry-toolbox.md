@@ -223,12 +223,48 @@ agents discover exactly the APIM-fronted URLs the app already consumes -- one go
 no second auth path. The shipped `infra/mcp-servers.json` is empty, so the script is a clean no-op
 until servers are registered.
 
-## Deferred (documented scaffolding, not shipped)
+## P7 — Routines and Agent-to-Agent (A2A): plan (not shipped)
 
-- **P7 — Routines + Agent-to-Agent (A2A) endpoint.** Foundry managed-agent-runtime features.
-  The intended pattern mirrors the bridge: enable the A2A endpoint, front it through APIM, and
-  optionally consume it via the app's agent `links` (agent-as-tool) seam. Deferred: managed
-  runtime features that require a live project and end-to-end tenant testing.
+Routines and A2A are Foundry **managed-agent-runtime** features. Unlike the toolbox/skills/catalog
+work, they have almost no offline-verifiable surface: the `azure-ai-projects` 2.3.0 client exposes
+only `get_openai_client` / `send_request` at the top level and reaches agents through a preview
+`_patch_agents` operations module, so any `--create` script written today would target an unstable,
+unverifiable SDK shape. Per this repo's guardrail we do **not** ship unverifiable live wiring. What
+follows is the concrete plan to execute against a live tenant with a pinned preview SDK.
+
+### Routines
+
+A [routine](https://learn.microsoft.com/azure/foundry/agents/how-to/use-routines) is a managed,
+multi-step agent definition that runs *inside* the Foundry agent. Key insight for this app: **a
+routine that needs tools calls the toolbox MCP endpoint, which is already fronted by APIM** -- so
+routines inherit the bridge's governance for free and add no new APIM surface for our runtime.
+
+Planned shape (mirrors `provision-foundry-toolbox.py`):
+- `foundry/routines/<name>.routine.json` -- a manifest (steps, tool references, model) checked in
+  next to the toolbox manifest, default empty/inert.
+- `scripts/provision-foundry-routine.py` -- pure `load`/`validate`/`plan` functions (dependency-free,
+  unit-tested) plus an isolated `--create` path using the pinned preview SDK. Dry-run default.
+- The routine references the `foundry-toolbox` tools by name, so every tool call it makes still flows
+  through the MCP APIM. Nothing is consumed by the app runtime directly.
+
+### Agent-to-Agent (A2A) endpoint
+
+[A2A](https://learn.microsoft.com/azure/foundry/agents/how-to/enable-agent-to-agent-endpoint) exposes
+a Foundry agent over the Agent2Agent protocol at a per-agent endpoint. This is the one P7 capability
+with a genuine new APIM angle, and the plan keeps it on the proxy:
+
+1. Enable the A2A endpoint on a deployed Foundry agent (portal/CLI/SDK); capture its endpoint URL.
+2. Front that URL through APIM as a dedicated route, reusing the exact pattern the toolbox bridge
+   uses: APIM injects the Foundry managed-identity bearer for `https://ai.azure.com` (and any preview
+   feature header), so callers present only the APIM subscription key -- no second auth path.
+3. Consume the APIM-fronted A2A endpoint from the app via the existing agent **`links`
+   (agent-as-tool)** seam, so a remote Foundry agent appears as a delegated tool, gated on APIM auth
+   exactly like every other official MCP server.
+
+Why deferred: steps 1-3 require a live project, a deployed agent to mint an endpoint URL, and
+end-to-end tenant testing; the enabling SDK/CLI surface is public preview. The APIM-fronting pattern
+itself is already proven by the toolbox bridge, so execution is a wiring exercise once a tenant is
+available.
 
 ## Testing and CI
 
