@@ -103,6 +103,7 @@ Settings → Secrets and variables → Actions → **Variables** (these are iden
 | `AZURE_LOCATION` | primary region, e.g. `eastus2` |
 | `AI4IA_OWNER` | accountable owner tag value for the deployed resources |
 | `AI4IA_APIM_PUBLISHER_EMAIL` | operator-owned APIM publisher mailbox |
+| `AI4IA_BUDGET_START_DATE` | *(optional, recommended)* fixed budget start month `yyyy-MM-01`. Empty defaults to the first of the current month, which **drifts and breaks the first deploy of each new month** (see 6.2). Pin it to keep redeploys idempotent. |
 
 The moment `AZURE_CLIENT_ID` is set, the next qualifying push to `main` deploys.
 
@@ -193,7 +194,7 @@ portal/CLI while a fix is prepared.
 
 ## 6. Troubleshooting
 
-### `Provision infrastructure` fails with `LocationIsOfferRestricted` (Postgres)
+### 6.1 `Provision infrastructure` fails with `LocationIsOfferRestricted` (Postgres)
 
 Symptom — the deploy job fails in **Provision infrastructure** with:
 
@@ -218,3 +219,39 @@ $sub = (az account show --query id -o tsv)
 az rest --method get --url "https://management.azure.com/subscriptions/$sub/providers/Microsoft.DBforPostgreSQL/locations/<region>/capabilities?api-version=2024-08-01" --query "value[0].{restricted:restricted, reason:reason}" -o json
 # restricted: "Disabled" (with reason: null) means the region is usable.
 ```
+
+
+### 6.2 `Provision infrastructure` fails with `Start date of budgets cannot be updated`
+
+Symptom — the deploy job fails in **Provision infrastructure**, after every other resource
+succeeds, with:
+
+```
+400: Start date of budgets cannot be updated. Please delete and create a new budget.
+```
+
+Cause — the resource-group budget (`infra/modules/cost.bicep`) needs a start date that is the
+first of a month. When `AI4IA_BUDGET_START_DATE` is unset, bicep defaults it to the first of the
+*current* month (`utcNow`). Azure forbids changing an existing budget's start date, so the first
+deploy of each new month tries to move the start date forward and is rejected. It is unrelated to
+any application or infra change in the triggering commit.
+
+Fix — pin the start date so it never drifts, then reconcile the existing budget once. Pick one:
+
+- **Match the existing budget (no deletion).** In the portal open Cost Management → Budgets →
+  `budget-ai4ia-<env>` and read its start date. Set the `AI4IA_BUDGET_START_DATE` repo variable to
+  that exact `yyyy-MM-01`. The next deploy sends the unchanged value, so there is no update to
+  reject, and it stays idempotent forever.
+- **Delete and recreate.** Delete `budget-ai4ia-<env>` in the target subscription (Azure's own
+  suggestion), set `AI4IA_BUDGET_START_DATE` to the first of the current month (`yyyy-MM-01`), then
+  re-run the deploy. It is recreated with the pinned date and stays idempotent.
+
+Set the variable with the CLI:
+
+```powershell
+gh variable set AI4IA_BUDGET_START_DATE --body "2026-07-01"
+```
+
+The value is a global repo variable, so use the first of the month in which the budget is (re)created.
+A brand-new environment created in a later month should use that later month (a monthly budget's start
+date cannot be more than the current period in the past).

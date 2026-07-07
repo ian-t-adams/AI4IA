@@ -82,6 +82,11 @@ jobs:
       AI4IA_ENTRA_WEB_CLIENT_ID: ${{ vars.AI4IA_ENTRA_WEB_CLIENT_ID }}
       AI4IA_ENTRA_API_SCOPE: ${{ vars.AI4IA_ENTRA_API_SCOPE }}
       AI4IA_ADMIN_SUBJECTS: ${{ vars.AI4IA_ADMIN_SUBJECTS }}
+      # Budget start date pin. Empty -> bicep uses the first of the current month
+      # (drifts, so the first deploy of each new month fails on the immutable
+      # budget start date). Set this repo variable to a fixed yyyy-MM-01 to keep
+      # redeploys idempotent. See docs/runbooks/deployment.md.
+      AI4IA_BUDGET_START_DATE: ${{ vars.AI4IA_BUDGET_START_DATE }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
