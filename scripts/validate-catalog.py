@@ -23,6 +23,8 @@ def main() -> int:
     data = json.loads(MODELS.read_text(encoding="utf-8"))
     regions = set(data["regions"].keys())
     sku_short = data["naming"]["skuShort"]
+    # Single source of truth (must match main.bicep + gen-model-catalog.py).
+    subscription_token = data["naming"]["subscriptionToken"]
     errors: list[str] = []
     seen_names: dict[str, str] = {}
     seen_pairs: set[tuple[str, str]] = set()
@@ -51,7 +53,7 @@ def main() -> int:
             if pair in seen_pairs:
                 errors.append(f"{name}: duplicate deployment for region '{region}'")
             seen_pairs.add(pair)
-            dep_name = f"{name}-slurmfactory-{region}-{sku_short[sku]}"
+            dep_name = f"{name}-{subscription_token}-{region}-{sku_short[sku]}"
             if dep_name in seen_names:
                 errors.append(
                     f"duplicate deployment name '{dep_name}' "

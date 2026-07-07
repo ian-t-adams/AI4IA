@@ -198,16 +198,18 @@ var tags = {
 
 var resourceGroupName = 'rg-${workload}-${environmentName}'
 
-@description('Foundry naming token kept per the approved convention.')
-var foundryToken = 'aiforia'
-
-@description('Subscription token used in deployment names (region/datazone notation).')
-var subscriptionToken = 'slurmfactory'
-
 // Curated, data-driven model catalog (see infra/models.json + models.schema.json).
 var models = loadJsonContent('models.json')
 var skuShort = models.naming.skuShort
 var catalog = models.catalog
+
+// Naming tokens come from models.json `naming` (the single source of truth also read by
+// scripts/gen-model-catalog.py, scripts/validate-catalog.py, and the app runtime). Changing
+// them there (plus AZURE_ENV_NAME) is what makes a subscription/tenant move 1:1.
+// `foundryToken` names the Foundry accounts/projects (mf-<foundryToken>-<env>-<region>);
+// `subscriptionToken` is stamped into every model deployment name.
+var foundryToken = models.naming.foundryToken
+var subscriptionToken = models.naming.subscriptionToken
 var regionList = map(items(models.regions), r => {
   name: r.key
   dataZone: r.value.dataZone

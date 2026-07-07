@@ -13,6 +13,18 @@ watch the Bicep parameter, and know which runtime setting appears in the app.
 | APIM publisher email | `AI4IA_APIM_PUBLISHER_EMAIL` | `apimPublisherEmail` | Required by API Management. Use an operator-owned mailbox, not a person. |
 | Budget alert recipients | Bicep override only today | `budgetAlertEmails` | Empty means budget tracking without email notifications. |
 
+## Naming tokens (subscription / tenant portability)
+
+These are **not** env vars or Bicep parameters — they live in `infra/models.json` under `naming`,
+the single source of truth read by Bicep, the catalog scripts, and the app runtime. Change them
+(and regenerate the model catalog) when standing the stack up in a new subscription/tenant. Full
+procedure: [`runbooks/deployment.md` §3](runbooks/deployment.md#3-moving-to-a-new-subscription-or-tenant-11-standup).
+
+| Token | `infra/models.json` path | What it names |
+| --- | --- | --- |
+| Subscription token | `naming.subscriptionToken` (default `slurmfactory`) | Every model deployment: `{model}-<token>-<region>-<sku>`. Must match between Bicep (creates the deployments) and the runtime catalog (routes to them) — a single edit + `scripts/gen-model-catalog.py` keeps them in sync. |
+| Foundry token | `naming.foundryToken` (default `aiforia`) | Foundry accounts/projects (`mf-<token>-<env>-<region>`) and the computed toolbox MCP URL. |
+
 ## Feature flags and prerequisites
 
 | Feature | azd / CI variable | Bicep parameter | Runtime setting emitted | Required companion config |

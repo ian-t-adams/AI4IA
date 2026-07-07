@@ -2,7 +2,10 @@
   "$schema": "./models.schema.json",
   "_comment": "Generated from live az cognitiveservices model list, reconciled to live catalog + quota (gen_catalog_v2). Each deployment pins an explicit model version.",
   "naming": {
-    "pattern": "{model}-slurmfactory-{region}-{skuShort}",
+    "_comment": "Naming tokens for the whole stack (single source of truth). `subscriptionToken` is stamped into every model deployment name; `foundryToken` names the Foundry accounts/projects (mf-<foundryToken>-<env>-<region>). main.bicep, scripts/gen-model-catalog.py, scripts/validate-catalog.py, and app/api catalog.py all read these, so changing them here (plus AZURE_ENV_NAME) is what makes a subscription/tenant move 1:1. After changing, run scripts/gen-model-catalog.py to regenerate the runtime catalog. See docs/runbooks/deployment.md (Moving to a new subscription/tenant).",
+    "subscriptionToken": "slurmfactory",
+    "foundryToken": "aiforia",
+    "pattern": "{model}-{subscriptionToken}-{region}-{skuShort}",
     "skuShort": {
       "GlobalStandard": "glbl",
       "DataZoneStandard": "dz",
