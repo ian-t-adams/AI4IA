@@ -5,6 +5,7 @@ web frontend calls the FastAPI backend; the backend owns auth, session state,
 tools, memory, document/library access, usage metering, and all model routing.
 
 Editable visual: [`architecture-overview.excalidraw`](./architecture-overview.excalidraw).
+Live, always-current view: the [status &amp; documentation portal](https://ian-t-adams.github.io/AI4IA/).
 
 ## High-level flow
 
@@ -48,6 +49,26 @@ entitlements, metering, deployment resolution, and optional governed tool callin
 5. Durable state is written to Cosmos and Blob Storage; derived memory/search/chunk
    stores are updated best-effort and can be rebuilt.
 
+```mermaid
+sequenceDiagram
+  autonumber
+  participant B as Browser
+  participant W as Web (Next.js)
+  participant A as API (FastAPI)
+  participant G as APIM + Proxy
+  participant F as Foundry
+  participant C as Cosmos
+  B->>W: POST /api/chat (Entra bearer)
+  W->>A: forward same-origin (+ identity)
+  A->>A: auth, normalize user id, entitlement + feature gates
+  A->>C: load session + inject memory/document context
+  A->>G: governed model call
+  G->>F: managed-identity call to deployment
+  F-->>A: streamed tokens
+  A-->>B: stream response (via web proxy)
+  A->>C: persist messages + usage ledger (best-effort)
+```
+
 ## Core principles
 
 1. **Gateway-first model calls.** Chat, agents, embeddings, image/video generation,
@@ -88,6 +109,80 @@ entitlements, metering, deployment resolution, and optional governed tool callin
 | AI services | Foundry + Content Understanding | Models, realtime, speech, image/video, CU ingest |
 | Observability | Log Analytics + App Insights + Monitor | Logs, traces, metrics, admin resource panels |
 
+## Deployment topology
+
+The live footprint in `rg-ai4ia-slurmfactory` (East US 2 primary), grouped by role.
+A live, always-current view is published on the
+[status portal](https://ian-t-adams.github.io/AI4IA/status.html).
+
+```mermaid
+flowchart LR
+  subgraph Edge["Edge / ingress"]
+    WebCA["ca-web · Next.js"]
+    ProxyCA["ca-proxy · SimpleL7Proxy"]
+  end
+  subgraph Gateways["API Management"]
+    Apim["apim · model gateway"]
+    ApimMcp["apim-mcp · MCP gateway"]
+    Apic["API Center · tool catalog"]
+  end
+  subgraph Compute["Container Apps env + registry"]
+    ApiCA["ca-api · FastAPI"]
+    Acr["ACR"]
+  end
+  subgraph AI["Azure AI Foundry (x3 regions)"]
+    F1["East US 2"]
+    F2["Sweden Central"]
+    F3["West US"]
+  end
+  subgraph Data["Data + memory"]
+    Cos["Cosmos DB"]
+    Pg["Postgres + pgvector"]
+    Srch["AI Search"]
+    St["Storage x2"]
+  end
+  subgraph Sec["Security / config"]
+    Kv["Key Vault"]
+    Ac["App Configuration"]
+    Ids["Managed identities x3"]
+  end
+  subgraph Obs["Observability"]
+    Ai["App Insights"]
+    La["Log Analytics"]
+    Amw["Monitor workspace"]
+  end
+  WebCA --> ApiCA
+  ProxyCA --> Apim
+  ApiCA --> Apim --> AI
+  ApiCA --> ApimMcp --> AI
+  ApimMcp -. inventory .-> Apic
+  ApiCA --> Data
+  ApiCA --> Sec
+  ApiCA --> Obs
+  Compute --> Acr
+```
+
+## Identity and RBAC
+
+AI4IA is keyless: every Azure data plane is reached through a user-assigned managed
+identity and a scoped role assignment. No account keys, connection strings, or SQL
+passwords are used at runtime.
+
+```mermaid
+flowchart LR
+  idapi["id-api"] -->|"Cosmos Data Contributor"| Cos["Cosmos DB"]
+  idapi -->|"Storage Blob Data Contributor"| St["Storage x2"]
+  idapi -->|"Search Index + Service Contributor"| Srch["AI Search"]
+  idapi -->|"Key Vault Secrets User / Officer"| Kv["Key Vault"]
+  idapi -->|"App Config Data Reader"| Ac["App Configuration"]
+  idapi -->|"Monitoring Reader (sub scope)"| Mon["Azure Monitor"]
+  idapi -->|"Entra token"| Pg["Postgres"]
+  idweb["id-web"] -->|"AcrPull"| Acr["ACR"]
+  idproxy["id-proxy"] -->|"AcrPull"| Acr
+  idapi -->|"AcrPull"| Acr
+  apim["APIM (system MI)"] -->|"OpenAI User + Cognitive Services User"| Foundry["Foundry accounts"]
+```
+
 ## MCP tool planes
 
 Remote MCP tools reach the model through two independent planes that share one
@@ -108,6 +203,17 @@ repo it is **activated**: `enableOfficialMcp=true` and the catalog registers the
 (`ai4ia-toolbox`). Each turn builds the official plane first and BYO second, then merges them: on a
 tool name collision the **official tool wins**, auto-approvals are unioned, and a single per-turn
 budget caps total MCP calls across both planes.
+
+```mermaid
+flowchart TB
+  Turn["Chat turn executor<br/>(per-turn budget + approvals)"]
+  Turn --> Official["Official plane (trusted, pre-approved)"]
+  Turn --> Byo["BYO plane (untrusted, approval-gated)"]
+  Official --> ApimMcp["MCP APIM front door<br/>(Basic v2 + subscription key)"]
+  ApimMcp --> Curated["Curated upstream MCP servers<br/>(infra/mcp-servers.json)"]
+  Byo -. "SSRF guard (DNS-rebind re-check)" .-> UserSrv["Per-user MCP servers"]
+  UserSrv --> Kv["Per-user secrets in Key Vault"]
+```
 
 ## Regions
 

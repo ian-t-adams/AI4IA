@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI4IA — Governed multi-model agentic chat on Azure</title>
+  <meta name="description" content="AI4IA is a governed, multi-model, multi-region agentic chat platform on Azure. This portal documents its purpose, features, architecture, deployed services, requirements and live health." />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="AI4IA — governed multi-model agentic chat on Azure" />
+  <meta property="og:description" content="Purpose, architecture, deployed Azure services, requirements and live status of the AI4IA platform." />
+  <meta property="og:image" content="https://ian-t-adams.github.io/AI4IA/assets/ai4ia-lettermark.png" />
+  <meta property="og:url" content="https://ian-t-adams.github.io/AI4IA/" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="icon" href="assets/favicon.ico" />
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site">
+    <div class="container nav">
+      <a class="brand" href="index.html"><img src="assets/ai4ia-icon.png" alt="" /><span>AI4IA</span></a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="index.html" aria-current="page">Home</a>
+        <a href="status.html">Status</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="services.html">Services</a>
+        <a href="requirements.html">Requirements</a>
+        <a href="docs.html">Docs</a>
+        <a class="nav-cta" href="https://ai4ia.nomad-analytics.com" target="_blank" rel="noopener">Open the app ↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="container">
+        <p class="eyebrow">Self-documenting portal</p>
+        <h1><span class="grad">AI4IA</span> — a governed, multi-model agentic chat platform on Azure</h1>
+        <p class="lede">A multi-model, multi-region agentic chat application for personal use and customer demos.
+          A Next.js web app, a FastAPI governance backend, a SimpleL7Proxy model gateway, and Azure infrastructure
+          as Bicep — all in one monorepo, all deployed through <span class="mono">azd</span>. This portal explains
+          what it is, how it fits together, what it runs on, and whether it is healthy right now.</p>
+        <div class="btn-row">
+          <a class="btn primary" href="https://ai4ia.nomad-analytics.com" target="_blank" rel="noopener">Open the app ↗</a>
+          <a class="btn" href="status.html">View live status</a>
+          <a class="btn" href="architecture.html">How it works</a>
+          <a class="btn" href="https://github.com/ian-t-adams/AI4IA" target="_blank" rel="noopener">Source on GitHub ↗</a>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="container">
+        <h2 class="section-title">What it is</h2>
+        <p class="section-sub">The web frontend calls the FastAPI backend; the backend owns auth, session state,
+          tools, memory, document/library access, usage metering, and all model routing. Model calls route through
+          APIM and SimpleL7Proxy to the selected Azure AI Foundry deployment.</p>
+        <div class="grid cols-2">
+          <div class="card">
+            <h3>🎯 Purpose &amp; principles</h3>
+            <p><strong>Gateway-first:</strong> every model call is governed through APIM + SimpleL7Proxy.</p>
+            <p><strong>Catalog-driven:</strong> <span class="mono">infra/models.json</span> is the deployment source of truth.</p>
+            <p><strong>Feature-gated:</strong> advanced surfaces fail closed and default safe.</p>
+            <p><strong>Keyless:</strong> every Azure data plane is reached with a managed identity + RBAC.</p>
+            <p><strong>Cosmos is canonical;</strong> derived stores (memory, search, chunks) are rebuildable.</p>
+          </div>
+          <div class="card">
+            <h3>🌍 Live environment</h3>
+            <div class="table-wrap"><table><tbody id="envfacts"></tbody></table></div>
+          </div>
+        </div>
+        <div class="grid cols-3" id="regions" style="margin-top:16px"></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="container">
+        <h2 class="section-title">Capabilities</h2>
+        <p class="section-sub">Feature posture in the checked-in live environment. Advanced capabilities are
+          individually gated; <span class="badge ok">on</span> reflects the deployed parameters and the running API.</p>
+        <div class="card" id="features"></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="container">
+        <h2 class="section-title">Technology</h2>
+        <p class="section-sub">One monorepo spanning frontend, backend, gateway and infrastructure.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Layer</th><th>Technology</th><th>Hosted on</th></tr></thead>
+            <tbody id="stack"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="container">
+        <h2 class="section-title">Explore</h2>
+        <div class="grid cols-4">
+          <a class="card" href="status.html" style="display:block"><h3>🟢 Status</h3><p>Live health of every deployed Azure resource and the public endpoints.</p></a>
+          <a class="card" href="architecture.html" style="display:block"><h3>🧭 Architecture</h3><p>Diagrams of the request lifecycle, deployment topology, identity and MCP planes.</p></a>
+          <a class="card" href="services.html" style="display:block"><h3>☁️ Services</h3><p>Every Azure service AI4IA deploys, what it does and the IaC that creates it.</p></a>
+          <a class="card" href="requirements.html" style="display:block"><h3>📋 Requirements</h3><p>Infrastructure, permissions/RBAC and package dependencies.</p></a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site">
+    <div class="container row">
+      <div>AI4IA · self-documenting portal · generated from the repository and the live Azure environment.</div>
+      <div><a href="https://github.com/ian-t-adams/AI4IA" target="_blank" rel="noopener">github.com/ian-t-adams/AI4IA</a> · &copy; <span id="year"></span></div>
+    </div>
+  </footer>
+
+  <script src="data/meta.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

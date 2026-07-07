@@ -34,6 +34,7 @@ Known gaps to keep visible:
 /app/api    FastAPI backend: auth, chat, agents, tools, memory, documents, usage
 /proxy      Vendored SimpleL7Proxy model gateway plus AI4IA Dockerfile/notes
 /scripts    Catalog, inventory, teardown, purge, and azd hook scripts
+/site       Self-documenting portal (docs + live status), published to GitHub Pages
 /docs       Architecture, capability map, naming/tagging, and runbooks
 azure.yaml  Azure Developer CLI service map
 ```
@@ -65,6 +66,13 @@ Merges to `main` deploy only after the one-time GitHub OIDC setup is complete.
 See [`docs/runbooks/deployment.md`](docs/runbooks/deployment.md).
 
 ## Documentation
+
+The **[self-documenting portal](https://ian-t-adams.github.io/AI4IA/)** (published from
+[`site/`](site/) to GitHub Pages) is the friendliest entry point: it explains the app,
+renders the architecture diagrams, catalogues every deployed Azure service, lists the
+requirements (IaC, permissions, packages), and shows a
+**[live status/health view](https://ian-t-adams.github.io/AI4IA/status.html)** of the
+deployed resources. The authoritative Markdown lives here:
 
 - [User guide](docs/user-guide.md)
 - [Architecture](docs/architecture.md)
