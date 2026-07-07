@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI4IA — Live status &amp; health</title>
+  <meta name="description" content="Live health of every deployed AI4IA Azure resource and public endpoint, generated from Azure Resource Graph and endpoint probes." />
+  <link rel="icon" href="assets/favicon.ico" />
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site">
+    <div class="container nav">
+      <a class="brand" href="index.html"><img src="assets/ai4ia-icon.png" alt="" /><span>AI4IA</span></a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="index.html">Home</a>
+        <a href="status.html" aria-current="page">Status</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="services.html">Services</a>
+        <a href="requirements.html">Requirements</a>
+        <a href="docs.html">Docs</a>
+        <a class="nav-cta" href="https://ai4ia.nomad-analytics.com" target="_blank" rel="noopener">Open the app ↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" style="padding-top:40px">
+      <div class="container">
+        <p class="eyebrow">Deployment health</p>
+        <h1>Live status</h1>
+        <p class="lede">The deployed footprint of AI4IA in <span class="mono">rg-ai4ia-slurmfactory</span>, generated
+          from Azure Resource Graph (the authoritative inventory), Azure Resource Health, and probes of the public
+          web and model-proxy endpoints.</p>
+        <p class="updated" id="updated">Loading snapshot…</p>
+      </div>
+    </section>
+
+    <section style="padding-top:6px">
+      <div class="container">
+        <div class="stats" id="status-stats"></div>
+        <div class="notice" style="margin-top:16px">
+          This is a <strong>static snapshot</strong>, not a live poll: a scheduled GitHub Actions workflow regenerates
+          <span class="mono">status.js</span> using the deployment's federated (OIDC) identity, then republishes this
+          page. Health is derived from provisioning state, Resource Health availability, and endpoint reachability.
+        </div>
+      </div>
+    </section>
+
+    <section style="padding-top:6px">
+      <div class="container">
+        <h2 class="section-title">Public endpoints</h2>
+        <p class="section-sub">A 200/redirect or an auth challenge (401/403) both prove the ingress is serving.
+          The model proxy is scale-to-zero, so a cold-start timeout reads as “no response”, not a confirmed outage.</p>
+        <div class="grid cols-2" id="endpoints"></div>
+      </div>
+    </section>
+
+    <section style="padding-top:6px">
+      <div class="container">
+        <h2 class="section-title">Azure resources</h2>
+        <p class="section-sub">Every resource in the resource group, grouped by role. A resource present in Resource
+          Graph and not failed/unavailable is healthy (existence means it is provisioned).</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Health</th><th>Resource</th><th>Location</th><th>Provisioning</th><th>Availability</th></tr></thead>
+            <tbody id="resources-body"></tbody>
+          </table>
+        </div>
+        <div class="legend">
+          <span class="badge ok">healthy</span>
+          <span class="badge warn">degraded</span>
+          <span class="badge bad">unavailable</span>
+          <span class="badge unknown">unknown</span>
+          <span>Availability = Azure Resource Health (blank/Unknown when the plane is not reported).</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site">
+    <div class="container row">
+      <div>AI4IA · live status · <span class="mono">scripts/status-snapshot.ps1</span></div>
+      <div><a href="https://github.com/ian-t-adams/AI4IA" target="_blank" rel="noopener">github.com/ian-t-adams/AI4IA</a> · &copy; <span id="year"></span></div>
+    </div>
+  </footer>
+
+  <script src="data/status.js"></script>
+  <script src="data/inventory.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

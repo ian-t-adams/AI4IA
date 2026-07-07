@@ -26,9 +26,9 @@ npm install
 npm run dev
 ```
 
-Use Node 22 locally. CI and the production Docker image use Node 22, and
-`package.json` declares that engine range so local drift fails early instead of
-surprising you in GitHub Actions.
+Use Node 22 locally. CI runs Node 22 and the production Docker image is
+`node:26-alpine`; `package.json` declares `engines.node` as `>=22.0.0 <27`, so local
+drift fails early instead of surprising you in GitHub Actions.
 
 Run checks from this folder:
 
@@ -39,16 +39,21 @@ npm run build
 
 ## Runtime configuration
 
-Server-side env in `app/layout.tsx` controls auth and feature visibility; avoid
-`NEXT_PUBLIC_*` for these gates so deploy-time config can change without a rebuild.
+Server-side env in `app/layout.tsx` controls auth and feature visibility; it is read
+at request time (not frozen at build), so deploy-time config can change without a
+rebuild. Avoid `NEXT_PUBLIC_*` for these gates.
 
 | Var | Purpose |
 | --- | --- |
 | `WEB_AUTH_PROVIDER` | `dev` or `entra` |
-| `ENTRA_CLIENT_ID` / `ENTRA_TENANT_ID` / `ENTRA_API_SCOPE` | MSAL SPA settings |
-| `VOICE_LIVE_ENABLED` + `API_PUBLIC_URL` | Show Voice Live and connect directly to the API ingress |
+| `ENTRA_CLIENT_ID` / `ENTRA_TENANT_ID` / `ENTRA_API_SCOPE` | MSAL SPA settings (Entra mode) |
+| `ENTRA_REDIRECT_URI` | Optional MSAL redirect URI; defaults to `window.location.origin` |
+| `VOICE_LIVE_ENABLED` + `API_PUBLIC_URL` | Show Voice Live and connect the browser directly to the API ingress (the Next.js proxy cannot proxy WebSockets) |
+| `VOICE_LIVE_TOOLS_ENABLED` | Offer governed tools inside a live voice session (mirrors the API's `AI4IA_REALTIME_TOOLS_ENABLED`) |
 | `DOCUMENT_LIBRARY_ENABLED` | Show the cross-session document library |
 | `CUSTOM_TOOLS_ENABLED` | Show user MCP server management |
+| `DEV_USER` | Dev-auth identity the proxy injects as `X-Dev-User` (dev only; dropped when unset) |
+| `API_BASE_URL` | Backend base URL for the same-origin proxy (server-side only) |
 
 ## Current gaps
 

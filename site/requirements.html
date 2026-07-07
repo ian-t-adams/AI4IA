@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI4IA — Requirements (IaC, permissions, packages)</title>
+  <meta name="description" content="AI4IA requirements: infrastructure-as-code modules, the RBAC/permissions model, and package dependencies for the API, web and proxy." />
+  <link rel="icon" href="assets/favicon.ico" />
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site">
+    <div class="container nav">
+      <a class="brand" href="index.html"><img src="assets/ai4ia-icon.png" alt="" /><span>AI4IA</span></a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="index.html">Home</a>
+        <a href="status.html">Status</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="services.html">Services</a>
+        <a href="requirements.html" aria-current="page">Requirements</a>
+        <a href="docs.html">Docs</a>
+        <a class="nav-cta" href="https://ai4ia.nomad-analytics.com" target="_blank" rel="noopener">Open the app ↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" style="padding-top:40px">
+      <div class="container">
+        <p class="eyebrow">What it takes to run</p>
+        <h1>Requirements</h1>
+        <p class="lede">Everything AI4IA needs to deploy and run: the infrastructure-as-code modules, the permissions
+          (RBAC) model that keeps it keyless, and the package dependencies for each service.</p>
+      </div>
+    </section>
+
+    <section style="padding-top:6px">
+      <div class="container">
+        <h2 class="section-title">Prerequisites</h2>
+        <div class="card"><ul id="prereqs" style="margin:0; padding-left:20px"></ul></div>
+      </div>
+    </section>
+
+    <section style="padding-top:6px">
+      <div class="container">
+        <h2 class="section-title">Infrastructure as code</h2>
+        <div class="card" id="iac-meta"></div>
+        <div class="table-wrap" style="margin-top:14px">
+          <table>
+            <thead><tr><th>Bicep module</th><th>Purpose</th></tr></thead>
+            <tbody id="modules"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section style="padding-top:6px">
+      <div class="container">
+        <h2 class="section-title">Permissions (RBAC)</h2>
+        <p class="section-sub">AI4IA is keyless: every data plane is reached through a managed identity and a scoped
+          role assignment. No account keys, connection strings or SQL passwords are used at runtime.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Identity</th><th>Role</th><th>Scope</th><th>Why</th><th>Module</th></tr></thead>
+            <tbody id="rbac"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section style="padding-top:6px">
+      <div class="container">
+        <h2 class="section-title">Packages &amp; dependencies</h2>
+        <p class="section-sub">The notable runtime dependencies per service. Full, pinned trees live in
+          <span class="mono">app/api/pyproject.toml</span> + <span class="mono">uv.lock</span> and
+          <span class="mono">app/web/package.json</span> + <span class="mono">package-lock.json</span>.</p>
+        <div class="grid cols-3" id="packages"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site">
+    <div class="container row">
+      <div>AI4IA · requirements · IaC + RBAC + dependencies</div>
+      <div><a href="https://github.com/ian-t-adams/AI4IA" target="_blank" rel="noopener">github.com/ian-t-adams/AI4IA</a> · &copy; <span id="year"></span></div>
+    </div>
+  </footer>
+
+  <script src="data/requirements.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,86 @@
+name: pages
+
+# Publish the self-documenting portal (site/) to GitHub Pages.
+#
+# The portal is plain static HTML/CSS/JS (no build step) that documents AI4IA — its
+# purpose, architecture, deployed Azure services, requirements and LIVE status/health.
+# It links to the app (https://ai4ia.nomad-analytics.com) but stands alone.
+#
+# Status data: site/data/status.js + inventory.js are committed as an accurate seed and
+# refreshed here best-effort. On main this job authenticates with the existing deploy
+# identity (id-ai4ia-deploy) via its `ref:refs/heads/main` federated credential — note
+# NO `environment:` is set on the build job, so the OIDC subject matches that credential
+# (setting an environment would change the subject to environment:<name> and break login).
+# The refresh is continue-on-error: a failure simply ships the committed seed data.
+#
+# One-time enablement: repo Settings -> Pages -> Source = "GitHub Actions". Until then the
+# deploy job fails harmlessly; the build/artifact still runs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "docs/**"
+      - "scripts/status-snapshot.ps1"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+  schedule:
+    # Twice daily: refresh the live status snapshot and republish.
+    - cron: "0 6,18 * * *"
+
+# id-token: write covers BOTH the Azure OIDC login (status refresh) and Pages OIDC deploy.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two Pages publishes at once; let an in-flight one finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # --- Best-effort live status refresh (only when the deploy identity is configured) ---
+      - name: Log in to Azure (OIDC, main-branch federated credential)
+        if: ${{ vars.AZURE_CLIENT_ID != '' }}
+        continue-on-error: true
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Refresh live status snapshot
+        if: ${{ vars.AZURE_CLIENT_ID != '' }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          ./scripts/status-snapshot.ps1 -Subscription "${{ vars.AZURE_SUBSCRIPTION_ID }}"
+
+      - name: Configure Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: ./site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

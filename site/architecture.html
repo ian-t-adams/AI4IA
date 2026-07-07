@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI4IA — Architecture</title>
+  <meta name="description" content="AI4IA architecture: request lifecycle, deployment topology, identity and RBAC,   the model gateway, and the two MCP tool planes, with diagrams." />
+  <link rel="icon" href="assets/favicon.ico" />
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site">
+    <div class="container nav">
+      <a class="brand" href="index.html"><img src="assets/ai4ia-icon.png" alt="" /><span>AI4IA</span></a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="index.html">Home</a>
+        <a href="status.html">Status</a>
+        <a href="architecture.html" aria-current="page">Architecture</a>
+        <a href="services.html">Services</a>
+        <a href="requirements.html">Requirements</a>
+        <a href="docs.html">Docs</a>
+        <a class="nav-cta" href="https://ai4ia.nomad-analytics.com" target="_blank" rel="noopener">Open the app ↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" style="padding-top:40px">
+      <div class="container">
+        <p class="eyebrow">How it works</p>
+        <h1>Architecture</h1>
+        <p class="lede">AI4IA is a governed, multi-model chat and agent app on Azure Container Apps. The web frontend
+          calls the FastAPI backend; the backend owns auth, session state, tools, memory, document/library access,
+          usage metering and all model routing. The editable source of these diagrams lives in
+          <a href="https://github.com/ian-t-adams/AI4IA/blob/main/docs/architecture.md" target="_blank" rel="noopener"><span class="mono">docs/architecture.md</span></a>.</p>
+      </div>
+    </section>
+
+    <section style="padding-top:6px">
+      <div class="container">
+        <h2 class="section-title">1 · High-level request flow</h2>
+        <p class="section-sub">Chat, embeddings, speech, image/video and realtime models route through APIM +
+          SimpleL7Proxy to the selected Foundry deployment. Native planes (Content Understanding, Monitor, Cosmos,
+          Storage, Search, Key Vault) are called directly with managed identity. Voice Live connects the browser to
+          the API over a WebSocket because the Next.js HTTP proxy cannot proxy WebSockets. The relay still enforces
+          auth, Origin, entitlements and metering.</p>
+        <figure class="diagram">
+          <pre class="mermaid">
+flowchart TB
+  User["Browser"] -->|"MSAL / Entra"| Web["Next.js web<br/>(Container App)"]
+  Web -->|"same-origin proxy"| API["FastAPI API<br/>(Container App)"]
+  User -. "Voice Live (WebSocket)" .-> API
+  API --> Cosmos[("Cosmos DB<br/>canonical state")]
+  API --> PG[("Postgres + pgvector<br/>memory / chunks")]
+  API --> Blob[("Blob Storage<br/>documents + media")]
+  API --> Search["Azure AI Search<br/>(optional retrieval)"]
+  API --> CU["Content Understanding"]
+  API --> Mon["Azure Monitor / App Insights"]
+  API --> GW["APIM + SimpleL7Proxy<br/>model gateway"]
+  GW --> EUS2["Foundry<br/>East US 2"]
+  GW --> SWC["Foundry<br/>Sweden Central"]
+  GW --> WUS["Foundry<br/>West US"]
+  API --> MCPGW["MCP APIM<br/>front door"]
+  MCPGW --> Toolbox["Foundry toolbox<br/>(official MCP)"]
+  API -. "SSRF-guarded" .-> BYO["User BYO<br/>MCP servers"]
+          </pre>
+          <figcaption>If a diagram does not render, its Mermaid source is shown above and also lives in <span class="mono">docs/architecture.md</span>.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section style="padding-top:6px">
+      <div class="container">
+        <h2 class="section-title">2 · Deployment topology</h2>
+        <p class="section-sub">The live footprint in <span class="mono">rg-ai4ia-slurmfactory</span> (East US 2 primary),
+          grouped by role. See the <a href="status.html">live status</a> for exact resources and health.</p>
+        <figure class="diagram">
+          <pre class="mermaid">
+flowchart LR
+  subgraph Edge["Edge / ingress"]
+    WebCA["ca-web · Next.js"]
+    ProxyCA["ca-proxy · SimpleL7Proxy"]
+  end
+  subgraph Gateways["API Management"]
+    Apim["apim · model gateway"]
+    ApimMcp["apim-mcp · MCP gateway"]
+    Apic["API Center · tool catalog"]
+  end
+  subgraph Compute["Container Apps env + registry"]
+    ApiCA["ca-api · FastAPI"]
+    Acr["ACR"]
+  end
+  subgraph AI["Azure AI Foundry (x3 regions)"]
+    F1["East US 2"]
+    F2["Sweden Central"]
+    F3["West US"]
+  end
+  subgraph Data["Data + memory"]
+    Cos["Cosmos DB"]
+    Pg["Postgres + pgvector"]
+    Srch["AI Search"]
+    St["Storage x2"]
+  end
+  subgraph Sec["Security / config"]
+    Kv["Key Vault"]
+    Ac["App Configuration"]
+    Ids["Managed identities x3"]
+  end
+  subgraph Obs["Observability"]
+    Ai["App Insights"]
+    La["Log Analytics"]
+    Amw["Monitor workspace"]
+  end
+  WebCA --> ApiCA
+  ProxyCA --> Apim
+  ApiCA --> Apim --> AI
+  ApiCA --> ApimMcp --> AI
+  ApimMcp -. inventory .-> Apic
+  ApiCA --> Data
+  ApiCA --> Sec
+  ApiCA --> Obs
+  Compute --> Acr
+          </pre>
+        </figure>
+      </div>
+    </section>
+
+    <section style="padding-top:6px">
+      <div class="container">
+        <h2 class="section-title">3 · Identity &amp; RBAC (keyless)</h2>
+        <p class="section-sub">Every Azure data plane is reached through a managed identity and a scoped role, with no
+          account keys or SQL passwords. The API identity is the most privileged; see
+          <a href="requirements.html">Requirements → Permissions</a> for the full map.</p>
+        <figure class="diagram">
+          <pre class="mermaid">
+flowchart LR
+  idapi["id-api"] -->|"Cosmos Data Contributor"| Cos["Cosmos DB"]
+  idapi -->|"Storage Blob Data Contributor"| St["Storage x2"]
+  idapi -->|"Search Index + Service Contributor"| Srch["AI Search"]
+  idapi -->|"Key Vault Secrets User / Officer"| Kv["Key Vault"]
+  idapi -->|"App Config Data Reader"| Ac["App Configuration"]
+  idapi -->|"Monitoring Reader (sub scope)"| Mon["Azure Monitor"]
+  idapi -->|"Entra token"| Pg["Postgres"]
+  idweb["id-web"] -->|"AcrPull"| Acr["ACR"]
+  idproxy["id-proxy"] -->|"AcrPull"| Acr
+  idapi -->|"AcrPull"| Acr
+  apim["APIM (system MI)"] -->|"OpenAI User + Cognitive Services User"| Foundry["Foundry accounts"]
+          </pre>
+        </figure>
+      </div>
+    </section>
+
+    <section style="padding-top:6px">
+      <div class="container">
+        <h2 class="section-title">4 · Two MCP tool planes</h2>
+        <p class="section-sub">Remote MCP tools reach the model through two independent planes that share one governed
+          per-turn executor. On a tool-name collision the official tool wins; a single per-turn budget caps total MCP
+          calls across both planes.</p>
+        <figure class="diagram">
+          <pre class="mermaid">
+flowchart TB
+  Turn["Chat turn executor<br/>(per-turn budget + approvals)"]
+  Turn --> Official["Official plane (trusted, pre-approved)"]
+  Turn --> Byo["BYO plane (untrusted, approval-gated)"]
+  Official --> ApimMcp["MCP APIM front door<br/>(Basic v2 + subscription key)"]
+  ApimMcp --> Curated["Curated upstream MCP servers<br/>(infra/mcp-servers.json)"]
+  Byo -. "SSRF guard (DNS-rebind re-check)" .-> UserSrv["Per-user MCP servers"]
+  UserSrv --> Kv["Per-user secrets in Key Vault"]
+          </pre>
+        </figure>
+      </div>
+    </section>
+
+    <section style="padding-top:6px">
+      <div class="container">
+        <h2 class="section-title">5 · Anatomy of a chat turn</h2>
+        <p class="section-sub">The governance order every request passes through: authenticate, gate, plan, route,
+          persist. Telemetry and derived stores are best-effort and never break the turn.</p>
+        <figure class="diagram">
+          <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant B as Browser
+  participant W as Web (Next.js)
+  participant A as API (FastAPI)
+  participant G as APIM + Proxy
+  participant F as Foundry
+  participant C as Cosmos
+  B->>W: POST /api/chat (Entra bearer)
+  W->>A: forward same-origin (+ identity)
+  A->>A: auth, normalize user id, entitlement + feature gates
+  A->>C: load session + inject memory/document context
+  A->>G: governed model call
+  G->>F: managed-identity call to deployment
+  F-->>A: streamed tokens
+  A-->>B: stream response (via web proxy)
+  A->>C: persist messages + usage ledger (best-effort)
+          </pre>
+        </figure>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site">
+    <div class="container row">
+      <div>AI4IA · architecture · diagrams rendered with a vendored Mermaid (works offline)</div>
+      <div><a href="https://github.com/ian-t-adams/AI4IA/blob/main/docs/architecture.md" target="_blank" rel="noopener">docs/architecture.md</a> · &copy; <span id="year"></span></div>
+    </div>
+  </footer>
+
+  <script src="assets/vendor/mermaid.min.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
