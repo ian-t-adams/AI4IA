@@ -148,10 +148,18 @@ class ResourceMetricsService:
             return self._querier
         if self._querier_unavailable:
             return None
+        endpoint = self._settings.metrics_endpoint
+        if not endpoint:
+            logger.warning(
+                "Azure Monitor metrics endpoint not configured "
+                "(AI4IA_METRICS_ENDPOINT); resource panels unavailable"
+            )
+            self._querier_unavailable = True
+            return None
         try:
             from .azure_monitor import AzureMonitorQuerier
 
-            self._querier = AzureMonitorQuerier()
+            self._querier = AzureMonitorQuerier(endpoint)
             return self._querier
         except Exception:  # noqa: BLE001 - SDK/credential absent -> degrade
             logger.warning("Azure Monitor querier construction failed", exc_info=True)

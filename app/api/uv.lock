@@ -19,7 +19,7 @@ dependencies = [
     { name = "azure-identity" },
     { name = "azure-keyvault-secrets" },
     { name = "azure-monitor-opentelemetry" },
-    { name = "azure-monitor-query" },
+    { name = "azure-monitor-querymetrics" },
     { name = "azure-search-documents" },
     { name = "azure-storage-blob" },
     { name = "fastapi" },
@@ -64,7 +64,7 @@ requires-dist = [
     { name = "azure-keyvault-secrets", specifier = ">=4.8" },
     { name = "azure-mgmt-apicenter", marker = "extra == 'foundry'", specifier = ">=1.0.0" },
     { name = "azure-monitor-opentelemetry", specifier = ">=1.6" },
-    { name = "azure-monitor-query", specifier = ">=1.2,<2" },
+    { name = "azure-monitor-querymetrics", specifier = ">=1,<2" },
     { name = "azure-search-documents", specifier = ">=11.5" },
     { name = "azure-storage-blob", specifier = ">=12.20" },
     { name = "fastapi", specifier = ">=0.115,<0.140" },
@@ -488,17 +488,17 @@ wheels = [
 ]
 
 [[package]]
-name = "azure-monitor-query"
-version = "1.4.1"
+name = "azure-monitor-querymetrics"
+version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "azure-core" },
     { name = "isodate" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/93/c5/26eee462559e254ec69b1a8585528aa0d2bfb814c31a8640af872a151e7a/azure_monitor_query-1.4.1.tar.gz", hash = "sha256:71824e2b577d25df0d3bebbbb054c06a1ae3ebcb91831a9bac0bb344d0addf68", size = 162946, upload-time = "2025-01-14T23:00:47.263Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fb/5e/210ed6516cb8ceadac620a15167c02b06186f3d6380cd17e481f0c5a0542/azure_monitor_querymetrics-1.0.0.tar.gz", hash = "sha256:fe0c2fc0e8fae199c10abaaf7418e0ab35183d744a8c2bd6073cbf172174c9c2", size = 63583, upload-time = "2025-07-28T21:31:21.745Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cb/71/bdf03aef699d9a17d80bcaa8255c20e596ed591daa8a42a21854ddc4277d/azure_monitor_query-1.4.1-py3-none-any.whl", hash = "sha256:192c5d8efec48b434f803aa3850ce73b869975507a12b3a823012fc100056ac0", size = 157978, upload-time = "2025-01-14T23:00:50.661Z" },
+    { url = "https://files.pythonhosted.org/packages/57/9b/01c28cd01e98cb3deef9873d39bbf5556f23ff01e3a33e732bd635820941/azure_monitor_querymetrics-1.0.0-py3-none-any.whl", hash = "sha256:631d98ff80e8165adec2f26483d1945e8b90f755720b40b7bacc6814bf0a7d10", size = 68833, upload-time = "2025-07-28T21:31:23.35Z" },
 ]
 
 [[package]]

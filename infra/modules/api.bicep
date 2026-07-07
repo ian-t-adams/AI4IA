@@ -22,9 +22,6 @@ param apiIdentityResourceId string
 @description('Client ID of the api user-assigned identity (for AZURE_CLIENT_ID / Managed Identity auth).')
 param apiIdentityClientId string
 
-@description('Principal ID (objectId) of the api user-assigned identity, for resource-scoped role assignments (Monitoring Reader on the container app).')
-param apiIdentityPrincipalId string
-
 @description('ACR login server the api image is pulled from.')
 param acrLoginServer string
 
@@ -477,11 +474,16 @@ var searchEnv = !empty(searchEndpoint) ? [
 var apiAppName = 'ca-api-${environmentName}'
 var apiAppResourceId = resourceId('Microsoft.App/containerApps', apiAppName)
 
-// Admin dashboard resource-metric panels. The container-app and Cosmos ids always
-// resolve; search/postgres ids are only emitted when those resources are deployed
-// (empty -> the api leaves that env var unset and the panel stays 'unavailable').
+// Admin dashboard resource-metric panels. The regional batch-metrics endpoint and
+// the container-app and Cosmos ids always resolve; search/postgres ids are only
+// emitted when those resources are deployed (empty -> the api leaves that env var
+// unset and the panel stays 'unavailable').
 var resourceMetricsEnv = concat(
   [
+    {
+      name: 'AI4IA_METRICS_ENDPOINT'
+      value: 'https://${location}.metrics.monitor.azure.com'
+    }
     {
       name: 'AI4IA_METRICS_CONTAINER_APP_RESOURCE_ID'
       value: apiAppResourceId
@@ -661,20 +663,6 @@ resource apiDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-previe
     metrics: [
       { category: 'AllMetrics', enabled: true }
     ]
-  }
-}
-
-// Monitoring Reader on the api's own container app so its managed identity can read
-// Azure Monitor metrics (HTTP 5xx, replica restarts, CPU/memory) for the admin
-// dashboard container-app resource panel.
-var monitoringReaderRoleId = '43d0d8ad-25c7-4714-9337-8ba259a9fe05' // Monitoring Reader
-resource apiAppMonitoringRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(apiApp.id, apiIdentityPrincipalId, monitoringReaderRoleId)
-  scope: apiApp
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', monitoringReaderRoleId)
-    principalId: apiIdentityPrincipalId
-    principalType: 'ServicePrincipal'
   }
 }
 
