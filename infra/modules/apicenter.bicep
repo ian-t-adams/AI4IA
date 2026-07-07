@@ -26,13 +26,18 @@ param workload string
 param environmentName string
 
 // ---------------- API Center (private tool catalog) ----------------
-// Free plan (the default; no sku block). System-assigned identity is included so
-// the catalog can later be granted read access from Foundry / consumers without a
-// resource replace.
+// Free plan. The `sku` MUST be declared explicitly: Azure defaults it to Free on
+// CREATE, but a later UPDATE (any redeploy) sends a null sku and fails validation
+// ("A valid Sku is required to create or update an API Catalog") unless it is set
+// here. System-assigned identity is included so the catalog can later be granted
+// read access from Foundry / consumers without a resource replace.
 resource apiCenter 'Microsoft.ApiCenter/services@2024-03-01' = {
   name: take('apic-${workload}-${environmentName}', 90)
   location: location
   tags: tags
+  sku: {
+    name: 'Free'
+  }
   identity: {
     type: 'SystemAssigned'
   }
