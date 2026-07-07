@@ -25,6 +25,12 @@ param budgetAmount int = 1500
 @description('Emails notified on budget thresholds (empty = tracking only).')
 param budgetAlertEmails array = []
 
+@description('Budget start date (first of a month, yyyy-MM-dd). Empty = first of the current month at deploy time. Pin this via the AI4IA_BUDGET_START_DATE repo variable to a fixed month so redeploys stay idempotent: Azure rejects changing an existing budget start date, so an unpinned value drifts and the first deploy of each new month fails ("Start date of budgets cannot be updated").')
+param budgetStartDate string = ''
+
+@description('Internal fallback: first of the current month. utcNow() is only valid in a parameter default, so it lives here and is used only when budgetStartDate is empty (greenfield budget creation). Do not set this.')
+param budgetStartDateCurrentMonth string = utcNow('yyyy-MM-01')
+
 @description('APIM publisher email for the model gateway front door. Override per deployment.')
 param apimPublisherEmail string = 'ai4ia@example.com'
 
@@ -425,6 +431,7 @@ module cost 'modules/cost.bicep' = {
     name: 'budget-${workload}-${environmentName}'
     amount: budgetAmount
     alertEmails: budgetAlertEmails
+    startDate: empty(budgetStartDate) ? budgetStartDateCurrentMonth : budgetStartDate
   }
 }
 

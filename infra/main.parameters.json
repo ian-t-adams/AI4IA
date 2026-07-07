@@ -47,6 +47,9 @@
     "apimPublisherEmail": {
       "value": "${AI4IA_APIM_PUBLISHER_EMAIL=ai4ia@example.com}"
     },
+    "budgetStartDate": {
+      "value": "${AI4IA_BUDGET_START_DATE=}"
+    },
     "enableOfficialMcp": {
       "value": false
     },
