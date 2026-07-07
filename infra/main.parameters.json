@@ -59,6 +59,9 @@
     "enablePrivateToolCatalog": {
       "value": true
     },
+    "apiCenterLocation": {
+      "value": "${AI4IA_API_CENTER_LOCATION=eastus}"
+    },
     "webCustomDomain": {
       "value": "${AI4IA_WEB_CUSTOM_DOMAIN=}"
     },
