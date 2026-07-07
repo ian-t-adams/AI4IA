@@ -10,9 +10,9 @@
 // portal/CLI/script-driven step (scripts/provision-private-tool-catalog.py), so the
 // per-server registration is intentionally NOT baked into IaC here.
 //
-// Default-OFF + inert: main.bicep deploys this module only when
-// enablePrivateToolCatalog is true, so by default nothing here is provisioned and
-// the checked-in deploy is byte-for-byte unchanged.
+// Provisioned only when enablePrivateToolCatalog is true. The param DEFAULT is
+// false (a fresh consumer of this template provisions no API Center); this repo
+// enables it in main.parameters.json.
 @description('Location for the API Center. API Center is available in a subset of regions; override if the deployment region is unsupported.')
 param location string
 

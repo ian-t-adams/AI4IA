@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://ai4ia/foundry/toolbox.manifest.schema.json",
   "title": "AI4IA Foundry toolbox manifest",
-  "description": "Declarative definition of the single Foundry Agent Service toolbox that AI4IA fronts through the official-MCP APIM (see docs/foundry-toolbox.md). scripts/provision-foundry-toolbox.py reads this file and calls project.toolboxes.create_toolbox_version(...). The checked-in manifest ships INERT (empty tools/skills/connections); nothing is provisioned until an operator populates it and runs the script. This mirrors the empty infra/mcp-servers.json catalog. Fields mirror the Foundry toolbox declarative contract; camelCase keys here map to the API's snake_case (the script translates).",
+  "description": "Declarative definition of the single Foundry Agent Service toolbox that AI4IA fronts through the official-MCP APIM (see docs/foundry-toolbox.md). scripts/provision-foundry-toolbox.py reads this file and calls project.toolboxes.create_version(name, tools=[typed ToolboxTool models], description, skills, policies). The checked-in foundry/toolbox.manifest.json is the CANONICAL definition of the live ai4ia-toolbox that a new tenant reproduces 1:1. Fields mirror the Foundry toolbox declarative contract; camelCase keys here map to the API's snake_case (the script translates).",
   "type": "object",
   "additionalProperties": false,
   "required": ["name", "description", "tools", "skills", "connections"],

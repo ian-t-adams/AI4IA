@@ -34,7 +34,7 @@ param budgetStartDateCurrentMonth string = utcNow('yyyy-MM-01')
 @description('APIM publisher email for the model gateway front door. Override per deployment.')
 param apimPublisherEmail string = 'ai4ia@example.com'
 
-@description('Opt-in: provision a dedicated APIM (Basic v2) front door for curated "official" MCP servers (infra/mcp-servers.json), so MCP traffic is gated on an APIM subscription key. Default OFF, and the catalog ships empty, so the checked-in deploy provisions no MCP gateway and the app is byte-for-byte unchanged. Basic v2 is required because the native MCP feature is unsupported on the Consumption model gateway.')
+@description('Opt-in: provision a dedicated APIM (Basic v2) front door for curated "official" MCP servers (infra/mcp-servers.json), so MCP traffic is gated on an APIM subscription key. The param DEFAULT is false (a fresh consumer of this template provisions no MCP gateway); this repo sets it true in main.parameters.json to front the Foundry toolbox. Basic v2 is required because the native MCP feature is unsupported on the Consumption model gateway.')
 param enableOfficialMcp bool = false
 
 @description('Opt-in: enable the Foundry Agent Service toolbox bridge. Grants the official-MCP APIM system-assigned identity the "Foundry User" role on the primary Foundry project so it can mint the AAD bearer the toolbox MCP endpoint requires, and emits AZURE_FOUNDRY_PROJECT_ENDPOINT for the provisioning scripts. Requires enableOfficialMcp=true to have any effect (the toolbox is consumed as an official MCP server fronted by that APIM). Default OFF; no toolbox is created by the deploy itself (provisioning is a documented, opt-in script step).')
@@ -501,9 +501,30 @@ module gateway 'modules/gateway.bicep' = {
 // --- Official MCP gateway (dedicated APIM Basic v2; opt-in) ---
 // Curated MCP servers (infra/mcp-servers.json) fronted by their own APIM so MCP
 // traffic is gated on an APIM subscription key, isolated from the Consumption
-// model gateway. Default OFF and ships empty: no resources unless explicitly
-// enabled. Phase 2 stands up the front door; the api/runtime wiring lands later.
-var officialMcpServers = loadJsonContent('mcp-servers.json').servers
+// model gateway. Ships with the Foundry toolbox registered; provisioned only when
+// enableOfficialMcp is true.
+//
+// Portability: an entry flagged `foundryToolbox: true` deliberately omits its
+// upstreamUrl in the JSON so the catalog is not pinned to one project/tenant. We
+// compute it here from the PRIMARY project endpoint
+// (`<projectEndpoint>/toolboxes/<name>/mcp`), so `azd up` in a fresh
+// subscription/environment targets that environment's own toolbox.
+//
+// The endpoint is built from the SAME start-computable naming the foundry module
+// uses (foundryToken + environmentName + primary region), NOT from foundry's module
+// output -- that avoids a cycle, since the foundry module already depends on the MCP
+// gateway's identity for the toolbox role grant. Must stay in sync with
+// foundry.bicep's `projectEndpoint` output and the account/project names below.
+var primaryRegionName = regionNames[primaryFoundryIndex]
+var primaryFoundryAccountNameComputed = take('mf-${foundryToken}-${environmentName}-${primaryRegionName}', 60)
+var primaryFoundryProjectNameComputed = take('proj-default-${foundryToken}-${environmentName}-${primaryRegionName}', 60)
+var primaryFoundryProjectEndpoint = 'https://${toLower(primaryFoundryAccountNameComputed)}.services.ai.azure.com/api/projects/${primaryFoundryProjectNameComputed}'
+var rawMcpServers = loadJsonContent('mcp-servers.json').servers
+var officialMcpServers = [
+  for s in rawMcpServers: (contains(s, 'foundryToolbox') && bool(s.foundryToolbox))
+    ? union(s, { upstreamUrl: '${primaryFoundryProjectEndpoint}/toolboxes/${s.name}/mcp' })
+    : s
+]
 module mcpgateway 'modules/mcpgateway.bicep' = if (enableOfficialMcp) {
   name: 'mcpgateway'
   scope: rg

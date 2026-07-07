@@ -44,8 +44,10 @@ def build_catalog(raw: dict) -> dict:
         if name in seen:
             errors.append(f"duplicate server name '{name}'")
         seen.add(name)
-        if not str(entry.get("upstreamUrl", "")).startswith("https://"):
-            errors.append(f"{name}: upstreamUrl must be https://")
+        # A Foundry-toolbox entry intentionally omits upstreamUrl: main.bicep computes it from the
+        # deployed project endpoint (portable across tenants). Every other entry needs an explicit URL.
+        if not entry.get("foundryToolbox") and not str(entry.get("upstreamUrl", "")).startswith("https://"):
+            errors.append(f"{name}: upstreamUrl must be https:// (or set foundryToolbox: true to compute it in bicep)")
         mode = entry.get("upstreamAuthMode")
         if mode not in {"none", "managed_identity"}:
             errors.append(f"{name}: upstreamAuthMode '{mode}' must be 'none' or 'managed_identity'")

@@ -1,11 +1,18 @@
 # Foundry Agent Service toolbox — fronted through the official-MCP APIM
 
-> **Status: default-OFF, public preview.** Nothing in this document is provisioned by
-> `azd up`, CI, or the app runtime. The checked-in deploy is byte-for-byte unchanged until an
-> operator populates `foundry/toolbox.manifest.json`, runs the provisioning scripts, and sets
-> `enableFoundryToolbox=true`. Every Foundry capability referenced here (toolboxes, skills,
-> tool search, browser automation, computer use, private tool catalog, routines, A2A) is
-> **public preview** — do not use in production without your own validation.
+> **Status: ACTIVATED in this repo, public preview.** The `ai4ia-toolbox` toolbox is live in the
+> primary Foundry project, registered in `infra/mcp-servers.json`, and `enableOfficialMcp` +
+> `enableFoundryToolbox` + `enablePrivateToolCatalog` are `true` in `infra/main.parameters.json`. The
+> bicep param *defaults* remain `false`, so a consumer of this template starts off; this repo has
+> opted in. Every Foundry capability referenced here (toolboxes, skills, tool search, browser
+> automation, computer use, private tool catalog, routines, A2A) is **public preview** — do not use
+> in production without your own validation.
+>
+> **Portability (1:1 standup):** the toolbox is a data-plane resource, so `azd up` alone cannot
+> create it; a new subscription/tenant is **`azd up` + one command** (`provision-foundry-toolbox.py
+> --create`). The `mcp-servers.json` entry is portable — it sets `foundryToolbox: true` and omits
+> `upstreamUrl`, which `main.bicep` computes from the deployed project endpoint per environment.
+> `foundry/toolbox.manifest.json` is the canonical toolbox definition the script reproduces.
 
 ## TL;DR — the bridge
 
@@ -96,10 +103,11 @@ latter).
 
 ## The manifest
 
-`foundry/toolbox.manifest.json` is the declarative, operator-owned definition of the single
-toolbox. It ships **inert** (empty `tools`/`skills`/`connections`) and is validated in CI
-against `foundry/toolbox.manifest.schema.json` (`infra-validate` workflow). `name` uses the
-same slug pattern as `infra/mcp-servers.schema.json`, so the projected catalog entry is always
+`foundry/toolbox.manifest.json` is the declarative, operator-owned, **canonical** definition of the
+single toolbox — it captures the live `ai4ia-toolbox` composition (web_search, code_interpreter,
+toolbox_search_preview) that a new tenant reproduces 1:1 via `provision-foundry-toolbox.py --create`.
+It is validated in CI against `foundry/toolbox.manifest.schema.json` (`infra-validate` workflow).
+`name` uses the same slug pattern as `infra/mcp-servers.schema.json`, so the projected catalog entry is always
 valid.
 
 | Field | Meaning |
@@ -145,9 +153,9 @@ when `toolbox_search_preview` is present.
 
 **Copy-paste starting point:** `foundry/toolbox.manifest.example.json` is a populated reference
 manifest with one of each toolbox tool (plus a connection and a bound skill), all uniquely named.
-The shipped `foundry/toolbox.manifest.json` stays inert; copy the example (or pass
-`--manifest foundry/toolbox.manifest.example.json`), prune what you don't need, create the
-referenced connections, then run `provision-foundry-toolbox.py`. The script creates the toolbox via
+The shipped `foundry/toolbox.manifest.json` is the canonical `ai4ia-toolbox` definition; edit it (or
+the example, passing `--manifest foundry/toolbox.manifest.example.json`), prune what you don't need,
+create any referenced connections, then run `provision-foundry-toolbox.py`. The script creates the toolbox via
 `project.toolboxes.create_version(name, tools=[...], description=..., skills=[...], policies=...)`.
 
 ## Skills
@@ -209,10 +217,11 @@ regenerate the catalog. Setting `enableOfficialMcp=false` tears down the whole M
 
 `enablePrivateToolCatalog=true` provisions an **Azure API Center** (`infra/modules/apicenter.bicep`,
 `Microsoft.ApiCenter/services@2024-03-01`, Free plan, system-assigned identity, single `default`
-workspace) to act as a private, governed inventory of tools. Default OFF: the checked-in deploy
-provisions no API Center, and the flag is independent of `enableOfficialMcp`/`enableFoundryToolbox`
-(you can catalog whatever official MCP servers exist). When enabled, `azd env get-values` exposes
-`AZURE_API_CENTER_NAME`.
+workspace) to act as a private, governed inventory of tools. `enablePrivateToolCatalog` is `true` in
+this repo (activated); the bicep param default is `false`. Its region is set by `apiCenterLocation`
+(default `eastus`) because API Center is not available in every region (notably not `eastus2`). The
+flag is independent of `enableOfficialMcp`/`enableFoundryToolbox` (you can catalog whatever official
+MCP servers exist). When enabled, `azd env get-values` exposes `AZURE_API_CENTER_NAME`.
 
 The **catalog container** is IaC; **registering each server as an asset** is a preview, script-driven
 step (MCP is a preview API kind in API Center), so it is intentionally not baked into Bicep:
@@ -291,11 +300,12 @@ scaffold and the APIM-fronting commands are shipped and tested.
 ## Testing and CI
 
 - `app/api/tests/test_foundry_toolbox.py` pins, with no Azure SDK or network: manifest
-  validation (inert rejected, populated accepted, bad name / duplicate unnamed tools flagged),
-  camelCase→snake_case tool projection, the consumer URL, the projected mcp-servers.json entry
-  shape, the azd YAML, and SKILL.md parse/validate. Two `jsonschema`-guarded tests assert the
-  projected entry validates against `infra/mcp-servers.schema.json` (the load-bearing
-  cross-seam guarantee) and that both manifests match `toolbox.manifest.schema.json`.
+  validation (checked-in manifest matches the live toolbox, bad name / too many unnamed tools /
+  non-toolbox tool types flagged), camelCase→snake_case tool projection, the consumer URL, the
+  portable mcp-servers.json entry shape (`foundryToolbox: true`, no hardcoded URL), the azd YAML,
+  and SKILL.md parse/validate. `jsonschema`-guarded tests assert the projected entry validates
+  against `infra/mcp-servers.schema.json` (the load-bearing cross-seam guarantee) and that the
+  manifests match `toolbox.manifest.schema.json`.
 - `infra-validate` runs `check-jsonschema` on `foundry/toolbox.manifest.json`, the populated
   `foundry/toolbox.manifest.example.json`, and the routine + A2A example manifests, and builds
   `infra/main.bicep` (which compiles `apicenter.bicep`).

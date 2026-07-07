@@ -30,9 +30,11 @@ feature posture.
 
 The checked-in live parameters currently turn on image/video generation,
 document understanding, document compute, AI Search, Voice Live + tools, custom
-tools, and Postgres-backed memory. Web IQ, inline attachment Code Interpreter,
-the official MCP plane, and the Foundry toolbox bridge remain OFF there. The
-private tool catalog (`enablePrivateToolCatalog`) is also OFF by default.
+tools, Postgres-backed memory, and — as of the Foundry activation — the **official
+MCP plane, the Foundry toolbox bridge, and the private tool catalog**
+(`enableOfficialMcp` / `enableFoundryToolbox` / `enablePrivateToolCatalog` are all
+`true`). Web IQ and inline attachment Code Interpreter remain OFF there. The bicep
+param *defaults* stay `false`, so a fresh consumer of the template starts off.
 
 ## Enablement notes
 
@@ -159,13 +161,14 @@ in each turn, sharing one per-turn MCP call budget.
 A Foundry **toolbox** is itself an MCP endpoint, so AI4IA consumes it as a single
 entry in the official MCP plane above — **no new runtime code, no dedicated app
 flag**. This routes the whole toolbox (web/AI search, code interpreter, tool
-search, and bound skills) through the same MCP APIM front door. Ships **inert**:
-`foundry/toolbox.manifest.json` is empty and `enableFoundryToolbox=false`.
+search, and bound skills) through the same MCP APIM front door. **Activated in this
+repo:** `foundry/toolbox.manifest.json` is the canonical `ai4ia-toolbox` and
+`enableOfficialMcp`/`enableFoundryToolbox` are `true`.
 
-To enable (full runbook + preview caveats in
-[`../foundry-toolbox.md`](../foundry-toolbox.md)):
+To reproduce in a NEW subscription/environment (full runbook + preview caveats in
+[`../foundry-toolbox.md`](../foundry-toolbox.md)) — it is **`azd up` + one command**:
 
-1. Provision the toolbox (and any skills) in the default Foundry project:
+1. Provision the toolbox (and any skills) in that environment's Foundry project:
 
    ```text
    uv pip install -e "app/api[foundry]"
@@ -173,13 +176,14 @@ To enable (full runbook + preview caveats in
    python scripts/provision-foundry-toolbox.py --create
    ```
 
-2. Paste the printed entry into `infra/mcp-servers.json` — it carries
-   `upstreamAuthMode: managed_identity`, `upstreamMiResource: https://ai.azure.com`,
-   `upstreamHeaders: {"Foundry-Features": "Toolboxes=V1Preview"}`, and
-   `upstreamQueryParams: {"api-version": "v1"}`. Then regenerate the runtime
-   catalog: `python scripts/gen-mcp-catalog.py`.
+2. No per-environment catalog edit needed: the `infra/mcp-servers.json` entry is
+   **portable** (`foundryToolbox: true`, no hardcoded URL). `main.bicep` computes
+   the toolbox URL from that environment's project endpoint. (Adding a *different*
+   toolbox name still means editing the entry + regenerating with
+   `python scripts/gen-mcp-catalog.py`.)
 
-3. Set `enableOfficialMcp=true` **and** `enableFoundryToolbox=true`.
+3. `enableOfficialMcp` and `enableFoundryToolbox` are already `true` in
+   `infra/main.parameters.json`.
 
 `enableFoundryToolbox` grants the MCP APIM managed identity the **"Foundry User"**
 role on the project (data-plane scope), so APIM's injected bearer for
@@ -189,10 +193,12 @@ toolbox/skills/tool-search features are **public preview**.
 
 ### Private tool catalog (Azure API Center)
 
-**Default OFF.** `enablePrivateToolCatalog=true` provisions an Azure API Center
+`enablePrivateToolCatalog=true` (activated in this repo) provisions an Azure API Center
 (`infra/modules/apicenter.bicep`) to act as a governed inventory of the
-APIM-fronted MCP servers. It is independent of the MCP plane flags -- it catalogs
-whatever exists -- and has **no app-runtime impact** (admin/IaC concern only).
+APIM-fronted MCP servers. Its region is `apiCenterLocation` (default `eastus`;
+override via `AI4IA_API_CENTER_LOCATION`) because API Center is not available in
+every region (notably not `eastus2`). It is independent of the MCP plane flags --
+it catalogs whatever exists -- and has **no app-runtime impact** (admin/IaC concern only).
 
 1. Set `enablePrivateToolCatalog=true` and `azd up`. `main.bicep` emits the service
    name as `AZURE_API_CENTER_NAME`.

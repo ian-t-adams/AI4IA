@@ -144,17 +144,20 @@ def consumer_mcp_url(project_endpoint: str, name: str) -> str:
 
 
 def build_mcp_server_entry(manifest: dict[str, Any], project_endpoint: str) -> dict[str, Any]:
-    """Project the toolbox to an infra/mcp-servers.json entry (routed via the official-MCP APIM).
+    """Project the toolbox to a PORTABLE infra/mcp-servers.json entry (routed via the official-MCP APIM).
 
-    The APIM policy adds the managed-identity bearer, the static Foundry-Features header, and
-    the api-version=v1 query; so `upstreamUrl` is the bare consumer path (no query string).
+    The entry sets ``foundryToolbox: true`` and deliberately OMITS ``upstreamUrl`` so the catalog is
+    not pinned to one project/tenant: main.bicep computes the URL from the deployed primary project
+    endpoint (``<projectEndpoint>/toolboxes/<name>/mcp``). The APIM policy adds the managed-identity
+    bearer, the static Foundry-Features header, and the api-version=v1 query. ``project_endpoint`` is
+    accepted for signature stability and shown in the dry-run plan, but is not baked into the entry.
     """
     name = manifest["name"]
     return {
         "name": name,
         "displayName": f"Foundry toolbox: {name}",
         "description": manifest.get("description", ""),
-        "upstreamUrl": f"{project_endpoint.rstrip('/')}/toolboxes/{name}/mcp",
+        "foundryToolbox": True,
         "upstreamAuthMode": "managed_identity",
         "upstreamMiResource": TOOLBOX_MI_RESOURCE,
         "upstreamHeaders": dict(TOOLBOX_FEATURES_HEADER),

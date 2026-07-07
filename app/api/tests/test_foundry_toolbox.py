@@ -61,13 +61,16 @@ def _valid_manifest() -> dict:
 
 
 # ----------------------------- manifest validation ------------------------------------
-def test_checked_in_manifest_is_inert_but_schema_valid():
+def test_checked_in_manifest_matches_the_live_toolbox():
     manifest = _tb.load_manifest(_MANIFEST)
-    errors = _tb.validate_manifest(manifest)
-    # Inert on purpose: no tools/skills/connections => not provisionable until an operator
-    # populates it. But it must still be structurally sound.
-    assert any("inert" in e for e in errors)
-    assert manifest["tools"] == [] and manifest["skills"] == [] and manifest["connections"] == []
+    # The checked-in manifest is now the CANONICAL definition a new tenant reproduces 1:1
+    # (it captures the deployed ai4ia-toolbox composition), so it must be provisionable.
+    assert _tb.validate_manifest(manifest) == []
+    assert manifest["name"] == "ai4ia-toolbox"
+    tool_types = [t["type"] for t in manifest["tools"]]
+    assert tool_types == ["web_search", "code_interpreter", "toolbox_search_preview"]
+    # Every tool is named (the service allows at most one unnamed tool total).
+    assert all(t.get("name") for t in manifest["tools"])
 
 
 def test_valid_manifest_has_no_errors():
@@ -113,15 +116,16 @@ def test_plan_tools_camel_to_snake():
     assert not any(k in mcp for k in ("serverLabel", "serverUrl", "requireApproval", "projectConnectionId"))
 
 
-def test_consumer_url_and_entry_shape():
+def test_consumer_url_and_portable_entry_shape():
     assert _tb.consumer_mcp_url(_ENDPOINT, "ai4ia-toolbox") == (
         "https://acct.services.ai.azure.com/api/projects/proj/toolboxes/ai4ia-toolbox/mcp?api-version=v1"
     )
     entry = _tb.build_mcp_server_entry(_valid_manifest(), _ENDPOINT)
     assert entry["name"] == "ai4ia-toolbox"
-    # upstreamUrl is the bare path; APIM injects the api-version query.
-    assert entry["upstreamUrl"].endswith("/toolboxes/ai4ia-toolbox/mcp")
-    assert "?" not in entry["upstreamUrl"]
+    # PORTABLE: the entry carries no hardcoded upstreamUrl; main.bicep computes it per
+    # environment from the deployed project endpoint. This is what keeps the catalog 1:1.
+    assert "upstreamUrl" not in entry
+    assert entry["foundryToolbox"] is True
     assert entry["upstreamAuthMode"] == "managed_identity"
     assert entry["upstreamMiResource"] == "https://ai.azure.com"
     assert entry["upstreamHeaders"] == {"Foundry-Features": "Toolboxes=V1Preview"}

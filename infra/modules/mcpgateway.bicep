@@ -5,9 +5,9 @@
 // model data path keeps scale-to-zero economics while MCP gets a v2 tier (the
 // MCP feature is NOT supported on the Consumption SKU).
 //
-// Default-OFF + ships empty: main.bicep deploys this module only when
-// enableOfficialMcp is true, and the catalog ships with zero servers, so by
-// default nothing here is provisioned.
+// Provisioned only when enableOfficialMcp is true. The param DEFAULT is false (a
+// fresh consumer of this template provisions no MCP gateway); this repo enables it
+// in main.parameters.json to front the Foundry toolbox registered in mcp-servers.json.
 @description('Location for the MCP gateway resources.')
 param location string
 
