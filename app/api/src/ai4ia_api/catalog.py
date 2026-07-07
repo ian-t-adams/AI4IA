@@ -98,7 +98,9 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
     naming = raw["naming"]
     sku_short = naming["skuShort"]
     regions = raw.get("regions", {})
-    token = "slurmfactory"
+    # Single source of truth in infra/models.json `naming` (matches main.bicep + the catalog
+    # generator). This dev fallback only runs from a source checkout without the packaged catalog.
+    token = naming["subscriptionToken"]
     models = []
     for model in raw["catalog"]:
         options = []

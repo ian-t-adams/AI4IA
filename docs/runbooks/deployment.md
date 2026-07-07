@@ -103,7 +103,7 @@ Settings → Secrets and variables → Actions → **Variables** (these are iden
 | `AZURE_LOCATION` | primary region, e.g. `eastus2` |
 | `AI4IA_OWNER` | accountable owner tag value for the deployed resources |
 | `AI4IA_APIM_PUBLISHER_EMAIL` | operator-owned APIM publisher mailbox |
-| `AI4IA_BUDGET_START_DATE` | *(optional, recommended)* fixed budget start month `yyyy-MM-01`. Empty defaults to the first of the current month, which **drifts and breaks the first deploy of each new month** (see 6.2). Pin it to keep redeploys idempotent. |
+| `AI4IA_BUDGET_START_DATE` | *(optional, recommended)* fixed budget start month `yyyy-MM-01`. Empty defaults to the first of the current month, which **drifts and breaks the first deploy of each new month** (see §7.2). Pin it to keep redeploys idempotent. |
 
 The moment `AZURE_CLIENT_ID` is set, the next qualifying push to `main` deploys.
 
@@ -155,7 +155,47 @@ az containerapp hostname bind --hostname ai4ia.nomad-analytics.com `
   --certificate mc-cae-ai4ia-slur-ai4ia-nomad-anal-2891
 ```
 
-## 3. Enabling feature-flagged capabilities at deploy time
+## 3. Moving to a new subscription or tenant (1:1 standup)
+
+The stack is data-driven, so standing it up in a **new subscription/tenant** is a small set of
+config edits plus the normal deploy — no code changes. What varies per environment is centralized:
+
+| What | Where | Notes |
+|---|---|---|
+| Environment name | `AZURE_ENV_NAME` repo/azd var | Feeds `environmentName`; names the RG (`rg-ai4ia-<env>`), Foundry accounts/projects (`mf-aiforia-<env>-<region>`), Container Apps, etc. |
+| Subscription / tenant / region | `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_LOCATION` repo vars | See §2.3. |
+| Model deployment-name token | `infra/models.json` → `naming.subscriptionToken` | Stamped into every model deployment name (`{model}-<token>-<region>-<sku>`). Read by bicep **and** the runtime catalog. |
+| Foundry account/project token | `infra/models.json` → `naming.foundryToken` | Names `mf-<token>-<env>-<region>` and the toolbox project endpoint. |
+| Postgres region | `AI4IA_POSTGRES_LOCATION` | Must be unrestricted for the subscription (see §7.1). |
+| API Center region | `AI4IA_API_CENTER_LOCATION` | Only if `enablePrivateToolCatalog=true`; not available in every region (see §7.2 / the API Center note). |
+| Custom domains | `AI4IA_*_CUSTOM_DOMAIN` / `*_MANAGED_CERT_NAME` | Leave empty for a vanilla hostname; see §2.5. |
+
+Procedure:
+
+1. Set the repo variables for the new subscription/tenant/env (§2.3), plus `AI4IA_POSTGRES_LOCATION`
+   and (if used) `AI4IA_API_CENTER_LOCATION` to regions valid there.
+2. If you want a different naming token, edit `infra/models.json` `naming.subscriptionToken` and
+   `naming.foundryToken`, then **regenerate the runtime catalog** so routing matches the deployments:
+
+   ```powershell
+   python scripts/gen-model-catalog.py     # rewrites app/api/src/ai4ia_api/data/model_catalog.json
+   python scripts/gen-model-catalog.py --check   # CI drift guard; must pass
+   python scripts/validate-catalog.py            # names/regions/SKUs consistent
+   ```
+
+   The tokens are the single source of truth (bicep, the generator, the validator, and the app all
+   read `infra/models.json` `naming`), so there is nothing else to change for naming to stay 1:1.
+3. `azd up`. Model deployments, Foundry accounts/projects, and the whole stack come up under the new
+   names.
+4. **Foundry toolbox (data-plane, if used):** the toolbox is not created by `azd up`. After the
+   deploy, run `python scripts/provision-foundry-toolbox.py --create` against the new project (the
+   `infra/mcp-servers.json` entry is already portable — its APIM upstream URL is computed by bicep
+   from the new project endpoint). See [`../foundry-toolbox.md`](../foundry-toolbox.md).
+5. **Break-glass ops scripts** (`scripts/inventory.ps1`, `teardown.ps1`, `purge-soft-deleted.ps1`)
+   default their `-ResourceGroup` / `-NameFilter` to the original environment on purpose (so they
+   cannot accidentally target the wrong stack). Pass explicit arguments for the new environment.
+
+## 4. Enabling feature-flagged capabilities at deploy time
 
 Feature flags (Voice Live, document library, memory, etc.) are **not** turned on by this pipeline —
 they are azd environment values consumed by `infra/main.parameters.json`. To enable one, set the azd
@@ -163,7 +203,7 @@ env var (locally `azd env set <NAME> <value>`, or as an environment variable ava
 workflow) and let the next provision apply it. The exact flags, required resources, and fail-closed
 prerequisites for each feature are in [`feature-enablement.md`](./feature-enablement.md).
 
-## 4. Manual deploy (no pipeline / break-glass)
+## 5. Manual deploy (no pipeline / break-glass)
 
 From a workstation with the azd env selected:
 
@@ -179,7 +219,7 @@ azd deploy
 > Validate in a parallel resource group before reprovisioning a live stack — see
 > [`teardown.md`](./teardown.md).
 
-## 5. Rollback
+## 6. Rollback
 
 There is no automatic rollback. To revert, deploy a known-good commit:
 
@@ -192,9 +232,9 @@ azd deploy
 Container Apps keeps prior revisions; you can also shift traffic back to a previous revision in the
 portal/CLI while a fix is prepared.
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
-### 6.1 `Provision infrastructure` fails with `LocationIsOfferRestricted` (Postgres)
+### 7.1 `Provision infrastructure` fails with `LocationIsOfferRestricted` (Postgres)
 
 Symptom — the deploy job fails in **Provision infrastructure** with:
 
@@ -221,7 +261,7 @@ az rest --method get --url "https://management.azure.com/subscriptions/$sub/prov
 ```
 
 
-### 6.2 `Provision infrastructure` fails with `Start date of budgets cannot be updated`
+### 7.2 `Provision infrastructure` fails with `Start date of budgets cannot be updated`
 
 Symptom — the deploy job fails in **Provision infrastructure**, after every other resource
 succeeds, with:

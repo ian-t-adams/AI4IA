@@ -9,8 +9,11 @@
     "_comment": { "type": "string" },
     "naming": {
       "type": "object",
-      "required": ["pattern", "skuShort"],
+      "required": ["subscriptionToken", "foundryToken", "pattern", "skuShort"],
       "properties": {
+        "_comment": { "type": "string" },
+        "subscriptionToken": { "type": "string", "minLength": 1, "description": "Token stamped into every model deployment name ({model}-{subscriptionToken}-{region}-{skuShort}). Read by bicep + the catalog scripts + the runtime; change it (per tenant/subscription) and regenerate the catalog." },
+        "foundryToken": { "type": "string", "minLength": 1, "description": "Token naming the Foundry accounts/projects (mf-<foundryToken>-<env>-<region>). Read by bicep for account/project/toolbox-URL naming." },
         "pattern": { "type": "string" },
         "skuShort": { "type": "object", "additionalProperties": { "type": "string" } }
       }
