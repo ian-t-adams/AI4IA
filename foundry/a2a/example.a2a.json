@@ -1,0 +1,8 @@
+{
+  "$schema": "./a2a.schema.json",
+  "_comment": "EXAMPLE A2A exposure. Copy/edit and run scripts/provision-foundry-a2a.py to print the APIM-fronted consumer URL, the enable + APIM-front commands, and an agents.json stub. The APIM front reuses the toolbox bridge pattern: APIM injects the Foundry managed-identity bearer for https://ai.azure.com so callers present only the APIM subscription key. Nothing here changes the deploy; A2A is preview.",
+  "agentName": "ai4ia-research-agent",
+  "displayName": "Research Agent (A2A)",
+  "description": "Remote Foundry agent that runs the research-brief routine; delegated to over A2A, gated on APIM auth.",
+  "linkAs": "remote-research"
+}

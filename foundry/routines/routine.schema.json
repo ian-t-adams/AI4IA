@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ai4ia/foundry/routine.schema.json",
+  "title": "AI4IA Foundry routine manifest",
+  "description": "Declarative definition of a Foundry Agent Service routine (see docs/foundry-toolbox.md P7 and https://learn.microsoft.com/azure/foundry/agents/how-to/use-routines). scripts/provision-foundry-routine.py reads this file and creates the routine in the primary project. Key AI4IA property: a routine's tool calls target the shared toolbox, which is already fronted by the official-MCP APIM, so routines inherit the bridge's governance and add NO new APIM surface for the app runtime. camelCase keys map to the API's snake_case (the script translates). All routine features are Azure public preview.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "description", "model", "steps"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "_comment": { "type": "string" },
+    "name": {
+      "type": "string",
+      "description": "Routine name (lowercase slug; same pattern as the toolbox name).",
+      "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable routine description.",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "model": {
+      "type": "string",
+      "description": "Model deployment name the routine runs on (must exist in the project; AI4IA deploys these in foundry.bicep).",
+      "minLength": 1
+    },
+    "toolbox": {
+      "type": "string",
+      "description": "Optional name of the toolbox whose tools the steps reference. Documents that every tool call flows through the APIM-fronted toolbox MCP endpoint (the bridge). Defaults to the toolbox in toolbox.manifest.json.",
+      "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$"
+    },
+    "steps": {
+      "type": "array",
+      "description": "Ordered routine steps. A routine must have at least one step before it is created (the script rejects an empty routine).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "instructions"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Step name (unique within the routine).",
+            "minLength": 1
+          },
+          "instructions": {
+            "type": "string",
+            "description": "What the model should do in this step.",
+            "minLength": 1
+          },
+          "tools": {
+            "type": "array",
+            "description": "Names of toolbox tools this step may call. Each must exist in the referenced toolbox; calls flow through the APIM-fronted toolbox MCP endpoint.",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}

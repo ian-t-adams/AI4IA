@@ -19,6 +19,7 @@ _TOOLBOX_SCRIPT = _REPO_ROOT / "scripts" / "provision-foundry-toolbox.py"
 _SKILLS_SCRIPT = _REPO_ROOT / "scripts" / "provision-foundry-skills.py"
 _MANIFEST = _REPO_ROOT / "foundry" / "toolbox.manifest.json"
 _MANIFEST_SCHEMA = _REPO_ROOT / "foundry" / "toolbox.manifest.schema.json"
+_EXAMPLE_MANIFEST = _REPO_ROOT / "foundry" / "toolbox.manifest.example.json"
 _MCP_SCHEMA = _REPO_ROOT / "infra" / "mcp-servers.schema.json"
 _EXAMPLE_SKILL = _REPO_ROOT / "foundry" / "skills" / "citation-discipline" / "SKILL.md"
 
@@ -130,6 +131,28 @@ def test_manifest_matches_its_schema():
     schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
     jsonschema.validate(_tb.load_manifest(_MANIFEST), schema)
     jsonschema.validate(_valid_manifest(), schema)
+
+
+def test_example_manifest_is_populated_valid_and_schema_valid():
+    # The reference manifest shows every supported tool; unlike the shipped inert one it must
+    # be populated, provisionable, and schema-valid so operators can copy it verbatim.
+    manifest = _tb.load_manifest(_EXAMPLE_MANIFEST)
+    assert _tb.validate_manifest(manifest) == []
+    tool_types = {t["type"] for t in manifest["tools"]}
+    assert {
+        "web_search",
+        "azure_ai_search",
+        "code_interpreter",
+        "browser_automation",
+        "computer_use",
+        "toolbox_search_preview",
+    } <= tool_types
+    # both a default and a custom code_interpreter are present (the custom one is named)
+    ci = [t for t in manifest["tools"] if t["type"] == "code_interpreter"]
+    assert any("name" in t for t in ci) and len(ci) >= 2
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+    jsonschema.validate(manifest, schema)
 
 
 # ----------------------------------- skills -------------------------------------------

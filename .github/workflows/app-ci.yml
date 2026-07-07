@@ -12,6 +12,8 @@ on:
       - "scripts/provision-foundry-toolbox.py"
       - "scripts/provision-foundry-skills.py"
       - "scripts/provision-private-tool-catalog.py"
+      - "scripts/provision-foundry-routine.py"
+      - "scripts/provision-foundry-a2a.py"
       - ".github/workflows/app-ci.yml"
   push:
     branches: [main]
@@ -25,6 +27,8 @@ on:
       - "scripts/provision-foundry-toolbox.py"
       - "scripts/provision-foundry-skills.py"
       - "scripts/provision-private-tool-catalog.py"
+      - "scripts/provision-foundry-routine.py"
+      - "scripts/provision-foundry-a2a.py"
 
 permissions:
   contents: read
