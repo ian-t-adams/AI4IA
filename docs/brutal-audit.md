@@ -111,7 +111,7 @@ landed on `main` **except** #92 (genuinely blocked upstream — see open items).
 | `python` 3.12-slim → 3.14-slim (API image). | **Merged — with evidence, not faith.** No PR CI job builds this Dockerfile, so green CI was *not* base-image proof. Validated instead with a wheels-only resolution: `uv pip compile --python-version 3.14 --python-platform x86_64-unknown-linux-gnu --no-build` resolved the full 109-package tree (incl. `mem0ai → qdrant-client → grpcio/numpy`) at exit 0, proving every C-extension has a prebuilt cp314 wheel. | #91 |
 | `node` 22-alpine → 26-alpine (web image). | **Merged.** Left `app/web/package.json` `engines.node` at `">=22.0.0 <23"`, contradicting the image — since fixed in #106 (widened to `">=22.0.0 <27"`). | #90 |
 | `mem0ai` bump (API). | **Merged.** | #94 |
-| `eslint` 9→10 (devDep). | **Left open — blocked upstream.** `eslint-config-next@16` (the version that matches Next 16) is incompatible with eslint 10: its base config parses via Next's compiled `@babel/eslint-parser`, whose scope manager lacks eslint 10's required `addGlobals` API (`TypeError: scopeManager.addGlobals is not a function`). Only pre-release config-next builds support it. Hold at eslint 9 until stable upstream support ships. | #92 |
+| `eslint` 9→10 (devDep). | **Resolved (#132).** Previously held at eslint 9 (blocked upstream). Unblocked once `eslint-config-next@16.2.10` loosened its eslint peer to `>=9.0.0` (which includes 10) and CI's Node 22 satisfied eslint 10's engine (`^20.19\|\|^22.13\|\|>=24`). One config fix needed: pinned `settings.react.version = "19.2.7"` in `eslint.config.mjs` (eslint 10 removed `context.getFilename()`, which eslint-plugin-react's `version:"detect"` path relied on). No rules disabled, no app code changed; lint stayed at 0 errors / 19 warnings. Now on `^10.6.0`. | #132 |
 
 Several optional improvements shipped alongside the triage:
 
@@ -129,15 +129,16 @@ follow-up spike — documented here so they read as tracked, not forgotten.
 
 | Item | Why it matters | Where to look |
 | --- | --- | --- |
-| `eslint-config-next` can't move to `^16`, and `eslint` 9→10 (#92) is blocked. | Two halves of the same knot. `eslint-config-next` is pinned at `15.5.19` (a major behind `next` 16). Bumping it to `^16` was tried in #106 and reverted: with the current `eslint.config.mjs` `FlatCompat` (`@eslint/eslintrc`) bridge, config-next@16's flat-plugin object throws `Converting circular structure to JSON` and `npm run lint` exits non-zero. Unblocking needs `eslint.config.mjs` reworked to consume config-next's native flat export — which is also the path off the eslint-10 block (#92). Hold both until that rework lands. | `app/web/eslint.config.mjs`, `app/web/package.json`, PR #92 |
 | No PR CI job actually `docker build`s either Dockerfile. | The base-image bumps (#90/#91) and the original `engines.node` mismatch all slipped past PR CI because the Dockerfiles are only built in `deploy.yml` on push-to-main. A PR-time build-only image build would have caught the `EBADENGINE` drift before it reached `main`. | `.github/workflows/*.yml`, `deploy.yml` |
+
+**Resolved since this audit:** the `eslint-config-next` `^16` / `eslint` 9→10 knot (formerly listed here) is fixed — #124 reworked `eslint.config.mjs` onto config-next 16's native flat-config export (dropping the `@eslint/eslintrc` `FlatCompat` bridge), and #132 completed the eslint 9→10 bump. `eslint-config-next` is now `16.2.10` and `eslint` is `^10.6.0`.
 
 ## Bottom line
 
-The original audit backlog is cleared, and the Dependabot backlog is now triaged
-to a single genuinely-blocked PR (#92). The two quick web-manifest fixes —
-`engines.node` honesty and the stale proxy doc-comments — shipped in #106. What
-remains is the coupled `eslint-config-next`/eslint-10 rework and the PR-CI
-Docker-build gap, both tracked above, neither urgent — plus the one accepted cost
+The original audit backlog is cleared, and the Dependabot backlog is fully worked
+off — the last genuinely-blocked item (#92) shipped via #124 (native flat-config
+rework) and #132 (eslint 10). The two quick web-manifest fixes — `engines.node`
+honesty and the stale proxy doc-comments — shipped in #106. What remains is the
+PR-CI Docker-build gap, tracked above and not urgent — plus the one accepted cost
 tradeoff. That is a healthy steady state: explicit debt with owners and reasons,
 not silent rot.
