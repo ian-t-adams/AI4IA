@@ -51,7 +51,13 @@
       "value": "${AI4IA_BUDGET_START_DATE=}"
     },
     "enableOfficialMcp": {
-      "value": false
+      "value": true
+    },
+    "enableFoundryToolbox": {
+      "value": true
+    },
+    "enablePrivateToolCatalog": {
+      "value": true
     },
     "webCustomDomain": {
       "value": "${AI4IA_WEB_CUSTOM_DOMAIN=}"

@@ -136,10 +136,15 @@ def _svc(
 # --- Catalog ----------------------------------------------------------------
 
 
-def test_packaged_catalog_is_empty_by_default():
-    # The feature ships default-OFF with an empty catalog, so the checked-in build
-    # surfaces no official servers until an admin populates infra/mcp-servers.json.
-    assert load_official_mcp_catalog().servers == []
+def test_packaged_catalog_contains_the_activated_toolbox():
+    # The Foundry toolbox bridge has been activated: infra/mcp-servers.json registers the
+    # ai4ia-toolbox and the generated runtime catalog surfaces it (id + APIM path). If the
+    # catalog is later emptied again, flip this back to asserting `.servers == []`.
+    servers = load_official_mcp_catalog().servers
+    ids = [s.id for s in servers]
+    assert "ai4ia-toolbox" in ids
+    toolbox = next(s for s in servers if s.id == "ai4ia-toolbox")
+    assert toolbox.path == "ai4ia-toolbox/mcp"
 
 
 def test_explicit_catalog_loads_and_get(tmp_path):

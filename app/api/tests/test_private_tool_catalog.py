@@ -89,7 +89,11 @@ def test_resolve_prefers_env_when_no_arg(monkeypatch):
     assert _cat.resolve(None, "AZURE_OFFICIAL_MCP_GATEWAY_URL", "gateway") == _GATEWAY
 
 
-def test_checked_in_catalog_is_empty_so_registration_is_a_noop():
-    # The shipped catalog is intentionally empty; the script must no-op cleanly.
+def test_checked_in_catalog_registers_the_activated_toolbox():
+    # The catalog now contains the activated Foundry toolbox, so the script plans exactly
+    # one MCP asset whose URL is the APIM consumer route. If the catalog is later emptied,
+    # flip this back to asserting an empty no-op.
     servers = _cat.load_servers(_CATALOG)
-    assert servers == []
+    assert [s["name"] for s in servers] == ["ai4ia-toolbox"]
+    assets = _cat.plan_assets(servers, _GATEWAY)
+    assert assets[0]["mcpUrl"] == "https://apim-mcp.example.com/ai4ia-toolbox/mcp"
