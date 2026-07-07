@@ -43,6 +43,9 @@ param enableFoundryToolbox bool = false
 @description('Opt-in: provision an Azure API Center to act as a private tool catalog that inventories the official MCP servers fronted by the MCP APIM (discoverable/governable, and integratable with Microsoft Foundry private tool catalogs). Default OFF so the checked-in deploy provisions no API Center. Registering each MCP server as an asset is a documented, opt-in script step (scripts/provision-private-tool-catalog.py).')
 param enablePrivateToolCatalog bool = false
 
+@description('Region for the API Center (private tool catalog). API Center is only available in a subset of regions (e.g. eastus, westeurope, swedencentral) and NOT in eastus2, so it needs its own region knob independent of the primary `location`. The catalog only inventories URLs, so its region is not latency-sensitive. Override via AI4IA_API_CENTER_LOCATION if eastus is unsuitable.')
+param apiCenterLocation string = 'eastus'
+
 @description('Opt-in: deploy a minimal Azure Monitor alerting baseline (action group + metric alerts). Default OFF so existing deployments are byte-for-byte unchanged and no alert can fire without explicit enablement.')
 param enableAlerts bool = false
 
@@ -532,7 +535,7 @@ module apicenter 'modules/apicenter.bicep' = if (enablePrivateToolCatalog) {
   name: 'apicenter'
   scope: rg
   params: {
-    location: location
+    location: apiCenterLocation
     tags: tags
     workload: workload
     environmentName: environmentName
