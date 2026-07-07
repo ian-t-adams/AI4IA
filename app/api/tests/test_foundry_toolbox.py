@@ -74,13 +74,31 @@ def test_valid_manifest_has_no_errors():
     assert _tb.validate_manifest(_valid_manifest()) == []
 
 
-def test_manifest_rejects_bad_name_and_duplicate_unnamed_tools():
+def test_manifest_rejects_bad_name_and_too_many_unnamed_tools():
     bad_name = {**_valid_manifest(), "name": "Toolbox_NOPE"}
     assert any("name" in e for e in _tb.validate_manifest(bad_name))
 
+    # The service allows at most ONE unnamed tool total (across all types).
     dup = _valid_manifest()
-    dup["tools"] = [{"type": "web_search"}, {"type": "web_search"}]  # two unnamed same-type
-    assert any("web_search" in e for e in _tb.validate_manifest(dup))
+    dup["tools"] = [{"type": "web_search"}, {"type": "code_interpreter"}]  # two unnamed, any type
+    errs = _tb.validate_manifest(dup)
+    assert any("at most ONE tool total" in e for e in errs)
+
+
+def test_manifest_rejects_non_toolbox_tool_types():
+    # computer_use / bing_custom_search are agent-level tools with no toolbox equivalent.
+    for bad_type in ("computer_use", "bing_custom_search"):
+        m = _valid_manifest()
+        m["tools"] = [{"type": bad_type, "name": "x"}]
+        assert any(bad_type in e for e in _tb.validate_manifest(m))
+
+
+def test_every_allowed_type_maps_to_a_model_class():
+    # The live create path resolves each allowed type to a discriminated SDK model class.
+    assert _tb._ALLOWED_TOOL_TYPES == set(_tb._TYPE_TO_MODEL)
+    assert all(name.endswith("ToolboxTool") for name in _tb._TYPE_TO_MODEL.values())
+    assert "computer_use" not in _tb._ALLOWED_TOOL_TYPES
+    assert "browser_automation_preview" in _tb._ALLOWED_TOOL_TYPES
 
 
 # ----------------------------- tool projection ----------------------------------------
@@ -143,10 +161,11 @@ def test_example_manifest_is_populated_valid_and_schema_valid():
         "web_search",
         "azure_ai_search",
         "code_interpreter",
-        "browser_automation",
-        "computer_use",
+        "browser_automation_preview",
         "toolbox_search_preview",
     } <= tool_types
+    # non-toolbox tool types must not appear
+    assert "computer_use" not in tool_types and "bing_custom_search" not in tool_types
     # both a default and a custom code_interpreter are present (the custom one is named)
     ci = [t for t in manifest["tools"] if t["type"] == "code_interpreter"]
     assert any("name" in t for t in ci) and len(ci) >= 2

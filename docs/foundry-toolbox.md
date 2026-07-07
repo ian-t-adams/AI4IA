@@ -116,27 +116,39 @@ the API's `snake_case` by `scripts/provision-foundry-toolbox.py`.
 
 ## Per-tool configuration (all preview)
 
+These are the tool types that can be placed **in a toolbox** via `azure-ai-projects` (2.3.0),
+mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
+`scripts/provision-foundry-toolbox.py`:
+
 | `type` | Purpose | Key manifest fields | Notes |
 | --- | --- | --- | --- |
 | `web_search` | Grounded web search | `name`, `description` | Connectionless. |
 | `azure_ai_search` | RAG over an AI Search index | `indexName`, connection | Needs a project connection to the Search service. |
-| `bing_custom_search` | Scoped Bing search | `customSearchConfiguration`, connection | Needs a Bing connection. |
 | `code_interpreter` | Sandboxed Python | `container` | Foundry-managed sandbox (distinct from AI4IA's existing direct Responses-API code interpreter). |
-| `code_interpreter` (custom) | BYO container image | `container` (custom image ref) | "Custom code interpreter"; runs your image in the Foundry sandbox. |
+| `code_interpreter` (custom) | BYO container image | `container` (custom image ref) | "Custom code interpreter"; runs your image in the Foundry sandbox. Give it a distinct `name`. |
 | `file_search` | Search uploaded files | vector store / file refs | Connectionless once files are attached. |
-| `browser_automation` | Drive a hosted browser | connection / config | Preview; heavier isolation review recommended. |
-| `computer_use` | Screen/keyboard/mouse control | model + config | Preview; strongest safety review recommended. |
+| `browser_automation_preview` | Drive a hosted browser | connection / config | Preview; heavier isolation review recommended. |
+| `openapi` | Call an OpenAPI-described API | `spec`, connection | Wraps a REST API as a tool. |
 | `toolbox_search_preview` | **Tool search** — let the model pick tools from a large set | none | Add this so the toolbox self-describes its tools to the model. |
-| `mcp` | Nest another MCP server as a tool | `serverLabel`, `serverUrl`, `requireApproval`, `projectConnectionId` | Lets the toolbox aggregate upstream MCP servers. |
+| `mcp` | Nest another MCP server as a tool | `serverLabel`, `serverUrl`, `requireApproval`, `projectConnectionId` | Lets the toolbox aggregate upstream MCP servers. Identified by `serverLabel`. |
+
+> **Not toolbox tools:** `computer_use` and `bing_custom_search` exist only as *agent-level* tools
+> in the SDK (`ComputerUsePreviewTool` / `BingCustomSearchPreviewTool`) with no `*ToolboxTool`
+> counterpart, so they cannot be added to a toolbox. Attach them directly to an agent instead.
+
+> **Identifier rule:** the service allows at most **one tool total** without an identifier. Every
+> other tool needs a unique `name` (or `serverLabel` for `mcp`). The provisioning script and schema
+> both enforce this.
 
 Add a `description` to every tool — the model uses it for tool selection, which matters most
 when `toolbox_search_preview` is present.
 
 **Copy-paste starting point:** `foundry/toolbox.manifest.example.json` is a populated reference
-manifest with one of every tool above (plus a connection and a bound skill). The shipped
-`foundry/toolbox.manifest.json` stays inert; copy the example (or pass
+manifest with one of each toolbox tool (plus a connection and a bound skill), all uniquely named.
+The shipped `foundry/toolbox.manifest.json` stays inert; copy the example (or pass
 `--manifest foundry/toolbox.manifest.example.json`), prune what you don't need, create the
-referenced connections, then run `provision-foundry-toolbox.py`.
+referenced connections, then run `provision-foundry-toolbox.py`. The script creates the toolbox via
+`project.toolboxes.create_version(name, tools=[...], description=..., skills=[...], policies=...)`.
 
 ## Skills
 
