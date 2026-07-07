@@ -327,11 +327,12 @@ CI/CD is in good shape post-hardening: every `uses:` is SHA-pinned, jobs have
   a config list would read better. Not a leak.
 
 > **Already tracked (not re-flagged):** "no PR-time `docker build` of either
-> Dockerfile" and the `eslint-config-next` / eslint-10 block are both in
-> `brutal-audit.md`'s **Known open items**. The CI-vs-image runtime skew (CI Node 22
-> / Python 3.12 vs `node:26` / `python:3.14`) is a direct consequence of that same
-> no-PR-docker-build gap (the Python 3.14 bump was instead validated via
-> `uv pip compile`). See §9.
+> Dockerfile" is in `brutal-audit.md`'s **Known open items**. The
+> `eslint-config-next` / eslint-10 block once listed alongside it is now **resolved**
+> (#124 native flat-config rework + #132 eslint 10), so it is no longer an open item.
+> The CI-vs-image runtime skew (CI Node 22 / Python 3.12 vs `node:26` / `python:3.14`)
+> is a direct consequence of that same no-PR-docker-build gap (the Python 3.14 bump
+> was instead validated via `uv pip compile`). See §9.
 
 ---
 
@@ -363,7 +364,7 @@ These are real, but `docs/brutal-audit.md` already records them as **fixed**,
 | Item | Status in brutal-audit |
 | --- | --- |
 | No PR-time `docker build` of either Dockerfile | **Known open item** |
-| `eslint-config-next` `^16` / eslint 9→10 block | **Known open item** (blocked upstream) |
+| `eslint-config-next` `^16` / eslint 9→10 block | **Resolved** (#124/#132) |
 | `style-src 'unsafe-inline'` in CSP | **Deliberate** documented relaxation (#101) |
 | Gateway proxy `minReplicas:0` cold-start | **Accepted** cost tradeoff |
 | Cosmos PITR / KV purge protection / Postgres HA | **Deferred** cost/reliability decision |
