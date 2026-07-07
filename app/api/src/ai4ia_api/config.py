@@ -589,6 +589,10 @@ class Settings(BaseSettings):
     metrics_postgres_resource_id: str | None = None
     metrics_cosmos_resource_id: str | None = None
     metrics_container_app_resource_id: str | None = None
+    # Regional batch-metrics endpoint, e.g. https://<region>.metrics.monitor.azure.com
+    # (env AI4IA_METRICS_ENDPOINT). Required by the azure-monitor-querymetrics batch
+    # client; unset -> panels degrade to "unavailable" rather than erroring.
+    metrics_endpoint: str | None = None
 
     # Optional path override for the bundled model catalog (tests/dev).
     model_catalog_path: str | None = None

@@ -257,6 +257,21 @@ var proxyIdentity = filter(identity.outputs.identities, x => x.service == 'proxy
 // The web identity runs the Next.js frontend container (ACR pull only).
 var webIdentity = filter(identity.outputs.identities, x => x.service == 'web')[0]
 
+// The api managed identity reads Azure Monitor platform metrics for the admin
+// dashboard's resource panels via the batch metrics API (metrics:getBatch), which
+// requires Monitoring Reader at SUBSCRIPTION scope — per-resource grants are not
+// sufficient. This single read-only assignment replaces the four former
+// per-resource Monitoring Reader grants; it is acceptable because Monitoring Reader
+// is read-only and this subscription is dedicated to AI4IA. It lives in a
+// subscription-scoped module so the assignment name (a guid over the principalId)
+// is calculable at deployment start (BCP120 — principalId must cross as a param).
+module apiMonitoringReaderSub 'modules/monitoring-reader-sub.bicep' = {
+  name: 'apiMonitoringReaderSub'
+  params: {
+    principalId: apiIdentity.principalId
+  }
+}
+
 module keyvault 'modules/keyvault.bicep' = {
   name: 'keyvault'
   scope: rg
@@ -536,7 +551,6 @@ module api 'modules/api.bicep' = {
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     apiIdentityResourceId: apiIdentity.resourceId
     apiIdentityClientId: apiIdentity.clientId
-    apiIdentityPrincipalId: apiIdentity.principalId
     acrLoginServer: platform.outputs.acrLoginServer
     modelGatewayUrl: gateway.outputs.modelGatewayUrl
     modelGatewayAuthMode: 'api_key'
@@ -602,7 +616,8 @@ module api 'modules/api.bicep' = {
     // via managed identity (no keys). Empty string when off -> env var not set.
     searchEndpoint: search.outputs.searchEndpoint
     // Admin resource-metric panels: ARM ids of the provisioned resources the api
-    // reads Azure Monitor metrics from (Monitoring Reader granted per-resource).
+    // reads Azure Monitor metrics from via the batch metrics API (Monitoring Reader
+    // is granted once at subscription scope above, as the batch API requires).
     // Empty when a resource is not deployed -> that panel stays 'unavailable'.
     metricsSearchResourceId: search.outputs.searchId
     metricsPostgresResourceId: data.outputs.postgresId
