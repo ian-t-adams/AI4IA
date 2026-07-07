@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - "infra/**"
+      - "foundry/**"
       - ".github/workflows/infra-validate.yml"
   push:
     branches: [main]
     paths:
       - "infra/**"
+      - "foundry/**"
 
 permissions:
   contents: read
@@ -35,6 +37,12 @@ jobs:
         run: |
           python -m pip install --quiet check-jsonschema
           check-jsonschema --schemafile infra/models.schema.json infra/models.json
+
+      - name: Validate mcp-servers.json against schema
+        run: check-jsonschema --schemafile infra/mcp-servers.schema.json infra/mcp-servers.json
+
+      - name: Validate Foundry toolbox manifest against schema
+        run: check-jsonschema --schemafile foundry/toolbox.manifest.schema.json foundry/toolbox.manifest.json
 
       - name: Validate catalog consistency (regions / SKUs / names)
         run: python scripts/validate-catalog.py

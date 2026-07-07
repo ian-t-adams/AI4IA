@@ -34,6 +34,16 @@
           "upstreamMiResource": {
             "type": "string",
             "description": "AAD resource / audience URI used to acquire the managed-identity token (e.g. an Entra App ID URI for an Azure-hosted upstream). Required when upstreamAuthMode == 'managed_identity'."
+          },
+          "upstreamHeaders": {
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "description": "Optional static request headers APIM injects OUTBOUND to the upstream on every call (set-header, override), layered on top of any managed-identity bearer. Values are non-secret, XML-safe constants baked into the policy; secrets belong in managed identity or named values. Example (Foundry toolbox): { \"Foundry-Features\": \"Toolboxes=V1Preview\" }."
+          },
+          "upstreamQueryParams": {
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "description": "Optional static query parameters APIM injects OUTBOUND to the upstream on every call (set-query-parameter, override). Example (Foundry toolbox): { \"api-version\": \"v1\" }."
           }
         },
         "if": {

@@ -17,6 +17,9 @@ param disableLocalAuth bool = false
 @description('Principal IDs granted data-plane access (Cognitive Services OpenAI User + User).')
 param dataPlanePrincipalIds array = []
 
+@description('Principal IDs granted the "Foundry User" role on the PROJECT (Agent Service data plane: toolbox/agent invocation). Default empty; only populated for the primary account when the Foundry-toolbox bridge is enabled, so the checked-in deploy is byte-for-byte unchanged.')
+param toolboxPrincipalIds array = []
+
 @description('Central Log Analytics workspace resource id. Diagnostic settings stream account logs/metrics there for the admin observability plane.')
 param logAnalyticsWorkspaceId string
 
@@ -86,6 +89,7 @@ resource annotateOnlyRaiPolicy 'Microsoft.CognitiveServices/accounts/raiPolicies
 // Data-plane RBAC for app identities (managed-identity model access; no keys).
 var openAiUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd' // Cognitive Services OpenAI User
 var cognitiveUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908' // Cognitive Services User
+var foundryUserRoleId = '53ca6127-db72-4b80-b1b0-d745d6d5456d' // Foundry User (formerly "Azure AI User") — Agent Service data plane (toolbox/agent invocation)
 
 resource openAiUserAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in dataPlanePrincipalIds: {
   name: guid(account.id, pid, openAiUserRoleId)
@@ -102,6 +106,21 @@ resource cognitiveUserAssignments 'Microsoft.Authorization/roleAssignments@2022-
   scope: account
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveUserRoleId)
+    principalId: pid
+    principalType: 'ServicePrincipal'
+  }
+}]
+
+// Project-scoped "Foundry User" grants for identities that invoke the Agent
+// Service data plane (the toolbox MCP endpoint at
+// {project_endpoint}/toolboxes/<name>/mcp). Unlike the account-scoped model
+// grants above, the toolbox authorizes on the PROJECT resource. Preview
+// capability; default-empty so the checked-in deploy is byte-for-byte unchanged.
+resource toolboxFoundryUserAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in toolboxPrincipalIds: {
+  name: guid(project.id, pid, foundryUserRoleId)
+  scope: project
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryUserRoleId)
     principalId: pid
     principalType: 'ServicePrincipal'
   }
@@ -131,5 +150,12 @@ output accountId string = account.id
 output accountName string = account.name
 output endpoint string = account.properties.endpoint
 output projectName string = project.name
+// Foundry Agent Service project (data-plane) endpoint. The Agent Service host is
+// `<subdomain>.services.ai.azure.com` (distinct from the account's
+// `.cognitiveservices.azure.com` inference endpoint), and the subdomain is
+// deterministically `toLower(accountName)` (customSubDomainName above), so this is
+// composed rather than read from an ARM property. Consumed by the Foundry-toolbox
+// bridge: the toolbox MCP URL is `<projectEndpoint>/toolboxes/<name>/mcp`.
+output projectEndpoint string = 'https://${toLower(accountName)}.services.ai.azure.com/api/projects/${project.name}'
 output principalId string = account.identity.principalId
 output raiPolicyName string = annotateOnlyRaiPolicy.name

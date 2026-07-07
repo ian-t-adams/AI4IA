@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ai4ia/foundry/toolbox.manifest.schema.json",
+  "title": "AI4IA Foundry toolbox manifest",
+  "description": "Declarative definition of the single Foundry Agent Service toolbox that AI4IA fronts through the official-MCP APIM (see docs/foundry-toolbox.md). scripts/provision-foundry-toolbox.py reads this file and calls project.toolboxes.create_toolbox_version(...). The checked-in manifest ships INERT (empty tools/skills/connections); nothing is provisioned until an operator populates it and runs the script. This mirrors the empty infra/mcp-servers.json catalog. Fields mirror the Foundry toolbox declarative contract; camelCase keys here map to the API's snake_case (the script translates).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "description", "tools", "skills", "connections"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "_comment": { "type": "string" },
+    "name": {
+      "type": "string",
+      "description": "Toolbox name (also the {toolbox_name} path segment in the MCP endpoint, and the mcp-servers.json entry name). Lowercase slug; pattern matches infra/mcp-servers.schema.json so the projected catalog entry is always valid.",
+      "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable toolbox description (helps agents/operators understand its scope).",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "raiPolicyName": {
+      "type": "string",
+      "description": "Optional Responsible AI policy name that must already exist on the project (maps to policies.rai_config.rai_policy_name). AI4IA's foundry.bicep provisions 'ai4ia-annotate-only'.",
+      "maxLength": 128
+    },
+    "connections": {
+      "type": "array",
+      "description": "Project connections the toolbox references by name (credentials live in the connection, never here). Each must already exist in the project (create with `azd ai connection create`).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "description": "Connectionless built-in tools and MCP tools to include. At most one instance of a given type may omit `name`; give each additional instance of the same type a unique `name`. Add a `description` to every tool to help model tool selection.",
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Tool type. See docs/foundry-toolbox.md for per-tool config and regional/model limits (all preview).",
+            "enum": [
+              "web_search",
+              "azure_ai_search",
+              "bing_custom_search",
+              "code_interpreter",
+              "file_search",
+              "browser_automation",
+              "computer_use",
+              "toolbox_search_preview",
+              "mcp"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "Optional per-instance name; required when including multiple tools of the same type."
+          },
+          "description": {
+            "type": "string",
+            "description": "Optional tool description used by the model for tool selection."
+          }
+        }
+      }
+    },
+    "skills": {
+      "type": "array",
+      "description": "Existing project skills to bind to the toolbox as MCP resources. Create them first with scripts/provision-foundry-skills.py (or `azd ai skill create`).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "version": {
+            "type": "string",
+            "description": "Optional skill version to pin (string). Omit to use the skill's default version."
+          }
+        }
+      }
+    }
+  }
+}

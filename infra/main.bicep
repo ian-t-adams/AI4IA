@@ -31,6 +31,12 @@ param apimPublisherEmail string = 'ai4ia@example.com'
 @description('Opt-in: provision a dedicated APIM (Basic v2) front door for curated "official" MCP servers (infra/mcp-servers.json), so MCP traffic is gated on an APIM subscription key. Default OFF, and the catalog ships empty, so the checked-in deploy provisions no MCP gateway and the app is byte-for-byte unchanged. Basic v2 is required because the native MCP feature is unsupported on the Consumption model gateway.')
 param enableOfficialMcp bool = false
 
+@description('Opt-in: enable the Foundry Agent Service toolbox bridge. Grants the official-MCP APIM system-assigned identity the "Foundry User" role on the primary Foundry project so it can mint the AAD bearer the toolbox MCP endpoint requires, and emits AZURE_FOUNDRY_PROJECT_ENDPOINT for the provisioning scripts. Requires enableOfficialMcp=true to have any effect (the toolbox is consumed as an official MCP server fronted by that APIM). Default OFF; no toolbox is created by the deploy itself (provisioning is a documented, opt-in script step).')
+param enableFoundryToolbox bool = false
+
+@description('Opt-in: provision an Azure API Center to act as a private tool catalog that inventories the official MCP servers fronted by the MCP APIM (discoverable/governable, and integratable with Microsoft Foundry private tool catalogs). Default OFF so the checked-in deploy provisions no API Center. Registering each MCP server as an asset is a documented, opt-in script step (scripts/provision-private-tool-catalog.py).')
+param enablePrivateToolCatalog bool = false
+
 @description('Opt-in: deploy a minimal Azure Monitor alerting baseline (action group + metric alerts). Default OFF so existing deployments are byte-for-byte unchanged and no alert can fire without explicit enablement.')
 param enableAlerts bool = false
 
@@ -487,6 +493,30 @@ module mcpgateway 'modules/mcpgateway.bicep' = if (enableOfficialMcp) {
   }
 }
 
+// Foundry-toolbox bridge (opt-in): when both the official MCP gateway and the
+// toolbox bridge are enabled, the MCP APIM's system-assigned identity needs the
+// "Foundry User" role on the PRIMARY project so it can mint the toolbox bearer.
+// Guarded on enableOfficialMcp so the conditional-module output is only read when
+// the module exists; empty otherwise => no role assignment, unchanged deploy.
+#disable-next-line BCP318
+var foundryToolboxApimPrincipal = (enableOfficialMcp && enableFoundryToolbox) ? [mcpgateway.outputs.mcpApimPrincipalId] : []
+
+// --- Private tool catalog (Azure API Center; opt-in) ---
+// Inventories the APIM-fronted official MCP servers as a discoverable/governable
+// private catalog (and integrates with Foundry private tool catalogs). Default OFF:
+// no resources unless explicitly enabled. Asset registration is a documented script
+// step (scripts/provision-private-tool-catalog.py), not baked into IaC.
+module apicenter 'modules/apicenter.bicep' = if (enablePrivateToolCatalog) {
+  name: 'apicenter'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    workload: workload
+    environmentName: environmentName
+  }
+}
+
 // --- Backend API (FastAPI) Container App ---
 module api 'modules/api.bicep' = {
   name: 'api'
@@ -663,7 +693,7 @@ module alerts 'modules/alerts.bicep' = if (enableAlerts) {
 // Account/project names are environment-scoped so parallel-RG validation and
 // multi-env deploys don't collide on the globally-unique Cognitive Services subdomain.
 // Deployment (model endpoint) names keep the region/datazone notation via subscriptionToken.
-module foundry 'modules/foundry.bicep' = [for r in regionList: {
+module foundry 'modules/foundry.bicep' = [for (r, i) in regionList: {
   name: 'foundry-${r.name}'
   scope: rg
   params: {
@@ -672,6 +702,7 @@ module foundry 'modules/foundry.bicep' = [for r in regionList: {
     accountName: take('mf-${foundryToken}-${environmentName}-${r.name}', 60)
     projectName: take('proj-default-${foundryToken}-${environmentName}-${r.name}', 60)
     dataPlanePrincipalIds: dataPlanePrincipalIds
+    toolboxPrincipalIds: (i == primaryFoundryIndex) ? foundryToolboxApimPrincipal : []
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
   }
 }]
@@ -717,6 +748,15 @@ output AZURE_PROXY_URL string = gateway.outputs.proxyUrl
 // (it is wired module->module to the api during the runtime phase).
 #disable-next-line BCP318
 output AZURE_OFFICIAL_MCP_GATEWAY_URL string = enableOfficialMcp ? mcpgateway.outputs.mcpGatewayBaseUrl : ''
+// Primary Foundry project (Agent Service data-plane) endpoint, emitted only when
+// the toolbox bridge is enabled. The provisioning scripts read this to create the
+// toolbox; the toolbox MCP URL registered in mcp-servers.json is
+// `<this>/toolboxes/<name>/mcp`. Empty otherwise so the default deploy is unchanged.
+output AZURE_FOUNDRY_PROJECT_ENDPOINT string = enableFoundryToolbox ? foundry[primaryFoundryIndex].outputs.projectEndpoint : ''
+// Private tool catalog (API Center) name, emitted only when enabled. The
+// provisioning script reads this to register the APIM-fronted MCP servers as assets.
+#disable-next-line BCP318
+output AZURE_API_CENTER_NAME string = enablePrivateToolCatalog ? apicenter.outputs.apiCenterName : ''
 output AZURE_API_URL string = api.outputs.apiUrl
 output AZURE_API_APP_NAME string = api.outputs.apiAppName
 output AZURE_WEB_URL string = web.outputs.webUrl
