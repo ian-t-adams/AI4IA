@@ -40,7 +40,21 @@ _INFRA_ONLY_FIELDS = (
     "upstreamMiResource",
     "upstreamHeaders",
     "upstreamQueryParams",
+    "foundryToolbox",
 )
+
+# A PORTABLE Foundry-toolbox entry: no hardcoded upstreamUrl (main.bicep computes it from the
+# deployed project endpoint), flagged with foundryToolbox: true.
+_PORTABLE_TOOLBOX_ENTRY = {
+    "name": "ai4ia-toolbox",
+    "displayName": "Foundry toolbox: ai4ia-toolbox",
+    "description": "AI4IA shared Foundry toolbox via APIM.",
+    "foundryToolbox": True,
+    "upstreamAuthMode": "managed_identity",
+    "upstreamMiResource": "https://ai.azure.com",
+    "upstreamHeaders": {"Foundry-Features": "Toolboxes=V1Preview"},
+    "upstreamQueryParams": {"api-version": "v1"},
+}
 
 
 def _build_catalog():
@@ -73,6 +87,30 @@ def test_generator_projects_toolbox_to_runtime_shape_and_drops_infra_fields():
 
 def test_generator_still_enforces_managed_identity_resource():
     entry = {k: v for k, v in _TOOLBOX_ENTRY.items() if k != "upstreamMiResource"}
+    with pytest.raises(SystemExit):
+        _build_catalog()({"servers": [entry]})
+
+
+def test_generator_accepts_portable_foundry_toolbox_without_upstream_url():
+    # A foundryToolbox entry legitimately omits upstreamUrl (bicep computes it); the generator
+    # must accept it and project only the runtime shape (dropping foundryToolbox + all infra fields).
+    out = _build_catalog()({"servers": [_PORTABLE_TOOLBOX_ENTRY]})
+    assert out["servers"] == [
+        {
+            "id": "ai4ia-toolbox",
+            "displayName": "Foundry toolbox: ai4ia-toolbox",
+            "description": "AI4IA shared Foundry toolbox via APIM.",
+            "path": "ai4ia-toolbox/mcp",
+        }
+    ]
+    [item] = out["servers"]
+    for field in _INFRA_ONLY_FIELDS:
+        assert field not in item
+
+
+def test_generator_still_requires_url_for_non_toolbox_entries():
+    # An external (non-foundryToolbox) entry with no upstreamUrl must still fail closed.
+    entry = {k: v for k, v in _PORTABLE_TOOLBOX_ENTRY.items() if k != "foundryToolbox"}
     with pytest.raises(SystemExit):
         _build_catalog()({"servers": [entry]})
 

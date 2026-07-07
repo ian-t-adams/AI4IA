@@ -103,10 +103,11 @@ governed per-turn executor:
   model gateway stays a separate APIM so model traffic keeps its scale-to-zero
   economics.
 
-Both planes are **default-OFF**, and the official catalog also ships empty. Each
-turn builds the official plane first and BYO second, then merges them: on a tool
-name collision the **official tool wins**, auto-approvals are unioned, and a
-single per-turn budget caps total MCP calls across both planes.
+The BYO plane is **default-OFF**. The official plane's bicep params default off too, but in this
+repo it is **activated**: `enableOfficialMcp=true` and the catalog registers the Foundry toolbox
+(`ai4ia-toolbox`). Each turn builds the official plane first and BYO second, then merges them: on a
+tool name collision the **official tool wins**, auto-approvals are unioned, and a single per-turn
+budget caps total MCP calls across both planes.
 
 ## Regions
 

@@ -12,7 +12,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "displayName", "upstreamUrl", "upstreamAuthMode"],
+        "required": ["name", "displayName", "upstreamAuthMode"],
         "properties": {
           "name": {
             "type": "string",
@@ -44,14 +44,33 @@
             "type": "object",
             "additionalProperties": { "type": "string" },
             "description": "Optional static query parameters APIM injects OUTBOUND to the upstream on every call (set-query-parameter, override). Example (Foundry toolbox): { \"api-version\": \"v1\" }."
+          },
+          "foundryToolbox": {
+            "type": "boolean",
+            "description": "When true, this entry is an Azure AI Foundry toolbox and its `upstreamUrl` is NOT hardcoded here: main.bicep computes it from the deployed primary project endpoint as `<projectEndpoint>/toolboxes/<name>/mcp`, so the catalog stays portable across subscriptions/tenants/environments. Omit `upstreamUrl` when this is true."
           }
         },
-        "if": {
-          "properties": { "upstreamAuthMode": { "const": "managed_identity" } }
-        },
-        "then": {
-          "required": ["upstreamMiResource"]
-        }
+        "allOf": [
+          {
+            "if": {
+              "properties": { "upstreamAuthMode": { "const": "managed_identity" } }
+            },
+            "then": {
+              "required": ["upstreamMiResource"]
+            }
+          },
+          {
+            "if": {
+              "not": {
+                "required": ["foundryToolbox"],
+                "properties": { "foundryToolbox": { "const": true } }
+              }
+            },
+            "then": {
+              "required": ["upstreamUrl"]
+            }
+          }
+        ]
       }
     }
   }

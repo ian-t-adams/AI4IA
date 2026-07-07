@@ -17,7 +17,7 @@ param disableLocalAuth bool = false
 @description('Principal IDs granted data-plane access (Cognitive Services OpenAI User + User).')
 param dataPlanePrincipalIds array = []
 
-@description('Principal IDs granted the "Foundry User" role on the PROJECT (Agent Service data plane: toolbox/agent invocation). Default empty; only populated for the primary account when the Foundry-toolbox bridge is enabled, so the checked-in deploy is byte-for-byte unchanged.')
+@description('Principal IDs granted the "Foundry User" role on the PROJECT (Agent Service data plane: toolbox/agent invocation). Default empty; only populated for the primary account when the Foundry-toolbox bridge is enabled (no role assignment while empty).')
 param toolboxPrincipalIds array = []
 
 @description('Central Log Analytics workspace resource id. Diagnostic settings stream account logs/metrics there for the admin observability plane.')
@@ -115,7 +115,7 @@ resource cognitiveUserAssignments 'Microsoft.Authorization/roleAssignments@2022-
 // Service data plane (the toolbox MCP endpoint at
 // {project_endpoint}/toolboxes/<name>/mcp). Unlike the account-scoped model
 // grants above, the toolbox authorizes on the PROJECT resource. Preview
-// capability; default-empty so the checked-in deploy is byte-for-byte unchanged.
+// capability; default-empty (no grant is created unless the bridge is enabled).
 resource toolboxFoundryUserAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in toolboxPrincipalIds: {
   name: guid(project.id, pid, foundryUserRoleId)
   scope: project

@@ -1,9 +1,10 @@
-# `foundry/` — Foundry Agent Service toolbox + skills (default-OFF, preview)
+# `foundry/` — Foundry Agent Service toolbox + skills (ACTIVATED, preview)
 
 This directory holds the **declarative, operator-owned** definition of the single Azure AI
 Foundry **Agent Service toolbox** that AI4IA fronts through its existing official-MCP APIM.
-Nothing here is provisioned by `azd up`, CI, or the app runtime; it ships **inert** and is
-created only when an operator runs the provisioning scripts and flips the feature flags.
+`toolbox.manifest.json` is the canonical `ai4ia-toolbox` definition (live in the primary project);
+the toolbox is a data-plane resource created by the provisioning scripts (not `azd up`), and the
+feature flags are on in `infra/main.parameters.json`.
 
 Full design + runbook: [`docs/foundry-toolbox.md`](../docs/foundry-toolbox.md).
 
@@ -20,7 +21,7 @@ PR #125, with **zero new runtime code**. APIM injects the managed-identity beare
 
 | Path | What it is |
 | --- | --- |
-| `toolbox.manifest.json` | The toolbox definition (tools/skills/connections). Ships **empty** on purpose. |
+| `toolbox.manifest.json` | Canonical definition of the live `ai4ia-toolbox` (a new tenant reproduces it 1:1). |
 | `toolbox.manifest.example.json` | Populated reference manifest with one of every tool (copy-paste starting point). |
 | `toolbox.manifest.schema.json` | JSON Schema for the manifest; validated in CI (`infra-validate`). |
 | `skills/<name>/SKILL.md` | Agent-Skills packages (YAML front matter + Markdown instructions) bound to the toolbox. |
