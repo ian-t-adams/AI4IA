@@ -1,8 +1,8 @@
 {
   "$schema": "./toolbox.manifest.schema.json",
-  "_comment": "POPULATED REFERENCE manifest showing every tool AI4IA supports through the toolbox bridge. This is an EXAMPLE only: the shipped toolbox.manifest.json stays inert (empty) so the checked-in deploy is byte-for-byte unchanged. To use it, copy this to toolbox.manifest.json (or pass --manifest foundry/toolbox.manifest.example.json), prune the tools you do not want, create the referenced connections, then run scripts/provision-foundry-toolbox.py. Every tool listed here is consumed through the official-MCP APIM front door once the toolbox is added to infra/mcp-servers.json. All tools are Azure public preview.",
+  "_comment": "POPULATED REFERENCE manifest showing the tools AI4IA can place in a toolbox via azure-ai-projects. This is an EXAMPLE only: the shipped toolbox.manifest.json stays inert (empty) so the checked-in deploy is byte-for-byte unchanged. To use it, copy this to toolbox.manifest.json (or pass --manifest foundry/toolbox.manifest.example.json), prune the tools you do not want, create the referenced connections, then run scripts/provision-foundry-toolbox.py. Every tool listed here is consumed through the official-MCP APIM front door once the toolbox is added to infra/mcp-servers.json. Note: computer_use and bing_custom_search are agent-level tools with no toolbox equivalent in the SDK, so they are not toolbox tools. The service allows at most one unnamed tool total, so every tool here is named. All tools are Azure public preview.",
   "name": "ai4ia-toolbox",
-  "description": "AI4IA shared Foundry toolbox (populated reference). Groups grounding, code execution, browsing, computer control, and tool search behind one APIM-fronted MCP endpoint.",
+  "description": "AI4IA shared Foundry toolbox (populated reference). Groups grounding, code execution, browsing, and tool search behind one APIM-fronted MCP endpoint.",
   "raiPolicyName": "ai4ia-annotate-only",
   "connections": [
     {
@@ -12,6 +12,7 @@
   "tools": [
     {
       "type": "web_search",
+      "name": "web-search",
       "description": "Grounded public web search. Connectionless."
     },
     {
@@ -23,6 +24,7 @@
     },
     {
       "type": "code_interpreter",
+      "name": "code-interpreter",
       "description": "Foundry-managed sandboxed Python (distinct from AI4IA's existing direct Responses-API code interpreter)."
     },
     {
@@ -32,15 +34,13 @@
       "container": "myacr.azurecr.io/ai4ia-code-interpreter:latest"
     },
     {
-      "type": "browser_automation",
+      "type": "browser_automation_preview",
+      "name": "browser",
       "description": "Drive a hosted browser (preview; heavier isolation review recommended)."
     },
     {
-      "type": "computer_use",
-      "description": "Screen/keyboard/mouse control (preview; strongest safety review recommended)."
-    },
-    {
       "type": "toolbox_search_preview",
+      "name": "tool-search",
       "description": "Tool search: lets the model pick from a large tool set. Add so the toolbox self-describes its tools."
     }
   ],

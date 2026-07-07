@@ -39,7 +39,7 @@
     },
     "tools": {
       "type": "array",
-      "description": "Connectionless built-in tools and MCP tools to include. At most one instance of a given type may omit `name`; give each additional instance of the same type a unique `name`. Add a `description` to every tool to help model tool selection.",
+      "description": "Connectionless built-in tools and MCP tools to include. The service allows at most ONE tool total to omit `name`; give every other tool a unique `name`. Add a `description` to every tool to help model tool selection.",
       "items": {
         "type": "object",
         "required": ["type"],
@@ -50,11 +50,10 @@
             "enum": [
               "web_search",
               "azure_ai_search",
-              "bing_custom_search",
               "code_interpreter",
               "file_search",
-              "browser_automation",
-              "computer_use",
+              "browser_automation_preview",
+              "openapi",
               "toolbox_search_preview",
               "mcp"
             ]

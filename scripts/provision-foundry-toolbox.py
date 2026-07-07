@@ -14,7 +14,7 @@ What it does
    ready-to-paste ``infra/mcp-servers.json`` entry that routes the toolbox through the
    existing official-MCP APIM (managed-identity bearer + the ``Foundry-Features`` header +
    ``api-version=v1`` query the toolbox endpoint requires).
-4. With ``--create``, calls ``project.toolboxes.create_toolbox_version(...)`` via the
+4. With ``--create``, calls ``project.toolboxes.create_version(...)`` via the
    ``azure-ai-projects`` SDK (install the optional dependency group: ``foundry``).
    Without it, the script is a dry run (safe, offline, no Azure calls).
 5. With ``--emit-yaml PATH``, writes the equivalent ``azd ai toolbox create --from-file``
@@ -44,17 +44,23 @@ TOOLBOX_FEATURES_HEADER = {"Foundry-Features": "Toolboxes=V1Preview"}
 TOOLBOX_API_VERSION_QUERY = {"api-version": "v1"}
 
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,38}[a-z0-9]$")  # matches infra/mcp-servers.schema.json
-_ALLOWED_TOOL_TYPES = {
-    "web_search",
-    "azure_ai_search",
-    "bing_custom_search",
-    "code_interpreter",
-    "file_search",
-    "browser_automation",
-    "computer_use",
-    "toolbox_search_preview",
-    "mcp",
+# Toolbox tool types that can actually be placed in a toolbox via azure-ai-projects, mapped to
+# their discriminated model classes (resolved lazily in the live path so the pure functions stay
+# dependency-free). NOTE: `computer_use` and `bing_custom_search` exist only as AGENT-level tools
+# in the SDK (ComputerUsePreviewTool / BingCustomSearchPreviewTool); there is no matching
+# *ToolboxTool, so they cannot go in a toolbox and are intentionally absent here. Browser automation
+# is spelled `browser_automation_preview` to match the SDK discriminator.
+_TYPE_TO_MODEL = {
+    "web_search": "WebSearchToolboxTool",
+    "azure_ai_search": "AzureAISearchToolboxTool",
+    "code_interpreter": "CodeInterpreterToolboxTool",
+    "file_search": "FileSearchToolboxTool",
+    "browser_automation_preview": "BrowserAutomationPreviewToolboxTool",
+    "openapi": "OpenApiToolboxTool",
+    "toolbox_search_preview": "ToolboxSearchPreviewToolboxTool",
+    "mcp": "MCPToolboxTool",
 }
+_ALLOWED_TOOL_TYPES = set(_TYPE_TO_MODEL)
 # camelCase manifest keys -> snake_case payload keys (only the ones that differ).
 _CAMEL_TO_SNAKE = {
     "serverLabel": "server_label",
@@ -94,20 +100,20 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
             "before provisioning (the checked-in manifest ships empty on purpose)."
         )
 
-    unnamed_by_type: dict[str, int] = {}
+    unnamed = 0
     for i, tool in enumerate(tools):
         ttype = tool.get("type")
         if ttype not in _ALLOWED_TOOL_TYPES:
             errors.append(f"tools[{i}].type '{ttype}' is not one of {sorted(_ALLOWED_TOOL_TYPES)}.")
             continue
-        if not tool.get("name"):
-            unnamed_by_type[ttype] = unnamed_by_type.get(ttype, 0) + 1
-    for ttype, count in unnamed_by_type.items():
-        if count > 1:
-            errors.append(
-                f"{count} '{ttype}' tools omit `name`; at most one unnamed tool per type is "
-                "allowed (give each additional instance a unique `name`)."
-            )
+        # The service identifies a tool by `name` OR `serverLabel` (mcp tools use the latter).
+        if not (tool.get("name") or tool.get("serverLabel")):
+            unnamed += 1
+    if unnamed > 1:
+        errors.append(
+            f"{unnamed} tools have no identifier; the service allows at most ONE tool total without "
+            "a `name` (or `serverLabel` for mcp) -- give every other tool a unique `name`."
+        )
     return errors
 
 
@@ -205,9 +211,16 @@ def resolve_project_endpoint(arg: str | None) -> str:
 # Live path (isolated Azure SDK import; requires the optional `foundry` dependency group)
 # --------------------------------------------------------------------------------------
 def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
-    """Create a toolbox version via azure-ai-projects. Imported lazily so dry runs need no SDK."""
+    """Create a toolbox version via azure-ai-projects. Imported lazily so dry runs need no SDK.
+
+    Uses the real SDK surface: ``client.toolboxes.create_version(name, *, tools=[<typed
+    ToolboxTool subclasses>], description, skills=[ToolboxSkillReference], policies=ToolboxPolicies)``.
+    Each manifest tool maps to its discriminated model class (``_TYPE_TO_MODEL``); type-specific
+    fields are passed through (snake_cased) best-effort.
+    """
     try:
         from azure.ai.projects import AIProjectClient
+        from azure.ai.projects import models as m
         from azure.identity import DefaultAzureCredential
     except ImportError as exc:  # pragma: no cover - exercised only on live provisioning
         raise SystemExit(
@@ -216,18 +229,32 @@ def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
         ) from exc
 
     project = AIProjectClient(endpoint=project_endpoint, credential=DefaultAzureCredential())
-    kwargs: dict[str, Any] = {
-        "name": manifest["name"],
-        "description": manifest.get("description", ""),
-        "tools": plan_tools(manifest),
-    }
+
+    tools: list[Any] = []
+    for tool in manifest.get("tools") or []:
+        cls_name = _TYPE_TO_MODEL.get(tool["type"])
+        if cls_name is None:  # pragma: no cover - guarded earlier by validate_manifest
+            raise SystemExit(
+                f"tool type '{tool['type']}' cannot be placed in a toolbox via azure-ai-projects "
+                f"(creatable types: {sorted(_ALLOWED_TOOL_TYPES)})."
+            )
+        model_cls = getattr(m, cls_name)
+        fields = {_to_snake(k): v for k, v in tool.items() if k != "type"}
+        tools.append(model_cls(**fields))
+
+    kwargs: dict[str, Any] = {"tools": tools, "description": manifest.get("description", "")}
     if manifest.get("skills"):
-        kwargs["skills"] = [_convert_keys(s) for s in manifest["skills"]]
-    if manifest.get("connections"):
-        kwargs["connections"] = [_convert_keys(c) for c in manifest["connections"]]
+        kwargs["skills"] = [
+            m.ToolboxSkillReference(name=s["name"], version=s["version"])
+            if s.get("version")
+            else m.ToolboxSkillReference(name=s["name"])
+            for s in manifest["skills"]
+        ]
     if manifest.get("raiPolicyName"):
-        kwargs["rai_policy_name"] = manifest["raiPolicyName"]
-    return project.toolboxes.create_toolbox_version(**kwargs)
+        kwargs["policies"] = m.ToolboxPolicies(
+            rai_config=m.RaiConfig(rai_policy_name=manifest["raiPolicyName"])
+        )
+    return project.toolboxes.create_version(manifest["name"], **kwargs)
 
 
 # --------------------------------------------------------------------------------------
