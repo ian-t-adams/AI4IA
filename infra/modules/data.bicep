@@ -301,6 +301,14 @@ resource memoryDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-0
     charset: 'UTF8'
     collation: 'en_US.utf8'
   }
+  // Serialize server child operations. Flexible Server runs control-plane ops one
+  // at a time; when a database create is in flight the server is briefly "not
+  // accessible", which makes a concurrent Entra-admin op fail with
+  // AadAuthOperationCannotBePerformedWhenServerIsNotAccessible. Chaining after the
+  // admin (via postgresExtensions) keeps the whole sequence single-file.
+  dependsOn: [
+    postgresExtensions
+  ]
 }
 
 // Allow Azure-internal traffic (the special 0.0.0.0 rule) so the api Container
@@ -314,6 +322,11 @@ resource postgresAllowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallR
     startIpAddress: '0.0.0.0'
     endIpAddress: '0.0.0.0'
   }
+  // Last link in the serialized child-operation chain (see memoryDb) so the
+  // firewall update never runs concurrently with the Entra-admin assignment.
+  dependsOn: [
+    memoryDb
+  ]
 }
 
 // Stream the Postgres server log (errors/connections/checkpoints — the standard
