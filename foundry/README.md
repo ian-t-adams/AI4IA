@@ -21,8 +21,11 @@ PR #125, with **zero new runtime code**. APIM injects the managed-identity beare
 | Path | What it is |
 | --- | --- |
 | `toolbox.manifest.json` | The toolbox definition (tools/skills/connections). Ships **empty** on purpose. |
+| `toolbox.manifest.example.json` | Populated reference manifest with one of every tool (copy-paste starting point). |
 | `toolbox.manifest.schema.json` | JSON Schema for the manifest; validated in CI (`infra-validate`). |
 | `skills/<name>/SKILL.md` | Agent-Skills packages (YAML front matter + Markdown instructions) bound to the toolbox. |
+| `routines/routine.schema.json` + `routines/example.routine.json` | Routine schema + a populated example; a routine's tool calls flow through the APIM-fronted toolbox. |
+| `a2a/a2a.schema.json` + `a2a/example.a2a.json` | A2A exposure schema + example; fronts a deployed agent's A2A endpoint through APIM. |
 
 ## Provisioning (operator, one time)
 
@@ -35,6 +38,7 @@ python scripts/provision-foundry-skills.py
 python scripts/provision-foundry-skills.py --create
 
 # 2. Populate toolbox.manifest.json (tools + skills), then create the toolbox.
+#    Tip: copy toolbox.manifest.example.json (one of every tool) as a starting point.
 python scripts/provision-foundry-toolbox.py            # dry run: prints plan + mcp-servers.json entry
 python scripts/provision-foundry-toolbox.py --create
 
@@ -45,6 +49,16 @@ python scripts/provision-foundry-toolbox.py --create
 #    private tool catalog (set enablePrivateToolCatalog=true first).
 python scripts/provision-private-tool-catalog.py     # dry run: prints APIM URLs to catalog
 python scripts/provision-private-tool-catalog.py --create
+
+# 5. (optional) Create a routine. Its tool calls target the toolbox, so they
+#    inherit the APIM bridge. Edit foundry/routines/example.routine.json first.
+python scripts/provision-foundry-routine.py          # dry run: prints steps + tool calls
+python scripts/provision-foundry-routine.py --create
+
+# 6. (optional) Expose a deployed agent over A2A, fronted through APIM. Edit
+#    foundry/a2a/example.a2a.json, then emit the enable + APIM-front commands.
+python scripts/provision-foundry-a2a.py              # dry run: prints URLs + agents.json stub
+python scripts/provision-foundry-a2a.py --emit-az    # prints the `az` enable + APIM commands
 ```
 
 The scripts default to a **safe offline dry run** and read the project endpoint from

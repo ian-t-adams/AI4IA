@@ -132,6 +132,12 @@ the API's `snake_case` by `scripts/provision-foundry-toolbox.py`.
 Add a `description` to every tool — the model uses it for tool selection, which matters most
 when `toolbox_search_preview` is present.
 
+**Copy-paste starting point:** `foundry/toolbox.manifest.example.json` is a populated reference
+manifest with one of every tool above (plus a connection and a bound skill). The shipped
+`foundry/toolbox.manifest.json` stays inert; copy the example (or pass
+`--manifest foundry/toolbox.manifest.example.json`), prune what you don't need, create the
+referenced connections, then run `provision-foundry-toolbox.py`.
+
 ## Skills
 
 A **skill** is a `foundry/skills/<name>/SKILL.md` file (Agent Skills spec,
@@ -223,14 +229,12 @@ agents discover exactly the APIM-fronted URLs the app already consumes -- one go
 no second auth path. The shipped `infra/mcp-servers.json` is empty, so the script is a clean no-op
 until servers are registered.
 
-## P7 — Routines and Agent-to-Agent (A2A): plan (not shipped)
+## P7 — Routines and Agent-to-Agent (A2A): shipped (scaffold; live paths preview)
 
-Routines and A2A are Foundry **managed-agent-runtime** features. Unlike the toolbox/skills/catalog
-work, they have almost no offline-verifiable surface: the `azure-ai-projects` 2.3.0 client exposes
-only `get_openai_client` / `send_request` at the top level and reaches agents through a preview
-`_patch_agents` operations module, so any `--create` script written today would target an unstable,
-unverifiable SDK shape. Per this repo's guardrail we do **not** ship unverifiable live wiring. What
-follows is the concrete plan to execute against a live tenant with a pinned preview SDK.
+Routines and A2A are Foundry **managed-agent-runtime** features. Their offline-verifiable surface
+(manifests, schemas, validation/planning, `--emit-az`, unit tests) is **shipped and green**; only the
+final live calls (`--create` / enabling the endpoint) run against a tenant, and those use the pinned
+preview `azure-ai-projects` SDK / `az` CLI. Both keep every tool call and endpoint on the proxy.
 
 ### Routines
 
@@ -239,13 +243,16 @@ multi-step agent definition that runs *inside* the Foundry agent. Key insight fo
 routine that needs tools calls the toolbox MCP endpoint, which is already fronted by APIM** -- so
 routines inherit the bridge's governance for free and add no new APIM surface for our runtime.
 
-Planned shape (mirrors `provision-foundry-toolbox.py`):
-- `foundry/routines/<name>.routine.json` -- a manifest (steps, tool references, model) checked in
-  next to the toolbox manifest, default empty/inert.
-- `scripts/provision-foundry-routine.py` -- pure `load`/`validate`/`plan` functions (dependency-free,
-  unit-tested) plus an isolated `--create` path using the pinned preview SDK. Dry-run default.
-- The routine references the `foundry-toolbox` tools by name, so every tool call it makes still flows
-  through the MCP APIM. Nothing is consumed by the app runtime directly.
+Shipped (mirrors `provision-foundry-toolbox.py`):
+- `foundry/routines/routine.schema.json` + `foundry/routines/example.routine.json` -- a schema and a
+  populated example routine (steps, tool references, model).
+- `scripts/provision-foundry-routine.py` -- pure `load`/`validate`/`plan`/`referenced_tools` functions
+  (dependency-free, unit-tested in `test_foundry_routine.py`) plus an isolated `--create` path using the
+  pinned preview SDK. Dry-run default.
+- The routine references the toolbox tools by name, so every tool call it makes still flows through the
+  MCP APIM. Nothing is consumed by the app runtime directly.
+
+Run it: `python scripts/provision-foundry-routine.py` (dry run prints the plan), then `--create`.
 
 ### Agent-to-Agent (A2A) endpoint
 
@@ -261,10 +268,13 @@ with a genuine new APIM angle, and the plan keeps it on the proxy:
    (agent-as-tool)** seam, so a remote Foundry agent appears as a delegated tool, gated on APIM auth
    exactly like every other official MCP server.
 
-Why deferred: steps 1-3 require a live project, a deployed agent to mint an endpoint URL, and
-end-to-end tenant testing; the enabling SDK/CLI surface is public preview. The APIM-fronting pattern
-itself is already proven by the toolbox bridge, so execution is a wiring exercise once a tenant is
-available.
+Shipped: `foundry/a2a/a2a.schema.json` + `foundry/a2a/example.a2a.json` and
+`scripts/provision-foundry-a2a.py` -- pure `validate` / `a2a_endpoint` / `consumer_url` /
+`build_agent_link` functions (unit-tested in `test_foundry_a2a.py`, including that the emitted
+`agents.json` stub is a valid `AgentSpec`). `--emit-az` prints the enable + APIM-front commands. Steps
+1-3 above still need a live project and a deployed agent to mint the endpoint URL, and the enabling
+`az`/SDK surface is public preview -- so the final enable + catalog wiring is an operator step, but the
+scaffold and the APIM-fronting commands are shipped and tested.
 
 ## Testing and CI
 
@@ -274,10 +284,15 @@ available.
   shape, the azd YAML, and SKILL.md parse/validate. Two `jsonschema`-guarded tests assert the
   projected entry validates against `infra/mcp-servers.schema.json` (the load-bearing
   cross-seam guarantee) and that both manifests match `toolbox.manifest.schema.json`.
-- `infra-validate` runs `check-jsonschema` on `foundry/toolbox.manifest.json` and builds
+- `infra-validate` runs `check-jsonschema` on `foundry/toolbox.manifest.json`, the populated
+  `foundry/toolbox.manifest.example.json`, and the routine + A2A example manifests, and builds
   `infra/main.bicep` (which compiles `apicenter.bicep`).
 - `app-ci` runs the pytest suite whenever `app/**`, `foundry/**`, or the provisioning scripts
   change.
 - `app/api/tests/test_private_tool_catalog.py` pins the API Center registration script: each
   server projects to an MCP asset carrying the **APIM consumer URL**, the emitted
   `az apic api create` command shape, and fail-closed input resolution.
+- `app/api/tests/test_foundry_routine.py` and `test_foundry_a2a.py` pin the routine and A2A
+  scripts: manifest validation, the toolbox-tool references a routine makes, the raw-vs-APIM
+  endpoint URLs, the emitted `az` command shape, and that the A2A `agents.json` stub constructs
+  as a real `AgentSpec` (so the links seam can consume it).

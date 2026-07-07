@@ -1,0 +1,52 @@
+{
+  "$schema": "./toolbox.manifest.schema.json",
+  "_comment": "POPULATED REFERENCE manifest showing every tool AI4IA supports through the toolbox bridge. This is an EXAMPLE only: the shipped toolbox.manifest.json stays inert (empty) so the checked-in deploy is byte-for-byte unchanged. To use it, copy this to toolbox.manifest.json (or pass --manifest foundry/toolbox.manifest.example.json), prune the tools you do not want, create the referenced connections, then run scripts/provision-foundry-toolbox.py. Every tool listed here is consumed through the official-MCP APIM front door once the toolbox is added to infra/mcp-servers.json. All tools are Azure public preview.",
+  "name": "ai4ia-toolbox",
+  "description": "AI4IA shared Foundry toolbox (populated reference). Groups grounding, code execution, browsing, computer control, and tool search behind one APIM-fronted MCP endpoint.",
+  "raiPolicyName": "ai4ia-annotate-only",
+  "connections": [
+    {
+      "name": "ai4ia-search"
+    }
+  ],
+  "tools": [
+    {
+      "type": "web_search",
+      "description": "Grounded public web search. Connectionless."
+    },
+    {
+      "type": "azure_ai_search",
+      "name": "ai4ia-rag",
+      "description": "RAG over the AI4IA AI Search index. Requires the 'ai4ia-search' project connection.",
+      "indexName": "ai4ia-docs",
+      "projectConnectionId": "ai4ia-search"
+    },
+    {
+      "type": "code_interpreter",
+      "description": "Foundry-managed sandboxed Python (distinct from AI4IA's existing direct Responses-API code interpreter)."
+    },
+    {
+      "type": "code_interpreter",
+      "name": "custom-code-interpreter",
+      "description": "Custom code interpreter: runs a BYO container image in the Foundry sandbox.",
+      "container": "myacr.azurecr.io/ai4ia-code-interpreter:latest"
+    },
+    {
+      "type": "browser_automation",
+      "description": "Drive a hosted browser (preview; heavier isolation review recommended)."
+    },
+    {
+      "type": "computer_use",
+      "description": "Screen/keyboard/mouse control (preview; strongest safety review recommended)."
+    },
+    {
+      "type": "toolbox_search_preview",
+      "description": "Tool search: lets the model pick from a large tool set. Add so the toolbox self-describes its tools."
+    }
+  ],
+  "skills": [
+    {
+      "name": "citation-discipline"
+    }
+  ]
+}
