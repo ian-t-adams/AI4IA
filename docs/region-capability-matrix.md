@@ -93,25 +93,42 @@ confirmation in the target Azure subscription before `azd up`.
 | `gpt-image-1.5` | image | `2025-12-16` | retires 2026-12-16 | Keep for compatibility; prefer `gpt-image-2`, add `gpt-image-1-mini` for cheaper image jobs. |
 | `gpt-realtime-mini` | realtime | `2025-12-15` | retires 2026-12-15 | Add `gpt-realtime-2` / `gpt-realtime-1.5` before changing Voice Live defaults. |
 
-### Adds / swaps — attempted in #149, mostly reverted 2026-07-08 (quota)
+### Adds / swaps — deployment-type & quota investigation (2026-07-08)
 
-The 8 model adds were committed in PR #149, but the resulting `main` deploy failed:
-the subscription has **0 quota** for the new models (`InsufficientQuota ... gpt-5.5 -
-GlobalStandard ... the quota limit is 0`). Only `MAI-Image-2.5-Flash` (westus) deployed
-successfully, so the other new models were **removed again** to restore a green deploy.
+PR #149 added 8 models; the `main` deploy then failed with `InsufficientQuota` on
+`gpt-5.5`. A live check against the deploy subscription (`az cognitiveservices model list`
++ `az cognitiveservices usage list`, eastus2 / swedencentral) settled the deployment-type
+and region questions:
 
-| Model | Status | Notes |
+- **Deployment type:** `GlobalStandard` is correct for all of these models in eastus2 +
+  swedencentral. Four (`gpt-5.4-pro`, `gpt-audio-1.5`, `gpt-realtime-2`, `gpt-image-1-mini`)
+  offer *only* GlobalStandard there; the rest also offer DataZoneStandard, but Global has
+  equal-or-higher quota. No DataZone switch is needed.
+- **Regions:** no new regions needed — every model is available in both primary regions,
+  and several are *not* offered in westus / eastus / northcentralus, so eastus2 +
+  swedencentral are the right homes.
+- **Root cause was quota, and only for one model.** `gpt-5.5` has a hard quota of **0**
+  (GlobalStandard and DataZoneStandard, both regions). The deploy aborted on it before
+  reaching the others, which made #150 over-remove; the other 6 have quota and are re-added.
+
+| Model | GlobalStandard quota (K TPM, eastus2 / swedencentral) | Status |
 |---|---|---|
-| `MAI-Image-2.5-Flash` (westus, `2026-06-02`) | **kept** | Deployed successfully; has MAI image quota in West US. |
-| `gpt-5.5`, `gpt-5.4-pro`, `gpt-5.4-nano`, `gpt-5.3-codex`, `gpt-audio-1.5`, `gpt-realtime-2`, `gpt-image-1-mini` | **removed — re-add after quota** | Each needs its own Azure quota pool (e.g. "Tokens Per Minute - <model> - GlobalStandard"), currently 0 in this subscription. |
+| `gpt-audio-1.5` | 30000 / 30000 | **re-added** |
+| `gpt-5.4-nano` | 5000 / 5000 | **re-added** |
+| `gpt-5.3-codex` | 1000 / 1000 | **re-added** |
+| `gpt-5.4-pro` | 160 / 160 | **re-added** |
+| `gpt-realtime-2` | 10 / 10 | **re-added** |
+| `gpt-image-1-mini` | 4 / 4 | **re-added** |
+| `gpt-5.5` | 0 / 0 | **held out — needs a quota request** |
+| `MAI-Image-2.5-Flash` (westus) | n/a (MAI image quota) | kept (deployed in #149) |
 
-To re-add one: request quota for that model + region + SKU in the Azure portal (Quotas ->
-Cognitive Services / Azure AI Foundry), restore its entry in `infra/models.json`, run
-`python scripts/gen-model-catalog.py`, then redeploy.
+To bring in `gpt-5.5`: Portal -> Quotas -> Cognitive Services / Azure AI Foundry -> request
+"Tokens Per Minute - gpt-5.5 - GlobalStandard" in eastus2 or swedencentral, then restore its
+entry in `infra/models.json`, run `python scripts/gen-model-catalog.py`, and redeploy.
 
 ### Removals applied 2026-07-08
 
-- `gpt-4.1-nano` — removed (no code references; re-add `gpt-5.4-nano` as its successor once quota exists).
+- `gpt-4.1-nano` — removed (no code references); its successor `gpt-5.4-nano` is deployed (quota confirmed).
 - `MAI-Image-2.5` — kept in **westus** only. The Sweden Central (EU) deployment added in #149
   was reverted because its quota was not confirmed in the failed deploy; re-add once MAI image
   quota in Sweden Central is validated.
