@@ -29,12 +29,13 @@ feature posture.
 | Admin resource panels | `AI4IA_RESOURCE_METRICS_ENABLED` + resource ids | admin dashboard | resource-id env from modules | Monitoring Reader and ARM resource ids |
 
 The checked-in live parameters currently turn on image/video generation,
-document understanding, document compute, AI Search, Voice Live + tools, custom
-tools, Postgres-backed memory, and — as of the Foundry activation — the **official
-MCP plane, the Foundry toolbox bridge, and the private tool catalog**
-(`enableOfficialMcp` / `enableFoundryToolbox` / `enablePrivateToolCatalog` are all
-`true`). Web IQ and inline attachment Code Interpreter remain OFF there. The bicep
-param *defaults* stay `false`, so a fresh consumer of the template starts off.
+document understanding, document compute, inline-attachment code interpreter, AI
+Search, Voice Live + tools, custom tools, Web IQ search, Postgres-backed memory,
+and — as of the Foundry activation — the **official MCP plane, the Foundry toolbox
+bridge, and the private tool catalog** (`enableOfficialMcp` / `enableFoundryToolbox`
+/ `enablePrivateToolCatalog` are all `true`). Every feature flag in
+`infra/main.parameters.json` is `true`; the bicep param *defaults* stay `false`, so a
+fresh consumer of the template starts from a safe, mostly-off posture.
 
 ## Enablement notes
 

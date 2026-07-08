@@ -54,7 +54,5 @@ they enable. The authoritative flag list is
 
 ## Current gaps
 
-- Web IQ and inline-attachment Code Interpreter are implemented but disabled in
-  the checked-in live parameters.
 - Memory has no global user-facing consent/toggle or recalled-memory indicator.
 - Custom analyzer authoring and non-document library upload UI are not surfaced.

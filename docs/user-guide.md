@@ -126,8 +126,6 @@ missing; a `—` cell means no data for that metric, not an error.
 
 ## Known gaps
 
-- Web IQ search tools and inline-attachment Code Interpreter are implemented but
-  disabled in the checked-in live parameters.
 - The library UI is document-centric; backend support for image, audio, and video
   exists, but uploads are not first-class in the picker.
 - Custom analyzer authoring, folder-level sharing, and anonymous public links are

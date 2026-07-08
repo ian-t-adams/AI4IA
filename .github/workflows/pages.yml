@@ -13,6 +13,10 @@ name: pages
 # (setting an environment would change the subject to environment:<name> and break login).
 # The refresh is continue-on-error: a failure simply ships the committed seed data.
 #
+# Docs index: site/data/docs.js is regenerated from site/data/docs.manifest.json on every
+# publish (scripts/gen-docs-catalog.py) so the portal's documentation hub always reflects
+# the current repo markdown — the committed docs.js is kept in sync by the quality workflow.
+#
 # One-time enablement: repo Settings -> Pages -> Source = "GitHub Actions". Until then the
 # deploy job fails harmlessly; the build/artifact still runs.
 
@@ -47,6 +51,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Regenerate the portal docs index from the manifest so the published hub
+      # always reflects the current repo markdown (titles, descriptions, new docs).
+      - name: Regenerate portal docs index
+        run: |
+          set -euo pipefail
+          python3 scripts/gen-docs-catalog.py
 
       # --- Best-effort live status refresh (only when the deploy identity is configured) ---
       - name: Log in to Azure (OIDC, main-branch federated credential)

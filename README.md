@@ -14,14 +14,14 @@ Application Insights telemetry.
 
 Advanced capabilities are feature-gated. Code defaults stay safe and mostly OFF;
 the deployed environment is controlled by `infra/main.parameters.json` and azd
-environment values. See
+environment values. In the checked-in live parameters every capability is enabled,
+including Web IQ search (the `/research` command) and the inline-attachment Code
+Interpreter; Web IQ authenticates with the API's managed identity unless
+`AI4IA_WEBIQ_API_KEY` is set. See
 [`docs/runbooks/feature-enablement.md`](docs/runbooks/feature-enablement.md).
 
 Known gaps to keep visible:
 
-- Web IQ search (including the `/research` command) and the inline-attachment
-  Code Interpreter are now enabled in the checked-in live parameters. Web IQ
-  authenticates with the API's managed identity unless `AI4IA_WEBIQ_API_KEY` is set.
 - The document library UI is still document-centric; custom analyzer authoring,
   folder-level sharing, and unauthenticated public links are not implemented.
 - Memory has save/forget APIs and automatic recall, but no global user-facing
