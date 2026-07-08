@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Provision the AI4IA shared Foundry Agent Service toolbox from foundry/toolbox.manifest.json.
 
-This is the operator-run, provisioning-time companion to the *default-OFF* Foundry-toolbox
+This is the operator-run, provisioning-time companion to the Foundry-toolbox
 bridge described in docs/foundry-toolbox.md. It does NOT run during `azd up`, in CI, or in
-the app runtime; the checked-in manifest ships inert (empty tools/skills/connections).
+the app runtime; `foundry/toolbox.manifest.json` is the canonical live `ai4ia-toolbox`
+definition a new environment reproduces after infrastructure deploy.
 
 What it does
 ------------
@@ -22,7 +23,7 @@ What it does
 
 The bridge, in one line: the toolbox is consumed as a single "official MCP server", so the
 app needs ZERO new runtime code — it reuses the OfficialMcpService + tool picker shipped in
-PR #125. Everything is public preview; do not use in production without validation.
+the official MCP plane. Everything is public preview; do not use in production without validation.
 """
 
 from __future__ import annotations
@@ -97,7 +98,7 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
     if not (tools or skills or connections):
         errors.append(
             "manifest is inert: add at least one of `tools`, `skills`, or `connections` "
-            "before provisioning (the checked-in manifest ships empty on purpose)."
+            "before provisioning (a toolbox must contain at least one item)."
         )
 
     unnamed = 0

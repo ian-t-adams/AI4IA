@@ -648,6 +648,23 @@ export function ChatApp() {
           <div style={{ marginLeft: "auto", fontSize: "0.8em", color: "var(--fg-muted)" }}>
             {streaming ? "Generating…" : "Ready"}
           </div>
+          <a
+            href="https://ian-t-adams.github.io/AI4IA/"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              fontSize: "0.8em",
+              padding: "4px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--bg-elevated)",
+              color: "var(--fg)",
+              textDecoration: "none",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Docs &amp; status
+          </a>
           <AdminLink />
           <UserMenu />
         </header>

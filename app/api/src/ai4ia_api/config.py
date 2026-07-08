@@ -266,9 +266,10 @@ class Settings(BaseSettings):
     # ``infra/modules/mcpgateway.bicep``) and gated on an APIM subscription key,
     # so MCP egress is governed by APIM auth rather than called directly. The
     # catalog is packaged (``official_mcp_catalog.json``, projected from
-    # ``infra/mcp-servers.json``) and ships **empty**, and this flag defaults
-    # **OFF**, so by default no official server is wired into a turn and the app
-    # is byte-for-byte unchanged. When enabled, ``validate_runtime`` requires both
+    # ``infra/mcp-servers.json``). This repo's packaged catalog contains the
+    # activated ``ai4ia-toolbox`` entry, while the code flag still defaults OFF so
+    # no official server is wired unless enabled. When enabled, ``validate_runtime``
+    # requires both
     # the gateway URL and the subscription key (fail-closed): an enabled-but-
     # unconfigured official plane is a misconfiguration, not a silent no-op.
     official_mcp_enabled: bool = False

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Register AI4IA's APIM-fronted MCP servers in an Azure API Center private tool catalog.
 
-This is the operator-run, provisioning-time companion to the *default-OFF* private tool
-catalog described in docs/foundry-toolbox.md (P6). It does NOT run during `azd up`, in CI, or
-in the app runtime.
+This is the operator-run, provisioning-time companion to the private tool
+catalog described in docs/foundry-toolbox.md. The Bicep default is safe-off, but this repo's
+live posture enables API Center; the script still does NOT run during `azd up`, in CI, or in
+the app runtime.
 
 What it does
 ------------
@@ -157,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"Catalog not found: {args.catalog}")
     servers = load_servers(args.catalog)
     if not servers:
-        print(f"No servers in {args.catalog} (the catalog ships empty). Nothing to register.")
+        print(f"No servers in {args.catalog}. Nothing to register.")
         return 0
 
     gateway_url = resolve(args.gateway_url, "AZURE_OFFICIAL_MCP_GATEWAY_URL", "MCP APIM gateway URL")

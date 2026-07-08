@@ -165,9 +165,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.mcp_service = None
         # Curated "official" MCP plane reached through the dedicated MCP APIM
         # front door, gated on an app-global subscription key. Feature-flagged +
-        # default-OFF and the catalog ships empty, so by default the service is
-        # None and nothing is wired into a turn. When enabled, ``validate_runtime``
-        # has already guaranteed the gateway URL + key are present (fail-closed).
+        # safe-off by default; an empty catalog wires no tools, while this repo's
+        # packaged catalog contains the activated ai4ia-toolbox entry. When enabled,
+        # ``validate_runtime`` has already guaranteed the gateway URL + key are
+        # present (fail-closed).
         # Its own connector instance keeps the official egress path independent of
         # the BYO one.
         if settings.official_mcp_enabled:
