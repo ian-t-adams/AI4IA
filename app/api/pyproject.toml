@@ -51,7 +51,7 @@ dependencies = [
     "pypdf>=4.0",
     # Real mem0 OSS memory backend (memory_store=mem0): LLM fact-extraction +
     # consolidation over Postgres+pgvector. Pinned exactly because our integration
-    # (Mem0MemoryService) depends on verified 2.0.4 internals — config keys,
+    # (Mem0MemoryService) depends on verified 2.0.11 internals — config keys,
     # azure_openai default_headers, the pgvector connection_pool injection point,
     # and add/search/get_all/delete_all signatures. Bump deliberately with tests.
     "mem0ai==2.0.11",

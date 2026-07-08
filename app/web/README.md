@@ -22,13 +22,13 @@ generated media, MCP server management, and the admin dashboard.
 ## Local dev
 
 ```powershell
-npm install
+npm ci
 npm run dev
 ```
 
-Use Node 22 locally. CI runs Node 22 and the production Docker image is
-`node:26-alpine`; `package.json` declares `engines.node` as `>=22.0.0 <27`, so local
-drift fails early instead of surprising you in GitHub Actions.
+Use any Node version in the declared `>=22.0.0 <27` range (CI pins Node 22; the
+production Docker image is `node:26-alpine`). `package.json` enforces `engines.node`,
+so out-of-range local drift fails early instead of surprising you in GitHub Actions.
 
 Run checks from this folder:
 

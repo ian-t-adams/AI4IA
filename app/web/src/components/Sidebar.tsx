@@ -1,6 +1,7 @@
 "use client";
 
 import type { Session } from "@/lib/types";
+import { DOCS_INDEX_URL, STATUS_URL } from "@/lib/docs";
 
 export function Sidebar({
   sessions,
@@ -200,6 +201,7 @@ export function Sidebar({
         )}
         <button
           onClick={onOpenSettings}
+          title="Theme, text size, accessibility, and media generation options"
           style={{
             width: "100%",
             padding: "8px 12px",
@@ -211,6 +213,49 @@ export function Sidebar({
         >
           ⚙ Appearance &amp; accessibility
         </button>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 8,
+            marginTop: 8,
+          }}
+        >
+          <a
+            href={DOCS_INDEX_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Browse the AI4IA documentation hub"
+            style={{
+              textAlign: "center",
+              padding: "8px 12px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              color: "var(--sidebar-fg)",
+              textDecoration: "none",
+              fontSize: "0.9em",
+            }}
+          >
+            📖 Docs
+          </a>
+          <a
+            href={STATUS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Live deployment health and service status"
+            style={{
+              textAlign: "center",
+              padding: "8px 12px",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              color: "var(--sidebar-fg)",
+              textDecoration: "none",
+              fontSize: "0.9em",
+            }}
+          >
+            📡 Status
+          </a>
+        </div>
       </div>
     </nav>
   );

@@ -32,7 +32,7 @@ site/
     meta.js         app metadata, features, stack           (hand-maintained)
     services.js     Azure service catalogue                 (hand-maintained)
     requirements.js IaC modules, RBAC, packages             (hand-maintained)
-    docs.js         documentation index                     (hand-maintained)
+    docs.js         documentation index                     (generated)
     inventory.js    live resource inventory                 (generated)
     status.js       live health snapshot                    (generated)
 ```
@@ -49,8 +49,20 @@ site/
   ./scripts/status-snapshot.ps1
   ```
 
-- The other `data/*.js` files are hand-maintained documentation content; refresh them when
-  infra, RBAC, or dependencies change.
+- `docs.js` is **generated** by [`scripts/gen-docs-catalog.py`](../scripts/gen-docs-catalog.py)
+  from [`data/docs.manifest.json`](data/docs.manifest.json) — the curated list of which repo
+  Markdown files to surface and how to group them. Regenerate it (and verify no drift) with:
+
+  ```powershell
+  python scripts/gen-docs-catalog.py
+  python scripts/gen-docs-catalog.py --check
+  ```
+
+  The `--check` mode is enforced by the `quality` CI workflow, and `pages.yml` regenerates it
+  on every portal publish, so the documentation hub always tracks the current repo Markdown.
+
+- The other `data/*.js` files (`meta.js`, `services.js`, `requirements.js`) are hand-maintained
+  documentation content; refresh them when infra, RBAC, or dependencies change.
 
 ## Deploy
 

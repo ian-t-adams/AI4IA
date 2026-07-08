@@ -3,8 +3,6 @@
   "repoBase": "https://github.com/ian-t-adams/AI4IA/blob/main/",
   "exclude": [
     ".github/**",
-    "CODE_OF_CONDUCT.md",
-    "THIRD_PARTY_NOTICES.md",
     "site/README.md",
     "foundry/skills/**",
     "proxy/SimpleL7Proxy/**"
@@ -49,10 +47,12 @@
       ]
     },
     {
-      "group": "Contributing & security",
+      "group": "Contributing, security & governance",
       "docs": [
         { "path": "CONTRIBUTING.md", "title": "Contributing", "desc": "How to build, test and lint each surface before opening a pull request." },
-        { "path": "SECURITY.md", "title": "Security policy", "desc": "How to report a vulnerability and what is in scope." }
+        { "path": "SECURITY.md", "title": "Security policy", "desc": "How to report a vulnerability and what is in scope." },
+        { "path": "CODE_OF_CONDUCT.md", "title": "Code of conduct", "desc": "Contributor Covenant standards and enforcement for participating in the project." },
+        { "path": "THIRD_PARTY_NOTICES.md", "title": "Third-party notices", "desc": "License attribution and provenance for vendored and third-party dependencies the app ships — compliance reference." }
       ]
     },
     {
