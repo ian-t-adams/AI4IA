@@ -117,10 +117,14 @@ and region questions:
 | `gpt-5.4-nano` | 5000 / 5000 | **re-added** |
 | `gpt-5.3-codex` | 1000 / 1000 | **re-added** |
 | `gpt-5.4-pro` | 160 / 160 | **re-added** |
-| `gpt-realtime-2` | 10 / 10 | **re-added** |
+| `gpt-realtime-2` | 10 / 10 | **re-added (eastus2 only)** |
 | `gpt-image-1-mini` | 4 / 4 | **re-added** |
 | `gpt-5.5` | 0 / 0 | **held out — needs a quota request** |
 | `MAI-Image-2.5-Flash` (westus) | n/a (MAI image quota) | kept (deployed in #149) |
+
+`gpt-realtime-2`'s quota is only 10 RPM per region, and the eastus2 deployment consumes it
+exactly (10/10). It is therefore deployed in **eastus2 only**; a swedencentral copy needs a
+realtime RPM quota increase there before it can fit.
 
 To bring in `gpt-5.5`: Portal -> Quotas -> Cognitive Services / Azure AI Foundry -> request
 "Tokens Per Minute - gpt-5.5 - GlobalStandard" in eastus2 or swedencentral, then restore its
