@@ -79,6 +79,19 @@ export function SignInGate({ children }: { children: React.ReactNode }) {
       >
         {busy ? "Signing in…" : "Sign in"}
       </button>
+      {/* Reachable before sign-in: the self-documenting portal (docs + live status). */}
+      <a
+        href="https://ian-t-adams.github.io/AI4IA/"
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{
+          fontSize: "0.85em",
+          color: "var(--fg-muted)",
+          textDecoration: "underline",
+        }}
+      >
+        Docs &amp; status
+      </a>
     </div>
   );
 }
