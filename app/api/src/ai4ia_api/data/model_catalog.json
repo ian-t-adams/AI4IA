@@ -217,6 +217,29 @@
       ]
     },
     {
+      "id": "gpt-5.4-pro",
+      "displayName": "gpt-5.4-pro",
+      "category": "reasoning",
+      "format": "OpenAI",
+      "api": "responses",
+      "contextWindow": 400000,
+      "maxOutputTokens": 128000,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.4-pro-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.4-pro-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
       "id": "gpt-5-codex",
       "displayName": "gpt-5-codex",
       "category": "reasoning",
@@ -236,6 +259,29 @@
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-5-codex-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "gpt-5.3-codex",
+      "displayName": "gpt-5.3-codex",
+      "category": "reasoning",
+      "format": "OpenAI",
+      "api": "responses",
+      "contextWindow": 400000,
+      "maxOutputTokens": 128000,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.3-codex-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.3-codex-slurmfactory-swedencentral-glbl"
         }
       ]
     },
@@ -305,6 +351,29 @@
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-5.4-mini-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "gpt-5.4-nano",
+      "displayName": "gpt-5.4-nano",
+      "category": "chat-fast",
+      "format": "OpenAI",
+      "api": "chat",
+      "contextWindow": 400000,
+      "maxOutputTokens": 128000,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.4-nano-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.4-nano-slurmfactory-swedencentral-glbl"
         }
       ]
     },
@@ -470,6 +539,29 @@
       ]
     },
     {
+      "id": "gpt-image-1-mini",
+      "displayName": "gpt-image-1-mini",
+      "category": "image",
+      "format": "OpenAI",
+      "api": "chat",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-image-1-mini-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-image-1-mini-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
       "id": "MAI-Image-2.5",
       "displayName": "MAI-Image-2.5",
       "category": "image",
@@ -596,6 +688,29 @@
       ]
     },
     {
+      "id": "gpt-realtime-2",
+      "displayName": "gpt-realtime-2",
+      "category": "realtime",
+      "format": "OpenAI",
+      "api": "chat",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-realtime-2-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-realtime-2-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
       "id": "gpt-realtime-mini",
       "displayName": "gpt-realtime-mini",
       "category": "realtime",
@@ -638,6 +753,29 @@
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-audio-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "gpt-audio-1.5",
+      "displayName": "gpt-audio-1.5",
+      "category": "audio",
+      "format": "OpenAI",
+      "api": "chat",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-audio-1.5-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-audio-1.5-slurmfactory-swedencentral-glbl"
         }
       ]
     },
