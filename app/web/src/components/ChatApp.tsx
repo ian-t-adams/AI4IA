@@ -1,5 +1,10 @@
 "use client";
 
+// Main chat application shell. Orchestrates session lifecycle, message streaming,
+// model selection and chat parameters, and the voice / library / custom-tools /
+// media surfaces. Feature panels are hidden here when their env flag is off, but
+// enforcement is server-side — the API is the authority (see app/api).
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import type { AgentSummary, ChatParams, DocumentSummary, Message, ModelEntry, Session, VoiceTurnInput } from "@/lib/types";

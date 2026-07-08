@@ -1,5 +1,10 @@
 "use client";
 
+// Message composer and attachment control. Handles text input with IME
+// composition, @-mention agent selection and /-command menus (see lib/commands.ts),
+// per-session and library document uploads, and voice dictation. Slash-command and
+// agent hints are advisory; the backend re-validates every tool call at execution.
+
 import {
   useEffect,
   useLayoutEffect,

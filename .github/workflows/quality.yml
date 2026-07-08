@@ -2,7 +2,8 @@ name: quality
 
 # Static linting of the repo's operational surface: GitHub Actions workflows
 # (actionlint + shellcheck for embedded bash), PowerShell operator scripts
-# (PSScriptAnalyzer), the AI4IA-owned Dockerfiles (hadolint) and YAML (yamllint).
+# (PSScriptAnalyzer), the AI4IA-owned Dockerfiles (hadolint), YAML (yamllint) and
+# the generated portal documentation index (gen-docs-catalog.py --check).
 # Additive/quality only - it builds and deploys nothing.
 
 on:
@@ -90,3 +91,19 @@ jobs:
           set -euo pipefail
           python3 -m pip install --user --quiet "yamllint==${YAMLLINT_VERSION}"
           python3 -m yamllint -c .yamllint .
+
+  docs-catalog:
+    name: docs-catalog drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check portal docs index is in sync
+        run: |
+          set -euo pipefail
+          # Fails if site/data/docs.js is stale, a listed doc is missing, a tracked
+          # markdown file is untriaged (not in the manifest or its exclude list), or
+          # site/data/meta.js feature posture contradicts infra/main.parameters.json.
+          # Regenerate locally with: python scripts/gen-docs-catalog.py
+          python3 scripts/gen-docs-catalog.py --check

@@ -32,7 +32,11 @@ window.AI4IA_META = {
     ],
   },
   // Feature posture in the live (checked-in) environment. `on` reflects
-  // infra/main.parameters.json + the running API container's env.
+  // infra/main.parameters.json + the running API container's env. Entries with a
+  // `param` are cross-checked against that parameter in main.parameters.json by
+  // scripts/gen-docs-catalog.py --check, so this list cannot drift from the flag
+  // it advertises. (The `param` field is metadata only; the portal renderer
+  // ignores it.)
   features: [
     { name: "Governed model calls (APIM + SimpleL7Proxy)", on: true, core: true,
       note: "All chat, embeddings, speech, image/video and realtime models route through the gateway." },
@@ -45,24 +49,24 @@ window.AI4IA_META = {
     { name: "Usage metering & entitlements", on: true, core: true,
       note: "Per-request token/cost ledger with per-user and default limits." },
     { name: "Voice: STT / TTS", on: true },
-    { name: "Voice Live (realtime speech-to-speech relay)", on: true,
+    { name: "Voice Live (realtime speech-to-speech relay)", on: true, param: "voiceLiveEnabled",
       note: "Browser connects directly to the API over WebSocket; the relay still enforces auth, Origin, entitlements and metering." },
-    { name: "Image generation", on: true },
-    { name: "Video generation", on: true },
-    { name: "Document & multimodal understanding (Content Understanding)", on: true },
-    { name: "Document compute (Responses API code interpreter)", on: true },
-    { name: "Custom (bring-your-own) MCP tools", on: true,
+    { name: "Image generation", on: true, param: "imageGenerationEnabled" },
+    { name: "Video generation", on: true, param: "videoGenerationEnabled" },
+    { name: "Document & multimodal understanding (Content Understanding)", on: true, param: "documentUnderstandingEnabled" },
+    { name: "Document compute (Responses API code interpreter)", on: true, param: "documentComputeEnabled" },
+    { name: "Custom (bring-your-own) MCP tools", on: true, param: "customToolsEnabled",
       note: "Per-user MCP servers behind an SSRF guard; credentials in per-user Key Vault; approval-gated." },
     { name: "Official MCP plane (MCP APIM front door + Foundry toolbox)", on: true,
       note: "Curated servers reached through a dedicated APIM, gated on one subscription key." },
     { name: "Private tool catalog (API Center)", on: true,
       note: "Inventories the official MCP servers for governance + Foundry discovery." },
-    { name: "Automatic context summarization (auto-fold)", on: true },
+    { name: "Automatic context summarization (auto-fold)", on: true, param: "autoSummarizationEnabled" },
     { name: "Admin dashboards (usage rollups + Azure Monitor resource panels)", on: true },
-    { name: "Inline-attachment code interpreter", on: false,
-      note: "Implemented; OFF in the checked-in live parameters." },
-    { name: "Web IQ search tools (web/news/videos/images/browse)", on: false,
-      note: "Implemented; OFF in the checked-in live parameters." },
+    { name: "Inline-attachment code interpreter", on: true, param: "inlineDocumentComputeEnabled",
+      note: "Attach a file in chat and the model runs sandboxed code over it via the Responses API." },
+    { name: "Web IQ search tools (web/news/videos/images/browse)", on: true, param: "webSearchEnabled",
+      note: "Synthetic web/news/image/video/browse tools agents can call, subject to approval + metering." },
   ],
   stack: [
     { layer: "Web", tech: "Next.js 16 · React 19 · TypeScript 6", host: "Azure Container Apps" },

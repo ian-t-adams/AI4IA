@@ -1,5 +1,10 @@
 "use client";
 
+// Chat history renderer. Draws user/assistant turns and the artifacts tools
+// produce (images, video, documents), speech-playback controls, and citation
+// chips that deep-link into library sources. Artifact bytes are fetched lazily
+// through the same-origin API proxy, never directly from storage.
+
 import { useEffect, useRef, useState } from "react";
 import type { Message, MessageAttachment } from "@/lib/types";
 import { fetchImageArtifact, fetchVideoArtifact, fetchDocumentArtifact } from "@/lib/api";
@@ -528,9 +533,26 @@ export function MessageList({
             textAlign: "center",
           }}
         >
-          <div>
-            <p style={{ fontSize: "1.3em", marginBottom: 8 }}>Start a conversation</p>
-            <p>Pick a model, adjust parameters, and send a message.</p>
+          <div style={{ maxWidth: 460 }}>
+            <p style={{ fontSize: "1.3em", marginBottom: 8, color: "var(--fg)" }}>
+              Start a conversation
+            </p>
+            <p style={{ marginBottom: 12 }}>Pick a model, adjust parameters, and send a message.</p>
+            <p style={{ marginBottom: 12 }}>
+              Type <strong>/</strong> for commands, <strong>@</strong> to call an agent, or
+              attach a file to ground the reply.
+            </p>
+            <p style={{ fontSize: "0.9em" }}>
+              New here?{" "}
+              <a
+                href="https://ian-t-adams.github.io/AI4IA/"
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: "var(--accent)" }}
+              >
+                Docs &amp; status
+              </a>
+            </p>
           </div>
         </div>
       ) : (
