@@ -65,6 +65,27 @@
       ]
     },
     {
+      "name": "gpt-5.5",
+      "format": "OpenAI",
+      "category": "chat",
+      "contextWindow": 400000,
+      "maxOutputTokens": 128000,
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-04-24"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-04-24"
+        }
+      ]
+    },
+    {
       "name": "gpt-5.2",
       "format": "OpenAI",
       "category": "chat",
@@ -213,6 +234,28 @@
       ]
     },
     {
+      "name": "gpt-5.4-pro",
+      "format": "OpenAI",
+      "category": "reasoning",
+      "api": "responses",
+      "contextWindow": 400000,
+      "maxOutputTokens": 128000,
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-03-05"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-03-05"
+        }
+      ]
+    },
+    {
       "name": "gpt-5-codex",
       "format": "OpenAI",
       "category": "reasoning",
@@ -231,6 +274,28 @@
           "sku": "GlobalStandard",
           "capacity": 50,
           "version": "2025-09-15"
+        }
+      ]
+    },
+    {
+      "name": "gpt-5.3-codex",
+      "format": "OpenAI",
+      "category": "reasoning",
+      "api": "responses",
+      "contextWindow": 400000,
+      "maxOutputTokens": 128000,
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-02-24"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-02-24"
         }
       ]
     },
@@ -299,6 +364,27 @@
       ]
     },
     {
+      "name": "gpt-5.4-nano",
+      "format": "OpenAI",
+      "category": "chat-fast",
+      "contextWindow": 400000,
+      "maxOutputTokens": 128000,
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 100,
+          "version": "2026-03-17"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 100,
+          "version": "2026-03-17"
+        }
+      ]
+    },
+    {
       "name": "gpt-5-mini",
       "format": "OpenAI",
       "category": "chat-fast",
@@ -321,27 +407,6 @@
     },
     {
       "name": "gpt-4.1-mini",
-      "format": "OpenAI",
-      "category": "chat-fast",
-      "contextWindow": 1047576,
-      "maxOutputTokens": 32768,
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 100,
-          "version": "2025-04-14"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 100,
-          "version": "2025-04-14"
-        }
-      ]
-    },
-    {
-      "name": "gpt-4.1-nano",
       "format": "OpenAI",
       "category": "chat-fast",
       "contextWindow": 1047576,
@@ -461,12 +526,56 @@
       ]
     },
     {
+      "name": "gpt-image-1-mini",
+      "format": "OpenAI",
+      "category": "image",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2025-10-06"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2025-10-06"
+        }
+      ]
+    },
+    {
       "name": "MAI-Image-2.5",
       "format": "Microsoft",
       "category": "image",
       "deployments": [
         {
           "region": "westus",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2026-06-02"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2026-06-02"
+        }
+      ]
+    },
+    {
+      "name": "MAI-Image-2.5-Flash",
+      "format": "Microsoft",
+      "category": "image",
+      "deployments": [
+        {
+          "region": "westus",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2026-06-02"
+        },
+        {
+          "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 2,
           "version": "2026-06-02"
@@ -550,6 +659,25 @@
       ]
     },
     {
+      "name": "gpt-realtime-2",
+      "format": "OpenAI",
+      "category": "realtime",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10,
+          "version": "2026-05-06"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 10,
+          "version": "2026-05-06"
+        }
+      ]
+    },
+    {
       "name": "gpt-realtime-mini",
       "format": "OpenAI",
       "category": "realtime",
@@ -584,6 +712,25 @@
           "sku": "GlobalStandard",
           "capacity": 10,
           "version": "2025-08-28"
+        }
+      ]
+    },
+    {
+      "name": "gpt-audio-1.5",
+      "format": "OpenAI",
+      "category": "audio",
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10,
+          "version": "2026-02-23"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 10,
+          "version": "2026-02-23"
         }
       ]
     },

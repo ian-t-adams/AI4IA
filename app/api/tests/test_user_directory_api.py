@@ -1,12 +1,13 @@
 """HTTP tests for user-directory enrichment of the admin usage endpoints.
 
-The admin ``by-user`` and ``user-agents`` panels resolve the hashed ``userId`` to
-a display name + email via the admin-only directory, attaching optional
-``displayName``/``email`` and degrading to ``null`` (the UI falls back to the short
-hash) when a user has no directory entry. Enrichment is read-only and must not
-change the aggregation, and the existing ``require_admin`` gating is unchanged
-(covered exhaustively in test_admin_usage_api.py).
+The admin ``by-user`` and ``user-agents`` panels can resolve the hashed ``userId``
+to a display name + email via the admin-only directory when ``identify=true`` is
+requested, attaching optional ``displayName``/``email`` and degrading to ``null``
+(the UI falls back to the short hash) when de-identified or unknown. Enrichment is
+read-only and must not change the aggregation, and the existing ``require_admin``
+gating is unchanged (covered exhaustively in test_admin_usage_api.py).
 """
+
 from __future__ import annotations
 
 import time
@@ -76,10 +77,19 @@ def _rec(user: str, **kw) -> UsageRecord:
 # ---- by-user enrichment ----
 
 
-def test_by_user_attaches_name_and_email_when_known(client):
-    _seed_usage(client, [_rec("bob", totalTokens=100), _rec("carol", totalTokens=5)])
+def test_by_user_defaults_to_deidentified_even_when_directory_known(client):
+    _seed_usage(client, [_rec("bob", totalTokens=100)])
     _seed_directory(client, "bob", "Bob Builder", "bob@build.test")
     body = client.get("/api/admin/usage/by-user", headers=ADMIN).json()
+    row = next(r for r in body["byUser"] if r["userId"] == "bob")
+    assert row["displayName"] is None
+    assert row["email"] is None
+
+
+def test_by_user_attaches_name_and_email_when_identified(client):
+    _seed_usage(client, [_rec("bob", totalTokens=100), _rec("carol", totalTokens=5)])
+    _seed_directory(client, "bob", "Bob Builder", "bob@build.test")
+    body = client.get("/api/admin/usage/by-user?identify=true", headers=ADMIN).json()
     rows = {r["userId"]: r for r in body["byUser"]}
     assert rows["bob"]["displayName"] == "Bob Builder"
     assert rows["bob"]["email"] == "bob@build.test"
@@ -103,7 +113,7 @@ def test_by_user_degrades_when_directory_disabled():
     try:
         _seed_usage(c, [_rec("bob", totalTokens=100)])
         _seed_directory(c, "bob", "Bob Builder", "bob@build.test")
-        body = c.get("/api/admin/usage/by-user", headers=ADMIN).json()
+        body = c.get("/api/admin/usage/by-user?identify=true", headers=ADMIN).json()
         row = next(r for r in body["byUser"] if r["userId"] == "bob")
         # Disabled -> resolve returns {} -> name stays null even though seeded.
         assert row["displayName"] is None
@@ -115,7 +125,16 @@ def test_by_user_degrades_when_directory_disabled():
 # ---- user-agents enrichment ----
 
 
-def test_user_agents_attaches_name_and_email_when_known(client):
+def test_user_agents_defaults_to_deidentified_even_when_directory_known(client):
+    _seed_usage(client, [_rec("bob", agent="coder", totalTokens=100)])
+    _seed_directory(client, "bob", "Bob Builder", "bob@build.test")
+    body = client.get("/api/admin/usage/user-agents", headers=ADMIN).json()
+    cell = next(c for c in body["userAgents"] if (c["userId"], c["agent"]) == ("bob", "coder"))
+    assert cell["displayName"] is None
+    assert cell["email"] is None
+
+
+def test_user_agents_attaches_name_and_email_when_identified(client):
     _seed_usage(
         client,
         [
@@ -124,7 +143,7 @@ def test_user_agents_attaches_name_and_email_when_known(client):
         ],
     )
     _seed_directory(client, "bob", "Bob Builder", "bob@build.test")
-    body = client.get("/api/admin/usage/user-agents", headers=ADMIN).json()
+    body = client.get("/api/admin/usage/user-agents?identify=true", headers=ADMIN).json()
     cells = {(c["userId"], c["agent"]): c for c in body["userAgents"]}
     assert cells[("bob", "coder")]["displayName"] == "Bob Builder"
     assert cells[("bob", "coder")]["email"] == "bob@build.test"
@@ -142,9 +161,7 @@ def test_user_agents_preserves_cross_tab_math(client):
         ],
     )
     body = client.get("/api/admin/usage/user-agents", headers=ADMIN).json()
-    cell = next(
-        c for c in body["userAgents"] if (c["userId"], c["agent"]) == ("bob", "coder")
-    )
+    cell = next(c for c in body["userAgents"] if (c["userId"], c["agent"]) == ("bob", "coder"))
     assert cell["requests"] == 2
     assert cell["erroredRequests"] == 1
 
@@ -153,7 +170,12 @@ def test_user_agents_preserves_cross_tab_math(client):
 
 
 def test_enriched_routes_still_forbid_non_admin(client):
-    for route in ("/api/admin/usage/by-user", "/api/admin/usage/user-agents"):
+    for route in (
+        "/api/admin/usage/by-user",
+        "/api/admin/usage/by-user?identify=true",
+        "/api/admin/usage/user-agents",
+        "/api/admin/usage/user-agents?identify=true",
+    ):
         assert client.get(route, headers=NON_ADMIN).status_code == 403
 
 
@@ -173,5 +195,10 @@ def test_capture_populates_directory_for_signed_in_user(client):
     _seed_usage(client, [_rec(uid, totalTokens=42)])
     body = client.get("/api/admin/usage/by-user", headers=ADMIN).json()
     row = next(r for r in body["byUser"] if r["userId"] == uid)
+    assert row["displayName"] is None
+    assert row["email"] is None
+
+    identified = client.get("/api/admin/usage/by-user?identify=true", headers=ADMIN).json()
+    row = next(r for r in identified["byUser"] if r["userId"] == uid)
     assert row["displayName"] == "dave"
     assert row["email"] == "dave@example.com"

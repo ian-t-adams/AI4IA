@@ -19,8 +19,9 @@ environment values. See
 
 Known gaps to keep visible:
 
-- Web IQ search tools and inline-attachment Code Interpreter are implemented but
-  OFF in the checked-in live parameters.
+- Web IQ search (including the `/research` command) and the inline-attachment
+  Code Interpreter are now enabled in the checked-in live parameters. Web IQ
+  authenticates with the API's managed identity unless `AI4IA_WEBIQ_API_KEY` is set.
 - The document library UI is still document-centric; custom analyzer authoring,
   folder-level sharing, and unauthenticated public links are not implemented.
 - Memory has save/forget APIs and automatic recall, but no global user-facing

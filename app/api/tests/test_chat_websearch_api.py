@@ -74,10 +74,13 @@ class ScriptedWebGateway:
         self.calls = 0
         self.tool_calls_seen = 0
         self.tools_offered_first_call: bool | None = None
+        self.first_messages = None
         self.tool_result_messages: list[str] = []
 
     async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         self.calls += 1
+        if self.first_messages is None:
+            self.first_messages = messages
         tools = (params or {}).get("tools")
         if self.tools_offered_first_call is None:
             self.tools_offered_first_call = bool(tools)
@@ -208,5 +211,67 @@ def test_plain_path_unchanged_when_web_search_off():
         assert resp.json()["message"]["content"] == "Here is the answer."
         assert gw.tools_offered_first_call is False
         assert gw.tool_calls_seen == 0
+    finally:
+        client.__exit__(None, None, None)
+
+
+# --- /research: disabled/default gives a local friendly reply ---
+def test_research_slash_command_not_enabled_when_web_search_off():
+    client = _make_client()
+    try:
+        assert client.app.state.web_search is None
+        gw = ScriptedWebGateway(call_tool=True)
+        client.app.state.gateway = gw
+
+        sid = _new_session(client)
+        resp = client.post(
+            "/api/chat",
+            json={"sessionId": sid, "content": "/research latest AI news", "stream": False},
+        )
+        assert resp.status_code == 200, resp.text
+        assert "/research isn't enabled" in resp.json()["message"]["content"]
+        assert gw.calls == 0
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_research_slash_command_usage_when_empty():
+    client = _make_client()
+    try:
+        _inject_web(client, FakeWebClient())
+
+        sid = _new_session(client)
+        resp = client.post(
+            "/api/chat", json={"sessionId": sid, "content": "/research", "stream": False}
+        )
+        assert resp.status_code == 200, resp.text
+        assert "Usage: /research" in resp.json()["message"]["content"]
+    finally:
+        client.__exit__(None, None, None)
+
+
+# --- /research: enabled routes through the Web IQ capability tool loop ---
+def test_research_slash_command_invokes_web_search_capability():
+    client = _make_client()
+    try:
+        web = FakeWebClient()
+        _inject_web(client, web)
+        gw = ScriptedWebGateway(call_tool=True)
+        client.app.state.gateway = gw
+
+        sid = _new_session(client)
+        resp = client.post(
+            "/api/chat",
+            json={"sessionId": sid, "content": "/research latest AI news", "stream": False},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["message"]["content"] == "Here is the answer."
+        assert len(web.calls) == 1 and web.calls[0]["tool"] == "web"
+        assert gw.tools_offered_first_call is True
+        assert gw.first_messages[0]["role"] == "system"
+        assert "Web IQ tools" in gw.first_messages[0]["content"]
+        assert {"role": "user", "content": "latest AI news"} in gw.first_messages
+        assert gw.tool_result_messages
+        assert "BEGIN RESULTS" in gw.tool_result_messages[0]
     finally:
         client.__exit__(None, None, None)

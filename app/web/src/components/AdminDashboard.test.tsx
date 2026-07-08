@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { AdminDashboard } from "./AdminDashboard";
 
@@ -34,6 +34,21 @@ import {
   fetchWhoAmI,
 } from "@/lib/admin";
 
+
+const localStorageData = new Map<string, string>();
+const localStorageMock = {
+  getItem: vi.fn((key: string) => localStorageData.get(key) ?? null),
+  setItem: vi.fn((key: string, value: string) => {
+    localStorageData.set(key, value);
+  }),
+  removeItem: vi.fn((key: string) => {
+    localStorageData.delete(key);
+  }),
+  clear: vi.fn(() => {
+    localStorageData.clear();
+  }),
+};
+
 const summary = {
   sinceDays: 30,
   fromTime: "2024-06-01T00:00:00Z",
@@ -58,6 +73,11 @@ const summary = {
 };
 
 beforeEach(() => {
+  Object.defineProperty(window, "localStorage", {
+    value: localStorageMock,
+    configurable: true,
+  });
+  window.localStorage.clear();
   vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "alice", isAdmin: true });
   vi.mocked(fetchSummary).mockResolvedValue(summary);
   vi.mocked(fetchByModel).mockResolvedValue({ sinceDays: 30, truncated: false, scannedRecords: 6, byModel: [] });
@@ -113,6 +133,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  window.localStorage.clear();
 });
 
 // Resolve the <section> panel that owns a given heading, so assertions can be
@@ -146,7 +167,58 @@ describe("AdminDashboard new analytics panels", () => {
     expect(within(panel).getAllByText("alice-00…3333")).toHaveLength(1);
   });
 
-  it("shows the directory display name + email in Top users, keeping the hash", async () => {
+  it("defaults to de-identified mode and fetches hash-only rows", async () => {
+    vi.mocked(fetchByUser).mockResolvedValue({
+      sinceDays: 30,
+      fromTime: "",
+      toTime: "",
+      truncated: false,
+      scannedRecords: 1,
+      totalUsers: 1,
+      limit: 20,
+      offset: 0,
+      byUser: [
+        {
+          userId: "alice-0000-1111-2222-3333",
+          requests: 1,
+          erroredRequests: 0,
+          promptTokens: 1,
+          completionTokens: 1,
+          totalTokens: 2,
+          costMicroUsd: 0,
+          costKnown: true,
+          displayName: "Ada Lovelace",
+          email: "ada@example.com",
+        },
+      ],
+    });
+
+    render(<AdminDashboard />);
+
+    const panel = await panelByHeading("Top users");
+    expect(await within(panel).findByText("alice-00…3333")).toBeInTheDocument();
+    expect(within(panel).queryByText("Ada Lovelace")).toBeNull();
+    expect(within(panel).queryByText("ada@example.com")).toBeNull();
+    expect(screen.getByRole("checkbox", { name: "Show real identities" })).not.toBeChecked();
+    await waitFor(() => expect(fetchByUser).toHaveBeenLastCalledWith(30, 20, 0, false));
+    expect(fetchUserAgents).toHaveBeenLastCalledWith(30, false);
+  });
+
+  it("refetches and persists when real identities are enabled", async () => {
+    render(<AdminDashboard />);
+    await panelByHeading("Top users");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show real identities" }));
+
+    await waitFor(() => expect(fetchByUser).toHaveBeenLastCalledWith(30, 20, 0, true));
+    expect(fetchUserAgents).toHaveBeenLastCalledWith(30, true);
+    await waitFor(() =>
+      expect(window.localStorage.getItem("ai4ia.admin.showRealIdentities")).toBe("true"),
+    );
+  });
+
+  it("shows the directory display name + email in Top users when identified, keeping the hash", async () => {
+    window.localStorage.setItem("ai4ia.admin.showRealIdentities", "true");
     vi.mocked(fetchByUser).mockResolvedValue({
       sinceDays: 30,
       fromTime: "",
@@ -221,7 +293,8 @@ describe("AdminDashboard new analytics panels", () => {
     expect(await within(panel).findByText("carol-00…5555")).toBeInTheDocument();
   });
 
-  it("shows the display name in the user×agent panel when known", async () => {
+  it("shows the display name in the user×agent panel when identified", async () => {
+    window.localStorage.setItem("ai4ia.admin.showRealIdentities", "true");
     vi.mocked(fetchUserAgents).mockResolvedValue({
       sinceDays: 30,
       truncated: false,

@@ -251,6 +251,15 @@ var webSearchEnv = concat(
       secretRef: 'webiq-api-key'
     }
   ] : [],
+  // No key supplied but the feature is on: authenticate Web IQ with the api's
+  // managed identity (EntraID DefaultAzureCredential) so the deploy does not
+  // fail closed at startup (validate_runtime requires a key OR use-entra).
+  (webSearchEnabled && empty(webIqApiKey)) ? [
+    {
+      name: 'AI4IA_WEBIQ_USE_ENTRA'
+      value: 'true'
+    }
+  ] : [],
   (webSearchEnabled && !empty(webIqBaseUrl)) ? [
     {
       name: 'AI4IA_WEBIQ_BASE_URL'

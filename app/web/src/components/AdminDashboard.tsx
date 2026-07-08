@@ -48,6 +48,7 @@ import {
 } from "@/lib/admin";
 
 const WINDOWS = [7, 30, 90];
+const IDENTITY_STORAGE_KEY = "ai4ia.admin.showRealIdentities";
 
 const card: React.CSSProperties = {
   background: "var(--bg-elevated)",
@@ -162,33 +163,36 @@ function DayTrend({ items }: { items: DayUsageBucket[] }) {
 function UserCell({
   displayName,
   email,
+  identified,
   userId,
 }: {
   displayName?: string | null;
   email?: string | null;
+  identified: boolean;
   userId: string;
 }) {
-  const name = displayName?.trim();
-  // Full hash (and email) stay available on hover; the hash is the stable key.
-  const tooltip = email ? `${userId}\n${email}` : userId;
+  const visibleName = identified ? displayName?.trim() : "";
+  const visibleEmail = identified ? email : null;
+  // Full hash (and email in identified mode) stay available on hover; the hash is the stable key.
+  const tooltip = visibleEmail ? `${userId}\n${visibleEmail}` : userId;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 1 }} title={tooltip}>
-      <span style={{ fontFamily: name ? "inherit" : "monospace" }}>
-        {userLabel(displayName, userId)}
+      <span style={{ fontFamily: visibleName ? "inherit" : "monospace" }}>
+        {userLabel(visibleName, userId)}
       </span>
-      {name ? (
+      {visibleName ? (
         <span style={{ fontFamily: "monospace", fontSize: "0.82em", color: "var(--fg-muted)" }}>
           {shortUserId(userId)}
         </span>
       ) : null}
-      {email ? (
-        <span style={{ fontSize: "0.82em", color: "var(--fg-muted)" }}>{email}</span>
+      {visibleEmail ? (
+        <span style={{ fontSize: "0.82em", color: "var(--fg-muted)" }}>{visibleEmail}</span>
       ) : null}
     </div>
   );
 }
 
-function TopUsers({ rows }: { rows: AdminUserRow[] }) {
+function TopUsers({ rows, identified }: { rows: AdminUserRow[]; identified: boolean }) {
   if (!rows.length) return <div style={muted}>No usage in this window.</div>;
   return (
     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85em" }}>
@@ -205,7 +209,7 @@ function TopUsers({ rows }: { rows: AdminUserRow[] }) {
         {rows.map((u) => (
           <tr key={u.userId} style={{ borderTop: "1px solid var(--border)" }}>
             <td style={{ padding: "4px 8px" }}>
-              <UserCell displayName={u.displayName} email={u.email} userId={u.userId} />
+              <UserCell displayName={u.displayName} email={u.email} identified={identified} userId={u.userId} />
             </td>
             <td style={{ padding: "4px 8px", textAlign: "right" }}>{formatTokens(u.totalTokens)}</td>
             <td style={{ padding: "4px 8px", textAlign: "right" }}>
@@ -252,7 +256,7 @@ function Agents({ items }: { items: AgentUsageBucket[] }) {
   );
 }
 
-function UserAgents({ rows }: { rows: UserAgentBucket[] }) {
+function UserAgents({ rows, identified }: { rows: UserAgentBucket[]; identified: boolean }) {
   const groups = groupUserAgents(rows);
   if (!groups.length) return <div style={muted}>No agent activity in this window.</div>;
   return (
@@ -274,7 +278,7 @@ function UserAgents({ rows }: { rows: UserAgentBucket[] }) {
               <tr key={`${g.userId}:${r.agent}`} style={{ borderTop: "1px solid var(--border)" }}>
                 <td style={{ padding: "4px 8px" }}>
                   {i === 0 ? (
-                    <UserCell displayName={g.displayName} email={g.email} userId={g.userId} />
+                    <UserCell displayName={g.displayName} email={g.email} identified={identified} userId={g.userId} />
                   ) : null}
                 </td>
                 <td style={{ padding: "4px 8px" }}>{r.agent}</td>
@@ -375,6 +379,13 @@ export function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<DashboardData>(EMPTY);
+  const [identifyUsers, setIdentifyUsers] = useState(() => {
+    try {
+      return window.localStorage.getItem(IDENTITY_STORAGE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -391,7 +402,15 @@ export function AdminDashboard() {
     };
   }, []);
 
-  const load = useCallback(async (window: number) => {
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(IDENTITY_STORAGE_KEY, identifyUsers ? "true" : "false");
+    } catch {
+      /* localStorage can be unavailable in private browsing or tests */
+    }
+  }, [identifyUsers]);
+
+  const load = useCallback(async (window: number, identify: boolean) => {
     setLoading(true);
     setError(null);
     const [summary, byModel, byDay, byUser, agents, userAgents, distributions, resources] =
@@ -399,9 +418,9 @@ export function AdminDashboard() {
         fetchSummary(window),
         fetchByModel(window),
         fetchByDay(window),
-        fetchByUser(window, 20, 0),
+        fetchByUser(window, 20, 0, identify),
         fetchAgents(window),
-        fetchUserAgents(window),
+        fetchUserAgents(window, identify),
         fetchDistributions(window),
         fetchResources(),
       ]);
@@ -433,8 +452,8 @@ export function AdminDashboard() {
 
   useEffect(() => {
     if (phase !== "ready") return;
-    void load(days);
-  }, [phase, days, load]);
+    void load(days, identifyUsers);
+  }, [phase, days, identifyUsers, load]);
 
   if (phase === "checking") {
     return <Shell>Checking access…</Shell>;
@@ -461,6 +480,18 @@ export function AdminDashboard() {
     <Shell>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
         <h1 style={{ fontSize: "1.3em", margin: 0, flex: 1 }}>Usage dashboard</h1>
+        <label
+          style={{ ...muted, display: "flex", alignItems: "center", gap: 6 }}
+          title="Off keeps user rows hash-only for demos and screen-shares."
+        >
+          <input
+            type="checkbox"
+            checked={identifyUsers}
+            onChange={(e) => setIdentifyUsers(e.target.checked)}
+            aria-label="Show real identities"
+          />
+          Show real identities
+        </label>
         <label style={muted} htmlFor="admin-window">
           Window
         </label>
@@ -541,7 +572,7 @@ export function AdminDashboard() {
 
         <section style={card}>
           <h2 style={sectionTitle}>Top users</h2>
-          <TopUsers rows={data.byUser} />
+          <TopUsers rows={data.byUser} identified={identifyUsers} />
         </section>
 
         <section style={card}>
@@ -551,7 +582,7 @@ export function AdminDashboard() {
 
         <section style={card}>
           <h2 style={sectionTitle}>Who uses which agents</h2>
-          <UserAgents rows={data.userAgents} />
+          <UserAgents rows={data.userAgents} identified={identifyUsers} />
         </section>
 
         <section style={card}>
