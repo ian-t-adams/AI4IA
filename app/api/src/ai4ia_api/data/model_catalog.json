@@ -701,12 +701,6 @@
           "dataZone": "US",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-realtime-2-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "deploymentName": "gpt-realtime-2-slurmfactory-swedencentral-glbl"
         }
       ]
     },

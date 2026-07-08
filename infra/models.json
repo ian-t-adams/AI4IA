@@ -635,12 +635,6 @@
           "sku": "GlobalStandard",
           "capacity": 10,
           "version": "2026-05-06"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 10,
-          "version": "2026-05-06"
         }
       ]
     },
