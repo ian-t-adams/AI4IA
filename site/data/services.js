@@ -145,7 +145,8 @@ window.AI4IA_SERVICES = [
     key: "appinsights", name: "Application Insights", azureType: "Microsoft.Insights/components",
     group: "Observability", icon: "📈", module: "monitoring.bicep", resourcePattern: "appi-ai4ia-*",
     summary: "Distributed tracing, request/dependency/exception telemetry and custom usage events, exported by the API's " +
-      "Azure Monitor OpenTelemetry distro (only when a connection string is set, so local/dev is a no-op).",
+      "Azure Monitor OpenTelemetry distro (only when a connection string is set, so local/dev is a no-op). Its auto-created " +
+      "Smart Detection action group also lives in the resource group.",
     identity: "n/a (connection-string gated)",
     docs: [["Application Insights", "https://learn.microsoft.com/azure/azure-monitor/app/app-insights-overview"]],
   },
