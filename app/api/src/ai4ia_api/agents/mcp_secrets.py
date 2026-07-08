@@ -119,7 +119,10 @@ class KeyVaultMcpSecretStore:
         except ResourceNotFoundError:
             return None
         except Exception:  # noqa: BLE001 - cleanup is best-effort, never fatal
-            logger.warning("mcp secret delete failed ref=%s", ref, exc_info=True)
+            # Do not interpolate ``ref`` (a Key Vault secret reference) into the log:
+            # it is flagged by CodeQL py/clear-text-logging-sensitive-data. The
+            # traceback is enough to diagnose a failed best-effort cleanup.
+            logger.warning("mcp secret delete failed", exc_info=True)
 
     async def close(self) -> None:
         if self._owns_client and self._client is not None:
