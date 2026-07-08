@@ -10,6 +10,7 @@ import type { Message, MessageAttachment } from "@/lib/types";
 import { fetchImageArtifact, fetchVideoArtifact, fetchDocumentArtifact } from "@/lib/api";
 import { useSpeechPlayback, type SpeechState } from "@/lib/voice";
 import { parseCitations } from "@/lib/citations";
+import { DOCS_INDEX_URL, STATUS_URL, USER_GUIDE_URL } from "@/lib/docs";
 
 interface DisplayMessage {
   id: string;
@@ -22,8 +23,8 @@ interface DisplayMessage {
 }
 
 // Renders one tool-generated image. The bytes live behind an authenticated
-// endpoint (a raw <img src> would not carry the bearer token), so we fetch the
-// blob, wrap it in an object URL, and revoke it on unmount to avoid leaks.
+// endpoint (a direct image element would not carry the bearer token), so we fetch
+// the blob, wrap it in an object URL, and revoke it on unmount to avoid leaks.
 function ImageAttachmentView({ attachment }: { attachment: MessageAttachment }) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -533,26 +534,48 @@ export function MessageList({
             textAlign: "center",
           }}
         >
-          <div style={{ maxWidth: 460 }}>
+          <div style={{ maxWidth: 520 }}>
             <p style={{ fontSize: "1.3em", marginBottom: 8, color: "var(--fg)" }}>
               Start a conversation
             </p>
-            <p style={{ marginBottom: 12 }}>Pick a model, adjust parameters, and send a message.</p>
             <p style={{ marginBottom: 12 }}>
               Type <strong>/</strong> for commands, <strong>@</strong> to call an agent, or
-              attach a file to ground the reply.
+              attach a file to ground the reply. Pick a model only when you need to.
             </p>
-            <p style={{ fontSize: "0.9em" }}>
-              New here?{" "}
+            <div
+              style={{
+                display: "flex",
+                gap: 12,
+                justifyContent: "center",
+                flexWrap: "wrap",
+                fontSize: "0.9em",
+              }}
+            >
               <a
-                href="https://ian-t-adams.github.io/AI4IA/"
+                href={USER_GUIDE_URL}
                 target="_blank"
                 rel="noreferrer"
                 style={{ color: "var(--accent)" }}
               >
-                Docs &amp; status
+                User guide
               </a>
-            </p>
+              <a
+                href={DOCS_INDEX_URL}
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: "var(--accent)" }}
+              >
+                Documentation
+              </a>
+              <a
+                href={STATUS_URL}
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: "var(--accent)" }}
+              >
+                Live status
+              </a>
+            </div>
           </div>
         </div>
       ) : (

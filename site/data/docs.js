@@ -42,10 +42,12 @@ window.AI4IA_DOCS = {
       ],
     },
     {
-      group: "Contributing & security",
+      group: "Contributing, security & governance",
       docs: [
         { path: "CONTRIBUTING.md", title: "Contributing", desc: "How to build, test and lint each surface before opening a pull request." },
         { path: "SECURITY.md", title: "Security policy", desc: "How to report a vulnerability and what is in scope." },
+        { path: "CODE_OF_CONDUCT.md", title: "Code of conduct", desc: "Contributor Covenant standards and enforcement for participating in the project." },
+        { path: "THIRD_PARTY_NOTICES.md", title: "Third-party notices", desc: "License attribution and provenance for vendored and third-party dependencies the app ships \u2014 compliance reference." },
       ],
     },
     {

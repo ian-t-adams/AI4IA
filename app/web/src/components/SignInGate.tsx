@@ -8,6 +8,7 @@ import { InteractionStatus } from "@azure/msal-browser";
 import { useIsAuthenticated, useMsal } from "@azure/msal-react";
 
 import { getWebAuthConfig } from "@/lib/auth";
+import { DOCS_PORTAL_URL } from "@/lib/docs";
 
 export function SignInGate({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useIsAuthenticated();
@@ -81,7 +82,7 @@ export function SignInGate({ children }: { children: React.ReactNode }) {
       </button>
       {/* Reachable before sign-in: the self-documenting portal (docs + live status). */}
       <a
-        href="https://ian-t-adams.github.io/AI4IA/"
+        href={DOCS_PORTAL_URL}
         target="_blank"
         rel="noopener noreferrer"
         style={{

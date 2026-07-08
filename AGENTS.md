@@ -85,7 +85,7 @@ python scripts/validate-feature-prereqs.py
 bicep build infra/main.bicep --stdout > /dev/null
 ```
 
-`quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on `scripts`, hadolint on `app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile`, and `python3 -m yamllint -c .yamllint .`. `security-scan` runs Trivy filesystem/config scans and gitleaks.
+`quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on `scripts`, hadolint on `app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile`, `python3 -m yamllint -c .yamllint .`, and a docs-catalog drift gate (`python scripts/gen-docs-catalog.py --check`) that keeps `site/data/docs.js` in sync with `site/data/docs.manifest.json`. `security-scan` runs Trivy filesystem/config scans and gitleaks.
 
 ## How to add things
 
@@ -122,6 +122,17 @@ bicep build infra/main.bicep --stdout > /dev/null
 - Scope reads/writes by `AuthenticatedUser.internal_user_id`; preserve Cosmos partition and ownership patterns.
 - Add client helpers in `app/web/src/lib` that call `apiFetch` so Entra bearer tokens and dev proxy behavior remain consistent.
 - Cover auth, ownership, disabled-feature, and error cases in tests.
+
+### Add or move a documentation page
+
+- The portal's documentation hub (`site/docs.html`) is generated, not hand-written. Edit
+  `site/data/docs.manifest.json` to add, move, retitle, or re-describe a doc, then run
+  `python scripts/gen-docs-catalog.py` to regenerate `site/data/docs.js`.
+- Every tracked `*.md` must be either listed in a manifest section or matched by the manifest's
+  `exclude` globs — the generator's completeness gate (and the `quality` CI `--check`) fails
+  otherwise. Regenerate and commit `docs.js` alongside your Markdown change.
+- Judge a doc by post-build value: does it help a human or agent understand, use, deploy,
+  govern, or extend the running app? Surface those; exclude build-time scaffolding.
 
 ## Auth model and `apiFetch` contract
 

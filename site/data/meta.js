@@ -64,9 +64,9 @@ window.AI4IA_META = {
     { name: "Automatic context summarization (auto-fold)", on: true, param: "autoSummarizationEnabled" },
     { name: "Admin dashboards (usage rollups + Azure Monitor resource panels)", on: true },
     { name: "Inline-attachment code interpreter", on: true, param: "inlineDocumentComputeEnabled",
-      note: "Attach a file in chat and the model runs sandboxed code over it via the Responses API." },
+      note: "Attach a file in chat and the model runs sandboxed code over it via the same Responses API code interpreter path as document compute." },
     { name: "Web IQ search tools (web/news/videos/images/browse)", on: true, param: "webSearchEnabled",
-      note: "Synthetic web/news/image/video/browse tools agents can call, subject to approval + metering." },
+      note: "Web/news/image/video/browse tools agents can call (approval + metering); uses the API managed identity unless AI4IA_WEBIQ_API_KEY is set." },
   ],
   stack: [
     { layer: "Web", tech: "Next.js 16 · React 19 · TypeScript 6", host: "Azure Container Apps" },

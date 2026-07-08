@@ -24,6 +24,7 @@ import { MessageList, type DisplayMessage } from "./MessageList";
 import { Composer } from "./Composer";
 import { UserMenu } from "./UserMenu";
 import { AdminLink } from "./AdminLink";
+import { DOCS_PORTAL_URL } from "@/lib/docs";
 import { useVoiceLiveConfig } from "./VoiceLiveProvider";
 import { useLibraryConfig } from "./LibraryProvider";
 import { useCustomToolsConfig } from "./CustomToolsProvider";
@@ -654,9 +655,10 @@ export function ChatApp() {
             {streaming ? "Generating…" : "Ready"}
           </div>
           <a
-            href="https://ian-t-adams.github.io/AI4IA/"
+            href={DOCS_PORTAL_URL}
             target="_blank"
             rel="noopener noreferrer"
+            title="Open the AI4IA documentation and live status portal"
             style={{
               fontSize: "0.8em",
               padding: "4px 10px",
