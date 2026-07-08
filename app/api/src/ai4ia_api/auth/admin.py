@@ -1,9 +1,11 @@
 """Admin authorization for the entitlement-management API.
 
-Threat model: the deployed environment currently runs the *dev* auth provider,
-which derives identity from the client-supplied ``X-Dev-User`` header — i.e. it
-is spoofable. Gating admin solely on ``subject in admin_subjects`` would let any
-caller impersonate an admin and disable users or lift limits. So:
+Threat model: Entra auth is the live deployed posture, but the code still
+supports an explicitly opted-in dev provider for local and break-glass
+environments. Dev auth derives identity from the client-supplied
+``X-Dev-User`` header — i.e. it is spoofable. Gating admin solely on
+``subject in admin_subjects`` would let any caller impersonate an admin and
+disable users or lift limits. So:
 
 - Under **non-spoofable** auth (entra) or **local** dev, an admin is anyone in
   the configured subject/email allowlist or carrying an ``admin`` role claim.
@@ -13,8 +15,8 @@ caller impersonate an admin and disable users or lift limits. So:
 - When a secret IS configured, it is always required (a second factor) on top of
   identity, in every environment.
 
-This keeps the management API usable on a personal demo (set a secret) without
-opening a privilege-escalation hole.
+This keeps the management API usable in an explicitly configured deployed
+dev-auth environment (set a secret) without opening a privilege-escalation hole.
 """
 from __future__ import annotations
 

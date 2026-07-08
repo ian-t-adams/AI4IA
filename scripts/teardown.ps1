@@ -1,16 +1,19 @@
 <#
 .SYNOPSIS
-  Tear down the existing aiforia/AI4IA resource groups.
+  Tear down named AI4IA resource groups (dry-run by default).
 
 .DESCRIPTION
   Deletes the target resource group(s) and purges soft-deleted Cognitive/Key Vault
   resources so the stack can be rebuilt from IaC. SAFE BY DEFAULT: lists what would
-  be deleted unless -Force is supplied. Never touches NetworkWatcherRG,
-  Default-ActivityLogAlerts, or DefaultResourceGroup-* (hard-coded protect list).
+  be deleted unless -Force is supplied. The built-in target remains the legacy
+  pre-AI4IA rg-aiforia-slurmfactory stack; pass -ResourceGroups and -PurgeNameFilter
+  explicitly for the live rg-ai4ia-slurmfactory environment. Never touches
+  NetworkWatcherRG, Default-ActivityLogAlerts, or DefaultResourceGroup-* (hard-coded
+  protect list).
 
 .EXAMPLE
-  ./scripts/teardown.ps1 -Subscription ca68cf94-...                 # dry run (lists)
-  ./scripts/teardown.ps1 -Subscription ca68cf94-... -Force          # actually deletes
+  ./scripts/teardown.ps1 -Subscription ca68cf94-... -ResourceGroups rg-ai4ia-slurmfactory -PurgeNameFilter ai4ia
+  ./scripts/teardown.ps1 -Subscription ca68cf94-... -ResourceGroups rg-ai4ia-slurmfactory -PurgeNameFilter ai4ia -Force
 #>
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = "High")]
 param(

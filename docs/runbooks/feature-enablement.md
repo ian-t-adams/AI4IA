@@ -127,7 +127,9 @@ the same governed executor used by built-ins.
 A curated, admin-defined set of MCP servers reached **through a dedicated MCP
 APIM front door** (`infra/modules/mcpgateway.bicep`, APIM Basic v2) gated on a
 single app-global subscription key — distinct from per-user BYO MCP, which the
-API calls directly behind the SSRF guard. Ships **empty and OFF**.
+API calls directly behind the SSRF guard. The bicep defaults are empty and OFF,
+but this repo's live parameters enable the plane and register the portable
+`ai4ia-toolbox` Foundry toolbox entry.
 
 To register a server and enable the plane:
 

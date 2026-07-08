@@ -8,8 +8,8 @@
   them. Destructive and irreversible - purged data cannot be recovered.
 
 .EXAMPLE
-  ./scripts/purge-soft-deleted.ps1 -Subscription ca68cf94-... -NameFilter aiforia -WhatIf
-  ./scripts/purge-soft-deleted.ps1 -Subscription ca68cf94-... -NameFilter aiforia -Force
+  ./scripts/purge-soft-deleted.ps1 -Subscription ca68cf94-... -NameFilter ai4ia -WhatIf
+  ./scripts/purge-soft-deleted.ps1 -Subscription ca68cf94-... -NameFilter ai4ia -Force
 #>
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = "High")]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'NameFilter',

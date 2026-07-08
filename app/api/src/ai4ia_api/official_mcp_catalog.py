@@ -5,10 +5,9 @@ front door** (provisioned by ``infra/modules/mcpgateway.bicep``), gated on an
 APIM subscription key. This is distinct from per-user BYO remote MCP servers,
 which the backend calls directly behind the SSRF guard.
 
-The catalog ships **empty** and the feature is **default-OFF**, so by default
-``load_official_mcp_catalog().servers == []`` and nothing is wired into a chat
-turn. Populate ``infra/mcp-servers.json`` and enable the feature to register
-servers.
+Code/Bicep defaults are still safe-off, and an empty catalog wires no tools,
+but this repo's packaged catalog is activated and contains the portable
+``ai4ia-toolbox`` Foundry toolbox entry generated from ``infra/mcp-servers.json``.
 
 Precedence mirrors ``catalog.py``: explicit path -> packaged
 ``data/official_mcp_catalog.json`` -> repo ``infra/mcp-servers.json`` fallback
@@ -73,7 +72,7 @@ def _load_raw(explicit_path: str | None) -> dict[str, Any]:
     infra = Path(__file__).resolve().parents[4] / "infra" / "mcp-servers.json"
     if infra.exists():
         return _project_infra_catalog(json.loads(infra.read_text(encoding="utf-8")))
-    # Absent catalog is not fatal: the feature is default-OFF and ships empty.
+    # Absent catalog is not fatal: safe-off consumers can run with no official servers.
     return {"servers": []}
 
 

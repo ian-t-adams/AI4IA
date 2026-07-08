@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Snapshot the existing AI4IA / aiforia Azure footprint before teardown.
+  Snapshot the existing AI4IA Azure footprint before teardown.
 
 .DESCRIPTION
   Captures Foundry (Cognitive Services) accounts, model deployments, projects,
@@ -8,7 +8,7 @@
   files so the rebuild is reversible and auditable. Read-only.
 
 .EXAMPLE
-  ./scripts/inventory.ps1 -Subscription ca68cf94-... -ResourceGroup rg-aiforia-slurmfactory
+  ./scripts/inventory.ps1 -Subscription ca68cf94-... -ResourceGroup rg-ai4ia-slurmfactory
 #>
 [CmdletBinding()]
 param(

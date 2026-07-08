@@ -25,7 +25,7 @@ An Azure AI Foundry **toolbox is itself an MCP endpoint**:
 It requires an AAD bearer for `https://ai.azure.com` and the header
 `Foundry-Features: Toolboxes=V1Preview`. So instead of rewriting the app onto the Foundry
 managed agent runtime, AI4IA registers that one endpoint as a **single "official MCP server"**
-in `infra/mcp-servers.json`. The MCP APIM front door shipped in PR #125 injects the
+in `infra/mcp-servers.json`. The MCP APIM front door injects the
 managed-identity bearer, the static feature header, and the `api-version=v1` query; the app
 then consumes the entire toolbox — web/AI search, code interpreter, tool search, and bound
 skills — through the existing `OfficialMcpService` + agent tool picker with **zero new runtime
@@ -247,8 +247,9 @@ The load-bearing detail: the script catalogs the **APIM consumer URL**
 (`https://<mcp-apim-gateway>/<name>/mcp`), not the raw upstream. Discovery and governance stay on
 the proxy, and because API Center private tool catalogs integrate with Microsoft Foundry, Foundry
 agents discover exactly the APIM-fronted URLs the app already consumes -- one governed inventory,
-no second auth path. The shipped `infra/mcp-servers.json` is empty, so the script is a clean no-op
-until servers are registered.
+no second auth path. The shipped `infra/mcp-servers.json` now contains the activated
+`ai4ia-toolbox` entry, so the script plans that MCP asset by default; an empty catalog is still a
+clean no-op for consumers who remove all official servers.
 
 ## P7 — Routines and Agent-to-Agent (A2A): shipped (scaffold; live paths preview)
 
