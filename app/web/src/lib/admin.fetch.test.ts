@@ -33,7 +33,7 @@ describe("fetchUserAgents", () => {
 
     const out = await fetchUserAgents(30);
 
-    expect(mockApiFetch).toHaveBeenCalledWith("/api/admin/usage/user-agents?days=30", { cache: "no-store" });
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/admin/usage/user-agents?days=30&identify=false", { cache: "no-store" });
     expect(out.userAgents[0].agent).toBe("research");
   });
 
@@ -57,8 +57,9 @@ describe("fetchUserAgents", () => {
     };
     mockApiFetch.mockResolvedValue(jsonResponse(body));
 
-    const out = await fetchUserAgents(30);
+    const out = await fetchUserAgents(30, true);
 
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/admin/usage/user-agents?days=30&identify=true", { cache: "no-store" });
     expect(out.userAgents[0].displayName).toBe("Ada Lovelace");
     expect(out.userAgents[0].email).toBe("ada@example.com");
     expect(out.userAgents[1].displayName).toBeNull();
@@ -66,6 +67,28 @@ describe("fetchUserAgents", () => {
 });
 
 describe("fetchByUser", () => {
+  it("defaults to the de-identified by-user endpoint", async () => {
+    const body = {
+      sinceDays: 30,
+      fromTime: "2024-01-01T00:00:00Z",
+      toTime: "2024-01-31T00:00:00Z",
+      truncated: false,
+      scannedRecords: 0,
+      totalUsers: 0,
+      limit: 20,
+      offset: 0,
+      byUser: [],
+    };
+    mockApiFetch.mockResolvedValue(jsonResponse(body));
+
+    await fetchByUser(30, 20, 0);
+
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      "/api/admin/usage/by-user?days=30&limit=20&offset=0&identify=false",
+      { cache: "no-store" },
+    );
+  });
+
   it("carries the optional directory displayName/email on each row", async () => {
     const body = {
       sinceDays: 30,
@@ -105,10 +128,10 @@ describe("fetchByUser", () => {
     };
     mockApiFetch.mockResolvedValue(jsonResponse(body));
 
-    const out = await fetchByUser(30, 20, 0);
+    const out = await fetchByUser(30, 20, 0, true);
 
     expect(mockApiFetch).toHaveBeenCalledWith(
-      "/api/admin/usage/by-user?days=30&limit=20&offset=0",
+      "/api/admin/usage/by-user?days=30&limit=20&offset=0&identify=true",
       { cache: "no-store" },
     );
     expect(out.byUser[0].displayName).toBe("Ada Lovelace");

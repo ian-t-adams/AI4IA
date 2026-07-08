@@ -447,7 +447,7 @@ export async function deleteDocument(
   sessionId: string,
   documentId: string,
 ): Promise<void> {
-  const resp = await fetch(
+  const resp = await apiFetch(
     `/api/sessions/${sessionId}/documents/${documentId}`,
     { method: "DELETE" },
   );

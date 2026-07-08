@@ -140,6 +140,9 @@ describe("Composer", () => {
     await user.type(textarea, "/");
     expect(screen.getByRole("listbox", { name: "Commands" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /help/i })).toBeInTheDocument();
+
+    await user.type(textarea, "res");
+    expect(screen.getByRole("option", { name: /research/i })).toBeInTheDocument();
   });
 
   it("shows a Stop button while streaming and calls onStop when clicked", async () => {

@@ -15,6 +15,7 @@ Everything here is read-only: aggregation is a bounded, cross-partition ledger
 scan; the resource panels are read from Azure Monitor. The only mutations in the
 admin surface remain the pre-existing entitlement PUT/DELETE (routers/entitlements).
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -45,6 +46,13 @@ whoami_router = APIRouter(prefix="/api/admin", tags=["admin"])
 router = APIRouter(prefix="/api/admin", tags=["admin-usage"])
 
 _DAYS = Query(default=30, ge=1, le=MAX_ADMIN_DAYS, description="Window in days (1-90).")
+_IDENTIFY = Query(
+    default=False,
+    description=(
+        "When true, enrich admin-only usage rows with displayName/email from the "
+        "user directory. Defaults false so dashboard responses are demo-safe."
+    ),
+)
 
 
 class WhoAmI(BaseModel):
@@ -61,8 +69,9 @@ class AdminUserRow(UserUsageBucket):
     unlimited default — so the UI shows "Unlimited" without an extra call.
 
     ``displayName``/``email`` come from the admin-only user directory (PII, admin
-    plane only). They are ``None`` until the user has signed in at least once since
-    the directory shipped — the hashed ``userId`` is irreversible, so there is no
+    plane only) only when the request opts into identified mode. They are ``None``
+    in de-identified mode or until the user has signed in at least once since the
+    directory shipped — the hashed ``userId`` is irreversible, so there is no
     historical backfill and the UI degrades to the short hash.
     """
 
@@ -87,7 +96,7 @@ class AdminUserAgentRow(UserAgentBucket):
     """A (user, agent) cross-tab cell enriched with the directory display name.
 
     Same PII posture as :class:`AdminUserRow`: ``displayName``/``email`` are best-
-    effort and ``None`` until the user signs in post-deploy, degrading to the hash.
+    effort, populated only in identified mode, and ``None`` otherwise.
     """
 
     displayName: str | None = None
@@ -183,21 +192,21 @@ async def usage_agents(
 async def usage_user_agents(
     request: Request,
     days: int = _DAYS,
+    identify: bool = _IDENTIFY,
     _admin: AuthenticatedUser = Depends(require_admin),
 ) -> AdminUserAgentsResponse:
     report = await _service(request).user_agents(days=days)
-    # Best-effort enrich each (user, agent) cell with the directory display name,
-    # resolving only the userIds already present in the cross-tab. Aggregation math
-    # is untouched; we only attach optional displayName/email (None -> hash in UI).
-    directory = await _resolve_directory(
-        request, [cell.userId for cell in report.userAgents]
+    # Best-effort enrich each (user, agent) cell only when explicitly requested.
+    # Aggregation math is untouched; the stable hashed userId remains the row key.
+    directory = (
+        await _resolve_directory(request, [cell.userId for cell in report.userAgents])
+        if identify
+        else {}
     )
     rows = []
     for cell in report.userAgents:
         name, email = _directory_fields(directory.get(cell.userId))
-        rows.append(
-            AdminUserAgentRow(**cell.model_dump(), displayName=name, email=email)
-        )
+        rows.append(AdminUserAgentRow(**cell.model_dump(), displayName=name, email=email))
     return AdminUserAgentsResponse(
         sinceDays=report.sinceDays,
         fromTime=report.fromTime,
@@ -223,6 +232,7 @@ async def usage_by_user(
     days: int = _DAYS,
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    identify: bool = _IDENTIFY,
     _admin: AuthenticatedUser = Depends(require_admin),
 ) -> AdminByUserResponse:
     report = await _service(request).by_user(days=days, limit=limit, offset=offset)
@@ -236,9 +246,11 @@ async def usage_by_user(
     except Exception:  # noqa: BLE001 - the join is advisory; never fail the report
         overrides_by_user = {}
 
-    # Best-effort enrich the page with directory display names (only the userIds
-    # on this page; None -> the UI shows the short hash).
-    directory = await _resolve_directory(request, [b.userId for b in report.byUser])
+    # Best-effort enrich the page with directory display names only in identified
+    # mode. De-identified mode leaves PII null so the UI shows only the short hash.
+    directory = (
+        await _resolve_directory(request, [b.userId for b in report.byUser]) if identify else {}
+    )
 
     rows = []
     for bucket in report.byUser:

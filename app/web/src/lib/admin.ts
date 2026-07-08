@@ -229,8 +229,10 @@ export function fetchAgents(days: number): Promise<AdminAgentsReport> {
   return getJson<AdminAgentsReport>(`/api/admin/usage/agents?days=${days}`);
 }
 
-export function fetchUserAgents(days: number): Promise<AdminUserAgentsReport> {
-  return getJson<AdminUserAgentsReport>(`/api/admin/usage/user-agents?days=${days}`);
+export function fetchUserAgents(days: number, identify = false): Promise<AdminUserAgentsReport> {
+  return getJson<AdminUserAgentsReport>(
+    `/api/admin/usage/user-agents?days=${days}&identify=${identify ? "true" : "false"}`,
+  );
 }
 
 export function fetchDistributions(days: number): Promise<AdminDistributionsReport> {
@@ -241,9 +243,10 @@ export function fetchByUser(
   days: number,
   limit = 20,
   offset = 0,
+  identify = false,
 ): Promise<AdminByUserResponse> {
   return getJson<AdminByUserResponse>(
-    `/api/admin/usage/by-user?days=${days}&limit=${limit}&offset=${offset}`,
+    `/api/admin/usage/by-user?days=${days}&limit=${limit}&offset=${offset}&identify=${identify ? "true" : "false"}`,
   );
 }
 

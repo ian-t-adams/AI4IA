@@ -87,7 +87,7 @@
       "value": true
     },
     "inlineDocumentComputeEnabled": {
-      "value": false
+      "value": true
     },
     "searchEnabled": {
       "value": true
@@ -111,7 +111,7 @@
       "value": true
     },
     "webSearchEnabled": {
-      "value": false
+      "value": true
     },
     "webIqApiKey": {
       "value": "${AI4IA_WEBIQ_API_KEY=}"
