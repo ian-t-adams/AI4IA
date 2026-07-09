@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // Mock the same-origin proxy so the typed fetchers can be tested without a network.
 vi.mock("./auth", () => ({ apiFetch: vi.fn() }));
 
-import { fetchByUser, fetchDistributions, fetchUserAgents } from "./admin";
+import { fetchByUser, fetchDistributions, fetchUserAgents, fetchWebSearchHealth } from "./admin";
 import { apiFetch } from "./auth";
 
 const mockApiFetch = vi.mocked(apiFetch);
@@ -169,5 +169,31 @@ describe("fetchDistributions", () => {
     } as unknown as Response);
 
     await expect(fetchDistributions(30)).rejects.toMatchObject({ status: 403 });
+  });
+});
+
+describe("fetchWebSearchHealth", () => {
+  it("requests the web-search health endpoint and returns the posture + counters", async () => {
+    const body = {
+      enabled: true,
+      authMode: "managed_identity",
+      startedAt: "2024-01-01T00:00:00Z",
+      generatedAt: "2024-01-01T01:00:00Z",
+      totalCalls: 3,
+      successes: 0,
+      failures: 3,
+      lastSuccessAt: null,
+      lastFailureAt: "2024-01-01T01:00:00Z",
+      byCategory: [{ category: "auth", count: 3 }],
+      recent: [{ category: "auth", detail: "401", at: "2024-01-01T01:00:00Z" }],
+    };
+    mockApiFetch.mockResolvedValue(jsonResponse(body));
+
+    const out = await fetchWebSearchHealth();
+
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/admin/metrics/web-search", { cache: "no-store" });
+    expect(out.authMode).toBe("managed_identity");
+    expect(out.failures).toBe(3);
+    expect(out.byCategory[0].category).toBe("auth");
   });
 });

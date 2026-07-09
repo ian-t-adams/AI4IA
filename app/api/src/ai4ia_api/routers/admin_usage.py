@@ -28,6 +28,7 @@ from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..metrics.models import ResourceMetricsReport
 from ..metrics.service import ResourceMetricsService
+from ..websearch.health import WebSearchHealth, WebSearchHealthReport
 from ..usage.aggregate import (
     MAX_ADMIN_DAYS,
     AdminByDayReport,
@@ -286,3 +287,35 @@ async def metrics_resources(
 ) -> ResourceMetricsReport:
     service: ResourceMetricsService = request.app.state.resource_metrics
     return await service.resources()
+
+
+@router.get("/metrics/web-search", response_model=WebSearchHealthReport)
+async def metrics_web_search(
+    request: Request,
+    _admin: AuthenticatedUser = Depends(require_admin),
+) -> WebSearchHealthReport:
+    """Process-local Web IQ call health for this replica (diagnostics only).
+
+    The Web IQ capability fails *soft* — a categorized auth/permission/rate_limit/
+    connection failure becomes a clean ``{"error": ...}`` and the turn continues —
+    so a misconfiguration is otherwise invisible. The recorder is built at startup
+    unconditionally (even when the feature is off), so this endpoint always answers.
+
+    ``enabled`` + ``authMode`` are the config posture that explains the failures:
+    ``enabled`` with ``authMode == "managed_identity"`` and a run of ``auth``
+    failures means the api's managed identity is not entitled to Web IQ;
+    ``authMode == "unconfigured"`` means no API key and the Entra fallback is off.
+    The report is de-identified (no userId) and process-local (lost on restart, not
+    aggregated across replicas) — the durable, cross-replica view is App Insights.
+    """
+    settings = request.app.state.settings
+    health: WebSearchHealth = request.app.state.web_search_health
+    report = health.snapshot()
+    report.enabled = bool(settings.web_search_enabled)
+    if settings.webiq_api_key:
+        report.authMode = "api_key"
+    elif settings.webiq_use_entra:
+        report.authMode = "managed_identity"
+    else:
+        report.authMode = "unconfigured"
+    return report

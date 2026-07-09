@@ -190,6 +190,36 @@ export interface ResourceMetricsReport {
   panels: ResourcePanel[];
 }
 
+// ---- web search health (diagnostics for the fail-soft web-search path) ----
+
+export interface WebSearchFailure {
+  category: string;
+  detail?: string | null;
+  at: string;
+}
+
+export interface WebSearchCategoryCount {
+  category: string;
+  count: number;
+}
+
+// Mirrors ai4ia_api.websearch.health.WebSearchHealthReport. `authMode` explains
+// *why* calls fail: "managed_identity" + auth failures => the api's identity is
+// not entitled to Web IQ; "unconfigured" => no key and the Entra fallback is off.
+export interface WebSearchHealthReport {
+  enabled: boolean;
+  authMode: "api_key" | "managed_identity" | "unconfigured" | string;
+  startedAt: string;
+  generatedAt: string;
+  totalCalls: number;
+  successes: number;
+  failures: number;
+  lastSuccessAt?: string | null;
+  lastFailureAt?: string | null;
+  byCategory: WebSearchCategoryCount[];
+  recent: WebSearchFailure[];
+}
+
 // ---- API client ----
 
 async function getJson<T>(path: string): Promise<T> {
@@ -254,6 +284,10 @@ export function fetchResources(): Promise<ResourceMetricsReport> {
   return getJson<ResourceMetricsReport>("/api/admin/metrics/resources");
 }
 
+export function fetchWebSearchHealth(): Promise<WebSearchHealthReport> {
+  return getJson<WebSearchHealthReport>("/api/admin/metrics/web-search");
+}
+
 // ---- pure transforms / formatters (unit-tested) ----
 
 // The cosmetic gate for showing the admin nav entry / dashboard body. The server
@@ -314,6 +348,79 @@ export function formatPercent(rate: number | null | undefined, digits = 1): stri
 export function barScale(value: number, max: number, maxPx: number): number {
   if (max <= 0 || !Number.isFinite(value) || value <= 0) return 0;
   return Math.max(0, Math.min(maxPx, (value / max) * maxPx));
+}
+
+// Human label for a web-search failure category (falls back to the raw token).
+const WEB_SEARCH_CATEGORY_LABELS: Record<string, string> = {
+  auth: "Auth",
+  permission: "Permission",
+  rate_limit: "Rate limit",
+  status: "Upstream status",
+  connection: "Connection",
+  unknown: "Unknown",
+};
+
+export function webSearchCategoryLabel(category: string): string {
+  return WEB_SEARCH_CATEGORY_LABELS[category] ?? category;
+}
+
+export interface WebSearchHint {
+  tone: "ok" | "info" | "warn";
+  text: string;
+}
+
+// Turn the raw health posture into a single operator-facing diagnosis. This is
+// the panel's headline: it converts (enabled, authMode, recent failure
+// categories) into the most likely root cause AND the concrete fix, so an admin
+// doesn't have to reverse-engineer it from the counters. The common production
+// bug — feature on, no key, so the api falls back to a managed identity that is
+// not entitled to Web IQ — is called out explicitly.
+export function webSearchHint(r: WebSearchHealthReport | null | undefined): WebSearchHint {
+  if (!r) return { tone: "info", text: "Web search health is unavailable." };
+  if (!r.enabled) {
+    return {
+      tone: "info",
+      text:
+        "Web search is disabled (AI4IA_WEB_SEARCH_ENABLED is off). No web tools are advertised to the model.",
+    };
+  }
+  const authish = r.byCategory
+    .filter((c) => c.category === "auth" || c.category === "permission")
+    .reduce((n, c) => n + c.count, 0);
+  if (r.authMode === "unconfigured") {
+    return {
+      tone: "warn",
+      text:
+        "Web search is enabled but no credentials are configured — set AI4IA_WEBIQ_API_KEY, or enable the managed-identity fallback (AI4IA_WEBIQ_USE_ENTRA).",
+    };
+  }
+  if (authish > 0 && r.authMode === "managed_identity") {
+    return {
+      tone: "warn",
+      text:
+        "Web search authenticates as the app's managed identity but calls are failing authorization — the managed identity is almost certainly not entitled to Web IQ. Grant it access or set AI4IA_WEBIQ_API_KEY.",
+    };
+  }
+  if (authish > 0 && r.authMode === "api_key") {
+    return {
+      tone: "warn",
+      text:
+        "Web search is using an API key but calls are failing authorization — the key may be invalid, expired, or lacking Web IQ entitlement.",
+    };
+  }
+  if (r.failures > 0) {
+    return {
+      tone: "warn",
+      text: "Web search is enabled but some recent calls failed — see the categories below.",
+    };
+  }
+  if (r.totalCalls === 0) {
+    return {
+      tone: "ok",
+      text: "Web search is enabled and configured. No calls recorded yet on this replica.",
+    };
+  }
+  return { tone: "ok", text: "Web search is healthy on this replica." };
 }
 
 function round(n: number): number {

@@ -21,6 +21,7 @@ import {
   type ModelUsageBucket,
   type ResourcePanel,
   type UserAgentBucket,
+  type WebSearchHealthReport,
   barScale,
   canShowAdmin,
   dimensionShare,
@@ -34,6 +35,7 @@ import {
   fetchResources,
   fetchSummary,
   fetchUserAgents,
+  fetchWebSearchHealth,
   fetchWhoAmI,
   formatCompact,
   formatPercent,
@@ -45,6 +47,8 @@ import {
   statusLabel,
   sumRequests,
   userLabel,
+  webSearchCategoryLabel,
+  webSearchHint,
 } from "@/lib/admin";
 
 const WINDOWS = [7, 30, 90];
@@ -78,6 +82,7 @@ interface DashboardData {
   byDeployment: DimensionBucket[];
   byStatus: DimensionBucket[];
   resources: ResourcePanel[];
+  webSearch: WebSearchHealthReport | null;
   truncated: boolean;
 }
 
@@ -93,6 +98,7 @@ const EMPTY: DashboardData = {
   byDeployment: [],
   byStatus: [],
   resources: [],
+  webSearch: null,
   truncated: false,
 };
 
@@ -373,6 +379,124 @@ function ResourcePanels({ panels }: { panels: ResourcePanel[] }) {
   );
 }
 
+function formatWhen(iso?: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString();
+}
+
+function authModeLabel(mode: string): string {
+  if (mode === "api_key") return "API key";
+  if (mode === "managed_identity") return "Managed identity";
+  if (mode === "unconfigured") return "Unconfigured";
+  return mode;
+}
+
+// Diagnostics for the fail-soft web-search path. The capability turns a
+// categorized upstream failure into a clean {"error": ...} and continues, so a
+// misconfiguration is otherwise invisible; this panel surfaces the categorized
+// failures + the config posture (enabled / authMode) that explains them.
+function WebSearchHealthPanel({ report }: { report: WebSearchHealthReport | null }) {
+  if (!report) return <div style={muted}>Web search health is unavailable.</div>;
+  const hint = webSearchHint(report);
+  return (
+    <div>
+      <div
+        style={{
+          margin: "0 0 12px",
+          fontSize: "0.85em",
+          fontWeight: hint.tone === "warn" ? 600 : 400,
+          color: hint.tone === "warn" ? "var(--danger)" : "var(--fg)",
+        }}
+      >
+        {hint.text}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 16,
+          fontSize: "0.85em",
+          marginBottom: 12,
+        }}
+      >
+        <span>
+          <strong>Feature:</strong> {report.enabled ? "Enabled" : "Disabled"}
+        </span>
+        <span>
+          <strong>Auth mode:</strong> {authModeLabel(report.authMode)}
+        </span>
+        <span>
+          <strong>Calls:</strong> {formatCompact(report.totalCalls)}
+        </span>
+        <span>
+          <strong>Successes:</strong> {formatCompact(report.successes)}
+        </span>
+        <span>
+          <strong>Failures:</strong> {formatCompact(report.failures)}
+        </span>
+        <span style={muted}>Last failure: {formatWhen(report.lastFailureAt)}</span>
+      </div>
+      {report.byCategory.length > 0 && (
+        <ul
+          style={{
+            listStyle: "none",
+            padding: 0,
+            margin: "0 0 12px",
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 8,
+          }}
+        >
+          {report.byCategory.map((c) => (
+            <li
+              key={c.category}
+              style={{
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+                padding: "2px 8px",
+                fontSize: "0.8em",
+              }}
+            >
+              {webSearchCategoryLabel(c.category)}: <strong>{c.count}</strong>
+            </li>
+          ))}
+        </ul>
+      )}
+      {report.recent.length > 0 ? (
+        <div>
+          <div style={{ ...muted, marginBottom: 4 }}>
+            Recent failures (this replica, newest first)
+          </div>
+          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {report.recent.map((f, i) => (
+              <li
+                key={`${f.at}-${i}`}
+                style={{
+                  fontSize: "0.8em",
+                  padding: "3px 0",
+                  borderTop: i ? "1px solid var(--border)" : undefined,
+                  display: "flex",
+                  gap: 8,
+                }}
+              >
+                <span style={{ color: "var(--danger)", flexShrink: 0, minWidth: 96 }}>
+                  {webSearchCategoryLabel(f.category)}
+                </span>
+                <span style={{ flex: 1, wordBreak: "break-word" }}>{f.detail ?? "—"}</span>
+                <span style={{ ...muted, flexShrink: 0 }}>{formatWhen(f.at)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <div style={muted}>No recorded failures on this replica.</div>
+      )}
+    </div>
+  );
+}
+
 export function AdminDashboard() {
   const [phase, setPhase] = useState<"checking" | "forbidden" | "ready">("checking");
   const [days, setDays] = useState(30);
@@ -413,7 +537,7 @@ export function AdminDashboard() {
   const load = useCallback(async (window: number, identify: boolean) => {
     setLoading(true);
     setError(null);
-    const [summary, byModel, byDay, byUser, agents, userAgents, distributions, resources] =
+    const [summary, byModel, byDay, byUser, agents, userAgents, distributions, resources, webSearch] =
       await Promise.allSettled([
         fetchSummary(window),
         fetchByModel(window),
@@ -423,6 +547,7 @@ export function AdminDashboard() {
         fetchUserAgents(window, identify),
         fetchDistributions(window),
         fetchResources(),
+        fetchWebSearchHealth(),
       ]);
     const next: DashboardData = { ...EMPTY };
     if (summary.status === "fulfilled") next.summary = summary.value;
@@ -442,6 +567,7 @@ export function AdminDashboard() {
       next.truncated = next.truncated || distributions.value.truncated;
     }
     if (resources.status === "fulfilled") next.resources = resources.value.panels;
+    if (webSearch.status === "fulfilled") next.webSearch = webSearch.value;
     if (summary.status === "fulfilled") next.truncated = next.truncated || summary.value.truncated;
     if (summary.status === "rejected") {
       setError("Failed to load usage summary. Some panels may be empty.");
@@ -608,6 +734,15 @@ export function AdminDashboard() {
         <section style={card}>
           <h2 style={sectionTitle}>Platform resources</h2>
           <ResourcePanels panels={data.resources} />
+        </section>
+
+        <section style={card}>
+          <h2 style={sectionTitle}>Web search health</h2>
+          <p style={{ ...muted, margin: "-4px 0 12px" }}>
+            Diagnoses the fail-soft web-search path. Counters are per-replica and in-memory
+            (reset on restart); the durable, cross-replica view is App Insights.
+          </p>
+          <WebSearchHealthPanel report={data.webSearch} />
         </section>
       </div>
     </Shell>
