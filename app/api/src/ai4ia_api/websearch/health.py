@@ -1,12 +1,13 @@
 """Process-local Web IQ health recorder for the admin diagnostics panel.
 
 The Web IQ capability fails **soft**: a categorized :class:`WebSearchError`
-(``auth`` / ``permission`` / ``rate_limit`` / ``status`` / ``connection`` /
-``unknown``) is turned into a clean, user-safe ``{"error": ...}`` and the turn
-continues. That is correct for the model, but it also means a *misconfiguration*
-(the common one: web search enabled with no API key, so the api's managed identity
-falls back to EntraID but is not entitled to Web IQ) is invisible — the errors are
-returned to the model and then dropped.
+(``config`` / ``credential`` / ``auth`` / ``permission`` / ``rate_limit`` /
+``timeout`` / ``connection`` / ``bad_request`` / ``not_found`` / ``server_error`` /
+``status`` / ``unknown``) is turned into a clean, user-safe ``{"error": ...}`` and
+the turn continues. That is correct for the model, but it also means a
+*misconfiguration* (the common one: web search enabled with no API key, so the api's
+managed identity falls back to EntraID but is not entitled to Web IQ) is invisible —
+the errors are returned to the model and then dropped.
 
 This recorder makes those failures visible to an app admin **without adding a
 store**. It is a derived, rebuildable diagnostic signal:
@@ -27,14 +28,24 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
-# Stable display order for the categories emitted by ``websearch.client``. Any
-# unrecognized category sorts last (alphabetically) so the panel never drops a row.
+# Stable display order for the categories emitted by ``websearch.client``, roughly
+# by remediation urgency/ownership: config/credential (fix the deployment) ->
+# auth/permission (entitle the principal) -> rate_limit/timeout/connection
+# (transient/network) -> bad_request/not_found (the request itself) -> server_error
+# (upstream incident) -> status/unknown (catch-alls). Any unrecognized category
+# sorts last (alphabetically) so the panel never drops a row.
 CATEGORY_ORDER: tuple[str, ...] = (
+    "config",
+    "credential",
     "auth",
     "permission",
     "rate_limit",
-    "status",
+    "timeout",
     "connection",
+    "bad_request",
+    "not_found",
+    "server_error",
+    "status",
     "unknown",
 )
 

@@ -38,9 +38,13 @@ from ..usage.models import TokenUsage
 from ..usage.service import UsageService
 from .client import (
     ERROR_AUTH,
+    ERROR_CONFIG,
     ERROR_CONNECTION,
+    ERROR_CREDENTIAL,
     ERROR_PERMISSION,
     ERROR_RATE_LIMIT,
+    ERROR_SERVER,
+    ERROR_TIMEOUT,
     ERROR_UNKNOWN,
     WebSearchClient,
     WebSearchError,
@@ -83,9 +87,13 @@ def _snippet(text: Any, limit: int = _SNIPPET_LIMIT) -> str:
 
 
 _ERROR_MESSAGES = {
+    ERROR_CONFIG: "web search is not available (not configured).",
+    ERROR_CREDENTIAL: "web search is not available (authentication failed).",
     ERROR_AUTH: "web search is not available (authentication failed).",
     ERROR_PERMISSION: "web search is not available for this account.",
     ERROR_RATE_LIMIT: "web search is temporarily rate-limited; try again shortly.",
+    ERROR_TIMEOUT: "web search timed out; try again shortly.",
+    ERROR_SERVER: "web search is temporarily unavailable; try again shortly.",
     ERROR_CONNECTION: "web search could not reach the service.",
 }
 _ERROR_DEFAULT = "web search could not complete that request."

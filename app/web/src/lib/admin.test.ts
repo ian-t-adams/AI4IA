@@ -244,6 +244,9 @@ describe("webSearchCategoryLabel", () => {
   it("humanizes known categories and passes through unknown tokens", () => {
     expect(webSearchCategoryLabel("auth")).toBe("Auth");
     expect(webSearchCategoryLabel("rate_limit")).toBe("Rate limit");
+    expect(webSearchCategoryLabel("credential")).toBe("Credential");
+    expect(webSearchCategoryLabel("server_error")).toBe("Server error");
+    expect(webSearchCategoryLabel("not_found")).toBe("Not found");
     expect(webSearchCategoryLabel("something_new")).toBe("something_new");
   });
 });
@@ -295,6 +298,48 @@ describe("webSearchHint", () => {
     );
     expect(h.tone).toBe("warn");
     expect(h.text).toMatch(/not entitled to Web IQ/);
+  });
+
+  it("distinguishes a failed token acquisition (credential) from an entitlement gap", () => {
+    const h = webSearchHint(
+      report({
+        authMode: "managed_identity",
+        totalCalls: 2,
+        failures: 2,
+        byCategory: [{ category: "credential", count: 2 }],
+      }),
+    );
+    expect(h.tone).toBe("warn");
+    expect(h.text).toMatch(/could not be acquired/);
+    expect(h.text).not.toMatch(/not entitled to Web IQ/);
+  });
+
+  it("calls out an upstream incident when server errors dominate", () => {
+    const h = webSearchHint(
+      report({
+        authMode: "api_key",
+        totalCalls: 5,
+        successes: 2,
+        failures: 3,
+        byCategory: [{ category: "server_error", count: 3 }],
+      }),
+    );
+    expect(h.tone).toBe("warn");
+    expect(h.text).toMatch(/5xx|upstream incident/);
+  });
+
+  it("calls out timeouts when calls are timing out", () => {
+    const h = webSearchHint(
+      report({
+        authMode: "api_key",
+        totalCalls: 4,
+        successes: 2,
+        failures: 2,
+        byCategory: [{ category: "timeout", count: 2 }],
+      }),
+    );
+    expect(h.tone).toBe("warn");
+    expect(h.text).toMatch(/timing out/);
   });
 
   it("blames the API key when auth calls fail under api_key mode", () => {

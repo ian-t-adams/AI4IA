@@ -31,10 +31,16 @@ from ai4ia_api.websearch.capability import (
 )
 from ai4ia_api.websearch.client import (
     ERROR_AUTH,
+    ERROR_BAD_REQUEST,
+    ERROR_CONFIG,
     ERROR_CONNECTION,
+    ERROR_CREDENTIAL,
+    ERROR_NOT_FOUND,
     ERROR_PERMISSION,
     ERROR_RATE_LIMIT,
+    ERROR_SERVER,
     ERROR_STATUS,
+    ERROR_TIMEOUT,
     ERROR_UNKNOWN,
     WebSearchClient,
     WebSearchError,
@@ -321,11 +327,17 @@ async def test_disabled_account_is_blocked_before_client():
 @pytest.mark.parametrize(
     "category,needle",
     [
+        (ERROR_CONFIG, "not available"),
+        (ERROR_CREDENTIAL, "not available"),
         (ERROR_AUTH, "not available"),
         (ERROR_PERMISSION, "not available for this account"),
         (ERROR_RATE_LIMIT, "rate-limited"),
+        (ERROR_TIMEOUT, "timed out"),
+        (ERROR_SERVER, "temporarily unavailable"),
         (ERROR_CONNECTION, "could not reach"),
         (ERROR_STATUS, "could not complete"),
+        (ERROR_BAD_REQUEST, "could not complete"),
+        (ERROR_NOT_FOUND, "could not complete"),
         (ERROR_UNKNOWN, "could not complete"),
     ],
 )
@@ -442,8 +454,30 @@ async def test_wrapper_normalizes_web_results():
         (lambda m: __import__("webiq").AuthenticationError(401, m), ERROR_AUTH),
         (lambda m: __import__("webiq").PermissionDeniedError(403, m), ERROR_PERMISSION),
         (lambda m: __import__("webiq").RateLimitError(429, m), ERROR_RATE_LIMIT),
-        (lambda m: __import__("webiq").APIStatusError(500, m), ERROR_STATUS),
+        # Generic APIStatusError is bucketed by its HTTP status_code.
+        (lambda m: __import__("webiq").APIStatusError(400, m), ERROR_BAD_REQUEST),
+        (lambda m: __import__("webiq").APIStatusError(422, m), ERROR_BAD_REQUEST),
+        (lambda m: __import__("webiq").APIStatusError(404, m), ERROR_NOT_FOUND),
+        (lambda m: __import__("webiq").APIStatusError(500, m), ERROR_SERVER),
+        (lambda m: __import__("webiq").APIStatusError(503, m), ERROR_SERVER),
+        (lambda m: __import__("webiq").APIStatusError(409, m), ERROR_BAD_REQUEST),
+        # A status code outside the error ranges falls back to the generic bucket.
+        (lambda m: __import__("webiq").APIStatusError(0, m), ERROR_STATUS),
+        # Client-side timeouts are folded into APIConnectionError by the SDK; the
+        # "timed out" message teases them back out into their own category.
+        (
+            lambda m: __import__("webiq").APIConnectionError("Request timed out after 30s"),
+            ERROR_TIMEOUT,
+        ),
         (lambda m: __import__("webiq").APIConnectionError(m), ERROR_CONNECTION),
+        # An EntraID token that cannot be acquired arrives as an azure-identity
+        # error (not a webiq error) and must classify as `credential`, not unknown.
+        (
+            lambda m: __import__(
+                "azure.core.exceptions", fromlist=["ClientAuthenticationError"]
+            ).ClientAuthenticationError(m),
+            ERROR_CREDENTIAL,
+        ),
         (lambda m: ValueError(m), ERROR_UNKNOWN),
     ],
 )
@@ -455,6 +489,15 @@ async def test_wrapper_maps_sdk_errors_to_categories(exc_factory, category):
     with pytest.raises(WebSearchError) as ei:
         await client.web_search("q", max_results=5)
     assert ei.value.category == category
+
+
+async def test_wrapper_unconfigured_raises_config_category():
+    # No api key and the entra fallback off is a *configuration* failure, distinct
+    # from an auth rejection; it must surface before any network call.
+    client = WebSearchClient(_settings(webiq_api_key="", webiq_use_entra=False))
+    with pytest.raises(WebSearchError) as ei:
+        await client.web_search("q", max_results=3)
+    assert ei.value.category == ERROR_CONFIG
 
 
 async def test_wrapper_does_not_close_injected_client():
