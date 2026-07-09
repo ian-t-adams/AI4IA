@@ -352,11 +352,17 @@ export function barScale(value: number, max: number, maxPx: number): number {
 
 // Human label for a web-search failure category (falls back to the raw token).
 const WEB_SEARCH_CATEGORY_LABELS: Record<string, string> = {
+  config: "Not configured",
+  credential: "Credential",
   auth: "Auth",
   permission: "Permission",
   rate_limit: "Rate limit",
-  status: "Upstream status",
+  timeout: "Timeout",
   connection: "Connection",
+  bad_request: "Bad request",
+  not_found: "Not found",
+  server_error: "Server error",
+  status: "Upstream status",
   unknown: "Unknown",
 };
 
@@ -384,14 +390,24 @@ export function webSearchHint(r: WebSearchHealthReport | null | undefined): WebS
         "Web search is disabled (AI4IA_WEB_SEARCH_ENABLED is off). No web tools are advertised to the model.",
     };
   }
-  const authish = r.byCategory
-    .filter((c) => c.category === "auth" || c.category === "permission")
-    .reduce((n, c) => n + c.count, 0);
+  const count = (cat: string): number =>
+    r.byCategory.filter((c) => c.category === cat).reduce((n, c) => n + c.count, 0);
+  const authish = count("auth") + count("permission");
   if (r.authMode === "unconfigured") {
     return {
       tone: "warn",
       text:
         "Web search is enabled but no credentials are configured — set AI4IA_WEBIQ_API_KEY, or enable the managed-identity fallback (AI4IA_WEBIQ_USE_ENTRA).",
+    };
+  }
+  // A managed-identity token could not be ACQUIRED at all — a different failure
+  // (and a different fix) than a token that was acquired but rejected as
+  // unentitled (the `auth` case below).
+  if (count("credential") > 0 && r.authMode === "managed_identity") {
+    return {
+      tone: "warn",
+      text:
+        "Web search is set to use the app's managed identity but a token could not be acquired at all — the Container App likely has no usable managed identity, cannot reach the token endpoint (IMDS), or is requesting the wrong scope. Fix the managed-identity assignment; this is separate from a Web IQ entitlement problem.",
     };
   }
   if (authish > 0 && r.authMode === "managed_identity") {
@@ -406,6 +422,24 @@ export function webSearchHint(r: WebSearchHealthReport | null | undefined): WebS
       tone: "warn",
       text:
         "Web search is using an API key but calls are failing authorization — the key may be invalid, expired, or lacking Web IQ entitlement.",
+    };
+  }
+  // Reachable-but-failing patterns: an upstream incident (5xx) reads differently
+  // from the service being slow (timeout), so surface whichever dominates.
+  const serverish = count("server_error");
+  const timeoutish = count("timeout");
+  if (serverish > 0 && serverish >= timeoutish) {
+    return {
+      tone: "warn",
+      text:
+        "Web search is reaching Web IQ but it is returning server errors (HTTP 5xx) — most likely an upstream incident. Retry later; this is not a configuration problem on our side.",
+    };
+  }
+  if (timeoutish > 0) {
+    return {
+      tone: "warn",
+      text:
+        "Web search calls are timing out — Web IQ may be slow or overloaded, or the client timeout budget is too low. Retry; if it persists, check latency and capacity.",
     };
   }
   if (r.failures > 0) {

@@ -10,11 +10,23 @@ Adds the app-side governance shape the synthetic capability relies on:
 * Every resource method returns **normalized** ``list[dict]`` / ``dict`` of simple
   scalar fields (never SDK model objects), so the capability layer only ever
   sanitizes plain strings.
-* Every ``webiq`` ``WebIQError`` subclass is mapped to a local
-  :class:`WebSearchError` carrying a coarse ``category`` (``auth`` / ``permission`` /
-  ``rate_limit`` / ``status`` / ``connection`` / ``unknown``); the capability maps
-  those to clean, user-safe error strings. The wrapper itself never raises a raw SDK
+* Every ``webiq`` ``WebIQError`` subclass — plus an EntraID token-acquisition
+  failure and a missing-credential misconfiguration — is mapped to a local
+  :class:`WebSearchError` carrying a coarse, remediation-oriented ``category``
+  (``config`` / ``credential`` / ``auth`` / ``permission`` / ``rate_limit`` /
+  ``timeout`` / ``connection`` / ``bad_request`` / ``not_found`` / ``server_error``
+  / ``status`` / ``unknown``); the capability maps those to clean, user-safe error
+  strings and the admin panel counts them. The wrapper itself never raises a raw SDK
   exception into the turn.
+
+  The categories are deliberately finer than the SDK's exception classes so the
+  admin diagnostics can point at the *fix*: ``credential`` (the managed identity
+  could not get a token at all) reads differently from ``auth`` (a token was
+  acquired but Web IQ rejected it, i.e. the identity is not entitled); a 5xx
+  ``server_error`` (an upstream Web IQ incident) reads differently from a 4xx
+  ``bad_request`` (the request the app sent was wrong); and a ``timeout`` (the
+  service is slow/overloaded) reads differently from a ``connection`` failure (no
+  network path at all).
 
 For unit tests a fake SDK client may be injected via ``sdk_client`` so the error
 mapping + normalization can be exercised without the network or a real key.
@@ -28,13 +40,21 @@ from ..config import Settings
 
 logger = logging.getLogger(__name__)
 
-# Coarse error categories the capability maps to user-safe strings.
-ERROR_AUTH = "auth"
-ERROR_PERMISSION = "permission"
-ERROR_RATE_LIMIT = "rate_limit"
-ERROR_STATUS = "status"
-ERROR_CONNECTION = "connection"
-ERROR_UNKNOWN = "unknown"
+# Coarse, remediation-oriented error categories the capability maps to user-safe
+# strings and the admin panel counts. Ordered here loosely by "what an operator
+# does about it"; the display order lives in ``health.CATEGORY_ORDER``.
+ERROR_CONFIG = "config"  # feature on but no api key and no entra fallback configured
+ERROR_CREDENTIAL = "credential"  # entra token could not be acquired (identity/IMDS/scope)
+ERROR_AUTH = "auth"  # 401: authenticated principal rejected (e.g. not entitled)
+ERROR_PERMISSION = "permission"  # 403: credentials valid, operation not permitted
+ERROR_RATE_LIMIT = "rate_limit"  # 429/430: rate / concurrency limit
+ERROR_TIMEOUT = "timeout"  # client-side timeout (service reachable but slow/overloaded)
+ERROR_CONNECTION = "connection"  # could not reach the service at all
+ERROR_BAD_REQUEST = "bad_request"  # other 4xx: the request the app sent was wrong
+ERROR_NOT_FOUND = "not_found"  # 404: page/route missing (common + expected for browse)
+ERROR_SERVER = "server_error"  # 5xx: upstream Web IQ incident
+ERROR_STATUS = "status"  # any other non-2xx status
+ERROR_UNKNOWN = "unknown"  # uncategorized
 
 
 class WebSearchError(Exception):
@@ -85,7 +105,8 @@ class WebSearchClient:
             kwargs["credential"] = self._credential
         else:
             raise WebSearchError(
-                ERROR_AUTH, "web search is not configured (no api key or entra credential)."
+                ERROR_CONFIG,
+                "web search is not configured (no api key or entra credential).",
             )
         self._client = WebIQAsyncClient(**kwargs)
         return self._client
@@ -126,11 +147,33 @@ class WebSearchClient:
         return None
 
     def _map_error(self, exc: Exception) -> WebSearchError:
-        """Map a ``webiq`` ``WebIQError`` subclass to a categorized ``WebSearchError``.
+        """Map a transport / SDK / credential exception to a categorized error.
 
-        Imports the SDK exception classes lazily; if ``webiq`` is unavailable the
-        error is simply classified ``unknown`` (never re-raised).
+        Ordering matters. An EntraID *token-acquisition* failure reaches us straight
+        from the SDK's auth provider (``credential.get_token``) as an
+        ``azure-core`` ``ClientAuthenticationError`` — never wrapped as a ``webiq``
+        error — so it is checked first and surfaced as ``credential`` (distinct from
+        a Web IQ ``auth`` 401, where a token *was* acquired but rejected). Then the
+        specific ``webiq`` status subclasses (401/403/429) are matched before the
+        generic :class:`APIStatusError`, whose ``status_code`` is bucketed into
+        ``server_error`` (5xx) / ``not_found`` (404) / ``bad_request`` (other 4xx).
+        A client-side ``timeout`` is teased out of ``APIConnectionError`` (the SDK
+        folds httpx timeouts into it). All imports are lazy + guarded so mapping can
+        never itself raise; anything unrecognized is ``unknown``.
         """
+        # 1) Managed-identity token could not be acquired at all (no identity
+        #    assigned, IMDS unreachable, wrong scope). azure-identity's
+        #    CredentialUnavailableError subclasses ClientAuthenticationError, so the
+        #    one check covers both. webiq errors do not derive from this, so testing
+        #    it first is safe.
+        try:
+            from azure.core.exceptions import ClientAuthenticationError
+
+            if isinstance(exc, ClientAuthenticationError):
+                return WebSearchError(ERROR_CREDENTIAL, str(exc))
+        except Exception:  # noqa: BLE001 - azure-identity may be absent; fall through
+            pass
+
         try:
             from webiq import (
                 APIConnectionError,
@@ -141,15 +184,33 @@ class WebSearchClient:
             )
         except Exception:  # noqa: BLE001 - never let mapping itself raise
             return WebSearchError(ERROR_UNKNOWN, str(exc))
+        # 2) Specific status subclasses (each derives from APIStatusError).
         if isinstance(exc, AuthenticationError):
             return WebSearchError(ERROR_AUTH, str(exc))
         if isinstance(exc, PermissionDeniedError):
             return WebSearchError(ERROR_PERMISSION, str(exc))
         if isinstance(exc, RateLimitError):
             return WebSearchError(ERROR_RATE_LIMIT, str(exc))
+        # 3) Generic non-2xx: bucket by HTTP status so an operator can tell an
+        #    upstream incident (5xx) from a request the app got wrong (other 4xx)
+        #    or a missing page/route (404 — common + expected for browse_url).
         if isinstance(exc, APIStatusError):
+            code = getattr(exc, "status_code", None)
+            if isinstance(code, int):
+                if code >= 500:
+                    return WebSearchError(ERROR_SERVER, str(exc))
+                if code == 404:
+                    return WebSearchError(ERROR_NOT_FOUND, str(exc))
+                if code >= 400:
+                    return WebSearchError(ERROR_BAD_REQUEST, str(exc))
             return WebSearchError(ERROR_STATUS, str(exc))
+        # 4) Connection-level: the SDK folds client-side httpx timeouts into
+        #    APIConnectionError ("Request timed out after Ns"). Separate them so
+        #    "slow/overloaded" reads differently from "no network path"; fall back
+        #    to connection if the SDK's message ever changes.
         if isinstance(exc, APIConnectionError):
+            if "timed out" in str(exc).lower() or "timeout" in str(exc).lower():
+                return WebSearchError(ERROR_TIMEOUT, str(exc))
             return WebSearchError(ERROR_CONNECTION, str(exc))
         return WebSearchError(ERROR_UNKNOWN, str(exc))
 
