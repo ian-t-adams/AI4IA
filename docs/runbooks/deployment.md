@@ -155,6 +155,29 @@ az containerapp hostname bind --hostname ai4ia.nomad-analytics.com `
   --certificate mc-cae-ai4ia-slur-ai4ia-nomad-anal-2891
 ```
 
+### 2.6 Web IQ API key (secret)
+
+Web search is enabled in `infra/main.parameters.json`, and `webIqApiKey` reads from the
+`AI4IA_WEBIQ_API_KEY` environment variable. Unlike the identifiers in §2.3, this is a **secret**, so
+it lives as a **`production` environment secret** and is mapped into the deploy job in
+`.github/workflows/deploy.yml` (`AI4IA_WEBIQ_API_KEY: ${{ secrets.AI4IA_WEBIQ_API_KEY }}`).
+
+Set it once (or via Settings → Environments → `production` → **Secrets**):
+
+```powershell
+gh secret set AI4IA_WEBIQ_API_KEY --env production
+```
+
+Like the custom-domain variables in §2.5, an **empty value at provision time is not harmless**: bicep
+computes `hasWebIqKey = false`, drops the `webiq-api-key` Container App secret, and falls back to
+authenticating Web IQ with the api's managed identity. That identity must be **entitled to Web IQ**
+(the `https://api.microsoft.ai/.default` scope) or every live-search call returns HTTP 401. So either
+keep this secret set, **or** entitle the managed identity and leave it empty on purpose.
+
+> Rotating the key is one update to this secret plus a deploy (the next `azd provision` re-writes the
+> Container App secret). Diagnose live-search auth state from the admin **Web search health** panel,
+> which reports `authMode` (`api_key` / `managed_identity` / `unconfigured`) and categorized failures.
+
 ## 3. Moving to a new subscription or tenant (1:1 standup)
 
 The stack is data-driven, so standing it up in a **new subscription/tenant** is a small set of
