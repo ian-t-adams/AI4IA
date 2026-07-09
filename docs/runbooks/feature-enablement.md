@@ -237,6 +237,26 @@ The API exposes web/news/video/image/browse tools to tool-enabled turns, sanitiz
 and nonce-fences returned content, and caps per-turn search fan-out. Outside local
 it fails closed unless an API key or Entra managed identity is configured.
 
+In CI, `webIqApiKey` is supplied by the `AI4IA_WEBIQ_API_KEY` **`production`
+environment secret** (mapped into `.github/workflows/deploy.yml`). If that secret is
+empty at provision time, bicep drops the `webiq-api-key` Container App secret and the
+api falls back to its managed identity — which must be **entitled to Web IQ**, or
+every call returns 401. Set it with `gh secret set AI4IA_WEBIQ_API_KEY --env
+production`; see [`deployment.md`](deployment.md#26-web-iq-api-key-secret).
+
+**Diagnosing failures.** The admin dashboard has a **Web search health** panel
+(`GET /api/admin/metrics/web-search`, admin-gated) that reports per-replica call
+counts, the auth posture (`authMode`: `api_key` / `managed_identity` /
+`unconfigured`), and recent failures by category. The categories are
+remediation-oriented: `config` (feature on, no credential), `credential` (a
+managed-identity token could not be acquired at all), `auth` (a token was acquired
+but Web IQ rejected it — usually the identity is not entitled), `permission`,
+`rate_limit`, `timeout` vs `connection`, and `bad_request` / `not_found` /
+`server_error` (bucketed from the upstream HTTP status), plus `unknown`. The panel's
+headline hint turns `(authMode, recent categories)` into the likely root cause and
+fix — e.g. `managed_identity` + `auth` failures means the managed identity is not
+entitled to Web IQ, so set the API key secret.
+
 ## Operational reminders
 
 - Enabling a feature is a deploy and cost action; validate in a parallel resource
