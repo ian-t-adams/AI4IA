@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import secrets
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -22,10 +23,17 @@ from pydantic import BaseModel
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
-from ..catalog import ModelCatalog, ModelEntry
+from ..catalog import DeploymentOption, ModelCatalog, ModelEntry
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..logging_setup import get_correlation_id
-from ..sessions.models import Message, MessageAttachment, MessageRole, MessageStatus, Session
+from ..sessions.models import (
+    ActivityStep,
+    Message,
+    MessageAttachment,
+    MessageRole,
+    MessageStatus,
+    Session,
+)
 from ..sessions.repository import SessionNotFoundError, SessionRepository
 from ..agents.agent_catalog import AgentCatalog, AgentSpec
 from ..agents.command_service import (
@@ -34,7 +42,8 @@ from ..agents.command_service import (
     execute_tool_command,
 )
 from ..agents.commands import CommandKind, parse_input
-from ..agents.runtime import run_agent_turn
+from ..agents.runtime import AgentRunResult, AgentStep, run_agent_turn
+from ..agents.activity import persisted_trace, serialize_step
 from ..agents.summarization import SummarizationService
 from ..agents.mcp_execution import McpPlane, build_mcp_turn_tools_multi
 from ..agents.mcp_servers import is_mcp_tool_name
@@ -233,6 +242,135 @@ def _local_reply_response(session_id: str, assistant: Message, stream: bool):
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# Live activity + final answer for an agentic (tool-using) turn. The turn's tool
+# path is non-streaming internally, so today it dumps the whole answer at once and
+# the bubble stays blank while tools run. This runs the turn as a shielded task and
+# forwards its step trace live as ``{"step": {...}}`` SSE events (older clients that
+# only read ``choices[0].delta.content`` ignore them), then a single content delta,
+# then ``[DONE]`` — mirroring the plain-stream path's cancel-safe persist/meter.
+async def _agentic_stream(
+    *,
+    assistant: Message,
+    run: Callable[[Callable[[AgentStep], Awaitable[None]]], Awaitable[AgentRunResult]],
+    repo: SessionRepository,
+    memory: MemoryServiceProtocol,
+    metering: UsageService,
+    user: AuthenticatedUser,
+    session_id: str,
+    model_id: str,
+    deployment: DeploymentOption,
+    agent_name: str | None,
+    correlation_id: str,
+    content_for_model: str,
+    extra_usage: list[TokenUsage] | None = None,
+    fallback: Callable[[], Awaitable[tuple[str, TokenUsage]]] | None = None,
+    get_attachments: Callable[[], list[MessageAttachment]] | None = None,
+) -> AsyncIterator[str]:
+    queue: asyncio.Queue = asyncio.Queue()
+    sentinel = object()
+
+    async def on_step(step: AgentStep) -> None:
+        view = serialize_step(step)
+        if view is not None:
+            queue.put_nowait(("step", view))
+
+    async def runner() -> None:
+        try:
+            result = await run(on_step)
+            queue.put_nowait(("result", result))
+        except Exception as exc:  # noqa: BLE001 - surfaced below; never crashes the response
+            queue.put_nowait(("error", exc))
+        finally:
+            queue.put_nowait(sentinel)
+
+    task = asyncio.create_task(runner())
+    final = MessageStatus.complete
+    total_usage = TokenUsage.empty()
+    content = ""
+    persisted: list[ActivityStep] | None = None
+    remembered = False
+    try:
+        result: AgentRunResult | None = None
+        run_error: Exception | None = None
+        while True:
+            item = await queue.get()
+            if item is sentinel:
+                break
+            kind, payload = item
+            if kind == "step":
+                yield f"data: {json.dumps({'step': payload.model_dump(exclude_none=True)})}\n\n"
+            elif kind == "result":
+                result = payload
+            elif kind == "error":
+                run_error = payload
+
+        if result is not None and (result.text or "").strip():
+            content = result.text
+            total_usage = result.usage
+            for extra in extra_usage or []:
+                total_usage = total_usage.add(extra)
+            persisted = persisted_trace(result.steps) or None
+        elif fallback is not None:
+            # Empty (or failed) tool turn: complete the answer with a plain call so
+            # the turn never dead-ends. The steps that did run are still shown.
+            if run_error is not None:
+                logger.warning("agentic stream fell back after run error", exc_info=run_error)
+            fb_text, fb_usage = await fallback()
+            content = fb_text
+            total_usage = fb_usage
+            if result is not None:
+                persisted = persisted_trace(result.steps) or None
+        elif run_error is not None:
+            raise run_error
+
+        if content:
+            yield f"data: {json.dumps({'choices': [{'delta': {'content': content}}]})}\n\n"
+        yield "data: [DONE]\n\n"
+    except ModelGatewayError as exc:
+        final = MessageStatus.error
+        yield f"data: {json.dumps({'error': exc.detail})}\n\n"
+    except (asyncio.CancelledError, GeneratorExit):
+        final = MessageStatus.cancelled
+        raise
+    finally:
+        if not task.done():
+            task.cancel()
+        assistant.content = content
+        assistant.status = final
+        assistant.steps = persisted
+        if get_attachments is not None:
+            assistant.attachments = get_attachments()
+        try:
+            await asyncio.shield(repo.upsert_message(user.internal_user_id, assistant))
+        except Exception:  # noqa: BLE001 - best-effort durability
+            logger.exception("Failed to persist assistant message %s", assistant.id)
+        _status_map = {
+            MessageStatus.complete: "complete",
+            MessageStatus.cancelled: "cancelled",
+            MessageStatus.error: "error",
+        }
+        try:
+            await asyncio.shield(
+                metering.record_completion(
+                    user_id=user.internal_user_id,
+                    session_id=session_id,
+                    model_id=model_id,
+                    deployment=deployment,
+                    usage=total_usage,
+                    status=_status_map.get(final, "error"),  # pyright: ignore[reportArgumentType]
+                    agent=agent_name,
+                    correlation_id=correlation_id,
+                )
+            )
+        except Exception:  # noqa: BLE001 - metering must never break a turn
+            logger.warning("usage metering failed for %s", assistant.id, exc_info=True)
+        if final == MessageStatus.complete and content.strip() and not remembered:
+            remembered = True
+            await asyncio.shield(
+                memory.remember(user.internal_user_id, session_id, content_for_model)
+            )
 
 
 async def _persist_local_reply(
@@ -1063,6 +1201,55 @@ async def chat(
                 extra_handlers = {**extra_handlers, **r_handlers}
             except Exception:  # noqa: BLE001 - recall must never break a turn
                 logger.warning("recall capability build failed", exc_info=True)
+        if body.stream:
+            # Live-stream the agent's activity, then its answer; persist + meter in
+            # the generator's cancel-safe finally (mirrors the plain-stream path).
+            placeholder = Message(
+                sessionId=body.sessionId,
+                userId=user.internal_user_id,
+                role=MessageRole.assistant,
+                content="",
+                status=MessageStatus.streaming,
+                model=deployment.deploymentName,
+                agent=agent_name,
+            )
+            await repo.add_message(user.internal_user_id, placeholder)
+
+            def _run(on_step: Callable[[AgentStep], Awaitable[None]]):
+                return run_agent_turn(
+                    deployment=deployment.deploymentName,
+                    messages=payload_messages,
+                    tool_names=agent.tools,
+                    gateway=gateway,
+                    registry=turn_registry,
+                    executor=turn_executor,
+                    ctx=ctx,
+                    params=effective_params,
+                    extra_tools=extra_tools or None,
+                    extra_handlers=extra_handlers or None,
+                    on_step=on_step,
+                )
+
+            return StreamingResponse(
+                _agentic_stream(
+                    assistant=placeholder,
+                    run=_run,
+                    repo=repo,
+                    memory=memory,
+                    metering=metering,
+                    user=user,
+                    session_id=body.sessionId,
+                    model_id=model_id,
+                    deployment=deployment,
+                    agent_name=agent_name,
+                    correlation_id=correlation_id,
+                    content_for_model=content_for_model,
+                    extra_usage=usage_sink,  # live list: sub-turn usage lands during the run
+                    get_attachments=lambda: [*image_sink, *video_sink, *doc_sink],
+                ),
+                media_type="text/event-stream",
+            )
+
         run = await run_agent_turn(
             deployment=deployment.deploymentName,
             messages=payload_messages,
@@ -1090,6 +1277,7 @@ async def chat(
             model=deployment.deploymentName,
             agent=agent_name,
             attachments=[*image_sink, *video_sink, *doc_sink],
+            steps=persisted_trace(run.steps) or None,
         )
         await repo.add_message(user.internal_user_id, assistant)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
@@ -1103,7 +1291,7 @@ async def chat(
             agent=agent_name,
             correlation_id=correlation_id,
         )
-        return _local_reply_response(body.sessionId, assistant, body.stream)
+        return {"sessionId": body.sessionId, "message": assistant}
 
     # Plain-chat tool loop (document compute + Web IQ search) — the MAIN chat's
     # coverage. The main chat (no @mentioned agent) has ``agent is None`` and never
@@ -1177,6 +1365,66 @@ async def chat(
                     f"plain-chat synthetic tool names collide: {collisions}"
                 )
             if plain_tools:
+                if body.stream:
+                    # Live-stream the tool activity + answer. If the tool turn yields
+                    # no answer (or fails), the generator finishes with a plain call
+                    # so the response never dead-ends — the streaming equivalent of
+                    # the non-stream fall-through to the RAG path below.
+                    placeholder = Message(
+                        sessionId=body.sessionId,
+                        userId=user.internal_user_id,
+                        role=MessageRole.assistant,
+                        content="",
+                        status=MessageStatus.streaming,
+                        model=deployment.deploymentName,
+                        agent=agent_name,
+                    )
+                    await repo.add_message(user.internal_user_id, placeholder)
+
+                    def _run_plain(on_step: Callable[[AgentStep], Awaitable[None]]):
+                        return run_agent_turn(
+                            deployment=deployment.deploymentName,
+                            messages=payload_messages,
+                            tool_names=[],
+                            gateway=gateway,
+                            registry=registry,
+                            executor=executor,
+                            ctx=ctx,
+                            params=effective_params,
+                            extra_tools=plain_tools or None,
+                            extra_handlers=plain_handlers or None,
+                            on_step=on_step,
+                        )
+
+                    async def _rag_fallback() -> tuple[str, TokenUsage]:
+                        res = await gateway.complete(
+                            deployment=deployment.deploymentName,
+                            messages=payload_messages,
+                            params=effective_params,
+                            correlation_id=correlation_id,
+                            api=api,
+                        )
+                        return _extract_text(res), TokenUsage.parse(res.get("usage"))
+
+                    return StreamingResponse(
+                        _agentic_stream(
+                            assistant=placeholder,
+                            run=_run_plain,
+                            repo=repo,
+                            memory=memory,
+                            metering=metering,
+                            user=user,
+                            session_id=body.sessionId,
+                            model_id=model_id,
+                            deployment=deployment,
+                            agent_name=agent_name,
+                            correlation_id=correlation_id,
+                            content_for_model=content_for_model,
+                            fallback=_rag_fallback,
+                        ),
+                        media_type="text/event-stream",
+                    )
+
                 run = await run_agent_turn(
                     deployment=deployment.deploymentName,
                     messages=payload_messages,
@@ -1198,6 +1446,7 @@ async def chat(
                         status=MessageStatus.complete,
                         model=deployment.deploymentName,
                         agent=agent_name,
+                        steps=persisted_trace(run.steps) or None,
                     )
                     await repo.add_message(user.internal_user_id, assistant)
                     await memory.remember(
@@ -1213,9 +1462,7 @@ async def chat(
                         agent=agent_name,
                         correlation_id=correlation_id,
                     )
-                    return _local_reply_response(
-                        body.sessionId, assistant, body.stream
-                    )
+                    return {"sessionId": body.sessionId, "message": assistant}
         except Exception:  # noqa: BLE001 - the plain tool loop must never break a turn
             logger.warning(
                 "plain-chat tool loop failed; falling back to normal answer",

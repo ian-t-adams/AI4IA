@@ -206,6 +206,56 @@ export interface SpeechPlayback {
   toggle: (id: string, text: string) => void;
 }
 
+// The TTS endpoint caps a single request near the provider's hard limit, so a
+// long answer is spoken as an ordered sequence of sub-limit chunks. Kept a little
+// under the server's 4000 so trimming/encoding can never push a chunk over.
+export const TTS_CHUNK_LIMIT = 3500;
+
+// Split text into speech-sized chunks (<= limit) at natural boundaries so a long
+// message can be read aloud in order. Prefers sentence/paragraph breaks, falls
+// back to word boundaries, and hard-splits only a single token longer than the
+// limit. Exported for unit testing.
+export function chunkForSpeech(text: string, limit = TTS_CHUNK_LIMIT): string[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  if (trimmed.length <= limit) return [trimmed];
+
+  // Sentence-ish units: leading space + a run up to (and including) terminators,
+  // or a run of newlines as its own break point.
+  const units = trimmed.match(/\s*\S[^.!?\n]*[.!?]*|\n+/g) ?? [trimmed];
+  const chunks: string[] = [];
+  let cur = "";
+  const flush = () => {
+    const t = cur.trim();
+    if (t) chunks.push(t);
+    cur = "";
+  };
+  for (const raw of units) {
+    for (const unit of splitOversized(raw, limit)) {
+      if (cur && (cur + unit).length > limit) flush();
+      cur += unit;
+    }
+  }
+  flush();
+  return chunks;
+}
+
+// Break a single unit longer than the limit on word boundaries, hard-cutting only
+// when a lone "word" still exceeds it.
+function splitOversized(unit: string, limit: number): string[] {
+  if (unit.length <= limit) return [unit];
+  const out: string[] = [];
+  let rest = unit;
+  while (rest.length > limit) {
+    let cut = rest.lastIndexOf(" ", limit);
+    if (cut <= 0) cut = limit;
+    out.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+
 // Single-active text-to-speech playback keyed by message id. Fetching a new clip
 // stops/revokes the previous one; a request token drops results that resolve
 // after the user moved on or the component unmounted.
@@ -219,6 +269,9 @@ export function useSpeechPlayback(
   const urlRef = useRef<string | null>(null);
   const tokenRef = useRef(0);
   const mountedRef = useRef(true);
+  // Rejects the in-flight chunk's playback promise when stop()/cleanup() runs, so
+  // the sequential player never hangs awaiting an ``ended`` that won't fire.
+  const cancelPlaybackRef = useRef<(() => void) | null>(null);
 
   const onErrorRef = useRef(onError);
   useEffect(() => {
@@ -226,6 +279,9 @@ export function useSpeechPlayback(
   }, [onError]);
 
   const cleanup = useCallback(() => {
+    // Un-hang any awaited chunk playback before tearing down the element.
+    cancelPlaybackRef.current?.();
+    cancelPlaybackRef.current = null;
     const audio = audioRef.current;
     if (audio) {
       audio.pause();
@@ -257,6 +313,29 @@ export function useSpeechPlayback(
     }
   }, [cleanup]);
 
+  // Play one already-fetched clip to its end. Resolves on ``ended``, rejects on a
+  // playback error or when stop()/cleanup() cancels it (via cancelPlaybackRef).
+  const playToEnd = useCallback((audio: HTMLAudioElement) => {
+    return new Promise<void>((resolve, reject) => {
+      cancelPlaybackRef.current = () => {
+        cancelPlaybackRef.current = null;
+        reject(new Error("__stopped__"));
+      };
+      audio.onended = () => {
+        cancelPlaybackRef.current = null;
+        resolve();
+      };
+      audio.onerror = () => {
+        cancelPlaybackRef.current = null;
+        reject(new Error("Couldn't play the synthesized audio."));
+      };
+      audio.play().catch((e) => {
+        cancelPlaybackRef.current = null;
+        reject(e as Error);
+      });
+    });
+  }, []);
+
   const toggle = useCallback(
     (id: string, text: string) => {
       // Clicking the message that's already active/loading stops it.
@@ -265,53 +344,53 @@ export function useSpeechPlayback(
         return;
       }
       stop(); // switching: tear down whatever was playing/loading first
-      const trimmed = text.trim();
-      if (!trimmed) {
+      const chunks = chunkForSpeech(text);
+      if (chunks.length === 0) {
         onErrorRef.current("There's nothing to read aloud.");
-        return;
-      }
-      if (trimmed.length > 4000) {
-        onErrorRef.current(
-          "That message is too long to read aloud (4000 character limit).",
-        );
         return;
       }
       const token = ++tokenRef.current;
       setBusyId(id);
       void (async () => {
         try {
-          const blob = await synthesizeSpeech(trimmed);
-          if (token !== tokenRef.current || !mountedRef.current) return;
-          const url = URL.createObjectURL(blob);
-          urlRef.current = url;
-          const audio = new Audio(url);
-          audioRef.current = audio;
-          audio.onended = () => {
-            if (token !== tokenRef.current) return;
-            cleanup();
-            if (mountedRef.current) setActiveId(null);
-          };
-          audio.onerror = () => {
-            if (token !== tokenRef.current) return;
-            cleanup();
-            if (mountedRef.current) {
-              setActiveId(null);
-              onErrorRef.current("Couldn't play the synthesized audio.");
+          // Prefetch pipeline: synthesize the next chunk while the current plays so
+          // long answers read back with minimal gaps.
+          let nextBlob: Promise<Blob> | null = synthesizeSpeech(chunks[0]);
+          for (let i = 0; i < chunks.length; i++) {
+            const blob = await nextBlob!;
+            if (token !== tokenRef.current || !mountedRef.current) return;
+            nextBlob =
+              i + 1 < chunks.length ? synthesizeSpeech(chunks[i + 1]) : null;
+            // Keep an unused prefetch from rejecting unhandled if playback stops.
+            nextBlob?.catch(() => {});
+
+            const url = URL.createObjectURL(blob);
+            urlRef.current = url;
+            const audio = new Audio(url);
+            audioRef.current = audio;
+            setBusyId(null);
+            setActiveId(id);
+            await playToEnd(audio);
+            if (urlRef.current === url) {
+              URL.revokeObjectURL(url);
+              urlRef.current = null;
             }
-          };
-          setBusyId(null);
-          setActiveId(id);
-          await audio.play();
+            if (token !== tokenRef.current || !mountedRef.current) return;
+          }
+          cleanup();
+          if (mountedRef.current) setActiveId(null);
         } catch (e) {
+          // A stop/switch invalidates the token; only surface real failures.
           if (token === tokenRef.current && mountedRef.current) {
             setBusyId(null);
             setActiveId(null);
-            onErrorRef.current((e as Error).message);
+            const msg = (e as Error).message;
+            if (msg !== "__stopped__") onErrorRef.current(msg);
           }
         }
       })();
     },
-    [activeId, busyId, stop, cleanup],
+    [activeId, busyId, stop, cleanup, playToEnd],
   );
 
   return { activeId, busyId, toggle };

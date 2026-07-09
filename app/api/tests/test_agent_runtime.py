@@ -354,3 +354,59 @@ async def test_usage_summed_on_max_iters_final_call():
     assert result.usage.calls == 3
     assert result.usage.complete is True
     assert result.usage.total == (15 + 15 + 10)
+
+
+async def test_on_step_emits_tool_start_before_result_and_final_live_only():
+    registry, executor = build_tools()
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "calculator", json.dumps({"expression": "6*7"})),
+            _assistant_text("The answer is 42."),
+        ]
+    )
+    emitted: list[tuple[str, str | None]] = []
+
+    async def on_step(step):
+        emitted.append((step.kind, step.tool))
+
+    result = await run_agent_turn(
+        deployment="dep",
+        messages=_messages(),
+        tool_names=["calculator"],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+        on_step=on_step,
+    )
+    assert result.text == "The answer is 42."
+    # Live: a pre-execution start precedes the finalized result; final closes it.
+    assert [k for k, _ in emitted] == ["tool_start", "tool_result", "final"]
+    assert ("tool_start", "calculator") in emitted
+    # tool_start is live-only; the persisted trace never includes it.
+    assert [s.kind for s in result.steps] == ["tool_result", "final"]
+
+
+async def test_on_step_failure_never_breaks_the_turn():
+    registry, executor = build_tools()
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "calculator", json.dumps({"expression": "6*7"})),
+            _assistant_text("42."),
+        ]
+    )
+
+    async def boom(_step):
+        raise RuntimeError("ui blew up")
+
+    result = await run_agent_turn(
+        deployment="dep",
+        messages=_messages(),
+        tool_names=["calculator"],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+        on_step=boom,
+    )
+    assert result.text == "42."

@@ -95,6 +95,7 @@ async def run_agent_turn(
     extra_tools: Sequence[dict[str, Any]] | None = None,
     extra_handlers: Mapping[str, Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]]
     | None = None,
+    on_step: Callable[[AgentStep], Awaitable[None]] | None = None,
 ) -> AgentRunResult:
     """Run a single agent turn with tool calling and return the final answer.
 
@@ -125,6 +126,22 @@ async def run_agent_turn(
     denied_once: set[str] = set()
     tool_calls_used = 0
 
+    async def record(step: AgentStep, *, persist: bool = True) -> None:
+        """Append a finalized step to the trace and/or surface it live.
+
+        ``persist=False`` is used for the pre-execution ``tool_start`` marker: it
+        is streamed for the live activity indicator but kept out of the durable
+        trace (which records only what actually happened). The callback is
+        best-effort so a UI/stream error can never break the turn.
+        """
+        if persist:
+            steps.append(step)
+        if on_step is not None:
+            try:
+                await on_step(step)
+            except Exception:  # noqa: BLE001 - a UI callback must never break a turn
+                logger.debug("on_step callback failed", exc_info=True)
+
     base_params = dict(params or {})
     for key in _RESERVED_PARAMS:
         base_params.pop(key, None)
@@ -148,7 +165,7 @@ async def run_agent_turn(
         tool_calls = message.get("tool_calls") or []
 
         if not tool_calls:
-            steps.append(AgentStep(kind="final"))
+            await record(AgentStep(kind="final"))
             return AgentRunResult(
                 text=message.get("content") or "",
                 model=deployment,
@@ -182,7 +199,7 @@ async def run_agent_turn(
                         {"error": {"type": "budget_exceeded", "message": "tool budget exhausted"}},
                     )
                 )
-                steps.append(AgentStep(kind="tool_error", tool=name, detail="budget_exceeded"))
+                await record(AgentStep(kind="tool_error", tool=name, detail="budget_exceeded"))
                 force_final = True
                 continue
 
@@ -197,8 +214,15 @@ async def run_agent_turn(
                         {"error": {"type": "invalid_arguments", "message": redact(str(exc))}},
                     )
                 )
-                steps.append(AgentStep(kind="tool_error", tool=name, detail="invalid_arguments"))
+                await record(AgentStep(kind="tool_error", tool=name, detail="invalid_arguments"))
                 continue
+
+            # Emit a pre-execution marker so the UI can show "running X" live. It
+            # is NOT persisted (only the finalized result/denied/error step is).
+            await record(
+                AgentStep(kind="tool_start", tool=name, arguments=redact_obj(parsed)),
+                persist=False,
+            )
 
             # Synthetic capabilities (e.g. delegate_to_agent) are dispatched here,
             # before the registry path. They are disjoint from real tool names
@@ -214,7 +238,7 @@ async def run_agent_turn(
                             {"error": {"type": "execution_error", "message": redact(str(exc))}},
                         )
                     )
-                    steps.append(
+                    await record(
                         AgentStep(
                             kind="tool_error",
                             tool=name,
@@ -231,7 +255,7 @@ async def run_agent_turn(
                         "content": _truncate(json.dumps(raw_result, default=str)),
                     }
                 )
-                steps.append(
+                await record(
                     AgentStep(
                         kind="delegate",
                         tool=name,
@@ -256,7 +280,7 @@ async def run_agent_turn(
                         {"error": {"type": "authorization_denied", "message": reason}},
                     )
                 )
-                steps.append(AgentStep(kind="tool_denied", tool=name, detail=reason))
+                await record(AgentStep(kind="tool_denied", tool=name, detail=reason))
                 logger.info("agent tool denied: tool=%s reason=%s", name, reason)
                 # A second denial of the same tool means the model is looping;
                 # cut tools off so the next call must produce a final answer.
@@ -274,7 +298,7 @@ async def run_agent_turn(
                         {"error": {"type": "validation_error", "message": redact(str(exc))}},
                     )
                 )
-                steps.append(
+                await record(
                     AgentStep(
                         kind="tool_error",
                         tool=name,
@@ -290,7 +314,7 @@ async def run_agent_turn(
                         {"error": {"type": "execution_error", "message": redact(str(exc))}},
                     )
                 )
-                steps.append(
+                await record(
                     AgentStep(
                         kind="tool_error",
                         tool=name,
@@ -308,7 +332,7 @@ async def run_agent_turn(
                     "content": _truncate(json.dumps(raw_result, default=str)),
                 }
             )
-            steps.append(
+            await record(
                 AgentStep(
                     kind="tool_result",
                     tool=name,
@@ -330,7 +354,7 @@ async def run_agent_turn(
         correlation_id=ctx.correlation_id,
     )
     usage_agg = usage_agg.add(TokenUsage.parse(final.get("usage")))
-    steps.append(AgentStep(kind="final", detail="max_iters"))
+    await record(AgentStep(kind="final", detail="max_iters"))
     return AgentRunResult(
         text=_final_text(final),
         model=deployment,

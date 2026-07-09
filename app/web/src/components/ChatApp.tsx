@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
-import type { AgentSummary, ChatParams, DocumentSummary, Message, ModelEntry, Session, VoiceTurnInput } from "@/lib/types";
+import type { ActivityStep, AgentSummary, ChatParams, DocumentSummary, Message, ModelEntry, Session, VoiceTurnInput } from "@/lib/types";
 import type { LibraryDocument } from "@/lib/library";
 import { Sidebar } from "./Sidebar";
 import { ModelPicker } from "./ModelPicker";
@@ -72,6 +72,8 @@ export function ChatApp() {
 
   const [streaming, setStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState("");
+  // Live agent activity for the in-flight turn (tool steps streamed as they run).
+  const [liveSteps, setLiveSteps] = useState<ActivityStep[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
@@ -438,6 +440,7 @@ export function ChatApp() {
       streamingRef.current = true;
       setStreaming(true);
       setStreamingText("");
+      setLiveSteps([]);
       let sessionId = activeId;
 
       // Lazily create a session on the first message (shared with uploads).
@@ -476,6 +479,7 @@ export function ChatApp() {
           /* keep optimistic view */
         }
         setStreamingText("");
+        setLiveSteps([]);
         // A slash command can change the session's model or system prompt on the
         // server; re-sync the controls so the change holds for the next turn.
         if (isCommand) {
@@ -499,6 +503,7 @@ export function ChatApp() {
         { sessionId, content, model: selectedModel, params },
         {
           onDelta: (t) => setStreamingText((prev) => prev + t),
+          onStep: (step) => setLiveSteps((prev) => [...prev, step]),
           onDone: () => void finalize(),
           onError: (msg) => {
             setError(msg);
@@ -528,6 +533,7 @@ export function ChatApp() {
         agent: m.agent,
         attachments: m.attachments,
         source: m.source,
+        steps: m.steps,
       }));
     if (streaming) {
       base.push({
@@ -535,10 +541,11 @@ export function ChatApp() {
         role: "assistant",
         content: streamingText,
         pending: true,
+        steps: liveSteps,
       });
     }
     return base;
-  }, [messages, streaming, streamingText]);
+  }, [messages, streaming, streamingText, liveSteps]);
 
   // Live voice is offered only when the runtime flag is on AND the catalog exposes
   // at least one realtime model (filtered from the same /api/models the picker
