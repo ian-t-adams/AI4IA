@@ -19,6 +19,7 @@ vi.mock("@/lib/admin", async (importOriginal) => {
     fetchUserAgents: vi.fn(),
     fetchDistributions: vi.fn(),
     fetchResources: vi.fn(),
+    fetchWebSearchHealth: vi.fn(),
   };
 });
 
@@ -31,6 +32,7 @@ import {
   fetchResources,
   fetchSummary,
   fetchUserAgents,
+  fetchWebSearchHealth,
   fetchWhoAmI,
 } from "@/lib/admin";
 
@@ -128,6 +130,19 @@ beforeEach(() => {
     ],
   });
   vi.mocked(fetchResources).mockResolvedValue({ generatedAt: "", windowMinutes: 5, panels: [] });
+  vi.mocked(fetchWebSearchHealth).mockResolvedValue({
+    enabled: true,
+    authMode: "managed_identity",
+    startedAt: "2024-06-01T00:00:00Z",
+    generatedAt: "2024-06-30T00:00:00Z",
+    totalCalls: 5,
+    successes: 0,
+    failures: 5,
+    lastSuccessAt: null,
+    lastFailureAt: "2024-06-30T00:00:00Z",
+    byCategory: [{ category: "auth", count: 5 }],
+    recent: [{ category: "auth", detail: "401 not entitled", at: "2024-06-30T00:00:00Z" }],
+  });
 });
 
 afterEach(() => {
@@ -342,5 +357,15 @@ describe("AdminDashboard new analytics panels", () => {
     const region = await panelByHeading("Requests by region");
     expect(within(region).getByText("eastus")).toBeInTheDocument();
     expect(within(region).getByText("westus")).toBeInTheDocument();
+  });
+
+  it("surfaces the web-search auth failure diagnosis in the health panel", async () => {
+    render(<AdminDashboard />);
+    const panel = await panelByHeading("Web search health");
+    // The managed-identity + auth-failure smoking gun is spelled out for the operator.
+    expect(await within(panel).findByText(/not entitled to Web IQ/)).toBeInTheDocument();
+    // Config posture (auth mode) + the categorized recent failure detail are shown.
+    expect(within(panel).getByText("Managed identity")).toBeInTheDocument();
+    expect(within(panel).getByText(/401 not entitled/)).toBeInTheDocument();
   });
 });

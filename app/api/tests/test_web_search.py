@@ -40,6 +40,7 @@ from ai4ia_api.websearch.client import (
     WebSearchError,
 )
 from ai4ia_api.websearch.factory import build_web_search_service
+from ai4ia_api.websearch.health import WebSearchHealth
 from tests.conftest import make_settings
 
 
@@ -123,7 +124,7 @@ def _settings(**overrides):
 
 
 def _caps(client=None, *, settings=None, entitlements=None, metering=None,
-          user_id="u1", session_id="s1", nonce="nn"):
+          user_id="u1", session_id="s1", nonce="nn", health=None):
     cl = client or FakeWebClient()
     ent = entitlements or FakeEntitlements()
     met = metering or FakeMetering()
@@ -135,6 +136,7 @@ def _caps(client=None, *, settings=None, entitlements=None, metering=None,
         user_id=user_id,
         session_id=session_id,
         nonce=nonce,
+        health=health,
     )
     return tools, handlers, cl, ent, met
 
@@ -460,3 +462,63 @@ async def test_wrapper_does_not_close_injected_client():
     client = WebSearchClient(_settings(), sdk_client=fake)
     await client.close()
     assert fake.aclosed is False  # caller/test-owned client is never closed
+
+
+# --------------------------------------------------------------------------- #
+# Health recorder wiring: the capability feeds the admin diagnostics panel
+# --------------------------------------------------------------------------- #
+async def test_health_records_success_on_happy_path():
+    health = WebSearchHealth()
+    _, handlers, _, _, _ = _caps(health=health)
+    res = await handlers[WEB_SEARCH_TOOL_NAME]({"query": "q"}, ctx=None)
+    assert "error" not in res
+    snap = health.snapshot()
+    assert snap.successes == 1
+    assert snap.failures == 0
+    assert snap.byCategory == []
+
+
+async def test_health_records_categorized_failure_deidentified_and_capped():
+    health = WebSearchHealth()
+    client = FakeWebClient(
+        raise_with=WebSearchError(ERROR_AUTH, "401 not entitled\n" + "x" * 500)
+    )
+    _, handlers, _, _, met = _caps(client=client, health=health)
+    res = await handlers[WEB_SEARCH_TOOL_NAME]({"query": "q"}, ctx=None)
+    assert "error" in res  # still fail-soft, unchanged
+    assert met.calls == []  # nothing metered on failure
+    snap = health.snapshot()
+    assert snap.successes == 0
+    assert snap.failures == 1
+    assert {c.category: c.count for c in snap.byCategory} == {ERROR_AUTH: 1}
+    failure = snap.recent[0]
+    assert failure.category == ERROR_AUTH
+    # Detail is single-lined and length-capped; no user identity is stored.
+    assert failure.detail is not None
+    assert "\n" not in failure.detail
+    assert len(failure.detail) <= 200
+
+
+async def test_health_records_unknown_for_unexpected_exception():
+    health = WebSearchHealth()
+    client = FakeWebClient(raise_with=ValueError("kaboom"))
+    _, handlers, _, _, _ = _caps(client=client, health=health)
+    await handlers[BROWSE_TOOL_NAME]({"url": "https://a.example/1"}, ctx=None)
+    snap = health.snapshot()
+    assert snap.failures == 1
+    assert {c.category for c in snap.byCategory} == {ERROR_UNKNOWN}
+
+
+def test_health_snapshot_orders_categories_and_bounds_recent():
+    health = WebSearchHealth()
+    # Insert out of display order + more than the ring-buffer bound.
+    health.record_failure(ERROR_CONNECTION, "c")
+    for _ in range(25):
+        health.record_failure(ERROR_AUTH, "a")
+    snap = health.snapshot()
+    # auth is displayed before connection regardless of insertion order.
+    assert [c.category for c in snap.byCategory] == [ERROR_AUTH, ERROR_CONNECTION]
+    assert snap.failures == 26
+    # Recent ring buffer is bounded (newest-first).
+    assert len(snap.recent) == 20
+    assert snap.recent[0].category == ERROR_AUTH

@@ -78,6 +78,7 @@ from .usage.pricing import load_pricing
 from .usage.service import UsageService
 from .metrics.service import ResourceMetricsService
 from .websearch.factory import build_web_search_service
+from .websearch.health import WebSearchHealth
 from .workflows.factory import build_workflow_store
 from .workflows.service import WorkflowService
 from .routers import workflows as workflows_router
@@ -309,10 +310,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # constructed — zero regression by default. When on, owns a lazily-built
         # WebIQAsyncClient (closed in finally), the entitlement gate, and the usage
         # meter.
+        #
+        # The health recorder is built UNCONDITIONALLY (even when the feature is
+        # off) so the admin diagnostics endpoint always has something to report —
+        # it makes otherwise-invisible auth/connection failures (e.g. an
+        # un-entitled managed identity) visible to operators. It is process-local,
+        # in-memory, and carries no user identity.
+        app.state.web_search_health = WebSearchHealth()
         app.state.web_search = build_web_search_service(
             settings,
             entitlements=app.state.entitlements,
             metering=app.state.usage,
+            health=app.state.web_search_health,
         )
         # Rolling summarization. Always built; ``enabled`` mirrors
         # the DEFAULT-OFF ``auto_summarization_enabled`` flag, so the chat router

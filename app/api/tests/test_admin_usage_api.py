@@ -30,6 +30,7 @@ GATED_ROUTES = [
     "/api/admin/usage/distributions",
     "/api/admin/usage/by-user",
     "/api/admin/metrics/resources",
+    "/api/admin/metrics/web-search",
 ]
 
 
@@ -267,6 +268,63 @@ def test_resource_metrics_disabled_returns_unavailable():
         body = c.get("/api/admin/metrics/resources", headers=ADMIN).json()
         assert all(p["status"] == "unavailable" for p in body["panels"])
         assert all("disabled" in p["detail"].lower() for p in body["panels"])
+    finally:
+        c.__exit__(None, None, None)
+
+
+# ---- web search health (diagnostics for the otherwise-invisible fail-soft path) ----
+
+
+def test_web_search_health_reports_counts_and_recent_failures(client):
+    # The recorder is always present (built at startup even when the feature is
+    # off), so the endpoint always answers. Drive it directly to simulate calls.
+    health = client.app.state.web_search_health
+    health.record_success()
+    health.record_failure("auth", "401 from api.microsoft.ai\nnot entitled")
+    health.record_failure("auth", "401 again")
+    health.record_failure("connection", "timed out")
+
+    body = client.get("/api/admin/metrics/web-search", headers=ADMIN).json()
+    assert body["successes"] == 1
+    assert body["failures"] == 3
+    assert body["totalCalls"] == 4
+    # Counts are grouped by category in a stable display order (auth before connection).
+    assert [c["category"] for c in body["byCategory"]] == ["auth", "connection"]
+    assert {c["category"]: c["count"] for c in body["byCategory"]} == {"auth": 2, "connection": 1}
+    # Recent ring buffer is newest-first, de-identified, and single-lined.
+    assert body["recent"][0]["category"] == "connection"
+    assert all("\n" not in (r["detail"] or "") for r in body["recent"])
+    assert all("userId" not in r for r in body["recent"])
+
+
+def test_web_search_health_posture_unconfigured_by_default(client):
+    # Default test settings: feature off, no key, no Entra fallback.
+    body = client.get("/api/admin/metrics/web-search", headers=ADMIN).json()
+    assert body["enabled"] is False
+    assert body["authMode"] == "unconfigured"
+
+
+def test_web_search_health_authmode_api_key():
+    # A configured API key -> authMode "api_key" (the key itself is never returned).
+    c = _client(web_search_enabled=True, webiq_api_key="secret-key")
+    try:
+        body = c.get("/api/admin/metrics/web-search", headers=ADMIN).json()
+        assert body["enabled"] is True
+        assert body["authMode"] == "api_key"
+        assert "secret-key" not in c.get(
+            "/api/admin/metrics/web-search", headers=ADMIN
+        ).text
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_web_search_health_authmode_managed_identity():
+    # No key but Entra fallback on -> managed identity (this bug's smoking gun when
+    # paired with a run of auth failures).
+    c = _client(webiq_use_entra=True)
+    try:
+        body = c.get("/api/admin/metrics/web-search", headers=ADMIN).json()
+        assert body["authMode"] == "managed_identity"
     finally:
         c.__exit__(None, None, None)
 

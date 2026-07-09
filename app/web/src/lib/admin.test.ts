@@ -16,8 +16,11 @@ import {
   statusLabel,
   sumRequests,
   userLabel,
+  webSearchCategoryLabel,
+  webSearchHint,
   type EntitlementView,
   type UserAgentBucket,
+  type WebSearchHealthReport,
 } from "./admin";
 
 describe("canShowAdmin", () => {
@@ -234,5 +237,89 @@ describe("groupUserAgents", () => {
     const bob = groups.find((g) => g.userId === "bob")!;
     expect(bob.displayName ?? null).toBeNull();
     expect(bob.email ?? null).toBeNull();
+  });
+});
+
+describe("webSearchCategoryLabel", () => {
+  it("humanizes known categories and passes through unknown tokens", () => {
+    expect(webSearchCategoryLabel("auth")).toBe("Auth");
+    expect(webSearchCategoryLabel("rate_limit")).toBe("Rate limit");
+    expect(webSearchCategoryLabel("something_new")).toBe("something_new");
+  });
+});
+
+describe("webSearchHint", () => {
+  function report(over: Partial<WebSearchHealthReport> = {}): WebSearchHealthReport {
+    return {
+      enabled: true,
+      authMode: "api_key",
+      startedAt: "2024-01-01T00:00:00Z",
+      generatedAt: "2024-01-01T01:00:00Z",
+      totalCalls: 0,
+      successes: 0,
+      failures: 0,
+      lastSuccessAt: null,
+      lastFailureAt: null,
+      byCategory: [],
+      recent: [],
+      ...over,
+    };
+  }
+
+  it("is info-only and unavailable when there is no report", () => {
+    const h = webSearchHint(null);
+    expect(h.tone).toBe("info");
+    expect(h.text).toMatch(/unavailable/);
+  });
+
+  it("is info when the feature is disabled", () => {
+    const h = webSearchHint(report({ enabled: false }));
+    expect(h.tone).toBe("info");
+    expect(h.text).toMatch(/disabled/);
+  });
+
+  it("warns when enabled but no credentials are configured", () => {
+    const h = webSearchHint(report({ authMode: "unconfigured" }));
+    expect(h.tone).toBe("warn");
+    expect(h.text).toMatch(/no credentials/);
+  });
+
+  it("names the managed-identity entitlement gap when auth calls fail", () => {
+    const h = webSearchHint(
+      report({
+        authMode: "managed_identity",
+        totalCalls: 3,
+        failures: 3,
+        byCategory: [{ category: "auth", count: 3 }],
+      }),
+    );
+    expect(h.tone).toBe("warn");
+    expect(h.text).toMatch(/not entitled to Web IQ/);
+  });
+
+  it("blames the API key when auth calls fail under api_key mode", () => {
+    const h = webSearchHint(
+      report({
+        authMode: "api_key",
+        totalCalls: 2,
+        failures: 2,
+        byCategory: [{ category: "permission", count: 2 }],
+      }),
+    );
+    expect(h.tone).toBe("warn");
+    expect(h.text).toMatch(/API key/);
+  });
+
+  it("warns generically for non-auth failures", () => {
+    const h = webSearchHint(
+      report({ totalCalls: 4, failures: 1, byCategory: [{ category: "connection", count: 1 }] }),
+    );
+    expect(h.tone).toBe("warn");
+    expect(h.text).toMatch(/some recent calls failed/);
+  });
+
+  it("is ok when enabled and configured with no failures", () => {
+    expect(webSearchHint(report({ totalCalls: 0 })).tone).toBe("ok");
+    expect(webSearchHint(report({ totalCalls: 5, successes: 5 })).tone).toBe("ok");
   });
 });

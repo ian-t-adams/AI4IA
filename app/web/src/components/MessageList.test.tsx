@@ -116,4 +116,67 @@ describe("MessageList", () => {
     expect(screen.getByText(/lecture\.mp3/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Play/ })).toBeNull();
   });
+
+  it("renders assistant markdown: emphasis, headings and lists", () => {
+    const { container } = render(
+      <MessageList
+        messages={[
+          msg({
+            id: "md1",
+            role: "assistant",
+            content: "## Title\n\nSome **bold** text\n\n- one\n- two",
+          }),
+        ]}
+      />,
+    );
+    // Heading, strong and list items become real elements, not raw markdown text.
+    expect(screen.getByRole("heading", { name: "Title" })).toBeInTheDocument();
+    expect(container.querySelector("strong")?.textContent).toBe("bold");
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual(["one", "two"]);
+    // The raw markers must not survive into the rendered text.
+    expect(screen.queryByText(/\*\*bold\*\*/)).toBeNull();
+    expect(screen.queryByText(/## Title/)).toBeNull();
+  });
+
+  it("keeps user messages as plain text (no markdown parsing)", () => {
+    render(
+      <MessageList messages={[msg({ id: "u2", role: "user", content: "literal **stars**" })]} />,
+    );
+    // A user typing ** should see it verbatim, never bolded.
+    expect(screen.getByText("literal **stars**")).toBeInTheDocument();
+  });
+
+  it("renders citation chips inside markdown content", async () => {
+    const user = userEvent.setup();
+    const onCitation = vi.fn();
+    const { container } = render(
+      <MessageList
+        messages={[
+          msg({
+            id: "md2",
+            role: "assistant",
+            content: "See **this** then [[cite:lecture.mp3@12:34]] now",
+          }),
+        ]}
+        onCitation={onCitation}
+      />,
+    );
+    // Markdown formatting and the citation chip coexist in one paragraph.
+    expect(container.querySelector("strong")?.textContent).toBe("this");
+    expect(screen.queryByText(/\[\[cite:/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Play lecture\.mp3/ }));
+    expect(onCitation).toHaveBeenCalledWith("lecture.mp3", 12 * 60_000 + 34_000);
+  });
+
+  it("does not render raw HTML embedded in assistant markdown", () => {
+    const { container } = render(
+      <MessageList
+        messages={[
+          msg({ id: "md3", role: "assistant", content: "before <b>x</b> after" }),
+        ]}
+      />,
+    );
+    // Raw HTML is disabled, so no injected element is created from model output.
+    expect(container.querySelector("b")).toBeNull();
+  });
 });

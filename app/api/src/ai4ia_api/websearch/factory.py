@@ -20,6 +20,7 @@ from ..entitlements.service import EntitlementService
 from ..usage.service import UsageService
 from .capability import Handler, build_web_search_capability
 from .client import WebSearchClient
+from .health import WebSearchHealth
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +37,13 @@ class WebSearchService:
         entitlements: EntitlementService,
         metering: UsageService,
         settings: Settings,
+        health: WebSearchHealth | None = None,
     ) -> None:
         self._client = client
         self._entitlements = entitlements
         self._metering = metering
         self._settings = settings
+        self._health = health
 
     def build_capability(
         self, *, user_id: str, session_id: str, nonce: str
@@ -54,6 +57,7 @@ class WebSearchService:
             user_id=user_id,
             session_id=session_id,
             nonce=nonce,
+            health=self._health,
         )
 
     async def close(self) -> None:
@@ -66,6 +70,7 @@ def build_web_search_service(
     entitlements: EntitlementService,
     metering: UsageService,
     client: WebSearchClient | None = None,
+    health: WebSearchHealth | None = None,
 ) -> WebSearchService | None:
     """Construct the Web IQ search service.
 
@@ -73,6 +78,9 @@ def build_web_search_service(
     never advertises any web tool — the default-OFF, zero-regression posture. The
     client is injectable for tests; otherwise it is built lazily from settings (the
     underlying SDK client is constructed only on the first search).
+
+    ``health`` (optional) is the process-local diagnostics recorder shared with the
+    admin dashboard; failures/successes are recorded to it for operator visibility.
     """
     if not settings.web_search_enabled:
         return None
@@ -82,4 +90,5 @@ def build_web_search_service(
         entitlements=entitlements,
         metering=metering,
         settings=settings,
+        health=health,
     )

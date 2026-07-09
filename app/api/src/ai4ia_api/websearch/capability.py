@@ -41,9 +41,11 @@ from .client import (
     ERROR_CONNECTION,
     ERROR_PERMISSION,
     ERROR_RATE_LIMIT,
+    ERROR_UNKNOWN,
     WebSearchClient,
     WebSearchError,
 )
+from .health import WebSearchHealth
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +155,7 @@ def build_web_search_capability(
     user_id: str,
     session_id: str,
     nonce: str,
+    health: WebSearchHealth | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Handler]]:
     """Build the five Web IQ search tools bound to ``user_id`` + ``session_id``.
 
@@ -160,6 +163,11 @@ def build_web_search_capability(
     :func:`run_agent_turn`. All five tools share one per-turn ``budget`` and the
     same nonce fence; identity is closure-captured so a tool argument can only ever
     carry query/url params.
+
+    ``health`` (optional) is the process-local diagnostics recorder: every
+    categorized failure and every success is recorded to it so an app admin can see
+    otherwise-invisible auth/connection failures in the dashboard. It is best-effort
+    and never affects the returned tool result.
     """
     budget = {"used": 0}
     max_results_cap = max(1, settings.web_search_max_results)
@@ -173,6 +181,26 @@ def build_web_search_capability(
             return max_results_cap
         return max(1, min(n, max_results_cap))
 
+    def _fail(exc: WebSearchError) -> dict[str, str]:
+        """Record + log a categorized failure, then return the user-safe error.
+
+        The single choke point for every ``WebSearchError``: it surfaces the coarse
+        category to the diagnostics recorder (admin panel) and the log (App Insights)
+        while returning exactly the same fail-soft ``{"error": ...}`` as before — no
+        secrets, no upstream detail, no user identity in the log line.
+        """
+        if health is not None:
+            health.record_failure(exc.category, exc.detail)
+        logger.warning("web search failed category=%s user=%s", exc.category, user_id)
+        return _error_for(exc)
+
+    def _unexpected(tool: str) -> dict[str, str]:
+        """Record + log an *unexpected* (non-categorized) failure, fail-soft."""
+        if health is not None:
+            health.record_failure(ERROR_UNKNOWN)
+        logger.warning("%s unexpected error user=%s", tool, user_id, exc_info=True)
+        return {"error": _ERROR_DEFAULT}
+
     async def _gate() -> dict[str, str] | None:
         """Shared per-call preamble: budget + entitlement. None == proceed."""
         if budget["used"] >= MAX_WEB_SEARCHES_PER_TURN:
@@ -184,6 +212,8 @@ def build_web_search_capability(
         return None
 
     async def _meter(ctx: ToolContext) -> None:
+        if health is not None:
+            health.record_success()
         await metering.record_completion(
             user_id=user_id,
             session_id=session_id,
@@ -335,10 +365,9 @@ def build_web_search_capability(
                 query, max_results=_clamp_results(args.get("max_results"))
             )
         except WebSearchError as exc:
-            return _error_for(exc)
+            return _fail(exc)
         except Exception:  # noqa: BLE001 - a tool must never crash the turn
-            logger.warning("web_search unexpected error user=%s", user_id, exc_info=True)
-            return {"error": _ERROR_DEFAULT}
+            return _unexpected("web_search")
         await _meter(ctx)
         return _success(query, items, kind="web")
 
@@ -354,10 +383,9 @@ def build_web_search_capability(
                 query, max_results=_clamp_results(args.get("max_results"))
             )
         except WebSearchError as exc:
-            return _error_for(exc)
+            return _fail(exc)
         except Exception:  # noqa: BLE001
-            logger.warning("news_search unexpected error user=%s", user_id, exc_info=True)
-            return {"error": _ERROR_DEFAULT}
+            return _unexpected("news_search")
         await _meter(ctx)
         return _success(query, items, kind="news")
 
@@ -376,10 +404,9 @@ def build_web_search_capability(
                 freshness=freshness,
             )
         except WebSearchError as exc:
-            return _error_for(exc)
+            return _fail(exc)
         except Exception:  # noqa: BLE001
-            logger.warning("video_search unexpected error user=%s", user_id, exc_info=True)
-            return {"error": _ERROR_DEFAULT}
+            return _unexpected("video_search")
         await _meter(ctx)
         return _success(query, items, kind="video")
 
@@ -400,10 +427,9 @@ def build_web_search_capability(
                 image_size=size,
             )
         except WebSearchError as exc:
-            return _error_for(exc)
+            return _fail(exc)
         except Exception:  # noqa: BLE001
-            logger.warning("image_search unexpected error user=%s", user_id, exc_info=True)
-            return {"error": _ERROR_DEFAULT}
+            return _unexpected("image_search")
         await _meter(ctx)
         return _success(query, items, kind="image")
 
@@ -417,10 +443,9 @@ def build_web_search_capability(
         try:
             page = await client.browse(url, max_length=browse_cap)
         except WebSearchError as exc:
-            return _error_for(exc)
+            return _fail(exc)
         except Exception:  # noqa: BLE001
-            logger.warning("browse_url unexpected error user=%s", user_id, exc_info=True)
-            return {"error": _ERROR_DEFAULT}
+            return _unexpected("browse_url")
         await _meter(ctx)
         body = (
             f"title: {_one_line(page.get('title')) or '(untitled)'}\n\n"
