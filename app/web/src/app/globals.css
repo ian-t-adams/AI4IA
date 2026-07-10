@@ -266,3 +266,83 @@ select {
     transition-duration: 0.001ms !important;
   }
 }
+
+
+/* Agent activity: a live, animated indicator while a tool-using turn runs (the
+   current tool spins, finished steps tick off) and a collapsed "Activity" trace
+   under the finished answer. Replaces the bare blinking cursor for those turns. */
+.activity {
+  margin-top: 8px;
+  font-size: 0.82em;
+}
+.activity-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  color: var(--fg-muted);
+}
+.activity-row.running {
+  color: var(--assistant-bubble-fg);
+}
+.activity-glyph {
+  display: inline-flex;
+  width: 1em;
+  justify-content: center;
+  opacity: 0.8;
+}
+.activity-label {
+  font-weight: 500;
+}
+.activity-detail {
+  opacity: 0.65;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 24ch;
+}
+.activity-spinner {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: activity-spin 0.7s linear infinite;
+}
+@keyframes activity-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.activity-trace > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  list-style: none;
+  user-select: none;
+  padding: 2px 0;
+}
+.activity-trace > summary::-webkit-details-marker {
+  display: none;
+}
+.activity-trace > summary::before {
+  content: "\25B8";
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.15s ease;
+}
+.activity-trace[open] > summary::before {
+  transform: rotate(90deg);
+}
+.activity-rows {
+  margin-top: 4px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-spinner {
+    animation: none;
+  }
+  .activity-trace > summary::before {
+    transition: none;
+  }
+}

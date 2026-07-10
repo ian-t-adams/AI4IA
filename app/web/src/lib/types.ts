@@ -57,6 +57,17 @@ export interface MessageAttachment {
   filename?: string | null;
 }
 
+// A redacted, user-facing entry in an assistant turn's activity trace: which tool
+// ran and how it turned out. Streamed live during the turn (including the
+// pre-execution "tool_start" marker) and persisted on the assistant message.
+// Mirrors ai4ia_api.sessions.models.ActivityStep.
+export interface ActivityStep {
+  kind: "tool_start" | "tool_result" | "tool_denied" | "tool_error" | "delegate" | "final";
+  label: string;
+  tool?: string | null;
+  detail?: string | null;
+}
+
 export interface Message {
   id: string;
   sessionId: string;
@@ -69,6 +80,8 @@ export interface Message {
   createdAt: string;
   attachments?: MessageAttachment[];
   source?: MessageSource;
+  // Redacted activity trace for an agentic/tool turn; absent for plain turns.
+  steps?: ActivityStep[] | null;
 }
 
 // A finalized Voice Live turn the web persists back into the shared session.

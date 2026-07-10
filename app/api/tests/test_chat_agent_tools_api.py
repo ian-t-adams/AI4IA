@@ -75,7 +75,7 @@ def test_tool_enabled_agent_runs_tool_and_persists_answer(client):
     assert messages[1]["agent"] == "analyst"
 
 
-def test_tool_enabled_agent_streaming_returns_single_delta(client):
+def test_tool_enabled_agent_streaming_emits_steps_then_answer(client):
     gw = ToolThenAnswerGateway()
     client.app.state.gateway = gw
     sid = _create_session(client)["id"]
@@ -85,11 +85,20 @@ def test_tool_enabled_agent_streaming_returns_single_delta(client):
         json={"sessionId": sid, "content": "@analyst compute 6*7", "stream": True},
     )
     assert resp.status_code == 200, resp.text
+    # Live activity events precede the answer, then the answer + DONE.
+    assert '"step"' in resp.text
+    assert "Calculat" in resp.text  # tool_start "Calculating" / tool_result "Calculated"
     assert "It is 42." in resp.text
     assert "[DONE]" in resp.text
-    # Even when the client asked to stream, the tool loop ran (two model calls)
-    # and the streaming gateway path was never used.
+    # The tool loop ran (two model calls) and the streaming gateway path was unused.
     assert gw.calls == 2
+
+    # The redacted trace is persisted on the assistant message for after-the-fact view.
+    messages = client.get(f"/api/sessions/{sid}/messages").json()
+    assistant = messages[-1]
+    assert assistant["role"] == "assistant" and assistant["content"] == "It is 42."
+    steps = assistant.get("steps") or []
+    assert any(s["kind"] == "tool_result" and s["tool"] == "calculator" for s in steps)
 
 
 def test_toolless_agent_does_not_invoke_tool_loop(client):

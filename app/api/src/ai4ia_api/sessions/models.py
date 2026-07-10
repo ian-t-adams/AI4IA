@@ -78,6 +78,22 @@ class MessageAttachment(BaseModel):
     filename: str | None = None
 
 
+class ActivityStep(BaseModel):
+    """A redacted, user-facing entry in an assistant turn's activity trace.
+
+    Derived from the agent runtime's ``AgentStep`` for display only: a coarse
+    ``kind``, an optional tool name, a human ``label`` (e.g. "Searched the web"),
+    and a short redacted ``detail`` (e.g. the query) — never raw tool results or
+    full arguments. Persisted on the assistant message so the trace survives a
+    reload, and also streamed live during the turn.
+    """
+
+    kind: str
+    label: str
+    tool: str | None = None
+    detail: str | None = None
+
+
 class Message(BaseModel):
     id: str = Field(default_factory=_new_id)
     sessionId: str
@@ -101,6 +117,10 @@ class Message(BaseModel):
     # for ordinary text replies; each entry references a durable blob served
     # through an authenticated endpoint.
     attachments: list[MessageAttachment] = Field(default_factory=list)
+    # Redacted activity trace for an agentic/tool turn: the tools the model called
+    # and their outcome, rendered as an expandable panel under the answer. None for
+    # plain (no-tool) turns. Display-only, derived from the runtime's step trace.
+    steps: list[ActivityStep] | None = None
     createdAt: datetime = Field(default_factory=_now)
 
 

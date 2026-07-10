@@ -1,6 +1,7 @@
 // Browser-side API client. All calls are same-origin to the Next.js proxy
 // (src/app/api/[...path]/route.ts), which forwards to the backend API.
 import type {
+  ActivityStep,
   AgentSummary,
   ChatParams,
   DocumentSummary,
@@ -636,6 +637,10 @@ export interface StreamHandlers {
   onDelta: (text: string) => void;
   onDone: () => void;
   onError: (message: string) => void;
+  // Called for each live activity event during an agentic (tool-using) turn, so
+  // the UI can show "Searching the web..." while it runs. Ignored by callers that
+  // don't render activity.
+  onStep?: (step: ActivityStep) => void;
   // Called when the caller aborts the stream (e.g. Stop button). Lets the UI
   // reconcile with the server, which persists a `cancelled` assistant message.
   onAbort?: () => void;
@@ -693,6 +698,10 @@ export function streamChat(
             if (obj.error) {
               handlers.onError(String(obj.error));
               return;
+            }
+            if (obj.step) {
+              handlers.onStep?.(obj.step as ActivityStep);
+              continue;
             }
             const delta: string =
               obj?.choices?.[0]?.delta?.content ?? "";

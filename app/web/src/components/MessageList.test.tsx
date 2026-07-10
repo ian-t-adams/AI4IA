@@ -66,6 +66,62 @@ describe("MessageList", () => {
     ).toBeNull();
   });
 
+  it("shows a thinking indicator before any step or token arrives", () => {
+    render(
+      <MessageList
+        messages={[msg({ id: "a4", role: "assistant", content: "", pending: true })]}
+      />,
+    );
+    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+  });
+
+  it("shows live agent activity with finished and running steps while pending", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "a3",
+            role: "assistant",
+            content: "",
+            pending: true,
+            steps: [
+              { kind: "tool_result", label: "Searched the web", tool: "web_search" },
+              { kind: "tool_start", label: "Reading a web page", tool: "browse_url" },
+            ],
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByLabelText("Agent activity")).toBeInTheDocument();
+    expect(screen.getByText("Searched the web")).toBeInTheDocument();
+    expect(screen.getByText("Reading a web page")).toBeInTheDocument();
+  });
+
+  it("renders a collapsible activity trace under a finished tool answer", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "a5",
+            role: "assistant",
+            content: "Here is what I found.",
+            steps: [
+              {
+                kind: "tool_result",
+                label: "Searched the web",
+                tool: "web_search",
+                detail: "build 2025",
+              },
+            ],
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/Activity . 1 step/)).toBeInTheDocument();
+    expect(screen.getByText("Searched the web")).toBeInTheDocument();
+    expect(screen.getByText("build 2025")).toBeInTheDocument();
+  });
+
   it("wires the speak button to the playback toggle for finished replies", async () => {
     const user = userEvent.setup();
     render(

@@ -6,7 +6,7 @@
 // through the same-origin API proxy, never directly from storage.
 
 import { useEffect, useRef, useState } from "react";
-import type { Message, MessageAttachment } from "@/lib/types";
+import type { ActivityStep, Message, MessageAttachment } from "@/lib/types";
 import { fetchImageArtifact, fetchVideoArtifact, fetchDocumentArtifact } from "@/lib/api";
 import { useSpeechPlayback, type SpeechState } from "@/lib/voice";
 import { Markdown } from "@/components/Markdown";
@@ -20,6 +20,66 @@ interface DisplayMessage {
   pending?: boolean;
   attachments?: MessageAttachment[];
   source?: Message["source"];
+  // Agent activity: streamed live while pending, persisted for the finished turn.
+  steps?: ActivityStep[] | null;
+}
+
+// A small glyph for a finalized step's outcome (running steps show a spinner).
+function stepGlyph(kind: string): string {
+  if (kind === "tool_result" || kind === "delegate") return "✓";
+  if (kind === "tool_denied") return "⊘";
+  if (kind === "tool_error") return "!";
+  return "•";
+}
+
+// Renders the agent's activity: a live, animated view while the turn runs (the
+// current tool spins, finished ones tick off), and a collapsed "Activity" trace
+// once complete. Replaces the bare blinking cursor for tool-using turns.
+function ActivityPanel({ steps, live }: { steps: ActivityStep[]; live: boolean }) {
+  const lastRunning =
+    live && steps.length > 0 && steps[steps.length - 1].kind === "tool_start";
+  const rows = steps.map((s, i) => {
+    const running = live && i === steps.length - 1 && s.kind === "tool_start";
+    return (
+      <div key={i} className={`activity-row${running ? " running" : ""}`}>
+        {running ? (
+          <span className="activity-spinner" aria-hidden="true" />
+        ) : (
+          <span className="activity-glyph" aria-hidden="true">
+            {stepGlyph(s.kind)}
+          </span>
+        )}
+        <span className="activity-label">{s.label}</span>
+        {s.detail && <span className="activity-detail">{s.detail}</span>}
+      </div>
+    );
+  });
+
+  if (live) {
+    return (
+      <div className="activity activity-live" aria-live="polite" aria-label="Agent activity">
+        {rows}
+        {!lastRunning && (
+          <div className="activity-row running">
+            <span className="activity-spinner" aria-hidden="true" />
+            <span className="activity-label">
+              {steps.length ? "Composing the answer…" : "Thinking…"}
+            </span>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (steps.length === 0) return null;
+  return (
+    <details className="activity activity-trace">
+      <summary>
+        Activity · {steps.length} step{steps.length === 1 ? "" : "s"}
+      </summary>
+      <div className="activity-rows">{rows}</div>
+    </details>
+  );
 }
 
 // Renders one tool-generated image. The bytes live behind an authenticated
@@ -362,11 +422,17 @@ function Bubble({
         ) : (
           <Markdown content={msg.content} onCitation={onCitation} />
         )}
-        {msg.pending && (
-          <span aria-label="Generating" style={{ opacity: 0.6 }}>
-            ▍
-          </span>
-        )}
+        {msg.pending ? (
+          (msg.steps && msg.steps.length > 0) || msg.content.trim().length === 0 ? (
+            <ActivityPanel steps={msg.steps ?? []} live />
+          ) : (
+            <span aria-label="Generating" style={{ opacity: 0.6 }}>
+              ▍
+            </span>
+          )
+        ) : msg.steps && msg.steps.length > 0 ? (
+          <ActivityPanel steps={msg.steps} live={false} />
+        ) : null}
         {msg.attachments?.map((att) =>
           att.kind === "image" ? (
             <ImageAttachmentView key={att.id} attachment={att} />
