@@ -553,6 +553,14 @@ export function ChatApp() {
   // flag is off, the control is never rendered and nothing about the chat UI changes.
   const realtimeModelList = useMemo(() => realtimeModels(models), [models]);
   const voiceLiveEnabled = voiceLiveConfig.enabled && realtimeModelList.length > 0;
+  const currentVoiceAgent = useMemo(() => {
+    const enabled = new Set(agents.filter((agent) => agent.enabled).map((agent) => agent.name));
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const agent = messages[i].agent;
+      if (messages[i].role === "assistant" && agent && enabled.has(agent)) return agent;
+    }
+    return null;
+  }, [agents, messages]);
 
   // Hydrate panel-collapse preferences from localStorage on mount (after SSR).
   useEffect(() => {
@@ -854,6 +862,7 @@ export function ChatApp() {
           onError={setError}
           history={voiceHistory}
           onConversation={persistVoiceConversation}
+          initialAgent={currentVoiceAgent}
         />
       )}
     </div>
