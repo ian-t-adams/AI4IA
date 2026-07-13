@@ -7,7 +7,14 @@
 // in the engine and reflected here), governed-tool badges, and graceful
 // connecting / live / ending / error states. It reuses the `useVoiceLive` audio
 // engine unchanged — this component only renders its structured state.
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import type { AgentSummary, ModelEntry, VoiceTurnInput } from "@/lib/types";
 import {
   useVoiceLive,
@@ -175,6 +182,8 @@ export function VoiceLivePanel({
   onError,
   history = [],
   onConversation,
+  initialAgent = null,
+  autoStart = true,
 }: {
   config: VoiceLiveConfig;
   // The realtime-category models the user can pick among (filtered upstream from
@@ -189,12 +198,18 @@ export function VoiceLivePanel({
   // Called once when a live session ends, with the finalized voice turns, so the
   // host can persist them back into the shared session's transcript.
   onConversation?: (turns: VoiceTurnInput[]) => void;
+  // The agent already active in the chat. Voice should continue that experience
+  // without asking the user to choose the same agent again.
+  initialAgent?: string | null;
+  // Composer launches start immediately. Kept configurable for focused tests and
+  // any future settings-only entry point.
+  autoStart?: boolean;
 }) {
   // Chosen voice persists across reloads and locks for a session once live (the
   // model fixes the voice after its first audio reply), so the picker is disabled
   // while a session is active.
   const [liveVoice, setLiveVoice] = useState<string>(DEFAULT_VOICE);
-  const [liveAgent, setLiveAgent] = useState<string>("");
+  const [liveAgent, setLiveAgent] = useState<string>(initialAgent ?? "");
   // Chosen realtime model persists across reloads. Empty => fall back to the first
   // available realtime model (which is what the host auto-resolved before this
   // picker existed, so the default is unchanged).
@@ -206,27 +221,31 @@ export function VoiceLivePanel({
   // an untouched panel produces a byte-for-byte identical session.update.
   const [settings, setSettings] = useState<VoiceSessionSettings>(DEFAULT_VOICE_SETTINGS);
   const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(false);
 
   // Realtime-only models for the picker (defensive re-filter even though the host
   // already passes a filtered list).
   const availableModels = useMemo(() => realtimeModels(models), [models]);
+  const enabledAgents = useMemo(() => agents.filter((a) => a.enabled), [agents]);
 
   useEffect(() => {
     try {
       const v = window.localStorage.getItem(VOICE_STORAGE_KEY);
       if (v && isRealtimeVoice(v)) setLiveVoice(v);
       const a = window.localStorage.getItem(AGENT_STORAGE_KEY);
-      if (a) setLiveAgent(a);
+      if (!initialAgent && a && enabledAgents.some((agent) => agent.name === a)) {
+        setLiveAgent(a);
+      }
       const m = window.localStorage.getItem(MODEL_STORAGE_KEY);
-      if (m) setLiveModel(m);
+      if (m && availableModels.some((model) => model.id === m)) setLiveModel(m);
       const t = window.localStorage.getItem(TOOLS_STORAGE_KEY);
       if (t === "1") setToolsAllowed(true);
     } catch {
       /* storage unavailable -> defaults */
     }
-  }, []);
-
-  const enabledAgents = useMemo(() => agents.filter((a) => a.enabled), [agents]);
+    setHydrated(true);
+  }, [availableModels, enabledAgents, initialAgent]);
 
   // Drop a remembered agent that no longer exists / was disabled.
   useEffect(() => {
@@ -291,7 +310,10 @@ export function VoiceLivePanel({
     config,
     effectiveModel,
     liveVoice,
-    (msg) => onError?.(msg),
+    (msg) => {
+      setSessionError(msg);
+      onError?.(msg);
+    },
     liveAgent || null,
     history,
     settings,
@@ -309,15 +331,46 @@ export function VoiceLivePanel({
     onConversationRef.current = onConversation;
   }, [onConversation]);
   const wasActiveRef = useRef(false);
+  const persistedRef = useRef(false);
+  const persistFinalizedTurns = useCallback(() => {
+    if (persistedRef.current) return;
+    const finalized: VoiceTurnInput[] = turnsRef.current
+      .filter((t) => !t.pending && !t.streaming && t.text.trim())
+      .map((t) => ({ role: t.role, text: t.text.trim() }));
+    if (finalized.length === 0) return;
+    persistedRef.current = true;
+    onConversationRef.current?.(finalized);
+  }, []);
   useEffect(() => {
+    if (live.active && !wasActiveRef.current) {
+      persistedRef.current = false;
+      setSessionError(null);
+    }
     if (wasActiveRef.current && !live.active) {
-      const finalized: VoiceTurnInput[] = turnsRef.current
-        .filter((t) => !t.pending && !t.streaming && t.text.trim())
-        .map((t) => ({ role: t.role, text: t.text.trim() }));
-      if (finalized.length > 0) onConversationRef.current?.(finalized);
+      persistFinalizedTurns();
     }
     wasActiveRef.current = live.active;
-  }, [live.active]);
+  }, [live.active, persistFinalizedTurns]);
+
+  const autoStartAttemptedRef = useRef(false);
+  const startLive = live.start;
+  const startConversation = useCallback(() => {
+    setSessionError(null);
+    startLive();
+  }, [startLive]);
+  useEffect(() => {
+    if (
+      !autoStart ||
+      !hydrated ||
+      autoStartAttemptedRef.current ||
+      !live.supported ||
+      live.status !== "idle"
+    ) {
+      return;
+    }
+    autoStartAttemptedRef.current = true;
+    startConversation();
+  }, [autoStart, hydrated, live.status, live.supported, startConversation]);
 
   const agentLabel = liveAgent
     ? enabledAgents.find((a) => a.name === liveAgent)?.displayName ?? liveAgent
@@ -344,6 +397,7 @@ export function VoiceLivePanel({
   }, [live.turns]);
 
   const close = () => {
+    persistFinalizedTurns();
     live.stop();
     onClose();
   };
@@ -417,8 +471,11 @@ export function VoiceLivePanel({
           </button>
         </div>
 
-        {/* Controls */}
+        {/* Primary action stays visible; configuration is secondary so opening the
+            microphone starts a conversation instead of presenting a setup menu. */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          {showSettings && (
+            <>
           {enabledAgents.length > 0 && (
             <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.75em" }}>
               <span style={{ color: "var(--fg-muted)" }}>Agent</span>
@@ -502,10 +559,12 @@ export function VoiceLivePanel({
               ))}
             </select>
           </label>
+            </>
+          )}
 
           <button
             type="button"
-            onClick={live.toggle}
+            onClick={live.active ? close : startConversation}
             disabled={unsupported || live.status === "connecting" || live.status === "closing"}
             aria-pressed={live.active}
             aria-busy={live.status === "connecting"}
@@ -533,7 +592,7 @@ export function VoiceLivePanel({
             {live.status === "connecting"
               ? "Connecting"
               : live.active
-                ? "End conversation"
+                ? "End and return to chat"
                 : "Start conversation"}
           </button>
         </div>
@@ -545,6 +604,7 @@ export function VoiceLivePanel({
             type="button"
             onClick={() => setShowSettings((s) => !s)}
             aria-expanded={showSettings}
+            aria-label="Voice settings"
             style={{
               border: "1px solid var(--border)",
               background: "var(--bg)",
@@ -555,7 +615,7 @@ export function VoiceLivePanel({
               cursor: "pointer",
             }}
           >
-            {showSettings ? "▾" : "▸"} Session settings
+            {showSettings ? "▾" : "▸"} Voice settings
           </button>
           {config.toolsAvailable && (
             <label
@@ -743,6 +803,7 @@ export function VoiceLivePanel({
                 Reset to defaults
               </button>
             </div>
+
           </div>
         )}
 
@@ -778,9 +839,29 @@ export function VoiceLivePanel({
                 : phaseLabel(phase)
               : unsupported
                 ? "Live voice isn't supported in this browser."
-                : "Press Start and allow microphone access to begin."}
+                : sessionError
+                  ? "Connection failed — press Start to retry."
+                  : autoStart
+                    ? "Preparing microphone access…"
+                    : "Press Start and allow microphone access to begin."}
           </span>
         </div>
+
+        {sessionError && (
+          <div
+            role="alert"
+            style={{
+              padding: "8px 12px",
+              borderRadius: 10,
+              border: "1px solid var(--danger)",
+              color: "var(--danger)",
+              background: "var(--bg)",
+              fontSize: "0.82em",
+            }}
+          >
+            {sessionError}
+          </div>
+        )}
 
         {/* Timeline */}
         <ol

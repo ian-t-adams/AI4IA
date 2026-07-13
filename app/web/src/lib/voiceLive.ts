@@ -118,6 +118,7 @@ export interface VoiceLiveController {
   listening: boolean;
   // The assistant is currently producing audio (speaking) for its reply.
   speaking: boolean;
+  start: () => void;
   toggle: () => void;
   stop: () => void;
 }
@@ -811,6 +812,7 @@ export function useVoiceLive(
     turns,
     listening,
     speaking,
+    start,
     toggle,
     stop,
   };
