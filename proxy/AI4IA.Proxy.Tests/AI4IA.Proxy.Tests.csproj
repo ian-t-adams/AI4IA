@@ -1,0 +1,11 @@
+<Project Sdk="MSTest.Sdk/3.7.0">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SimpleL7Proxy\SimpleL7Proxy.csproj" />
+  </ItemGroup>
+</Project>

@@ -90,6 +90,55 @@ def main() -> int:
         if domain and not cert:
             warnings.append(f"{domain_name} is set without {cert_name}; Bicep will derive a cert name.")
 
+    profiles_enabled = truthy(parameter_value(parameters, "proxyProfilesEnabled", False))
+    profile_projection = text(parameter_value(parameters, "proxyProfileProjectionJson"))
+    if profiles_enabled:
+        if not profile_projection:
+            errors.append(
+                "proxyProfilesEnabled=true requires proxyProfileProjectionJson."
+            )
+        else:
+            try:
+                profiles = json.loads(profile_projection)
+            except json.JSONDecodeError as exc:
+                errors.append(f"proxyProfileProjectionJson is invalid JSON: {exc.msg}.")
+            else:
+                if not isinstance(profiles, list) or not profiles:
+                    errors.append(
+                        "proxyProfileProjectionJson must be a non-empty JSON array."
+                    )
+                elif any(
+                    not isinstance(profile, dict)
+                    or not isinstance(profile.get("appId"), str)
+                    or not profile["appId"].strip()
+                    for profile in profiles
+                ):
+                    errors.append(
+                        "Every proxy profile projection entry requires a non-empty appId."
+                    )
+        errors.append(
+            "proxyProfilesEnabled=true requires a verified identity-aware application "
+            "header at the proxy edge. The temporary shared-key ingress does not meet "
+            "that prerequisite; keep profiles disabled until Entra workload auth is wired."
+        )
+
+    priorities_enabled = truthy(
+        parameter_value(parameters, "proxyPrioritiesEnabled", False)
+    )
+    priority_workers = text(parameter_value(parameters, "proxyPriorityWorkers"))
+    if priorities_enabled and not re.fullmatch(r"\d+:\d+(?:\s*,\s*\d+:\d+)*", priority_workers):
+        errors.append(
+            "proxyPrioritiesEnabled=true requires proxyPriorityWorkers in "
+            "priority:count format (for example 1:2,3:1)."
+        )
+
+    min_replicas = int(text(parameter_value(parameters, "proxyMinReplicas", 1)) or "1")
+    max_replicas = int(text(parameter_value(parameters, "proxyMaxReplicas", 3)) or "3")
+    if min_replicas < 1:
+        errors.append("proxyMinReplicas must be at least 1 for the active gateway path.")
+    if min_replicas > max_replicas:
+        errors.append("proxyMinReplicas must not exceed proxyMaxReplicas.")
+
     owner = text(parameter_value(parameters, "owner"))
     publisher = text(parameter_value(parameters, "apimPublisherEmail"))
     if owner in {"", "ian-t-adams"}:

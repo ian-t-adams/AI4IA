@@ -101,7 +101,7 @@ This document describes the ownership, lifecycle, and disposal responsibilities 
 
 | Aspect | Details |
 |--------|---------|
-| **Created** | DI container at startup; concrete type resolved via `AsyncClassNames` map (`BlobWriterFactory` for Azure, `S3BlobWriterFactory` for S3) |
+| **Created** | DI container at startup; concrete type resolved via `AsyncClassNames` map (`BlobWriterFactory` for Azure, `S3BlobWriterFactory` stub for S3) |
 | **Owner** | DI container (singleton, app lifetime) |
 | **Role** | Produces `IBlobWriter` (raw, per-call via `CreateBlobWriter()`) and `IQueuedBlobWriter` (singleton via `CreateQueuedBlobWriter()`) |
 | **Disposed** | Not disposed; lives for process lifetime |

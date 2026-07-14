@@ -77,6 +77,22 @@ jobs:
           # AI4IA-owned Dockerfiles only; proxy/SimpleL7Proxy/Dockerfile is vendored upstream.
           ./hadolint app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile
 
+  proxy-dotnet:
+    name: proxy .NET build + auth tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install .NET 10
+        uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0
+        with:
+          dotnet-version: 10.0.x
+      - name: Build proxy and test AI4IA auth guard
+        run: |
+          dotnet build proxy/SimpleL7Proxy/SimpleL7Proxy.csproj --configuration Release --nologo
+          dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --nologo
+
   yamllint:
     name: yamllint
     runs-on: ubuntu-latest

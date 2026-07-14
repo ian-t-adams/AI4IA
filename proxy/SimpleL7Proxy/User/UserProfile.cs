@@ -405,6 +405,8 @@ public class UserProfile : BackgroundService, IUserProfileService, IConfigChange
         }
     }
 
+    // TODO  make all three the same
+
     private async Task<CurrentRequestStatus> ProfileReader(ConfigStatus status, string url, ParsingMode mode)
     {
         var callResult = await ReadUserConfigAsync(url ?? string.Empty, mode).ConfigureAwait(false);

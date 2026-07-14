@@ -75,6 +75,19 @@ jobs:
       AI4IA_WEB_MANAGED_CERT_NAME: ${{ vars.AI4IA_WEB_MANAGED_CERT_NAME }}
       AI4IA_PROXY_CUSTOM_DOMAIN: ${{ vars.AI4IA_PROXY_CUSTOM_DOMAIN }}
       AI4IA_PROXY_MANAGED_CERT_NAME: ${{ vars.AI4IA_PROXY_MANAGED_CERT_NAME }}
+      # Multi-application gateway controls are default-off. The profile projection
+      # is a secret and validation refuses profile enablement until the edge has a
+      # verified workload identity rather than the temporary shared-key contract.
+      AI4IA_PROXY_PROFILES_ENABLED: ${{ vars.AI4IA_PROXY_PROFILES_ENABLED || 'false' }}
+      AI4IA_PROXY_PROFILE_PROJECTION_JSON: ${{ secrets.AI4IA_PROXY_PROFILE_PROJECTION_JSON }}
+      AI4IA_PROXY_PRIORITIES_ENABLED: ${{ vars.AI4IA_PROXY_PRIORITIES_ENABLED || 'false' }}
+      AI4IA_PROXY_PRIORITY_WORKERS: ${{ vars.AI4IA_PROXY_PRIORITY_WORKERS }}
+      AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED: ${{ vars.AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED || 'false' }}
+      AI4IA_PROXY_ASYNC_ENABLED: ${{ vars.AI4IA_PROXY_ASYNC_ENABLED || 'false' }}
+      AI4IA_PROXY_WORKERS: ${{ vars.AI4IA_PROXY_WORKERS || '10' }}
+      AI4IA_PROXY_MIN_REPLICAS: ${{ vars.AI4IA_PROXY_MIN_REPLICAS || '1' }}
+      AI4IA_PROXY_MAX_REPLICAS: ${{ vars.AI4IA_PROXY_MAX_REPLICAS || '3' }}
+      AI4IA_PROXY_APPCONFIG_LABEL: ${{ vars.AI4IA_PROXY_APPCONFIG_LABEL }}
       AI4IA_APP_ENVIRONMENT: ${{ vars.AI4IA_APP_ENVIRONMENT }}
       AI4IA_AUTH_PROVIDER: ${{ vars.AI4IA_AUTH_PROVIDER }}
       AI4IA_ENTRA_TENANT_ID: ${{ vars.AI4IA_ENTRA_TENANT_ID }}

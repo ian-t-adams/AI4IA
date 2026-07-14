@@ -1,8 +1,9 @@
-# Vendored from microsoft/SimpleL7Proxy (MIT) @ 72244ac3e779587ae81e25de3ece4653cfbf2ab1
+# Vendored from microsoft/SimpleL7Proxy (MIT) @ d9eb1d1fa42820792a9699bfc253562fba07d977
 # Build context is ./proxy (the azd "proxy" service project dir). This differs
 # from the upstream Dockerfile (whose context is the repo's src/ dir) only in
 # that it ALSO copies Shared-parser.csproj before `dotnet restore` — the proxy
-# project references it, so the upstream file fails restore without it.
+# project references it, so the upstream file fails restore without it. The
+# source tree also carries the documented inbound-auth fail-closed patch in README.
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build-env
 WORKDIR /app
 

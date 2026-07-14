@@ -104,8 +104,17 @@ Settings → Secrets and variables → Actions → **Variables** (these are iden
 | `AI4IA_OWNER` | accountable owner tag value for the deployed resources |
 | `AI4IA_APIM_PUBLISHER_EMAIL` | operator-owned APIM publisher mailbox |
 | `AI4IA_BUDGET_START_DATE` | *(optional, recommended)* fixed budget start month `yyyy-MM-01`. Empty defaults to the first of the current month, which **drifts and breaks the first deploy of each new month** (see §7.2). Pin it to keep redeploys idempotent. |
+| `AI4IA_PROXY_WORKERS` / `AI4IA_PROXY_MIN_REPLICAS` / `AI4IA_PROXY_MAX_REPLICAS` | Optional proxy capacity overrides. Minimum defaults to `1`; do not scale the active gateway to zero. |
+| `AI4IA_PROXY_PRIORITIES_ENABLED` / `AI4IA_PROXY_PRIORITY_WORKERS` | Optional, default off. Worker reservations such as `1:2,3:1`; fairness remains per replica. |
+| `AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED` | Optional, default off metadata telemetry. |
+| `AI4IA_PROXY_ASYNC_ENABLED` | Optional, default off dedicated Blob + Service Bus durable async plane. |
+| `AI4IA_PROXY_PROFILES_ENABLED` / `AI4IA_PROXY_PROFILE_PROJECTION_JSON` | Keep disabled until Entra workload identity is wired at the proxy edge; validation intentionally fails otherwise. The JSON value is a secret. |
 
 The moment `AZURE_CLIENT_ID` is set, the next qualifying push to `main` deploys.
+
+The model gateway has no Front Door in this phase. Point model clients at the
+proxy custom/default FQDN. DNS/custom domain terminates on the proxy Container
+App, which calls APIM; APIM alone has Foundry model RBAC.
 
 ### 2.4 (Recommended) protect the `production` environment
 
@@ -130,6 +139,20 @@ are set. **If they are empty, `azd provision` resets the ingress to *no* custom 
 site fails with `ERR_CONNECTION_CLOSED` on the vanity hostname (the default
 `*.azurecontainerapps.io` FQDN keeps working). DNS records are untouched — only the Azure-side
 binding is dropped.
+
+After provisioning gateway changes, verify direction before application smoke
+tests:
+
+1. `AZURE_MODEL_GATEWAY_URL` ends in the proxy `/openai` URL.
+2. `AZURE_APIM_GATEWAY_URL` is different and is not configured as an application
+   model URL.
+3. APIM's `openai` API service URL terminates at Foundry, never at `ca-proxy`.
+4. The proxy `Host1` terminates at APIM and its subscription key is an ACA secret.
+5. Voice Live uses `AZURE_REALTIME_GATEWAY_URL` through the FastAPI relay.
+
+Do not add a second retry loop around model writes. APIM performs bounded
+same-dispatch regional failover; SimpleL7Proxy owns delayed requeue from the
+`S7PREQUEUE` contract.
 
 | Variable | Value (this deployment) |
 |---|---|
@@ -203,6 +226,8 @@ Procedure:
    ```powershell
    python scripts/gen-model-catalog.py     # rewrites app/api/src/ai4ia_api/data/model_catalog.json
    python scripts/gen-model-catalog.py --check   # CI drift guard; must pass
+   python scripts/gen-gateway-policy.py          # rewrites APIM deployment routing
+   python scripts/gen-gateway-policy.py --check
    python scripts/validate-catalog.py            # names/regions/SKUs consistent
    ```
 

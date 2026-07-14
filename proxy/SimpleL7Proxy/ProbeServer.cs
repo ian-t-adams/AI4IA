@@ -168,6 +168,7 @@ public class ProbeServer : BackgroundService, IConfigChangeSubscriber
     public int BlobQueueDepth => _blobQueueDepth;
     public int EventCount => _activeUndrainedEvents;
 
+    // TODO: no need for stopwatch any longer
     public async Task<HttpStatusCode> LivenessResponseAsync(HttpListenerContext lc)
     {
         // Liveness probe check - use pre-allocated objects
@@ -295,7 +296,7 @@ public class ProbeServer : BackgroundService, IConfigChangeSubscriber
 
     public void InitVars()
     {
-        // Reserved for config-dependent probe state.
+        // no config-dependent variables to init for now, but this is a placeholder for future ones
     }
 
     /// <summary>

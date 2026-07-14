@@ -5,12 +5,16 @@ on:
     paths:
       - "infra/**"
       - "foundry/**"
+      - "scripts/gen-gateway-policy.py"
+      - "scripts/tests/test_gateway_policy.py"
       - ".github/workflows/infra-validate.yml"
   push:
     branches: [main]
     paths:
       - "infra/**"
       - "foundry/**"
+      - "scripts/gen-gateway-policy.py"
+      - "scripts/tests/test_gateway_policy.py"
 
 permissions:
   contents: read
@@ -53,6 +57,11 @@ jobs:
 
       - name: Validate catalog consistency (regions / SKUs / names)
         run: python scripts/validate-catalog.py
+
+      - name: Validate generated gateway policy catalog
+        run: |
+          python scripts/gen-gateway-policy.py --check
+          python -m unittest scripts.tests.test_gateway_policy
 
       - name: Validate deployment parameters
         run: python scripts/validate-feature-prereqs.py
