@@ -22,10 +22,10 @@ CATALOG_OUTPUT_PATHS = tuple(
     for index in range(CATALOG_FRAGMENT_COUNT)
 )
 CATALOG_FRAGMENT_IDS = tuple(
-    f"endpoint_selection_catalog_{index}_31"
+    f"endpoint_selection_catalog_{index}_32"
     for index in range(CATALOG_FRAGMENT_COUNT)
 )
-SETUP_FRAGMENT_ID = "endpoint_selection_setup_31"
+SETUP_FRAGMENT_ID = "endpoint_selection_setup_32"
 PRIORITY_POLICY_PATH = (
     ROOT / "infra" / "policies" / "simplel7proxy-priority-retry.xml"
 )
@@ -43,6 +43,10 @@ ATTRIBUTE_PATTERN = re.compile(
     re.DOTALL,
 )
 XML_COMMENT_PATTERN = re.compile(r"<!--.*?-->", re.DOTALL)
+JOBJECT_INDEX_INITIALIZER_PATTERN = re.compile(
+    r"new\s+JObject\s*\{\s*\[",
+    re.DOTALL,
+)
 
 
 def deployment_name(
@@ -72,11 +76,16 @@ def backend_row(
 ) -> str:
     named_value = f"{{{{foundry-{region}-endpoint}}}}"
     return (
-        f'                ["{label}"] = new JObject {{ '
-        f'["url"] = "{named_value}", ["path"] = "openai", '
-        f'["deployment"] = "{deployment}", ["priority"] = {priority}, '
-        '["acceptablePriorities"] = "1, 2, 3", '
-        f'["timeout"] = {timeout}, ["bufferResponse"] = false, ["auth"] = "MI" }}'
+        f'                new JProperty("{label}", new JObject(\n'
+        f'                    new JProperty("url", "{named_value}"),\n'
+        '                    new JProperty("path", "openai"),\n'
+        f'                    new JProperty("deployment", "{deployment}"),\n'
+        f'                    new JProperty("priority", {priority}),\n'
+        '                    new JProperty("acceptablePriorities", "1, 2, 3"),\n'
+        f'                    new JProperty("timeout", {timeout}),\n'
+        '                    new JProperty("bufferResponse", false),\n'
+        '                    new JProperty("auth", "MI")\n'
+        "                ))"
     )
 
 
@@ -121,9 +130,9 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
                 for candidate in ordered
             ]
             block = (
-                f'            ["{requested["name"]}"] = new JObject {{\n'
+                f'            new JProperty("{requested["name"]}", new JObject(\n'
                 + ",\n".join(rows)
-                + "\n            }"
+                + "\n            ))"
             )
             blocks.append(block)
 
@@ -137,10 +146,10 @@ def catalog_expression(blocks: list[str]) -> str:
         return "@{\n        return new JObject();\n    }"
     return (
         "@{\n"
-        "        return new JObject {\n"
+        "        return new JObject(\n"
         + ",\n\n".join(blocks)
         + "\n"
-        "        };\n"
+        "        );\n"
         "    }"
     )
 
@@ -213,6 +222,11 @@ def _position(text: str, index: int) -> tuple[int, int]:
 
 
 def validate_csharp_expression(expression: str, source: str) -> None:
+    if JOBJECT_INDEX_INITIALIZER_PATTERN.search(expression):
+        raise ValueError(
+            f"{source}: JObject index initializers are forbidden; "
+            "use JProperty constructors or assignment statements"
+        )
     if len(expression) >= APIM_EXPRESSION_MAX_CHARS:
         raise ValueError(
             f"{source}: policy expression is {len(expression)} characters; "
@@ -420,6 +434,17 @@ def validate_policy_expressions(xml_text: str, source: str) -> None:
 
 def validate_policy_fragment(xml_text: str, source: str) -> None:
     validate_policy_expressions(xml_text, source)
+    searchable_xml = XML_COMMENT_PATTERN.sub(
+        lambda match: re.sub(r"[^\n]", " ", match.group(0)),
+        xml_text,
+    )
+    for match in ATTRIBUTE_PATTERN.finditer(searchable_xml):
+        expression = html.unescape(match.group("value"))
+        if expression.lstrip().startswith("@") and "://" in expression:
+            raise ValueError(
+                f"{source}: APIM policy fragments reject literal '://' tokens "
+                "inside expression attributes; construct the scheme separator"
+            )
     raw_bytes = len(xml_text.encode("utf-8"))
     if raw_bytes > APIM_FRAGMENT_COMPILER_SAFE_BYTES:
         raise ValueError(

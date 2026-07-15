@@ -65,11 +65,11 @@ REFACTOR:
 		<set-variable name="DefaultModel" value="" />
 		<!-- Build this request's backend list, priority rules, and auth resource from the
 		     editable catalog. Nothing here is cached; only the throttle state (below) is. -->
-		<include-fragment fragment-id="endpoint_selection_catalog_0_31" />
-		<include-fragment fragment-id="endpoint_selection_catalog_1_31" />
-		<include-fragment fragment-id="endpoint_selection_catalog_2_31" />
-		<include-fragment fragment-id="endpoint_selection_catalog_3_31" />
-		<include-fragment fragment-id="endpoint_selection_setup_31" />
+		<include-fragment fragment-id="endpoint_selection_catalog_0_32" />
+		<include-fragment fragment-id="endpoint_selection_catalog_1_32" />
+		<include-fragment fragment-id="endpoint_selection_catalog_2_32" />
+		<include-fragment fragment-id="endpoint_selection_catalog_3_32" />
+		<include-fragment fragment-id="endpoint_selection_setup_32" />
 		<set-variable name="pathDeploymentMatchesModel" value="@{
 			string path = context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;);
 			string marker = &quot;deployments/&quot;;
@@ -101,7 +101,10 @@ REFACTOR:
 		<set-variable name="throttleState" value="@{
 			JObject loaded = context.Variables.GetValueOrDefault&lt;JObject>(&quot;throttleState&quot;, null);
 			JObject map = (loaded != null &amp;&amp; loaded[&quot;backends&quot;] != null &amp;&amp; loaded[&quot;backends&quot;].Type == JTokenType.Object) ? (JObject)loaded[&quot;backends&quot;] : new JObject();
-			return new JObject { [&quot;dirty&quot;] = false, [&quot;backends&quot;] = map };
+			return new JObject(
+				new JProperty(&quot;dirty&quot;, false),
+				new JProperty(&quot;backends&quot;, map)
+			);
 		}" />
 		<set-variable name="listBackends" value="@{
 			JArray backends = (JArray)context.Variables[&quot;listBackends&quot;];
@@ -228,7 +231,10 @@ REFACTOR:
 			<set-variable name="throttleState" value="@{
 				JObject loaded = context.Variables.GetValueOrDefault&lt;JObject>(&quot;throttleState&quot;, null);
 				JObject map = (loaded != null &amp;&amp; loaded[&quot;backends&quot;] != null &amp;&amp; loaded[&quot;backends&quot;].Type == JTokenType.Object) ? (JObject)loaded[&quot;backends&quot;] : new JObject();
-				return new JObject { [&quot;dirty&quot;] = false, [&quot;backends&quot;] = map };
+				return new JObject(
+					new JProperty(&quot;dirty&quot;, false),
+					new JProperty(&quot;backends&quot;, map)
+				);
 			}" />
 			<set-variable name="listBackends" value="@{
 				JArray backends = (JArray)context.Variables[&quot;listBackends&quot;];
@@ -668,7 +674,10 @@ REFACTOR:
 					<set-variable name="throttleState" value="@{
 						JObject loaded = context.Variables.GetValueOrDefault&lt;JObject>(&quot;throttleState&quot;, null);
 						JObject map = (loaded != null &amp;&amp; loaded[&quot;backends&quot;] != null &amp;&amp; loaded[&quot;backends&quot;].Type == JTokenType.Object) ? (JObject)loaded[&quot;backends&quot;] : new JObject();
-						JObject wrapper = new JObject { [&quot;dirty&quot;] = false, [&quot;backends&quot;] = map };
+						JObject wrapper = new JObject(
+							new JProperty(&quot;dirty&quot;, false),
+							new JProperty(&quot;backends&quot;, map)
+						);
 						JArray backends = (JArray)context.Variables[&quot;listBackends&quot;];
 						int idx = (int)context.Variables[&quot;backendIndex&quot;];
 						if (idx &lt; 0 || idx >= backends.Count) { return wrapper; }

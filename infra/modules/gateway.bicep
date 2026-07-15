@@ -146,27 +146,27 @@ resource foundryEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024
 
 var endpointSelectionFragmentDefinitions = [
   {
-    name: 'endpoint_selection_catalog_0_31'
+    name: 'endpoint_selection_catalog_0_32'
     description: 'Generated model/deployment catalog chunk 0 for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-0.xml')
   }
   {
-    name: 'endpoint_selection_catalog_1_31'
+    name: 'endpoint_selection_catalog_1_32'
     description: 'Generated model/deployment catalog chunk 1 for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-1.xml')
   }
   {
-    name: 'endpoint_selection_catalog_2_31'
+    name: 'endpoint_selection_catalog_2_32'
     description: 'Generated model/deployment catalog chunk 2 for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-2.xml')
   }
   {
-    name: 'endpoint_selection_catalog_3_31'
+    name: 'endpoint_selection_catalog_3_32'
     description: 'Generated model/deployment catalog chunk 3 for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-3.xml')
   }
   {
-    name: 'endpoint_selection_setup_31'
+    name: 'endpoint_selection_setup_32'
     description: 'Generated model routing setup for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints.xml')
   }
