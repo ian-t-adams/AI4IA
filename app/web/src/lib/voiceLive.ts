@@ -10,7 +10,13 @@
 // This module is feature-flagged and only ever exercised when the runtime config
 // is enabled (see VoiceLiveProvider). With the flag off it is never imported into
 // an active code path, so the default app behavior is unchanged.
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { getApiAccessToken, isEntraEnabled } from "./auth";
 
@@ -98,6 +104,7 @@ export interface LiveTurn {
   text: string;
   streaming: boolean;
   pending: boolean;
+  createdAt?: string;
   // Friendly label of a governed tool the assistant invoked this turn, or "".
   tool: string;
 }
@@ -194,7 +201,7 @@ class CaptureProcessor extends AudioWorkletProcessor {
 registerProcessor('ai4ia-capture', CaptureProcessor);
 `;
 
-function supportsVoiceLive(): boolean {
+export function supportsVoiceLive(): boolean {
   return (
     typeof window !== "undefined" &&
     typeof window.WebSocket !== "undefined" &&
@@ -205,6 +212,10 @@ function supportsVoiceLive(): boolean {
       typeof (window as unknown as { webkitAudioContext?: unknown })
         .webkitAudioContext !== "undefined")
   );
+}
+
+function subscribeVoiceSupport(): () => void {
+  return () => {};
 }
 
 function makeAudioContext(): AudioContext {
@@ -381,6 +392,11 @@ interface LiveSession {
   nextPlayTime: number;
 }
 
+interface PendingLiveSession {
+  ctx: AudioContext | null;
+  stream: MediaStream | null;
+}
+
 // Real-time speech-to-speech controller. Owns the WS + mic capture + playback
 // lifecycle and tears everything down on stop or unmount.
 export function useVoiceLive(
@@ -394,7 +410,11 @@ export function useVoiceLive(
   tools: boolean = false,
 ): VoiceLiveController {
   const [status, setStatus] = useState<VoiceLiveStatus>("idle");
-  const [supported, setSupported] = useState(false);
+  const supported = useSyncExternalStore(
+    subscribeVoiceSupport,
+    supportsVoiceLive,
+    () => false,
+  );
   const [userTranscript, setUserTranscript] = useState("");
   const [assistantTranscript, setAssistantTranscript] = useState("");
   const [toolActivity, setToolActivity] = useState("");
@@ -403,7 +423,9 @@ export function useVoiceLive(
   const [speaking, setSpeaking] = useState(false);
 
   const sessionRef = useRef<LiveSession | null>(null);
+  const pendingRef = useRef<PendingLiveSession | null>(null);
   const startingRef = useRef(false);
+  const attemptRef = useRef(0);
   const mountedRef = useRef(true);
 
   const onErrorRef = useRef(onError);
@@ -437,17 +459,16 @@ export function useVoiceLive(
     toolsRef.current = tools;
   }, [tools]);
 
-  useEffect(() => {
-    mountedRef.current = true;
-    setSupported(supportsVoiceLive());
-    return () => {
-      mountedRef.current = false;
-      teardown();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const teardown = useCallback(() => {
+    const pending = pendingRef.current;
+    pendingRef.current = null;
+    if (pending?.stream) {
+      for (const track of pending.stream.getTracks()) track.stop();
+    }
+    if (pending?.ctx) {
+      void pending.ctx.close().catch(() => {});
+    }
+
     const s = sessionRef.current;
     sessionRef.current = null;
     if (!s) return;
@@ -481,6 +502,16 @@ export function useVoiceLive(
     void s.ctx.close().catch(() => {});
   }, []);
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      attemptRef.current += 1;
+      startingRef.current = false;
+      teardown();
+    };
+  }, [teardown]);
+
   const start = useCallback(async () => {
     if (startingRef.current || sessionRef.current) return;
     if (!config.enabled || !config.wsUrl) {
@@ -491,6 +522,7 @@ export function useVoiceLive(
       onErrorRef.current("Live voice isn't supported in this browser.");
       return;
     }
+    const attempt = ++attemptRef.current;
     startingRef.current = true;
     setStatus("connecting");
     setUserTranscript("");
@@ -499,29 +531,43 @@ export function useVoiceLive(
     setTurns([]);
     setListening(false);
     setSpeaking(false);
-    // Raw resources are acquired before the session is wired into sessionRef; if
-    // init fails before that, teardown() can't see them (it early-returns on a
-    // null sessionRef), so the catch path releases these directly.
-    let pendingStream: MediaStream | null = null;
-    let pendingCtx: AudioContext | null = null;
+    const pending: PendingLiveSession = { ctx: null, stream: null };
+    pendingRef.current = pending;
     try {
-      const subprotocols = await buildSubprotocols(config);
+      // Begin permission-gated browser APIs before the first await so this work is
+      // still directly attributable to the microphone button's user gesture.
+      const streamPromise = navigator.mediaDevices
+        .getUserMedia({
+          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+        })
+        .then((stream) => {
+          if (attempt !== attemptRef.current) {
+            for (const track of stream.getTracks()) track.stop();
+            throw new DOMException("Voice start cancelled.", "AbortError");
+          }
+          pending.stream = stream;
+          return stream;
+        });
+      const ctx = makeAudioContext();
+      pending.ctx = ctx;
+      const resumePromise = ctx.resume();
+      const [subprotocols, stream] = await Promise.all([
+        buildSubprotocols(config),
+        streamPromise,
+        resumePromise,
+      ]).then(([protocols, mediaStream]) => [protocols, mediaStream] as const);
+
+      if (attempt !== attemptRef.current) return;
       if (!subprotocols) {
         onErrorRef.current("Please sign in to use live voice.");
+        teardown();
         setStatus("idle");
         return;
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-      });
-      pendingStream = stream;
       if (!mountedRef.current) {
         for (const t of stream.getTracks()) t.stop();
         return;
       }
-      const ctx = makeAudioContext();
-      pendingCtx = ctx;
-      await ctx.resume();
       const blob = new Blob([CAPTURE_WORKLET_SRC], { type: "application/javascript" });
       const moduleUrl = URL.createObjectURL(blob);
       try {
@@ -529,6 +575,7 @@ export function useVoiceLive(
       } finally {
         URL.revokeObjectURL(moduleUrl);
       }
+      if (attempt !== attemptRef.current) return;
       const source = ctx.createMediaStreamSource(stream);
       const worklet = new AudioWorkletNode(ctx, "ai4ia-capture");
 
@@ -556,6 +603,7 @@ export function useVoiceLive(
         nextPlayTime: 0,
       };
       sessionRef.current = session;
+      pendingRef.current = null;
 
       const enqueuePlayback = (b64: string) => {
         const int16 = base64ToInt16(b64);
@@ -612,7 +660,15 @@ export function useVoiceLive(
         if (assistantTurnId) return assistantTurnId;
         const id = nextTurnId();
         assistantTurnId = id;
-        pushTurn({ id, role: "assistant", text: "", streaming: true, pending: false, tool: "" });
+        pushTurn({
+          id,
+          role: "assistant",
+          text: "",
+          streaming: true,
+          pending: false,
+          createdAt: new Date().toISOString(),
+          tool: "",
+        });
         return id;
       };
 
@@ -674,6 +730,7 @@ export function useVoiceLive(
                   text: trimmed,
                   streaming: false,
                   pending: false,
+                  createdAt: new Date().toISOString(),
                   tool: "",
                 });
               }
@@ -715,6 +772,7 @@ export function useVoiceLive(
               text: "",
               streaming: false,
               pending: true,
+              createdAt: new Date().toISOString(),
               tool: "",
             });
             break;
@@ -760,6 +818,14 @@ export function useVoiceLive(
       ws.onmessage = handleServerEvent;
       ws.onerror = () => {
         onErrorRef.current("Live voice connection error.");
+        if (sessionRef.current === session) {
+          teardown();
+          if (mountedRef.current) {
+            setListening(false);
+            setSpeaking(false);
+            setStatus("idle");
+          }
+        }
       };
       ws.onclose = () => {
         if (sessionRef.current === session) {
@@ -772,22 +838,39 @@ export function useVoiceLive(
         }
       };
     } catch (e) {
-      onErrorRef.current((e as Error).message || "Couldn't start live voice.");
-      // If the session was never wired, teardown() early-returns, so release the
-      // raw mic/AudioContext here — otherwise the mic track stays live (the OS
-      // mic indicator stays lit) and the AudioContext leaks.
-      if (!sessionRef.current) {
-        if (pendingStream) for (const t of pendingStream.getTracks()) t.stop();
-        if (pendingCtx) void pendingCtx.close().catch(() => {});
+      const cancelled =
+        attempt !== attemptRef.current ||
+        (e instanceof DOMException && e.name === "AbortError");
+      if (cancelled) {
+        // A later retry may already own the shared refs. Only clean resources that
+        // still belong to this cancelled attempt; never tear down the newer start.
+        if (pendingRef.current === pending) {
+          pendingRef.current = null;
+          if (pending.stream) {
+            for (const track of pending.stream.getTracks()) track.stop();
+          }
+          if (pending.ctx) void pending.ctx.close().catch(() => {});
+        }
+      } else {
+        onErrorRef.current((e as Error).message || "Couldn't start live voice.");
+        // Invalidate this attempt before releasing known resources. If the mic
+        // permission promise resolves later, its continuation sees the mismatch
+        // and stops the newly returned track instead of retaining it.
+        if (attempt === attemptRef.current) {
+          attemptRef.current += 1;
+          startingRef.current = false;
+        }
+        teardown();
+        if (mountedRef.current) setStatus("idle");
       }
-      teardown();
-      if (mountedRef.current) setStatus("idle");
     } finally {
-      startingRef.current = false;
+      if (attempt === attemptRef.current) startingRef.current = false;
     }
   }, [config, model, agent, teardown]);
 
   const stop = useCallback(() => {
+    attemptRef.current += 1;
+    startingRef.current = false;
     setStatus("closing");
     teardown();
     if (mountedRef.current) {

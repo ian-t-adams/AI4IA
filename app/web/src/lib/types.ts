@@ -88,6 +88,7 @@ export interface Message {
 export interface VoiceTurnInput {
   role: "user" | "assistant";
   text: string;
+  createdAt?: string;
 }
 
 export interface AgentSummary {

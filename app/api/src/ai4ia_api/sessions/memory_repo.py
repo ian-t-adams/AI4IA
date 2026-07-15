@@ -6,6 +6,7 @@ identical across stores.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 from .models import Document, Message, Session
 from .repository import SessionNotFoundError
@@ -43,6 +44,11 @@ class InMemorySessionRepository:
             self._sessions[session.id] = session
             return session
 
+    async def touch_session(self, user_id: str, session_id: str) -> None:
+        async with self._lock:
+            session = await self._owned_session(user_id, session_id)
+            session.updatedAt = datetime.now(timezone.utc)
+
     async def delete_session(self, user_id: str, session_id: str) -> None:
         async with self._lock:
             await self._owned_session(user_id, session_id)
@@ -71,7 +77,10 @@ class InMemorySessionRepository:
 
     async def list_messages(self, user_id: str, session_id: str) -> list[Message]:
         await self._owned_session(user_id, session_id)
-        return list(self._messages.get(session_id, []))
+        return sorted(
+            self._messages.get(session_id, []),
+            key=lambda message: (message.createdAt, message.id),
+        )
 
     async def clear_messages(self, user_id: str, session_id: str) -> None:
         async with self._lock:

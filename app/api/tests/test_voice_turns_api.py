@@ -36,6 +36,43 @@ def test_append_voice_turns_persists_into_transcript(client):
     assert messages[0]["createdAt"] < messages[1]["createdAt"]
 
 
+def test_append_voice_turns_is_idempotent_per_conversation(client):
+    sid = _create_session(client)["id"]
+    payload = {
+        "conversationId": "voice-cycle-123",
+        "turns": [
+            {"role": "user", "text": "hello", "createdAt": "2026-07-15T12:00:00Z"},
+            {"role": "assistant", "text": "hi", "createdAt": "2026-07-15T12:00:01Z"},
+        ],
+    }
+
+    first = client.post(f"/api/sessions/{sid}/voice-turns", json=payload)
+    second = client.post(f"/api/sessions/{sid}/voice-turns", json=payload)
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert [message["id"] for message in second.json()] == [
+        message["id"] for message in first.json()
+    ]
+    messages = client.get(f"/api/sessions/{sid}/messages").json()
+    assert [message["content"] for message in messages] == ["hello", "hi"]
+    assert messages[0]["createdAt"] == "2026-07-15T12:00:00Z"
+
+
+def test_append_voice_turns_rejects_invalid_conversation_id(client):
+    sid = _create_session(client)["id"]
+
+    resp = client.post(
+        f"/api/sessions/{sid}/voice-turns",
+        json={
+            "conversationId": "not valid!",
+            "turns": [{"role": "user", "text": "hello"}],
+        },
+    )
+
+    assert resp.status_code == 422
+
+
 def test_voice_turns_then_typed_turn_share_one_session(client):
     sid = _create_session(client)["id"]
 
@@ -55,6 +92,33 @@ def test_voice_turns_then_typed_turn_share_one_session(client):
     # The typed turn (default source "chat") follows the voice turn.
     assert messages[1]["source"] == "chat"
     assert messages[1]["content"] == "hi"
+
+
+def test_typed_and_voice_turns_are_listed_chronologically(client):
+    sid = _create_session(client)["id"]
+    typed = client.post(
+        "/api/chat", json={"sessionId": sid, "content": "typed later", "stream": False}
+    )
+    assert typed.status_code == 200, typed.text
+
+    voice = client.post(
+        f"/api/sessions/{sid}/voice-turns",
+        json={
+            "conversationId": "earlier-cycle",
+            "turns": [
+                {
+                    "role": "user",
+                    "text": "spoken earlier",
+                    "createdAt": "2000-01-01T00:00:00Z",
+                }
+            ],
+        },
+    )
+    assert voice.status_code == 201, voice.text
+
+    messages = client.get(f"/api/sessions/{sid}/messages").json()
+    assert messages[0]["content"] == "spoken earlier"
+    assert messages[1]["content"] == "typed later"
 
 
 def test_append_voice_turns_drops_empty_and_whitespace(client):
@@ -137,6 +201,29 @@ def test_append_voice_turns_touches_session_updated_at(client):
 
     after = client.get(f"/api/sessions/{sid}").json()["updatedAt"]
     assert after >= before
+
+
+def test_append_voice_turns_preserves_session_configuration(client):
+    session = _create_session(client, model="gpt-5.2")
+    sid = session["id"]
+    patched = client.patch(
+        f"/api/sessions/{sid}",
+        json={"model": "gpt-5.3", "systemPrompt": "Stay concise."},
+    )
+    assert patched.status_code == 200, patched.text
+
+    resp = client.post(
+        f"/api/sessions/{sid}/voice-turns",
+        json={
+            "conversationId": "preserve-config",
+            "turns": [{"role": "user", "text": "hello"}],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+    current = client.get(f"/api/sessions/{sid}").json()
+    assert current["model"] == "gpt-5.3"
+    assert current["systemPrompt"] == "Stay concise."
 
 
 def test_append_voice_turns_rejects_other_users_session(client):
