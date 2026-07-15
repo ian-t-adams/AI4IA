@@ -83,6 +83,28 @@ throttled it returns `429`, `S7PREQUEUE: true`, and `retry-after-ms`.
 SimpleL7Proxy uses `MaxAttempts=1` per dispatch and owns delayed requeue, avoiding
 retry multiplication.
 
+### Multi-application onboarding status
+
+The infrastructure exposes the profile/priority/telemetry/async knobs, but shared
+key ingress is not a sufficient application identity boundary. A new independent
+application is therefore **not onboarded by adding a profile JSON row**.
+
+Before enabling `proxyProfilesEnabled`, an operator must:
+
+1. give each application a verifiable Entra workload identity (or equivalent
+   cryptographically verified identity) at the proxy edge;
+2. derive the profile lookup header at that trusted boundary rather than accepting
+   a caller-supplied value;
+3. export only the minimal app projection from canonical Cosmos into the
+   secret-mounted snapshot; and
+4. enforce per-app allowed paths/models and quotas at the proxy/APIM boundary.
+
+The current upstream profile subsystem can add flat profile fields and influence
+priority, but it does not securely authenticate `UserConfigUrl`, provide a Cosmos
+projection job, or independently enforce the full allowed-path/model/quota
+contract. `validate-feature-prereqs.py` intentionally rejects profile enablement
+until that work exists.
+
 ## Validation
 
 CI runs `scripts/validate-feature-prereqs.py` from `infra-validate.yml`. It
@@ -91,4 +113,8 @@ catch: prod with dev auth, Entra without tenant/audience/client ID, Voice Live
 tools without Voice Live, document compute without document understanding,
 broken custom-domain/cert combinations, proxy scale/priority errors, unsafe
 profile enablement, and personal ownership defaults. CI also regenerates and
-tests `infra/policies/simplel7proxy-endpoints.xml` against `infra/models.json`.
+tests the HTTP/SSE endpoint fragment and realtime routing policy against
+`infra/models.json`.
+The proxy Container App also uses the upstream listener on port `8080` for
+startup, liveness, and readiness. Optional async resources inherit the data-tier
+public/private posture and emit diagnostics to the shared Log Analytics workspace.

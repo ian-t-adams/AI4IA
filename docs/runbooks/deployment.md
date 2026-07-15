@@ -116,6 +116,11 @@ The model gateway has no Front Door in this phase. Point model clients at the
 proxy custom/default FQDN. DNS/custom domain terminates on the proxy Container
 App, which calls APIM; APIM alone has Foundry model RBAC.
 
+Both `azd provision` and the deploy workflow run the model/MCP/gateway drift
+checks plus `validate-feature-prereqs.py` before provisioning. The validator
+resolves the actual `AI4IA_*` environment values, not only the defaults embedded
+in `main.parameters.json`.
+
 ### 2.4 (Recommended) protect the `production` environment
 
 Settings → Environments → `production` → add **Required reviewers** so a human approves each deploy,
@@ -149,10 +154,36 @@ tests:
 3. APIM's `openai` API service URL terminates at Foundry, never at `ca-proxy`.
 4. The proxy `Host1` terminates at APIM and its subscription key is an ACA secret.
 5. Voice Live uses `AZURE_REALTIME_GATEWAY_URL` through the FastAPI relay.
+6. `AZURE_PROXY_APP_NAME` names the Container App used for revision-level
+   inspection and rollback.
 
 Do not add a second retry loop around model writes. APIM performs bounded
 same-dispatch regional failover; SimpleL7Proxy owns delayed requeue from the
 `S7PREQUEUE` contract.
+
+The `postprovision` hook hard-gates these output relationships even though it runs
+before application image deployment.
+
+#### Gateway canary and rollback
+
+`ca-proxy` uses `activeRevisionsMode: Single`, so this template does not provide a
+same-app weighted canary. Use a parallel azd environment/resource group as the
+canary:
+
+1. deploy the branch to the parallel environment with a separate proxy hostname;
+2. verify `/startup`, `/liveness`, and `/readiness` on the proxy revision;
+3. send one non-streaming and one streaming model request through the proxy URL;
+4. run a Voice Live session through the API relay and confirm its upstream is the
+   APIM realtime URL, not the proxy;
+5. verify APIM logs show the proxy subscription for HTTP/SSE and the realtime
+   subscription only for `/openai/realtime`; and
+6. move the production DNS/custom-domain binding only after those checks pass.
+
+For rollback, redeploy the known-good commit. If only the proxy image regressed,
+restore the previous Container App revision while preparing the source revert. If
+the APIM policy or subscription topology changed, revert and run `azd provision`
+as well as `azd deploy`; shifting Container App traffic alone does not roll back
+APIM.
 
 | Variable | Value (this deployment) |
 |---|---|
@@ -277,8 +308,9 @@ git checkout <good-sha>
 azd deploy
 ```
 
-Container Apps keeps prior revisions; you can also shift traffic back to a previous revision in the
-portal/CLI while a fix is prepared.
+Container Apps keeps prior revisions. The proxy is configured for single active
+revision, so rollback means reactivating/redeploying the prior revision rather
+than weighted traffic splitting.
 
 ## 7. Troubleshooting
 

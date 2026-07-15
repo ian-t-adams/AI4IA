@@ -5,6 +5,11 @@ usage, admin analytics, and model-gateway access. Model calls use the configured
 gateway except for Azure service control/data planes that are not OpenAI chat
 surfaces.
 
+`AI4IA_MODEL_GATEWAY_URL` is the SimpleL7Proxy `/openai` URL for compatible
+HTTP/SSE calls. When Voice Live is enabled, `AI4IA_REALTIME_BASE_URL` is the APIM
+`/openai` URL used by the server-side WebSocket relay; it intentionally bypasses
+SimpleL7Proxy.
+
 ## Responsibilities
 
 - Auth: dev mode for local work, Entra validation for deployed environments,

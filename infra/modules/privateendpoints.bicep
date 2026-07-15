@@ -13,7 +13,7 @@ param pepSubnetId string
 
 @description('''Private-endpoint targets. Each item:
   { name, serviceId, groupId, dnsZoneId }
-where groupId is the sub-resource (Sql | blob | vault) and dnsZoneId is the
+where groupId is the sub-resource (Sql | blob | vault | namespace) and dnsZoneId is the
 matching private DNS zone. Empty serviceId entries should be filtered by the
 caller (e.g. for conditionally-deployed storage accounts).''')
 param targets array

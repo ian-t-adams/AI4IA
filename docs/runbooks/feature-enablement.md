@@ -90,6 +90,24 @@ interval; Event Hub and async settings are cold and need a revision/restart.
   as a secret file. Do not configure `UserConfigUrl` to an unauthenticated HTTP or
   Blob URL, and do not grant the proxy Cosmos access.
 
+#### Onboarding another application
+
+Do not share the FastAPI key and trust `X-AI4IA-App-Id`; that would let one
+authorized caller impersonate another profile. The supported state in this phase
+is one trusted FastAPI application plus disabled profile enforcement.
+
+The onboarding sequence for a future independent application is:
+
+1. provision or register its Entra workload identity;
+2. make the proxy edge validate the token and derive an immutable app id;
+3. define its allowed model/path set, priority, and quota;
+4. publish a minimal server-owned Cosmos projection to the secret snapshot;
+5. enable profiles with `UserConfigRequired=true`; and
+6. verify unauthorized app ids, models, and paths fail closed before production.
+
+Steps 1-4 are explicit prerequisites, not implemented automation. Until they are
+complete, `proxyProfilesEnabled=true` fails validation.
+
 ### Document library and multimodal understanding
 
 Set:

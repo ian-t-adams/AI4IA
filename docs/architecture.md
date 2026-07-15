@@ -49,7 +49,8 @@ SimpleL7Proxy is deliberately bypassed because it supports HTTP/SSE, not WebSock
 4. Compatible model calls route through SimpleL7Proxy, then APIM, to a
    catalog-selected Foundry deployment. APIM performs bounded immediate regional
    failover; a full-capacity `429` carries the `S7PREQUEUE`/`retry-after-ms`
-   contract back to the proxy for delayed requeue. Native Azure service planes such as Content Understanding, Azure
+   contract back to the proxy for delayed requeue. Native Azure service planes
+   such as Content Understanding, Azure
    Monitor, Key Vault, Blob Storage, Cosmos, and AI Search are called directly with
    managed identity or configured service auth.
 5. Durable state is written to Cosmos and Blob Storage; derived memory/search/chunk
@@ -81,7 +82,8 @@ sequenceDiagram
 
 1. **Gateway-first model calls.** Chat, agents, embeddings, image/video generation,
    and REST speech route SimpleL7Proxy -> APIM. Realtime/Voice Live stays on the
-   governed FastAPI relay -> APIM path because the proxy is not a WebSocket server. Non-chat Azure
+   governed FastAPI relay -> APIM path because the proxy is not a WebSocket
+   server. Non-chat Azure
    service planes such as Content Understanding and Azure Monitor use their native
    endpoints with managed identity or configured service auth.
 2. **Catalog-driven deployments.** `infra/models.json` is the deployment source of
@@ -102,6 +104,23 @@ sequenceDiagram
 6. **Telemetry without blocking the hot path.** Usage writes, custom events,
    resource metrics, and optional App Insights export are best-effort and never
    break a chat turn.
+
+## Gateway execution boundaries
+
+- DNS/custom domain terminates on the public SimpleL7Proxy Container App. APIM is
+  the proxy's backend and never routes back to the proxy.
+- FastAPI receives the realtime-only APIM key. It uses that same value to
+  authenticate to the proxy for normal calls; the proxy strips it and injects a
+  separate model-API subscription key. The realtime subscription cannot invoke
+  the normal APIM model API.
+- APIM performs bounded immediate attempts across compatible regional
+  deployments. SimpleL7Proxy performs delayed requeue and owns queue TTL and
+  per-replica circuit breaking. The synchronous queue is not durable or global.
+- Event Hub carries optional metadata telemetry only. Dedicated Blob and Service
+  Bus resources are provisioned only for explicit durable async mode.
+- Cosmos remains canonical. The proxy has no Cosmos RBAC. A minimal profile
+  snapshot can be mounted as a secret file, but enablement is blocked until the
+  edge can prove application identity.
 
 ## Components
 

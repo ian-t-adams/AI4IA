@@ -6,7 +6,8 @@ Azure infrastructure all live here and deploy through `azd`.
 
 ## Current state
 
-Implemented: governed chat through SimpleL7Proxy + APIM, Entra/MSAL auth, agents
+Implemented: governed HTTP/SSE model traffic through SimpleL7Proxy -> APIM,
+realtime through the FastAPI relay -> APIM, Entra/MSAL auth, agents
 and workflows, per-user memory, usage metering and entitlements, voice/STT/TTS +
 Voice Live, image/video generation, document and multimodal understanding,
 custom remote MCP tools, admin usage/resource dashboards, and Azure Monitor /
@@ -14,10 +15,11 @@ Application Insights telemetry.
 
 Advanced capabilities are feature-gated. Code defaults stay safe and mostly OFF;
 the deployed environment is controlled by `infra/main.parameters.json` and azd
-environment values. In the checked-in live parameters every capability is enabled,
-including Web IQ search (the `/research` command) and the inline-attachment Code
-Interpreter; Web IQ authenticates with the API's managed identity unless
-`AI4IA_WEBIQ_API_KEY` is set. See
+environment values. The checked-in live parameters enable the application
+capabilities, including Web IQ search (the `/research` command) and the
+inline-attachment Code Interpreter, while the new multi-application profile,
+priority, Event Hub, and durable-async gateway controls remain off. Web IQ
+authenticates with the API's managed identity unless `AI4IA_WEBIQ_API_KEY` is set. See
 [`docs/runbooks/feature-enablement.md`](docs/runbooks/feature-enablement.md).
 
 Known gaps to keep visible:
@@ -26,6 +28,9 @@ Known gaps to keep visible:
   folder-level sharing, and unauthenticated public links are not implemented.
 - Memory has save/forget APIs and automatic recall, but no global user-facing
   memory toggle or recalled-memory indicator in chat.
+- Multi-application profiles remain blocked until the public proxy edge validates
+  a workload identity; shared-key ingress is not sufficient for trusted app
+  identity or per-app policy.
 
 ## Repository layout
 
@@ -44,7 +49,8 @@ azure.yaml  Azure Developer CLI service map
 
 - **IaC:** Bicep + Azure Developer CLI (`azd`).
 - **Stack:** Next.js/TypeScript web, Python FastAPI API, .NET SimpleL7Proxy.
-- **Model gateway:** backend model calls go through APIM/SimpleL7Proxy; direct
+- **Model gateway:** compatible HTTP/SSE calls go SimpleL7Proxy -> APIM; realtime
+  WebSockets go FastAPI relay -> APIM. Direct
   Foundry calls are reserved for non-OpenAI control planes such as Content
   Understanding and Azure Monitor where required.
 - **Catalog-driven models:** `infra/models.json` is the deployment source of truth

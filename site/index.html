@@ -54,15 +54,15 @@
       <div class="container">
         <h2 class="section-title">What it is</h2>
         <p class="section-sub">The web frontend calls the FastAPI backend; the backend owns auth, session state,
-          tools, memory, document/library access, usage metering, and all model routing. Model calls route through
-          APIM and SimpleL7Proxy to the selected Azure AI Foundry deployment.</p>
+          tools, memory, document/library access, usage metering, and all model routing. Compatible HTTP/SSE calls go
+          SimpleL7Proxy -> APIM -> Foundry; Voice Live uses the FastAPI relay -> APIM path.</p>
         <div class="grid cols-2">
           <div class="card">
             <h3>🎯 Purpose &amp; principles</h3>
-            <p><strong>Gateway-first:</strong> every model call is governed through APIM + SimpleL7Proxy.</p>
+            <p><strong>Gateway-first:</strong> HTTP/SSE uses SimpleL7Proxy -> APIM; realtime uses the relay -> APIM.</p>
             <p><strong>Catalog-driven:</strong> <span class="mono">infra/models.json</span> is the deployment source of truth.</p>
             <p><strong>Feature-gated:</strong> advanced surfaces fail closed and default safe.</p>
-            <p><strong>Keyless:</strong> every Azure data plane is reached with a managed identity + RBAC.</p>
+            <p><strong>Identity-first:</strong> Azure data planes use managed identity; scoped hop keys remain app secrets.</p>
             <p><strong>Cosmos is canonical;</strong> derived stores (memory, search, chunks) are rebuildable.</p>
           </div>
           <div class="card">

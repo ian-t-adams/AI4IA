@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the APIM endpoint fragment from the authoritative model catalog."""
+"""Generate APIM model and realtime routing from the authoritative catalog."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODELS_PATH = ROOT / "infra" / "models.json"
 TEMPLATE_PATH = ROOT / "infra" / "policies" / "simplel7proxy-endpoints.template.xml"
 OUTPUT_PATH = ROOT / "infra" / "policies" / "simplel7proxy-endpoints.xml"
+REALTIME_OUTPUT_PATH = ROOT / "infra" / "policies" / "realtime-routing.xml"
 CATALOG_MARKER = "__AI4IA_BACKEND_CATALOG__"
 ATTEMPTS_MARKER = "__AI4IA_MAX_IMMEDIATE_ATTEMPTS__"
 
@@ -116,6 +117,63 @@ def generate() -> str:
     )
 
 
+def generate_realtime_policy(models: dict[str, Any]) -> str:
+    naming = models["naming"]
+    routes: list[str] = []
+    for model in models["catalog"]:
+        if model["category"] != "realtime":
+            continue
+        for deployment in model["deployments"]:
+            name = deployment_name(
+                model=model["name"],
+                subscription_token=naming["subscriptionToken"],
+                region=deployment["region"],
+                sku=deployment["sku"],
+                sku_short=naming["skuShort"],
+            )
+            routes.append(
+                "      <when condition=\"@(&quot;"
+                + html.escape(name, quote=True)
+                + "&quot;.Equals(context.Request.Url.Query.GetValueOrDefault"
+                "(&quot;deployment&quot;, &quot;&quot;), "
+                "StringComparison.OrdinalIgnoreCase))\">\n"
+                "        <set-backend-service base-url=\"{{foundry-"
+                + deployment["region"]
+                + "-endpoint}}/openai/realtime\" />\n"
+                "      </when>"
+            )
+
+    if not routes:
+        raise ValueError("infra/models.json contains no realtime deployments")
+
+    return (
+        "<policies>\n"
+        "  <inbound>\n"
+        "    <base />\n"
+        "    <choose>\n"
+        + "\n".join(routes)
+        + "\n"
+        "      <otherwise>\n"
+        "        <return-response>\n"
+        "          <set-status code=\"404\" reason=\"Realtime deployment is not in the AI4IA catalog\" />\n"
+        "          <set-body>{\"error\":{\"code\":\"model_not_allowed\",\"message\":\"The requested realtime deployment is not allowed by the gateway catalog.\"}}</set-body>\n"
+        "        </return-response>\n"
+        "      </otherwise>\n"
+        "    </choose>\n"
+        "    <set-header name=\"x-correlation-id\" exists-action=\"override\">\n"
+        "      <value>@(context.RequestId.ToString())</value>\n"
+        "    </set-header>\n"
+        "    <set-header name=\"Ocp-Apim-Subscription-Key\" exists-action=\"delete\" />\n"
+        "    <set-header name=\"Authorization\" exists-action=\"delete\" />\n"
+        "    <authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" />\n"
+        "  </inbound>\n"
+        "  <backend><base /></backend>\n"
+        "  <outbound><base /></outbound>\n"
+        "  <on-error><base /></on-error>\n"
+        "</policies>\n"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -124,21 +182,32 @@ def main() -> int:
         help="fail when the checked-in fragment differs from generated output",
     )
     args = parser.parse_args()
+    models = json.loads(MODELS_PATH.read_text(encoding="utf-8"))
     generated = generate()
+    realtime_generated = generate_realtime_policy(models)
 
     if args.check:
         current = OUTPUT_PATH.read_text(encoding="utf-8") if OUTPUT_PATH.exists() else ""
-        if current != generated:
+        realtime_current = (
+            REALTIME_OUTPUT_PATH.read_text(encoding="utf-8")
+            if REALTIME_OUTPUT_PATH.exists()
+            else ""
+        )
+        if current != generated or realtime_current != realtime_generated:
             print(
                 "Gateway policy catalog is stale. Run scripts/gen-gateway-policy.py.",
                 file=sys.stderr,
             )
             return 1
-        print("Gateway policy catalog is current.")
+        print("Gateway model and realtime policy catalogs are current.")
         return 0
 
     OUTPUT_PATH.write_text(generated, encoding="utf-8", newline="\n")
+    REALTIME_OUTPUT_PATH.write_text(
+        realtime_generated, encoding="utf-8", newline="\n"
+    )
     print(f"Wrote {OUTPUT_PATH.relative_to(ROOT)}")
+    print(f"Wrote {REALTIME_OUTPUT_PATH.relative_to(ROOT)}")
     return 0
 
 

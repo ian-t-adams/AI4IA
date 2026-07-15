@@ -22,6 +22,16 @@ param uniqueSuffix string
 @description('Proxy managed identity principal ID.')
 param proxyPrincipalId string
 
+@description('Central Log Analytics workspace resource ID for diagnostic settings.')
+param logAnalyticsWorkspaceId string
+
+@description('Public network access posture for both async resources.')
+@allowed([
+  'Enabled'
+  'Disabled'
+])
+param publicNetworkAccess string = 'Enabled'
+
 @description('Service Bus queue used by SimpleL7Proxy async processing.')
 param queueName string = 'requeststatus'
 
@@ -42,7 +52,18 @@ module asyncStorage 'br/public:avm/res/storage/storage-account:0.32.1' = if (ena
     allowBlobPublicAccess: false
     allowSharedKeyAccess: false
     minimumTlsVersion: 'TLS1_2'
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: publicNetworkAccess
+    diagnosticSettings: [
+      {
+        name: 'to-log-analytics'
+        workspaceResourceId: logAnalyticsWorkspaceId
+        metricCategories: [
+          {
+            category: 'AllMetrics'
+          }
+        ]
+      }
+    ]
     blobServices: {
       containers: [
         {
@@ -71,8 +92,24 @@ module asyncServiceBus 'br/public:avm/res/service-bus/namespace:0.16.2' = if (en
       name: 'Standard'
     }
     disableLocalAuth: true
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: publicNetworkAccess
     minimumTlsVersion: '1.2'
+    diagnosticSettings: [
+      {
+        name: 'to-log-analytics'
+        workspaceResourceId: logAnalyticsWorkspaceId
+        logCategoriesAndGroups: [
+          {
+            categoryGroup: 'allLogs'
+          }
+        ]
+        metricCategories: [
+          {
+            category: 'AllMetrics'
+          }
+        ]
+      }
+    ]
     queues: [
       {
         name: queueName
@@ -96,5 +133,9 @@ module asyncServiceBus 'br/public:avm/res/service-bus/namespace:0.16.2' = if (en
 #disable-next-line BCP318
 output blobServiceUri string = enabled ? asyncStorage.outputs.primaryBlobEndpoint : ''
 #disable-next-line BCP318
+output storageAccountId string = enabled ? asyncStorage.outputs.resourceId : ''
+#disable-next-line BCP318
 output serviceBusNamespaceFqdn string = enabled ? '${asyncServiceBus.outputs.name}.servicebus.windows.net' : ''
+#disable-next-line BCP318
+output serviceBusNamespaceId string = enabled ? asyncServiceBus.outputs.resourceId : ''
 output asyncQueueName string = enabled ? queueName : ''

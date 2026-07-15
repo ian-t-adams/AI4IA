@@ -4,7 +4,7 @@ AI4IA depends on third-party open-source software through its application packag
 
 ## Vendored SimpleL7Proxy
 
-The `proxy/` tree vendors source from [`microsoft/SimpleL7Proxy`](https://github.com/microsoft/SimpleL7Proxy), pinned in `proxy/README.md` and `proxy/Dockerfile` to commit `72244ac3e779587ae81e25de3ece4653cfbf2ab1`.
+The `proxy/` tree vendors source from [`microsoft/SimpleL7Proxy`](https://github.com/microsoft/SimpleL7Proxy), pinned in `proxy/README.md` and `proxy/Dockerfile` to commit `d9eb1d1fa42820792a9699bfc253562fba07d977`.
 
 Vendored directories:
 
@@ -12,7 +12,7 @@ Vendored directories:
 - `proxy/Shared-parser/`
 - `proxy/SimpleL7Proxy/`
 
-Upstream license: MIT License, copyright Microsoft Corporation. A copy of the upstream MIT license is kept at `proxy/LICENSE`. Keep the pinned commit, this notice, and `proxy/README.md` in sync whenever the vendored copy is refreshed.
+Upstream license: MIT License, copyright Microsoft Corporation. A copy of the upstream MIT license is kept at `proxy/LICENSE`. Keep the pinned commit, this notice, `proxy/README.md`, and its documented AI4IA deviations in sync whenever the vendored copy is refreshed.
 
 ## Application dependencies
 

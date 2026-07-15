@@ -2,7 +2,7 @@
 
 `azd` provisions AI4IA from [`main.bicep`](./main.bicep) at subscription scope.
 The deployment creates the resource group, shared tags, identities, observability,
-data services, model deployments, Container Apps, APIM/SimpleL7Proxy, and optional
+data services, model deployments, Container Apps, SimpleL7Proxy/APIM, and optional
 feature resources.
 
 ## Files
@@ -12,6 +12,8 @@ feature resources.
   environment values.
 - `models.json` — model deployment source of truth.
 - `models.schema.json` — schema for `models.json`.
+- `policies/` — upstream-derived APIM retry/requeue policy plus the generated
+  catalog endpoint fragment.
 - `abbreviations.json` — resource-name abbreviations.
 - `modules/` — Bicep modules consumed by `main.bicep`.
 
@@ -28,9 +30,26 @@ feature resources.
 | `search.bicep` | Azure AI Search service and RBAC |
 | `containerapps.bicep` | Container Apps environment and ACR |
 | `api.bicep` / `web.bicep` | API and web Container Apps |
-| `gateway.bicep` | SimpleL7Proxy Container App and APIM gateway |
+| `gateway.bicep` | Public SimpleL7Proxy HTTP/SSE edge, APIM model/realtime APIs, policy, auth, and Foundry RBAC |
+| `proxyasync.bicep` | Default-off AVM Blob + Service Bus backing for durable proxy async jobs |
 | `eventhubs.bicep` | Telemetry Event Hubs namespace/hub |
 | `cost.bicep` | Budget tracking |
+
+Normal model traffic is DNS/custom domain -> SimpleL7Proxy -> APIM -> Foundry.
+The FastAPI Voice Live relay bypasses SimpleL7Proxy and uses the separately scoped
+APIM realtime API because the proxy does not support WebSockets.
+
+Regenerate and validate policy routing after any `models.json` change:
+
+```powershell
+python scripts/gen-gateway-policy.py
+python scripts/gen-gateway-policy.py --check
+python -m unittest scripts.tests.test_gateway_policy
+```
+
+When `dataTierPrivate=true`, the optional async Blob and Service Bus resources
+also disable public access and receive private endpoints/DNS. Both send platform
+diagnostics to the shared Log Analytics workspace.
 
 ## Usage
 

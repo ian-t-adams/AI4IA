@@ -297,10 +297,11 @@ var webIdentity = filter(identity.outputs.identities, x => x.service == 'web')[0
 var nativeFoundryPrincipalIds = [
   apiIdentity.principalId
 ]
-var telemetrySenderPrincipalIds = [
+var telemetrySenderPrincipalIds = concat([
   apiIdentity.principalId
+], proxyEventHubTelemetryEnabled ? [
   proxyIdentity.principalId
-]
+] : [])
 
 // The api managed identity reads Azure Monitor platform metrics for the admin
 // dashboard's resource panels via the batch metrics API (metrics:getBatch), which
@@ -453,6 +454,20 @@ var privateEndpointTargets = vnetIsolationEnabled ? filter([
     #disable-next-line BCP318
     dnsZoneId: network.outputs.vaultDnsZoneId
   }
+  {
+    name: 'proxyasyncblob'
+    serviceId: proxyasync.outputs.storageAccountId
+    groupId: 'blob'
+    #disable-next-line BCP318
+    dnsZoneId: network.outputs.blobDnsZoneId
+  }
+  {
+    name: 'proxyasyncbus'
+    serviceId: proxyasync.outputs.serviceBusNamespaceId
+    groupId: 'namespace'
+    #disable-next-line BCP318
+    dnsZoneId: network.outputs.serviceBusDnsZoneId
+  }
 ], t => !empty(t.serviceId)) : []
 
 module privateEndpoints 'modules/privateendpoints.bicep' = if (vnetIsolationEnabled) {
@@ -497,6 +512,8 @@ module proxyasync 'modules/proxyasync.bicep' = {
     environmentName: environmentName
     uniqueSuffix: uniqueSuffix
     proxyPrincipalId: proxyIdentity.principalId
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
+    publicNetworkAccess: dataTierPrivate ? 'Disabled' : 'Enabled'
   }
 }
 
@@ -547,6 +564,7 @@ module gateway 'modules/gateway.bicep' = {
       endpoint: foundry[i].outputs.endpoint
       accountName: foundry[i].outputs.accountName
     }]
+    primaryFoundryEndpoint: primaryFoundryEndpoint
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     appConfigEndpoint: keyvault.outputs.appConfigEndpoint
     appConfigLabel: proxyAppConfigLabel
@@ -868,6 +886,7 @@ output AZURE_MODEL_GATEWAY_URL string = gateway.outputs.modelGatewayUrl
 output AZURE_APIM_GATEWAY_URL string = gateway.outputs.apimGatewayUrl
 output AZURE_REALTIME_GATEWAY_URL string = gateway.outputs.realtimeGatewayUrl
 output AZURE_PROXY_URL string = gateway.outputs.proxyUrl
+output AZURE_PROXY_APP_NAME string = gateway.outputs.proxyAppName
 // Empty unless enableOfficialMcp; subscription key is intentionally NOT output
 // (it is wired module->module to the api during the runtime phase).
 #disable-next-line BCP318

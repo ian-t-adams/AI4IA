@@ -35,6 +35,9 @@ param proxyImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 @description('Catalog-driven Foundry backends: region, endpoint, and accountName.')
 param foundryBackends array
 
+@description('Foundry endpoint in the deployment primary region, used only as the non-looping APIM service URL fallback.')
+param primaryFoundryEndpoint string
+
 @description('Application Insights connection string for proxy telemetry.')
 param appInsightsConnectionString string
 
@@ -109,8 +112,7 @@ param managedCertificateName string = ''
 @description('Container Apps managed environment name (parent of the managed certificate).')
 param containerEnvName string
 
-var primaryFoundry = foundryBackends[0]
-var foundryBase = endsWith(primaryFoundry.endpoint, '/') ? primaryFoundry.endpoint : '${primaryFoundry.endpoint}/'
+var foundryBase = endsWith(primaryFoundryEndpoint, '/') ? primaryFoundryEndpoint : '${primaryFoundryEndpoint}/'
 var foundryOpenAiUrl = '${foundryBase}openai'
 var proxyAppName = 'ca-proxy-${environmentName}'
 
@@ -138,7 +140,7 @@ resource foundryEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024
   properties: {
     displayName: 'foundry-${backend.region}-endpoint'
     secret: false
-    value: backend.endpoint
+    value: endsWith(backend.endpoint, '/') ? substring(backend.endpoint, 0, length(backend.endpoint) - 1) : backend.endpoint
   }
 }]
 
@@ -254,9 +256,12 @@ resource realtimeApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-0
   parent: realtimeApi
   name: 'policy'
   properties: {
-    format: 'xml'
-    value: '<policies><inbound><base /><set-header name="x-correlation-id" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header><set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" /><set-header name="Authorization" exists-action="delete" /><authentication-managed-identity resource="https://cognitiveservices.azure.com" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>'
+    format: 'rawxml'
+    value: loadTextContent('../policies/realtime-routing.xml')
   }
+  dependsOn: [
+    foundryEndpointValues
+  ]
 }
 
 resource apiRealtimeSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
@@ -483,6 +488,47 @@ resource proxyApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
           }
           env: concat(hostEnv, staticEnv, appConfigEnv, priorityEnv, eventHubEnv, profileEnv, asyncEnv)
           volumeMounts: profileVolumeMounts
+          probes: [
+            {
+              type: 'Startup'
+              httpGet: {
+                path: '/startup'
+                port: 8080
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 2
+              periodSeconds: 5
+              timeoutSeconds: 3
+              failureThreshold: 30
+              successThreshold: 1
+            }
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/liveness'
+                port: 8080
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 10
+              periodSeconds: 30
+              timeoutSeconds: 3
+              failureThreshold: 3
+              successThreshold: 1
+            }
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/readiness'
+                port: 8080
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              timeoutSeconds: 3
+              failureThreshold: 3
+              successThreshold: 1
+            }
+          ]
         }
       ]
       scale: {
@@ -523,7 +569,6 @@ var proxyUrl = 'https://${proxyApp.properties.configuration.ingress.fqdn}'
 
 output proxyAppName string = proxyApp.name
 output proxyUrl string = proxyUrl
-output apimName string = apim.name
 output apimGatewayUrl string = apim.properties.gatewayUrl
 output modelGatewayUrl string = '${proxyUrl}/openai'
 output realtimeGatewayUrl string = '${apim.properties.gatewayUrl}/openai'

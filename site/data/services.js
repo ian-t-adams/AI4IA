@@ -22,9 +22,9 @@ window.AI4IA_SERVICES = [
   {
     key: "proxy", name: "Model proxy (Container App)", azureType: "Microsoft.App/containerApps",
     group: "Compute", icon: "🛡️", module: "gateway.bicep", resourcePattern: "ca-proxy-*",
-    summary: "Vendored SimpleL7Proxy model gateway sitting behind APIM. The backend always calls models " +
-      "through this single front door, so model wiring is not duplicated and quotas/entitlements layer above it.",
-    identity: "id-proxy (user-assigned) · ACR Pull",
+    summary: "Public HTTP/SSE gateway edge. Applications call SimpleL7Proxy first for queueing, priority and delayed " +
+      "requeue; its only model backend is APIM. Realtime WebSockets bypass it through the FastAPI relay.",
+    identity: "id-proxy (user-assigned) · ACR Pull + App Configuration reader; optional telemetry/async roles",
     docs: [["SimpleL7Proxy (upstream)", "https://github.com/microsoft/SimpleL7Proxy"]],
   },
   {
@@ -46,8 +46,8 @@ window.AI4IA_SERVICES = [
   {
     key: "apim", name: "API Management — model gateway", azureType: "Microsoft.ApiManagement/service",
     group: "Gateway", icon: "🚪", module: "gateway.bicep", resourcePattern: "apim-ai4ia-*",
-    summary: "The model gateway front door (Consumption SKU, scale-to-zero). Governs model access and " +
-      "reaches Azure AI Foundry with a managed identity (Cognitive Services OpenAI User + User).",
+    summary: "Internal model-policy hop on the Consumption SKU. It receives proxy-authenticated HTTP/SSE traffic, " +
+      "performs catalog routing and bounded regional failover, exposes a separate realtime API, and reaches Foundry with MI.",
     identity: "system-assigned; granted OpenAI User + Cognitive Services User on the Foundry accounts",
     docs: [["APIM AI gateway", "https://learn.microsoft.com/azure/api-management/genai-gateway-capabilities"]],
   },
@@ -55,8 +55,8 @@ window.AI4IA_SERVICES = [
     key: "apim-mcp", name: "API Management — MCP gateway", azureType: "Microsoft.ApiManagement/service",
     group: "Gateway", icon: "🔌", module: "mcpgateway.bicep", resourcePattern: "apim-mcp-ai4ia-*",
     summary: "A second, dedicated APIM (Basic v2) front door that exposes and governs the curated 'official' " +
-      "MCP servers using APIM's native MCP feature, gated on one subscription key. Kept separate so model " +
-      "traffic keeps its scale-to-zero economics (the MCP feature is unsupported on Consumption).",
+      "MCP servers using APIM's native MCP feature, gated on one subscription key. Kept separate because the native " +
+      "MCP feature is unsupported on the model gateway's Consumption tier.",
     identity: "system-assigned; may be granted Foundry User to mint the toolbox bearer",
     docs: [["Expose MCP servers in APIM", "https://learn.microsoft.com/azure/api-management/export-rest-mcp-server"]],
   },
@@ -65,8 +65,8 @@ window.AI4IA_SERVICES = [
     group: "AI", icon: "🧠", module: "foundry.bicep + models.bicep", resourcePattern: "mf-aiforia-slurmfactory-{region}",
     summary: "Azure AI Services (Foundry) accounts in East US 2, Sweden Central and West US, each with a default " +
       "project. They serve chat/embedding/realtime/speech/image/video models (deployed from infra/models.json) and " +
-      "Content Understanding. Reached via managed identity through the model gateway; CU is called directly.",
-    identity: "data-plane callers granted OpenAI User + Cognitive Services User",
+      "Content Understanding. APIM reaches normal model deployments with MI; FastAPI retains direct MI only for native/control planes such as CU and code interpreter.",
+    identity: "APIM system MI and the API native-plane identity hold scoped data-plane roles; the proxy has no Foundry RBAC",
     docs: [["Azure AI Foundry", "https://learn.microsoft.com/azure/ai-foundry/"], ["Content Understanding", "https://learn.microsoft.com/azure/ai-services/content-understanding/"]],
   },
   {
@@ -94,18 +94,18 @@ window.AI4IA_SERVICES = [
     docs: [["Azure AI Search", "https://learn.microsoft.com/azure/search/search-what-is-azure-search"]],
   },
   {
-    key: "storage", name: "Storage accounts (×2)", azureType: "Microsoft.Storage/storageAccounts",
-    group: "Data", icon: "💾", module: "data.bicep", resourcePattern: "st*",
+    key: "storage", name: "Storage accounts (×2 + optional async)", azureType: "Microsoft.Storage/storageAccounts",
+    group: "Data", icon: "💾", module: "data.bicep + proxyasync.bicep", resourcePattern: "st*",
     summary: "Blob storage for raw + parsed documents (library) and for generated media (images/videos). Identity-based " +
-      "access only (Storage Blob Data Contributor); each emits Event Grid system topics for change events.",
-    identity: "id-api granted Storage Blob Data Contributor on both accounts",
+      "access only. Durable proxy async adds a dedicated default-off account; the two application accounts emit Event Grid topics.",
+    identity: "id-api owns application blobs; id-proxy gets Blob Data Contributor only on the optional async account",
     docs: [["Azure Blob Storage", "https://learn.microsoft.com/azure/storage/blobs/storage-blobs-introduction"]],
   },
   {
     key: "keyvault", name: "Key Vault", azureType: "Microsoft.KeyVault/vaults",
     group: "Security", icon: "🔐", module: "keyvault.bicep", resourcePattern: "kvai4ia*",
-    summary: "RBAC-mode Key Vault holding secrets such as per-user (BYO) MCP connection credentials and gateway keys. " +
-      "Only opaque references land in Cosmos; the actual secrets stay in the vault.",
+    summary: "RBAC-mode Key Vault holding per-user (BYO) MCP connection credentials. Only opaque references land in " +
+      "Cosmos; APIM hop keys are separate Container App secrets and are not stored here.",
     identity: "app identities get Secrets User (read); id-api gets Secrets Officer when custom tools are enabled (write)",
     docs: [["Azure Key Vault", "https://learn.microsoft.com/azure/key-vault/general/overview"]],
   },
@@ -130,8 +130,16 @@ window.AI4IA_SERVICES = [
     group: "Messaging", icon: "📨", module: "eventhubs.bicep", resourcePattern: "evhns-ai4ia-*",
     summary: "Telemetry/eventing backbone for cost/usage events. Identity-based auth only (local/SAS auth disabled); " +
       "senders/receivers use the Event Hubs Data Sender/Receiver roles.",
-    identity: "principals granted Event Hubs Data Sender / Data Receiver",
+    identity: "id-api sender/receiver; id-proxy sender only when proxy telemetry is enabled",
     docs: [["Azure Event Hubs", "https://learn.microsoft.com/azure/event-hubs/event-hubs-about"]],
+  },
+  {
+    key: "servicebus", name: "Service Bus Namespace (optional async)", azureType: "Microsoft.ServiceBus/namespaces",
+    group: "Messaging", icon: "📬", module: "proxyasync.bicep", resourcePattern: "sb-ai4ia-*-proxy-async",
+    summary: "Default-off durable async request queue for SimpleL7Proxy. It is separate from the synchronous in-memory " +
+      "priority queue, disables local auth, follows the private-data-tier posture, and sends diagnostics to Log Analytics.",
+    identity: "id-proxy granted Service Bus Data Sender + Receiver only when async is enabled",
+    docs: [["Azure Service Bus", "https://learn.microsoft.com/azure/service-bus-messaging/service-bus-messaging-overview"]],
   },
   {
     key: "eventgrid", name: "Event Grid System Topics (×2)", azureType: "Microsoft.EventGrid/systemTopics",
@@ -169,8 +177,8 @@ window.AI4IA_SERVICES = [
   {
     key: "identities", name: "User-Assigned Managed Identities (×3)", azureType: "Microsoft.ManagedIdentity/userAssignedIdentities",
     group: "Security", icon: "🪪", module: "identity.bicep", resourcePattern: "id-{web,api,proxy}-*",
-    summary: "The workload identities for the web, api and proxy container apps. All Azure access is keyless — every " +
-      "data plane (Cosmos, Storage, Search, Key Vault, Postgres, Foundry, Monitor) is reached through these identities + RBAC.",
+    summary: "The workload identities for the web, api and proxy container apps. Azure service data planes " +
+      "(Cosmos, Storage, Search, Key Vault, Postgres, Foundry, Monitor) use these identities + RBAC; scoped APIM hop keys remain Container App secrets.",
     identity: "see Requirements → Permissions for the full role map",
     docs: [["Managed identities", "https://learn.microsoft.com/azure/active-directory/managed-identities-azure-resources/overview"]],
   },

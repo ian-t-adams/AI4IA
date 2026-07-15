@@ -26,7 +26,7 @@ Vendored (not a submodule) from microsoft/SimpleL7Proxy @
 
 ### Intentional source deviation
 
-Two files carry AI4IA security/correctness patches over the audited pin:
+Three files carry AI4IA security/correctness patches over the audited pin:
 
 - `SimpleL7Proxy/Config/IncomingAuthValidator.cs` applies `ValidateAuthConfig`'s `header=` value to the actual key lookup (upstream otherwise keeps
   reading the default `S7P-KEY`, which rejects AI4IA's `Ocp-Apim-Subscription-Key` ingress);
@@ -35,22 +35,27 @@ Two files carry AI4IA security/correctness patches over the audited pin:
 - `SimpleL7Proxy/Config/ConfigFactory.cs` removes an upstream warm-reload debug line that printed
   old and new configuration values, which could expose a secret if an operator ever placed one in
   a warm App Configuration key.
+- `SimpleL7Proxy/RequestData.cs` derives Azure-native deployment names from
+  `/deployments/{name}/...` when the request body correctly omits `model`. This
+  supplies the generated APIM catalog header for chat, embeddings, image, and
+  audio calls while preserving body-based model detection for Responses API.
 
 All other files in the three source directories remain byte-for-byte upstream. Re-evaluate and
 drop this patch when refreshing to an upstream commit that fixes both behaviors.
 
 To refresh the vendored copy, check out the audited upstream commit and mirror the three project
 directories from upstream `src/` (excluding `bin/`/`obj/`). Keep this README and the root
-`Dockerfile`, reapply/test the documented inbound-auth patch, verify every other source file is
+`Dockerfile`, reapply/test the documented source patches, verify every other source file is
 byte-for-byte identical to upstream, and update both pin references.
 
 ## Runtime shape
 
-- **Worker** (generic host, not a web host). The L7 listener is an `HttpListener` bound to the
-  `Port` env var (Bicep sets `8080`; Container Apps ingress `targetPort: 8080`). A separate
-  Kestrel **probe server** listens on `9000` (`/health`, `/readiness`, `/startup`, `/liveness`).
-- Token refresh runs as non-blocking background tasks, so the listener binds and the Container
-  Apps TCP probe on 8080 passes even before the first backend token is acquired.
+- **Worker** (generic host, not a web host). The L7 `HttpListener` is bound to the
+  `Port` env var (Bicep sets `8080`; Container Apps ingress `targetPort: 8080`) and
+  serves `/readiness`, `/startup`, and `/liveness` on that listener.
+- Token refresh runs as non-blocking background tasks, so the listener binds
+  independently of backend token acquisition. Container Apps probes those
+  endpoints on port `8080`.
 - The backend comes from `Host1` (set in `infra/modules/gateway.bicep`) and targets APIM:
   `host=<apim-gateway>;mode=apim;probe=/openai/status;processor=OpenAI`. The APIM subscription key
   is a Container App secret exposed only through `Host1-api-key`; it is never embedded in `Host1`.
@@ -79,9 +84,23 @@ authenticates the API to the proxy, where it is stripped before the proxy inject
 model-API subscription key. This temporary key design is isolated per hop and stored only as
 Container App secrets; the migration target is Entra workload authentication at both edges.
 
+## Optional controls
+
+- App Configuration is read with `id-proxy`; warm profile, priority, and header
+  policy values refresh without a revision. Event Hub and async settings are cold.
+- Event Hub export is default-off and emits routing/status/latency metadata with
+  request/response header logging disabled. It is not a work queue.
+- Durable async is default-off and provisions dedicated MI-only Blob + Service Bus
+  resources. It does not make the synchronous queue durable.
+- Profiles are default-off and `UserConfigRequired=true` when enabled. The only
+  supported source is the secret-mounted local snapshot. Validation blocks
+  enablement until the edge derives a verified app identity; the proxy never
+  reads Cosmos directly.
+
 ## Current scope
 
-- SimpleL7Proxy + APIM front the Foundry endpoints with a `models.json`-derived allowlist, auth,
-  routing, request IDs, token/cost telemetry, multi-region capacity sharing, priority queues,
-  Event Hubs/App Insights analytics, and user entitlements.
+- SimpleL7Proxy + APIM front the Foundry endpoints with a `models.json`-derived
+  allowlist, auth, routing, request IDs, multi-region selection, queueing/requeue,
+  and App Insights. Priority reservations, Event Hub export, durable async, and
+  profiles are optional and default off.
 - Custom domain: `genaiproxy.nomad-analytics.com` (public, governed).

@@ -131,6 +131,14 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Validate generated gateway and deployment prerequisites
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
+        run: |
+          python scripts/gen-model-catalog.py --check
+          python scripts/gen-mcp-catalog.py --check
+          python scripts/gen-gateway-policy.py --check
+          python scripts/validate-feature-prereqs.py
+
       # Guard: a provision rewrites the Container App ingress from the bicep, which
       # sets customDomains to [] when AI4IA_*_CUSTOM_DOMAIN is empty -> it WIPES an
       # existing vanity-host binding (live site drops to ERR_CONNECTION_CLOSED; see

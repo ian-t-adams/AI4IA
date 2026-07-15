@@ -3,7 +3,7 @@
 # from the upstream Dockerfile (whose context is the repo's src/ dir) only in
 # that it ALSO copies Shared-parser.csproj before `dotnet restore` — the proxy
 # project references it, so the upstream file fails restore without it. The
-# source tree also carries the documented inbound-auth fail-closed patch in README.
+# source tree also carries the documented AI4IA correctness/security patches.
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build-env
 WORKDIR /app
 
@@ -30,10 +30,9 @@ COPY --from=build-env /app/out .
 COPY SimpleL7Proxy/config.json .
 COPY SimpleL7Proxy/auth.json .
 
-# Main L7 listener (Port env, default 8000 -> we set 8080) and the probe server
-# (Kestrel on 9000: /health, /readiness, /startup, /liveness).
+# Main L7 listener (Port env, default 8000 -> we set 8080), including
+# /readiness, /startup, and /liveness.
 EXPOSE 8080
-EXPOSE 9000
 
 # Workstation GC returns memory to the OS more aggressively under bursty load.
 ENV DOTNET_GCConserveMemory=9
