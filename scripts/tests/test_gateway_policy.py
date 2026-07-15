@@ -39,7 +39,16 @@ class GatewayPolicyTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertEqual(output, expected)
         ElementTree.fromstring(output)
+        gateway_generator.validate_policy_expressions(
+            output, "infra/policies/simplel7proxy-endpoints.xml"
+        )
         ElementTree.parse(ROOT / "infra/policies/simplel7proxy-priority-retry.xml")
+        gateway_generator.validate_policy_expressions(
+            (
+                ROOT / "infra/policies/simplel7proxy-priority-retry.xml"
+            ).read_text(encoding="utf-8"),
+            "infra/policies/simplel7proxy-priority-retry.xml",
+        )
         realtime_models = json.loads(
             (ROOT / "infra/models.json").read_text(encoding="utf-8")
         )
@@ -49,6 +58,68 @@ class GatewayPolicyTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertEqual(realtime_output, realtime_expected)
         ElementTree.fromstring(realtime_output)
+        gateway_generator.validate_policy_expressions(
+            realtime_output, "infra/policies/realtime-routing.xml"
+        )
+
+    def test_catalog_expressions_stay_below_apim_limit(self) -> None:
+        output = gateway_generator.generate()
+        root = ElementTree.fromstring(output)
+        catalog_expressions = [
+            element.attrib["value"]
+            for element in root.findall("set-variable")
+            if element.attrib.get("name", "").startswith("backendCatalog")
+        ]
+        self.assertGreater(len(catalog_expressions), 2)
+        self.assertTrue(
+            all(
+                len(expression) < gateway_generator.APIM_EXPRESSION_MAX_CHARS
+                for expression in catalog_expressions
+            )
+        )
+
+    def test_policy_validator_rejects_unterminated_csharp_string(self) -> None:
+        malformed = (
+            '<fragment><set-variable name="broken" '
+            'value="@(&quot;unterminated)" /></fragment>'
+        )
+        ElementTree.fromstring(malformed)
+        with self.assertRaisesRegex(ValueError, "unterminated string literal"):
+            gateway_generator.validate_policy_expressions(
+                malformed, "malformed-policy.xml"
+            )
+
+    def test_policy_validator_rejects_oversized_expression(self) -> None:
+        oversized = (
+            '<fragment><set-variable name="oversized" value="@(&quot;'
+            + ("x" * gateway_generator.APIM_EXPRESSION_MAX_CHARS)
+            + '&quot;)" /></fragment>'
+        )
+        ElementTree.fromstring(oversized)
+        with self.assertRaisesRegex(ValueError, "APIM requires"):
+            gateway_generator.validate_policy_expressions(
+                oversized, "oversized-policy.xml"
+            )
+
+    def test_policy_validator_checks_interpolation_delimiters(self) -> None:
+        malformed_expressions = (
+            '@{ return $&quot;broken {context.RequestId&quot;; }',
+            '@{ return $&quot;broken {context.RequestId)&quot;; }',
+        )
+        for expression in malformed_expressions:
+            with self.subTest(expression=expression):
+                malformed = (
+                    '<fragment><set-variable name="broken" value="'
+                    + expression
+                    + '" /></fragment>'
+                )
+                ElementTree.fromstring(malformed)
+                with self.assertRaisesRegex(
+                    ValueError, "unmatched|unterminated"
+                ):
+                    gateway_generator.validate_policy_expressions(
+                        malformed, "malformed-interpolation.xml"
+                    )
 
     def test_every_catalog_deployment_is_allowlisted(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))

@@ -34,7 +34,7 @@
         Generated from infra/models.json. Each deployment alias maps to every
         compatible regional deployment for the same model. Endpoint values are
         APIM named values created by gateway.bicep. -->
-    <set-variable name="backendCatalog" value="@{
+    <set-variable name="backendCatalogChunk0" value="@{
         return new JObject {
             [&quot;gpt-5.4-slurmfactory-eastus2-glbl&quot;] = new JObject {
                 [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-5.4-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
@@ -209,8 +209,11 @@
             [&quot;model-router-slurmfactory-eastus2-glbl&quot;] = new JObject {
                 [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;model-router-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
                 [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;model-router-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
-            },
-
+            }
+        };
+    }" />
+    <set-variable name="backendCatalogChunk1" value="@{
+        return new JObject {
             [&quot;model-router-slurmfactory-swedencentral-glbl&quot;] = new JObject {
                 [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;model-router-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
                 [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;model-router-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
@@ -380,6 +383,12 @@
                 [&quot;WESTUS&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-westus-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;o3-deep-research-slurmfactory-westus-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
             }
         };
+    }" />
+    <set-variable name="backendCatalog" value="@{
+        JObject catalog = new JObject();
+        catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk0&quot;]);
+        catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk1&quot;]);
+        return catalog;
     }" />
 
     <!-- ================= PRIORITY RULES (edit me) =================
