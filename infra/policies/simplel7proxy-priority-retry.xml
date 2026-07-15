@@ -65,7 +65,11 @@ REFACTOR:
 		<set-variable name="DefaultModel" value="" />
 		<!-- Build this request's backend list, priority rules, and auth resource from the
 		     editable catalog. Nothing here is cached; only the throttle state (below) is. -->
-		<include-fragment fragment-id="endpoint_selection_frag_30" />
+		<include-fragment fragment-id="endpoint_selection_catalog_0_31" />
+		<include-fragment fragment-id="endpoint_selection_catalog_1_31" />
+		<include-fragment fragment-id="endpoint_selection_catalog_2_31" />
+		<include-fragment fragment-id="endpoint_selection_catalog_3_31" />
+		<include-fragment fragment-id="endpoint_selection_setup_31" />
 		<set-variable name="pathDeploymentMatchesModel" value="@{
 			string path = context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;);
 			string marker = &quot;deployments/&quot;;

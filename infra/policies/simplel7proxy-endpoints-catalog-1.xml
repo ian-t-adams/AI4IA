@@ -1,0 +1,174 @@
+<fragment>
+    <set-variable name="backendCatalogChunk1" value="@{
+        return new JObject {
+            [&quot;model-router-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;model-router-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;model-router-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;o4-mini-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;o4-mini-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;o4-mini-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;o4-mini-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;o4-mini-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;o4-mini-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;DeepSeek-V3.2-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;DeepSeek-V3.2-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;DeepSeek-V3.2-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;DeepSeek-V3.2-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;DeepSeek-V3.2-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;DeepSeek-V3.2-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-image-1.5-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-image-1.5-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-image-1.5-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-image-1.5-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-image-1.5-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-image-1.5-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-image-2-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-image-2-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-image-2-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-image-2-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-image-2-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-image-2-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-image-1-mini-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-image-1-mini-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-image-1-mini-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-image-1-mini-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-image-1-mini-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-image-1-mini-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;MAI-Image-2.5-slurmfactory-westus-glbl&quot;] = new JObject {
+                [&quot;WESTUS&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-westus-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;MAI-Image-2.5-slurmfactory-westus-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;MAI-Image-2.5-Flash-slurmfactory-westus-glbl&quot;] = new JObject {
+                [&quot;WESTUS&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-westus-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;MAI-Image-2.5-Flash-slurmfactory-westus-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;text-embedding-3-large-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;text-embedding-3-large-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;text-embedding-3-large-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;text-embedding-3-large-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;text-embedding-3-large-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;text-embedding-3-large-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;embed-v-4-0-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;embed-v-4-0-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;embed-v-4-0-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;embed-v-4-0-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;embed-v-4-0-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;embed-v-4-0-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;Cohere-rerank-v4.0-pro-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;Cohere-rerank-v4.0-pro-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;Cohere-rerank-v4.0-pro-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;Cohere-rerank-v4.0-pro-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;Cohere-rerank-v4.0-pro-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;Cohere-rerank-v4.0-pro-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-realtime-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-realtime-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-realtime-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-realtime-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-realtime-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-realtime-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-realtime-2-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-realtime-2-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-realtime-mini-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-realtime-mini-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-realtime-mini-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-realtime-mini-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-realtime-mini-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-realtime-mini-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-audio-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-audio-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-audio-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-audio-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-audio-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-audio-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-audio-1.5-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-audio-1.5-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-audio-1.5-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-audio-1.5-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-audio-1.5-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-audio-1.5-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;whisper-slurmfactory-eastus2-std&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;whisper-slurmfactory-eastus2-std&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;whisper-slurmfactory-swedencentral-std&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;whisper-slurmfactory-swedencentral-std&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;whisper-slurmfactory-swedencentral-std&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;whisper-slurmfactory-eastus2-std&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;gpt-4o-mini-tts-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;gpt-4o-mini-tts-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;tts-hd-slurmfactory-swedencentral-std&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;tts-hd-slurmfactory-swedencentral-std&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;sora-2-slurmfactory-eastus2-glbl&quot;] = new JObject {
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;sora-2-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;sora-2-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;sora-2-slurmfactory-swedencentral-glbl&quot;] = new JObject {
+                [&quot;SWEDENCENTRAL&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-swedencentral-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;sora-2-slurmfactory-swedencentral-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; },
+                [&quot;EASTUS2&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-eastus2-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;sora-2-slurmfactory-eastus2-glbl&quot;, [&quot;priority&quot;] = 2, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 240, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            },
+
+            [&quot;o3-deep-research-slurmfactory-westus-glbl&quot;] = new JObject {
+                [&quot;WESTUS&quot;] = new JObject { [&quot;url&quot;] = &quot;{{foundry-westus-endpoint}}&quot;, [&quot;path&quot;] = &quot;openai&quot;, [&quot;deployment&quot;] = &quot;o3-deep-research-slurmfactory-westus-glbl&quot;, [&quot;priority&quot;] = 1, [&quot;acceptablePriorities&quot;] = &quot;1, 2, 3&quot;, [&quot;timeout&quot;] = 120, [&quot;bufferResponse&quot;] = false, [&quot;auth&quot;] = &quot;MI&quot; }
+            }
+        };
+    }" />
+</fragment>

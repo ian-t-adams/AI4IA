@@ -16,14 +16,27 @@ ROOT = Path(__file__).resolve().parents[1]
 MODELS_PATH = ROOT / "infra" / "models.json"
 TEMPLATE_PATH = ROOT / "infra" / "policies" / "simplel7proxy-endpoints.template.xml"
 OUTPUT_PATH = ROOT / "infra" / "policies" / "simplel7proxy-endpoints.xml"
+CATALOG_FRAGMENT_COUNT = 4
+CATALOG_OUTPUT_PATHS = tuple(
+    ROOT / "infra" / "policies" / f"simplel7proxy-endpoints-catalog-{index}.xml"
+    for index in range(CATALOG_FRAGMENT_COUNT)
+)
+CATALOG_FRAGMENT_IDS = tuple(
+    f"endpoint_selection_catalog_{index}_31"
+    for index in range(CATALOG_FRAGMENT_COUNT)
+)
+SETUP_FRAGMENT_ID = "endpoint_selection_setup_31"
 PRIORITY_POLICY_PATH = (
     ROOT / "infra" / "policies" / "simplel7proxy-priority-retry.xml"
 )
 REALTIME_OUTPUT_PATH = ROOT / "infra" / "policies" / "realtime-routing.xml"
-CATALOG_MARKER = "__AI4IA_BACKEND_CATALOG_VARIABLES__"
+CATALOG_MARKER = "__AI4IA_BACKEND_CATALOG_MERGE__"
 ATTEMPTS_MARKER = "__AI4IA_MAX_IMMEDIATE_ATTEMPTS__"
 # APIM rejects a single decoded policy expression at the 32 KiB boundary.
 APIM_EXPRESSION_MAX_CHARS = 32_768
+# The documented resource limit is 512 KiB, but a 74,784-byte fragment fails
+# APIM's policy compiler. Keep generated fragments well below that observed path.
+APIM_FRAGMENT_COMPILER_SAFE_BYTES = 48 * 1024
 CATALOG_CHUNK_TARGET_CHARS = 24_000
 ATTRIBUTE_PATTERN = re.compile(
     r"(?P<name>[\w:.-]+)\s*=\s*(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
@@ -119,34 +132,33 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
     return blocks, max_attempts
 
 
+def catalog_expression(blocks: list[str]) -> str:
+    if not blocks:
+        return "@{\n        return new JObject();\n    }"
+    return (
+        "@{\n"
+        "        return new JObject {\n"
+        + ",\n\n".join(blocks)
+        + "\n"
+        "        };\n"
+        "    }"
+    )
+
+
 def chunk_catalog(blocks: list[str]) -> list[list[str]]:
     chunks: list[list[str]] = []
     current: list[str] = []
 
     for block in blocks:
         candidate = current + [block]
-        expression = (
-            "@{\n"
-            "        return new JObject {\n"
-            + ",\n\n".join(candidate)
-            + "\n"
-            "        };\n"
-            "    }"
-        )
+        expression = catalog_expression(candidate)
         if current and len(expression) > CATALOG_CHUNK_TARGET_CHARS:
             chunks.append(current)
             current = [block]
         else:
             current = candidate
 
-        single_expression = (
-            "@{\n"
-            "        return new JObject {\n"
-            + ",\n\n".join(current)
-            + "\n"
-            "        };\n"
-            "    }"
-        )
+        single_expression = catalog_expression(current)
         if len(single_expression) >= APIM_EXPRESSION_MAX_CHARS:
             raise ValueError("a generated backend catalog entry exceeds APIM limits")
 
@@ -155,24 +167,26 @@ def chunk_catalog(blocks: list[str]) -> list[list[str]]:
     return chunks
 
 
-def render_catalog_variables(blocks: list[str]) -> str:
-    variables: list[str] = []
-    chunk_names: list[str] = []
+def render_catalog_fragments(blocks: list[str]) -> tuple[tuple[str, ...], str]:
+    chunks = chunk_catalog(blocks)
+    if len(chunks) > CATALOG_FRAGMENT_COUNT:
+        raise ValueError(
+            f"backend catalog requires {len(chunks)} fragments; "
+            f"only {CATALOG_FRAGMENT_COUNT} are configured"
+        )
+    chunks.extend([[] for _ in range(CATALOG_FRAGMENT_COUNT - len(chunks))])
 
-    for index, chunk in enumerate(chunk_catalog(blocks)):
+    fragments: list[str] = []
+    chunk_names: list[str] = []
+    for index, chunk in enumerate(chunks):
         name = f"backendCatalogChunk{index}"
         chunk_names.append(name)
-        expression = (
-            "@{\n"
-            "        return new JObject {\n"
-            + ",\n\n".join(chunk)
-            + "\n"
-            "        };\n"
-            "    }"
-        )
-        variables.append(
+        expression = catalog_expression(chunk)
+        fragments.append(
+            "<fragment>\n"
             f'    <set-variable name="{name}" '
-            f'value="{html.escape(expression, quote=True)}" />'
+            f'value="{html.escape(expression, quote=True)}" />\n'
+            "</fragment>\n"
         )
 
     merge_lines = [
@@ -185,11 +199,11 @@ def render_catalog_variables(blocks: list[str]) -> str:
         "        return catalog;",
     ]
     merge_expression = "@{\n" + "\n".join(merge_lines) + "\n    }"
-    variables.append(
+    merge_variable = (
         '    <set-variable name="backendCatalog" '
         f'value="{html.escape(merge_expression, quote=True)}" />'
     )
-    return "\n".join(variables)
+    return tuple(fragments), merge_variable
 
 
 def _position(text: str, index: int) -> tuple[int, int]:
@@ -404,15 +418,32 @@ def validate_policy_expressions(xml_text: str, source: str) -> None:
             )
 
 
-def generate() -> str:
+def validate_policy_fragment(xml_text: str, source: str) -> None:
+    validate_policy_expressions(xml_text, source)
+    raw_bytes = len(xml_text.encode("utf-8"))
+    if raw_bytes > APIM_FRAGMENT_COMPILER_SAFE_BYTES:
+        raise ValueError(
+            f"{source}: policy fragment is {raw_bytes} bytes; "
+            f"safe compiler ceiling is {APIM_FRAGMENT_COMPILER_SAFE_BYTES}"
+        )
+
+
+def generate_endpoint_policies() -> tuple[str, tuple[str, ...]]:
     models = json.loads(MODELS_PATH.read_text(encoding="utf-8"))
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     if template.count(CATALOG_MARKER) != 1 or template.count(ATTEMPTS_MARKER) != 3:
         raise ValueError("gateway policy template markers are missing or duplicated")
     catalog_blocks, max_attempts = render_catalog(models)
-    return template.replace(
-        CATALOG_MARKER, render_catalog_variables(catalog_blocks)
-    ).replace(ATTEMPTS_MARKER, str(max_attempts))
+    catalog_fragments, merge_variable = render_catalog_fragments(catalog_blocks)
+    setup_fragment = template.replace(CATALOG_MARKER, merge_variable).replace(
+        ATTEMPTS_MARKER, str(max_attempts)
+    )
+    return setup_fragment, catalog_fragments
+
+
+def generate() -> str:
+    setup_fragment, _ = generate_endpoint_policies()
+    return setup_fragment
 
 
 def generate_realtime_policy(models: dict[str, Any]) -> str:
@@ -481,28 +512,39 @@ def main() -> int:
     )
     args = parser.parse_args()
     models = json.loads(MODELS_PATH.read_text(encoding="utf-8"))
-    generated = generate()
+    generated, catalog_fragments = generate_endpoint_policies()
     realtime_generated = generate_realtime_policy(models)
-    policies = (
+    fragments = (
         (OUTPUT_PATH, generated),
-        (PRIORITY_POLICY_PATH, PRIORITY_POLICY_PATH.read_text(encoding="utf-8")),
+        *zip(CATALOG_OUTPUT_PATHS, catalog_fragments, strict=True),
+    )
+    policies = (
+        *fragments,
+        (
+            PRIORITY_POLICY_PATH,
+            PRIORITY_POLICY_PATH.read_text(encoding="utf-8"),
+        ),
         (REALTIME_OUTPUT_PATH, realtime_generated),
     )
     try:
-        for path, policy in policies:
+        for path, policy in fragments:
+            validate_policy_fragment(policy, str(path.relative_to(ROOT)))
+        for path, policy in policies[len(fragments) :]:
             validate_policy_expressions(policy, str(path.relative_to(ROOT)))
     except (ElementTree.ParseError, ValueError) as error:
         print(f"Gateway policy validation failed: {error}", file=sys.stderr)
         return 1
 
     if args.check:
-        current = OUTPUT_PATH.read_text(encoding="utf-8") if OUTPUT_PATH.exists() else ""
-        realtime_current = (
-            REALTIME_OUTPUT_PATH.read_text(encoding="utf-8")
-            if REALTIME_OUTPUT_PATH.exists()
-            else ""
+        generated_outputs = (
+            *fragments,
+            (REALTIME_OUTPUT_PATH, realtime_generated),
         )
-        if current != generated or realtime_current != realtime_generated:
+        stale = any(
+            not path.exists() or path.read_text(encoding="utf-8") != content
+            for path, content in generated_outputs
+        )
+        if stale:
             print(
                 "Gateway policy catalog is stale. Run scripts/gen-gateway-policy.py.",
                 file=sys.stderr,
@@ -511,12 +553,9 @@ def main() -> int:
         print("Gateway model and realtime policy catalogs are current.")
         return 0
 
-    OUTPUT_PATH.write_text(generated, encoding="utf-8", newline="\n")
-    REALTIME_OUTPUT_PATH.write_text(
-        realtime_generated, encoding="utf-8", newline="\n"
-    )
-    print(f"Wrote {OUTPUT_PATH.relative_to(ROOT)}")
-    print(f"Wrote {REALTIME_OUTPUT_PATH.relative_to(ROOT)}")
+    for path, content in (*fragments, (REALTIME_OUTPUT_PATH, realtime_generated)):
+        path.write_text(content, encoding="utf-8", newline="\n")
+        print(f"Wrote {path.relative_to(ROOT)}")
     return 0
 
 
