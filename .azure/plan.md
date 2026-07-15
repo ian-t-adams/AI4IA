@@ -164,11 +164,11 @@ The fix must preserve:
 
 ### Phase 4: Delivery
 
-- [ ] Commit with Copilot coauthor
-- [ ] Push branch
-- [ ] Open pull request using repository template
-- [ ] Report PR and exact maximum policy payload sizes/checks
-- [ ] Do not deploy
+- [x] Commit with Copilot coauthor
+- [x] Push branch
+- [x] Open pull request using repository template
+- [x] Report PR and exact maximum policy payload sizes/checks
+- [x] Do not deploy
 
 ---
 
@@ -220,4 +220,4 @@ The fix must preserve:
 
 ## 12. Current Step
 
-Commit, push, and open the pull request. Do not deploy.
+Pull request #172 is open with all validation evidence. No deployment was run.
