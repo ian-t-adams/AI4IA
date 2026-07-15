@@ -29,6 +29,20 @@ SETUP_FRAGMENT_ID = "endpoint_selection_setup_32"
 PRIORITY_POLICY_PATH = (
     ROOT / "infra" / "policies" / "simplel7proxy-priority-retry.xml"
 )
+PRIORITY_OUTPUT_PATH = (
+    ROOT / "infra" / "policies" / "simplel7proxy-priority-policy.xml"
+)
+PRIORITY_FRAGMENT_IDS = (
+    "simplel7proxy_inbound_pre_32",
+    "simplel7proxy_inbound_post_32",
+    "simplel7proxy_backend_32",
+    "simplel7proxy_outbound_32",
+    "simplel7proxy_on_error_32",
+)
+PRIORITY_OUTPUT_PATHS = tuple(
+    ROOT / "infra" / "policies" / f"{fragment_id}.xml"
+    for fragment_id in PRIORITY_FRAGMENT_IDS
+)
 REALTIME_OUTPUT_PATH = ROOT / "infra" / "policies" / "realtime-routing.xml"
 CATALOG_MARKER = "__AI4IA_BACKEND_CATALOG_MERGE__"
 ATTEMPTS_MARKER = "__AI4IA_MAX_IMMEDIATE_ATTEMPTS__"
@@ -37,6 +51,7 @@ APIM_EXPRESSION_MAX_CHARS = 32_768
 # The documented resource limit is 512 KiB, but a 74,784-byte fragment fails
 # APIM's policy compiler. Keep generated fragments well below that observed path.
 APIM_FRAGMENT_COMPILER_SAFE_BYTES = 48 * 1024
+APIM_API_POLICY_MAX_BYTES = 16 * 1024
 CATALOG_CHUNK_TARGET_CHARS = 24_000
 ATTRIBUTE_PATTERN = re.compile(
     r"(?P<name>[\w:.-]+)\s*=\s*(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
@@ -453,6 +468,185 @@ def validate_policy_fragment(xml_text: str, source: str) -> None:
         )
 
 
+def _find_tag_end(xml_text: str, start: int) -> int:
+    quote = ""
+    for index in range(start + 1, len(xml_text)):
+        char = xml_text[index]
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in {'"', "'"}:
+            quote = char
+        elif char == ">":
+            return index
+    raise ValueError("unterminated XML tag")
+
+
+def _top_level_xml_nodes(xml_text: str) -> list[str]:
+    nodes: list[str] = []
+    index = 0
+    while index < len(xml_text):
+        while index < len(xml_text) and xml_text[index].isspace():
+            index += 1
+        if index >= len(xml_text):
+            break
+        start = index
+        depth = 0
+        while index < len(xml_text):
+            marker = xml_text.find("<", index)
+            if marker < 0:
+                raise ValueError("unterminated XML element")
+            if xml_text.startswith("<!--", marker):
+                comment_end = xml_text.find("-->", marker + 4)
+                if comment_end < 0:
+                    raise ValueError("unterminated XML comment")
+                index = comment_end + 3
+                if depth == 0:
+                    nodes.append(xml_text[start:index])
+                    break
+                continue
+            tag_end = _find_tag_end(xml_text, marker)
+            token = xml_text[marker : tag_end + 1]
+            if token.startswith("</"):
+                depth -= 1
+            elif not token.startswith(("<?", "<!")) and not token.rstrip().endswith(
+                "/>"
+            ):
+                depth += 1
+            index = tag_end + 1
+            if depth == 0:
+                nodes.append(xml_text[start:index])
+                break
+        else:
+            raise ValueError("unterminated XML node")
+    return nodes
+
+
+def _section_nodes(policy: str, section_name: str) -> list[str]:
+    match = re.search(
+        rf"<{re.escape(section_name)}>(?P<body>.*?)</{re.escape(section_name)}>",
+        policy,
+        re.DOTALL,
+    )
+    if match is None:
+        raise ValueError(f"priority policy section {section_name!r} is missing")
+    return _top_level_xml_nodes(match.group("body"))
+
+
+def _node_tag(node: str) -> str:
+    match = re.match(r"<([A-Za-z][\w-]*)\b", node)
+    return match.group(1) if match else ""
+
+
+def _serialize_fragment(children: list[str]) -> str:
+    body = "\n".join(child.rstrip() for child in children)
+    body = "\n".join(line.rstrip() for line in body.splitlines())
+    return f"<fragment>\n{body}\n</fragment>\n"
+
+
+def generate_priority_policies() -> tuple[str, tuple[str, ...]]:
+    source = PRIORITY_POLICY_PATH.read_text(encoding="utf-8")
+    inbound_children = _section_nodes(source, "inbound")
+    base_index = next(
+        index
+        for index, child in enumerate(inbound_children)
+        if _node_tag(child) == "base"
+    )
+    if base_index != 0:
+        raise ValueError("inbound base policy must be the first policy")
+    endpoint_ids = (*CATALOG_FRAGMENT_IDS, SETUP_FRAGMENT_ID)
+    endpoint_nodes = [
+        (index, child)
+        for index, child in enumerate(inbound_children)
+        if _node_tag(child) == "include-fragment"
+        and any(f'fragment-id="{fragment_id}"' in child for fragment_id in endpoint_ids)
+    ]
+    endpoint_indices = [index for index, _ in endpoint_nodes]
+    endpoint_order = [
+        next(
+            fragment_id
+            for fragment_id in endpoint_ids
+            if f'fragment-id="{fragment_id}"' in child
+        )
+        for _, child in endpoint_nodes
+    ]
+    if tuple(endpoint_order) != endpoint_ids:
+        raise ValueError("priority policy endpoint fragment chain is incomplete")
+    expected_indices = list(
+        range(endpoint_indices[0], endpoint_indices[0] + len(endpoint_ids))
+    )
+    if endpoint_indices != expected_indices:
+        raise ValueError("priority policy endpoint fragment chain must be contiguous")
+    inbound_pre = inbound_children[base_index + 1 : endpoint_indices[0]]
+    inbound_post = inbound_children[endpoint_indices[-1] + 1 :]
+
+    def without_base(section_name: str) -> tuple[str, list[str]]:
+        children = _section_nodes(source, section_name)
+        base_indices = [
+            index for index, child in enumerate(children) if _node_tag(child) == "base"
+        ]
+        if not base_indices:
+            return "none", children
+        if len(base_indices) != 1:
+            raise ValueError(f"{section_name} contains multiple base policies")
+        base_index = base_indices[0]
+        if base_index == 0:
+            placement = "before"
+        elif base_index == len(children) - 1:
+            placement = "after"
+        else:
+            raise ValueError(
+                f"{section_name} base policy must be first or last for splitting"
+            )
+        return placement, [
+            child for index, child in enumerate(children) if index != base_index
+        ]
+
+    backend_base, backend_children = without_base("backend")
+    outbound_base, outbound_children = without_base("outbound")
+    on_error_base, on_error_children = without_base("on-error")
+    fragments = (
+        _serialize_fragment(inbound_pre),
+        _serialize_fragment(inbound_post),
+        _serialize_fragment(backend_children),
+        _serialize_fragment(outbound_children),
+        _serialize_fragment(on_error_children),
+    )
+
+    def section_fragment(fragment_id: str, base_placement: str) -> str:
+        before = "    <base />\n" if base_placement == "before" else ""
+        after = "    <base />\n" if base_placement == "after" else ""
+        return (
+            before
+            + f'    <include-fragment fragment-id="{fragment_id}" />\n'
+            + after
+        )
+
+    wrapper = (
+        "<policies>\n"
+        "  <inbound>\n"
+        "    <base />\n"
+        f'    <include-fragment fragment-id="{PRIORITY_FRAGMENT_IDS[0]}" />\n'
+        + "".join(
+            f'    <include-fragment fragment-id="{fragment_id}" />\n'
+            for fragment_id in endpoint_ids
+        )
+        + f'    <include-fragment fragment-id="{PRIORITY_FRAGMENT_IDS[1]}" />\n'
+        + "  </inbound>\n"
+        + "  <backend>\n"
+        + section_fragment(PRIORITY_FRAGMENT_IDS[2], backend_base)
+        + "  </backend>\n"
+        + "  <outbound>\n"
+        + section_fragment(PRIORITY_FRAGMENT_IDS[3], outbound_base)
+        + "  </outbound>\n"
+        + "  <on-error>\n"
+        + section_fragment(PRIORITY_FRAGMENT_IDS[4], on_error_base)
+        + "  </on-error>\n"
+        + "</policies>\n"
+    )
+    return wrapper, fragments
+
+
 def generate_endpoint_policies() -> tuple[str, tuple[str, ...]]:
     models = json.loads(MODELS_PATH.read_text(encoding="utf-8"))
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -538,10 +732,12 @@ def main() -> int:
     args = parser.parse_args()
     models = json.loads(MODELS_PATH.read_text(encoding="utf-8"))
     generated, catalog_fragments = generate_endpoint_policies()
+    priority_generated, priority_fragments = generate_priority_policies()
     realtime_generated = generate_realtime_policy(models)
     fragments = (
         (OUTPUT_PATH, generated),
         *zip(CATALOG_OUTPUT_PATHS, catalog_fragments, strict=True),
+        *zip(PRIORITY_OUTPUT_PATHS, priority_fragments, strict=True),
     )
     policies = (
         *fragments,
@@ -549,6 +745,7 @@ def main() -> int:
             PRIORITY_POLICY_PATH,
             PRIORITY_POLICY_PATH.read_text(encoding="utf-8"),
         ),
+        (PRIORITY_OUTPUT_PATH, priority_generated),
         (REALTIME_OUTPUT_PATH, realtime_generated),
     )
     try:
@@ -556,6 +753,11 @@ def main() -> int:
             validate_policy_fragment(policy, str(path.relative_to(ROOT)))
         for path, policy in policies[len(fragments) :]:
             validate_policy_expressions(policy, str(path.relative_to(ROOT)))
+        if len(priority_generated.encode("utf-8")) > APIM_API_POLICY_MAX_BYTES:
+            raise ValueError(
+                f"{PRIORITY_OUTPUT_PATH.relative_to(ROOT)} exceeds "
+                f"{APIM_API_POLICY_MAX_BYTES} bytes"
+            )
     except (ElementTree.ParseError, ValueError) as error:
         print(f"Gateway policy validation failed: {error}", file=sys.stderr)
         return 1
@@ -563,6 +765,7 @@ def main() -> int:
     if args.check:
         generated_outputs = (
             *fragments,
+            (PRIORITY_OUTPUT_PATH, priority_generated),
             (REALTIME_OUTPUT_PATH, realtime_generated),
         )
         stale = any(
@@ -578,7 +781,11 @@ def main() -> int:
         print("Gateway model and realtime policy catalogs are current.")
         return 0
 
-    for path, content in (*fragments, (REALTIME_OUTPUT_PATH, realtime_generated)):
+    for path, content in (
+        *fragments,
+        (PRIORITY_OUTPUT_PATH, priority_generated),
+        (REALTIME_OUTPUT_PATH, realtime_generated),
+    ):
         path.write_text(content, encoding="utf-8", newline="\n")
         print(f"Wrote {path.relative_to(ROOT)}")
     return 0

@@ -55,6 +55,31 @@ $fragmentDefinitions = @(
         TemporaryId = "ai4ia-compiler-setup-$suffix"
         Path = 'infra/policies/simplel7proxy-endpoints.xml'
     }
+    @{
+        ProductionId = 'simplel7proxy_inbound_pre_32'
+        TemporaryId = "ai4ia-compiler-inbound-pre-$suffix"
+        Path = 'infra/policies/simplel7proxy_inbound_pre_32.xml'
+    }
+    @{
+        ProductionId = 'simplel7proxy_inbound_post_32'
+        TemporaryId = "ai4ia-compiler-inbound-post-$suffix"
+        Path = 'infra/policies/simplel7proxy_inbound_post_32.xml'
+    }
+    @{
+        ProductionId = 'simplel7proxy_backend_32'
+        TemporaryId = "ai4ia-compiler-backend-$suffix"
+        Path = 'infra/policies/simplel7proxy_backend_32.xml'
+    }
+    @{
+        ProductionId = 'simplel7proxy_outbound_32'
+        TemporaryId = "ai4ia-compiler-outbound-$suffix"
+        Path = 'infra/policies/simplel7proxy_outbound_32.xml'
+    }
+    @{
+        ProductionId = 'simplel7proxy_on_error_32'
+        TemporaryId = "ai4ia-compiler-on-error-$suffix"
+        Path = 'infra/policies/simplel7proxy_on_error_32.xml'
+    }
 )
 
 function Assert-DiagnosticName {
@@ -188,7 +213,10 @@ Assert-DiagnosticName `
 foreach ($definition in $fragmentDefinitions) {
     Assert-DiagnosticName `
         -Name $definition.TemporaryId `
-        -Pattern '^ai4ia-compiler-(catalog-[0-3]|setup)-[0-9a-f]{12}$'
+        -Pattern (
+            '^ai4ia-compiler-(catalog-[0-3]|setup|inbound-pre|' +
+            'inbound-post|backend|outbound|on-error)-[0-9a-f]{12}$'
+        )
 }
 
 $accessToken = az account get-access-token `
@@ -282,17 +310,16 @@ try {
         ) -InformationAction Continue
     }
 
-    $includes = $fragmentDefinitions |
-        ForEach-Object {
-            '<include-fragment fragment-id="' + $_.TemporaryId + '" />'
-        }
-    $policyXml = (
-        '<policies><inbound><base />' +
-        '<set-variable name="DefaultModel" value="" />' +
-        ($includes -join '') +
-        '</inbound><backend><base /></backend>' +
-        '<outbound><base /></outbound><on-error><base /></on-error></policies>'
-    )
+    $policyPath = Join-Path `
+        $repoRoot `
+        'infra/policies/simplel7proxy-priority-policy.xml'
+    $policyXml = Get-Content -LiteralPath $policyPath -Raw
+    foreach ($definition in $fragmentDefinitions) {
+        $policyXml = $policyXml.Replace(
+            $definition.ProductionId,
+            $definition.TemporaryId
+        )
+    }
     $policy = Invoke-ArmRequest `
         -Method Put `
         -Url $apiPolicyUrl `
@@ -305,6 +332,19 @@ try {
         }
     if (-not $policy.Success) {
         throw "Full temporary include chain failed compilation: $($policy.Body)"
+    }
+    $policyOperationUrl = $policy.Headers['Azure-AsyncOperation'] |
+        Select-Object -First 1
+    if (-not [string]::IsNullOrWhiteSpace($policyOperationUrl)) {
+        $policyState = Wait-ArmOperation `
+            -OperationUrl $policyOperationUrl `
+            -Headers $headers
+        if ($policyState.status -ne 'Succeeded') {
+            throw (
+                'Full temporary include chain failed compilation: ' +
+                ($policyState.error | ConvertTo-Json -Depth 8 -Compress)
+            )
+        }
     }
 
     Write-Information 'LIVE_APIM_COMPILER=PASS' -InformationAction Continue

@@ -1,0 +1,23 @@
+<policies>
+  <inbound>
+    <base />
+    <include-fragment fragment-id="simplel7proxy_inbound_pre_32" />
+    <include-fragment fragment-id="endpoint_selection_catalog_0_32" />
+    <include-fragment fragment-id="endpoint_selection_catalog_1_32" />
+    <include-fragment fragment-id="endpoint_selection_catalog_2_32" />
+    <include-fragment fragment-id="endpoint_selection_catalog_3_32" />
+    <include-fragment fragment-id="endpoint_selection_setup_32" />
+    <include-fragment fragment-id="simplel7proxy_inbound_post_32" />
+  </inbound>
+  <backend>
+    <include-fragment fragment-id="simplel7proxy_backend_32" />
+  </backend>
+  <outbound>
+    <base />
+    <include-fragment fragment-id="simplel7proxy_outbound_32" />
+  </outbound>
+  <on-error>
+    <include-fragment fragment-id="simplel7proxy_on_error_32" />
+    <base />
+  </on-error>
+</policies>

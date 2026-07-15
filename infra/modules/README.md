@@ -12,8 +12,8 @@ Composable modules consumed by [`../main.bicep`](../main.bicep). Each module:
 Gateway-specific modules:
 
 - `gateway.bicep` owns the public SimpleL7Proxy Container App, the internal APIM
-  model and realtime APIs, scoped subscriptions, ordered generated policy
-  fragments, and APIM-to-Foundry RBAC.
+  model and realtime APIs, scoped subscriptions, the bounded API-policy wrapper,
+  ordered generated fragments, and APIM-to-Foundry RBAC.
 - `proxyasync.bicep` owns optional MI-only Blob/Service Bus resources for durable
   async work. It is not the synchronous priority queue, which remains in-memory
   per proxy replica.
