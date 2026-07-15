@@ -749,13 +749,13 @@
           "region": "eastus2",
           "sku": "GlobalStandard",
           "capacity": 5,
-          "version": "2025-10-06"
+          "version": "2025-12-08"
         },
         {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 5,
-          "version": "2025-10-06"
+          "version": "2025-12-08"
         }
       ]
     },
