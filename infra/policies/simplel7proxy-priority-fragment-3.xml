@@ -1,0 +1,117 @@
+<fragment>
+  <choose>
+    <when condition="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;backendIndex&quot;, 0) &gt; -1 &amp;&amp; context.Variables.GetValueOrDefault&lt;int&gt;(&quot;RetryCount&quot;) &gt; 0)">
+      <!-- Set each backend configuration value individually -->
+      <set-variable name="RetryCount" value="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;RetryCount&quot;) - 1)" />
+      <set-variable name="selectedBackend" value="@(((JArray)context.Variables[&quot;listBackends&quot;])[(int)context.Variables[&quot;backendIndex&quot;]])" />
+      <set-variable name="RequestTimeout" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;int&gt;(&quot;timeout&quot;))" />
+      <set-variable name="backendUrl" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string&gt;(&quot;url&quot;))" />
+      <set-variable name="auth" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string&gt;(&quot;auth&quot;))" />
+      <set-variable name="selectedDeployment" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string&gt;(&quot;deployment&quot;))" />
+      <set-variable name="backendCallCounter" value="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;backendCallCounter&quot;) + 1)" />
+      <!-- Set the backend service URL -->
+      <set-backend-service base-url="@((string)context.Variables[&quot;backendUrl&quot;])" />
+      <!-- Deployment names are region-specific in infra/models.json.
+					     Rewrite path-based Azure OpenAI calls and model-body calls
+					     to the deployment selected for this immediate APIM attempt. -->
+      <set-variable name="backendRelativePath" value="@{       string path = context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;);       string requested = context.Variables.GetValueOrDefault&lt;string&gt;(&quot;model&quot;, &quot;&quot;);       string selected = context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedDeployment&quot;, &quot;&quot;);       if (!string.IsNullOrEmpty(requested) &amp;&amp; !string.IsNullOrEmpty(selected)) {        path = path.Replace(&quot;deployments/&quot; + requested + &quot;/&quot;, &quot;deployments/&quot; + selected + &quot;/&quot;);       }       return &quot;/&quot; + path.TrimStart('/');      }" />
+      <rewrite-uri template="@((string)context.Variables[&quot;backendRelativePath&quot;])" copy-unmatched-params="true" />
+      <choose>
+        <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;backendRelativePath&quot;, &quot;&quot;).IndexOf(&quot;/deployments/&quot;, StringComparison.OrdinalIgnoreCase) &lt; 0 &amp;&amp; context.Request.HasBody)">
+          <set-body>@{
+								JObject body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+								if (body["model"] != null) {
+									body["model"] = context.Variables.GetValueOrDefault&lt;string&gt;("selectedDeployment", body["model"].ToString());
+								}
+								return body.ToString(Newtonsoft.Json.Formatting.None);
+							}</set-body>
+        </when>
+      </choose>
+      <!-- use Managed Identity, API-Key, or no auth header based on auth value -->
+      <choose>
+        <when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;auth&quot;, &quot;&quot;), &quot;MI&quot;, StringComparison.OrdinalIgnoreCase))">
+          <set-header name="Authorization" exists-action="override">
+            <value>@("Bearer " + (string)context.Variables["managed-id-access-token"])</value>
+          </set-header>
+        </when>
+        <when condition="@(!string.IsNullOrEmpty(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;auth&quot;, &quot;&quot;)))">
+          <set-header name="api-key" exists-action="override">
+            <value>@((string)context.Variables["auth"])</value>
+          </set-header>
+        </when>
+        <otherwise>
+          <!-- empty/none: do not add any auth header -->
+        </otherwise>
+      </choose>
+      <set-variable name="activityLog" value="@{       /* Backend Selected */       var arr = context.Variables.GetValueOrDefault&lt;JArray&gt;(&quot;activityLog&quot;, new JArray());       int index = context.Variables.GetValueOrDefault&lt;int&gt;(&quot;backendIndex&quot;, 0);       JObject backend = (JObject)((JArray)context.Variables[&quot;listBackends&quot;])[index];       arr.Add(new JObject {        { &quot;Elapsed&quot;, context.Elapsed.TotalSeconds.ToString(&quot;F3&quot;) },        { &quot;message&quot;, &quot;Using &quot; + backend.Value&lt;string&gt;(&quot;label&quot;) + &quot; URL: &quot; + backend.Value&lt;string&gt;(&quot;url&quot;) +         &quot; LIMIT: &quot; + context.Variables.GetValueOrDefault&lt;string&gt;(&quot;shouldLimit&quot;, &quot;off&quot;) }       });       return arr;      }" />
+      <!-- If the endpoint is concurrency limited, it will immedietly retry -->
+      <set-variable name="callCompleted" value="@(false)" />
+      <set-variable name="callAttempted" value="@(true)" />
+      <set-variable name="CallAttemptStartTime" value="@(DateTime.UtcNow)" />
+      <set-variable name="wasLimited" value="@(true)" />
+      <!-- Concurrency counter is per-backend, keyed by its label -->
+      <set-variable name="concurrencyKey" value="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;string&gt;(&quot;label&quot;))" />
+      <choose>
+        <when condition="@(((JObject)context.Variables[&quot;selectedBackend&quot;]).Value&lt;bool&gt;(&quot;bufferResponse&quot;))">
+          <choose>
+            <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;low&quot;)">
+              <limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="10">
+                <forward-request buffer-request-body="true" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+              </limit-concurrency>
+            </when>
+            <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;medium&quot;)">
+              <limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="50">
+                <forward-request buffer-request-body="true" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+              </limit-concurrency>
+            </when>
+            <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;high&quot;)">
+              <limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="100">
+                <forward-request buffer-request-body="true" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+              </limit-concurrency>
+            </when>
+            <otherwise>
+              <set-variable name="wasLimited" value="@(false)" />
+              <forward-request buffer-request-body="true" buffer-response="true" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+            </otherwise>
+          </choose>
+        </when>
+        <otherwise>
+          <choose>
+            <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;low&quot;)">
+              <limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="10">
+                <forward-request buffer-request-body="true" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+              </limit-concurrency>
+            </when>
+            <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;medium&quot;)">
+              <limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="50">
+                <forward-request buffer-request-body="true" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+              </limit-concurrency>
+            </when>
+            <when condition="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;shouldLimit&quot;, &quot;off&quot;) == &quot;high&quot;)">
+              <limit-concurrency key="@((string)context.Variables[&quot;concurrencyKey&quot;])" max-count="100">
+                <forward-request buffer-request-body="true" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+              </limit-concurrency>
+            </when>
+            <otherwise>
+              <set-variable name="wasLimited" value="@(false)" />
+              <forward-request buffer-request-body="true" buffer-response="false" timeout="@((int)context.Variables[&quot;RequestTimeout&quot;])" />
+            </otherwise>
+          </choose>
+        </otherwise>
+      </choose>
+      <set-variable name="wasLimited" value="@(false)" />
+      <set-variable name="callCompleted" value="@(true)" />
+      <!-- Temporary Errors:  408, 429 and 50xx  -->
+      <set-variable name="isTempError" value="@{       var statusCode = context.Response?.StatusCode ?? 500;        bool isTempError = statusCode == 429 || statusCode == 408 || statusCode == 400 || statusCode &gt;= 500;       return isTempError;      }" />
+      <!-- Permanent Errors:  >400 , !408, !429 , <500   -->
+      <set-variable name="isPermError" value="@{       var isTempError = context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;isTempError&quot;, false);       var statusCode = context.Response?.StatusCode ?? 500;       bool isPermError =  !isTempError &amp;&amp; (statusCode &gt; 400 &amp;&amp; statusCode &lt; 500);       return isPermError;      }" />
+      <set-variable name="activityLog" value="@{       /* Response Classified */       var arr = context.Variables.GetValueOrDefault&lt;JArray&gt;(&quot;activityLog&quot;, new JArray());       var statusCode = context.Response?.StatusCode.ToString() ?? &quot;N/A&quot;;       var isPermError = context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;isPermError&quot;, false);       var isTempError = context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;isTempError&quot;, false);       if (isTempError) {        return arr;       }        var statusSummary = isTempError ? &quot;Temp Error&quot; : (isPermError ? &quot;Perm Error&quot; : &quot;Success&quot;);       arr.Add(new JObject {        { &quot;Elapsed&quot;, context.Elapsed.TotalSeconds.ToString(&quot;F3&quot;) },        { &quot;message&quot;, &quot;StatusCode: &quot; + statusCode + &quot; - &quot; + statusSummary }       });       return arr;      }" />
+    </when>
+    <otherwise>
+      <!-- No backend was selected (backendIndex == -1): record the reason in the activity log -->
+      <set-variable name="activityLog" value="@{       /* No Backend */       var arr = context.Variables.GetValueOrDefault&lt;JArray&gt;(&quot;activityLog&quot;, new JArray());       var priorityBackendIndxs = context.Variables.GetValueOrDefault&lt;JArray&gt;(&quot;PriBackendIndxs&quot;, new JArray());       int retryCount = context.Variables.GetValueOrDefault&lt;int&gt;(&quot;RetryCount&quot;, 0);       string message;        if (priorityBackendIndxs.Count == 0) {        message = &quot;NO BACKENDS: none configured for priority &quot; + context.Variables.GetValueOrDefault&lt;int&gt;(&quot;RequestPriority&quot;, 3);       } else if (retryCount &lt;= 0) {        message = &quot;NO BACKENDS: retries exhausted&quot;;       } else {        var backends = context.Variables.GetValueOrDefault&lt;JArray&gt;(&quot;listBackends&quot;, new JArray());        bool contextWindowExceeded = context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;contextWindowExceeded&quot;, false);        var now = DateTime.UtcNow;        var throttled = new List&lt;string&gt;();        foreach (int i in priorityBackendIndxs) {         JObject b = (JObject)backends[i];         if (contextWindowExceeded &amp;&amp; b.Value&lt;string&gt;(&quot;label&quot;) == &quot;PTU&quot;) { continue; }         if (!b.Value&lt;bool&gt;(&quot;isThrottling&quot;)) { continue; }         var retryAfter = b.Value&lt;DateTime&gt;(&quot;retryAfter&quot;);         var secs = retryAfter &gt; now ? (int)Math.Ceiling((retryAfter - now).TotalSeconds) : 0;         throttled.Add(b.Value&lt;string&gt;(&quot;label&quot;) + &quot; - &quot; + string.Format(&quot;{0:00}:{1:00}&quot;, secs / 60, secs % 60));        }        message = &quot;NO BACKENDS: all throttled (&quot; + (throttled.Count &gt; 0 ? string.Join(&quot;, &quot;, throttled) : &quot;none&quot;) + &quot;)&quot;;       }        arr.Add(new JObject {        { &quot;Elapsed&quot;, context.Elapsed.TotalSeconds.ToString(&quot;F3&quot;) },        { &quot;message&quot;, message }       });       return arr;      }" />
+    </otherwise>
+  </choose>
+  <!-- Set contextWindowExceeded flag separately after checking isPermError -->
+  <set-variable name="contextWindowExceeded" value="@{     if (context.Response == null) { return context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;contextWindowExceeded&quot;, false); }      int statusCode = context.Response.StatusCode;      if (statusCode == 400) {      try {       var body = context.Response.Body.As&lt;JObject&gt;(preserveContent: true);       var errorCode = body[&quot;error&quot;]?[&quot;code&quot;]?.ToString();        if (errorCode == &quot;context_length_exceeded&quot;) {        return true;       }      } catch { }     }      /* Keep existing value if not a context window error */     return context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;contextWindowExceeded&quot;, false);    }" />
+</fragment>

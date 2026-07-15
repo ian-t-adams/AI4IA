@@ -1,11 +1,11 @@
 <fragment>
     <set-variable name="backendCatalogChunk3" value="@{
         return new JObject(
-            new JProperty(&quot;gpt-realtime-mini-slurmfactory-swedencentral-glbl&quot;, new JObject(
+            new JProperty(&quot;gpt-5.4-mini-slurmfactory-swedencentral-glbl&quot;, new JObject(
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-realtime-mini-slurmfactory-swedencentral-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-5.4-mini-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -15,7 +15,7 @@
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-realtime-mini-slurmfactory-eastus2-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-5.4-mini-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -24,11 +24,11 @@
                 ))
             )),
 
-            new JProperty(&quot;gpt-audio-slurmfactory-eastus2-glbl&quot;, new JObject(
+            new JProperty(&quot;gpt-5.4-nano-slurmfactory-eastus2-glbl&quot;, new JObject(
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-audio-slurmfactory-eastus2-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-5.4-nano-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -38,7 +38,7 @@
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-audio-slurmfactory-swedencentral-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-5.4-nano-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -47,11 +47,11 @@
                 ))
             )),
 
-            new JProperty(&quot;gpt-audio-slurmfactory-swedencentral-glbl&quot;, new JObject(
+            new JProperty(&quot;gpt-5.4-nano-slurmfactory-swedencentral-glbl&quot;, new JObject(
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-audio-slurmfactory-swedencentral-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-5.4-nano-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -61,7 +61,7 @@
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-audio-slurmfactory-eastus2-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-5.4-nano-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -70,11 +70,11 @@
                 ))
             )),
 
-            new JProperty(&quot;gpt-audio-1.5-slurmfactory-eastus2-glbl&quot;, new JObject(
+            new JProperty(&quot;gpt-5-mini-slurmfactory-eastus2-glbl&quot;, new JObject(
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-audio-1.5-slurmfactory-eastus2-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-5-mini-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -84,7 +84,7 @@
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-audio-1.5-slurmfactory-swedencentral-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-5-mini-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -93,11 +93,11 @@
                 ))
             )),
 
-            new JProperty(&quot;gpt-audio-1.5-slurmfactory-swedencentral-glbl&quot;, new JObject(
+            new JProperty(&quot;gpt-5-mini-slurmfactory-swedencentral-glbl&quot;, new JObject(
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-audio-1.5-slurmfactory-swedencentral-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-5-mini-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -107,7 +107,7 @@
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-audio-1.5-slurmfactory-eastus2-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-5-mini-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -116,11 +116,11 @@
                 ))
             )),
 
-            new JProperty(&quot;whisper-slurmfactory-eastus2-std&quot;, new JObject(
+            new JProperty(&quot;gpt-4.1-mini-slurmfactory-eastus2-glbl&quot;, new JObject(
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;whisper-slurmfactory-eastus2-std&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-4.1-mini-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -130,7 +130,7 @@
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;whisper-slurmfactory-swedencentral-std&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-4.1-mini-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -139,11 +139,11 @@
                 ))
             )),
 
-            new JProperty(&quot;whisper-slurmfactory-swedencentral-std&quot;, new JObject(
+            new JProperty(&quot;gpt-4.1-mini-slurmfactory-swedencentral-glbl&quot;, new JObject(
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;whisper-slurmfactory-swedencentral-std&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-4.1-mini-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -153,7 +153,7 @@
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;whisper-slurmfactory-eastus2-std&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;gpt-4.1-mini-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
@@ -162,84 +162,45 @@
                 ))
             )),
 
-            new JProperty(&quot;gpt-4o-mini-tts-slurmfactory-eastus2-glbl&quot;, new JObject(
+            new JProperty(&quot;model-router-slurmfactory-eastus2-glbl&quot;, new JObject(
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;gpt-4o-mini-tts-slurmfactory-eastus2-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;model-router-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
-                    new JProperty(&quot;bufferResponse&quot;, false),
-                    new JProperty(&quot;auth&quot;, &quot;MI&quot;)
-                ))
-            )),
-
-            new JProperty(&quot;tts-hd-slurmfactory-swedencentral-std&quot;, new JObject(
-                new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
-                    new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
-                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;tts-hd-slurmfactory-swedencentral-std&quot;),
-                    new JProperty(&quot;priority&quot;, 1),
-                    new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
-                    new JProperty(&quot;timeout&quot;, 120),
-                    new JProperty(&quot;bufferResponse&quot;, false),
-                    new JProperty(&quot;auth&quot;, &quot;MI&quot;)
-                ))
-            )),
-
-            new JProperty(&quot;sora-2-slurmfactory-eastus2-glbl&quot;, new JObject(
-                new JProperty(&quot;EASTUS2&quot;, new JObject(
-                    new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
-                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;sora-2-slurmfactory-eastus2-glbl&quot;),
-                    new JProperty(&quot;priority&quot;, 1),
-                    new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
-                    new JProperty(&quot;timeout&quot;, 240),
                     new JProperty(&quot;bufferResponse&quot;, false),
                     new JProperty(&quot;auth&quot;, &quot;MI&quot;)
                 )),
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;sora-2-slurmfactory-swedencentral-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;model-router-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
-                    new JProperty(&quot;timeout&quot;, 240),
+                    new JProperty(&quot;timeout&quot;, 120),
                     new JProperty(&quot;bufferResponse&quot;, false),
                     new JProperty(&quot;auth&quot;, &quot;MI&quot;)
                 ))
             )),
 
-            new JProperty(&quot;sora-2-slurmfactory-swedencentral-glbl&quot;, new JObject(
+            new JProperty(&quot;model-router-slurmfactory-swedencentral-glbl&quot;, new JObject(
                 new JProperty(&quot;SWEDENCENTRAL&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-swedencentral-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;sora-2-slurmfactory-swedencentral-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;model-router-slurmfactory-swedencentral-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
-                    new JProperty(&quot;timeout&quot;, 240),
+                    new JProperty(&quot;timeout&quot;, 120),
                     new JProperty(&quot;bufferResponse&quot;, false),
                     new JProperty(&quot;auth&quot;, &quot;MI&quot;)
                 )),
                 new JProperty(&quot;EASTUS2&quot;, new JObject(
                     new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-endpoint}}&quot;),
                     new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;sora-2-slurmfactory-eastus2-glbl&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;model-router-slurmfactory-eastus2-glbl&quot;),
                     new JProperty(&quot;priority&quot;, 2),
-                    new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
-                    new JProperty(&quot;timeout&quot;, 240),
-                    new JProperty(&quot;bufferResponse&quot;, false),
-                    new JProperty(&quot;auth&quot;, &quot;MI&quot;)
-                ))
-            )),
-
-            new JProperty(&quot;o3-deep-research-slurmfactory-westus-glbl&quot;, new JObject(
-                new JProperty(&quot;WESTUS&quot;, new JObject(
-                    new JProperty(&quot;url&quot;, &quot;{{foundry-westus-endpoint}}&quot;),
-                    new JProperty(&quot;path&quot;, &quot;openai&quot;),
-                    new JProperty(&quot;deployment&quot;, &quot;o3-deep-research-slurmfactory-westus-glbl&quot;),
-                    new JProperty(&quot;priority&quot;, 1),
                     new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
                     new JProperty(&quot;timeout&quot;, 120),
                     new JProperty(&quot;bufferResponse&quot;, false),

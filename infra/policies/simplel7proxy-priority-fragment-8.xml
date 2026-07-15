@@ -1,0 +1,3 @@
+<fragment>
+  <set-variable name="priorityPolicyPlaceholder8" value="@((bool)true)" />
+</fragment>

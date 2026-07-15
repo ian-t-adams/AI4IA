@@ -1,0 +1,29 @@
+<fragment>
+  <choose>
+    <when condition="@(context.Request.Url.Path.EndsWith(&quot;/openai/status&quot;, StringComparison.OrdinalIgnoreCase))">
+      <return-response>
+        <set-status code="200" reason="OK" />
+        <set-body>{"status":"ok"}</set-body>
+      </return-response>
+    </when>
+  </choose>
+  <!-- The API subscription is scoped to the proxy. Caller-supplied trust
+		     metadata is discarded; correlation is derived from the proxy-owned ID. -->
+  <set-header name="x-correlation-id" exists-action="override">
+    <value>@(context.Request.Headers.GetValueOrDefault("x-S7P-ID", context.RequestId.ToString()))</value>
+  </set-header>
+  <set-header name="x-ai4ia-gateway-caller" exists-action="override">
+    <value>@(context.Subscription?.Id ?? "unknown")</value>
+  </set-header>
+  <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+  <set-header name="Authorization" exists-action="delete" />
+  <!-- set the request ID in case we need to debug -->
+  <set-header name="x-ms-client-request-id" exists-action="override">
+    <value>@(context.Request.Headers.GetValueOrDefault("x-S7P-id", Guid.NewGuid().ToString()))</value>
+  </set-header>
+  <!-- Customer-configurable header names -->
+  <!-- <include-fragment fragment-id="S7P_headers_frag" /> -->
+  <set-variable name="DefaultModel" value="" />
+  <!-- Build this request's backend list, priority rules, and auth resource from the
+		     editable catalog. Nothing here is cached; only the throttle state (below) is. -->
+</fragment>

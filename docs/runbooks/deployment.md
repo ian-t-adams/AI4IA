@@ -169,7 +169,14 @@ before application image deployment.
 ARM what-if validates resource changes, not APIM's policy-expression compiler.
 Likewise, a policy-fragment `PUT` can return `201 InProgress` before its
 `Azure-AsyncOperation` later fails. Neither result proves that the production
-include chain compiles.
+include chain compiles. A successful live fragment `PUT` and full-chain compile
+also do not exercise the production template validator that rejects fragment
+payloads above 16 KB. The generator and harness therefore hard-fail locally when
+any complete raw UTF-8 fragment payload exceeds the conservative 14 KiB ceiling.
+Generated fragment and model-shell content is pinned in
+`infra/policies/policy-fragment-generation.json`; changing an existing
+generation fails until the generation number and corresponding Bicep/harness
+resource IDs are advanced, preventing mixed old/new policy execution.
 
 Before merging an APIM policy-fragment change, run the disposable full-chain
 compiler harness against the target APIM:
@@ -181,13 +188,16 @@ compiler harness against the target APIM:
   -ServiceName <apim-service-name>
 ```
 
-The harness creates uniquely named temporary copies of every generated endpoint
-fragment and a collision-free temporary API, waits for each fragment's async
-compiler operation, and applies an API policy that includes the fragments in
-production order. Its `finally` path deletes only those exact temporary names
-and verifies that all are absent. It never modifies a production API, policy, or
-fragment. A successful full-chain compile plus cleanup verification is the
-decisive APIM service validation.
+Before acquiring an ARM token or creating resources, the harness checks every
+fragment plus the model and realtime API policy documents against their local
+raw UTF-8 limits. It then creates uniquely named temporary copies of every
+generated endpoint fragment and a collision-free temporary API, waits for each
+fragment's async compiler operation, applies the full production model policy
+with temporary fragment references in production order, and compiles the
+realtime policy. Its `finally` path deletes only those exact temporary names and
+verifies that all are absent. It never modifies a production API, policy, or
+fragment. Local size validation, successful full-chain compilation, and cleanup
+verification are all required.
 
 #### Gateway canary and rollback
 

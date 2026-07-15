@@ -146,33 +146,129 @@ resource foundryEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024
 
 var endpointSelectionFragmentDefinitions = [
   {
-    name: 'endpoint_selection_catalog_0_32'
+    name: 'endpoint_selection_catalog_0_33'
     description: 'Generated model/deployment catalog chunk 0 for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-0.xml')
   }
   {
-    name: 'endpoint_selection_catalog_1_32'
+    name: 'endpoint_selection_catalog_1_33'
     description: 'Generated model/deployment catalog chunk 1 for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-1.xml')
   }
   {
-    name: 'endpoint_selection_catalog_2_32'
+    name: 'endpoint_selection_catalog_2_33'
     description: 'Generated model/deployment catalog chunk 2 for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-2.xml')
   }
   {
-    name: 'endpoint_selection_catalog_3_32'
+    name: 'endpoint_selection_catalog_3_33'
     description: 'Generated model/deployment catalog chunk 3 for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-3.xml')
   }
   {
-    name: 'endpoint_selection_setup_32'
+    name: 'endpoint_selection_catalog_4_33'
+    description: 'Generated model/deployment catalog chunk 4 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-4.xml')
+  }
+  {
+    name: 'endpoint_selection_catalog_5_33'
+    description: 'Generated model/deployment catalog chunk 5 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-5.xml')
+  }
+  {
+    name: 'endpoint_selection_catalog_6_33'
+    description: 'Generated model/deployment catalog chunk 6 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-6.xml')
+  }
+  {
+    name: 'endpoint_selection_catalog_7_33'
+    description: 'Generated model/deployment catalog chunk 7 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-7.xml')
+  }
+  {
+    name: 'endpoint_selection_catalog_8_33'
+    description: 'Generated model/deployment catalog chunk 8 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-8.xml')
+  }
+  {
+    name: 'endpoint_selection_catalog_9_33'
+    description: 'Generated model/deployment catalog chunk 9 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-9.xml')
+  }
+  {
+    name: 'endpoint_selection_setup_33'
     description: 'Generated model routing setup for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints.xml')
   }
 ]
 
 resource endpointSelectionFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in endpointSelectionFragmentDefinitions: {
+  parent: apim
+  name: definition.name
+  properties: {
+    description: definition.description
+    format: 'rawxml'
+    value: definition.value
+  }
+  dependsOn: [
+    foundryEndpointValues
+  ]
+}]
+
+var priorityPolicyFragmentDefinitions = [
+  {
+    name: 'priority_policy_0_33'
+    description: 'Generated SimpleL7Proxy priority policy chunk 0.'
+    value: loadTextContent('../policies/simplel7proxy-priority-fragment-0.xml')
+  }
+  {
+    name: 'priority_policy_1_33'
+    description: 'Generated SimpleL7Proxy priority policy chunk 1.'
+    value: loadTextContent('../policies/simplel7proxy-priority-fragment-1.xml')
+  }
+  {
+    name: 'priority_policy_2_33'
+    description: 'Generated SimpleL7Proxy priority policy chunk 2.'
+    value: loadTextContent('../policies/simplel7proxy-priority-fragment-2.xml')
+  }
+  {
+    name: 'priority_policy_3_33'
+    description: 'Generated SimpleL7Proxy priority policy chunk 3.'
+    value: loadTextContent('../policies/simplel7proxy-priority-fragment-3.xml')
+  }
+  {
+    name: 'priority_policy_4_33'
+    description: 'Generated SimpleL7Proxy priority policy chunk 4.'
+    value: loadTextContent('../policies/simplel7proxy-priority-fragment-4.xml')
+  }
+  {
+    name: 'priority_policy_5_33'
+    description: 'Generated SimpleL7Proxy priority policy chunk 5.'
+    value: loadTextContent('../policies/simplel7proxy-priority-fragment-5.xml')
+  }
+  {
+    name: 'priority_policy_6_33'
+    description: 'Generated SimpleL7Proxy priority policy chunk 6.'
+    value: loadTextContent('../policies/simplel7proxy-priority-fragment-6.xml')
+  }
+  {
+    name: 'priority_policy_7_33'
+    description: 'Generated SimpleL7Proxy priority policy chunk 7.'
+    value: loadTextContent('../policies/simplel7proxy-priority-fragment-7.xml')
+  }
+  {
+    name: 'priority_policy_8_33'
+    description: 'Generated SimpleL7Proxy priority policy chunk 8.'
+    value: loadTextContent('../policies/simplel7proxy-priority-fragment-8.xml')
+  }
+  {
+    name: 'priority_policy_9_33'
+    description: 'Generated SimpleL7Proxy priority policy chunk 9.'
+    value: loadTextContent('../policies/simplel7proxy-priority-fragment-9.xml')
+  }
+]
+
+resource priorityPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in priorityPolicyFragmentDefinitions: {
   parent: apim
   name: definition.name
   properties: {
@@ -236,6 +332,7 @@ resource modelsApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-
   }
   dependsOn: [
     endpointSelectionFragments
+    priorityPolicyFragments
   ]
 }
 

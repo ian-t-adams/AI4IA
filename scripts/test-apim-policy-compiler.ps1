@@ -19,6 +19,10 @@ $suffix = [guid]::NewGuid().ToString('N').Substring(0, 12)
 $apiName = "ai4ia-compiler-$suffix"
 $apiPath = $apiName
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$fragmentPayloadMaxBytes = 14 * 1024
+$policyDocumentMaxBytes = 14 * 1024
+$priorityPolicyPath = 'infra/policies/simplel7proxy-priority-retry.xml'
+$realtimePolicyPath = 'infra/policies/realtime-routing.xml'
 $managementBase = (
     "https://management.azure.com/subscriptions/$SubscriptionId" +
     "/resourceGroups/$ResourceGroup/providers/Microsoft.ApiManagement" +
@@ -30,28 +34,22 @@ $apiPolicyUrl = (
     "?api-version=$apiVersion"
 )
 $fragmentDefinitions = @(
-    @{
-        ProductionId = 'endpoint_selection_catalog_0_32'
-        TemporaryId = "ai4ia-compiler-catalog-0-$suffix"
-        Path = 'infra/policies/simplel7proxy-endpoints-catalog-0.xml'
+    foreach ($index in 0..9) {
+        @{
+            ProductionId = "endpoint_selection_catalog_$($index)_33"
+            TemporaryId = "ai4ia-compiler-catalog-$index-$suffix"
+            Path = "infra/policies/simplel7proxy-endpoints-catalog-$index.xml"
+        }
+    }
+    foreach ($index in 0..9) {
+        @{
+            ProductionId = "priority_policy_$($index)_33"
+            TemporaryId = "ai4ia-compiler-priority-$index-$suffix"
+            Path = "infra/policies/simplel7proxy-priority-fragment-$index.xml"
+        }
     }
     @{
-        ProductionId = 'endpoint_selection_catalog_1_32'
-        TemporaryId = "ai4ia-compiler-catalog-1-$suffix"
-        Path = 'infra/policies/simplel7proxy-endpoints-catalog-1.xml'
-    }
-    @{
-        ProductionId = 'endpoint_selection_catalog_2_32'
-        TemporaryId = "ai4ia-compiler-catalog-2-$suffix"
-        Path = 'infra/policies/simplel7proxy-endpoints-catalog-2.xml'
-    }
-    @{
-        ProductionId = 'endpoint_selection_catalog_3_32'
-        TemporaryId = "ai4ia-compiler-catalog-3-$suffix"
-        Path = 'infra/policies/simplel7proxy-endpoints-catalog-3.xml'
-    }
-    @{
-        ProductionId = 'endpoint_selection_setup_32'
+        ProductionId = 'endpoint_selection_setup_33'
         TemporaryId = "ai4ia-compiler-setup-$suffix"
         Path = 'infra/policies/simplel7proxy-endpoints.xml'
     }
@@ -69,6 +67,34 @@ function Assert-DiagnosticName {
     if ($Name -notmatch $Pattern) {
         throw "Refusing to operate on non-diagnostic resource name '$Name'."
     }
+}
+
+function Assert-PolicyPayloadSize {
+    param(
+        [Parameter(Mandatory)]
+        [string]$RelativePath,
+
+        [Parameter(Mandatory)]
+        [int]$MaximumBytes,
+
+        [Parameter(Mandatory)]
+        [string]$LimitName
+    )
+
+    $path = Join-Path $repoRoot $RelativePath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Required policy file does not exist: $RelativePath"
+    }
+    $rawBytes = (Get-Item -LiteralPath $path).Length
+    if ($rawBytes -gt $MaximumBytes) {
+        throw (
+            "$RelativePath is $rawBytes raw UTF-8 bytes; " +
+            "$LimitName is $MaximumBytes bytes."
+        )
+    }
+    Write-Information (
+        "LOCAL_POLICY_SIZE=$RelativePath`:$rawBytes/$MaximumBytes"
+    ) -InformationAction Continue
 }
 
 function Invoke-ArmRequest {
@@ -188,8 +214,20 @@ Assert-DiagnosticName `
 foreach ($definition in $fragmentDefinitions) {
     Assert-DiagnosticName `
         -Name $definition.TemporaryId `
-        -Pattern '^ai4ia-compiler-(catalog-[0-3]|setup)-[0-9a-f]{12}$'
+        -Pattern '^ai4ia-compiler-(catalog-[0-9]|priority-[0-9]|setup)-[0-9a-f]{12}$'
+    Assert-PolicyPayloadSize `
+        -RelativePath $definition.Path `
+        -MaximumBytes $fragmentPayloadMaxBytes `
+        -LimitName 'APIM_POLICY_FRAGMENT_MAX_BYTES'
 }
+Assert-PolicyPayloadSize `
+    -RelativePath $priorityPolicyPath `
+    -MaximumBytes $policyDocumentMaxBytes `
+    -LimitName 'APIM_POLICY_DOCUMENT_MAX_BYTES'
+Assert-PolicyPayloadSize `
+    -RelativePath $realtimePolicyPath `
+    -MaximumBytes $policyDocumentMaxBytes `
+    -LimitName 'APIM_POLICY_DOCUMENT_MAX_BYTES'
 
 $accessToken = az account get-access-token `
     --subscription $SubscriptionId `
@@ -282,17 +320,29 @@ try {
         ) -InformationAction Continue
     }
 
-    $includes = $fragmentDefinitions |
-        ForEach-Object {
-            '<include-fragment fragment-id="' + $_.TemporaryId + '" />'
-        }
-    $policyXml = (
-        '<policies><inbound><base />' +
-        '<set-variable name="DefaultModel" value="" />' +
-        ($includes -join '') +
-        '</inbound><backend><base /></backend>' +
-        '<outbound><base /></outbound><on-error><base /></on-error></policies>'
+    $policyXml = [System.IO.File]::ReadAllText(
+        (Join-Path $repoRoot $priorityPolicyPath)
     )
+    foreach ($definition in $fragmentDefinitions) {
+        $productionReference = (
+            'fragment-id="' + $definition.ProductionId + '"'
+        )
+        if (
+            -not $policyXml.Contains($productionReference) -and
+            $definition.ProductionId.StartsWith('endpoint_selection_')
+        ) {
+            throw (
+                "$priorityPolicyPath does not include " +
+                "$($definition.ProductionId)."
+            )
+        }
+        if ($policyXml.Contains($productionReference)) {
+            $policyXml = $policyXml.Replace(
+                $productionReference,
+                ('fragment-id="' + $definition.TemporaryId + '"')
+            )
+        }
+    }
     $policy = Invoke-ArmRequest `
         -Method Put `
         -Url $apiPolicyUrl `
@@ -307,7 +357,29 @@ try {
         throw "Full temporary include chain failed compilation: $($policy.Body)"
     }
 
-    Write-Information 'LIVE_APIM_COMPILER=PASS' -InformationAction Continue
+    Write-Information (
+        'LIVE_APIM_FULL_CHAIN_COMPILER=PASS'
+    ) -InformationAction Continue
+
+    $realtimePolicyXml = [System.IO.File]::ReadAllText(
+        (Join-Path $repoRoot $realtimePolicyPath)
+    )
+    $realtimePolicy = Invoke-ArmRequest `
+        -Method Put `
+        -Url $apiPolicyUrl `
+        -Headers $headers `
+        -Payload @{
+            properties = @{
+                format = 'rawxml'
+                value = $realtimePolicyXml
+            }
+        }
+    if (-not $realtimePolicy.Success) {
+        throw "Realtime policy failed live compilation: $($realtimePolicy.Body)"
+    }
+    Write-Information (
+        'LIVE_APIM_REALTIME_COMPILER=PASS'
+    ) -InformationAction Continue
 }
 finally {
     $apiDelete = Invoke-ArmRequest `
