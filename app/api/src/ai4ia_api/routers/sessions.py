@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -126,9 +127,16 @@ class VoiceTurnInput(BaseModel):
 
     role: Literal["user", "assistant"]
     text: str = Field(min_length=1)
+    createdAt: datetime | None = None
 
 
 class AppendVoiceTurnsRequest(BaseModel):
+    conversationId: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
     turns: list[VoiceTurnInput] = Field(default_factory=list)
 
 
@@ -160,10 +168,12 @@ async def append_voice_turns(
     the transcript and feed model context when the user resumes typing. Ownership
     is enforced (404 for a session the caller does not own); empty/whitespace
     turns are dropped; ``createdAt`` is monotonically offset to preserve order.
+    New clients provide ``conversationId`` so retries deterministically upsert the
+    same message ids instead of duplicating an exchange after a lost response.
     """
     repo = _repo(request)
     try:
-        session = await repo.get_session(user.internal_user_id, session_id)
+        await repo.get_session(user.internal_user_id, session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
@@ -173,24 +183,56 @@ async def append_voice_turns(
             detail=f"too many turns (max {MAX_VOICE_TURNS})",
         )
 
+    existing_by_id: dict[str, Message] = {}
+    if body.conversationId:
+        existing_by_id = {
+            message.id: message
+            for message in await repo.list_messages(user.internal_user_id, session_id)
+        }
+
     base = datetime.now(timezone.utc)
     created: list[Message] = []
     for index, turn in enumerate(body.turns):
         text = _clean_turn_text(turn.text)
         if not text:
             continue
+        message_id: str | None = None
+        if body.conversationId:
+            fingerprint = "\0".join(
+                (
+                    user.internal_user_id,
+                    session_id,
+                    body.conversationId,
+                    str(index),
+                    turn.role,
+                    text,
+                )
+            )
+            message_id = f"voice-{sha256(fingerprint.encode('utf-8')).hexdigest()}"
+            if existing := existing_by_id.get(message_id):
+                created.append(existing)
+                continue
+        created_at = turn.createdAt or base + timedelta(milliseconds=index)
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        else:
+            created_at = created_at.astimezone(timezone.utc)
         message = Message(
             sessionId=session_id,
             userId=user.internal_user_id,
             role=MessageRole(turn.role),
             content=text,
             source=MessageSource.voice,
-            createdAt=base + timedelta(milliseconds=index),
+            createdAt=created_at,
         )
-        created.append(await repo.add_message(user.internal_user_id, message))
+        if message_id:
+            message.id = message_id
+        if message_id:
+            created.append(await repo.upsert_message(user.internal_user_id, message))
+        else:
+            created.append(await repo.add_message(user.internal_user_id, message))
 
     if created:
-        session.updatedAt = datetime.now(timezone.utc)
-        await repo.update_session(session)
+        await repo.touch_session(user.internal_user_id, session_id)
 
     return created

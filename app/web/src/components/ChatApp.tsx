@@ -5,7 +5,14 @@
 // media surfaces. Feature panels are hidden here when their env flag is off, but
 // enforcement is server-side — the API is the authority (see app/api).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as api from "@/lib/api";
 import type { ActivityStep, AgentSummary, ChatParams, DocumentSummary, Message, ModelEntry, Session, VoiceTurnInput } from "@/lib/types";
 import type { LibraryDocument } from "@/lib/library";
@@ -16,12 +23,16 @@ import { SystemPromptEditor } from "./SystemPromptEditor";
 import { SettingsPanel } from "./SettingsPanel";
 import { StudioPanel } from "./StudioPanel";
 import { ImageStudioPanel } from "./ImageStudioPanel";
-import { VoiceLivePanel } from "./VoiceLivePanel";
 import { realtimeModels } from "@/lib/voiceLive";
 import { LibraryPanel } from "./LibraryPanel";
 import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import { Composer } from "./Composer";
+import {
+  InlineVoiceLiveStatus,
+  mergeDisplayMessages,
+  useInlineVoiceLive,
+} from "./InlineVoiceLive";
 import { UserMenu } from "./UserMenu";
 import { AdminLink } from "./AdminLink";
 import { DOCS_PORTAL_URL } from "@/lib/docs";
@@ -37,6 +48,24 @@ function pickDefaultModel(models: ModelEntry[]): string | null {
     conversational.find((m) => m.category === "chat")?.id ??
     conversational[0]?.id ??
     null
+  );
+}
+
+function reconcileMessages(
+  previous: Message[],
+  fresh: Message[],
+  removeIds: ReadonlySet<string> = new Set(),
+): Message[] {
+  const byId = new Map(fresh.map((message) => [message.id, message]));
+  for (const message of previous) {
+    if (!removeIds.has(message.id) && !byId.has(message.id)) {
+      byId.set(message.id, message);
+    }
+  }
+  return [...byId.values()].sort(
+    (left, right) =>
+      Date.parse(left.createdAt) - Date.parse(right.createdAt) ||
+      left.id.localeCompare(right.id),
   );
 }
 
@@ -72,13 +101,15 @@ export function ChatApp() {
 
   const [streaming, setStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState("");
+  const [streamingStartedAt, setStreamingStartedAt] = useState<string | null>(
+    null,
+  );
   // Live agent activity for the in-flight turn (tool steps streamed as they run).
   const [liveSteps, setLiveSteps] = useState<ActivityStep[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
   const [imageryOpen, setImageryOpen] = useState(false);
-  const [voiceOpen, setVoiceOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   // Left sidebar + right parameters panel collapse state, persisted across
   // reloads. Initialized false (matching SSR) and hydrated from localStorage on
@@ -106,6 +137,7 @@ export function ChatApp() {
   // immediately (before the setActiveId state flush), preventing a double create
   // when an upload is quickly followed by a send.
   const sessionIdRef = useRef<string | null>(null);
+  const voiceNavigationLockedRef = useRef(false);
   useEffect(() => {
     sessionIdRef.current = activeId;
   }, [activeId]);
@@ -155,7 +187,7 @@ export function ChatApp() {
 
   const selectSession = useCallback(
     async (id: string) => {
-      if (streamingRef.current) return;
+      if (streamingRef.current || voiceNavigationLockedRef.current) return;
       setActiveId(id);
       setError(null);
       try {
@@ -183,12 +215,13 @@ export function ChatApp() {
   );
 
   const newChat = useCallback(() => {
-    if (streamingRef.current) return;
+    if (streamingRef.current || voiceNavigationLockedRef.current) return;
     setActiveId(null);
     setMessages([]);
     setDocuments([]);
     setLibraryDocs([]);
     setStreamingText("");
+    setStreamingStartedAt(null);
     setError(null);
   }, []);
 
@@ -210,7 +243,7 @@ export function ChatApp() {
 
   const deleteSession = useCallback(
     async (id: string) => {
-      if (streamingRef.current) return;
+      if (streamingRef.current || voiceNavigationLockedRef.current) return;
       try {
         await api.deleteSession(id);
         if (id === activeId) newChat();
@@ -317,22 +350,83 @@ export function ChatApp() {
   // turns land in the text transcript and the user can keep typing in the same
   // conversation. Lazily creates the session if the live chat was the first turn.
   const persistVoiceConversation = useCallback(
-    async (turns: VoiceTurnInput[]) => {
+    async (
+      sessionId: string,
+      conversationId: string,
+      turns: VoiceTurnInput[],
+    ) => {
       if (turns.length === 0) return;
-      try {
-        const sid = await ensureSession();
-        await api.appendVoiceTurns(sid, turns);
-        if (sessionIdRef.current === sid) {
-          setMessages(await api.listMessages(sid));
-        }
-        await refreshSessions();
-      } catch (e) {
-        setError((e as Error).message);
+      const created = await api.appendVoiceTurns(
+        sessionId,
+        conversationId,
+        turns,
+      );
+      if (sessionIdRef.current === sessionId) {
+        setMessages((previous) => {
+          const createdIds = new Set(created.map((message) => message.id));
+          return [
+            ...previous.filter((message) => !createdIds.has(message.id)),
+            ...created,
+          ];
+        });
       }
+      void Promise.allSettled([
+        api.listMessages(sessionId).then((fresh) => {
+          if (sessionIdRef.current === sessionId) {
+            setMessages((previous) => reconcileMessages(previous, fresh));
+          }
+        }),
+        refreshSessions(),
+      ]);
     },
-    [ensureSession, refreshSessions],
+    [refreshSessions],
   );
 
+  const realtimeModelList = useMemo(() => realtimeModels(models), [models]);
+  const voiceLiveEnabled =
+    voiceLiveConfig.enabled && realtimeModelList.length > 0;
+  const currentVoiceAgent = useMemo(() => {
+    const enabled = new Set(
+      agents.filter((agent) => agent.enabled).map((agent) => agent.name),
+    );
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const agent = messages[i].agent;
+      if (
+        messages[i].role === "assistant" &&
+        agent &&
+        enabled.has(agent)
+      ) {
+        return agent;
+      }
+    }
+    return null;
+  }, [agents, messages]);
+
+  const inlineVoice = useInlineVoiceLive({
+    config: voiceLiveConfig,
+    model: realtimeModelList[0]?.id ?? null,
+    agent: currentVoiceAgent,
+    agents,
+    history: voiceHistory,
+    ensureSession,
+    persistConversation: persistVoiceConversation,
+  });
+  const voiceExitLocked =
+    inlineVoice.active ||
+    inlineVoice.saving ||
+    Boolean(inlineVoice.persistenceError);
+  useLayoutEffect(() => {
+    voiceNavigationLockedRef.current = voiceExitLocked;
+  }, [voiceExitLocked]);
+  useEffect(() => {
+    if (!voiceExitLocked) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [voiceExitLocked]);
   const removeDocument = useCallback(
     async (documentId: string) => {
       if (!activeId) return;
@@ -455,6 +549,7 @@ export function ChatApp() {
         }
       }
 
+      const userCreatedAt = new Date();
       const optimisticUser: Message = {
         id: `tmp-${Date.now()}`,
         sessionId,
@@ -464,8 +559,11 @@ export function ChatApp() {
         status: "complete",
         model: selectedModel,
         agent: null,
-        createdAt: new Date().toISOString(),
+        createdAt: userCreatedAt.toISOString(),
       };
+      setStreamingStartedAt(
+        new Date(userCreatedAt.getTime() + 1).toISOString(),
+      );
       setMessages((prev) => [...prev, optimisticUser]);
 
       const isCommand = content.trimStart().startsWith("/");
@@ -474,11 +572,19 @@ export function ChatApp() {
         setStreaming(false);
         abortRef.current = null;
         try {
-          setMessages(await api.listMessages(sessionId!));
+          const fresh = await api.listMessages(sessionId!);
+          setMessages((previous) =>
+            reconcileMessages(
+              previous,
+              fresh,
+              new Set([optimisticUser.id]),
+            ),
+          );
         } catch {
           /* keep optimistic view */
         }
         setStreamingText("");
+        setStreamingStartedAt(null);
         setLiveSteps([]);
         // A slash command can change the session's model or system prompt on the
         // server; re-sync the controls so the change holds for the next turn.
@@ -530,6 +636,7 @@ export function ChatApp() {
         id: m.id,
         role: m.role,
         content: m.content,
+        createdAt: m.createdAt,
         agent: m.agent,
         attachments: m.attachments,
         source: m.source,
@@ -540,27 +647,20 @@ export function ChatApp() {
         id: "streaming",
         role: "assistant",
         content: streamingText,
+        createdAt: streamingStartedAt ?? undefined,
         pending: true,
         steps: liveSteps,
       });
     }
-    return base;
-  }, [messages, streaming, streamingText, liveSteps]);
-
-  // Live voice is offered only when the runtime flag is on AND the catalog exposes
-  // at least one realtime model (filtered from the same /api/models the picker
-  // uses). The full realtime list is handed to the panel's model picker; when the
-  // flag is off, the control is never rendered and nothing about the chat UI changes.
-  const realtimeModelList = useMemo(() => realtimeModels(models), [models]);
-  const voiceLiveEnabled = voiceLiveConfig.enabled && realtimeModelList.length > 0;
-  const currentVoiceAgent = useMemo(() => {
-    const enabled = new Set(agents.filter((agent) => agent.enabled).map((agent) => agent.name));
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const agent = messages[i].agent;
-      if (messages[i].role === "assistant" && agent && enabled.has(agent)) return agent;
-    }
-    return null;
-  }, [agents, messages]);
+    return mergeDisplayMessages(base, inlineVoice.messages);
+  }, [
+    messages,
+    streaming,
+    streamingText,
+    streamingStartedAt,
+    liveSteps,
+    inlineVoice.messages,
+  ]);
 
   // Hydrate panel-collapse preferences from localStorage on mount (after SSR).
   useEffect(() => {
@@ -650,7 +750,7 @@ export function ChatApp() {
           onOpenImagery={() => setImageryOpen(true)}
           onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
           onCollapse={toggleLeftCollapsed}
-          disabled={streaming}
+          disabled={streaming || voiceExitLocked}
         />
       )}
 
@@ -687,8 +787,8 @@ export function ChatApp() {
           >
             Docs &amp; status
           </a>
-          <AdminLink />
-          <UserMenu />
+          <AdminLink disabled={voiceExitLocked} />
+          <UserMenu disabled={voiceExitLocked} />
         </header>
 
         {error && (
@@ -719,6 +819,7 @@ export function ChatApp() {
           onError={setError}
           onCitation={libraryEnabled ? handleCitation : undefined}
         />
+        <InlineVoiceLiveStatus voice={inlineVoice} />
         <Composer
           disabled={streaming || !selectedModel}
           streaming={streaming}
@@ -732,7 +833,21 @@ export function ChatApp() {
           onRemoveDocument={removeDocument}
           onRemoveLibraryDocument={removeLibraryDocument}
           onError={setError}
-          onStartVoice={voiceLiveEnabled ? () => setVoiceOpen(true) : undefined}
+          voiceLive={
+            voiceLiveEnabled
+              ? {
+                  active: inlineVoice.active,
+                  supported: inlineVoice.supported,
+                  connecting: inlineVoice.phase === "connecting",
+                  ending: inlineVoice.phase === "ending",
+                  saving: inlineVoice.saving,
+                  saveBlocked: Boolean(inlineVoice.persistenceError),
+                  retrying: Boolean(inlineVoice.error),
+                  start: inlineVoice.start,
+                  stop: inlineVoice.stop,
+                }
+              : undefined
+          }
         />
       </main>
 
@@ -852,18 +967,6 @@ export function ChatApp() {
       )}
       {imageryOpen && (
         <ImageStudioPanel models={models} onClose={() => setImageryOpen(false)} />
-      )}
-      {voiceOpen && voiceLiveEnabled && (
-        <VoiceLivePanel
-          config={voiceLiveConfig}
-          models={realtimeModelList}
-          agents={agents}
-          onClose={() => setVoiceOpen(false)}
-          onError={setError}
-          history={voiceHistory}
-          onConversation={persistVoiceConversation}
-          initialAgent={currentVoiceAgent}
-        />
       )}
     </div>
   );

@@ -14,6 +14,7 @@ Azure SDKs are imported lazily so the app and tests run without them installed.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from .models import Document, Message, Session
@@ -69,6 +70,17 @@ class CosmosSessionRepository:
         await self._owned_session(session.userId, session.id)
         await self._sessions.upsert_item(self._to_doc(session))
         return session
+
+    async def touch_session(self, user_id: str, session_id: str) -> None:
+        await self._owned_session(user_id, session_id)
+        updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        await self._sessions.patch_item(
+            item=session_id,
+            partition_key=user_id,
+            patch_operations=[
+                {"op": "set", "path": "/updatedAt", "value": updated_at}
+            ],
+        )
 
     async def delete_session(self, user_id: str, session_id: str) -> None:
         await self._owned_session(user_id, session_id)

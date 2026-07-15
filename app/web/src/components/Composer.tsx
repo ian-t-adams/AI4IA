@@ -95,7 +95,7 @@ export function Composer({
   onRemoveDocument,
   onRemoveLibraryDocument,
   onError,
-  onStartVoice,
+  voiceLive,
 }: {
   disabled: boolean;
   streaming: boolean;
@@ -109,10 +109,19 @@ export function Composer({
   onRemoveDocument: (id: string) => void;
   onRemoveLibraryDocument?: (id: string) => void;
   onError?: (message: string) => void;
-  // Opens the live voice-to-voice (VoiceLive) panel. Only provided when the
-  // VoiceLive feature flag is on, so the button is gated exactly like the
-  // Sidebar launcher.
-  onStartVoice?: () => void;
+  // Inline Voice Live controller. Unlike dictation, this starts/stops the
+  // realtime conversation without leaving or covering the chat.
+  voiceLive?: {
+    active: boolean;
+    supported: boolean;
+    connecting: boolean;
+    ending: boolean;
+    saving: boolean;
+    saveBlocked: boolean;
+    retrying: boolean;
+    start: () => void;
+    stop: () => void;
+  };
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -631,18 +640,24 @@ export function Composer({
         <button
           type="button"
           onClick={voice.toggle}
-          disabled={!voice.supported || voice.transcribing}
+          disabled={
+            !voice.supported || voice.transcribing || Boolean(voiceLive?.active)
+          }
           aria-pressed={voice.recording}
           aria-busy={voice.transcribing}
           aria-label={
-            voice.transcribing
+            voiceLive?.active
+              ? "Voice dictation unavailable while Voice Live is active"
+              : voice.transcribing
               ? "Transcribing audio"
               : voice.recording
                 ? "Stop recording"
                 : "Record a voice message"
           }
           title={
-            !voice.supported
+            voiceLive?.active
+              ? "Stop Voice Live before recording a dictated message"
+              : !voice.supported
               ? "Voice input isn't supported in this browser"
               : voice.transcribing
                 ? "Transcribing…"
@@ -661,35 +676,80 @@ export function Composer({
             fontSize: "1.15em",
             lineHeight: 1,
             cursor:
-              !voice.supported || voice.transcribing
+              !voice.supported || voice.transcribing || voiceLive?.active
                 ? "not-allowed"
                 : "pointer",
-            opacity: voice.supported ? 1 : 0.45,
+            opacity: voice.supported && !voiceLive?.active ? 1 : 0.45,
           }}
         >
           {voice.transcribing ? "…" : voice.recording ? "■" : "🎙"}
         </button>
 
-        {onStartVoice && (
+        {voiceLive && (
           <button
             type="button"
-            onClick={onStartVoice}
-            aria-label="Start a live voice conversation"
-            title="Voice conversation — talk live, hands-free (voice to voice)"
+            onClick={voiceLive.active ? voiceLive.stop : voiceLive.start}
+            disabled={
+              !voiceLive.supported || voiceLive.ending || voiceLive.saving
+                || voiceLive.saveBlocked || voice.recording || voice.transcribing
+            }
+            aria-pressed={voiceLive.active}
+            aria-busy={
+              voiceLive.connecting || voiceLive.ending || voiceLive.saving
+            }
+            aria-label={
+              voice.recording || voice.transcribing
+                ? "Stop voice dictation before starting live voice"
+                : voiceLive.saveBlocked
+                ? "Retry saving the voice transcript below"
+                : voiceLive.saving
+                ? "Saving live voice transcript"
+                : voiceLive.active
+                ? "Stop live voice conversation"
+                : voiceLive.retrying
+                  ? "Retry live voice conversation"
+                  : "Start live voice conversation"
+            }
+            title={
+              !voiceLive.supported
+                ? "Live voice isn't supported in this browser"
+                : voice.recording || voice.transcribing
+                  ? "Stop voice dictation before starting Voice Live"
+                : voiceLive.saveBlocked
+                  ? "Save the previous Voice Live transcript before starting again"
+                : voiceLive.active
+                  ? "Stop Voice Live"
+                  : "Start Voice Live in this chat"
+            }
             style={{
               alignSelf: "stretch",
               minHeight: 46,
               padding: "0 14px",
               borderRadius: 10,
-              border: "1px solid var(--accent)",
-              background: "var(--accent)",
-              color: "var(--accent-fg)",
+              border: `1px solid ${voiceLive.active ? "var(--danger)" : "var(--accent)"}`,
+              background: voiceLive.active ? "var(--danger)" : "var(--accent)",
+              color: voiceLive.active ? "#fff" : "var(--accent-fg)",
               fontSize: "1.15em",
               lineHeight: 1,
-              cursor: "pointer",
+              cursor:
+                !voiceLive.supported ||
+                voiceLive.ending ||
+                voiceLive.saving ||
+                voiceLive.saveBlocked ||
+                voice.recording ||
+                voice.transcribing
+                  ? "not-allowed"
+                  : "pointer",
+              opacity: voiceLive.supported ? 1 : 0.45,
             }}
           >
-            🎤
+            {voiceLive.saveBlocked
+              ? "!"
+              : voiceLive.connecting || voiceLive.saving
+              ? "…"
+              : voiceLive.active
+                ? "■"
+                : "🎤"}
           </button>
         )}
 

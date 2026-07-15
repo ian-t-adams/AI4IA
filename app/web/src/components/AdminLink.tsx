@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 
 import { canShowAdmin, fetchWhoAmI } from "@/lib/admin";
 
-export function AdminLink() {
+export function AdminLink({ disabled = false }: { disabled?: boolean }) {
   const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
@@ -30,7 +30,11 @@ export function AdminLink() {
 
   return (
     <a
-      href="/admin"
+      href={disabled ? undefined : "/admin"}
+      aria-disabled={disabled}
+      tabIndex={disabled ? -1 : undefined}
+      title={disabled ? "Finish saving the Voice Live transcript first" : undefined}
+      onClick={disabled ? (event) => event.preventDefault() : undefined}
       style={{
         fontSize: "0.8em",
         padding: "4px 10px",
@@ -40,6 +44,8 @@ export function AdminLink() {
         color: "var(--fg)",
         textDecoration: "none",
         whiteSpace: "nowrap",
+        opacity: disabled ? 0.5 : 1,
+        cursor: disabled ? "not-allowed" : "pointer",
       }}
     >
       Admin

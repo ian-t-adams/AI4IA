@@ -60,6 +60,12 @@ Sharing is tenant-scoped:
   Next.js proxy does not proxy WebSockets.
 - The API still enforces auth, Origin checks, entitlements, metering, deployment
   selection, and optional governed tools.
+- The orange live microphone starts and stops Voice Live inside the current chat.
+  The normal transcript and composer stay available, and finalized spoken turns
+  are saved into that same session.
+- You can type while Voice Live is connected. Typed turns are saved immediately
+  in the shared transcript; because an open realtime socket cannot be reseeded,
+  they become Voice Live context the next time it connects.
 
 If Voice Live controls are hidden, the feature is disabled for that environment.
 

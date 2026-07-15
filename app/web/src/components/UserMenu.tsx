@@ -8,7 +8,7 @@ import { useMsal } from "@azure/msal-react";
 
 import { isEntraEnabled } from "@/lib/auth";
 
-function EntraUserMenu() {
+function EntraUserMenu({ disabled }: { disabled: boolean }) {
   const { instance, accounts } = useMsal();
   const account = instance.getActiveAccount() ?? accounts[0] ?? null;
   if (!account) return null;
@@ -38,6 +38,8 @@ function EntraUserMenu() {
       <button
         type="button"
         onClick={signOut}
+        disabled={disabled}
+        title={disabled ? "Finish saving the Voice Live transcript first" : undefined}
         style={{
           fontSize: "0.8em",
           padding: "4px 10px",
@@ -45,7 +47,8 @@ function EntraUserMenu() {
           border: "1px solid var(--border)",
           background: "var(--bg-elevated)",
           color: "var(--fg)",
-          cursor: "pointer",
+          cursor: disabled ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.5 : 1,
         }}
       >
         Sign out
@@ -54,7 +57,7 @@ function EntraUserMenu() {
   );
 }
 
-export function UserMenu() {
+export function UserMenu({ disabled = false }: { disabled?: boolean }) {
   if (!isEntraEnabled()) return null;
-  return <EntraUserMenu />;
+  return <EntraUserMenu disabled={disabled} />;
 }

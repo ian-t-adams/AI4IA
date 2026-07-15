@@ -10,12 +10,17 @@ import type { AgentSummary } from "@/lib/types";
 // doesn't implement, and it pulls in the API client transitively. Stub it with a
 // deterministic "unsupported" recorder so these tests exercise only the composer's
 // own logic (typing, submit, autocomplete) and never touch the network or mic.
-const { mockToggle } = vi.hoisted(() => ({ mockToggle: vi.fn() }));
-vi.mock("@/lib/voice", () => ({
-  useVoiceRecorder: () => ({
+const { mockToggle, recorderState } = vi.hoisted(() => ({
+  mockToggle: vi.fn(),
+  recorderState: {
     recording: false,
     transcribing: false,
     supported: false,
+  },
+}));
+vi.mock("@/lib/voice", () => ({
+  useVoiceRecorder: () => ({
+    ...recorderState,
     toggle: mockToggle,
   }),
 }));
@@ -23,6 +28,9 @@ vi.mock("@/lib/voice", () => ({
 afterEach(() => {
   cleanup();
   mockToggle.mockReset();
+  recorderState.recording = false;
+  recorderState.transcribing = false;
+  recorderState.supported = false;
 });
 
 const AGENTS: AgentSummary[] = [
@@ -156,6 +164,51 @@ describe("Composer", () => {
     setup();
     expect(
       screen.getByRole("button", { name: "Record a voice message" }),
+    ).toBeDisabled();
+  });
+
+  it("prevents dictation and Voice Live from capturing simultaneously", () => {
+    recorderState.supported = true;
+    setup({
+      voiceLive: {
+        active: true,
+        supported: true,
+        connecting: false,
+        ending: false,
+        saving: false,
+        saveBlocked: false,
+        retrying: false,
+        start: vi.fn(),
+        stop: vi.fn(),
+      },
+    });
+    expect(
+      screen.getByRole("button", {
+        name: "Voice dictation unavailable while Voice Live is active",
+      }),
+    ).toBeDisabled();
+  });
+
+  it("requires dictation to stop before Voice Live can start", () => {
+    recorderState.supported = true;
+    recorderState.recording = true;
+    setup({
+      voiceLive: {
+        active: false,
+        supported: true,
+        connecting: false,
+        ending: false,
+        saving: false,
+        saveBlocked: false,
+        retrying: false,
+        start: vi.fn(),
+        stop: vi.fn(),
+      },
+    });
+    expect(
+      screen.getByRole("button", {
+        name: "Stop voice dictation before starting live voice",
+      }),
     ).toBeDisabled();
   });
 });

@@ -402,16 +402,18 @@ export async function listMessages(sessionId: string): Promise<Message[]> {
 }
 
 // Persists a finalized Voice Live exchange back into a session's transcript so
-// text chat and live voice share one conversation. Returns the created messages.
+// text chat and live voice share one conversation. The per-cycle conversation id
+// makes a retry idempotent. Returns the created (or previously created) messages.
 export async function appendVoiceTurns(
   sessionId: string,
+  conversationId: string,
   turns: VoiceTurnInput[],
 ): Promise<Message[]> {
   return jsonOrThrow(
     await apiFetch(`/api/sessions/${sessionId}/voice-turns`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ turns }),
+      body: JSON.stringify({ conversationId, turns }),
     }),
   );
 }

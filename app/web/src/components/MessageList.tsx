@@ -16,6 +16,7 @@ interface DisplayMessage {
   id: string;
   role: Message["role"];
   content: string;
+  createdAt?: string;
   agent?: string | null;
   pending?: boolean;
   attachments?: MessageAttachment[];
