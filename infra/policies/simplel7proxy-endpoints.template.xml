@@ -40,11 +40,20 @@ __AI4IA_BACKEND_CATALOG_MERGE__
             retryCount = how many times to retry
             requeue    = whether the request may be sent back to the queue -->
     <set-variable name="priorityCfg" value="@{
-        return new JObject {
-            [&quot;1&quot;] = new JObject { [&quot;retryCount&quot;] = __AI4IA_MAX_IMMEDIATE_ATTEMPTS__, [&quot;requeue&quot;] = true },
-            [&quot;2&quot;] = new JObject { [&quot;retryCount&quot;] = __AI4IA_MAX_IMMEDIATE_ATTEMPTS__, [&quot;requeue&quot;] = true },
-            [&quot;3&quot;] = new JObject { [&quot;retryCount&quot;] = __AI4IA_MAX_IMMEDIATE_ATTEMPTS__, [&quot;requeue&quot;] = true }
-        };
+        return new JObject(
+            new JProperty(&quot;1&quot;, new JObject(
+                new JProperty(&quot;retryCount&quot;, __AI4IA_MAX_IMMEDIATE_ATTEMPTS__),
+                new JProperty(&quot;requeue&quot;, true)
+            )),
+            new JProperty(&quot;2&quot;, new JObject(
+                new JProperty(&quot;retryCount&quot;, __AI4IA_MAX_IMMEDIATE_ATTEMPTS__),
+                new JProperty(&quot;requeue&quot;, true)
+            )),
+            new JProperty(&quot;3&quot;, new JObject(
+                new JProperty(&quot;retryCount&quot;, __AI4IA_MAX_IMMEDIATE_ATTEMPTS__),
+                new JProperty(&quot;requeue&quot;, true)
+            ))
+        );
     }" />
 
     <!-- ================= AUTH RESOURCE (edit me) =================
@@ -52,7 +61,8 @@ __AI4IA_BACKEND_CATALOG_MERGE__
         for a model share one token, so this is set per model, not per backend.
         "DEFAULT" is used when the model is not listed. -->
     <set-variable name="authResourceByModel" value="@{
-        return new JObject { [&quot;DEFAULT&quot;] = &quot;https://cognitiveservices.azure.com&quot; };
+        string resource = &quot;https:&quot; + &quot;/&quot; + &quot;/cognitiveservices.azure.com&quot;;
+        return new JObject(new JProperty(&quot;DEFAULT&quot;, resource));
     }" />
 
     <!-- Which model does this request want?

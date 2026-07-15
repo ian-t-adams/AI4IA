@@ -4,6 +4,8 @@ import importlib.util
 import html
 import io
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -134,6 +136,28 @@ class GatewayPolicyTests(unittest.TestCase):
                 oversized, "oversized-policy.xml"
             )
 
+    def test_policy_validator_rejects_jobject_index_initializers(self) -> None:
+        policy = (
+            '<fragment><set-variable name="unsupported" '
+            'value="@{ return new JObject { [&quot;key&quot;] = 1 }; }" />'
+            "</fragment>"
+        )
+        with self.assertRaisesRegex(ValueError, "JObject index initializers"):
+            gateway_generator.validate_policy_fragment(
+                policy, "unsupported-initializer.xml"
+            )
+
+    def test_fragment_validator_rejects_literal_uri_tokens(self) -> None:
+        policy = (
+            '<fragment><set-variable name="unsupported" '
+            'value="@{ return &quot;https://example.com&quot;; }" />'
+            "</fragment>"
+        )
+        with self.assertRaisesRegex(ValueError, "literal '://'"):
+            gateway_generator.validate_policy_fragment(
+                policy, "unsupported-uri.xml"
+            )
+
     def test_policy_validator_checks_interpolation_delimiters(self) -> None:
         malformed_expressions = (
             '@{ return $&quot;broken {context.RequestId&quot;; }',
@@ -250,6 +274,8 @@ class GatewayPolicyTests(unittest.TestCase):
             for fragment_id in ordered_ids
         ]
         self.assertEqual(positions, sorted(positions))
+        self.assertNotIn("endpoint_selection_setup_31", policy)
+        self.assertNotIn("endpoint_selection_catalog_0_31", policy)
         self.assertNotIn('fragment-id="endpoint_selection_frag_30"', policy)
         self.assertNotIn("name: 'endpoint_selection_frag_30'", gateway)
         for probe_path in ("/startup", "/liveness", "/readiness"):
@@ -262,6 +288,64 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertNotIn("proxyIdentity.principalId\n]", main.split(
             "var nativeFoundryPrincipalIds =", 1
         )[1].split("]", 1)[0])
+
+    def test_compiled_arm_creates_fragments_before_api_policy(self) -> None:
+        gateway_path = ROOT / "infra/modules/gateway.bicep"
+        bicep = shutil.which("bicep")
+        if bicep:
+            command = [bicep, "build", str(gateway_path), "--stdout"]
+        else:
+            az = shutil.which("az")
+            if not az:
+                self.skipTest("Bicep CLI and Azure CLI are unavailable")
+            command = [
+                az,
+                "bicep",
+                "build",
+                "--file",
+                str(gateway_path),
+                "--stdout",
+                "--only-show-errors",
+            ]
+        completed = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        template = json.loads(completed.stdout.lstrip("\ufeff"))
+        resources = template["resources"]
+        self.assertIn(
+            "endpointSelectionFragments",
+            resources["modelsApiPolicy"]["dependsOn"],
+        )
+        definitions = template["variables"]["endpointSelectionFragmentDefinitions"]
+        self.assertEqual(
+            [
+                *gateway_generator.CATALOG_FRAGMENT_IDS,
+                gateway_generator.SETUP_FRAGMENT_ID,
+            ],
+            [definition["name"] for definition in definitions],
+        )
+
+    def test_live_compiler_harness_has_exact_name_cleanup_guards(self) -> None:
+        harness = (
+            ROOT / "scripts/test-apim-policy-compiler.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn("[guid]::NewGuid()", harness)
+        self.assertIn("Assert-DiagnosticName", harness)
+        self.assertIn("'If-Match' = '*'", harness)
+        self.assertIn("finally {", harness)
+        self.assertIn("CLEANUP_VERIFIED_ABSENT_API=", harness)
+        self.assertIn("CLEANUP_VERIFIED_ABSENT_FRAGMENT=", harness)
+        self.assertNotIn("azd provision", harness)
+        self.assertNotIn("az deployment", harness)
+        for fragment_id in (
+            *gateway_generator.CATALOG_FRAGMENT_IDS,
+            gateway_generator.SETUP_FRAGMENT_ID,
+        ):
+            self.assertIn(fragment_id, harness)
 
     def test_governance_features_default_off_and_fail_closed(self) -> None:
         main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")

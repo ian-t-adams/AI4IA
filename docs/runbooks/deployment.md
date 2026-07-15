@@ -164,6 +164,31 @@ same-dispatch regional failover; SimpleL7Proxy owns delayed requeue from the
 The `postprovision` hook hard-gates these output relationships even though it runs
 before application image deployment.
 
+#### APIM policy compiler preflight
+
+ARM what-if validates resource changes, not APIM's policy-expression compiler.
+Likewise, a policy-fragment `PUT` can return `201 InProgress` before its
+`Azure-AsyncOperation` later fails. Neither result proves that the production
+include chain compiles.
+
+Before merging an APIM policy-fragment change, run the disposable full-chain
+compiler harness against the target APIM:
+
+```powershell
+.\scripts\test-apim-policy-compiler.ps1 `
+  -SubscriptionId <subscription-id> `
+  -ResourceGroup <resource-group> `
+  -ServiceName <apim-service-name>
+```
+
+The harness creates uniquely named temporary copies of every generated endpoint
+fragment and a collision-free temporary API, waits for each fragment's async
+compiler operation, and applies an API policy that includes the fragments in
+production order. Its `finally` path deletes only those exact temporary names
+and verifies that all are absent. It never modifies a production API, policy, or
+fragment. A successful full-chain compile plus cleanup verification is the
+decisive APIM service validation.
+
 #### Gateway canary and rollback
 
 `ca-proxy` uses `activeRevisionsMode: Single`, so this template does not provide a
