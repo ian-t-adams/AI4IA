@@ -14,7 +14,7 @@
 
 ## Governance checklist
 
-- [ ] Model traffic still goes through APIM + SimpleL7Proxy; no direct Foundry model calls were added.
+- [ ] HTTP/SSE model traffic still goes SimpleL7Proxy -> APIM, realtime still goes FastAPI relay -> APIM, and no direct Foundry model calls were added.
 - [ ] No hardcoded deployment names or model lists were added; `infra/models.json` remains the source of truth.
 - [ ] Feature gates are enforced server-side, not only in the web app.
 - [ ] Per-user ownership, Cosmos partitioning, and derived-store rebuild assumptions are preserved.

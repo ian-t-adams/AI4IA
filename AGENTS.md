@@ -18,7 +18,7 @@ AI4IA is a governed, multi-model, multi-region agentic chat app on Azure Contain
 
 ## Non-negotiable rules
 
-1. **Gateway-first model traffic.** Chat, agents, embeddings, images, videos, speech, and realtime model calls go through APIM + SimpleL7Proxy. Do not call Foundry model deployments directly from app code. Direct calls are reserved for non-OpenAI/native control or data planes such as Content Understanding, Azure Monitor, Key Vault, Blob, Cosmos, and Azure AI Search.
+1. **Gateway-first model traffic.** Compatible HTTP/SSE calls (chat, agents, embeddings, images, videos, and REST speech) go SimpleL7Proxy -> APIM -> Foundry. Realtime/Voice Live WebSockets are the explicit exception: FastAPI relay -> APIM -> Foundry. Do not call Foundry model deployments directly from app code. Direct calls are reserved for non-OpenAI/native control or data planes such as Content Understanding, Azure Monitor, Key Vault, Blob, Cosmos, and Azure AI Search.
 2. **Catalog-driven models.** Do not hardcode deployment names or model lists. `infra/models.json` is the source of truth; generated runtime catalog data must match it.
 3. **Server-authoritative feature gates.** The web app may hide UI, but the API and startup validation must enforce feature posture. Never gate only in React/Next.js.
 4. **Cosmos is canonical.** Sessions, messages, usage, user agents/workflows, MCP server records, and document manifests are canonical and scoped per user. Derived memory vectors, document chunks, search indexes, and parsed artifacts must be rebuildable.
@@ -113,6 +113,8 @@ dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Rel
    ```powershell
    python scripts/gen-model-catalog.py
    python scripts/gen-model-catalog.py --check
+   python scripts/gen-gateway-policy.py
+   python scripts/gen-gateway-policy.py --check
    python scripts/validate-catalog.py
    ```
 
@@ -151,7 +153,7 @@ dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Rel
 
 ## Red flags: stop and ask a human
 
-- You are about to bypass APIM/SimpleL7Proxy for model traffic or introduce a direct deployment name.
+- You are about to bypass the approved HTTP/SSE proxy -> APIM path, bypass APIM for realtime, or introduce a direct deployment name.
 - A feature would be enabled only in the UI, or a deployed feature lacks durable storage/auth/prerequisites.
 - You need new Azure resources, RBAC, production secrets, custom domains, or a deploy/provision run.
 - You are changing `proxy/SimpleL7Proxy` without refreshing its upstream pin and notices.

@@ -4,7 +4,7 @@ Thanks for improving AI4IA. Start with the canonical agent/contributor guide in 
 
 ## Ground rules
 
-- Keep model traffic gateway-first through APIM + SimpleL7Proxy.
+- Keep HTTP/SSE model traffic on SimpleL7Proxy -> APIM and realtime on the FastAPI relay -> APIM.
 - Keep models catalog-driven from `infra/models.json`; do not hardcode deployment names.
 - Keep feature gates server-authoritative and fail closed.
 - Preserve per-user ownership, Cosmos canonical data, and tool SSRF/scope/approval checks.
@@ -52,6 +52,8 @@ From the repo root, also run catalog checks when catalogs, MCP manifests, Foundr
 ```powershell
 python scripts\gen-model-catalog.py --check
 python scripts\gen-mcp-catalog.py --check
+python scripts\gen-gateway-policy.py --check
+python -m unittest scripts.tests.test_gateway_policy
 python scripts\validate-catalog.py
 python scripts\validate-feature-prereqs.py
 ```

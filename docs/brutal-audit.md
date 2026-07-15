@@ -8,7 +8,7 @@ half-configured, or expensive.
 ## Verdict
 
 AI4IA is a serious Azure AI workload wearing a demo repo hoodie. It has real
-governance ideas: APIM/SimpleL7Proxy in front of model calls, managed identity,
+governance ideas: SimpleL7Proxy -> APIM in front of HTTP/SSE model calls, managed identity,
 feature gates, Cosmos as canonical state, rebuildable derived stores, and
 Container Apps for deployable services. Good.
 

@@ -40,11 +40,11 @@
     <section style="padding-top:6px">
       <div class="container">
         <h2 class="section-title">1 · High-level request flow</h2>
-        <p class="section-sub">Chat, embeddings, speech, image/video and realtime models route through APIM +
-          SimpleL7Proxy to the selected Foundry deployment. Native planes (Content Understanding, Monitor, Cosmos,
-          Storage, Search, Key Vault) are called directly with managed identity. Voice Live connects the browser to
-          the API over a WebSocket because the Next.js HTTP proxy cannot proxy WebSockets. The relay still enforces
-          auth, Origin, entitlements and metering.</p>
+        <p class="section-sub">Compatible HTTP/SSE calls route through SimpleL7Proxy then APIM to a catalog-selected
+          Foundry deployment. Native planes (Content Understanding, Monitor, Cosmos, Storage, Search, Key Vault) are
+          called directly with managed identity. Voice Live connects the browser to the API over a WebSocket because
+          neither the Next.js HTTP proxy nor SimpleL7Proxy proxies WebSockets; the relay calls the APIM realtime API
+          and still enforces auth, Origin, entitlements and metering.</p>
         <figure class="diagram">
           <pre class="mermaid">
 flowchart TB
@@ -57,10 +57,12 @@ flowchart TB
   API --> Search["Azure AI Search<br/>(optional retrieval)"]
   API --> CU["Content Understanding"]
   API --> Mon["Azure Monitor / App Insights"]
-  API --> GW["APIM + SimpleL7Proxy<br/>model gateway"]
-  GW --> EUS2["Foundry<br/>East US 2"]
-  GW --> SWC["Foundry<br/>Sweden Central"]
-  GW --> WUS["Foundry<br/>West US"]
+  API --> Proxy["SimpleL7Proxy<br/>queue + delayed requeue"]
+  Proxy --> APIM["APIM<br/>catalog routing + MI"]
+  API -. "Realtime relay" .-> APIM
+  APIM --> EUS2["Foundry<br/>East US 2"]
+  APIM --> SWC["Foundry<br/>Sweden Central"]
+  APIM --> WUS["Foundry<br/>West US"]
   API --> MCPGW["MCP APIM<br/>front door"]
   MCPGW --> Toolbox["Foundry toolbox<br/>(official MCP)"]
   API -. "SSRF-guarded" .-> BYO["User BYO<br/>MCP servers"]
@@ -113,8 +115,8 @@ flowchart LR
     Amw["Monitor workspace"]
   end
   WebCA --> ApiCA
-  ProxyCA --> Apim
-  ApiCA --> Apim --> AI
+  ApiCA --> ProxyCA --> Apim --> AI
+  ApiCA -. "Voice Live WS relay" .-> Apim
   ApiCA --> ApimMcp --> AI
   ApimMcp -. inventory .-> Apic
   ApiCA --> Data
@@ -128,9 +130,10 @@ flowchart LR
 
     <section style="padding-top:6px">
       <div class="container">
-        <h2 class="section-title">3 · Identity &amp; RBAC (keyless)</h2>
-        <p class="section-sub">Every Azure data plane is reached through a managed identity and a scoped role, with no
-          account keys or SQL passwords. The API identity is the most privileged; see
+        <h2 class="section-title">3 · Identity &amp; RBAC</h2>
+        <p class="section-sub">Azure service data planes use managed identities and scoped roles. Two independently
+          scoped APIM subscription keys protect the API-to-proxy/realtime and proxy-to-model hops and remain Container
+          App secrets. The API identity is the most privileged; see
           <a href="requirements.html">Requirements → Permissions</a> for the full map.</p>
         <figure class="diagram">
           <pre class="mermaid">
@@ -144,6 +147,7 @@ flowchart LR
   idapi -->|"Entra token"| Pg["Postgres"]
   idweb["id-web"] -->|"AcrPull"| Acr["ACR"]
   idproxy["id-proxy"] -->|"AcrPull"| Acr
+  idproxy -->|"App Config Data Reader"| Ac
   idapi -->|"AcrPull"| Acr
   apim["APIM (system MI)"] -->|"OpenAI User + Cognitive Services User"| Foundry["Foundry accounts"]
           </pre>

@@ -44,6 +44,7 @@ _LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 _EMPHASIS_RE = re.compile(r"[*_`]+")
 _WS_RE = re.compile(r"\s+")
 _DESC_MAX = 200
+_PARAM_PLACEHOLDER_RE = re.compile(r"^\$\{[A-Z0-9_]+(?:=(.*))?\}$")
 
 
 def _tracked_markdown() -> list[str]:
@@ -196,7 +197,16 @@ def check_meta_posture(errors: list[str]) -> None:
                 f"{PARAMETERS.relative_to(REPO_ROOT)}"
             )
             continue
-        actual = bool(params[param].get("value"))
+        value = params[param].get("value")
+        if isinstance(value, bool):
+            actual = value
+        elif isinstance(value, str):
+            placeholder = _PARAM_PLACEHOLDER_RE.match(value)
+            if placeholder:
+                value = placeholder.group(1) or ""
+            actual = value.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            actual = bool(value)
         if shown != actual:
             errors.append(
                 f"meta.js: feature for '{param}' shows on={shown} but "

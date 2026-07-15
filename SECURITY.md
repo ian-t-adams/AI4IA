@@ -21,6 +21,6 @@ Maintainers should acknowledge the report in GitHub, assess severity, prepare a 
 ## Security expectations for contributors
 
 - Do not commit secrets or customer data.
-- Keep model traffic behind APIM + SimpleL7Proxy.
+- Keep HTTP/SSE model traffic behind SimpleL7Proxy -> APIM and realtime behind the authenticated FastAPI relay -> APIM.
 - Preserve Entra/dev-auth boundaries, admin gates, per-user ownership checks, entitlement checks, and SSRF protections.
 - Treat feature enablement as a security and cost change; wire server-side validation before surfacing UI.

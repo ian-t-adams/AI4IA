@@ -26,7 +26,7 @@ assignees: []
 
 ## Governance considerations
 
-- [ ] Uses APIM + SimpleL7Proxy for model traffic.
+- [ ] Keeps HTTP/SSE on SimpleL7Proxy -> APIM and realtime on the FastAPI relay -> APIM.
 - [ ] Avoids hardcoded model/deployment names; uses `infra/models.json` where relevant.
 - [ ] Has server-side feature gates and fail-closed prerequisites.
 - [ ] Preserves per-user data isolation and Cosmos canonical data.

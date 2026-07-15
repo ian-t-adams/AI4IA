@@ -9,6 +9,7 @@ main.bicep derives from provisioned resources.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -29,6 +30,9 @@ def resolve_placeholder(value: Any) -> Any:
     match = PLACEHOLDER_RE.match(value)
     if match is None:
         return value
+    env_value = os.environ.get(match.group("name"))
+    if env_value is not None and env_value.strip():
+        return env_value
     return match.group("default") or ""
 
 
@@ -138,6 +142,11 @@ def main() -> int:
         errors.append("proxyMinReplicas must be at least 1 for the active gateway path.")
     if min_replicas > max_replicas:
         errors.append("proxyMinReplicas must not exceed proxyMaxReplicas.")
+
+    if truthy(parameter_value(parameters, "dataTierPrivate", False)) and not truthy(
+        parameter_value(parameters, "vnetIsolationEnabled", False)
+    ):
+        errors.append("dataTierPrivate=true requires vnetIsolationEnabled=true.")
 
     owner = text(parameter_value(parameters, "owner"))
     publisher = text(parameter_value(parameters, "apimPublisherEmail"))

@@ -1,4 +1,4 @@
-"""Model gateway client (APIM front door -> SimpleL7Proxy -> Foundry)."""
+"""HTTP/SSE model gateway client (SimpleL7Proxy -> APIM -> Foundry)."""
 
 from .client import (
     ChatChunk,

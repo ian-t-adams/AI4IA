@@ -33,3 +33,22 @@ public sealed class IncomingAuthValidatorTests
         StringAssert.Contains(error.InnerException.Message, "OIDC/JWKS");
     }
 }
+
+[TestClass]
+public sealed class RequestDataModelDetectionTests
+{
+    [TestMethod]
+    public void ConstructorExtractsAzureNativeDeploymentFromPath()
+    {
+        using var request = new RequestData(
+            "request-id",
+            Guid.NewGuid(),
+            "mid",
+            "/openai/deployments/gpt-5.4-example-eastus2-glbl/chat/completions?api-version=2025-04-01-preview",
+            "POST",
+            DateTime.UtcNow,
+            new Dictionary<string, string>());
+
+        Assert.AreEqual("gpt-5.4-example-eastus2-glbl", request.Model);
+    }
+}

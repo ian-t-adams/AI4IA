@@ -77,7 +77,7 @@ feature-enablement docs are 8–9/10). The problem is what is missing.
 ### 3.1 `[NEW]` `HIGH` — No `AGENTS.md` / copilot-instructions / CLAUDE.md
 
 There is **zero** machine-facing contributor guidance in the repo. The load-bearing
-invariants — *all model calls go through the gateway*, *deployments are
+invariants — *all model calls follow the approved gateway path*, *deployments are
 catalog-driven*, *advanced surfaces are feature-gated and safe-by-default*, *Cosmos
 is partitioned per user*, *every tool re-checks scope + SSRF allowlist* — are tribal
 knowledge. An agent (or new human) editing this repo cannot discover them without
@@ -87,7 +87,7 @@ top gap. Recommended outline for a root `AGENTS.md` (or `.github/copilot-instruc
 ```
 1. What this repo is + the monorepo map (api / web / infra / proxy / scripts / docs)
 2. The non-negotiable rules
-   - All model traffic goes through APIM + SimpleL7Proxy (never call Foundry direct)
+   - HTTP/SSE model traffic goes SimpleL7Proxy -> APIM; realtime goes FastAPI relay -> APIM (never call Foundry direct)
    - No hardcoded model names — everything is catalog-driven (infra/models.json)
    - Feature gates are server-authoritative; never gate in the web app only
    - Cosmos is canonical + partitioned per user; derived stores are rebuildable
@@ -119,7 +119,7 @@ people:
 
 - chat streaming (browser → Next proxy → API → gateway → Foundry, SSE back)
 - auth (Entra prod vs `X-Dev-User` local; `apiFetch` token attach)
-- the model gateway hop (APIM policy → SimpleL7Proxy → endpoint selection)
+- the model gateway hop (SimpleL7Proxy queue/requeue -> APIM policy -> endpoint selection)
 - Voice Live (browser ↔ API WebSocket, direct, bypassing the proxy)
 - document ingestion / multimodal understanding
 
@@ -286,7 +286,8 @@ revision can take traffic before the app reports ready. `infra/modules/api.bicep
 `infra/main.bicep` does **not** override it to `true`; `publicNetworkAccess` is
 hardcoded `Enabled` (`:36-37`). The gateway authenticates with managed identity, so
 account keys are a *latent alternate path*, not an active exposure — but leaving
-local auth on is a hardening gap on the one resource that fronts every model call.
+local auth on is a hardening gap on the resource that authorizes every governed
+Foundry model call.
 Note: this is **not** in `brutal-audit.md`'s accepted list. (Distinct from the
 already-accepted public-network-access posture on other planes.)
 

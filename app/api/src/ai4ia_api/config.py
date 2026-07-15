@@ -133,19 +133,19 @@ class Settings(BaseSettings):
     # ``/api/voice/live`` WebSocket refuses (closes immediately), so the app's
     # default behavior is byte-for-byte unchanged. When enabled, the browser
     # connects to the API's external ingress (the Next.js HTTP proxy can't proxy
-    # WebSockets) and the relay opens the upstream realtime socket through the
-    # same model gateway as chat — the browser never sees the deployment or the
-    # gateway credential. Governance (auth + entitlement gate + metering +
-    # Origin/auth validation) is enforced in the relay.
+    # WebSockets) and the relay opens the upstream realtime socket through APIM,
+    # bypassing the HTTP/SSE-only SimpleL7Proxy. The browser never sees the
+    # deployment or gateway credential. Governance (auth + entitlement gate +
+    # metering + Origin/auth validation) is enforced in the relay.
     realtime_enabled: bool = False
     # Azure OpenAI realtime preview api-version. The preview surface is reached at
     # ``{base}/realtime?api-version=<v>&deployment=<dep>`` (the GA surface uses
     # ``/v1/realtime?model=`` instead); 2025-04-01-preview is verified against the
     # deployed gpt-realtime (version 2025-08-28) on Microsoft Learn.
     realtime_api_version: str = "2025-04-01-preview"
-    # Upstream base for the realtime WebSocket. Defaults to the model gateway URL
-    # (which already carries the ``/openai`` suffix), so realtime rides the same
-    # governed path as chat. http(s) is converted to ws(s) at connect time.
+    # Upstream APIM base for the realtime WebSocket. Deployed IaC sets this
+    # separately from the SimpleL7Proxy model gateway URL. Local-only setups may
+    # omit it and use the model-gateway fallback. http(s) is converted to ws(s).
     realtime_base_url: str | None = None
     # Upstream connect/handshake timeout (seconds).
     realtime_timeout_seconds: float = 30.0

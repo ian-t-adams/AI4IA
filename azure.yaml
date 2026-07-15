@@ -43,6 +43,25 @@ services:
 # successful. continueOnError is false on purpose. The posix branch also invokes
 # pwsh (preinstalled on the GitHub ubuntu runner) so the same checks run in CI.
 hooks:
+  preprovision:
+    windows:
+      shell: pwsh
+      run: |
+        python scripts/gen-model-catalog.py --check
+        python scripts/gen-mcp-catalog.py --check
+        python scripts/gen-gateway-policy.py --check
+        python scripts/validate-feature-prereqs.py
+      continueOnError: false
+      interactive: false
+    posix:
+      shell: sh
+      run: |
+        python3 scripts/gen-model-catalog.py --check
+        python3 scripts/gen-mcp-catalog.py --check
+        python3 scripts/gen-gateway-policy.py --check
+        python3 scripts/validate-feature-prereqs.py
+      continueOnError: false
+      interactive: false
   postprovision:
     windows:
       shell: pwsh

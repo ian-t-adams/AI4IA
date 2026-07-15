@@ -33,6 +33,10 @@
        AI4IA_PROXY_CUSTOM_DOMAIN are set, confirm the hostname resolves. DNS lives
        outside Azure (external registrar, propagation lag) so a miss is a WARN.
 
+    4. Gateway topology outputs (HARD GATE). The normal model URL must be the
+       proxy /openai URL, while realtime must be the APIM /openai URL. This catches
+       reversed or looped module wiring before an application image is deployed.
+
   Cross-platform: uses .NET (HttpClient, System.Net.Dns) instead of Windows-only
   cmdlets so the same script runs under Windows PowerShell 5.1 and pwsh 7 on the
   Linux CI runner. Read-only and idempotent - safe to re-run.
@@ -221,6 +225,37 @@ function Test-ApiHealth {
   }
 }
 
+function Test-GatewayTopology {
+    $proxyUrl = Get-EnvValue 'AZURE_PROXY_URL'
+    $modelUrl = Get-EnvValue 'AZURE_MODEL_GATEWAY_URL'
+    $apimUrl = Get-EnvValue 'AZURE_APIM_GATEWAY_URL'
+    $realtimeUrl = Get-EnvValue 'AZURE_REALTIME_GATEWAY_URL'
+
+    $missing = @(
+      @{ Name = 'AZURE_PROXY_URL'; Value = $proxyUrl }
+      @{ Name = 'AZURE_MODEL_GATEWAY_URL'; Value = $modelUrl }
+      @{ Name = 'AZURE_APIM_GATEWAY_URL'; Value = $apimUrl }
+      @{ Name = 'AZURE_REALTIME_GATEWAY_URL'; Value = $realtimeUrl }
+    ) | Where-Object { [string]::IsNullOrWhiteSpace($_.Value) }
+    if ($missing.Count -gt 0) {
+      Add-Result -Name 'gateway-topology' -Status 'FAIL' -Detail "missing output(s): $((@($missing.Name) -join ', '))"
+      return
+    }
+
+    $expectedModel = "$($proxyUrl.TrimEnd('/'))/openai"
+    $expectedRealtime = "$($apimUrl.TrimEnd('/'))/openai"
+    $modelMatches = [string]::Equals($modelUrl.TrimEnd('/'), $expectedModel, [System.StringComparison]::OrdinalIgnoreCase)
+    $realtimeMatches = [string]::Equals($realtimeUrl.TrimEnd('/'), $expectedRealtime, [System.StringComparison]::OrdinalIgnoreCase)
+    $pathsAreSplit = -not [string]::Equals($modelUrl.TrimEnd('/'), $realtimeUrl.TrimEnd('/'), [System.StringComparison]::OrdinalIgnoreCase)
+
+    if ($modelMatches -and $realtimeMatches -and $pathsAreSplit) {
+      Add-Result -Name 'gateway-topology' -Status 'PASS' -Detail 'HTTP/SSE=proxy -> APIM; realtime=APIM'
+      return
+    }
+
+    Add-Result -Name 'gateway-topology' -Status 'FAIL' -Detail "expected model=$expectedModel realtime=$expectedRealtime; got model=$modelUrl realtime=$realtimeUrl"
+}
+
 function Test-CustomDomainDns {
   [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
     Justification = 'Dns is an acronym, not a plural noun; renaming would obscure intent.')]
@@ -233,6 +268,7 @@ function Test-CustomDomainDns {
     Add-Result -Name 'custom-domain-dns' -Status 'SKIP' -Detail 'no custom-domain vars set'
     return
   }
+
   foreach ($d in $domains) {
     try {
       $addrs = [System.Net.Dns]::GetHostAddresses($d.Value)
@@ -255,6 +291,7 @@ $checks = @(
   @{ Label = 'Model deployments (hard gate)'; Fn = { Test-ModelDeployment } }
   @{ Label = 'API health'; Fn = { Test-ApiHealth } }
   @{ Label = 'Custom-domain DNS'; Fn = { Test-CustomDomainDns } }
+  @{ Label = 'Gateway topology outputs (hard gate)'; Fn = { Test-GatewayTopology } }
 )
 foreach ($check in $checks) {
   Write-Host ("{0}:" -f $check.Label)

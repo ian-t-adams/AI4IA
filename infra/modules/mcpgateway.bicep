@@ -1,8 +1,8 @@
 // Dedicated MCP gateway: a second APIM (Basic v2) front door that exposes and
 // governs a curated set of "official" MCP servers (infra/mcp-servers.json) using
 // APIM's native "expose an existing MCP server" feature. MCP traffic is gated on
-// an APIM subscription key, isolated from the Consumption model gateway so the
-// model data path keeps scale-to-zero economics while MCP gets a v2 tier (the
+// an APIM subscription key, isolated from the Consumption model gateway so MCP
+// gets the required v2 capabilities without changing the model APIM tier (the
 // MCP feature is NOT supported on the Consumption SKU).
 //
 // Provisioned only when enableOfficialMcp is true. The param DEFAULT is false (a

@@ -287,6 +287,7 @@ public class RequestData : IDisposable, IAsyncDisposable
 
         EventData = RentEvent();
         Path = path;
+        Model = ExtractDeploymentName(path);
         Timestamp = enqueueTime;
         EnqueueTime = enqueueTime;
         Method = method;
@@ -312,6 +313,7 @@ public class RequestData : IDisposable, IAsyncDisposable
     public void Populate(string id, Guid guid, string mid, string path, string method, DateTime enqueueTime, Dictionary<string, string> headers)
     {
         Path = path;
+        Model = ExtractDeploymentName(path);
         Timestamp = enqueueTime;
         EnqueueTime = enqueueTime;
         Method = method;
@@ -348,6 +350,7 @@ public class RequestData : IDisposable, IAsyncDisposable
 
         EventData = RentEvent();
         Path = context.Request.Url.PathAndQuery;
+        Model = ExtractDeploymentName(Path);
         Method = context.Request.HttpMethod;
         Headers = (WebHeaderCollection)context.Request.Headers;
         Body = context.Request.InputStream;
@@ -370,6 +373,25 @@ public class RequestData : IDisposable, IAsyncDisposable
         {
             throw new IOException("Failed to initialize OutputStream for the request.", ex);
         }
+    }
+
+    private static string ExtractDeploymentName(string path)
+    {
+        const string marker = "/deployments/";
+        int markerIndex = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (markerIndex < 0)
+        {
+            return string.Empty;
+        }
+
+        int start = markerIndex + marker.Length;
+        int end = path.IndexOfAny(['/', '?'], start);
+        if (end < 0)
+        {
+            end = path.Length;
+        }
+
+        return end > start ? Uri.UnescapeDataString(path[start..end]) : string.Empty;
     }
 
     public async Task<byte[]> CacheBodyAsync()

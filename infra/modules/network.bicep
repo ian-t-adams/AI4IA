@@ -1,7 +1,7 @@
 // VNet + private DNS for the optional network-isolation hardening pass.
 // Provisioned only when main.bicep's `vnetIsolationEnabled` flag is on; nothing
 // here exists by default. Hosts the Container Apps env (snet-infra) and the
-// private endpoints for the data tier (snet-pep), plus the three private DNS
+// private endpoints for the data tier (snet-pep), plus the four private DNS
 // zones their FQDNs resolve through.
 @description('Location for the network resources.')
 param location string
@@ -62,6 +62,7 @@ var zoneNames = [
   'privatelink.documents.azure.com' // Cosmos DB (Sql)
   'privatelink.blob.${environment().suffixes.storage}' // Storage (blob)
   'privatelink.vaultcore.azure.net' // Key Vault
+  'privatelink.servicebus.windows.net' // Service Bus
 ]
 
 resource dnsZones 'Microsoft.Network/privateDnsZones@2024-06-01' = [for z in zoneNames: {
@@ -89,3 +90,4 @@ output pepSubnetId string = '${vnet.id}/subnets/snet-pep'
 output cosmosDnsZoneId string = dnsZones[0].id
 output blobDnsZoneId string = dnsZones[1].id
 output vaultDnsZoneId string = dnsZones[2].id
+output serviceBusDnsZoneId string = dnsZones[3].id
