@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import html
 import io
 import json
 import tempfile
@@ -33,15 +34,26 @@ docs_generator = load_script("gen_docs_catalog", "scripts/gen-docs-catalog.py")
 
 class GatewayPolicyTests(unittest.TestCase):
     def test_generated_fragment_is_current_and_well_formed(self) -> None:
-        expected = gateway_generator.generate()
+        expected, expected_catalog_fragments = (
+            gateway_generator.generate_endpoint_policies()
+        )
         output = (
             ROOT / "infra/policies/simplel7proxy-endpoints.xml"
         ).read_text(encoding="utf-8")
         self.assertEqual(output, expected)
-        ElementTree.fromstring(output)
-        gateway_generator.validate_policy_expressions(
+        gateway_generator.validate_policy_fragment(
             output, "infra/policies/simplel7proxy-endpoints.xml"
         )
+        for path, catalog_expected in zip(
+            gateway_generator.CATALOG_OUTPUT_PATHS,
+            expected_catalog_fragments,
+            strict=True,
+        ):
+            catalog_output = path.read_text(encoding="utf-8")
+            self.assertEqual(catalog_output, catalog_expected)
+            gateway_generator.validate_policy_fragment(
+                catalog_output, str(path.relative_to(ROOT))
+            )
         ElementTree.parse(ROOT / "infra/policies/simplel7proxy-priority-retry.xml")
         gateway_generator.validate_policy_expressions(
             (
@@ -63,20 +75,41 @@ class GatewayPolicyTests(unittest.TestCase):
         )
 
     def test_catalog_expressions_stay_below_apim_limit(self) -> None:
-        output = gateway_generator.generate()
-        root = ElementTree.fromstring(output)
+        output, catalog_fragments = gateway_generator.generate_endpoint_policies()
+        roots = [
+            ElementTree.fromstring(fragment)
+            for fragment in (*catalog_fragments, output)
+        ]
         catalog_expressions = [
             element.attrib["value"]
+            for root in roots
             for element in root.findall("set-variable")
             if element.attrib.get("name", "").startswith("backendCatalog")
         ]
-        self.assertGreater(len(catalog_expressions), 2)
+        self.assertEqual(
+            len(catalog_expressions),
+            gateway_generator.CATALOG_FRAGMENT_COUNT + 1,
+        )
         self.assertTrue(
             all(
                 len(expression) < gateway_generator.APIM_EXPRESSION_MAX_CHARS
                 for expression in catalog_expressions
             )
         )
+
+    def test_every_generated_fragment_stays_below_compiler_ceiling(self) -> None:
+        setup_fragment, catalog_fragments = (
+            gateway_generator.generate_endpoint_policies()
+        )
+        for fragment in (*catalog_fragments, setup_fragment):
+            self.assertLessEqual(
+                len(fragment.encode("utf-8")),
+                gateway_generator.APIM_FRAGMENT_COMPILER_SAFE_BYTES,
+            )
+            self.assertLessEqual(
+                len(html.unescape(fragment).encode("utf-8")),
+                gateway_generator.APIM_FRAGMENT_COMPILER_SAFE_BYTES,
+            )
 
     def test_policy_validator_rejects_unterminated_csharp_string(self) -> None:
         malformed = (
@@ -123,9 +156,10 @@ class GatewayPolicyTests(unittest.TestCase):
 
     def test_every_catalog_deployment_is_allowlisted(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
-        fragment = (
-            ROOT / "infra/policies/simplel7proxy-endpoints.xml"
-        ).read_text(encoding="utf-8")
+        fragment = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in gateway_generator.CATALOG_OUTPUT_PATHS
+        )
         naming = models["naming"]
         for model in models["catalog"]:
             for deployment in model["deployments"]:
@@ -193,6 +227,31 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn(
             "loadTextContent('../policies/realtime-routing.xml')", gateway
         )
+        for index, path in enumerate(gateway_generator.CATALOG_OUTPUT_PATHS):
+            self.assertIn(
+                f"loadTextContent('../policies/{path.name}')",
+                gateway,
+            )
+            self.assertIn(
+                f'fragment-id="{gateway_generator.CATALOG_FRAGMENT_IDS[index]}"',
+                (
+                    ROOT / "infra/policies/simplel7proxy-priority-retry.xml"
+                ).read_text(encoding="utf-8"),
+            )
+        policy = (
+            ROOT / "infra/policies/simplel7proxy-priority-retry.xml"
+        ).read_text(encoding="utf-8")
+        ordered_ids = [
+            *gateway_generator.CATALOG_FRAGMENT_IDS,
+            gateway_generator.SETUP_FRAGMENT_ID,
+        ]
+        positions = [
+            policy.index(f'fragment-id="{fragment_id}"')
+            for fragment_id in ordered_ids
+        ]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn('fragment-id="endpoint_selection_frag_30"', policy)
+        self.assertNotIn("name: 'endpoint_selection_frag_30'", gateway)
         for probe_path in ("/startup", "/liveness", "/readiness"):
             self.assertIn(f"path: '{probe_path}'", gateway)
         self.assertEqual(gateway.count("port: 8080"), 3)

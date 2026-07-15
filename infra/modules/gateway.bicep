@@ -144,18 +144,46 @@ resource foundryEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024
   }
 }]
 
-resource endpointSelectionFragment 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = {
-  parent: apim
-  name: 'endpoint_selection_frag_30'
-  properties: {
-    description: 'Generated model/deployment allowlist and regional backend selection for SimpleL7Proxy.'
-    format: 'rawxml'
+var endpointSelectionFragmentDefinitions = [
+  {
+    name: 'endpoint_selection_catalog_0_31'
+    description: 'Generated model/deployment catalog chunk 0 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-0.xml')
+  }
+  {
+    name: 'endpoint_selection_catalog_1_31'
+    description: 'Generated model/deployment catalog chunk 1 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-1.xml')
+  }
+  {
+    name: 'endpoint_selection_catalog_2_31'
+    description: 'Generated model/deployment catalog chunk 2 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-2.xml')
+  }
+  {
+    name: 'endpoint_selection_catalog_3_31'
+    description: 'Generated model/deployment catalog chunk 3 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-3.xml')
+  }
+  {
+    name: 'endpoint_selection_setup_31'
+    description: 'Generated model routing setup for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints.xml')
+  }
+]
+
+resource endpointSelectionFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in endpointSelectionFragmentDefinitions: {
+  parent: apim
+  name: definition.name
+  properties: {
+    description: definition.description
+    format: 'rawxml'
+    value: definition.value
   }
   dependsOn: [
     foundryEndpointValues
   ]
-}
+}]
 
 resource modelsApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
   parent: apim
@@ -207,7 +235,7 @@ resource modelsApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-
     value: loadTextContent('../policies/simplel7proxy-priority-retry.xml')
   }
   dependsOn: [
-    endpointSelectionFragment
+    endpointSelectionFragments
   ]
 }
 

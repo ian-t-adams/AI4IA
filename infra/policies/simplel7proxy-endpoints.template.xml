@@ -30,11 +30,10 @@
     <set-variable name="AffinityHeaderName" value="x-backend-affinity" />
     <set-variable name="modelHeaderName" value="x-LLMModel" />
 
-    <!-- ================= BACKEND CATALOG =================
-        Generated from infra/models.json. Each deployment alias maps to every
-        compatible regional deployment for the same model. Endpoint values are
-        APIM named values created by gateway.bicep. -->
-__AI4IA_BACKEND_CATALOG_VARIABLES__
+    <!-- ================= BACKEND CATALOG MERGE =================
+        Preceding catalog fragments initialize bounded chunks. Merge them only
+        after every chunk has executed. -->
+__AI4IA_BACKEND_CATALOG_MERGE__
 
     <!-- ================= PRIORITY RULES (edit me) =================
         For each request priority (1, 2, 3), set:

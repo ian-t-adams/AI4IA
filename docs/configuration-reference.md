@@ -68,8 +68,9 @@ and a dead vanity URL.
 Normal HTTP/SSE traffic uses
 `AI4IA_MODEL_GATEWAY_URL=https://<proxy>/openai`. The proxy's only backend is
 `https://<apim>/openai`; APIM terminates at Foundry endpoints generated from
-`infra/models.json`. The generated policy fragment rewrites region-specific
-deployment names and rejects unknown deployments rather than falling back.
+`infra/models.json`. Ordered, size-bounded policy fragments initialize the
+catalog and routing setup; they rewrite region-specific deployment names and
+reject unknown deployments rather than falling back.
 
 Voice Live uses `AI4IA_REALTIME_BASE_URL=https://<apim>/openai` from the FastAPI
 relay. Its APIM subscription is scoped only to `/openai/realtime`, so it cannot
