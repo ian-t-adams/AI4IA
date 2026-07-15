@@ -146,35 +146,82 @@ resource foundryEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024
 
 var endpointSelectionFragmentDefinitions = [
   {
-    name: 'endpoint_selection_catalog_0_32'
+    baseName: 'endpoint_selection_catalog_0_32'
     description: 'Generated model/deployment catalog chunk 0 for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-0.xml')
   }
   {
-    name: 'endpoint_selection_catalog_1_32'
+    baseName: 'endpoint_selection_catalog_1_32'
     description: 'Generated model/deployment catalog chunk 1 for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-1.xml')
   }
   {
-    name: 'endpoint_selection_catalog_2_32'
+    baseName: 'endpoint_selection_catalog_2_32'
     description: 'Generated model/deployment catalog chunk 2 for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-2.xml')
   }
   {
-    name: 'endpoint_selection_catalog_3_32'
+    baseName: 'endpoint_selection_catalog_3_32'
     description: 'Generated model/deployment catalog chunk 3 for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-3.xml')
   }
   {
-    name: 'endpoint_selection_setup_32'
+    baseName: 'endpoint_selection_setup_32'
     description: 'Generated model routing setup for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints.xml')
   }
 ]
 
-resource endpointSelectionFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in endpointSelectionFragmentDefinitions: {
+var priorityPolicyFragmentDefinitions = [
+  {
+    baseName: 'simplel7proxy_inbound_pre_32'
+    description: 'SimpleL7Proxy inbound policies before model catalog initialization.'
+    value: loadTextContent('../policies/simplel7proxy_inbound_pre_32.xml')
+  }
+  {
+    baseName: 'simplel7proxy_inbound_post_32'
+    description: 'SimpleL7Proxy inbound policies after model catalog initialization.'
+    value: loadTextContent('../policies/simplel7proxy_inbound_post_32.xml')
+  }
+  {
+    baseName: 'simplel7proxy_backend_32'
+    description: 'SimpleL7Proxy backend retry and routing policies.'
+    value: loadTextContent('../policies/simplel7proxy_backend_32.xml')
+  }
+  {
+    baseName: 'simplel7proxy_outbound_32'
+    description: 'SimpleL7Proxy outbound policies.'
+    value: loadTextContent('../policies/simplel7proxy_outbound_32.xml')
+  }
+  {
+    baseName: 'simplel7proxy_on_error_32'
+    description: 'SimpleL7Proxy error handling policies.'
+    value: loadTextContent('../policies/simplel7proxy_on_error_32.xml')
+  }
+]
+
+var modelPolicyFragmentDefinitions = concat(
+  endpointSelectionFragmentDefinitions,
+  priorityPolicyFragmentDefinitions
+)
+
+// Content-addressed names prevent mixed generations during incremental deploys.
+// Superseded generations are retained for rollback and cleaned up only through
+// the explicit post-stabilization procedure in docs/runbooks/deployment.md.
+var modelApiPolicyTemplate = loadTextContent('../policies/simplel7proxy-priority-policy.xml')
+var modelApiPolicyValue = reduce(
+  modelPolicyFragmentDefinitions,
+  modelApiPolicyTemplate,
+  (policy, definition) => replace(
+    policy,
+    definition.baseName,
+    '${definition.baseName}-${uniqueString(definition.value)}'
+  )
+)
+
+resource modelPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in modelPolicyFragmentDefinitions: {
   parent: apim
-  name: definition.name
+  name: '${definition.baseName}-${uniqueString(definition.value)}'
   properties: {
     description: definition.description
     format: 'rawxml'
@@ -232,10 +279,10 @@ resource modelsApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-
   name: 'policy'
   properties: {
     format: 'rawxml'
-    value: loadTextContent('../policies/simplel7proxy-priority-retry.xml')
+    value: modelApiPolicyValue
   }
   dependsOn: [
-    endpointSelectionFragments
+    modelPolicyFragments
   ]
 }
 

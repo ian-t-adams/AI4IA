@@ -1,0 +1,150 @@
+<fragment>
+<set-variable name="pathDeploymentMatchesModel" value="@{
+			string path = context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;);
+			string marker = &quot;deployments/&quot;;
+			int markerIndex = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+			if (markerIndex &lt; 0) { return true; }
+			int start = markerIndex + marker.Length;
+			int end = path.IndexOf('/', start);
+			string pathDeployment = end &lt; 0 ? path.Substring(start) : path.Substring(start, end - start);
+			string detectedModel = context.Variables.GetValueOrDefault&lt;string&gt;(&quot;model&quot;, &quot;&quot;);
+			return !string.IsNullOrWhiteSpace(pathDeployment) &amp;&amp;
+				string.Equals(pathDeployment, detectedModel, StringComparison.OrdinalIgnoreCase);
+		}" />
+<choose>
+			<when condition="@(!context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;pathDeploymentMatchesModel&quot;, false))">
+				<return-response>
+					<set-status code="400" reason="Deployment path and detected model disagree" />
+					<set-body>{"error":{"code":"model_path_mismatch","message":"The deployment path must match the detected catalog model."}}</set-body>
+				</return-response>
+			</when>
+			<when condition="@(((JObject)context.Variables[&quot;selectedBackends&quot;]).Count == 0)">
+				<return-response>
+					<set-status code="404" reason="Model deployment is not in the AI4IA catalog" />
+					<set-body>{"error":{"code":"model_not_allowed","message":"The requested deployment is not allowed by the gateway catalog."}}</set-body>
+				</return-response>
+			</when>
+		</choose>
+<!-- Load the shared throttle state (backend id -> wakeAt) and overlay it onto the list -->
+<cache-lookup-value key="@(&quot;throttle-&quot; + context.Api.Id)" variable-name="throttleState" />
+<set-variable name="throttleState" value="@{
+			JObject loaded = context.Variables.GetValueOrDefault&lt;JObject>(&quot;throttleState&quot;, null);
+			JObject map = (loaded != null &amp;&amp; loaded[&quot;backends&quot;] != null &amp;&amp; loaded[&quot;backends&quot;].Type == JTokenType.Object) ? (JObject)loaded[&quot;backends&quot;] : new JObject();
+			return new JObject(
+				new JProperty(&quot;dirty&quot;, false),
+				new JProperty(&quot;backends&quot;, map)
+			);
+		}" />
+<set-variable name="listBackends" value="@{
+			JArray backends = (JArray)context.Variables[&quot;listBackends&quot;];
+			JObject state = (JObject)((JObject)context.Variables[&quot;throttleState&quot;])[&quot;backends&quot;];
+			DateTime now = DateTime.UtcNow;
+			foreach (JObject b in backends) {
+				DateTime wakeAt = state.Value&lt;DateTime?>(b.Value&lt;string>(&quot;affinity&quot;)) ?? DateTime.MinValue;
+				bool isThrottling = wakeAt > now;
+				b[&quot;isThrottling&quot;] = isThrottling;
+				b[&quot;retryAfter&quot;] = isThrottling ? wakeAt : DateTime.MinValue;
+			}
+			return backends;
+		}" />
+<!--  set the priority to 3 if not set -->
+<set-variable name="RequestPriority" value="@{
+			const int defaultPriority = 3;
+			string priorityHeaderName = (string)context.Variables[&quot;priorityHeaderName&quot;];
+			return context.Request.Headers.TryGetValue(priorityHeaderName, out var priorityValues) &amp;&amp;
+				int.TryParse(priorityValues.FirstOrDefault(), out int parsedPriority)
+				? parsedPriority
+				: defaultPriority;
+		}" />
+<set-variable name="RequestAffinityBackendIdx" value="@{
+			string affinityHeaderName = (string)context.Variables[&quot;AffinityHeaderName&quot;];
+			string affinityHeader = context.Request.Headers.GetValueOrDefault(affinityHeaderName, &quot;&quot;);
+
+			// Find the backend with the matching affinity
+			if (!string.IsNullOrEmpty(affinityHeader)) {
+				JArray backends = (JArray)context.Variables[&quot;listBackends&quot;];
+				for (int i = 0; i &lt; backends.Count; i++) {
+					JObject backend = (JObject)backends[i];
+					if (string.Equals(backend[&quot;affinity&quot;]?.ToString(), affinityHeader, StringComparison.OrdinalIgnoreCase)) {
+						return i;  // Return the index of the matching backend
+					}
+				}
+			}
+
+			// Return -1 if no affinity header or no match found
+			return -1;
+		}" />
+<!-- Get the list of backend indexes that can handle the requested priority -->
+<set-variable name="PriBackendIndxs" value="@{
+			JArray list =  new JArray();
+			JArray backends = (JArray)context.Variables[&quot;listBackends&quot;];
+			int requestPriority = (int)context.Variables[&quot;RequestPriority&quot;];
+			for (int i = 0; i &lt; backends.Count; i++) {
+				JObject backend = (JObject)backends[i];
+				if (backend[&quot;acceptablePriorities&quot;]?.Values&lt;int>().Contains(requestPriority) == true) {
+					list.Add(i);
+				}
+			}
+			return list;
+		}" />
+<set-variable name="RetryCount" value="@{
+			return ((JObject)context.Variables[&quot;priorityCfg&quot;])
+				.GetValue(context.Variables.GetValueOrDefault&lt;int>(&quot;RequestPriority&quot;, 3).ToString())?
+				.Value&lt;int>(&quot;retryCount&quot;) ?? 1;
+		}" />
+<set-variable name="RequeueAllowed" value="@{
+			return ((JObject)context.Variables[&quot;priorityCfg&quot;])
+				.GetValue(context.Variables.GetValueOrDefault&lt;int>(&quot;RequestPriority&quot;, 3).ToString())?
+				.Value&lt;bool>(&quot;requeue&quot;) ?? true;
+		}" />
+<!-- Fetch the Managed Identity token once for the whole request. The token
+		     audience (authResource) is resolved per model in the endpoint catalog. -->
+<authentication-managed-identity resource="@((string)context.Variables[&quot;authResource&quot;])" output-token-variable-name="managed-id-access-token" ignore-error="false" />
+<set-variable name="backendCallCounter" value="@(0)" />
+<set-variable name="PolicyCycleCounter" value="@{
+			string policyCycleCounterHeaderName = (string)context.Variables[&quot;PolicyCycleCounterHeaderName&quot;];
+			return context.Request.Headers.TryGetValue(policyCycleCounterHeaderName, out var priorityValues) &amp;&amp;
+				int.TryParse(priorityValues.FirstOrDefault(), out int parsedCounter)   ? parsedCounter : 0;   // return 0 if not set
+		}" />
+<!-- set-backend-service base-url="https://a208790-function-app-sleep-gvdha0ffczd4h4cc.eastus2-01.azurewebsites.net/api/sleep_function" />
+		<rewrite-uri template="/" copy-unmatched-params="false" /> -->
+<set-variable name="lastPolicyError" value="@{
+			// Initialize or reuse
+			JArray arr = context.Variables.GetValueOrDefault&lt;JArray>(&quot;lastPolicyError&quot;, new JArray());
+			arr.Clear();
+			arr.Add(new JObject {
+				{ &quot;code&quot;, &quot;init&quot; },
+				{ &quot;message&quot;, &quot;noError&quot; }
+			});
+			return arr;
+		}" />
+<set-variable name="contextWindowExceeded" value="@(false)" />
+<set-variable name="activityLog" value="@{
+			// Request Start
+			JArray arr = context.Variables.GetValueOrDefault&lt;JArray>(&quot;activityLog&quot;, new JArray());
+			arr.Clear();
+			arr.Add(new JObject {
+				{ &quot;Elapsed&quot;, context.Elapsed.TotalSeconds.ToString(&quot;F3&quot;)},
+				{ &quot;message&quot;, &quot;Begin&quot; }
+			});
+			return arr;
+		}" />
+<!-- Response headers (name -> value) to surface only when debugging is requested -->
+<set-variable name="DbgStr" value="@{
+			var headers = context.Request.Headers;
+			if (!string.Equals(headers.GetValueOrDefault(&quot;S7PDEBUG&quot;, &quot;&quot;), &quot;true&quot;, StringComparison.OrdinalIgnoreCase)) {
+				return &quot;&quot;;
+			}
+
+			string priorityHeaderName = (string)context.Variables[&quot;priorityHeaderName&quot;];
+			JObject dbgObj = new JObject {
+				{ &quot;Proxy-Queue-Duration&quot;, headers.GetValueOrDefault(&quot;x-Request-Queue-Duration&quot;, &quot;N/A&quot;) },
+				{ &quot;Proxy-Process-Duration&quot;, headers.GetValueOrDefault(&quot;x-Request-Process-Duration&quot;, &quot;N/A&quot;) },
+				{ &quot;S7PID&quot;, headers.GetValueOrDefault(&quot;x-S7P-ID&quot;, &quot;N/A&quot;) },
+				{ priorityHeaderName, headers.GetValueOrDefault(priorityHeaderName, &quot;N/A&quot;) },
+				{ &quot;Priority&quot;, context.Variables.GetValueOrDefault&lt;int>(&quot;RequestPriority&quot;, 3) }
+			};
+
+			return string.Join(&quot; | &quot;, dbgObj.Properties().Select(p => p.Name + &quot;: &quot; + p.Value));
+		}" />
+</fragment>

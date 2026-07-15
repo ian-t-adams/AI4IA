@@ -63,6 +63,45 @@ class GatewayPolicyTests(unittest.TestCase):
             ).read_text(encoding="utf-8"),
             "infra/policies/simplel7proxy-priority-retry.xml",
         )
+        priority_expected, priority_fragments = (
+            gateway_generator.generate_priority_policies()
+        )
+        priority_output = gateway_generator.PRIORITY_OUTPUT_PATH.read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(priority_output, priority_expected)
+        gateway_generator.validate_policy_expressions(
+            priority_output,
+            str(gateway_generator.PRIORITY_OUTPUT_PATH.relative_to(ROOT)),
+        )
+        self.assertLessEqual(
+            len(priority_output.encode("utf-8")),
+            gateway_generator.APIM_API_POLICY_MAX_BYTES,
+        )
+        rollback_policy = (
+            ROOT / "infra/policies/simplel7proxy-rollback-policy.xml"
+        ).read_text(encoding="utf-8")
+        ElementTree.fromstring(rollback_policy)
+        gateway_generator.validate_policy_expressions(
+            rollback_policy,
+            "infra/policies/simplel7proxy-rollback-policy.xml",
+        )
+        self.assertLessEqual(
+            len(rollback_policy.encode("utf-8")),
+            gateway_generator.APIM_API_POLICY_MAX_BYTES,
+        )
+        for path, fragment_expected in zip(
+            gateway_generator.PRIORITY_OUTPUT_PATHS,
+            priority_fragments,
+            strict=True,
+        ):
+            fragment_output = path.read_text(encoding="utf-8")
+            self.assertEqual(fragment_output, fragment_expected)
+            gateway_generator.validate_policy_fragment(
+                fragment_output,
+                str(path.relative_to(ROOT)),
+            )
+            self.assertNotIn("<base", fragment_output)
         realtime_models = json.loads(
             (ROOT / "infra/models.json").read_text(encoding="utf-8")
         )
@@ -112,6 +151,41 @@ class GatewayPolicyTests(unittest.TestCase):
                 len(html.unescape(fragment).encode("utf-8")),
                 gateway_generator.APIM_FRAGMENT_COMPILER_SAFE_BYTES,
             )
+
+    def test_priority_splitter_rejects_lossy_inbound_order(self) -> None:
+        source = (
+            ROOT / "infra/policies/simplel7proxy-priority-retry.xml"
+        ).read_text(encoding="utf-8")
+        cases = {
+            "base policy must be the first": source.replace(
+                "<inbound>\n\t\t<base />",
+                '<inbound>\n\t\t<set-header name="before-base" '
+                'exists-action="override"><value>x</value></set-header>\n'
+                "\t\t<base />",
+                1,
+            ),
+            "fragment chain must be contiguous": source.replace(
+                '<include-fragment fragment-id="endpoint_selection_catalog_1_32" />',
+                '<include-fragment fragment-id="endpoint_selection_catalog_1_32" />'
+                '\n\t\t<set-header name="interleaved" exists-action="override">'
+                "<value>x</value></set-header>",
+                1,
+            ),
+        }
+        for expected_error, malformed in cases.items():
+            with self.subTest(expected_error=expected_error):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    path = Path(temp_dir) / "priority.xml"
+                    path.write_text(malformed, encoding="utf-8")
+                    with (
+                        patch.object(
+                            gateway_generator,
+                            "PRIORITY_POLICY_PATH",
+                            path,
+                        ),
+                        self.assertRaisesRegex(ValueError, expected_error),
+                    ):
+                        gateway_generator.generate_priority_policies()
 
     def test_policy_validator_rejects_unterminated_csharp_string(self) -> None:
         malformed = (
@@ -251,6 +325,18 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn(
             "loadTextContent('../policies/realtime-routing.xml')", gateway
         )
+        self.assertIn(
+            "loadTextContent('../policies/simplel7proxy-priority-policy.xml')",
+            gateway,
+        )
+        self.assertIn("uniqueString(definition.value)", gateway)
+        self.assertIn("var modelApiPolicyValue = reduce(", gateway)
+        self.assertNotIn("simplel7proxy-rollback-policy.xml", gateway)
+        for path in gateway_generator.PRIORITY_OUTPUT_PATHS:
+            self.assertIn(
+                f"loadTextContent('../policies/{path.name}')",
+                gateway,
+            )
         for index, path in enumerate(gateway_generator.CATALOG_OUTPUT_PATHS):
             self.assertIn(
                 f"loadTextContent('../policies/{path.name}')",
@@ -317,16 +403,26 @@ class GatewayPolicyTests(unittest.TestCase):
         template = json.loads(completed.stdout.lstrip("\ufeff"))
         resources = template["resources"]
         self.assertIn(
-            "endpointSelectionFragments",
+            "modelPolicyFragments",
             resources["modelsApiPolicy"]["dependsOn"],
         )
-        definitions = template["variables"]["endpointSelectionFragmentDefinitions"]
+        definitions = [
+            *template["variables"]["endpointSelectionFragmentDefinitions"],
+            *template["variables"]["priorityPolicyFragmentDefinitions"],
+        ]
         self.assertEqual(
             [
                 *gateway_generator.CATALOG_FRAGMENT_IDS,
                 gateway_generator.SETUP_FRAGMENT_ID,
+                *gateway_generator.PRIORITY_FRAGMENT_IDS,
             ],
-            [definition["name"] for definition in definitions],
+            [definition["baseName"] for definition in definitions],
+        )
+        fragment_resource = resources["modelPolicyFragments"]
+        self.assertIn("uniqueString", fragment_resource["name"])
+        self.assertIn(
+            "modelApiPolicyValue",
+            resources["modelsApiPolicy"]["properties"]["value"],
         )
 
     def test_live_compiler_harness_has_exact_name_cleanup_guards(self) -> None:
@@ -344,6 +440,7 @@ class GatewayPolicyTests(unittest.TestCase):
         for fragment_id in (
             *gateway_generator.CATALOG_FRAGMENT_IDS,
             gateway_generator.SETUP_FRAGMENT_ID,
+            *gateway_generator.PRIORITY_FRAGMENT_IDS,
         ):
             self.assertIn(fragment_id, harness)
 

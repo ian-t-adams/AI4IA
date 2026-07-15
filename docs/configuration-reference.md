@@ -72,6 +72,15 @@ Normal HTTP/SSE traffic uses
 catalog and routing setup; they rewrite region-specific deployment names and
 reject unknown deployments rather than falling back.
 
+The generated API policy is a sub-16 KB wrapper over bounded endpoint and
+priority-section fragments. APIM block expressions misparse contiguous `://`
+inside string literals, so generated `@{ ... }` expressions split URL slash
+tokens.
+
+`infra/policies/simplel7proxy-rollback-policy.xml` preserves the current minimal
+live API policy as an explicit operator rollback target. Bicep never deploys it
+automatically.
+
 Voice Live uses `AI4IA_REALTIME_BASE_URL=https://<apim>/openai` from the FastAPI
 relay. Its APIM subscription is scoped only to `/openai/realtime`, so it cannot
 be used to bypass the proxy for normal model calls. The normal-model APIM key is

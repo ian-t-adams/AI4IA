@@ -1,0 +1,18 @@
+<policies>
+	<inbound>
+		<base />
+		<set-header name="x-correlation-id" exists-action="skip">
+			<value>@(context.RequestId.ToString())</value>
+		</set-header>
+		<authentication-managed-identity resource="https://cognitiveservices.azure.com" />
+	</inbound>
+	<backend>
+		<base />
+	</backend>
+	<outbound>
+		<base />
+	</outbound>
+	<on-error>
+		<base />
+	</on-error>
+</policies>

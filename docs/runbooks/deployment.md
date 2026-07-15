@@ -181,13 +181,13 @@ compiler harness against the target APIM:
   -ServiceName <apim-service-name>
 ```
 
-The harness creates uniquely named temporary copies of every generated endpoint
-fragment and a collision-free temporary API, waits for each fragment's async
-compiler operation, and applies an API policy that includes the fragments in
-production order. Its `finally` path deletes only those exact temporary names
-and verifies that all are absent. It never modifies a production API, policy, or
-fragment. A successful full-chain compile plus cleanup verification is the
-decisive APIM service validation.
+The harness creates uniquely named temporary copies of every generated
+model-policy fragment and a collision-free temporary API, waits for each
+fragment's async compiler operation, and applies the generated API wrapper with
+the complete fragment chain in production order. Its `finally` path deletes
+only those exact temporary names and verifies that all are absent. It never
+modifies a production API, policy, or fragment. A successful full-chain compile
+plus cleanup verification is the decisive APIM service validation.
 
 #### Gateway canary and rollback
 
@@ -209,6 +209,16 @@ restore the previous Container App revision while preparing the source revert. I
 the APIM policy or subscription topology changed, revert and run `azd provision`
 as well as `azd deploy`; shifting Container App traffic alone does not roll back
 APIM.
+
+For an API-policy-only emergency rollback, apply
+`infra/policies/simplel7proxy-rollback-policy.xml` through an explicitly
+authorized operator change. Bicep never deploys this preserved live policy.
+
+Generated model-policy fragments use content-addressed names. Incremental
+deployment intentionally retains superseded generations for rollback. After a
+new wrapper is stable, retain its active generation and one known-good rollback
+generation; removing older unreferenced fragments is a separate destructive
+operation that requires explicit approval.
 
 | Variable | Value (this deployment) |
 |---|---|

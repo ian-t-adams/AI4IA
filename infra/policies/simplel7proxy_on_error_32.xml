@@ -1,0 +1,129 @@
+<fragment>
+<set-variable name="responseObject" value="@{
+			var responseObj = context.Variables.GetValueOrDefault&lt;JObject>(&quot;responseObject&quot;, new JObject());
+			var arr = context.Variables.GetValueOrDefault&lt;JArray>(&quot;activityLog&quot;, new JArray());
+			var statusCode = context.Response?.StatusCode ?? 500;
+			var callCompleted = context.Variables.GetValueOrDefault&lt;bool>(&quot;callCompleted&quot;, false);
+			var backendIndex = context.Variables.GetValueOrDefault&lt;int>(&quot;backendIndex&quot;, -1);
+
+			bool isTempError = statusCode == 429 || statusCode == 408 || statusCode == 400 || statusCode >= 500;
+			bool isPermError = false;//!isTempError &amp;&amp; (statusCode > 400 &amp;&amp; statusCode &lt; 500);
+			var lastErrorReason = context.LastError?.Reason ?? &quot;&quot;;
+			var lastErrorMessage = context.LastError?.Message ?? &quot;&quot;;
+			if (lastErrorMessage.Length > 200) {
+				lastErrorMessage = lastErrorMessage.Substring(0, 200) + &quot;...&quot;;
+			}
+
+			arr.Add(new JObject {
+				{ &quot;Elapsed&quot;, context.Elapsed.TotalSeconds.ToString(&quot;F3&quot;) },
+				{ &quot;message&quot;, &quot;ON ERROR ENTERED: callCompleted: &quot; + callCompleted +
+					&quot; backendIndex: &quot; + backendIndex +
+					&quot; unThrottledBackends: &quot; + context.Variables.GetValueOrDefault&lt;int>(&quot;unThrottledBackends&quot;, -1) +
+					&quot; RetryRemaining: &quot; + context.Variables.GetValueOrDefault&lt;bool>(&quot;RetryRemaining&quot;, true) +
+					&quot; Return429: &quot; + context.Variables.GetValueOrDefault&lt;bool>(&quot;Return429&quot;, false) +
+					&quot; LastError: &quot; + lastErrorReason + &quot; - &quot; + lastErrorMessage }
+			});
+
+			if (callCompleted) {
+				if (isPermError) {
+					responseObj[&quot;statusCode&quot;] = statusCode;
+					responseObj[&quot;statusReason&quot;] = &quot;Permanent Error&quot;;
+				} else if (isTempError) {
+					responseObj[&quot;statusCode&quot;] = statusCode;
+					responseObj[&quot;statusReason&quot;] = &quot;Temporary Error&quot;;
+				} else {
+					responseObj[&quot;statusCode&quot;] = 500;
+					responseObj[&quot;statusReason&quot;] = &quot;Unknown Error&quot;;
+				}
+			} else {
+				JArray backends = context.Variables.GetValueOrDefault&lt;JArray>(&quot;listBackends&quot;, new JArray());
+				JArray priorityBackendIndxs = context.Variables.GetValueOrDefault&lt;JArray>(&quot;PriBackendIndxs&quot;, new JArray());
+				bool contextWindowExceeded = context.Variables.GetValueOrDefault&lt;bool>(&quot;contextWindowExceeded&quot;, false);
+				int unthrottledBackends = 0;
+
+				foreach (int i in priorityBackendIndxs) {
+					if (i &lt; 0 || i >= backends.Count) { continue; }
+					JObject backend = (JObject)backends[i];
+					if (contextWindowExceeded &amp;&amp; backend.Value&lt;string>(&quot;label&quot;) == &quot;PTU&quot;) { continue; }
+					if (!backend.Value&lt;bool>(&quot;isThrottling&quot;)) { unthrottledBackends++; }
+				}
+
+				// Retries are exhausted (on-error runs after the final attempt). If every eligible
+				// backend is now throttling, there is no backend available: return a 429 so the client
+				// can back off / requeue. The S7PREQUEUE header (below) only requests a requeue when configured.
+				if (unthrottledBackends == 0) {
+					responseObj[&quot;statusCode&quot;] = 429;
+					responseObj[&quot;statusReason&quot;] = &quot;No Backends Available&quot;;
+					return responseObj;
+				}
+
+				if ( backendIndex &lt; 0 || backendIndex >= backends.Count) {
+					responseObj[&quot;statusCode&quot;] = 500;
+					responseObj[&quot;statusReason&quot;] = &quot;Invalid Backend Index&quot;;
+					return responseObj;
+				}
+
+				// recalculate timeout or concurrency limit because retry did not happen
+				var wasLimited = context.Variables.GetValueOrDefault&lt;bool>(&quot;wasLimited&quot;, false);
+				var startTime = context.Variables.GetValueOrDefault&lt;DateTime>(&quot;CallAttemptStartTime&quot;, DateTime.UtcNow);
+				var deltaSeconds = (DateTime.UtcNow - startTime).TotalSeconds;
+				var requestTimeout = ((JObject)backends[backendIndex]).Value&lt;int>(&quot;timeout&quot;);
+				bool likelyTimeout = deltaSeconds >= (requestTimeout * 0.9);
+
+				if ( likelyTimeout) {
+					responseObj[&quot;statusCode&quot;] = 408;
+					responseObj[&quot;statusReason&quot;] = &quot;Timeout&quot;;
+					statusCode = 408;
+				} else if ( wasLimited ) {
+					responseObj[&quot;statusCode&quot;] = 429;
+					responseObj[&quot;statusReason&quot;] = &quot;Concurrency Limit&quot;;
+					statusCode = 429;
+				} else {
+					responseObj[&quot;statusCode&quot;] = 500;
+					responseObj[&quot;statusReason&quot;] = &quot;Unknown Error&quot;;
+				}
+			}
+
+			// Error Handler
+			arr.Add(new JObject {
+				{ &quot;Elapsed&quot;, context.Elapsed.TotalSeconds.ToString(&quot;F3&quot;) },
+				{ &quot;message&quot;, &quot;ON ERROR HANDLER INVOKED-  callCompleted: &quot; + callCompleted +
+					&quot; isPermError: &quot; + isPermError +
+					&quot; isTempError: &quot; + isTempError +
+					&quot; StatusCode: &quot; + statusCode }
+			});
+			return responseObj;
+		}" />
+<set-status code="@(((JObject)context.Variables[&quot;responseObject&quot;]).Value&lt;int>(&quot;statusCode&quot;))"
+			reason="@(((JObject)context.Variables[&quot;responseObject&quot;]).Value&lt;string>(&quot;statusReason&quot;))" />
+<!-- set the body	-->
+<set-body>@{
+			var responseObj = context.Variables.GetValueOrDefault&lt;JObject>("responseObject", new JObject());
+			return responseObj.ToString(Newtonsoft.Json.Formatting.None);
+		}</set-body>
+<set-header name="backendLog" exists-action="override">
+			<value>@{
+				JArray actLog = context.Variables.GetValueOrDefault&lt;JArray>("activityLog", new JArray());
+				string result = string.Join(" | ", actLog.Select(entry =>
+					((JObject)entry).Value&lt;string>("Elapsed") + "s " + ((JObject)entry).Value&lt;string>("message")
+				));
+				return result.Length > 4000 ? result.Substring(0, 4000) + "..." : result;
+			}</value>
+		</set-header>
+<set-header name="X-Policy-LastError" exists-action="override">
+			<value>@{
+				JArray errArr = context.Variables.GetValueOrDefault&lt;JArray>("lastPolicyError", new JArray());
+				return errArr.Count == 0 ? "" : errArr.ToString(Newtonsoft.Json.Formatting.None);
+			}</value>
+		</set-header>
+<choose>
+			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;RequeueAllowed&quot;, true))">
+				<set-header name="S7PREQUEUE" exists-action="override">
+					<value>true</value>
+				</set-header>
+			</when>
+		</choose>
+<set-header name="retry-after-ms" exists-action="override">
+			<value>@(context.Variables.GetValueOrDefault&lt;int>("sleepDuration", 10000).ToString())</value>
+		</set-header>
+</fragment>
