@@ -161,6 +161,40 @@ param proxyCustomDomain string = ''
 @description('Existing Azure-managed cert name the proxy adopts (empty derives a stable name).')
 param proxyManagedCertName string = ''
 
+@description('Enable the SimpleL7Proxy server-owned application profile snapshot. Default OFF; requires a non-empty minimal projection JSON.')
+param proxyProfilesEnabled bool = false
+
+@secure()
+@description('Minimal server-owned application profile projection. Mounted as an ACA secret file; never fetched from a public endpoint.')
+param proxyProfileProjectionJson string = ''
+
+@description('Enable priority-key mapping and reserved proxy workers. Default OFF.')
+param proxyPrioritiesEnabled bool = false
+
+@description('Reserved proxy workers in priority:count format. Required when proxyPrioritiesEnabled.')
+param proxyPriorityWorkers string = ''
+
+@description('Enable metadata-only SimpleL7Proxy Event Hub telemetry. Default OFF.')
+param proxyEventHubTelemetryEnabled bool = false
+
+@description('Enable durable proxy async processing backed by dedicated Blob + Service Bus resources. Default OFF.')
+param proxyAsyncEnabled bool = false
+
+@minValue(1)
+@description('SimpleL7Proxy workers per replica.')
+param proxyWorkers int = 10
+
+@minValue(1)
+@description('Warm proxy replicas. Keep at least one because queues and fairness are in-memory per replica.')
+param proxyMinReplicas int = 1
+
+@minValue(1)
+@description('Maximum proxy replicas.')
+param proxyMaxReplicas int = 3
+
+@description('Optional App Configuration label for the proxy hot-reload scope.')
+param proxyAppConfigLabel string = ''
+
 @description('Deploy the Postgres Flexible Server (pgvector home for mem0). Derived from postgresLocation: empty location => skip. Disable where the subscription is offer-restricted for Postgres; mem0/pgvector is optional for the MVP api/web.')
 param postgresLocation string = ''
 
@@ -252,15 +286,21 @@ module monitoring 'modules/monitoring.bicep' = {
 
 // All app identity principals (api, web, proxy) may read secrets/config.
 var allPrincipalIds = map(identity.outputs.identities, x => x.principalId)
-// Only api + proxy reach the model data plane.
-var dataPlanePrincipalIds = map(filter(identity.outputs.identities, x => x.service != 'web'), x => x.principalId)
-
 // The api identity owns the canonical data stores (Cosmos + Postgres).
 var apiIdentity = filter(identity.outputs.identities, x => x.service == 'api')[0]
 // The proxy identity runs the SimpleL7Proxy gateway container.
 var proxyIdentity = filter(identity.outputs.identities, x => x.service == 'proxy')[0]
 // The web identity runs the Next.js frontend container (ACR pull only).
 var webIdentity = filter(identity.outputs.identities, x => x.service == 'web')[0]
+// Native/non-OpenAI control planes remain callable by FastAPI. Normal model
+// traffic reaches Foundry only through APIM, so the proxy gets no Foundry RBAC.
+var nativeFoundryPrincipalIds = [
+  apiIdentity.principalId
+]
+var telemetrySenderPrincipalIds = [
+  apiIdentity.principalId
+  proxyIdentity.principalId
+]
 
 // The api managed identity reads Azure Monitor platform metrics for the admin
 // dashboard's resource panels via the batch metrics API (metrics:getBatch), which
@@ -436,11 +476,27 @@ module eventhubs 'modules/eventhubs.bicep' = {
     workload: workload
     environmentName: environmentName
     uniqueSuffix: uniqueSuffix
-    senderPrincipalIds: dataPlanePrincipalIds
+    senderPrincipalIds: telemetrySenderPrincipalIds
     receiverPrincipalIds: [
       apiIdentity.principalId
     ]
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
+  }
+}
+
+// Durable async is separate from the in-memory synchronous proxy queue. The
+// module is declared unconditionally but creates no resources unless enabled.
+module proxyasync 'modules/proxyasync.bicep' = {
+  name: 'proxyasync'
+  scope: rg
+  params: {
+    enabled: proxyAsyncEnabled
+    location: location
+    tags: tags
+    workload: workload
+    environmentName: environmentName
+    uniqueSuffix: uniqueSuffix
+    proxyPrincipalId: proxyIdentity.principalId
   }
 }
 
@@ -456,11 +512,8 @@ module cost 'modules/cost.bicep' = {
 }
 
 // --- Model gateway (SimpleL7Proxy + APIM front door) ---
-// APIM routes the model data plane straight to the primary Foundry account (the
-// one co-located with the shared resources / `location`). The index is
-// start-computable from the catalog; the Foundry outputs are referenced inline in
-// the module params (deferred), exactly like `foundryEndpoints` below, so no new
-// dependency cycle is introduced.
+// The proxy is the public HTTP/SSE entry point. Its single backend is APIM; APIM
+// selects and rewrites to catalog-compatible regional Foundry deployments.
 var regionNames = map(regionList, r => r.name)
 var primaryFoundryIndex = filter(range(0, length(regionList)), i => regionNames[i] == location)[0]
 
@@ -489,10 +542,28 @@ module gateway 'modules/gateway.bicep' = {
     proxyIdentityResourceId: proxyIdentity.resourceId
     proxyIdentityClientId: proxyIdentity.clientId
     acrLoginServer: platform.outputs.acrLoginServer
-    foundryEndpoints: [for (r, i) in regionList: foundry[i].outputs.endpoint]
-    primaryFoundryEndpoint: foundry[primaryFoundryIndex].outputs.endpoint
-    primaryFoundryAccountName: foundry[primaryFoundryIndex].outputs.accountName
+    foundryBackends: [for (r, i) in regionList: {
+      region: r.name
+      endpoint: foundry[i].outputs.endpoint
+      accountName: foundry[i].outputs.accountName
+    }]
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
+    appConfigEndpoint: keyvault.outputs.appConfigEndpoint
+    appConfigLabel: proxyAppConfigLabel
+    proxyEventHubTelemetryEnabled: proxyEventHubTelemetryEnabled
+    eventHubNamespaceFqdn: eventhubs.outputs.namespaceFqdn
+    eventHubName: eventhubs.outputs.telemetryHubName
+    proxyProfilesEnabled: proxyProfilesEnabled
+    proxyProfileProjectionJson: proxyProfileProjectionJson
+    proxyPrioritiesEnabled: proxyPrioritiesEnabled
+    proxyPriorityWorkers: proxyPriorityWorkers
+    proxyWorkers: proxyWorkers
+    proxyMinReplicas: proxyMinReplicas
+    proxyMaxReplicas: proxyMaxReplicas
+    proxyAsyncEnabled: proxyAsyncEnabled
+    proxyAsyncBlobUri: proxyasync.outputs.blobServiceUri
+    proxyAsyncServiceBusNamespace: proxyasync.outputs.serviceBusNamespaceFqdn
+    proxyAsyncServiceBusQueue: proxyasync.outputs.asyncQueueName
     apimPublisherEmail: apimPublisherEmail
     customDomain: proxyCustomDomain
     managedCertificateName: proxyManagedCertName
@@ -580,7 +651,11 @@ module api 'modules/api.bicep' = {
     acrLoginServer: platform.outputs.acrLoginServer
     modelGatewayUrl: gateway.outputs.modelGatewayUrl
     modelGatewayAuthMode: 'api_key'
-    modelGatewayApiKey: gateway.outputs.gatewaySubscriptionKey
+    modelGatewayApiKey: gateway.outputs.apiGatewayKey
+    // Realtime stays on the FastAPI relay -> APIM path because the proxy does
+    // not support WebSockets. The separately scoped subscription key cannot call
+    // the normal APIM model API, so compatible traffic cannot bypass the proxy.
+    realtimeBaseUrl: gateway.outputs.realtimeGatewayUrl
     cosmosEndpoint: data.outputs.cosmosEndpoint
     cosmosDatabase: data.outputs.cosmosDatabaseName
     // Per-user memory: real mem0 (LLM extraction + pgvector) when Postgres is
@@ -749,7 +824,7 @@ module foundry 'modules/foundry.bicep' = [for (r, i) in regionList: {
     tags: tags
     accountName: take('mf-${foundryToken}-${environmentName}-${r.name}', 60)
     projectName: take('proj-default-${foundryToken}-${environmentName}-${r.name}', 60)
-    dataPlanePrincipalIds: dataPlanePrincipalIds
+    dataPlanePrincipalIds: nativeFoundryPrincipalIds
     toolboxPrincipalIds: (i == primaryFoundryIndex) ? foundryToolboxApimPrincipal : []
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
   }
@@ -791,6 +866,7 @@ output AZURE_EVENTHUBS_NAMESPACE_FQDN string = eventhubs.outputs.namespaceFqdn
 output AZURE_EVENTHUBS_TELEMETRY_HUB string = eventhubs.outputs.telemetryHubName
 output AZURE_MODEL_GATEWAY_URL string = gateway.outputs.modelGatewayUrl
 output AZURE_APIM_GATEWAY_URL string = gateway.outputs.apimGatewayUrl
+output AZURE_REALTIME_GATEWAY_URL string = gateway.outputs.realtimeGatewayUrl
 output AZURE_PROXY_URL string = gateway.outputs.proxyUrl
 // Empty unless enableOfficialMcp; subscription key is intentionally NOT output
 // (it is wired module->module to the api during the runtime phase).

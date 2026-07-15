@@ -74,6 +74,36 @@
     "proxyManagedCertName": {
       "value": "${AI4IA_PROXY_MANAGED_CERT_NAME=}"
     },
+    "proxyProfilesEnabled": {
+      "value": "${AI4IA_PROXY_PROFILES_ENABLED=false}"
+    },
+    "proxyProfileProjectionJson": {
+      "value": "${AI4IA_PROXY_PROFILE_PROJECTION_JSON=}"
+    },
+    "proxyPrioritiesEnabled": {
+      "value": "${AI4IA_PROXY_PRIORITIES_ENABLED=false}"
+    },
+    "proxyPriorityWorkers": {
+      "value": "${AI4IA_PROXY_PRIORITY_WORKERS=}"
+    },
+    "proxyEventHubTelemetryEnabled": {
+      "value": "${AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED=false}"
+    },
+    "proxyAsyncEnabled": {
+      "value": "${AI4IA_PROXY_ASYNC_ENABLED=false}"
+    },
+    "proxyWorkers": {
+      "value": "${AI4IA_PROXY_WORKERS=10}"
+    },
+    "proxyMinReplicas": {
+      "value": "${AI4IA_PROXY_MIN_REPLICAS=1}"
+    },
+    "proxyMaxReplicas": {
+      "value": "${AI4IA_PROXY_MAX_REPLICAS=3}"
+    },
+    "proxyAppConfigLabel": {
+      "value": "${AI4IA_PROXY_APPCONFIG_LABEL=}"
+    },
     "imageGenerationEnabled": {
       "value": true
     },

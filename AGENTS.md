@@ -4,7 +4,7 @@ Canonical machine-facing contributor guide for AI4IA. Keep this file accurate wh
 
 ## What this repo is
 
-AI4IA is a governed, multi-model, multi-region agentic chat app on Azure Container Apps. The browser uses the Next.js web app; FastAPI owns auth, sessions, tools, memory, document/library access, usage, and model routing; APIM plus the vendored SimpleL7Proxy is the model gateway.
+AI4IA is a governed, multi-model, multi-region agentic chat app on Azure Container Apps. The browser uses the Next.js web app; FastAPI owns auth, sessions, tools, memory, document/library access, usage, and model routing. Compatible HTTP/SSE model traffic flows SimpleL7Proxy -> APIM -> Foundry; realtime/Voice Live WebSockets stay on the FastAPI relay -> APIM path because SimpleL7Proxy does not support WebSockets.
 
 ## Monorepo map
 
@@ -81,11 +81,20 @@ check-jsonschema --schemafile foundry/toolbox.manifest.schema.json foundry/toolb
 check-jsonschema --schemafile foundry/routines/routine.schema.json foundry/routines/example.routine.json
 check-jsonschema --schemafile foundry/a2a/a2a.schema.json foundry/a2a/example.a2a.json
 python scripts/validate-catalog.py
+python scripts/gen-gateway-policy.py --check
+python -m unittest scripts.tests.test_gateway_policy
 python scripts/validate-feature-prereqs.py
 bicep build infra/main.bicep --stdout > /dev/null
 ```
 
-`quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on `scripts`, hadolint on `app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile`, `python3 -m yamllint -c .yamllint .`, and a docs-catalog drift gate (`python scripts/gen-docs-catalog.py --check`) that keeps `site/data/docs.js` in sync with `site/data/docs.manifest.json`. `security-scan` runs Trivy filesystem/config scans and gitleaks.
+`quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on `scripts`, hadolint on `app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile`, the proxy .NET build/auth tests, `python3 -m yamllint -c .yamllint .`, and a docs-catalog drift gate (`python scripts/gen-docs-catalog.py --check`) that keeps `site/data/docs.js` in sync with `site/data/docs.manifest.json`. `security-scan` runs Trivy filesystem/config scans and gitleaks.
+
+The vendored proxy plus AI4IA auth guard tests use .NET 10:
+
+```powershell
+dotnet build proxy/SimpleL7Proxy/SimpleL7Proxy.csproj --configuration Release
+dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release
+```
 
 ## How to add things
 

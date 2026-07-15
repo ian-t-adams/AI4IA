@@ -27,15 +27,19 @@ feature posture.
 | Private tool catalog (API Center) | admin/IaC only (no app-runtime env) | none | `enablePrivateToolCatalog` | Provisions an Azure API Center to inventory the APIM-fronted MCP servers; asset registration is a documented script step (`scripts/provision-private-tool-catalog.py`). See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
 | Web IQ search tools | `AI4IA_WEB_SEARCH_ENABLED` | none | `webSearchEnabled` | Web IQ API key or Entra managed identity outside local |
 | Admin resource panels | `AI4IA_RESOURCE_METRICS_ENABLED` + resource ids | admin dashboard | resource-id env from modules | Monitoring Reader and ARM resource ids |
+| Proxy application profiles | proxy runtime only | none | `proxyProfilesEnabled` | Secret-mounted minimal projection **and verified identity-aware app header**; validator blocks enablement with shared-key ingress |
+| Proxy priority reservations | proxy runtime only | none | `proxyPrioritiesEnabled`, `proxyPriorityWorkers` | Valid `priority:count` reservations; per-replica fairness only |
+| Proxy metadata telemetry | proxy runtime only | none | `proxyEventHubTelemetryEnabled` | Existing Event Hub sender RBAC; no prompt/response/header logging |
+| Proxy durable async | proxy runtime only | none | `proxyAsyncEnabled` | Dedicated AVM Blob + Service Bus resources and proxy MI RBAC |
 
 The checked-in live parameters currently turn on image/video generation,
 document understanding, document compute, inline-attachment code interpreter, AI
 Search, Voice Live + tools, custom tools, Web IQ search, Postgres-backed memory,
 and — as of the Foundry activation — the **official MCP plane, the Foundry toolbox
 bridge, and the private tool catalog** (`enableOfficialMcp` / `enableFoundryToolbox`
-/ `enablePrivateToolCatalog` are all `true`). Every feature flag in
-`infra/main.parameters.json` is `true`; the bicep param *defaults* stay `false`, so a
-fresh consumer of the template starts from a safe, mostly-off posture.
+/ `enablePrivateToolCatalog` are all `true`). The new proxy profile, priority,
+Event Hub, and durable-async controls remain `false`; their Bicep defaults are
+also off.
 
 ## Enablement notes
 
@@ -53,6 +57,38 @@ The browser connects directly to the API ingress for `/api/voice/live`; the API
 relay validates auth and Origin, resolves the realtime deployment from the model
 catalog, and opens the upstream socket through the model gateway. An empty Origin
 allowlist is allowed only in local.
+
+The upstream socket is `FastAPI -> APIM -> Foundry`. It does **not** traverse
+SimpleL7Proxy because that worker does not support WebSockets. The relay's APIM
+subscription is scoped to the realtime API only.
+
+### Multi-application gateway controls
+
+Normal HTTP/SSE model calls flow:
+
+```text
+application -> SimpleL7Proxy -> APIM -> catalog-selected Foundry deployment
+```
+
+App Configuration is always connected with the proxy managed identity. Warm
+settings such as priority reservations and header policy refresh on the configured
+interval; Event Hub and async settings are cold and need a revision/restart.
+
+- `proxyPrioritiesEnabled=true` requires `proxyPriorityWorkers` such as
+  `1:2,3:1`. Reserved capacity and fairness are in-memory **per replica**.
+- `proxyEventHubTelemetryEnabled=true` sends routing/status/latency metadata to
+  the existing telemetry hub. Request and response header logging remain false;
+  prompts, responses, and profile PII are not emitted. Event Hub is not a queue.
+- `proxyAsyncEnabled=true` provisions dedicated Blob + Service Bus resources,
+  disables local auth, and grants `id-proxy` only the data-plane roles needed to
+  write results and send/receive async jobs.
+- `proxyProfilesEnabled` must remain false while the public edge uses the
+  temporary shared-key contract. The validator rejects it even when a profile JSON
+  is supplied. Enablement requires Entra workload authentication (or another
+  verified app-identity boundary); then supply only the minimal server-owned
+  Cosmos projection through `AI4IA_PROXY_PROFILE_PROJECTION_JSON`. It is mounted
+  as a secret file. Do not configure `UserConfigUrl` to an unauthenticated HTTP or
+  Blob URL, and do not grant the proxy Cosmos access.
 
 ### Document library and multimodal understanding
 

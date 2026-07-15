@@ -114,6 +114,8 @@ public class ConcurrentPriQueue<T> : IConcurrentPriQueue<T>
         {
             try
             {
+                // // 40 seems good,  no timeout or 80ms gives reduced performance
+                // await _enqueueEvent.WaitAsync(TimeSpan.FromMilliseconds(40), cancellationToken).ConfigureAwait(false); // Wait for an item to be added
                 await _enqueueEvent.WaitAsync(cancellationToken).ConfigureAwait(false); // Signal-driven: wakes on Enqueue Release(), no timer allocations
             }
             catch (OperationCanceledException)

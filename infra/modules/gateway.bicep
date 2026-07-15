@@ -1,6 +1,7 @@
-// Model gateway: SimpleL7Proxy (Container App) behind APIM.
-// The backend always calls models through this single front door so model wiring
-// isn't duplicated; capacity-sharing/entitlements/quotas layer on above it.
+// Governed model data plane:
+// HTTP/SSE callers -> SimpleL7Proxy -> APIM -> catalog-driven Foundry backends.
+// Realtime WebSockets deliberately bypass the proxy through a separately scoped
+// APIM API because SimpleL7Proxy is an HTTP/SSE worker, not a WebSocket proxy.
 @description('Location for the gateway resources.')
 param location string
 
@@ -22,7 +23,7 @@ param logAnalyticsWorkspaceId string
 @description('Resource ID of the proxy user-assigned identity.')
 param proxyIdentityResourceId string
 
-@description('Client ID of the proxy user-assigned identity (selects the MI for DefaultAzureCredential token requests).')
+@description('Client ID of the proxy user-assigned identity.')
 param proxyIdentityClientId string
 
 @description('ACR login server the proxy image is pulled from.')
@@ -31,17 +32,67 @@ param acrLoginServer string
 @description('Container image for the proxy; azd replaces the default with the built /proxy image.')
 param proxyImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
-@description('Foundry account endpoints the proxy routes model traffic to.')
-param foundryEndpoints array
-
-@description('Primary Foundry account endpoint APIM routes model traffic to.')
-param primaryFoundryEndpoint string
-
-@description('Primary Foundry account name (role-assignment scope for the APIM managed identity).')
-param primaryFoundryAccountName string
+@description('Catalog-driven Foundry backends: region, endpoint, and accountName.')
+param foundryBackends array
 
 @description('Application Insights connection string for proxy telemetry.')
 param appInsightsConnectionString string
+
+@description('App Configuration endpoint used for managed-identity hot reload.')
+param appConfigEndpoint string = ''
+
+@description('Optional App Configuration label for this proxy deployment.')
+param appConfigLabel string = ''
+
+@minValue(10)
+@description('Warm-setting refresh interval in seconds.')
+param appConfigRefreshIntervalSeconds int = 30
+
+@description('Enable metadata-only proxy Event Hub telemetry. Default OFF.')
+param proxyEventHubTelemetryEnabled bool = false
+
+@description('Event Hubs namespace FQDN used with managed identity.')
+param eventHubNamespaceFqdn string = ''
+
+@description('Event Hub name used for proxy telemetry.')
+param eventHubName string = ''
+
+@description('Enable the server-owned multi-application profile snapshot. Default OFF.')
+param proxyProfilesEnabled bool = false
+
+@secure()
+@description('Minimal profile projection JSON. Mounted as an ACA secret file only when profiles are enabled.')
+param proxyProfileProjectionJson string = ''
+
+@description('Enable priority-key mapping and reserved workers. Default OFF.')
+param proxyPrioritiesEnabled bool = false
+
+@description('Reserved workers in priority:count format. Used only when priorities are enabled.')
+param proxyPriorityWorkers string = ''
+
+@minValue(1)
+@description('SimpleL7Proxy worker count per replica.')
+param proxyWorkers int = 10
+
+@minValue(1)
+@description('Keep at least one proxy replica warm because the synchronous queue is in-memory per replica.')
+param proxyMinReplicas int = 1
+
+@minValue(1)
+@description('Maximum proxy replicas.')
+param proxyMaxReplicas int = 3
+
+@description('Enable durable async Blob + Service Bus integration. Default OFF.')
+param proxyAsyncEnabled bool = false
+
+@description('Managed-identity Blob service URI for durable async results.')
+param proxyAsyncBlobUri string = ''
+
+@description('Managed-identity Service Bus namespace FQDN for durable async requests.')
+param proxyAsyncServiceBusNamespace string = ''
+
+@description('Service Bus queue used by durable async mode.')
+param proxyAsyncServiceBusQueue string = 'requeststatus'
 
 @description('APIM publisher email (required by APIM).')
 param apimPublisherEmail string
@@ -58,35 +109,313 @@ param managedCertificateName string = ''
 @description('Container Apps managed environment name (parent of the managed certificate).')
 param containerEnvName string
 
-// SimpleL7Proxy HostN connection strings (managed-identity auth to Cognitive Services).
-var hostEnv = [for (e, i) in foundryEndpoints: {
-  name: 'Host${i + 1}'
-  value: 'host=${e};usemi=true;audience=https://cognitiveservices.azure.com;mode=direct'
+var primaryFoundry = foundryBackends[0]
+var foundryBase = endsWith(primaryFoundry.endpoint, '/') ? primaryFoundry.endpoint : '${primaryFoundry.endpoint}/'
+var foundryOpenAiUrl = '${foundryBase}openai'
+var proxyAppName = 'ca-proxy-${environmentName}'
+
+// ---------------- APIM trust boundary ----------------
+resource apim 'Microsoft.ApiManagement/service@2024-05-01' = {
+  name: take('apim-${workload}-${environmentName}', 50)
+  location: location
+  tags: tags
+  sku: {
+    name: 'Consumption'
+    capacity: 0
+  }
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    publisherEmail: apimPublisherEmail
+    publisherName: apimPublisherName
+  }
+}
+
+resource foundryEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = [for backend in foundryBackends: {
+  parent: apim
+  name: 'foundry-${backend.region}-endpoint'
+  properties: {
+    displayName: 'foundry-${backend.region}-endpoint'
+    secret: false
+    value: backend.endpoint
+  }
 }]
 
-var staticEnv = [
+resource endpointSelectionFragment 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = {
+  parent: apim
+  name: 'endpoint_selection_frag_30'
+  properties: {
+    description: 'Generated model/deployment allowlist and regional backend selection for SimpleL7Proxy.'
+    format: 'rawxml'
+    value: loadTextContent('../policies/simplel7proxy-endpoints.xml')
+  }
+  dependsOn: [
+    foundryEndpointValues
+  ]
+}
+
+resource modelsApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
+  parent: apim
+  name: 'openai'
+  properties: {
+    displayName: 'SimpleL7Proxy model backend'
+    path: 'openai'
+    protocols: [
+      'https'
+    ]
+    // The policy always selects a catalog backend. This non-proxy fallback keeps
+    // the topology acyclic even if a policy is removed during troubleshooting.
+    serviceUrl: foundryOpenAiUrl
+    subscriptionRequired: true
+    apiType: 'http'
+  }
+}
+
+var modelMethods = [
+  'POST'
+  'GET'
+  'PUT'
+  'PATCH'
+  'DELETE'
+]
+
+resource modelOperations 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = [for method in modelMethods: {
+  parent: modelsApi
+  name: 'proxy-${toLower(method)}'
+  properties: {
+    displayName: 'Proxy ${method}'
+    method: method
+    urlTemplate: '/{*path}'
+    templateParameters: [
+      {
+        name: 'path'
+        type: 'string'
+        required: true
+      }
+    ]
+  }
+}]
+
+resource modelsApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = {
+  parent: modelsApi
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/simplel7proxy-priority-retry.xml')
+  }
+  dependsOn: [
+    endpointSelectionFragment
+  ]
+}
+
+// Only the proxy receives this subscription. It is injected from an ACA secret
+// into Host1-api-key and never returned to application callers.
+resource proxyModelSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
+  parent: apim
+  name: 'ai4ia-proxy-models'
+  properties: {
+    displayName: 'AI4IA SimpleL7Proxy model hop'
+    scope: modelsApi.id
+    state: 'active'
+    allowTracing: false
+  }
+}
+
+// The realtime API is intentionally separate and more specific than /openai.
+// Its key cannot invoke the normal model API, preventing callers from bypassing
+// the proxy for compatible HTTP/SSE traffic.
+resource realtimeApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
+  parent: apim
+  name: 'openai-realtime'
+  properties: {
+    displayName: 'FastAPI realtime relay backend'
+    path: 'openai/realtime'
+    protocols: [
+      'https'
+    ]
+    serviceUrl: '${foundryOpenAiUrl}/realtime'
+    subscriptionRequired: true
+    apiType: 'http'
+  }
+}
+
+resource realtimeOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = {
+  parent: realtimeApi
+  name: 'realtime-connect'
+  properties: {
+    displayName: 'Realtime WebSocket connect'
+    method: 'GET'
+    urlTemplate: '/'
+  }
+}
+
+resource realtimeApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = {
+  parent: realtimeApi
+  name: 'policy'
+  properties: {
+    format: 'xml'
+    value: '<policies><inbound><base /><set-header name="x-correlation-id" exists-action="override"><value>@(context.RequestId.ToString())</value></set-header><set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" /><set-header name="Authorization" exists-action="delete" /><authentication-managed-identity resource="https://cognitiveservices.azure.com" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>'
+  }
+}
+
+resource apiRealtimeSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
+  parent: apim
+  name: 'ai4ia-api-realtime'
+  properties: {
+    displayName: 'AI4IA FastAPI realtime relay'
+    scope: realtimeApi.id
+    state: 'active'
+    allowTracing: false
+  }
+}
+
+// APIM is the only identity granted normal model access by this module.
+var openAiUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
+var cognitiveUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
+
+resource foundryAccounts 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = [for backend in foundryBackends: {
+  name: backend.accountName
+}]
+
+resource apimOpenAiUsers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (backend, i) in foundryBackends: {
+  name: guid(foundryAccounts[i].id, apim.id, openAiUserRoleId)
+  scope: foundryAccounts[i]
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', openAiUserRoleId)
+    principalId: apim.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}]
+
+resource apimCognitiveUsers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (backend, i) in foundryBackends: {
+  name: guid(foundryAccounts[i].id, apim.id, cognitiveUserRoleId)
+  scope: foundryAccounts[i]
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveUserRoleId)
+    principalId: apim.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}]
+
+// ---------------- SimpleL7Proxy Container App ----------------
+var hostEnv = [
   {
-    name: 'Port'
-    value: '8080'
+    name: 'Host1'
+    value: 'host=${apim.properties.gatewayUrl};mode=apim;probe=/openai/status;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=true'
   }
   {
-    name: 'Workers'
-    value: '10'
-  }
-  {
-    name: 'AppInsightsConnectionString'
-    value: appInsightsConnectionString
-  }
-  {
-    // SimpleL7Proxy uses DefaultAzureCredential; with a user-assigned identity
-    // it must be told which client ID to use, or token requests fail with
-    // "Unable to load the proper Managed Identity".
-    name: 'AZURE_CLIENT_ID'
-    value: proxyIdentityClientId
+    name: 'Host1-api-key'
+    secretRef: 'proxy-apim-subscription-key'
   }
 ]
 
-// Custom-domain binding (durable in IaC; see web.bicep for rationale).
+var staticEnv = [
+  { name: 'Port', value: '8080' }
+  { name: 'Workers', value: string(proxyWorkers) }
+  { name: 'MaxAttempts', value: '1' }
+  { name: 'PriorityWorker', value: proxyPrioritiesEnabled ? proxyPriorityWorkers : '' }
+  { name: 'DefaultPriority', value: '2' }
+  { name: 'ValidateAuthConfig', value: 'enabled=true;mode=key;header=Ocp-Apim-Subscription-Key' }
+  { name: 'ValidateAuthKey1', secretRef: 'api-proxy-inbound-key' }
+  {
+    name: 'StripRequestHeaders'
+    value: string([
+      'Authorization'
+      'Ocp-Apim-Subscription-Key'
+      'X-AI4IA-App-Id'
+      'X-AI4IA-User-Id'
+      'X-UserProfile'
+    ])
+  }
+  {
+    name: 'StripResponseHeaders'
+    value: string([
+      'backendLog'
+      'X-Policy-LastError'
+    ])
+  }
+  { name: 'LogAllRequestHeaders', value: 'false' }
+  { name: 'LogAllResponseHeaders', value: 'false' }
+  { name: 'LogHeaders', value: '[]' }
+  { name: 'AppInsightsConnectionString', value: appInsightsConnectionString }
+  { name: 'AZURE_CLIENT_ID', value: proxyIdentityClientId }
+  { name: 'CONTAINER_APP_NAME', value: proxyAppName }
+]
+
+var appConfigEnv = empty(appConfigEndpoint) ? [] : concat([
+  { name: 'AZURE_APPCONFIG_ENDPOINT', value: appConfigEndpoint }
+  { name: 'AZURE_APPCONFIG_REFRESH_INTERVAL_SECONDS', value: string(appConfigRefreshIntervalSeconds) }
+], empty(appConfigLabel) ? [] : [
+  { name: 'AZURE_APPCONFIG_LABEL', value: appConfigLabel }
+])
+
+var priorityEnv = proxyPrioritiesEnabled ? [
+  { name: 'PriorityKeys', value: string(['high', 'standard', 'batch']) }
+  { name: 'PriorityValues', value: string([1, 2, 3]) }
+] : []
+
+var eventHubEnv = proxyEventHubTelemetryEnabled ? [
+  { name: 'EVENTHUB_NAMESPACE', value: eventHubNamespaceFqdn }
+  { name: 'EVENTHUB_NAME', value: eventHubName }
+  { name: 'EVENT_LOGGERS', value: 'eventhub' }
+] : []
+
+var profileEnv = proxyProfilesEnabled ? [
+  { name: 'UseProfiles', value: 'true' }
+  { name: 'UserConfigRequired', value: 'true' }
+  { name: 'UserConfigUrl', value: 'file:/mnt/ai4ia-profiles/profiles.json' }
+  { name: 'UserProfileHeader', value: 'X-AI4IA-App-Id' }
+  { name: 'UserIDFieldName', value: 'appId' }
+] : [
+  { name: 'UseProfiles', value: 'false' }
+]
+
+var asyncEnv = proxyAsyncEnabled ? [
+  { name: 'AsyncModeEnabled', value: 'true' }
+  { name: 'AsyncBlobStorageConfig', value: 'uri=${proxyAsyncBlobUri},mi=true' }
+  { name: 'AsyncSBConfig', value: 'ns=${proxyAsyncServiceBusNamespace},q=${proxyAsyncServiceBusQueue},mi=true' }
+  { name: 'StorageDbContainerName', value: 'requests' }
+] : [
+  { name: 'AsyncModeEnabled', value: 'false' }
+]
+
+var proxySecrets = concat([
+  {
+    name: 'proxy-apim-subscription-key'
+    value: proxyModelSubscription.listSecrets().primaryKey
+  }
+  {
+    name: 'api-proxy-inbound-key'
+    value: apiRealtimeSubscription.listSecrets().primaryKey
+  }
+], proxyProfilesEnabled ? [
+  {
+    name: 'profile-projection-json'
+    value: proxyProfileProjectionJson
+  }
+] : [])
+
+var profileVolumes = proxyProfilesEnabled ? [
+  {
+    name: 'profile-projection'
+    storageType: 'Secret'
+    secrets: [
+      {
+        secretRef: 'profile-projection-json'
+        path: 'profiles.json'
+      }
+    ]
+  }
+] : []
+
+var profileVolumeMounts = proxyProfilesEnabled ? [
+  {
+    volumeName: 'profile-projection'
+    mountPath: '/mnt/ai4ia-profiles'
+  }
+] : []
+
 var proxyManagedCertName = !empty(managedCertificateName) ? managedCertificateName : 'mc-${replace(customDomain, '.', '-')}'
 
 resource managedEnv 'Microsoft.App/managedEnvironments@2024-10-02-preview' existing = {
@@ -112,7 +441,7 @@ var proxyCustomDomains = empty(customDomain) ? [] : [
 ]
 
 resource proxyApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
-  name: 'ca-proxy-${environmentName}'
+  name: proxyAppName
   location: location
   tags: union(tags, {
     'azd-service-name': 'proxy'
@@ -127,6 +456,7 @@ resource proxyApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
     managedEnvironmentId: containerEnvId
     configuration: {
       activeRevisionsMode: 'Single'
+      secrets: proxySecrets
       ingress: {
         external: true
         targetPort: 8080
@@ -142,6 +472,7 @@ resource proxyApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
       ]
     }
     template: {
+      volumes: profileVolumes
       containers: [
         {
           name: 'proxy'
@@ -150,131 +481,19 @@ resource proxyApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
             cpu: json('0.5')
             memory: '1Gi'
           }
-          env: concat(hostEnv, staticEnv)
+          env: concat(hostEnv, staticEnv, appConfigEnv, priorityEnv, eventHubEnv, profileEnv, asyncEnv)
+          volumeMounts: profileVolumeMounts
         }
       ]
       scale: {
-        minReplicas: 0
-        maxReplicas: 3
+        minReplicas: proxyMinReplicas
+        maxReplicas: proxyMaxReplicas
       }
     }
   }
 }
 
-var proxyUrl = 'https://${proxyApp.properties.configuration.ingress.fqdn}'
-
-// APIM routes model traffic to the primary Foundry account's Azure OpenAI data
-// plane. The endpoint output always carries a trailing slash, but guard anyway
-// so the `/openai` suffix is never doubled or fused.
-var foundryBase = endsWith(primaryFoundryEndpoint, '/') ? primaryFoundryEndpoint : '${primaryFoundryEndpoint}/'
-var foundryServiceUrl = '${foundryBase}openai'
-
-// ---------------- APIM front door (Consumption) ----------------
-resource apim 'Microsoft.ApiManagement/service@2023-05-01-preview' = {
-  name: take('apim-${workload}-${environmentName}', 50)
-  location: location
-  tags: tags
-  sku: {
-    name: 'Consumption'
-    capacity: 0
-  }
-  identity: {
-    type: 'SystemAssigned'
-  }
-  properties: {
-    publisherEmail: apimPublisherEmail
-    publisherName: apimPublisherName
-  }
-}
-
-resource modelsApi 'Microsoft.ApiManagement/service/apis@2023-05-01-preview' = {
-  parent: apim
-  name: 'openai'
-  properties: {
-    displayName: 'Model Gateway'
-    path: 'openai'
-    protocols: [
-      'https'
-    ]
-    serviceUrl: foundryServiceUrl
-    subscriptionRequired: true
-    apiType: 'http'
-  }
-}
-
-resource modelsApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2023-05-01-preview' = {
-  parent: modelsApi
-  name: 'policy'
-  properties: {
-    format: 'xml'
-    value: '<policies><inbound><base /><set-header name="x-correlation-id" exists-action="skip"><value>@(context.RequestId.ToString())</value></set-header><authentication-managed-identity resource="https://cognitiveservices.azure.com" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>'
-  }
-}
-
-resource proxyOperation 'Microsoft.ApiManagement/service/apis/operations@2023-05-01-preview' = {
-  parent: modelsApi
-  name: 'proxy-post'
-  properties: {
-    displayName: 'Proxy POST'
-    method: 'POST'
-    urlTemplate: '/{*path}'
-    templateParameters: [
-      {
-        name: 'path'
-        type: 'string'
-        required: true
-      }
-    ]
-  }
-}
-
-// Single API-scoped subscription whose key the backend presents as
-// Ocp-Apim-Subscription-Key. This keeps the gateway from being an unauthenticated
-// open relay to real models.
-resource gatewaySubscription 'Microsoft.ApiManagement/service/subscriptions@2023-05-01-preview' = {
-  parent: apim
-  name: 'ai4ia-gateway'
-  properties: {
-    displayName: 'AI4IA backend gateway'
-    scope: modelsApi.id
-    state: 'active'
-    allowTracing: false
-  }
-}
-
-// APIM's system identity authenticates to the Foundry data plane via the policy
-// above; grant it the same data-plane roles the app/proxy identities hold.
-resource primaryFoundry 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = {
-  name: primaryFoundryAccountName
-}
-
-var openAiUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd' // Cognitive Services OpenAI User
-var cognitiveUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908' // Cognitive Services User
-
-resource apimOpenAiUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(primaryFoundry.id, apim.id, openAiUserRoleId)
-  scope: primaryFoundry
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', openAiUserRoleId)
-    principalId: apim.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-resource apimCognitiveUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(primaryFoundry.id, apim.id, cognitiveUserRoleId)
-  scope: primaryFoundry
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveUserRoleId)
-    principalId: apim.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// ---------------- Observability (diagnostic settings -> central Log Analytics) ----------------
-// APIM is the model front door, so its gateway request log + metrics are the
-// operational proof for everything routed through the gateway. Consumption SKU
-// supports GatewayLogs; LLM token logs are a separate workstream (not enabled here).
+// ---------------- Observability ----------------
 resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: 'to-log-analytics'
   scope: apim
@@ -289,10 +508,6 @@ resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-previ
   }
 }
 
-// Per-app metrics for the proxy (the gateway's compute data path). Console/system
-// logs already stream to LA via the managed environment's appLogsConfiguration;
-// container-app logs are env-scoped only, so this adds the per-app metric signal
-// (5xx rate, replica restarts, CPU/memory) into the same workspace for correlation.
 resource proxyDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: 'to-log-analytics'
   scope: proxyApp
@@ -304,12 +519,15 @@ resource proxyDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-prev
   }
 }
 
+var proxyUrl = 'https://${proxyApp.properties.configuration.ingress.fqdn}'
+
 output proxyAppName string = proxyApp.name
 output proxyUrl string = proxyUrl
 output apimName string = apim.name
 output apimGatewayUrl string = apim.properties.gatewayUrl
-output modelGatewayUrl string = '${apim.properties.gatewayUrl}/openai'
+output modelGatewayUrl string = '${proxyUrl}/openai'
+output realtimeGatewayUrl string = '${apim.properties.gatewayUrl}/openai'
 
-@description('API-scoped subscription key the backend presents to the gateway (api_key auth mode).')
-#disable-next-line outputs-should-not-contain-secrets
-output gatewaySubscriptionKey string = gatewaySubscription.listSecrets().primaryKey
+@description('API-scoped key used by FastAPI for proxy ingress and the APIM realtime API.')
+@secure()
+output apiGatewayKey string = apiRealtimeSubscription.listSecrets().primaryKey

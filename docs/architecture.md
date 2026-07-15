@@ -24,15 +24,19 @@ flowchart TB
   API --> OffMCP[Official MCP tools]
   OffMCP --> MCPGW[MCP APIM front door<br/>Basic v2 + subscription key]
   MCPGW --> MCPUp[Curated upstream MCP servers]
-  API --> GW[APIM + SimpleL7Proxy<br/>model gateway]
-  GW --> EUS2[Foundry East US 2]
-  GW --> SWC[Foundry Sweden Central]
-  GW --> WUS[Foundry West US]
+  API --> Proxy[SimpleL7Proxy<br/>HTTP/SSE queue + requeue]
+  Proxy --> APIM[APIM<br/>catalog routing + MI]
+  API -. Voice Live WS relay .-> APIM
+  APIM --> EUS2[Foundry East US 2]
+  APIM --> SWC[Foundry Sweden Central]
+  APIM --> WUS[Foundry West US]
 ```
 
 Voice Live connects directly from the browser to the API because the Next.js HTTP
 proxy cannot proxy WebSockets. The API relay still enforces auth, Origin checks,
 entitlements, metering, deployment resolution, and optional governed tool calling.
+Its upstream WebSocket goes directly to the separately scoped APIM realtime API;
+SimpleL7Proxy is deliberately bypassed because it supports HTTP/SSE, not WebSockets.
 
 ## Request lifecycle
 
@@ -42,8 +46,10 @@ entitlements, metering, deployment resolution, and optional governed tool callin
    and feature visibility from runtime environment variables.
 3. The FastAPI service normalizes the user id, enforces admin/feature/tool gates,
    loads session state, and builds the governed model/tool plan.
-4. Model calls route through APIM and SimpleL7Proxy to the selected Foundry
-   deployment. Native Azure service planes such as Content Understanding, Azure
+4. Compatible model calls route through SimpleL7Proxy, then APIM, to a
+   catalog-selected Foundry deployment. APIM performs bounded immediate regional
+   failover; a full-capacity `429` carries the `S7PREQUEUE`/`retry-after-ms`
+   contract back to the proxy for delayed requeue. Native Azure service planes such as Content Understanding, Azure
    Monitor, Key Vault, Blob Storage, Cosmos, and AI Search are called directly with
    managed identity or configured service auth.
 5. Durable state is written to Cosmos and Blob Storage; derived memory/search/chunk
@@ -55,14 +61,16 @@ sequenceDiagram
   participant B as Browser
   participant W as Web (Next.js)
   participant A as API (FastAPI)
-  participant G as APIM + Proxy
+  participant P as SimpleL7Proxy
+  participant G as APIM
   participant F as Foundry
   participant C as Cosmos
   B->>W: POST /api/chat (Entra bearer)
   W->>A: forward same-origin (+ identity)
   A->>A: auth, normalize user id, entitlement + feature gates
   A->>C: load session + inject memory/document context
-  A->>G: governed model call
+  A->>P: governed HTTP/SSE model call
+  P->>G: authenticated model hop
   G->>F: managed-identity call to deployment
   F-->>A: streamed tokens
   A-->>B: stream response (via web proxy)
@@ -72,7 +80,8 @@ sequenceDiagram
 ## Core principles
 
 1. **Gateway-first model calls.** Chat, agents, embeddings, image/video generation,
-   speech, and realtime models route through APIM/SimpleL7Proxy. Non-chat Azure
+   and REST speech route SimpleL7Proxy -> APIM. Realtime/Voice Live stays on the
+   governed FastAPI relay -> APIM path because the proxy is not a WebSocket server. Non-chat Azure
    service planes such as Content Understanding and Azure Monitor use their native
    endpoints with managed identity or configured service auth.
 2. **Catalog-driven deployments.** `infra/models.json` is the deployment source of
@@ -101,7 +110,7 @@ sequenceDiagram
 | Web | Next.js + TypeScript | Chat, voice, library/media, admin, auth runtime config |
 | API | FastAPI + Pydantic | Auth, chat, agents, tools, documents, usage, metrics |
 | Agent runtime | In-process Python | Gateway-native tool loop and user-defined agents |
-| Model gateway | APIM + SimpleL7Proxy | Routing, managed identity to Foundry, telemetry |
+| Model gateway | SimpleL7Proxy + APIM | HTTP/SSE priority queue and delayed requeue; catalog routing and managed identity to Foundry |
 | App data | Cosmos DB | Sessions, messages, usage, agents, workflows, documents |
 | Memory/chunks | Postgres + pgvector / mem0 | Per-user semantic recall and document chunks |
 | Search | Azure AI Search | Optional hybrid/semantic document retrieval backend |
@@ -152,8 +161,8 @@ flowchart LR
     Amw["Monitor workspace"]
   end
   WebCA --> ApiCA
-  ProxyCA --> Apim
-  ApiCA --> Apim --> AI
+  ApiCA --> ProxyCA --> Apim --> AI
+  ApiCA -. "Voice Live WS relay" .-> Apim
   ApiCA --> ApimMcp --> AI
   ApimMcp -. inventory .-> Apic
   ApiCA --> Data
@@ -164,9 +173,11 @@ flowchart LR
 
 ## Identity and RBAC
 
-AI4IA is keyless: every Azure data plane is reached through a user-assigned managed
-identity and a scoped role assignment. No account keys, connection strings, or SQL
-passwords are used at runtime.
+Azure service data planes use managed identities and scoped role assignments. The
+current proxy/APIM transition uses two independently scoped APIM subscription keys:
+one secret for proxy -> normal-model APIM and one realtime-only key that also
+authenticates FastAPI -> proxy. Both remain Container App secrets and are stripped
+before forwarding. The migration target is Entra workload authentication on both hops.
 
 ```mermaid
 flowchart LR
@@ -179,6 +190,9 @@ flowchart LR
   idapi -->|"Entra token"| Pg["Postgres"]
   idweb["id-web"] -->|"AcrPull"| Acr["ACR"]
   idproxy["id-proxy"] -->|"AcrPull"| Acr
+  idproxy -->|"App Config Data Reader"| Ac
+  idproxy -->|"Event Hubs Data Sender (optional)"| EH["Event Hubs"]
+  idproxy -->|"Blob Data Contributor + Service Bus sender/receiver (optional async)"| Async["Async stores"]
   idapi -->|"AcrPull"| Acr
   apim["APIM (system MI)"] -->|"OpenAI User + Cognitive Services User"| Foundry["Foundry accounts"]
 ```
@@ -227,6 +241,13 @@ strategy uses:
 
 ## Current gaps
 
+- Multi-application profiles remain default-off and the deployment validator
+  refuses to enable them while ingress uses a shared key. A verified
+  identity-aware application header (target: Entra workload auth) is required
+  before the mounted server-owned profile projection may become authoritative.
+- SimpleL7Proxy queue priority/fairness state is in-memory and per replica. Keeping
+  a warm replica removes cold-start risk but does not create durable, global
+  ordering across replicas.
 - External ID/CIAM is not wired; current auth is Entra workforce/B2B.
 - Folder-level document sharing and unauthenticated public links are not
   implemented; `public` documents are tenant-walled.

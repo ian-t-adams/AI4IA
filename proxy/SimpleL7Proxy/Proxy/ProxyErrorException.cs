@@ -25,9 +25,11 @@ public class ProxyErrorException(ProxyErrorException.ErrorType type, HttpStatusC
 
     public void Dispose()
     {
+        // Dispose of unmanaged resources here
     }
     void IDisposable.Dispose()
     {
+        // TODO: Dispose of unmanaged resources here
     }
 
     public ValueTask DisposeAsync()

@@ -103,6 +103,9 @@ param adminApiSecret string = ''
 @description('Enable the Voice Live realtime WebSocket relay. Default OFF (the /api/voice/live route refuses, so the app is inert).')
 param realtimeEnabled bool = false
 
+@description('APIM /openai base URL for the realtime relay. This intentionally differs from modelGatewayUrl, which points at SimpleL7Proxy.')
+param realtimeBaseUrl string = ''
+
 @description('Azure OpenAI realtime api-version the relay uses for the upstream WebSocket.')
 param realtimeApiVersion string = '2025-04-01-preview'
 
@@ -325,9 +328,9 @@ var memoryEnv = concat([
 
 // Voice Live realtime relay settings. Default OFF: with the flag unset
 // the /api/voice/live WebSocket refuses immediately, so the relay is inert and the
-// app's default behavior is unchanged. When enabled, the relay reuses the same
-// model-gateway URL + credential as chat for the upstream realtime socket; only
-// the flag, api-version, and Origin allowlist are realtime-specific env.
+// app's default behavior is unchanged. When enabled, the relay uses the APIM-only
+// realtime base URL (SimpleL7Proxy does not support WebSockets) while reusing the
+// separately scoped server-side credential.
 var realtimeEnv = realtimeEnabled ? [
   {
     name: 'AI4IA_REALTIME_ENABLED'
@@ -336,6 +339,10 @@ var realtimeEnv = realtimeEnabled ? [
   {
     name: 'AI4IA_REALTIME_API_VERSION'
     value: realtimeApiVersion
+  }
+  {
+    name: 'AI4IA_REALTIME_BASE_URL'
+    value: realtimeBaseUrl
   }
   {
     name: 'AI4IA_REALTIME_ALLOWED_ORIGINS'

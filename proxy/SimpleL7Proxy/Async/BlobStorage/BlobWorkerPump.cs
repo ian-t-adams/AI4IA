@@ -103,7 +103,7 @@ namespace SimpleL7Proxy.Async.BlobStorage
         private readonly BlobWriteQueueOptions _options;
         private readonly IBlobWriter _blobWriter;
         private readonly BlobPumpMetrics _metrics;
-        private volatile bool _isShuttingDown = false;
+        // private volatile bool _isShuttingDown = false;
         private bool _isStarted = false;
         private Task? _stopTask;
 
@@ -126,7 +126,6 @@ namespace SimpleL7Proxy.Async.BlobStorage
             _shutdownCts = new CancellationTokenSource();
             _metricsLoopCts = new CancellationTokenSource();
             _workers = new List<Task>();
-            _metrics = new BlobPumpMetrics(_logger, () => _workerChannels.Sum(ch => ch.Reader.Count), () => _options.WorkerCount);
 
             // Create per-worker channels for worker affinity
             _workerChannels = new Channel<BlobWriteOperation>[_options.WorkerCount];
@@ -154,6 +153,8 @@ namespace SimpleL7Proxy.Async.BlobStorage
                         });
                 }
             }
+
+            _metrics = new BlobPumpMetrics(_logger, () => _workerChannels.Sum(ch => ch.Reader.Count), () => _options.WorkerCount);
 
             _logger.LogInformation(
                 "[BlobWr-Q] Initialized - Workers: {Workers}, MaxQueue: {MaxQueue}, Batching: {Batching}, " +
@@ -270,7 +271,7 @@ namespace SimpleL7Proxy.Async.BlobStorage
         private async Task StopCoreAsync()
         {            
             // Signal shutdown to MetricsLoop (will increase frequency)
-            _isShuttingDown = true;
+            //_isShuttingDown = true;
             
             // Complete the channels - no more writes will be accepted
             // Safe because CoordinatedShutdownService ensures all producers
@@ -844,7 +845,8 @@ namespace SimpleL7Proxy.Async.BlobStorage
                     continue;
                 }
 
-                // Coarse, human-scannable summary. Lifetime totals are emitted on shutdown.
+                // Coarse, human-scannable summary. Lifetime totals are emitted on shutdown;
+                // detailed time-series should go to App Insights metrics (TODO: metrics eventType).
                 _logger.LogInformation(
                     "[BlobWr-Q] Wr ( 10s:{B10s}  1m:{B1m}  10m:{B10m} )  Bch ( 10s:{Bch10s}  1m:{Bch1m}  10m:{Bch10m} )  Q:{QSize}  InFlight:{InFlight}  Fail:{Failed}  Dup:{Dedup}",
                     blobs10s, _bucket1m, _bucket10m,
