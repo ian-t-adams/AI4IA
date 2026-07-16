@@ -60,3 +60,16 @@ description = "Voice Live localStorage namespace (public identifier, not a crede
 condition = "AND"
 paths = ['''app/web/src/lib/voicePreferences\.ts''']
 regexes = ['''ai4ia\.voiceLive\.prefs\.v1''']
+
+# 5) Synthetic JWT used by the Voice Live metadata-redaction regression test.
+#    Commit fde9006 briefly stored this intentionally fake token as a literal;
+#    the final test constructs it at runtime instead. Keep the historical scan
+#    exception scoped to the exact test path and exact dummy value so any other
+#    JWT-shaped value remains blocking.
+[[allowlists]]
+description = "Synthetic Voice Live JWT redaction fixture (not a credential)."
+condition = "AND"
+paths = ['''app/api/tests/test_realtime_logic\.py''']
+regexes = [
+  '''eyJhbGciOiJSUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.signature-value''',
+]
