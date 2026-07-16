@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     model_gateway_url: str = "http://localhost:9099"
     model_gateway_auth_mode: GatewayAuthMode = GatewayAuthMode.none
     model_gateway_api_key: str | None = None
+    model_gateway_api_key_header: str = "Ocp-Apim-Subscription-Key"
     gateway_provider_style: GatewayProviderStyle = GatewayProviderStyle.azure_openai_native
     gateway_api_version: str = "2025-04-01-preview"
     gateway_timeout_seconds: float = 120.0

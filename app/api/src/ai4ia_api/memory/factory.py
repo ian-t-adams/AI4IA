@@ -145,6 +145,7 @@ def _build_mem0_service(
             config = build_mem0_config(
                 endpoint=endpoint,
                 api_key=settings.model_gateway_api_key,
+                api_key_header=settings.model_gateway_api_key_header,
                 api_version=settings.gateway_api_version,
                 llm_deployment=extraction.deploymentName,
                 embed_deployment=embed_deployment,

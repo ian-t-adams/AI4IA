@@ -698,6 +698,7 @@ module api 'modules/api.bicep' = {
     modelGatewayUrl: gateway.outputs.proxyIngressUrl
     modelGatewayAuthMode: 'api_key'
     modelGatewayApiKey: gateway.outputs.proxyIngressKey
+    modelGatewayApiKeyHeader: 'S7P-KEY'
     // Realtime stays on the FastAPI relay -> APIM path because the proxy does
     // not support WebSockets. The separately scoped subscription key cannot call
     // the normal APIM model API, so compatible traffic cannot bypass the proxy.

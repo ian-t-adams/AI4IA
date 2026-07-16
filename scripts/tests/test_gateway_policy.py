@@ -463,6 +463,11 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertNotIn("sharedProxyIngressProductApi", gateway)
         self.assertIn("AI4IA_REALTIME_GATEWAY_API_KEY", api)
         self.assertIn("realtime-gateway-api-key", api)
+        self.assertIn("modelGatewayApiKeyHeader: 'S7P-KEY'", main)
+        self.assertIn("header=S7P-KEY", gateway)
+        strip_headers = gateway.split("name: 'StripRequestHeaders'", 1)[1].split("]", 1)[0]
+        self.assertIn("'S7P-KEY'", strip_headers)
+        self.assertNotIn("'Ocp-Apim-Subscription-Key'", strip_headers)
 
     def test_realtime_shared_api_is_a_websocket_api_with_supported_policy(self) -> None:
         gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")

@@ -43,6 +43,9 @@ param modelGatewayAuthMode string = 'none'
 @secure()
 param modelGatewayApiKey string = ''
 
+@description('Header carrying the model gateway API key. Use a proxy-only header when the upstream APIM also uses a subscription key.')
+param modelGatewayApiKeyHeader string = 'Ocp-Apim-Subscription-Key'
+
 @description('Cosmos DB account endpoint for the canonical session store.')
 param cosmosEndpoint string
 
@@ -231,6 +234,10 @@ var gatewayKeyEnv = hasGatewayKey ? [
   {
     name: 'AI4IA_MODEL_GATEWAY_API_KEY'
     secretRef: 'model-gateway-api-key'
+  }
+  {
+    name: 'AI4IA_MODEL_GATEWAY_API_KEY_HEADER'
+    value: modelGatewayApiKeyHeader
   }
 ] : []
 

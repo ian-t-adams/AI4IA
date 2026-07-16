@@ -446,6 +446,24 @@ def test_build_mem0_config_no_key_drops_default_headers():
     assert cfg["embedder"]["config"]["azure_kwargs"]["api_key"] is None
 
 
+def test_build_mem0_config_uses_configured_gateway_key_header():
+    cfg = build_mem0_config(
+        endpoint="https://proxy.example.net",
+        api_key="proxy-key",
+        api_key_header="S7P-KEY",
+        api_version="2025-04-01-preview",
+        llm_deployment="llm",
+        embed_deployment="embed",
+        embedding_dims=3072,
+        collection_name="memories",
+        history_db_path=":memory:",
+        connection_pool=object(),
+    )
+    expected = {"S7P-KEY": "proxy-key"}
+    assert cfg["llm"]["config"]["azure_kwargs"]["default_headers"] == expected
+    assert cfg["embedder"]["config"]["azure_kwargs"]["default_headers"] == expected
+
+
 # --- endpoint normalization -------------------------------------------------
 
 def test_normalize_endpoint_strips_openai_suffix():

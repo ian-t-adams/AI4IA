@@ -254,6 +254,7 @@ class ModelGatewayClient:
         self._api_version = settings.gateway_api_version
         self._auth_mode = settings.model_gateway_auth_mode
         self._api_key = settings.model_gateway_api_key
+        self._api_key_header = settings.model_gateway_api_key_header
         self._timeout = settings.gateway_timeout_seconds
         self._chat_path = settings.gateway_chat_path or _default_chat_path(self._style)
         self._embeddings_path = _default_embeddings_path(self._style)
@@ -278,7 +279,7 @@ class ModelGatewayClient:
         if correlation_id:
             headers["x-correlation-id"] = correlation_id
         if self._auth_mode == GatewayAuthMode.api_key and self._api_key:
-            headers["Ocp-Apim-Subscription-Key"] = self._api_key
+            headers[self._api_key_header] = self._api_key
         elif self._auth_mode == GatewayAuthMode.bearer and self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
@@ -291,7 +292,7 @@ class ModelGatewayClient:
         if correlation_id:
             headers["x-correlation-id"] = correlation_id
         if self._auth_mode == GatewayAuthMode.api_key and self._api_key:
-            headers["Ocp-Apim-Subscription-Key"] = self._api_key
+            headers[self._api_key_header] = self._api_key
         elif self._auth_mode == GatewayAuthMode.bearer and self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
