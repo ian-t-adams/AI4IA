@@ -24,6 +24,7 @@ import {
   DEFAULT_VOICE,
   DEFAULT_VOICE_SETTINGS,
   type RealtimeVoice,
+  type VoiceProviderId,
   type VoiceLiveController,
   type VoiceSessionSettings,
 } from "@/lib/voiceLive";
@@ -98,6 +99,7 @@ function Harness({
   onSend = vi.fn(),
   ensureSession = async () => "session-1",
   activeSessionId = null,
+  providerId,
   voice: voiceOverride,
   settings: settingsOverride,
   tools: toolsOverride,
@@ -110,6 +112,7 @@ function Harness({
   onSend?: (text: string) => void;
   ensureSession?: () => Promise<string>;
   activeSessionId?: string | null;
+  providerId?: VoiceProviderId;
   voice?: RealtimeVoice;
   settings?: VoiceSessionSettings;
   tools?: boolean;
@@ -136,6 +139,7 @@ function Harness({
   );
   const voice = useInlineVoiceLive({
     config: CONFIG,
+    providerId,
     model: "catalog-realtime-model",
     agent: "analyst",
     agents: AGENTS,
@@ -248,12 +252,14 @@ describe("inline Voice Live chat", () => {
     render(<Harness />);
 
     const args = mocks.useVoiceLive.mock.calls.at(-1);
-    expect(args?.[1]).toBe("catalog-realtime-model");
-    expect(args?.[2]).toBe(DEFAULT_VOICE);
-    expect(args?.[4]).toBe("analyst");
-    expect(args?.[5]).toEqual([{ role: "user", text: "Earlier text turn" }]);
-    expect(args?.[6]).toEqual(DEFAULT_VOICE_SETTINGS);
-    expect(args?.[7]).toBe(false);
+    expect(args?.[1]).toBe("azure_openai");
+    expect(args?.[2]).toBe("catalog-realtime-model");
+    expect(args?.[3]).toBeNull();
+    expect(args?.[4]).toBe(DEFAULT_VOICE);
+    expect(args?.[6]).toBe("analyst");
+    expect(args?.[7]).toEqual([{ role: "user", text: "Earlier text turn" }]);
+    expect(args?.[8]).toEqual(DEFAULT_VOICE_SETTINGS);
+    expect(args?.[10]).toBe(false);
   });
 
   it("threads a custom voice, session settings, and the tools opt-in into useVoiceLive", () => {
@@ -265,9 +271,9 @@ describe("inline Voice Live chat", () => {
     render(<Harness voice="marin" settings={customSettings} tools={true} />);
 
     const args = mocks.useVoiceLive.mock.calls.at(-1);
-    expect(args?.[2]).toBe("marin");
-    expect(args?.[6]).toEqual(customSettings);
-    expect(args?.[7]).toBe(true);
+    expect(args?.[4]).toBe("marin");
+    expect(args?.[8]).toEqual(customSettings);
+    expect(args?.[10]).toBe(true);
   });
 
   it("shows inline connecting, listening, thinking, and speaking phases", () => {
@@ -427,7 +433,9 @@ describe("inline Voice Live chat", () => {
     mocks.useVoiceLive.mockImplementation(
       (
         _config: unknown,
+        _providerId: unknown,
         _model: unknown,
+        _region: unknown,
         _voice: unknown,
         onError: (message: string) => void,
       ) => {
@@ -461,6 +469,33 @@ describe("inline Voice Live chat", () => {
     await userEvent.click(microphone);
     expect(mocks.start).toHaveBeenCalledTimes(2);
     expect(ensureSession).not.toHaveBeenCalled();
+  });
+
+  it("switching providers without a finalized turn does not create an empty session", () => {
+    const ensureSession = vi.fn().mockResolvedValue("session-1");
+    const { rerender } = render(
+      <Harness providerId="azure_openai" ensureSession={ensureSession} />,
+    );
+
+    rerender(
+      <Harness providerId="speech_voice_live" ensureSession={ensureSession} />,
+    );
+
+    expect(ensureSession).not.toHaveBeenCalled();
+    expect(mocks.start).not.toHaveBeenCalled();
+    expect(mocks.useVoiceLive).toHaveBeenLastCalledWith(
+      CONFIG,
+      "speech_voice_live",
+      "catalog-realtime-model",
+      null,
+      DEFAULT_VOICE,
+      expect.any(Function),
+      "analyst",
+      [{ role: "user", text: "Earlier text turn" }],
+      DEFAULT_VOICE_SETTINGS,
+      expect.any(Object),
+      false,
+    );
   });
 
   it("creates exactly one session on the first finalized turn and does not duplicate on repeated stop clicks", async () => {

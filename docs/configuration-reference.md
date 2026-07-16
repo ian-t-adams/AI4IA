@@ -31,6 +31,8 @@ procedure: [`runbooks/deployment.md` §3](runbooks/deployment.md#3-moving-to-a-n
 | --- | --- | --- | --- | --- |
 | Voice Live | `AI4IA_REALTIME_ENABLED` | `voiceLiveEnabled` | `AI4IA_REALTIME_ENABLED`, `VOICE_LIVE_ENABLED`, `API_PUBLIC_URL` | `realtimeAllowedOrigins` outside local/dev. |
 | Voice Live tools | `AI4IA_REALTIME_TOOLS_ENABLED` | `voiceLiveToolsEnabled` | `AI4IA_REALTIME_TOOLS_ENABLED`, `VOICE_LIVE_TOOLS_ENABLED` | Requires Voice Live. |
+| Speech Voice Live (second voice provider) | checked-in parameter | `speechVoiceLiveEnabled` | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | Requires `AI4IA_REALTIME_ENABLED=true`, `AI4IA_VOICE_PROVIDER_ALLOWLIST` to include `speech_voice_live`, and both `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`. Default OFF; enablement additionally waits on the live-validation gate below. |
+| Voice provider allowlist / default | n/a (server-authoritative) | `voiceProviderAllowlist`, `voiceDefaultProvider` | `AI4IA_VOICE_PROVIDER_ALLOWLIST` (default `azure_openai`), `AI4IA_VOICE_DEFAULT_PROVIDER` (default `azure_openai`) | Allowlist must always include `azure_openai`; default provider must be an allowlist member. The browser may only select an advertised, allowlisted provider. |
 | Document library / Content Understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `documentUnderstandingEnabled` | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`, `DOCUMENT_LIBRARY_ENABLED` | Cosmos + blob storage; CU endpoint defaults to the primary Foundry endpoint unless overridden. |
 | Library compute / export | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | `documentComputeEnabled` | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | Requires document understanding. Code Interpreter endpoint/model default to primary Foundry + `gpt-4.1-mini-*` unless overridden. |
 | Inline attachment compute | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | `inlineDocumentComputeEnabled` | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | Uses the same Code Interpreter endpoint/model as library compute. |
@@ -97,6 +99,51 @@ The active APIM is the existing shared `apim-mcp-*` Basic v2 service (capacity 1
 APIM and all of its children remain configured but inactive as the rollback plane;
 they are not deleted by this migration.
 
+### Speech Voice Live (second voice provider)
+
+`speech_voice_live` is an additive, default-off second realtime provider selected
+per connection by the browser's `provider` value (`azure_openai` remains the
+server-authoritative default). It routes
+`Browser -> FastAPI /api/voice/live -> separate shared Basic v2 APIM WebSocket API
+-> Foundry`, never through SimpleL7Proxy, and never directly from the browser.
+
+- `AI4IA_SPEECH_VOICE_LIVE_ENABLED` (`speechVoiceLiveEnabled` in Bicep, default
+  `false`) is the master gate. It requires `AI4IA_REALTIME_ENABLED=true` and
+  `speech_voice_live` present in `AI4IA_VOICE_PROVIDER_ALLOWLIST`.
+- `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` must be an HTTPS/WSS APIM URL ending in
+  `/speech/voice-live` (never a `services.ai.azure.com` or
+  `cognitiveservices.azure.com` host), and `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`
+  must be a secret distinct from both `AI4IA_REALTIME_GATEWAY_API_KEY` and
+  `AI4IA_MODEL_GATEWAY_API_KEY`. Startup fails closed if either is missing,
+  malformed, or reused.
+- The model/API version are fixed, not caller-suppliable: `gpt-realtime` at API
+  version `2026-04-10`, against the initial existing `eastus2` AIServices account —
+  the same account already used as a Foundry model backend, not a new resource.
+  Voices/locale/transcription/VAD/noise/echo capabilities come from the generated
+  voice provider catalog (`infra/voice-providers.json`); only curated
+  `azure-standard` built-in voices are offered and no custom endpoint, lexicon, or
+  personal voice value is ever accepted.
+- The shared active APIM's system-assigned managed identity authenticates to that
+  account using a managed-identity audience set by the **deployment-only** Bicep
+  parameter `speechVoiceLiveManagedIdentityAudience` (default `https://ai.azure.com`,
+  matching the `azure-ai-voicelive` SDK default) — this is not an app runtime
+  setting and the browser cannot influence it. Confirming that the selected account
+  accepts this exact audience is a pending live-validation gate; do not change the
+  default before that gate closes.
+- APIM grants that identity **Cognitive Services User** and **Foundry User**
+  (formerly Azure AI User) roles scoped only to the one selected AIServices
+  account, on top of (not instead of) the roles it already holds on every Foundry
+  backend.
+- The Speech Voice Live APIM subscription (`ai4ia-api-speech-voice-live`) is scoped
+  only to the `/speech/voice-live/realtime` WebSocket API; it cannot invoke
+  `/openai/realtime`, the normal model API, the MCP plane, or the proxy ingress
+  product, and none of those keys can invoke it.
+- Usage records add a `provider` field (default `azure_openai`, back-compatible
+  with existing records) and a nullable `deployment`; Speech Voice Live turns are
+  metered against a truthful `managed_voice_live` target rather than inventing a
+  deployment name. When Voice Live usage is not present on a response, the turn is
+  persisted as `usageKnown=false`, `billable=false` — never a fabricated zero cost.
+
 APIM owns bounded immediate backend attempts. When all compatible regions are
 throttled it returns `429`, `S7PREQUEUE: true`, and `retry-after-ms`.
 SimpleL7Proxy uses `MaxAttempts=1` per dispatch and owns delayed requeue, avoiding
@@ -129,17 +176,20 @@ until that work exists.
 CI runs `scripts/validate-feature-prereqs.py` from `infra-validate.yml`. It
 checks cross-parameter contradictions that Bicep syntax validation does not
 catch: prod with dev auth, Entra without tenant/audience/client ID, Voice Live
-tools without Voice Live, document compute without document understanding,
-broken custom-domain/cert combinations, proxy scale/priority errors, unsafe
-profile enablement, and personal ownership defaults. CI also regenerates and
-tests the HTTP/SSE endpoint fragment and realtime routing policy against
-`infra/models.json`.
+tools without Voice Live, Speech Voice Live enabled without Voice Live or without
+its allowlist/URL/key prerequisites, document compute without document
+understanding, broken custom-domain/cert combinations, proxy scale/priority
+errors, unsafe profile enablement, and personal ownership defaults. CI also
+regenerates and tests the HTTP/SSE endpoint fragment and realtime routing policy
+against `infra/models.json`, and the voice provider catalog
+(`scripts/gen-voice-provider-catalog.py --check`) against
+`infra/voice-providers.json`.
 The proxy Container App also uses the upstream listener on port `8080` for
 startup, liveness, and readiness. Optional async resources inherit the data-tier
 public/private posture and emit diagnostics to the shared Log Analytics workspace.
 
 ### Basic v2 model/realtime gateway cutover
 
-`AI4IA_MODEL_GATEWAY_URL` remains the SimpleL7Proxy `/openai` URL. Its API key is an opaque proxy-ingress key from an APIM product with no APIs, carried in `AI4IA_MODEL_GATEWAY_API_KEY_HEADER` (`S7P-KEY` in the deployed stack), so FastAPI cannot invoke the model API directly. SimpleL7Proxy strips that inbound header and alone injects `Ocp-Apim-Subscription-Key` for the shared model API. Voice Live uses `AI4IA_REALTIME_BASE_URL=https://<shared-active-apim>/openai` and the distinct secret `AI4IA_REALTIME_GATEWAY_API_KEY`, scoped only to `/openai/realtime`. Voice Live startup fails when the URL/key are missing, equal to the proxy ingress key, or do not name an HTTPS/WSS `/openai` endpoint.
+`AI4IA_MODEL_GATEWAY_URL` remains the SimpleL7Proxy `/openai` URL. Its API key is an opaque proxy-ingress key from an APIM product with no APIs, carried in `AI4IA_MODEL_GATEWAY_API_KEY_HEADER` (`S7P-KEY` in the deployed stack), so FastAPI cannot invoke the model API directly. SimpleL7Proxy strips that inbound header and alone injects `Ocp-Apim-Subscription-Key` for the shared model API. Voice Live uses `AI4IA_REALTIME_BASE_URL=https://<shared-active-apim>/openai` and the distinct secret `AI4IA_REALTIME_GATEWAY_API_KEY`, scoped only to `/openai/realtime`. Voice Live startup fails when the URL/key are missing, equal to the proxy ingress key, or do not name an HTTPS/WSS `/openai` endpoint. Speech Voice Live adds a third, independently scoped pair — `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` (`/speech/voice-live`) and `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY` — with the same fail-closed distinctness checks against both other keys.
 
 The active APIM is the existing shared `apim-mcp-*` Basic v2 service (capacity 1); no additional APIM base charge is added. The previous Consumption APIM and all its children remain fully configured but inactive for rollback; this migration does not delete them.

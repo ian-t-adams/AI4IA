@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_VOICE,
   DEFAULT_VOICE_SETTINGS,
+  DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+  buildVoiceLiveWebSocketUrl,
   isVadType,
   realtimeModels,
   sessionUpdate,
+  speechSessionUpdate,
   type VoiceSessionSettings,
 } from "./voiceLive";
 
@@ -97,6 +100,95 @@ describe("sessionUpdate settings round-trip", () => {
       sessionUpdate("alloy", { ...DEFAULT_VOICE_SETTINGS, instructions: "Be terse." }),
     );
     expect(parsed.session.instructions).toBe("Be terse.");
+  });
+});
+
+describe("speechSessionUpdate", () => {
+  it("builds the managed speech payload with only catalog-safe settings", () => {
+    const parsed = JSON.parse(speechSessionUpdate(DEFAULT_SPEECH_VOICE_LIVE_SETTINGS));
+    expect(parsed).toEqual({
+      type: "session.update",
+      session: {
+        instructions: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.instructions,
+        voice: {
+          type: "azure-standard",
+          name: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.voice,
+          locale: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.locale,
+        },
+        input_audio_transcription: {
+          model: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.transcription,
+          language: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.locale,
+        },
+        turn_detection: {
+          type: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.turnDetection,
+          interrupt_response: true,
+          auto_truncate: false,
+        },
+        input_audio_noise_reduction: {
+          type: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.noiseSuppression,
+        },
+        input_audio_echo_cancellation: {
+          type: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.echoCancellation,
+        },
+      },
+    });
+  });
+
+  it("reconstructs stale settings from catalog defaults and clamps temperature", () => {
+    const parsed = JSON.parse(
+      speechSessionUpdate({
+        ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+        temperature: 99,
+        voice: "custom-voice",
+        locale: "xx-XX",
+        transcription: "custom-transcriber",
+        turnDetection: "custom-vad" as never,
+        noiseSuppression: "custom-noise" as never,
+        echoCancellation: "custom-echo" as never,
+      }),
+    );
+
+    expect(parsed.session.temperature).toBe(2);
+    expect(parsed.session.voice.name).toBe(DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.voice);
+    expect(parsed.session.voice.locale).toBe(DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.locale);
+    expect(parsed.session.input_audio_transcription.model).toBe(
+      DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.transcription,
+    );
+    expect(parsed.session.turn_detection.type).toBe(
+      DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.turnDetection,
+    );
+    expect(parsed.session.input_audio_noise_reduction.type).toBe(
+      DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.noiseSuppression,
+    );
+    expect(parsed.session.input_audio_echo_cancellation.type).toBe(
+      DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.echoCancellation,
+    );
+  });
+});
+
+describe("buildVoiceLiveWebSocketUrl", () => {
+  it("keeps model and region only for Azure OpenAI", () => {
+    expect(
+      buildVoiceLiveWebSocketUrl("wss://api.example.test/api/voice/live", {
+        providerId: "azure_openai",
+        model: "gpt-realtime",
+        region: "eastus2",
+        agent: "analyst",
+        tools: true,
+      }),
+    ).toBe("wss://api.example.test/api/voice/live?provider=azure_openai&model=gpt-realtime&region=eastus2&agent=analyst&tools=1");
+  });
+
+  it("omits model and region for managed speech", () => {
+    expect(
+      buildVoiceLiveWebSocketUrl("wss://api.example.test/api/voice/live", {
+        providerId: "speech_voice_live",
+        model: "gpt-realtime",
+        region: "eastus2",
+        agent: "analyst",
+        tools: true,
+      }),
+    ).toBe("wss://api.example.test/api/voice/live?provider=speech_voice_live&agent=analyst&tools=1");
   });
 });
 

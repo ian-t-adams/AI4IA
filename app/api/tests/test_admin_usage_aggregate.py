@@ -19,6 +19,7 @@ from ai4ia_api.usage.aggregate import (
     aggregate_by_day,
     aggregate_by_deployment,
     aggregate_by_model,
+    aggregate_by_provider,
     aggregate_by_region,
     aggregate_by_status,
     aggregate_by_user,
@@ -47,7 +48,9 @@ def rec(
     cost_known: bool = True,
     cost_micro: int | None = 1000,
     created: datetime | None = None,
-    deployment: str = "dep",
+    provider: str = "azure_openai",
+    deployment: str | None = "dep",
+    target: str | None = None,
     session: str = "s1",
     region: str | None = None,
     data_zone: str | None = None,
@@ -55,8 +58,10 @@ def rec(
     return UsageRecord(
         userId=user,
         sessionId=session,
+        provider=provider,
         model=model,
         deployment=deployment,
+        target=target,
         agent=agent,
         status=status,
         billable=billable,
@@ -102,6 +107,7 @@ def test_summary_totals_and_distinct_counts():
     assert s.totalCostUsd == 0.0035
     assert s.distinctModels == 2
     assert s.distinctAgents == 1
+    assert s.distinctProviders == 1
     assert s.errorRate == 0.0
 
 
@@ -119,6 +125,15 @@ def test_summary_honesty_unknown_usage_and_cost():
     assert s.unknownUsageRequests == 1
     assert s.totalCostMicroUsd == 1000  # only the priced turn
     assert s.costUnknownRequests == 2  # two billable turns with no known cost
+
+
+def test_summary_counts_distinct_providers():
+    records = [
+        rec(provider="azure_openai"),
+        rec(provider="speech_voice_live", deployment=None, target="managed_voice_live"),
+    ]
+    s = aggregate_summary(records)
+    assert s.distinctProviders == 2
 
 
 def test_summary_error_rate():
@@ -317,6 +332,33 @@ def test_dimension_rollup_honours_cost_honesty():
     assert out[0].costKnown is False
 
 
+def test_dimension_rollup_groups_null_deployment_as_unknown():
+    records = [
+        rec(
+            provider="speech_voice_live",
+            deployment=None,
+            target="managed_voice_live",
+            total=10,
+            cost_known=False,
+            cost_micro=None,
+            billable=False,
+        ),
+    ]
+    out = aggregate_by_deployment(records)
+    assert out[0].key == UNKNOWN_DIMENSION
+
+
+def test_by_provider_rollup_groups_by_provider():
+    records = [
+        rec(provider="azure_openai", total=10),
+        rec(provider="speech_voice_live", deployment=None, target="managed_voice_live", total=20),
+    ]
+    out = aggregate_by_provider(records)
+    by_key = {b.key: b for b in out}
+    assert by_key["azure_openai"].requests == 1
+    assert by_key["speech_voice_live"].requests == 1
+
+
 def test_aggregate_by_data_zone_and_status_mix():
     records = [
         rec(data_zone="us", status="complete", total=10),
@@ -409,7 +451,18 @@ async def test_service_distributions_windowed_rollups():
     records = [
         rec(user="a", region="eastus", data_zone="us", deployment="d1", status="complete", created=now, total=10),
         rec(user="b", region="eastus", data_zone="us", deployment="d2", status="error", billable=False, created=now, total=0),
-        rec(user="c", region="westus", data_zone="eu", deployment="d1", status="cancelled", billable=False, created=now, total=0),
+        rec(
+            user="c",
+            region="westus",
+            data_zone="eu",
+            provider="speech_voice_live",
+            deployment=None,
+            target="managed_voice_live",
+            status="cancelled",
+            billable=False,
+            created=now,
+            total=0,
+        ),
         rec(user="old", region="eastus", created=now - timedelta(days=120), total=999),
     ]
     svc = await _service_with(records)
@@ -419,7 +472,9 @@ async def test_service_distributions_windowed_rollups():
     assert regions == {"eastus": 2, "westus": 1}
     zones = {b.key: b.requests for b in report.byDataZone}
     assert zones == {"us": 2, "eu": 1}
+    providers = {b.key: b.requests for b in report.byProvider}
+    assert providers == {"azure_openai": 2, "speech_voice_live": 1}
     deployments = {b.key: b.requests for b in report.byDeployment}
-    assert deployments == {"d1": 2, "d2": 1}
+    assert deployments == {"d1": 1, "d2": 1, UNKNOWN_DIMENSION: 1}
     statuses = {b.key: b.requests for b in report.byStatus}
     assert statuses == {"complete": 1, "error": 1, "cancelled": 1}

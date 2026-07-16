@@ -41,6 +41,7 @@ from .documents.ephemeral_store import (
     build_inline_attachment_blob_store,
 )
 from .routers.realtime import AiohttpRealtimeConnector
+from .voice_provider_catalog import load_voice_provider_catalog
 from .library.factory import build_document_library
 from .library.ingest_factory import build_document_ingestor, build_document_retrieval
 from .library.compute_factory import build_document_compute
@@ -119,6 +120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # so this is unused unless settings.realtime_enabled is true. Swappable in
         # tests (a fake socket) the same way app.state.gateway is.
         app.state.realtime_connector = AiohttpRealtimeConnector()
+        app.state.voice_provider_catalog = load_voice_provider_catalog()
         app.state.catalog = load_catalog(settings.model_catalog_path)
         app.state.agents = load_agent_catalog(settings.agent_catalog_path)
         # Tool-safety registry (governs) + executor (runs). Separate objects,

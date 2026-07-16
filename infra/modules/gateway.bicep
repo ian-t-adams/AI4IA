@@ -124,9 +124,25 @@ param managedCertificateName string = ''
 @description('Container Apps managed environment name (parent of the managed certificate).')
 param containerEnvName string
 
+@description('Name of the existing AIServices account Speech Voice Live routes to. This is the SAME account already used as a Foundry model backend (see foundryBackends); no new AIServices account is created for this capability.')
+param speechVoiceLiveAccountName string
+
+@description('Endpoint of the existing AIServices account Speech Voice Live routes to (https://<account>.cognitiveservices.azure.com/ or the .services.ai.azure.com equivalent). Converted to WSS and combined with the fixed /voice-live/realtime path; never a user-suppliable value.')
+param speechVoiceLiveAccountEndpoint string
+
+@description('Managed-identity audience (APIM authentication-managed-identity "resource", without the /.default suffix) APIM authenticates to the Speech Voice Live AIServices account with. Defaults to the audience the azure-ai-voicelive SDK requests by default (https://ai.azure.com/.default) for the fixed api-version this module pins. Kept overridable via a named value (not caller-influenced) because confirming this specific account accepts that audience is a pending live-validation gate (see .azure/plan.md).')
+param speechVoiceLiveManagedIdentityAudience string = 'https://ai.azure.com'
+
 var foundryBase = endsWith(primaryFoundryEndpoint, '/') ? primaryFoundryEndpoint : '${primaryFoundryEndpoint}/'
 var foundryOpenAiUrl = '${foundryBase}openai'
 var primaryFoundryRealtimeWssUrl = '${replace(endsWith(primaryFoundryEndpoint, '/') ? substring(primaryFoundryEndpoint, 0, length(primaryFoundryEndpoint) - 1) : primaryFoundryEndpoint, 'https://', 'wss://')}/openai/realtime'
+// Speech Voice Live's backend host, independent of the foundryBackends loop
+// above (that loop drives Azure OpenAI realtime routing across every region).
+// The same underlying AIServices account may coincide with one of those
+// backends, but this module never assumes that -- it only ever talks to the
+// account named by speechVoiceLiveAccountName/-Endpoint.
+var speechVoiceLiveAccountBase = endsWith(speechVoiceLiveAccountEndpoint, '/') ? substring(speechVoiceLiveAccountEndpoint, 0, length(speechVoiceLiveAccountEndpoint) - 1) : speechVoiceLiveAccountEndpoint
+var speechVoiceLiveWssBase = replace(speechVoiceLiveAccountBase, 'https://', 'wss://')
 var proxyAppName = 'ca-proxy-${environmentName}'
 
 // ---------------- APIM trust boundary ----------------
@@ -374,6 +390,7 @@ resource apiRealtimeSubscription 'Microsoft.ApiManagement/service/subscriptions@
 // APIM is the only identity granted normal model access by this module.
 var openAiUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
 var cognitiveUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
+var foundryUserRoleId = '53ca6127-db72-4b80-b1b0-d745d6d5456d'
 
 resource foundryAccounts 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = [for backend in foundryBackends: {
   name: backend.accountName
@@ -580,6 +597,89 @@ resource sharedApiRealtimeSubscription 'Microsoft.ApiManagement/service/subscrip
   ]
 }
 
+// ---------------- Speech Voice Live (additive, isolated) ----------------
+// A second, separately scoped realtime provider on the SAME shared active
+// Basic v2 APIM. It is entirely additive: it adds one new WebSocket API/path,
+// one new subscription, and one new named-scoped role assignment; it does not
+// modify, reparent, or share credentials with /openai/realtime, the legacy
+// Consumption plane, the model/MCP/proxy APIs, or their subscriptions above.
+resource speechVoiceLiveWssEndpointValue 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = {
+  parent: sharedApim
+  name: 'speech-voice-live-wss-endpoint'
+  properties: {
+    displayName: 'speech-voice-live-wss-endpoint'
+    secret: false
+    value: speechVoiceLiveWssBase
+  }
+}
+
+resource speechVoiceLiveAudienceValue 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = {
+  parent: sharedApim
+  name: 'speech-voice-live-mi-audience'
+  properties: {
+    displayName: 'speech-voice-live-mi-audience'
+    secret: false
+    value: speechVoiceLiveManagedIdentityAudience
+  }
+}
+
+// A WebSocket API has APIM's generated onHandshake operation; no HTTP GET
+// operation is declared here, matching the /openai/realtime pattern above.
+resource sharedSpeechVoiceLiveApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
+  parent: sharedApim
+  name: 'speech-voice-live-realtime'
+  properties: {
+    displayName: 'Speech Voice Live realtime relay backend'
+    path: 'speech/voice-live/realtime'
+    protocols: [
+      'wss'
+    ]
+    serviceUrl: '${speechVoiceLiveWssBase}/voice-live/realtime'
+    subscriptionRequired: true
+    type: 'websocket'
+  }
+  dependsOn: [
+    speechVoiceLiveWssEndpointValue
+  ]
+}
+
+// APIM does not allow policies at API scope for WebSocket APIs; it creates the
+// immutable onHandshake operation with the API, as with sharedRealtimeHandshake.
+resource sharedSpeechVoiceLiveHandshake 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' existing = {
+  parent: sharedSpeechVoiceLiveApi
+  name: 'onHandshake'
+}
+
+resource sharedSpeechVoiceLiveApiPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = {
+  parent: sharedSpeechVoiceLiveHandshake
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/speech-voice-live.xml')
+  }
+  dependsOn: [
+    speechVoiceLiveWssEndpointValue
+    speechVoiceLiveAudienceValue
+  ]
+}
+
+// Distinct, API-scoped subscription for FastAPI only. Its key cannot invoke
+// /openai/realtime, the normal model API, MCP, or the proxy ingress product --
+// each of those is a different subscription scope declared above.
+resource sharedSpeechVoiceLiveSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
+  parent: sharedApim
+  name: 'ai4ia-api-speech-voice-live'
+  properties: {
+    displayName: 'AI4IA FastAPI Speech Voice Live relay'
+    scope: sharedSpeechVoiceLiveApi.id
+    state: 'active'
+    allowTracing: false
+  }
+  dependsOn: [
+    sharedSpeechVoiceLiveApiPolicy
+  ]
+}
+
 // Least privilege is granted to the shared active APIM identity only; legacy APIM
 // RBAC is retained above so the inactive rollback service remains complete.
 resource sharedApimOpenAiUsers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (backend, i) in foundryBackends: {
@@ -601,6 +701,28 @@ resource sharedApimCognitiveUsers 'Microsoft.Authorization/roleAssignments@2022-
     principalType: 'ServicePrincipal'
   }
 }]
+
+// Speech Voice Live's own existing AIServices account reference. Declared
+// separately from foundryAccounts[] (which is indexed by foundryBackends) so
+// this grant is scoped ONLY to the one account Speech Voice Live is approved
+// to reach, never broadened to every regional backend.
+resource speechVoiceLiveAccount 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = {
+  name: speechVoiceLiveAccountName
+}
+
+// Voice Live 2026-04-10 requires both Cognitive Services User and Foundry User
+// (formerly Azure AI User). sharedApimCognitiveUsers already grants the first
+// role to every account in foundryBackends, including this selected account.
+// Add only the second role here to avoid a duplicate role assignment tuple.
+resource sharedApimSpeechVoiceLiveFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(speechVoiceLiveAccount.id, sharedApimResourceId, foundryUserRoleId, 'speech-voice-live')
+  scope: speechVoiceLiveAccount
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryUserRoleId)
+    principalId: sharedApimPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
 
 // ---------------- SimpleL7Proxy Container App ----------------
 var hostEnv = [
@@ -897,3 +1019,8 @@ output proxyIngressKey string = sharedProxyIngressSubscription.listSecrets().pri
 output realtimeGatewayUrl string = '${sharedApimGatewayUrl}/openai'
 @secure()
 output realtimeGatewayKey string = sharedApiRealtimeSubscription.listSecrets().primaryKey
+// Speech Voice Live base URL intentionally omits /realtime (the relay appends
+// it), matching the realtimeGatewayUrl convention above exactly.
+output speechVoiceLiveGatewayUrl string = '${sharedApimGatewayUrl}/speech/voice-live'
+@secure()
+output speechVoiceLiveGatewayKey string = sharedSpeechVoiceLiveSubscription.listSecrets().primaryKey

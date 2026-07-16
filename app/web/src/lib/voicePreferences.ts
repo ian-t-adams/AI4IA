@@ -13,15 +13,20 @@
 import {
   DEFAULT_VOICE,
   DEFAULT_VOICE_SETTINGS,
+  DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+  DEFAULT_VOICE_PROVIDER,
   isRealtimeVoice,
   isVadType,
   type RealtimeVoice,
+  type SpeechVoiceLiveSettings,
   type VoiceSessionSettings,
 } from "./voiceLive";
 
-export const VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v1";
+export const VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v2";
+const LEGACY_VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v1";
 
 export interface VoicePreferences {
+  provider: "azure_openai" | "speech_voice_live";
   // The user's explicit agent pick, or null to always follow the active chat
   // agent (the default). Kept even when temporarily invalid (e.g. the agent is
   // disabled) so it resumes automatically if the agent becomes valid again.
@@ -34,14 +39,17 @@ export interface VoicePreferences {
   // advertises tools as available; the raw preference is kept regardless.
   tools: boolean;
   settings: VoiceSessionSettings;
+  speech: SpeechVoiceLiveSettings;
 }
 
 export const DEFAULT_VOICE_PREFERENCES: VoicePreferences = {
+  provider: DEFAULT_VOICE_PROVIDER,
   explicitAgent: null,
   model: null,
   voice: DEFAULT_VOICE,
   tools: false,
   settings: DEFAULT_VOICE_SETTINGS,
+  speech: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
 };
 
 // Safe bounds for the advanced numeric settings — mirrors what the realtime
@@ -130,13 +138,17 @@ export function normalizeVoiceSessionSettings(raw: unknown): VoiceSessionSetting
 export function normalizeVoicePreferences(raw: unknown): VoicePreferences {
   if (!raw || typeof raw !== "object") return { ...DEFAULT_VOICE_PREFERENCES };
   const r = raw as Record<string, unknown>;
+  const provider =
+    r.provider === "speech_voice_live" ? "speech_voice_live" : DEFAULT_VOICE_PROVIDER;
   return {
+    provider,
     explicitAgent: normalizeNullableString(r.explicitAgent),
     model: normalizeNullableString(r.model),
     voice:
       typeof r.voice === "string" && isRealtimeVoice(r.voice) ? r.voice : DEFAULT_VOICE,
     tools: typeof r.tools === "boolean" ? r.tools : false,
     settings: normalizeVoiceSessionSettings(r.settings),
+    speech: normalizeSpeechVoiceLiveSettings(r.speech),
   };
 }
 
@@ -169,6 +181,78 @@ export function resolveEffectiveModel(
     : fallback;
 }
 
+export function resolveEffectiveVoiceProvider(
+  persistedProvider: VoicePreferences["provider"],
+  enabledProviderIds: readonly VoicePreferences["provider"][],
+  defaultProvider: VoicePreferences["provider"],
+  hasStoredProviderPreference: boolean,
+): VoicePreferences["provider"] {
+  const enabled = new Set(enabledProviderIds);
+  const requested = hasStoredProviderPreference ? persistedProvider : defaultProvider;
+  if (enabled.has(requested)) return requested;
+  if (enabled.has(defaultProvider)) return defaultProvider;
+  return enabledProviderIds[0] ?? DEFAULT_VOICE_PROVIDER;
+}
+
+export function normalizeSpeechVoiceLiveSettings(
+  raw: unknown,
+): SpeechVoiceLiveSettings {
+  if (!raw || typeof raw !== "object") return { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS };
+  const r = raw as Record<string, unknown>;
+  const instructions =
+    typeof r.instructions === "string" && r.instructions.trim().length > 0
+      ? r.instructions
+      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.instructions;
+  const temperature =
+    typeof r.temperature === "number" && Number.isFinite(r.temperature)
+      ? Math.min(2, Math.max(0, r.temperature))
+      : null;
+  const voice =
+    typeof r.voice === "string" && r.voice.trim().length > 0
+      ? r.voice.trim()
+      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.voice;
+  const locale =
+    typeof r.locale === "string" && r.locale.trim().length > 0
+      ? r.locale.trim()
+      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.locale;
+  const transcription =
+    typeof r.transcription === "string" && r.transcription.trim().length > 0
+      ? r.transcription.trim()
+      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.transcription;
+  const turnDetection =
+    typeof r.turnDetection === "string" && r.turnDetection.trim().length > 0
+      ? (r.turnDetection.trim() as SpeechVoiceLiveSettings["turnDetection"])
+      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.turnDetection;
+  const noiseSuppression =
+    typeof r.noiseSuppression === "string" && r.noiseSuppression.trim().length > 0
+      ? (r.noiseSuppression.trim() as SpeechVoiceLiveSettings["noiseSuppression"])
+      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.noiseSuppression;
+  const echoCancellation =
+    typeof r.echoCancellation === "string" && r.echoCancellation.trim().length > 0
+      ? (r.echoCancellation.trim() as SpeechVoiceLiveSettings["echoCancellation"])
+      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.echoCancellation;
+  const interruptResponse =
+    typeof r.interruptResponse === "boolean"
+      ? r.interruptResponse
+      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.interruptResponse;
+  const autoTruncate =
+    typeof r.autoTruncate === "boolean"
+      ? r.autoTruncate
+      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.autoTruncate;
+  return {
+    instructions,
+    temperature,
+    voice,
+    locale,
+    transcription,
+    turnDetection,
+    noiseSuppression,
+    echoCancellation,
+    interruptResponse,
+    autoTruncate,
+  };
+}
+
 // A narrow Storage-like surface so tests can inject a fake/throwing store
 // without touching jsdom's real localStorage.
 export type PreferencesStorage = Pick<Storage, "getItem" | "setItem">;
@@ -193,10 +277,35 @@ export function loadVoicePreferences(
   if (!storage) return { ...DEFAULT_VOICE_PREFERENCES };
   try {
     const raw = storage.getItem(VOICE_PREFERENCES_STORAGE_NAME);
-    if (!raw) return { ...DEFAULT_VOICE_PREFERENCES };
-    return normalizeVoicePreferences(JSON.parse(raw));
+    if (raw) return normalizeVoicePreferences(JSON.parse(raw));
+    const legacy = storage.getItem(LEGACY_VOICE_PREFERENCES_STORAGE_NAME);
+    if (!legacy) return { ...DEFAULT_VOICE_PREFERENCES };
+    const migrated = normalizeVoicePreferences(JSON.parse(legacy));
+    saveVoicePreferences(migrated, storage);
+    return migrated;
   } catch {
     return { ...DEFAULT_VOICE_PREFERENCES };
+  }
+}
+
+export function hasStoredVoicePreferences(
+  storage: PreferencesStorage | undefined = safeLocalStorage(),
+): boolean {
+  if (!storage) return false;
+  try {
+    const current = storage.getItem(VOICE_PREFERENCES_STORAGE_NAME);
+    if (current !== null) {
+      const parsed = JSON.parse(current) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+      const provider = (parsed as Record<string, unknown>).provider;
+      return provider === "azure_openai" || provider === "speech_voice_live";
+    }
+    const legacy = storage.getItem(LEGACY_VOICE_PREFERENCES_STORAGE_NAME);
+    if (legacy === null) return false;
+    const parsed = JSON.parse(legacy) as unknown;
+    return Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed));
+  } catch {
+    return false;
   }
 }
 

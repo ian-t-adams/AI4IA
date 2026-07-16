@@ -28,6 +28,10 @@ from ..catalog import ModelCatalog
 from ..entitlements.service import EntitlementService
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..logging_setup import get_correlation_id
+from ..voice_provider_catalog import (
+    VoiceLiveRuntimeConfig,
+    load_voice_provider_catalog,
+)
 from ..usage.models import TokenUsage
 from ..usage.service import UsageService
 
@@ -81,6 +85,18 @@ class TranscriptionResponse(BaseModel):
     text: str
     model: str
     deployment: str
+
+
+@router.get("/live/config", response_model=VoiceLiveRuntimeConfig)
+async def get_live_voice_config(request: Request) -> VoiceLiveRuntimeConfig:
+    settings = request.app.state.settings
+    catalog = getattr(request.app.state, "voice_provider_catalog", load_voice_provider_catalog())
+    enabled_provider_ids = catalog.allowed_provider_ids(settings.voice_provider_allowlist_list)
+    return VoiceLiveRuntimeConfig(
+        defaultProviderId=settings.voice_default_provider_id,
+        enabledProviderIds=enabled_provider_ids,
+        providers=catalog.public_providers(enabled_provider_ids),
+    )
 
 
 def _audio_usage() -> TokenUsage:

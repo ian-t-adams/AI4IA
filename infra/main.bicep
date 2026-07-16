@@ -90,6 +90,18 @@ param realtimeAllowedOrigins string = ''
 @description('Enable governed tool calling inside a live voice session (calculator, current time). Inert unless voiceLiveEnabled is also true. Default OFF in bicep (matches the image/video feature pattern); set TRUE in main.parameters.json so enabling Voice Live in the live env gives the assistant tools.')
 param voiceLiveToolsEnabled bool = false
 
+@description('Enable Azure AI Speech Voice Live as a second selectable realtime provider (a dedicated APIM WebSocket API + distinct subscription key on the SAME shared active APIM; no new APIM or Foundry resource). Default OFF (fail closed): inert unless voiceLiveEnabled is also true, and the api refuses to start with an incomplete configuration. Production enablement additionally remains gated on the pending live-validation confirmation recorded in .azure/plan.md (managed-identity audience + account posture) -- do not flip this on before that gate closes.')
+param speechVoiceLiveEnabled bool = false
+
+@description('Ordered, comma-separated server-authoritative voice provider allowlist (maps to AI4IA_VOICE_PROVIDER_ALLOWLIST). Must always include azure_openai; add speech_voice_live only once speechVoiceLiveEnabled is deliberately turned on and its prerequisites are complete.')
+param voiceProviderAllowlist string = 'azure_openai'
+
+@description('Server-authoritative default voice provider (maps to AI4IA_VOICE_DEFAULT_PROVIDER); must be a member of voiceProviderAllowlist.')
+param voiceDefaultProvider string = 'azure_openai'
+
+@description('Managed-identity audience (APIM authentication-managed-identity "resource") the shared active APIM uses to authenticate to the Speech Voice Live AIServices account. Defaults to the audience the azure-ai-voicelive SDK requests by default for the fixed api-version this stack pins. Configurable (not caller-influenced) pending the live-validation gate recorded in .azure/plan.md.')
+param speechVoiceLiveManagedIdentityAudience string = 'https://ai.azure.com'
+
 @description('Enable automatic context summarization (auto-fold) on the API. Default OFF in bicep (no behavior change: the manual /summarize command still works, but the auto-fold path stays dormant and the default chat path is byte-for-byte unchanged). Set TRUE in main.parameters.json to enable it in the live env. No additional infra is required.')
 param autoSummarizationEnabled bool = false
 
@@ -542,6 +554,19 @@ var primaryFoundryIndex = filter(range(0, length(regionList)), i => regionNames[
 // without hand-wiring a URL. The CI model defaults to the primary-region
 // gpt-4.1-mini deployment (naming: {model}-slurmfactory-{region}-glbl).
 var primaryFoundryEndpoint = foundry[primaryFoundryIndex].outputs.endpoint
+
+// Speech Voice Live is fixed to the existing eastus2 AIServices account
+// regardless of which region this deployment's primary `location` is, because
+// infra/voice-providers.json pins managedModel.initialRegion to "eastus2" (the
+// only fully managed gpt-realtime region documented at write time alongside
+// swedencentral; eastus2 is picked as the initial region). regionList always
+// includes eastus2 (see infra/models.json regions), independent of `location`,
+// so a foundry[] account for it always exists. Keep this literal in sync with
+// infra/voice-providers.json if that catalog value ever changes.
+var speechVoiceLiveRegionName = 'eastus2'
+var speechVoiceLiveIndex = filter(range(0, length(regionList)), i => regionNames[i] == speechVoiceLiveRegionName)[0]
+var speechVoiceLiveAccountName = foundry[speechVoiceLiveIndex].outputs.accountName
+var speechVoiceLiveAccountEndpoint = foundry[speechVoiceLiveIndex].outputs.endpoint
 var effectiveCuBaseUrl = !empty(cuBaseUrl) ? cuBaseUrl : primaryFoundryEndpoint
 var effectiveCodeInterpreterBaseUrl = !empty(codeInterpreterBaseUrl) ? codeInterpreterBaseUrl : primaryFoundryEndpoint
 var effectiveCodeInterpreterModel = !empty(codeInterpreterModel) ? codeInterpreterModel : 'gpt-4.1-mini-${subscriptionToken}-${location}-glbl'
@@ -609,6 +634,11 @@ module gateway 'modules/gateway.bicep' = {
     customDomain: proxyCustomDomain
     managedCertificateName: proxyManagedCertName
     containerEnvName: platform.outputs.containerEnvName
+    // Speech Voice Live reuses the existing eastus2 AIServices account computed
+    // above; no new AIServices account is provisioned for this capability.
+    speechVoiceLiveAccountName: speechVoiceLiveAccountName
+    speechVoiceLiveAccountEndpoint: speechVoiceLiveAccountEndpoint
+    speechVoiceLiveManagedIdentityAudience: speechVoiceLiveManagedIdentityAudience
   }
 }
 
@@ -727,6 +757,15 @@ module api 'modules/api.bicep' = {
     realtimeEnabled: voiceLiveEnabled
     realtimeAllowedOrigins: realtimeAllowedOrigins
     realtimeToolsEnabled: voiceLiveToolsEnabled
+    // Speech Voice Live: a second, additive realtime provider. Default OFF; the
+    // base URL/key come only from the gateway module's dedicated APIM
+    // subscription (never a user-suppliable value), matching the realtime
+    // provider pattern above. Inert unless voiceLiveEnabled is also true.
+    speechVoiceLiveEnabled: speechVoiceLiveEnabled
+    voiceProviderAllowlist: voiceProviderAllowlist
+    voiceDefaultProvider: voiceDefaultProvider
+    speechVoiceLiveBaseUrl: gateway.outputs.speechVoiceLiveGatewayUrl
+    speechVoiceLiveGatewayApiKey: gateway.outputs.speechVoiceLiveGatewayKey
     // Auto-summarization (context auto-fold). Default OFF; when on, the api folds
     // older turns into the session's running summary once the transcript exceeds
     // the model-derived threshold. No additional infra is required.

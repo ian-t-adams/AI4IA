@@ -1,0 +1,154 @@
+{
+  "$schema": "./voice-providers.schema.json",
+  "_comment": "Authoritative voice provider/capability catalog for AI4IA. scripts/gen-voice-provider-catalog.py projects this into packaged API JSON + a typed web TypeScript module. Keep the provider IDs stable (`azure_openai`, `speech_voice_live`), keep Azure OpenAI deployment selection sourced from infra/models.json, and keep the Speech provider fixed to managed Voice Live with only curated azure-standard built-in voices and no custom endpoint/lexicon/personal-voice values.",
+  "defaultProviderId": "azure_openai",
+  "providers": [
+    {
+      "id": "azure_openai",
+      "displayName": "Azure OpenAI Realtime",
+      "displayLabel": "Azure OpenAI",
+      "description": "Deployment-catalog realtime voice provider backed by infra/models.json realtime deployments.",
+      "transport": "websocket",
+      "selectionMode": "deployment_catalog",
+      "endpointPath": "/openai/realtime",
+      "modelCatalogRef": {
+        "sourceJson": "infra/models.json",
+        "filter": {
+          "category": "realtime"
+        },
+        "defaultModelId": "gpt-realtime"
+      },
+      "sessionDefaults": {
+        "voice": "alloy",
+        "inputTranscription": "whisper-1",
+        "turnDetection": "server_vad",
+        "interruptResponse": true,
+        "autoTruncate": false
+      },
+      "capabilities": {
+        "voices": {
+          "kind": "openai-realtime",
+          "default": "alloy",
+          "options": [
+            "alloy",
+            "ash",
+            "ballad",
+            "coral",
+            "echo",
+            "sage",
+            "shimmer",
+            "verse",
+            "marin",
+            "cedar"
+          ]
+        },
+        "inputTranscription": {
+          "provider": "openai",
+          "default": "whisper-1",
+          "options": [
+            "whisper-1"
+          ]
+        },
+        "turnDetection": {
+          "default": "server_vad",
+          "options": [
+            "server_vad",
+            "semantic_vad"
+          ]
+        },
+        "interruption": {
+          "interruptResponse": true,
+          "autoTruncate": false
+        },
+        "customVoice": {
+          "enabled": false,
+          "allowEndpointIds": false,
+          "allowLexicons": false,
+          "allowPersonalVoice": false
+        }
+      }
+    },
+    {
+      "id": "speech_voice_live",
+      "displayName": "Azure Speech Voice Live",
+      "displayLabel": "Azure Speech",
+      "description": "Fixed managed Voice Live provider backed by Azure Speech in Foundry Tools.",
+      "transport": "websocket",
+      "selectionMode": "fixed_managed_model",
+      "endpointPath": "/voice-live/realtime",
+      "managedModel": {
+        "modelId": "gpt-realtime",
+        "apiVersion": "2026-04-10",
+        "initialRegion": "eastus2",
+        "audioFormat": "pcm16",
+        "sampleRateHz": 24000
+      },
+      "sessionDefaults": {
+        "voice": "en-US-Ava:DragonHDLatestNeural",
+        "inputTranscription": "azure-speech",
+        "turnDetection": "azure_semantic_vad",
+        "locale": "en-US",
+        "noiseSuppression": "azure_deep_noise_suppression",
+        "echoCancellation": "server_echo_cancellation",
+        "interruptResponse": true,
+        "autoTruncate": false
+      },
+      "capabilities": {
+        "voices": {
+          "kind": "azure-standard",
+          "default": "en-US-Ava:DragonHDLatestNeural",
+          "options": [
+            "en-US-Ava:DragonHDLatestNeural",
+            "en-US-AvaNeural",
+            "en-US-AndrewNeural",
+            "en-US-Brian:DragonHDLatestNeural",
+            "en-US-Emma:DragonHDLatestNeural",
+            "en-US-Jenny:DragonHDLatestNeural"
+          ]
+        },
+        "inputTranscription": {
+          "provider": "azure-speech",
+          "default": "azure-speech",
+          "options": [
+            "azure-speech"
+          ]
+        },
+        "turnDetection": {
+          "default": "azure_semantic_vad",
+          "options": [
+            "azure_semantic_vad",
+            "azure_semantic_vad_multilingual"
+          ]
+        },
+        "noiseSuppression": {
+          "default": "azure_deep_noise_suppression",
+          "options": [
+            "azure_deep_noise_suppression"
+          ]
+        },
+        "echoCancellation": {
+          "default": "server_echo_cancellation",
+          "options": [
+            "server_echo_cancellation"
+          ]
+        },
+        "interruption": {
+          "interruptResponse": true,
+          "autoTruncate": false
+        },
+        "locale": {
+          "default": "en-US",
+          "options": [
+            "en-US"
+          ]
+        },
+        "customVoice": {
+          "enabled": false,
+          "allowEndpointIds": false,
+          "allowLexicons": false,
+          "allowPersonalVoice": false
+        }
+      }
+    }
+  ]
+}

@@ -95,6 +95,22 @@ jobs:
       AI4IA_ENTRA_WEB_CLIENT_ID: ${{ vars.AI4IA_ENTRA_WEB_CLIENT_ID }}
       AI4IA_ENTRA_API_SCOPE: ${{ vars.AI4IA_ENTRA_API_SCOPE }}
       AI4IA_ADMIN_SUBJECTS: ${{ vars.AI4IA_ADMIN_SUBJECTS }}
+      # Speech Voice Live is a second, additive realtime provider fronted by the
+      # SAME shared active APIM (a dedicated /speech/voice-live/realtime
+      # WebSocket API + distinct subscription key; see infra/modules/gateway.bicep).
+      # Default OFF: without AI4IA_SPEECH_VOICE_LIVE_ENABLED=true the provider
+      # never enters the allowlist and the relay never selects it, so the
+      # default Azure OpenAI Realtime path is unchanged. Enabling this in
+      # production additionally remains gated on the pending live-validation
+      # confirmation recorded in .azure/plan.md (managed-identity audience +
+      # account posture) -- do not set this true before that gate closes. The
+      # base URL/gateway key are NOT set here; they come from gateway.bicep's
+      # dedicated APIM subscription output, matching the realtime provider
+      # pattern (never a repo variable/secret).
+      AI4IA_SPEECH_VOICE_LIVE_ENABLED: ${{ vars.AI4IA_SPEECH_VOICE_LIVE_ENABLED || 'false' }}
+      AI4IA_VOICE_PROVIDER_ALLOWLIST: ${{ vars.AI4IA_VOICE_PROVIDER_ALLOWLIST || 'azure_openai' }}
+      AI4IA_VOICE_DEFAULT_PROVIDER: ${{ vars.AI4IA_VOICE_DEFAULT_PROVIDER || 'azure_openai' }}
+      AI4IA_SPEECH_VOICE_LIVE_MI_AUDIENCE: ${{ vars.AI4IA_SPEECH_VOICE_LIVE_MI_AUDIENCE }}
       # Budget start date pin. Empty -> bicep uses the first of the current month
       # (drifts, so the first deploy of each new month fails on the immutable
       # budget start date). Set this repo variable to a fixed yyyy-MM-01 to keep
@@ -136,6 +152,7 @@ jobs:
         run: |
           python scripts/gen-model-catalog.py --check
           python scripts/gen-mcp-catalog.py --check
+          python scripts/gen-voice-provider-catalog.py --check
           python scripts/gen-gateway-policy.py --check
           python scripts/validate-feature-prereqs.py
 

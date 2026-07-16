@@ -44,6 +44,12 @@ PRIORITY_OUTPUT_PATHS = tuple(
     for fragment_id in PRIORITY_FRAGMENT_IDS
 )
 REALTIME_OUTPUT_PATH = ROOT / "infra" / "policies" / "realtime-routing.xml"
+# Hand-authored (not catalog-generated): Speech Voice Live is a single fixed
+# model/api-version/backend, so there is no per-deployment enumeration to
+# generate. Still statically validated on every run (see
+# validate_speech_voice_live_policy) so drift is caught the same way as the
+# generated realtime policy.
+SPEECH_VOICE_LIVE_POLICY_PATH = ROOT / "infra" / "policies" / "speech-voice-live.xml"
 CATALOG_MARKER = "__AI4IA_BACKEND_CATALOG_MERGE__"
 ATTEMPTS_MARKER = "__AI4IA_MAX_IMMEDIATE_ATTEMPTS__"
 # APIM rejects a single decoded policy expression at the 32 KiB boundary.
@@ -740,6 +746,85 @@ def validate_realtime_policy(policy: str, source: str) -> None:
             raise ValueError(f"{source}: realtime backend must use the WSS named value and exact /openai/realtime path")
 
 
+def validate_speech_voice_live_policy(policy: str, source: str) -> None:
+    """Statically pin the Speech Voice Live onHandshake policy to the approved,
+    additive, isolated topology: only WebSocket-handshake-supported elements, a
+    single fixed backend/model/api-version, managed-identity backend auth via a
+    named value, and no reference to any other host, product, or API."""
+    root = ElementTree.fromstring(policy)
+    allowed = {
+        "policies", "inbound", "backend", "outbound", "on-error", "base",
+        "set-backend-service", "set-query-parameter", "value", "set-header",
+        "authentication-managed-identity", "return-response", "set-status",
+    }
+    unsupported = {element.tag for element in root.iter() if element.tag not in allowed}
+    if unsupported:
+        raise ValueError(f"{source}: unsupported WebSocket handshake policy element(s): {sorted(unsupported)}")
+    if root.findall(".//set-body"):
+        raise ValueError(f"{source}: set-body is unsupported for WebSocket onHandshake")
+    if root.findall(".//validate-parameters"):
+        raise ValueError(f"{source}: validate-parameters is unsupported for WebSocket onHandshake")
+    if root.findall(".//choose"):
+        raise ValueError(f"{source}: this policy must be a single fixed route, not a choose/otherwise fallback")
+
+    backends = root.findall(".//set-backend-service")
+    if len(backends) != 1:
+        raise ValueError(f"{source}: expected exactly one set-backend-service")
+    backend_url = backends[0].attrib.get("base-url", "")
+    if backend_url != "{{speech-voice-live-wss-endpoint}}/voice-live/realtime":
+        raise ValueError(
+            f"{source}: backend must be the named-value WSS endpoint plus the exact "
+            "/voice-live/realtime path, and nothing else"
+        )
+
+    fixed_params = {
+        query_param.attrib.get("name"): (query_param.findtext("value") or "").strip()
+        for query_param in root.findall(".//set-query-parameter")
+        if query_param.attrib.get("exists-action") == "override"
+    }
+    if fixed_params.get("model") != "gpt-realtime":
+        raise ValueError(f"{source}: model query parameter must be fixed to gpt-realtime")
+    if fixed_params.get("api-version") != "2026-04-10":
+        raise ValueError(f"{source}: api-version query parameter must be fixed to 2026-04-10")
+    for query_param in root.findall(".//set-query-parameter"):
+        if query_param.attrib.get("exists-action") not in {"override", "delete"}:
+            raise ValueError(
+                f"{source}: set-query-parameter must override (fix) or delete a value, "
+                "never append/skip a caller-controlled one"
+            )
+
+    identities = root.findall(".//authentication-managed-identity")
+    if len(identities) != 1:
+        raise ValueError(f"{source}: expected exactly one authentication-managed-identity policy")
+    if identities[0].attrib.get("resource") != "{{speech-voice-live-mi-audience}}":
+        raise ValueError(
+            f"{source}: managed-identity resource must be the named-value audience, "
+            "never a literal or caller-influenced host"
+        )
+
+    strip_headers = {
+        header.attrib.get("name")
+        for header in root.findall(".//set-header")
+        if header.attrib.get("exists-action") == "delete"
+    }
+    required_stripped = {
+        "Ocp-Apim-Subscription-Key", "Authorization",
+        "X-AI4IA-App-Id", "X-AI4IA-User-Id", "X-UserProfile",
+    }
+    missing_strips = required_stripped - strip_headers
+    if missing_strips:
+        raise ValueError(f"{source}: must strip caller/internal headers before the backend: {sorted(missing_strips)}")
+
+    # No fallback to Azure OpenAI, another host, the proxy/MCP APIs, or the
+    # Consumption rollback plane. This deliberately scans the whole document
+    # (including comments) so an accidental reference anywhere is caught.
+    lowered = policy.lower()
+    forbidden_tokens = ("openai", "cognitiveservices.azure.com", "consumption", "/mcp", "proxy")
+    hits = [token for token in forbidden_tokens if token in lowered]
+    if hits:
+        raise ValueError(f"{source}: must not reference {hits} (no fallback path is permitted)")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -772,6 +857,13 @@ def main() -> int:
         for path, policy in policies[len(fragments) :]:
             validate_policy_expressions(policy, str(path.relative_to(ROOT)))
         validate_realtime_policy(realtime_generated, str(REALTIME_OUTPUT_PATH.relative_to(ROOT)))
+        speech_voice_live_policy = SPEECH_VOICE_LIVE_POLICY_PATH.read_text(encoding="utf-8")
+        validate_policy_expressions(
+            speech_voice_live_policy, str(SPEECH_VOICE_LIVE_POLICY_PATH.relative_to(ROOT))
+        )
+        validate_speech_voice_live_policy(
+            speech_voice_live_policy, str(SPEECH_VOICE_LIVE_POLICY_PATH.relative_to(ROOT))
+        )
         if len(priority_generated.encode("utf-8")) > APIM_API_POLICY_MAX_BYTES:
             raise ValueError(
                 f"{PRIORITY_OUTPUT_PATH.relative_to(ROOT)} exceeds "

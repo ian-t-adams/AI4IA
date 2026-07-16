@@ -17,6 +17,12 @@ from urllib.parse import urlparse
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .voice_provider_catalog import (
+    EXPECTED_PROVIDER_IDS,
+    SPEECH_VOICE_LIVE_PROVIDER_ID,
+    load_voice_provider_catalog,
+)
+
 if TYPE_CHECKING:
     from .http_retry import RetryPolicy
 
@@ -162,6 +168,13 @@ class Settings(BaseSettings):
     # Empty reflects (allows any) ONLY in the local env; in any deployed env an
     # empty allowlist rejects every Origin (fail-closed).
     realtime_allowed_origins: str | None = None
+    # Voice provider rollout. The browser may only select an allowlisted provider;
+    # the API validates the allowlist and default provider at startup.
+    speech_voice_live_enabled: bool = False
+    voice_provider_allowlist: str = "azure_openai"
+    voice_default_provider: str = "azure_openai"
+    speech_voice_live_base_url: str = ""
+    speech_voice_live_gateway_api_key: str = ""
     # Server-side governed tool calling inside a live session. Default OFF and, like
     # every realtime knob, inert unless ``realtime_enabled`` is also true — so the
     # app's default behavior stays byte-for-byte unchanged. When BOTH are on, the
@@ -648,6 +661,22 @@ class Settings(BaseSettings):
         raw = self.realtime_allowed_origins or ""
         return [o.strip() for o in raw.split(",") if o.strip()]
 
+    @property
+    def voice_provider_allowlist_list(self) -> list[str]:
+        raw = self.voice_provider_allowlist or ""
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in (part.strip().lower() for part in raw.split(",")):
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            out.append(item)
+        return out
+
+    @property
+    def voice_default_provider_id(self) -> str:
+        return (self.voice_default_provider or "").strip().lower()
+
     def cu_analyzer_for_modality(self, modality: str) -> str:
         """Concrete prebuilt CU analyzer id for a modality (the ingest default)."""
         return {
@@ -727,6 +756,69 @@ class Settings(BaseSettings):
                 raise RuntimeError(
                     "Voice Live requires a WebSocket-capable shared active APIM /openai "
                     "gateway URL (https:// or wss://)."
+                )
+        voice_catalog = load_voice_provider_catalog()
+        if tuple(voice_catalog.providerIds) != EXPECTED_PROVIDER_IDS:
+            raise RuntimeError(
+                "Voice provider catalog must contain azure_openai and speech_voice_live."
+            )
+        allowlist = self.voice_provider_allowlist_list
+        if not allowlist:
+            raise RuntimeError(
+                "AI4IA_VOICE_PROVIDER_ALLOWLIST must include at least azure_openai."
+            )
+        unknown_providers = [provider_id for provider_id in allowlist if not voice_catalog.get(provider_id)]
+        if unknown_providers:
+            raise RuntimeError(
+                "AI4IA_VOICE_PROVIDER_ALLOWLIST contains unknown provider id(s): "
+                f"{', '.join(unknown_providers)}."
+            )
+        if self.voice_default_provider_id not in allowlist:
+            raise RuntimeError(
+                "AI4IA_VOICE_DEFAULT_PROVIDER must be a member of AI4IA_VOICE_PROVIDER_ALLOWLIST."
+            )
+        if SPEECH_VOICE_LIVE_PROVIDER_ID in allowlist and not self.speech_voice_live_enabled:
+            raise RuntimeError(
+                "speech_voice_live requires AI4IA_SPEECH_VOICE_LIVE_ENABLED=true."
+            )
+        if self.speech_voice_live_enabled and not self.realtime_enabled:
+            raise RuntimeError(
+                "Speech Voice Live requires AI4IA_REALTIME_ENABLED=true."
+            )
+        if self.speech_voice_live_enabled and SPEECH_VOICE_LIVE_PROVIDER_ID not in allowlist:
+            raise RuntimeError(
+                "Speech Voice Live requires AI4IA_VOICE_PROVIDER_ALLOWLIST to include "
+                "speech_voice_live."
+            )
+        if self.speech_voice_live_enabled:
+            if not self.speech_voice_live_base_url or not self.speech_voice_live_gateway_api_key:
+                raise RuntimeError(
+                    "Speech Voice Live requires AI4IA_SPEECH_VOICE_LIVE_BASE_URL and "
+                    "AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY."
+                )
+            speech_url = urlparse(self.speech_voice_live_base_url)
+            host = (speech_url.netloc or "").lower()
+            if (
+                speech_url.scheme not in {"https", "wss"}
+                or not speech_url.netloc
+                or speech_url.path.rstrip("/") != "/speech/voice-live"
+                or "services.ai.azure.com" in host
+                or "cognitiveservices.azure.com" in host
+            ):
+                raise RuntimeError(
+                    "Speech Voice Live requires an APIM-style HTTPS/WSS base URL at "
+                    "/speech/voice-live."
+                )
+        if self.speech_voice_live_gateway_api_key:
+            if self.speech_voice_live_gateway_api_key == self.realtime_gateway_api_key:
+                raise RuntimeError(
+                    "Speech Voice Live requires a distinct gateway key; do not reuse "
+                    "AI4IA_REALTIME_GATEWAY_API_KEY."
+                )
+            if self.speech_voice_live_gateway_api_key == self.model_gateway_api_key:
+                raise RuntimeError(
+                    "Speech Voice Live requires a distinct gateway key; do not reuse "
+                    "AI4IA_MODEL_GATEWAY_API_KEY."
                 )
         if self.realtime_enabled and self.env != Environment.local and (
             not self.realtime_allowed_origin_list

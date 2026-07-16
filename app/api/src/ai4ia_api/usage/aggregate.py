@@ -2,7 +2,7 @@
 
 The per-user :mod:`~ai4ia_api.usage.models` summary answers "what did *I* use".
 This module answers the admin's questions — "how many users, tokens, which
-models, how many agents" — by aggregating the whole ledger over a bounded window.
+models/providers, how many agents" — by aggregating the whole ledger over a bounded window.
 
 Design:
 - **Bounded by construction.** Every read goes through ``query_records`` (a
@@ -74,6 +74,7 @@ class AdminUsageSummary(AdminUsageWindow):
 
     distinctModels: int = 0
     distinctAgents: int = 0
+    distinctProviders: int = 0
 
     @property
     def totalCostUsd(self) -> float:
@@ -158,12 +159,13 @@ class AdminUserAgentsReport(AdminUsageWindow):
 class AdminDistributionsReport(AdminUsageWindow):
     """Distributions of the windowed ledger across categorical dimensions.
 
-    All four rollups come from a single bounded scan (one RU-bounded read, four
-    panels) — mirroring how ``aggregate_summary`` derives many fields from one pass.
+    All rollups come from a single bounded scan (one RU-bounded read, one report)
+    — mirroring how ``aggregate_summary`` derives many fields from one pass.
     """
 
     byRegion: list[DimensionBucket] = Field(default_factory=list)
     byDataZone: list[DimensionBucket] = Field(default_factory=list)
+    byProvider: list[DimensionBucket] = Field(default_factory=list)
     byDeployment: list[DimensionBucket] = Field(default_factory=list)
     byStatus: list[DimensionBucket] = Field(default_factory=list)
 
@@ -177,9 +179,11 @@ def aggregate_summary(records: list[UsageRecord]) -> AdminUsageSummary:
     users: set[str] = set()
     models: set[str] = set()
     agents: set[str] = set()
+    providers: set[str] = set()
     for rec in records:
         users.add(rec.userId)
         models.add(rec.model)
+        providers.add(rec.provider)
         if rec.agent:
             agents.add(rec.agent)
         summary.totalRequests += 1
@@ -202,6 +206,7 @@ def aggregate_summary(records: list[UsageRecord]) -> AdminUsageSummary:
     summary.activeUsers = len(users)
     summary.distinctModels = len(models)
     summary.distinctAgents = len(agents)
+    summary.distinctProviders = len(providers)
     if summary.totalRequests:
         summary.errorRate = round(
             summary.erroredRequests / summary.totalRequests, 4
@@ -242,8 +247,6 @@ def aggregate_by_day(records: list[UsageRecord]) -> list[DayUsageBucket]:
         if rec.costKnown and rec.estCostMicroUsd is not None:
             bucket.costMicroUsd += rec.estCostMicroUsd
     return sorted(by_day.values(), key=lambda b: b.day)
-
-
 def aggregate_by_user(records: list[UsageRecord]) -> list[UserUsageBucket]:
     by_user: dict[str, UserUsageBucket] = {}
     for rec in records:
@@ -362,6 +365,10 @@ def aggregate_by_data_zone(records: list[UsageRecord]) -> list[DimensionBucket]:
     return aggregate_dimension(records, lambda r: r.dataZone)
 
 
+def aggregate_by_provider(records: list[UsageRecord]) -> list[DimensionBucket]:
+    return aggregate_dimension(records, lambda r: r.provider)
+
+
 def aggregate_by_deployment(records: list[UsageRecord]) -> list[DimensionBucket]:
     return aggregate_dimension(records, lambda r: r.deployment)
 
@@ -468,6 +475,7 @@ class AdminUsageService:
         return AdminDistributionsReport(
             byRegion=aggregate_by_region(records),
             byDataZone=aggregate_by_data_zone(records),
+            byProvider=aggregate_by_provider(records),
             byDeployment=aggregate_by_deployment(records),
             byStatus=aggregate_by_status(records),
             **self._meta(days, since, now, records, truncated),

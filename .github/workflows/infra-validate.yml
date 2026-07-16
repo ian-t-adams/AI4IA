@@ -7,6 +7,8 @@ on:
       - "foundry/**"
       - "scripts/gen-gateway-policy.py"
       - "scripts/tests/test_gateway_policy.py"
+      - "scripts/gen-voice-provider-catalog.py"
+      - "scripts/tests/test_voice_provider_catalog.py"
       - ".github/workflows/infra-validate.yml"
   push:
     branches: [main]
@@ -15,6 +17,8 @@ on:
       - "foundry/**"
       - "scripts/gen-gateway-policy.py"
       - "scripts/tests/test_gateway_policy.py"
+      - "scripts/gen-voice-provider-catalog.py"
+      - "scripts/tests/test_voice_provider_catalog.py"
 
 permissions:
   contents: read
@@ -45,6 +49,9 @@ jobs:
       - name: Validate mcp-servers.json against schema
         run: check-jsonschema --schemafile infra/mcp-servers.schema.json infra/mcp-servers.json
 
+      - name: Validate voice-providers.json against schema
+        run: check-jsonschema --schemafile infra/voice-providers.schema.json infra/voice-providers.json
+
       - name: Validate Foundry toolbox manifest against schema
         run: |
           check-jsonschema --schemafile foundry/toolbox.manifest.schema.json foundry/toolbox.manifest.json
@@ -62,6 +69,11 @@ jobs:
         run: |
           python scripts/gen-gateway-policy.py --check
           python -m unittest scripts.tests.test_gateway_policy
+
+      - name: Validate generated voice provider catalog
+        run: |
+          python scripts/gen-voice-provider-catalog.py --check
+          python -m unittest scripts.tests.test_voice_provider_catalog
 
       - name: Validate deployment parameters
         run: python scripts/validate-feature-prereqs.py

@@ -13,10 +13,13 @@ import type { DisplayMessage } from "./MessageList";
 import type { AgentSummary, VoiceTurnInput } from "@/lib/types";
 import {
   DEFAULT_VOICE,
+  DEFAULT_VOICE_PROVIDER,
   DEFAULT_VOICE_SETTINGS,
+  DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   useVoiceLive,
   type LiveTurn,
-  type RealtimeVoice,
+  type SpeechVoiceLiveSettings,
+  type VoiceProviderId,
   type VoiceLiveConfig,
   type VoiceSeedTurn,
   type VoiceSessionSettings,
@@ -32,15 +35,18 @@ export type InlineVoicePhase =
 
 interface InlineVoiceLiveOptions {
   config: VoiceLiveConfig;
+  providerId?: VoiceProviderId;
   model: string | null;
+  region?: string | null;
   agent: string | null;
   agents: AgentSummary[];
   history: VoiceSeedTurn[];
   // Voice/session settings + the governed-tools opt-in, threaded straight into
   // useVoiceLive. Optional so existing callers keep today's behavior (default
   // voice/settings, tools off) until they opt into the settings panel.
-  voice?: RealtimeVoice;
+  voice?: string;
   settings?: VoiceSessionSettings;
+  speechSettings?: SpeechVoiceLiveSettings;
   tools?: boolean;
   // Existing chat at the moment Voice Live starts. Binding this without
   // calling ensureSession avoids empty-chat creation while ensuring a later
@@ -143,12 +149,15 @@ function labelFor(phase: InlineVoicePhase): string {
 
 export function useInlineVoiceLive({
   config,
+  providerId = DEFAULT_VOICE_PROVIDER,
   model,
+  region = null,
   agent,
   agents,
   history,
   voice = DEFAULT_VOICE,
   settings = DEFAULT_VOICE_SETTINGS,
+  speechSettings = DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   tools = false,
   activeSessionId = null,
   ensureSession,
@@ -163,12 +172,15 @@ export function useInlineVoiceLive({
 
   const live = useVoiceLive(
     config,
+    providerId,
     model,
+    region,
     voice,
     setConnectionError,
     agent,
     history,
     settings,
+    speechSettings,
     tools,
   );
   const startLive = live.start;
@@ -340,7 +352,7 @@ export function useInlineVoiceLive({
 
   return {
     messages,
-    enabled: config.enabled && model !== null,
+    enabled: config.enabled && (providerId === "speech_voice_live" || model !== null),
     supported: live.supported,
     active: live.active,
     saving,

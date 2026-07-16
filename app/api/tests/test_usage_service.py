@@ -5,7 +5,7 @@ import pytest
 
 from ai4ia_api.catalog import DeploymentOption
 from ai4ia_api.usage.memory_repo import InMemoryUsageRepository
-from ai4ia_api.usage.models import TokenUsage
+from ai4ia_api.usage.models import TokenUsage, UsageTarget
 from ai4ia_api.usage.pricing import PriceRate, PricingBook
 from ai4ia_api.usage.service import MAX_SUMMARY_DAYS, UsageService
 
@@ -49,6 +49,8 @@ def test_build_record_billable_complete_known_with_price():
     assert rec.costKnown is True
     assert rec.estCostMicroUsd == 6000
     assert rec.priceVersion == "p-1"
+    assert rec.provider == "azure_openai"
+    assert rec.target == "gpt-x-dep"
     assert rec.region == "eastus2"
 
 
@@ -85,6 +87,31 @@ def test_build_record_incomplete_usage_not_billable():
     assert rec.usageComplete is False
     assert rec.billable is False  # not every call reported -> not billable
     assert rec.costKnown is False
+
+
+def test_build_record_managed_target_uses_truthful_provider_and_null_deployment():
+    target = UsageTarget.managed_service(
+        provider="speech_voice_live", target="managed_voice_live", region="eastus2"
+    )
+    rec = _service().build_record(
+        user_id="u1",
+        session_id="s1",
+        model_id="gpt-realtime",
+        target=target,
+        usage=TokenUsage(known=False, complete=False, calls=1),
+        status="complete",
+        agent="voice",
+        correlation_id=None,
+    )
+    assert rec.provider == "speech_voice_live"
+    assert rec.deployment is None
+    assert rec.target == "managed_voice_live"
+    assert rec.region == "eastus2"
+    assert rec.usageKnown is False
+    assert rec.usageComplete is False
+    assert rec.billable is False
+    assert rec.costKnown is False
+    assert rec.estCostMicroUsd is None
 
 
 def test_build_record_cancelled_is_not_billable_even_if_known():
@@ -129,6 +156,9 @@ async def test_record_completion_persists_and_summarizes():
         deployment=_deployment(),
         usage=_known_usage(),
     )
+    stored = repo._by_user["u1"][0]
+    assert stored.provider == "azure_openai"
+    assert stored.target == "gpt-x-dep"
     summary = await svc.summarize("u1")
     assert summary.totalRequests == 1
     assert summary.billableRequests == 1
@@ -170,6 +200,25 @@ async def test_record_completion_never_raises_on_repo_failure():
         deployment=_deployment(),
         usage=_known_usage(),
     )
+
+
+async def test_record_completion_supports_managed_target():
+    repo = InMemoryUsageRepository()
+    svc = _service(repo=repo)
+    await svc.record_completion(
+        user_id="u1",
+        session_id="s1",
+        model_id="gpt-realtime",
+        target=UsageTarget.managed_service(
+            provider="speech_voice_live", target="managed_voice_live", region="eastus2"
+        ),
+        usage=TokenUsage(known=False, complete=False, calls=1),
+    )
+    stored = repo._by_user["u1"][0]
+    assert stored.provider == "speech_voice_live"
+    assert stored.deployment is None
+    assert stored.target == "managed_voice_live"
+    assert stored.billable is False
 
 
 @pytest.mark.parametrize("days,expected", [(0, 1), (1, 1), (45, 45), (1000, MAX_SUMMARY_DAYS)])

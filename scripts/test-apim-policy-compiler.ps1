@@ -29,6 +29,21 @@ $apiPolicyUrl = (
     "$managementBase/apis/$apiName/policies/policy" +
     "?api-version=$apiVersion"
 )
+# Additive coverage for the Speech Voice Live onHandshake policy
+# (infra/policies/speech-voice-live.xml). This is a second, independent
+# temporary WebSocket API -- distinct name/path from the HTTP diagnostic API
+# above -- because onHandshake policies can only be attached to a WebSocket
+# API's auto-created onHandshake operation, not an HTTP API's API-scoped
+# policy. It does not touch the production speech-voice-live-realtime API,
+# its subscription, or any named value.
+$speechWsApiName = "ai4ia-compiler-ws-$suffix"
+$speechWsApiPath = $speechWsApiName
+$speechWsApiUrl = "$managementBase/apis/$speechWsApiName`?api-version=$apiVersion"
+$speechWsHandshakePolicyUrl = (
+    "$managementBase/apis/$speechWsApiName/operations/onHandshake/policies/policy" +
+    "?api-version=$apiVersion"
+)
+$speechVoiceLivePolicyPath = 'infra/policies/speech-voice-live.xml'
 $fragmentDefinitions = @(
     @{
         ProductionId = 'endpoint_selection_catalog_0_32'
@@ -210,6 +225,9 @@ function Wait-ArmState {
 Assert-DiagnosticName `
     -Name $apiName `
     -Pattern '^ai4ia-compiler-[0-9a-f]{12}$'
+Assert-DiagnosticName `
+    -Name $speechWsApiName `
+    -Pattern '^ai4ia-compiler-ws-[0-9a-f]{12}$'
 foreach ($definition in $fragmentDefinitions) {
     Assert-DiagnosticName `
         -Name $definition.TemporaryId `
@@ -348,8 +366,83 @@ try {
     }
 
     Write-Information 'LIVE_APIM_COMPILER=PASS' -InformationAction Continue
+
+    # Speech Voice Live onHandshake policy coverage (additive; independent of
+    # the fragment-based include chain above). onHandshake is APIM's immutable,
+    # auto-created operation on a WebSocket API, so a distinct temporary
+    # WebSocket API is required to exercise it -- it cannot be attached to the
+    # HTTP diagnostic API created above.
+    $speechWsApi = Invoke-ArmRequest `
+        -Method Put `
+        -Url $speechWsApiUrl `
+        -Headers $headers `
+        -Payload @{
+            properties = @{
+                displayName = "AI4IA Speech Voice Live policy compiler diagnostic $suffix"
+                path = $speechWsApiPath
+                protocols = @('wss')
+                serviceUrl = 'wss://example.com'
+                subscriptionRequired = $false
+                type = 'websocket'
+            }
+        }
+    if (-not $speechWsApi.Success) {
+        throw "Temporary WebSocket API creation failed: $($speechWsApi.Body)"
+    }
+    Wait-ArmState -Url $speechWsApiUrl -Headers $headers -State Present
+    Write-Information "Temporary WebSocket API ready: $speechWsApiName" -InformationAction Continue
+
+    $speechVoiceLivePolicyFullPath = Join-Path $repoRoot $speechVoiceLivePolicyPath
+    $speechVoiceLivePolicyXml = Get-Content -LiteralPath $speechVoiceLivePolicyFullPath -Raw
+    $speechWsPolicy = Invoke-ArmRequest `
+        -Method Put `
+        -Url $speechWsHandshakePolicyUrl `
+        -Headers $headers `
+        -Payload @{
+            properties = @{
+                format = 'rawxml'
+                value = $speechVoiceLivePolicyXml
+            }
+        }
+    if (-not $speechWsPolicy.Success) {
+        throw "Speech Voice Live onHandshake policy failed compilation: $($speechWsPolicy.Body)"
+    }
+    $speechWsPolicyOperationUrl = $speechWsPolicy.Headers['Azure-AsyncOperation'] |
+        Select-Object -First 1
+    if (-not [string]::IsNullOrWhiteSpace($speechWsPolicyOperationUrl)) {
+        $speechWsPolicyState = Wait-ArmOperation `
+            -OperationUrl $speechWsPolicyOperationUrl `
+            -Headers $headers
+        if ($speechWsPolicyState.status -ne 'Succeeded') {
+            throw (
+                'Speech Voice Live onHandshake policy failed compilation: ' +
+                ($speechWsPolicyState.error | ConvertTo-Json -Depth 8 -Compress)
+            )
+        }
+    }
+
+    Write-Information 'LIVE_APIM_SPEECH_VOICE_LIVE_COMPILER=PASS' -InformationAction Continue
 }
 finally {
+    $speechWsApiDelete = Invoke-ArmRequest `
+        -Method Delete `
+        -Url $speechWsApiUrl `
+        -Headers $deleteHeaders
+    if ($speechWsApiDelete.Status -notin @(200, 202, 204, 404)) {
+        $cleanupErrors.Add(
+            "WebSocket API delete failed for $speechWsApiName (status $($speechWsApiDelete.Status))."
+        )
+    }
+    try {
+        Wait-ArmState -Url $speechWsApiUrl -Headers $headers -State Absent
+        Write-Information (
+            "CLEANUP_VERIFIED_ABSENT_API=$speechWsApiName"
+        ) -InformationAction Continue
+    }
+    catch {
+        $cleanupErrors.Add($_.Exception.Message)
+    }
+
     $apiDelete = Invoke-ArmRequest `
         -Method Delete `
         -Url $apiUrl `

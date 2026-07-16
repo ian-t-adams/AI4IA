@@ -26,17 +26,54 @@ flowchart TB
   APIM --> MCPUp[Curated upstream MCP servers]
   API --> Proxy[SimpleL7Proxy<br/>HTTP/SSE queue + requeue]
   Proxy --> APIM
-  API -. Voice Live WS relay .-> APIM
+  API -. "azure_openai<br/>/openai/realtime key" .-> APIM
+  API -. "speech_voice_live<br/>/speech/voice-live/realtime key" .-> APIM
   APIM --> EUS2[Foundry East US 2]
   APIM --> SWC[Foundry Sweden Central]
   APIM --> WUS[Foundry West US]
+  APIM -.->|MI + fixed model/version| SpeechAcct[Existing AIServices account<br/>voice-live/realtime]
 ```
 
 Voice Live connects directly from the browser to the API because the Next.js HTTP
 proxy cannot proxy WebSockets. The API relay still enforces auth, Origin checks,
 entitlements, metering, deployment resolution, and optional governed tool calling.
-Its upstream WebSocket goes directly to the separately scoped APIM realtime API;
-SimpleL7Proxy is deliberately bypassed because it supports HTTP/SSE, not WebSockets.
+Its upstream WebSocket goes to one of two separately scoped APIM WebSocket APIs on
+the same shared active Basic v2 APIM, selected by the `provider` the browser sent:
+`azure_openai` (catalog deployment routing) or `speech_voice_live` (fixed managed
+model, second provider, default OFF). SimpleL7Proxy is deliberately bypassed for
+both because it supports HTTP/SSE, not WebSockets.
+
+### Voice providers
+
+AI4IA advertises two stable voice provider IDs — `azure_openai` and
+`speech_voice_live` — behind one `/api/voice/live` relay and one inline chat
+transcript:
+
+```mermaid
+flowchart LR
+  Browser["Browser inline voice<br/>24 kHz PCM16"] -->|"WSS /api/voice/live<br/>provider ID only"| API["FastAPI relay<br/>auth, origin, gates, entitlements,<br/>agents/tools, persistence, metering"]
+  API -->|"azure_openai<br/>scoped key"| AOAIAPI["APIM WebSocket API<br/>/openai/realtime"]
+  API -->|"speech_voice_live<br/>distinct scoped key"| SpeechAPI["APIM WebSocket API<br/>/speech/voice-live/realtime"]
+  AOAIAPI -->|"MI + deployment routing"| AOAI["Foundry Azure OpenAI Realtime"]
+  SpeechAPI -->|"MI + fixed gpt-realtime / 2026-04-10"| Speech["Existing AIServices account<br/>eastus2 · /voice-live/realtime"]
+```
+
+- `azure_openai` is the default-safe provider: it stays enabled and default unless
+  an operator deliberately reconfigures `AI4IA_VOICE_DEFAULT_PROVIDER`. It resolves
+  a realtime model/region from `infra/models.json` exactly as before.
+- `speech_voice_live` is an additive, default-off second provider. It is fixed to
+  the managed `gpt-realtime` model at API version `2026-04-10` against the initial
+  existing `eastus2` AIServices account, with only curated `azure-standard`
+  built-in voices/capabilities from the generated voice provider catalog — no
+  custom endpoint, lexicon, or personal voice is accepted.
+- Both providers share the same governed relay path (auth, Origin, feature and
+  entitlement checks, agents/tools, transcript persistence, provider-aware usage
+  metering, and cleanup) and the same inline transcript/session. A provider switch
+  applies only to the **next** connection; it never triggers a silent reconnect of
+  an active session.
+- Each provider holds a distinct APIM subscription key scoped to its own
+  WebSocket API, so neither key can invoke the other provider's API, the normal
+  model API, the MCP plane, or the proxy ingress product.
 
 ## Request lifecycle
 
@@ -81,9 +118,9 @@ sequenceDiagram
 ## Core principles
 
 1. **Gateway-first model calls.** Chat, agents, embeddings, image/video generation,
-   and REST speech route SimpleL7Proxy -> APIM. Realtime/Voice Live stays on the
-   governed FastAPI relay -> APIM path because the proxy is not a WebSocket
-   server. Non-chat Azure
+   and REST speech route SimpleL7Proxy -> APIM. Realtime/Voice Live (both
+   `azure_openai` and `speech_voice_live`) stays on the governed FastAPI relay ->
+   APIM path because the proxy is not a WebSocket server. Non-chat Azure
    service planes such as Content Understanding and Azure Monitor use their native
    endpoints with managed identity or configured service auth.
 2. **Catalog-driven deployments.** `infra/models.json` is the deployment source of
@@ -113,6 +150,10 @@ sequenceDiagram
   authenticate to the proxy for normal calls; the proxy strips it and injects a
   separate model-API subscription key. The realtime subscription cannot invoke
   the normal APIM model API.
+- `speech_voice_live` adds a second, independently scoped APIM subscription held
+  only by FastAPI, bound to the `/speech/voice-live/realtime` WebSocket API. That
+  key cannot invoke `/openai/realtime`, the normal model API, the MCP plane, or the
+  proxy ingress product, and the `/openai/realtime` key cannot invoke it either.
 - APIM performs bounded immediate attempts across compatible regional
   deployments. SimpleL7Proxy performs delayed requeue and owns queue TTL and
   per-replica circuit breaking. The synchronous queue is not durable or global.
@@ -180,10 +221,11 @@ flowchart LR
     Amw["Monitor workspace"]
   end
   WebCA --> ApiCA
-  ApiCA --> ProxyCA --> Apim --> AI
-  ApiCA -. "Voice Live WS relay" .-> Apim
+  ApiCA --> ProxyCA --> ApimMcp --> AI
+  ApiCA -. "azure_openai + speech_voice_live<br/>realtime WS (distinct keys)" .-> ApimMcp
   ApiCA --> ApimMcp --> AI
   ApimMcp -. inventory .-> Apic
+  ApimMcp -. "inactive rollback plane" .-> Apim
   ApiCA --> Data
   ApiCA --> Sec
   ApiCA --> Obs
@@ -197,6 +239,19 @@ current proxy/APIM transition uses two independently scoped APIM subscription ke
 one secret for proxy -> normal-model APIM and one realtime-only key that also
 authenticates FastAPI -> proxy. Both remain Container App secrets and are stripped
 before forwarding. The migration target is Entra workload authentication on both hops.
+`speech_voice_live` adds a third, distinct APIM subscription key (`ai4ia-api-speech-voice-live`)
+held only by FastAPI and scoped only to the Speech Voice Live WebSocket API.
+
+The shared active APIM's system-assigned managed identity gets the additional
+**Foundry User** role (formerly Azure AI User) on the single existing AIServices
+account Speech Voice Live is approved to reach, on top of the **Cognitive Services
+User** role every Foundry backend already grants it. Both roles are scoped only to
+that one account, never broadened to every regional Foundry backend. APIM
+authenticates to it using a managed-identity audience (`speechVoiceLiveManagedIdentityAudience`,
+default `https://ai.azure.com`) that is a deployment-only Bicep parameter, not a
+runtime setting the app or browser can influence; confirming that this specific
+account accepts that audience remains a pending live-validation gate tracked in
+the operator's local (gitignored) approval plan, not this repository's published docs.
 
 ```mermaid
 flowchart LR
@@ -214,6 +269,7 @@ flowchart LR
   idproxy -->|"Blob Data Contributor + Service Bus sender/receiver (optional async)"| Async["Async stores"]
   idapi -->|"AcrPull"| Acr
   apim["APIM (system MI)"] -->|"OpenAI User + Cognitive Services User"| Foundry["Foundry accounts"]
+  apim -->|"Cognitive Services User + Foundry User"| SpeechAcct["Selected AIServices account<br/>(Speech Voice Live)"]
 ```
 
 ## MCP tool planes
@@ -274,7 +330,13 @@ strategy uses:
 - The library UI does not yet expose custom analyzer authoring or first-class
   non-document modality uploads.
 - Memory lacks a global user-facing toggle and recalled-memory indicator.
+- `speech_voice_live` is implemented but disabled by default
+  (`speechVoiceLiveEnabled=false`) pending a separately approved live-validation
+  pass confirming the selected AIServices account's Cognitive Services User +
+  Foundry User RBAC and managed-identity audience, an APIM policy compiler run,
+  and a zero-delete production what-if. It must not be enabled before those
+  approvals close.
 
 ### APIM replacement cutover
 
-The active APIM is a deterministic Basic v2 service with system-assigned identity. It carries both catalog-routed HTTP/SSE and the WSS realtime onHandshake API from one gateway base with separately scoped keys. The prior Consumption APIM remains fully configured but receives no active traffic during a temporary stabilization window. This overlap is migration state, not permanent architecture; removing Consumption is a later destructive change with separate approval.
+The active APIM is a deterministic Basic v2 service with system-assigned identity. It carries both catalog-routed HTTP/SSE and the WSS realtime onHandshake API from one gateway base with separately scoped keys, including the additive `speech_voice_live` WebSocket API and its own distinct subscription. The prior Consumption APIM remains fully configured but receives no active traffic during a temporary stabilization window. This overlap is migration state, not permanent architecture; removing Consumption is a later destructive change with separate approval.

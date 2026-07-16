@@ -13,7 +13,7 @@ import pytest
 from ai4ia_api import logging_setup
 from ai4ia_api.catalog import DeploymentOption
 from ai4ia_api.usage.memory_repo import InMemoryUsageRepository
-from ai4ia_api.usage.models import TokenUsage
+from ai4ia_api.usage.models import TokenUsage, UsageTarget
 from ai4ia_api.usage.pricing import PriceRate, PricingBook
 from ai4ia_api.usage.service import UsageService
 
@@ -159,7 +159,10 @@ async def test_record_completion_emits_chat_completion_event(monkeypatch):
     assert len(captured) == 1
     name, attrs = captured[0]
     assert name == "chat_completion"
+    assert attrs["provider"] == "azure_openai"
     assert attrs["model"] == "gpt-x"
+    assert attrs["deployment"] == "gpt-x-dep"
+    assert attrs["target"] == "gpt-x-dep"
     assert attrs["agent"] == "research"
     assert attrs["promptTokens"] == 1000
     assert attrs["completionTokens"] == 500
@@ -168,6 +171,33 @@ async def test_record_completion_emits_chat_completion_event(monkeypatch):
     assert attrs["billable"] is True
     assert attrs["estCostUsd"] == pytest.approx(0.006)
     assert attrs["correlationId"] == "cid-9"
+
+
+async def test_record_completion_emits_provider_and_managed_target(monkeypatch):
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.usage.service.emit_custom_event",
+        lambda name, attrs: captured.append((name, attrs)),
+    )
+    svc = _service()
+    await svc.record_completion(
+        user_id="u1",
+        session_id="s1",
+        model_id="gpt-realtime",
+        target=UsageTarget.managed_service(
+            provider="speech_voice_live", target="managed_voice_live", region="eastus2"
+        ),
+        usage=TokenUsage(known=False, complete=False, calls=1),
+        correlation_id="cid-10",
+    )
+    assert len(captured) == 1
+    _, attrs = captured[0]
+    assert attrs["provider"] == "speech_voice_live"
+    assert attrs["deployment"] is None
+    assert attrs["target"] == "managed_voice_live"
+    assert attrs["billable"] is False
+    assert attrs["usageKnown"] is False
+    assert attrs["correlationId"] == "cid-10"
 
 
 async def test_record_completion_survives_event_emit_failure(monkeypatch):

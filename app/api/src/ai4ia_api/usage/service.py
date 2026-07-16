@@ -20,7 +20,14 @@ from datetime import datetime
 
 from ..catalog import DeploymentOption
 from ..logging_setup import emit_custom_event
-from .models import TokenUsage, UsageRecord, UsageStatus, UsageSummary, WindowTotals
+from .models import (
+    TokenUsage,
+    UsageRecord,
+    UsageStatus,
+    UsageSummary,
+    UsageTarget,
+    WindowTotals,
+)
 from .pricing import PricingBook
 from .repository import UsageRepository
 
@@ -47,26 +54,43 @@ class UsageService:
     def enabled(self) -> bool:
         return self._enabled
 
+    @staticmethod
+    def _normalize_target(
+        target: UsageTarget | DeploymentOption | None,
+        deployment: DeploymentOption | None,
+    ) -> UsageTarget:
+        if target is not None:
+            if isinstance(target, DeploymentOption):
+                return UsageTarget.from_deployment(target)
+            return target
+        if deployment is not None:
+            return UsageTarget.from_deployment(deployment)
+        raise ValueError("A usage target or deployment is required.")
+
     def build_record(
         self,
         *,
         user_id: str,
         session_id: str,
         model_id: str,
-        deployment: DeploymentOption,
+        target: UsageTarget | DeploymentOption | None = None,
+        deployment: DeploymentOption | None = None,
         usage: TokenUsage,
         status: UsageStatus,
         agent: str | None,
         correlation_id: str | None,
     ) -> UsageRecord:
+        descriptor = self._normalize_target(target, deployment)
         billable = status == "complete" and usage.known and usage.complete
         rec = UsageRecord(
             userId=user_id,
             sessionId=session_id,
+            provider=descriptor.provider,
             model=model_id,
-            deployment=deployment.deploymentName,
-            region=deployment.region,
-            dataZone=deployment.dataZone,
+            deployment=descriptor.deployment,
+            target=descriptor.target,
+            region=descriptor.region,
+            dataZone=descriptor.dataZone,
             agent=agent,
             status=status,
             billable=billable,
@@ -100,7 +124,8 @@ class UsageService:
         user_id: str,
         session_id: str,
         model_id: str,
-        deployment: DeploymentOption,
+        target: UsageTarget | DeploymentOption | None = None,
+        deployment: DeploymentOption | None = None,
         usage: TokenUsage,
         status: UsageStatus = "complete",
         agent: str | None = None,
@@ -114,6 +139,7 @@ class UsageService:
                 user_id=user_id,
                 session_id=session_id,
                 model_id=model_id,
+                target=target,
                 deployment=deployment,
                 usage=usage,
                 status=status,
@@ -154,8 +180,10 @@ class UsageService:
             {
                 "userId": rec.userId,
                 "sessionId": rec.sessionId,
+                "provider": rec.provider,
                 "model": rec.model,
                 "deployment": rec.deployment,
+                "target": rec.target,
                 "region": rec.region,
                 "agent": rec.agent,
                 "status": rec.status,
@@ -181,8 +209,10 @@ class UsageService:
             "event": "model_usage",
             "userId": rec.userId,
             "sessionId": rec.sessionId,
+            "provider": rec.provider,
             "model": rec.model,
             "deployment": rec.deployment,
+            "target": rec.target,
             "region": rec.region,
             "agent": rec.agent,
             "status": rec.status,

@@ -64,20 +64,32 @@ Sharing is tenant-scoped:
   The normal transcript and composer stay available, and finalized spoken turns
   are saved into that same session.
 - Open **Voice settings** beside the composer to choose the current/default or an
-  enabled agent, a catalog realtime model, a voice, and optional governed tools.
+  enabled agent, a **provider**, a voice, and optional governed tools.
   **Advanced** includes instructions, temperature, turn detection, transcription,
   and a language hint. Settings are stored in this browser, stale values fall back
   safely, and controls lock while connected because changes apply to the next
   session.
+- Two providers are available when an operator enables both: **Azure OpenAI**
+  (the default, with a catalog realtime model and its usual voice/turn-detection
+  options) and **Azure Speech** (a second, opt-in provider fixed to one managed
+  model and a curated set of built-in voices, locale, transcription, noise
+  suppression, echo cancellation, and turn-detection choices — there is no custom
+  voice, custom endpoint, or free-text voice name option). If only Azure OpenAI is
+  configured, the provider control is not shown.
+- Changing the provider (or any other voice setting) applies starting with the
+  **next** connection, not the current one; it never triggers a silent reconnect
+  mid-session. The chat transcript and session are shared across both providers,
+  so switching providers keeps the same conversation.
 - You can type while Voice Live is connected. Typed turns are saved immediately
   in the shared transcript; because an open realtime socket cannot be reseeded,
   they become Voice Live context the next time it connects.
 - Starting Voice Live in an empty chat does not create a chat record until a real
   finalized voice turn needs saving. Denied microphone access or a gateway failure
   leaves the session list unchanged; use the inline **Retry** action after fixing
-  connectivity.
+  connectivity. This holds for both providers.
 
-If Voice Live controls are hidden, the feature is disabled for that environment.
+If Voice Live controls are hidden, the feature is disabled for that environment. If
+only the provider selector is hidden, only the default provider is configured.
 
 ## Generated artifacts
 
@@ -156,6 +168,7 @@ missing; a `—` cell means no data for that metric, not an error.
 | Feature controls are missing | The web feature flag is off or the API feature is disabled. |
 | A library route returns disabled/not found | Document understanding is not enabled or prerequisites failed startup validation. |
 | A document does not appear in chat | It is not `ready`, not accessible to you, or retrieval is capped for the turn. |
-| Voice Live reports that the gateway or realtime service is unavailable | The shared active APIM WebSocket API, its scoped key, or the Foundry realtime backend is unavailable. Retry after gateway health is restored. |
+| Voice Live reports that the gateway or realtime service is unavailable | The active provider's APIM WebSocket API, its scoped key, or its upstream backend (Foundry for Azure OpenAI, the AIServices account for Azure Speech) is unavailable. Retry after gateway health is restored; each provider's API and key are independent, so one provider's outage does not necessarily affect the other. |
 | Voice Live fails before opening the socket | API public URL, Origin allowlist, browser microphone permission, or auth is misconfigured. |
+| Azure Speech is not offered as a provider | The operator has not enabled it (`AI4IA_SPEECH_VOICE_LIVE_ENABLED` off, or it is not in the server's voice provider allowlist). Azure OpenAI remains available. |
 | Admin resource panel is unavailable | The resource id is empty, the API identity lacks Monitoring Reader, or Azure Monitor data is unavailable. |
