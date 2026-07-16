@@ -35,7 +35,7 @@ import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib.parse import quote
 
 import aiohttp
@@ -49,7 +49,14 @@ from ..auth.base import AuthCredentials, AuthError, AuthenticatedUser
 from ..catalog import DeploymentOption, ModelCatalog
 from ..config import Environment, GatewayAuthMode, Settings
 from ..logging_setup import new_correlation_id
-from ..usage.models import TokenUsage
+from ..voice_provider_catalog import (
+    AZURE_OPENAI_PROVIDER_ID,
+    SPEECH_VOICE_LIVE_PROVIDER_ID,
+    VoiceProvider,
+    VoiceProviderCatalog,
+    load_voice_provider_catalog,
+)
+from ..usage.models import TokenUsage, UsageTarget
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +179,101 @@ def resolve_realtime_deployment(
     return model_id, deployment
 
 
+@dataclass(frozen=True)
+class LiveVoiceProviderResolution:
+    provider: VoiceProvider
+    model_id: str
+    deployment: DeploymentOption | None
+    usage_target: UsageTarget
+    base_url: str
+    api_version: str
+    target_param: str
+    target_name: str
+    auth_mode: GatewayAuthMode
+    api_key: str
+    rewrite_client_frame: Callable[[str], str]
+
+
+class LiveVoiceProviderError(Exception):
+    """Raised when the browser requests an unknown or disabled voice provider."""
+
+
+def _resolve_live_voice_provider(
+    state,
+    settings: Settings,
+    provider_id: str | None,
+    *,
+    model: str | None,
+    region: str | None,
+) -> LiveVoiceProviderResolution:
+    catalog: VoiceProviderCatalog = getattr(
+        state, "voice_provider_catalog", load_voice_provider_catalog()
+    )
+    requested = (provider_id or settings.voice_default_provider_id).strip().lower()
+    allowlist = set(settings.voice_provider_allowlist_list)
+    if requested not in allowlist:
+        raise LiveVoiceProviderError(f"Provider '{requested}' is not enabled.")
+    provider = catalog.get(requested)
+    if provider is None:
+        raise LiveVoiceProviderError(f"Unknown voice provider: {requested}")
+
+    if requested == AZURE_OPENAI_PROVIDER_ID:
+        model_id, deployment = resolve_realtime_deployment(
+            state.catalog,
+            model,
+            region,
+        )
+        return LiveVoiceProviderResolution(
+            provider=provider,
+            model_id=model_id,
+            deployment=deployment,
+            usage_target=UsageTarget.from_deployment(deployment),
+            base_url=settings.realtime_effective_base_url,
+            api_version=settings.realtime_api_version,
+            target_param="deployment",
+            target_name=deployment.deploymentName,
+            auth_mode=settings.model_gateway_auth_mode,
+            api_key=settings.realtime_gateway_api_key or "",
+            rewrite_client_frame=lambda frame: frame,
+        )
+
+    if requested != SPEECH_VOICE_LIVE_PROVIDER_ID:
+        raise LiveVoiceProviderError(f"Unknown voice provider: {requested}")
+    if not settings.speech_voice_live_enabled:
+        raise LiveVoiceProviderError("Speech Voice Live is disabled.")
+    if not settings.speech_voice_live_base_url or not settings.speech_voice_live_gateway_api_key:
+        raise LiveVoiceProviderError("Speech Voice Live is not fully configured.")
+
+    managed = provider.managedModel
+    if managed is None:
+        raise LiveVoiceProviderError("Speech Voice Live catalog entry is incomplete.")
+    if model and model.strip().lower() != managed.modelId.lower():
+        raise LiveVoiceProviderError("Speech Voice Live model is fixed.")
+    if region and region.strip().lower() != managed.initialRegion.lower():
+        raise LiveVoiceProviderError("Speech Voice Live region is fixed.")
+
+    def rewrite_client_frame(frame: str) -> str:
+        return normalize_speech_session_update(frame, provider)
+
+    return LiveVoiceProviderResolution(
+        provider=provider,
+        model_id=managed.modelId,
+        deployment=None,
+        usage_target=UsageTarget.managed_service(
+            provider=SPEECH_VOICE_LIVE_PROVIDER_ID,
+            target="managed_voice_live",
+            region=managed.initialRegion,
+        ),
+        base_url=settings.speech_voice_live_base_url,
+        api_version=managed.apiVersion,
+        target_param="model",
+        target_name=managed.modelId,
+        auth_mode=GatewayAuthMode.api_key,
+        api_key=settings.speech_voice_live_gateway_api_key,
+        rewrite_client_frame=rewrite_client_frame,
+    )
+
+
 # Truthy spellings accepted for the per-session ``?tools=`` opt-in, matching the
 # browser's parseEnabledFlag / the server feature-flag env parsing.
 _TOOLS_TRUTHY = frozenset({"1", "true", "yes", "on"})
@@ -195,19 +297,181 @@ def _to_ws_scheme(url: str) -> str:
     return url
 
 
-def build_upstream_url(base_url: str, api_version: str, deployment_name: str) -> str:
-    """Construct the Azure OpenAI realtime (preview) WebSocket URL.
+def build_upstream_url(
+    base_url: str,
+    api_version: str,
+    target_name: str,
+    *,
+    target_param: str = "deployment",
+) -> str:
+    """Construct a realtime WebSocket URL.
 
-    ``{ws_base}/realtime?api-version=<v>&deployment=<dep>`` where the base already
-    carries the ``/openai`` suffix (the model gateway URL). http(s) is converted
-    to ws(s).
+    ``{ws_base}/realtime?api-version=<v>&<target_param>=<name>`` where the base
+    already carries the provider-specific APIM prefix (``/openai`` or
+    ``/speech/voice-live``). http(s) is converted to ws(s).
     """
     ws_base = _to_ws_scheme(base_url.rstrip("/"))
     return (
         f"{ws_base}/realtime"
         f"?api-version={quote(api_version, safe='')}"
-        f"&deployment={quote(deployment_name, safe='')}"
+        f"&{target_param}={quote(target_name, safe='')}"
     )
+
+
+def _speech_locale(provider: VoiceProvider, session: dict[str, Any]) -> str:
+    options = list(provider.capabilities.locale.options) if provider.capabilities.locale else []
+    default = provider.sessionDefaults.locale or (options[0] if options else "en-US")
+    raw_voice = session.get("voice")
+    candidates = [
+        raw_voice.get("locale") if isinstance(raw_voice, dict) else None,
+        session.get("locale"),
+        session.get("language"),
+    ]
+    for raw in candidates:
+        if isinstance(raw, str) and raw.strip() in options:
+            return raw.strip()
+    return default
+
+
+def _speech_session_voice(
+    provider: VoiceProvider, session: dict[str, Any], locale: str
+) -> dict[str, Any]:
+    default_name = provider.capabilities.voices.default
+    allowed = set(provider.capabilities.voices.options)
+    raw = session.get("voice")
+    selected = default_name
+    if isinstance(raw, str):
+        candidate = raw.strip()
+        if candidate in allowed:
+            selected = candidate
+    elif isinstance(raw, dict):
+        candidate_name = raw.get("name")
+        candidate_type = raw.get("type")
+        if isinstance(candidate_name, str):
+            candidate_name = candidate_name.strip()
+        if (
+            isinstance(candidate_name, str)
+            and candidate_name in allowed
+            and (candidate_type in (None, provider.capabilities.voices.kind))
+        ):
+            selected = candidate_name
+    return {
+        "type": provider.capabilities.voices.kind,
+        "name": selected,
+        "locale": locale,
+    }
+
+
+def _speech_input_transcription(
+    provider: VoiceProvider, session: dict[str, Any], locale: str
+) -> dict[str, Any]:
+    default = provider.capabilities.inputTranscription.default
+    allowed = set(provider.capabilities.inputTranscription.options)
+    raw = session.get("input_audio_transcription")
+    selected = default
+    if isinstance(raw, str):
+        candidate = raw.strip()
+        if candidate in allowed:
+            selected = candidate
+    elif isinstance(raw, dict):
+        for key in ("model", "provider", "type"):
+            candidate = raw.get(key)
+            if isinstance(candidate, str):
+                candidate = candidate.strip()
+                if candidate in allowed:
+                    selected = candidate
+                    break
+    return {"model": selected, "language": locale}
+
+
+def _speech_turn_detection(provider: VoiceProvider, session: dict[str, Any]) -> dict[str, Any]:
+    default = provider.capabilities.turnDetection.default
+    allowed = set(provider.capabilities.turnDetection.options)
+    raw = session.get("turn_detection")
+    selected = default
+    raw_settings = raw if isinstance(raw, dict) else {}
+    if isinstance(raw, str):
+        candidate = raw.strip()
+        if candidate in allowed:
+            selected = candidate
+    elif isinstance(raw, dict):
+        for key in ("type", "mode", "kind"):
+            candidate = raw.get(key)
+            if isinstance(candidate, str):
+                candidate = candidate.strip()
+                if candidate in allowed:
+                    selected = candidate
+                    break
+    turn_detection: dict[str, Any] = {
+        "type": selected,
+        "create_response": True,
+        "interrupt_response": _speech_bool(
+            raw_settings.get("interrupt_response", session.get("interrupt_response")),
+            provider.sessionDefaults.interruptResponse,
+        ),
+        "auto_truncate": _speech_bool(
+            raw_settings.get("auto_truncate", session.get("auto_truncate")),
+            provider.sessionDefaults.autoTruncate,
+        ),
+    }
+    threshold = raw_settings.get("threshold")
+    if isinstance(threshold, (int, float)) and not isinstance(threshold, bool):
+        turn_detection["threshold"] = max(0.0, min(float(threshold), 1.0))
+    silence_ms = raw_settings.get("silence_duration_ms")
+    if isinstance(silence_ms, (int, float)) and not isinstance(silence_ms, bool):
+        turn_detection["silence_duration_ms"] = max(0, min(int(silence_ms), 60_000))
+    return turn_detection
+
+
+def _speech_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    return default
+
+
+def normalize_speech_session_update(frame: str, provider: VoiceProvider) -> str:
+    """Normalize a browser ``session.update`` for Voice Live Speech.
+
+    The browser still sends the existing Azure OpenAI-shaped payload. For Speech we
+    keep the shared instruction/tool bridge but overwrite the model-specific voice
+    settings with catalog-backed safe values.
+    """
+    if _SESSION_UPDATE_HINT not in frame:
+        return frame
+    try:
+        payload = json.loads(frame)
+    except (ValueError, TypeError):
+        return frame
+    if not isinstance(payload, dict) or payload.get("type") != SESSION_UPDATE_TYPE:
+        return frame
+    requested = payload.get("session")
+    session = dict(requested) if isinstance(requested, dict) else {}
+    locale = _speech_locale(provider, session)
+    managed = provider.managedModel
+    normalized: dict[str, Any] = {
+        "voice": _speech_session_voice(provider, session, locale),
+        "input_audio_transcription": _speech_input_transcription(provider, session, locale),
+        "turn_detection": _speech_turn_detection(provider, session),
+        "input_audio_format": managed.audioFormat if managed else "pcm16",
+        "output_audio_format": managed.audioFormat if managed else "pcm16",
+        "input_audio_sampling_rate": managed.sampleRateHz if managed else 24_000,
+        "modalities": ["text", "audio"],
+    }
+    instructions = session.get("instructions")
+    if isinstance(instructions, str):
+        normalized["instructions"] = instructions
+    temperature = session.get("temperature")
+    if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
+        normalized["temperature"] = max(0.0, min(float(temperature), 2.0))
+    if provider.sessionDefaults.noiseSuppression is not None:
+        normalized["input_audio_noise_reduction"] = {
+            "type": provider.sessionDefaults.noiseSuppression
+        }
+    if provider.sessionDefaults.echoCancellation is not None:
+        normalized["input_audio_echo_cancellation"] = {
+            "type": provider.sessionDefaults.echoCancellation
+        }
+    return json.dumps({"type": SESSION_UPDATE_TYPE, "session": normalized})
 
 
 def build_upstream_headers(
@@ -682,7 +946,7 @@ async def _pump_client_to_upstream(
     client_ws: WebSocket,
     upstream: UpstreamConnection,
     lock: anyio.Lock,
-    bridge: ToolBridge,
+    rewrite_client_frame: Callable[[str], str],
     cancel_scope: anyio.CancelScope,
 ) -> None:
     try:
@@ -694,9 +958,7 @@ async def _pump_client_to_upstream(
             if text is not None:
                 # Inert (returns the frame unchanged) unless tools are enabled AND
                 # this is a session.update, where the relay injects its tool set.
-                await _send_upstream(
-                    upstream, lock, text=bridge.rewrite_client_frame(text)
-                )
+                await _send_upstream(upstream, lock, text=rewrite_client_frame(text))
                 continue
             data = message.get("bytes")
             if data is not None:
@@ -739,10 +1001,12 @@ async def relay(
     *,
     max_seconds: float,
     bridge: ToolBridge,
+    rewrite_client_frame: Callable[[str], str] | None = None,
 ) -> None:
     """Pump frames both ways until either side closes (or the optional clamp)."""
 
     send_lock = anyio.Lock()
+    rewrite = rewrite_client_frame or bridge.rewrite_client_frame
 
     async def run() -> None:
         async with anyio.create_task_group() as tg:
@@ -751,7 +1015,7 @@ async def relay(
                 client_ws,
                 upstream,
                 send_lock,
-                bridge,
+                rewrite,
                 tg.cancel_scope,
             )
             tg.start_soon(
@@ -815,14 +1079,16 @@ async def voice_live(websocket: WebSocket) -> None:
         await _deny(websocket, WS_POLICY_VIOLATION)
         return
 
-    # 4. Resolve the realtime deployment (browser never sees it).
+    # 4. Resolve the provider + upstream target (browser never sees it).
     try:
-        model_id, deployment = resolve_realtime_deployment(
-            state.catalog,
-            websocket.query_params.get("model"),
-            websocket.query_params.get("region"),
+        provider_resolution = _resolve_live_voice_provider(
+            state,
+            settings,
+            websocket.query_params.get("provider"),
+            model=websocket.query_params.get("model"),
+            region=websocket.query_params.get("region"),
         )
-    except RealtimeResolutionError:
+    except (LiveVoiceProviderError, RealtimeResolutionError):
         await _deny(websocket, WS_POLICY_VIOLATION)
         return
 
@@ -837,12 +1103,15 @@ async def voice_live(websocket: WebSocket) -> None:
 
     correlation_id = new_correlation_id()
     url = build_upstream_url(
-        settings.realtime_effective_base_url,
-        settings.realtime_api_version,
-        deployment.deploymentName,
+        provider_resolution.base_url,
+        provider_resolution.api_version,
+        provider_resolution.target_name,
+        target_param=provider_resolution.target_param,
     )
     headers = build_upstream_headers(
-        settings.model_gateway_auth_mode, settings.realtime_gateway_api_key, correlation_id
+        provider_resolution.auth_mode,
+        provider_resolution.api_key,
+        correlation_id,
     )
     connector: RealtimeConnector = state.realtime_connector
     # Agent-aware live voice: when the browser names an agent (?agent=), bind that
@@ -857,16 +1126,18 @@ async def voice_live(websocket: WebSocket) -> None:
         tools_requested=parse_tools_opt_in(websocket.query_params.get("tools")),
     )
 
+    def rewrite_client_frame(frame: str) -> str:
+        return bridge.rewrite_client_frame(provider_resolution.rewrite_client_frame(frame))
+
     try:
         async with connector.connect(
             url=url, headers=headers, timeout=settings.realtime_timeout_seconds
         ) as upstream:
-            # Meter one unknown call per opened session (best-effort, never raises).
             await state.usage.record_completion(
                 user_id=user.internal_user_id,
                 session_id=LIVE_SESSION_ID,
-                model_id=model_id,
-                deployment=deployment,
+                model_id=provider_resolution.model_id,
+                target=provider_resolution.usage_target,
                 usage=_session_usage(),
                 status="complete",
                 correlation_id=correlation_id,
@@ -876,11 +1147,14 @@ async def voice_live(websocket: WebSocket) -> None:
                 upstream,
                 max_seconds=settings.realtime_max_session_seconds,
                 bridge=bridge,
+                rewrite_client_frame=rewrite_client_frame,
             )
     except Exception:  # noqa: BLE001 - any upstream/relay failure -> clean client close
         logger.warning(
-            "voice-live relay error (model=%s, correlation_id=%s)",
-            model_id,
+            "voice-live relay error (provider=%s, target=%s, model=%s, correlation_id=%s)",
+            provider_resolution.provider.id,
+            provider_resolution.usage_target.target,
+            provider_resolution.model_id,
             correlation_id,
             exc_info=True,
         )

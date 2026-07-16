@@ -75,9 +75,27 @@ def test_empty_aggregate_is_known_false():
 
 
 def _rec(**kw) -> UsageRecord:
-    base = dict(userId="u1", sessionId="s1", model="gpt-5.2", deployment="dep")
+    base = dict(userId="u1", sessionId="s1", provider="azure_openai", model="gpt-5.2", deployment="dep")
     base.update(kw)
     return UsageRecord(**base)
+
+
+def test_usage_record_defaults_provider_and_nullable_deployment():
+    record = UsageRecord.model_validate(
+        {"userId": "u1", "sessionId": "s1", "model": "gpt-5.2"}
+    )
+    assert record.provider == "azure_openai"
+    assert record.deployment is None
+    assert record.target is None
+
+
+def test_usage_record_serializes_new_provider_and_target_fields():
+    record = _rec(provider="speech_voice_live", deployment=None, target="managed_voice_live")
+    payload = record.model_dump(mode="json")
+    assert payload["provider"] == "speech_voice_live"
+    assert payload["deployment"] is None
+    assert payload["target"] == "managed_voice_live"
+    assert UsageRecord.model_validate(payload) == record
 
 
 def test_summarize_counts_and_costs():

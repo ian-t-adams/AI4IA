@@ -66,6 +66,22 @@ async def test_query_records_marshals_rows():
     assert all(isinstance(r, UsageRecord) for r in out)
 
 
+async def test_query_records_defaults_old_rows_without_provider_or_deployment():
+    rows = [
+        {
+            "userId": "alice",
+            "sessionId": "s1",
+            "model": "gpt-5.2",
+            "createdAt": NOW.isoformat(),
+        }
+    ]
+    repo, fake = _repo(rows)
+    out = await repo.query_records(since=SINCE, now=NOW, limit=100)
+    assert out[0].provider == "azure_openai"
+    assert out[0].deployment is None
+    assert out[0].target is None
+
+
 async def test_query_records_query_is_bounded_and_windowed():
     repo, fake = _repo([])
     await repo.query_records(since=SINCE, now=NOW, limit=250)

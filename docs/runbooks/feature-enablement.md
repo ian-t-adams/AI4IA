@@ -14,6 +14,7 @@ feature posture.
 |---|---|---|---|---|
 | Voice Live | `AI4IA_REALTIME_ENABLED` | `VOICE_LIVE_ENABLED` + `API_PUBLIC_URL` | `voiceLiveEnabled` | Browser Origin allowlist outside local |
 | Voice Live tools | `AI4IA_REALTIME_TOOLS_ENABLED` | advertised by web env | `voiceLiveToolsEnabled` | Voice Live enabled |
+| Speech Voice Live (2nd voice provider) | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | advertised by web env | `speechVoiceLiveEnabled` | Voice Live enabled; `speech_voice_live` in `AI4IA_VOICE_PROVIDER_ALLOWLIST`; distinct `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`; separately approved live-validation gate (see below) |
 | Document library + multimodal understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `DOCUMENT_LIBRARY_ENABLED` | `documentUnderstandingEnabled` | Cosmos session store, blob account URL, CU endpoint outside local |
 | Library compute / export | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | none | `documentComputeEnabled` | Document understanding, Responses API base URL + model outside local |
 | Inline attachment Code Interpreter | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | none | `inlineDocumentComputeEnabled` | Responses API base URL + model outside local |
@@ -39,7 +40,10 @@ and — as of the Foundry activation — the **official MCP plane, the Foundry t
 bridge, and the private tool catalog** (`enableOfficialMcp` / `enableFoundryToolbox`
 / `enablePrivateToolCatalog` are all `true`). The new proxy profile, priority,
 Event Hub, and durable-async controls remain `false`; their Bicep defaults are
-also off.
+also off. `speechVoiceLiveEnabled` also remains `false` (mapped from the
+`AI4IA_SPEECH_VOICE_LIVE_ENABLED` CI variable, default `false`) — Azure OpenAI
+Realtime stays the only active, default-safe voice provider until the separate
+approvals in [Speech Voice Live](#speech-voice-live-second-voice-provider) below close.
 
 ## Enablement notes
 
@@ -69,6 +73,74 @@ Basic v2 capacity 1 has an approximately $150/month base cost before calls and i
 a single-region, single-unit production gateway. The prior Consumption service is
 retained unchanged only as an inactive HTTP/SSE rollback plane during stabilization;
 its deletion is a later destructive operation requiring separate approval.
+
+### Speech Voice Live (second voice provider)
+
+Set (only after the gates below close):
+
+```text
+speechVoiceLiveEnabled=true
+voiceProviderAllowlist=azure_openai,speech_voice_live
+voiceDefaultProvider=azure_openai        # keep Azure OpenAI default-safe
+```
+
+`speechVoiceLiveBaseUrl` and `speechVoiceLiveGatewayApiKey` are wired
+module-to-module from the gateway's outputs and never hand-entered; do not set
+`AI4IA_SPEECH_VOICE_LIVE_BASE_URL` / `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`
+directly. `speechVoiceLiveEnabled=true` requires `voiceLiveEnabled=true` and
+`speech_voice_live` present in `voiceProviderAllowlist`; the API refuses to start
+with any other combination.
+
+Speech Voice Live routes `Browser -> FastAPI /api/voice/live -> a second,
+separately scoped APIM WebSocket API (/speech/voice-live/realtime) on the same
+shared active Basic v2 APIM -> the existing eastus2 AIServices account`. It never
+traverses SimpleL7Proxy and never adds a new APIM service or Foundry account. The
+model/API version are fixed (`gpt-realtime`, `2026-04-10`); only curated
+`azure-standard` built-in voices/capabilities from the generated voice provider
+catalog are offered, and no custom endpoint, lexicon, or personal voice is
+accepted. The shared APIM managed identity additionally needs **Cognitive
+Services User** and **Foundry User** (formerly Azure AI User) on that one
+account; the `speechVoiceLiveManagedIdentityAudience` parameter (default
+`https://ai.azure.com`) is deployment-only, never an app runtime setting.
+
+**Enablement sequence and strict no-deploy gates.** This provider ships fully
+implemented and tested in the repository, but production enablement is
+intentionally blocked behind approvals this runbook cannot satisfy on its own:
+
+1. Repository validation passes: catalog/schema checks (including
+   `gen-voice-provider-catalog.py --check`), API (`ruff`, `pyright`, `pytest`),
+   web (`lint`, `test`, `build`), and IaC/quality gates (schema checks, policy
+   tests, `bicep build`, docs drift).
+2. Independent code review, a security review of the WebSocket/secret/event/tool
+   surface, and an Azure/Bicep specialist review of the additive APIM/MI/RBAC
+   changes.
+3. **Separate, explicit approval** before running the live APIM WebSocket policy
+   compiler (`scripts/test-apim-policy-compiler.ps1`) against the target APIM —
+   it creates and deletes temporary Azure resources, so it is never run
+   automatically.
+4. An authorized identity refreshes live Azure inventory and runs a zero-delete
+   production what-if. As of this writing, subscription/resource-group read and
+   `Microsoft.Resources/deployments/whatIf/action` return `403 AuthorizationFailed`
+   for the available identity — this is a recorded, current blocker, not a
+   theoretical one. Deployment does not proceed while that inventory/what-if
+   access remains forbidden.
+5. Only after steps 1-4 close does `azd provision` / `azd deploy` and a merge to
+   `main` become separate, explicitly authorized decisions. No step in this
+   runbook authorizes deployment or merge on its own.
+
+**Rollback.** Disabling Speech Voice Live is immediate and non-destructive:
+
+1. Set `speechVoiceLiveEnabled=false`, or drop `speech_voice_live` from
+   `voiceProviderAllowlist` — either alone returns the app to Azure OpenAI-only,
+   which remains the default and does not require Speech to be present.
+2. Roll back the API/web revision if needed; `ai4ia.voiceLive.prefs.v2` preference
+   values safely default back to Azure OpenAI when Speech is absent.
+3. Leave the Speech Voice Live APIM API, operation policy, and subscription
+   **dormant** for diagnosis; do not delete them as part of an incident response.
+   Deleting those children later is a separate destructive cleanup requiring its
+   own plan, what-if, and approval.
+4. The inactive Consumption APIM rollback plane is untouched by any of this — it
+   carries no Speech Voice Live traffic in either direction and needs no action.
 
 ### Multi-application gateway controls
 

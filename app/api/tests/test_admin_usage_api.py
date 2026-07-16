@@ -62,8 +62,10 @@ def _rec(user: str, **kw) -> UsageRecord:
     base = dict(
         userId=user,
         sessionId="s1",
+        provider="azure_openai",
         model="gpt-5.2",
         deployment="dep",
+        target=None,
         status="complete",
         billable=True,
         usageKnown=True,
@@ -220,6 +222,38 @@ def test_distributions_rollups(client):
     }
     region_eastus = next(b for b in body["byRegion"] if b["key"] == "eastus")
     assert region_eastus["erroredRequests"] == 1
+
+
+def test_distributions_handle_null_deployment_and_surface_provider_rollup(client):
+    _seed(
+        client,
+        [
+            _rec(
+                "alice",
+                provider="speech_voice_live",
+                deployment=None,
+                target="managed_voice_live",
+                status="complete",
+                billable=False,
+                usageKnown=False,
+                usageComplete=False,
+                promptTokens=None,
+                completionTokens=None,
+                totalTokens=None,
+                costKnown=False,
+                estCostMicroUsd=None,
+            ),
+        ],
+    )
+    body = client.get("/api/admin/usage/distributions", headers=ADMIN).json()
+    assert {b["key"]: b["requests"] for b in body["byProvider"]} == {
+        "speech_voice_live": 1
+    }
+    assert {b["key"]: b["requests"] for b in body["byDeployment"]} == {
+        "(unknown)": 1
+    }
+    summary = client.get("/api/admin/usage/summary", headers=ADMIN).json()
+    assert summary["distinctProviders"] == 1
 
 
 def test_distributions_honours_window(client):

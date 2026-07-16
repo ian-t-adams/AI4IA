@@ -122,6 +122,22 @@ param realtimeAllowedOrigins string = ''
 @description('Enable governed tool calling inside a live session (the relay injects the safe built-in tools and executes the model\'s function calls in-process). Inert unless realtimeEnabled is also true.')
 param realtimeToolsEnabled bool = true
 
+@description('Enable Azure AI Speech Voice Live as a second selectable realtime provider. Default OFF (AI4IA_SPEECH_VOICE_LIVE_ENABLED unset); inert unless realtimeEnabled is also true, and the relay refuses the provider without a complete base URL + gateway key.')
+param speechVoiceLiveEnabled bool = false
+
+@description('Ordered, comma-separated server-authoritative voice provider allowlist (AI4IA_VOICE_PROVIDER_ALLOWLIST). Must include azure_openai.')
+param voiceProviderAllowlist string = 'azure_openai'
+
+@description('Server-authoritative default voice provider (AI4IA_VOICE_DEFAULT_PROVIDER); must be a member of voiceProviderAllowlist.')
+param voiceDefaultProvider string = 'azure_openai'
+
+@description('Dedicated APIM WebSocket API base URL for Speech Voice Live (.../speech/voice-live). Distinct from realtimeBaseUrl; never points at Foundry directly, and the relay appends /realtime itself.')
+param speechVoiceLiveBaseUrl string = ''
+
+@secure()
+@description('Dedicated APIM subscription key for the Speech Voice Live API. Must differ from every other gateway key (proxy ingress, model, realtime, official MCP) or the api fails closed at startup.')
+param speechVoiceLiveGatewayApiKey string = ''
+
 @description('Enable automatic context summarization (auto-fold). Default OFF: the manual /summarize command still works, but the auto path that folds older turns into the running summary stays dormant, so the default chat path is byte-for-byte unchanged. When ON, once the assembled transcript would exceed the model-derived threshold, the oldest turns are folded into the session\'s running summary and only the newest turns are sent verbatim; the full transcript is always retained in storage + the UI scrollback.')
 param autoSummarizationEnabled bool = false
 
@@ -378,6 +394,46 @@ var realtimeEnv = realtimeEnabled ? [
     value: realtimeToolsEnabled ? 'true' : 'false'
   }
 ] : []
+
+// Speech Voice Live: a second, additive realtime provider. Inert unless
+// realtimeEnabled is ALSO true (see config.py validate_runtime), matching the
+// same master-gate posture as every other realtime setting above. The
+// allowlist/default provider are meaningful only once the relay itself is
+// enabled, so they are emitted in the same conditional bundle rather than
+// unconditionally.
+var hasSpeechVoiceLiveGatewayKey = realtimeEnabled && speechVoiceLiveEnabled && !empty(speechVoiceLiveGatewayApiKey)
+var speechVoiceLiveGatewaySecrets = hasSpeechVoiceLiveGatewayKey ? [
+  {
+    name: 'speech-voice-live-gateway-api-key'
+    value: speechVoiceLiveGatewayApiKey
+  }
+] : []
+var speechVoiceLiveGatewayKeyEnv = hasSpeechVoiceLiveGatewayKey ? [
+  {
+    name: 'AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY'
+    secretRef: 'speech-voice-live-gateway-api-key'
+  }
+] : []
+
+var speechVoiceLiveEnv = realtimeEnabled ? concat([
+  {
+    name: 'AI4IA_VOICE_PROVIDER_ALLOWLIST'
+    value: voiceProviderAllowlist
+  }
+  {
+    name: 'AI4IA_VOICE_DEFAULT_PROVIDER'
+    value: voiceDefaultProvider
+  }
+], speechVoiceLiveEnabled ? [
+  {
+    name: 'AI4IA_SPEECH_VOICE_LIVE_ENABLED'
+    value: 'true'
+  }
+  {
+    name: 'AI4IA_SPEECH_VOICE_LIVE_BASE_URL'
+    value: speechVoiceLiveBaseUrl
+  }
+] : []) : []
 
 // Auto-summarization (context auto-fold). Default OFF: with the flag unset the
 // chat assembler never folds older turns, so the default chat path is
@@ -638,7 +694,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, realtimeGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv)
+], gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName
@@ -656,7 +712,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
     managedEnvironmentId: containerEnvId
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: concat(gatewaySecrets, realtimeGatewaySecrets, adminSecrets, webIqSecrets, officialMcpSecrets)
+      secrets: concat(gatewaySecrets, realtimeGatewaySecrets, speechVoiceLiveGatewaySecrets, adminSecrets, webIqSecrets, officialMcpSecrets)
       ingress: {
         // External for v1 so the api is directly testable before the web app
         // exists. Flip to internal once web is the only public frontend.

@@ -56,6 +56,7 @@ Then it runs catalog drift checks from the repo root:
 ```powershell
 python scripts/gen-model-catalog.py --check
 python scripts/gen-mcp-catalog.py --check
+python scripts/gen-voice-provider-catalog.py --check
 ```
 
 Then it runs in `app/api`:
@@ -76,6 +77,7 @@ This repo has `app/api/uv.lock`; if using `uv` locally, sync the dev extra and r
 python -m pip install --quiet check-jsonschema
 check-jsonschema --schemafile infra/models.schema.json infra/models.json
 check-jsonschema --schemafile infra/mcp-servers.schema.json infra/mcp-servers.json
+check-jsonschema --schemafile infra/voice-providers.schema.json infra/voice-providers.json
 check-jsonschema --schemafile foundry/toolbox.manifest.schema.json foundry/toolbox.manifest.json
 check-jsonschema --schemafile foundry/toolbox.manifest.schema.json foundry/toolbox.manifest.example.json
 check-jsonschema --schemafile foundry/routines/routine.schema.json foundry/routines/example.routine.json
@@ -83,6 +85,8 @@ check-jsonschema --schemafile foundry/a2a/a2a.schema.json foundry/a2a/example.a2
 python scripts/validate-catalog.py
 python scripts/gen-gateway-policy.py --check
 python -m unittest scripts.tests.test_gateway_policy
+python scripts/gen-voice-provider-catalog.py --check
+python -m unittest scripts.tests.test_voice_provider_catalog
 python scripts/validate-feature-prereqs.py
 bicep build infra/main.bicep --stdout > /dev/null
 ```

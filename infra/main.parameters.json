@@ -134,6 +134,18 @@
     "voiceLiveToolsEnabled": {
       "value": true
     },
+    "speechVoiceLiveEnabled": {
+      "value": "${AI4IA_SPEECH_VOICE_LIVE_ENABLED=false}"
+    },
+    "voiceProviderAllowlist": {
+      "value": "${AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai}"
+    },
+    "voiceDefaultProvider": {
+      "value": "${AI4IA_VOICE_DEFAULT_PROVIDER=azure_openai}"
+    },
+    "speechVoiceLiveManagedIdentityAudience": {
+      "value": "${AI4IA_SPEECH_VOICE_LIVE_MI_AUDIENCE=https://ai.azure.com}"
+    },
     "autoSummarizationEnabled": {
       "value": true
     },

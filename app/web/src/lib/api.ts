@@ -19,6 +19,7 @@ import type {
   WorkflowRunResult,
   WorkflowUpdate,
 } from "./types";
+import type { VoiceLiveProviderCatalogResponse } from "./voiceLive";
 import type {
   DocumentAnnotation,
   ForgetFromMemoryResult,
@@ -53,6 +54,14 @@ async function jsonOrThrow<T>(resp: Response): Promise<T> {
 
 export async function listModels(): Promise<ModelCatalog> {
   return jsonOrThrow(await apiFetch("/api/models", { cache: "no-store" }));
+}
+
+export async function getVoiceLiveConfig(): Promise<VoiceLiveProviderCatalogResponse> {
+  return jsonOrThrow(
+    await apiFetch("/api/voice/live/config", {
+      cache: "no-store",
+    }),
+  );
 }
 
 // Generates an image through the backend gateway (gpt-image-2 etc.). Returns

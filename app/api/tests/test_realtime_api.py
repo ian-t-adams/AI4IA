@@ -8,6 +8,7 @@ gateway.
 """
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 
 import pytest
@@ -76,6 +77,20 @@ class FakeRealtimeConnector:
             await self.upstream.close()
 
 
+class FakeUsageService:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def record_completion(self, **kwargs):
+        self.calls.append(kwargs)
+
+    async def summarize(self, *args, **kwargs):  # pragma: no cover - not used here
+        raise AssertionError("summarize should not be called in this test")
+
+    async def close(self) -> None:
+        return None
+
+
 def _client(**overrides) -> TestClient:
     defaults = {
         "model_gateway_auth_mode": "api_key",
@@ -90,6 +105,18 @@ def _client(**overrides) -> TestClient:
     c.app.state.realtime_connector = FakeRealtimeConnector()
     assert app is c.app
     return c
+
+
+def _speech_client(**overrides) -> TestClient:
+    defaults = {
+        "realtime_enabled": True,
+        "speech_voice_live_enabled": True,
+        "voice_provider_allowlist": "azure_openai,speech_voice_live",
+        "speech_voice_live_base_url": "https://speech-gateway.test/speech/voice-live",
+        "speech_voice_live_gateway_api_key": "speech-key",
+    }
+    defaults.update(overrides)
+    return _client(**defaults)
 
 
 @pytest.fixture
@@ -119,6 +146,21 @@ def test_live_disabled_by_default_refuses():
                 "/api/voice/live", subprotocols=[DEV_SUBPROTOCOL, "u"], headers=_origin()
             ):
                 pass
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_live_unknown_provider_rejected_before_connect():
+    c = _client(realtime_enabled=True)
+    try:
+        with pytest.raises(WebSocketDisconnect):
+            with c.websocket_connect(
+                "/api/voice/live?provider=no-such-provider",
+                subprotocols=[DEV_SUBPROTOCOL, "u"],
+                headers=_origin(),
+            ):
+                pass
+        assert c.app.state.realtime_connector.connects == []
     finally:
         c.__exit__(None, None, None)
 
@@ -159,6 +201,46 @@ def test_live_disabled_user_refused(client):
             pass
 
 
+def test_live_speech_enforces_shared_auth_origin_and_entitlement_before_connect():
+    cases = [
+        ({}, [], _origin()),
+        (
+            {"realtime_allowed_origins": "https://good.example"},
+            [DEV_SUBPROTOCOL, "u"],
+            {"origin": "https://evil.example"},
+        ),
+    ]
+    for overrides, subprotocols, headers in cases:
+        c = _speech_client(**overrides)
+        try:
+            with pytest.raises(WebSocketDisconnect):
+                with c.websocket_connect(
+                    "/api/voice/live?provider=speech_voice_live",
+                    subprotocols=subprotocols,
+                    headers=headers,
+                ):
+                    pass
+            assert c.app.state.realtime_connector.connects == []
+        finally:
+            c.__exit__(None, None, None)
+
+    c = _speech_client()
+    try:
+        headers = {"X-Dev-User": "speech-banned"}
+        uid = _internal_id(c, headers)
+        c.put(f"/api/admin/entitlements/{uid}", json={"disabled": True}, headers=ADMIN)
+        with pytest.raises(WebSocketDisconnect):
+            with c.websocket_connect(
+                "/api/voice/live?provider=speech_voice_live",
+                subprotocols=[DEV_SUBPROTOCOL, "speech-banned"],
+                headers=_origin(),
+            ):
+                pass
+        assert c.app.state.realtime_connector.connects == []
+    finally:
+        c.__exit__(None, None, None)
+
+
 def test_live_upstream_failure_closes(client):
     client.app.state.realtime_connector = FakeRealtimeConnector(fail=True)
     with client.websocket_connect(
@@ -193,6 +275,151 @@ def test_live_relay_pumps_both_directions(client):
     assert connector.upstream.closed is True
 
 
+def test_live_speech_provider_uses_fixed_upstream_and_normalizes_session():
+    c = _speech_client(realtime_tools_enabled=True)
+    try:
+        connector = ToolFakeConnector()
+        c.app.state.realtime_connector = connector
+        with c.websocket_connect(
+            "/api/voice/live?provider=speech_voice_live&model=gpt-realtime&region=eastus2"
+            "&tools=1&host=attacker.example&path=/other&api-version=future"
+            "&deployment=attacker-deployment&customVoice=secret",
+            subprotocols=[DEV_SUBPROTOCOL, "speechuser"],
+            headers=_origin(),
+        ) as ws:
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "session.update",
+                        "host": "attacker.example",
+                        "api-version": "future",
+                        "model": "attacker-model",
+                        "deployment": "attacker-deployment",
+                        "session": {
+                            "voice": {
+                                "type": "azure-standard",
+                                "name": "en-US-AndrewNeural",
+                                "endpointId": "custom-endpoint",
+                            },
+                            "input_audio_transcription": {"model": "azure-speech"},
+                            "turn_detection": {
+                                "type": "azure_semantic_vad_multilingual",
+                                "interrupt_response": True,
+                                "auto_truncate": False,
+                            },
+                            "locale": "en-US",
+                            "voiceEndpointId": "custom-endpoint",
+                            "lexicons": ["bad"],
+                            "personalVoice": {"name": "bad"},
+                            "tools": [{"type": "function", "name": "untrusted"}],
+                        },
+                    }
+                )
+            )
+            fc = json.loads(ws.receive_text())
+            assert fc["type"] == "response.function_call_arguments.done"
+            assert json.loads(ws.receive_text())["type"] == "response.done"
+
+        opened = connector.connects[0]
+        assert opened["url"] == (
+            "wss://speech-gateway.test/speech/voice-live/realtime"
+            "?api-version=2026-04-10&model=gpt-realtime"
+        )
+        assert opened["headers"]["Ocp-Apim-Subscription-Key"] == "speech-key"
+
+        sent = json.loads(connector.upstream.sent_text[0])
+        session = sent["session"]
+        assert session["voice"] == {
+            "type": "azure-standard",
+            "name": "en-US-AndrewNeural",
+            "locale": "en-US",
+        }
+        assert session["input_audio_transcription"] == {
+            "model": "azure-speech",
+            "language": "en-US",
+        }
+        assert session["turn_detection"] == {
+            "type": "azure_semantic_vad_multilingual",
+            "create_response": True,
+            "interrupt_response": True,
+            "auto_truncate": False,
+        }
+        assert session["input_audio_noise_reduction"] == {
+            "type": "azure_deep_noise_suppression"
+        }
+        assert session["input_audio_echo_cancellation"] == {
+            "type": "server_echo_cancellation"
+        }
+        assert session["input_audio_sampling_rate"] == 24_000
+        assert "voiceEndpointId" not in session
+        assert "lexicons" not in session
+        assert "personalVoice" not in session
+        assert "host" not in sent
+        assert "api-version" not in sent
+        assert "model" not in sent
+        assert "deployment" not in sent
+        assert session["tools"]
+        assert all(tool.get("name") != "untrusted" for tool in session["tools"])
+        assert connector.upstream.closed is True
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_live_speech_rejects_nonmatching_model_or_region():
+    c = _speech_client()
+    try:
+        with pytest.raises(WebSocketDisconnect):
+            with c.websocket_connect(
+                "/api/voice/live?provider=speech_voice_live&model=wrong&region=westus",
+                subprotocols=[DEV_SUBPROTOCOL, "u"],
+                headers=_origin(),
+            ):
+                pass
+        assert c.app.state.realtime_connector.connects == []
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_live_speech_upstream_failure_is_bounded_and_cleans_up():
+    c = _speech_client()
+    try:
+        connector = FakeRealtimeConnector(fail=True)
+        c.app.state.realtime_connector = connector
+        with c.websocket_connect(
+            "/api/voice/live?provider=speech_voice_live",
+            subprotocols=[DEV_SUBPROTOCOL, "u"],
+            headers=_origin(),
+        ) as ws:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_text()
+        assert exc.value.code == 1011
+        assert len(connector.connects) == 1
+        opened = connector.connects[0]
+        assert opened["url"].endswith(
+            "/speech/voice-live/realtime?api-version=2026-04-10&model=gpt-realtime"
+        )
+        assert opened["headers"]["Ocp-Apim-Subscription-Key"] == "speech-key"
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_live_config_exposes_safe_provider_catalog():
+    c = _speech_client()
+    try:
+        response = c.get("/api/voice/live/config")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["defaultProviderId"] == "azure_openai"
+        assert body["enabledProviderIds"] == ["azure_openai", "speech_voice_live"]
+        providers = {provider["id"]: provider for provider in body["providers"]}
+        assert "endpointPath" not in providers["speech_voice_live"]
+        assert "managedModel" in providers["speech_voice_live"]
+        assert providers["speech_voice_live"]["capabilities"]["voices"]["kind"] == "azure-standard"
+        assert providers["speech_voice_live"]["capabilities"]["inputTranscription"]["provider"] == "azure-speech"
+    finally:
+        c.__exit__(None, None, None)
+
+
 def test_live_session_is_metered(client):
     headers = {"X-Dev-User": "meterlive"}
     with client.websocket_connect(
@@ -203,6 +430,40 @@ def test_live_session_is_metered(client):
 
     summary = client.get("/api/usage", headers=headers).json()
     assert summary["totalRequests"] >= 1
+
+
+def test_live_speech_session_records_managed_voice_usage():
+    c = _speech_client()
+    try:
+        headers = {"X-Dev-User": "speechmeter"}
+        uid = _internal_id(c, headers)
+        usage = FakeUsageService()
+        c.app.state.usage = usage
+        c.app.state.realtime_connector = FakeRealtimeConnector()
+        with c.websocket_connect(
+            "/api/voice/live?provider=speech_voice_live",
+            subprotocols=[DEV_SUBPROTOCOL, "speechmeter"],
+            headers=_origin(),
+        ) as ws:
+            ws.send_text("ping")
+            assert ws.receive_text() == "echo:ping"
+
+        assert len(usage.calls) == 1
+        call = usage.calls[0]
+        assert call["user_id"] == uid
+        assert call["session_id"] == "voice-live"
+        assert call["model_id"] == "gpt-realtime"
+        assert call["status"] == "complete"
+        assert call["usage"].known is False
+        assert call["usage"].complete is False
+        assert call["usage"].calls == 1
+        target = call["target"]
+        assert target.provider == "speech_voice_live"
+        assert target.deployment is None
+        assert target.target == "managed_voice_live"
+        assert target.region == "eastus2"
+    finally:
+        c.__exit__(None, None, None)
 
 
 def test_live_accepts_matching_origin_with_allowlist():

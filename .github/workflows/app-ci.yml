@@ -6,14 +6,18 @@ on:
       - "app/**"
       - "infra/models.json"
       - "infra/mcp-servers.json"
+      - "infra/voice-providers.json"
+      - "infra/voice-providers.schema.json"
       - "foundry/**"
       - "scripts/gen-model-catalog.py"
       - "scripts/gen-mcp-catalog.py"
+      - "scripts/gen-voice-provider-catalog.py"
       - "scripts/provision-foundry-toolbox.py"
       - "scripts/provision-foundry-skills.py"
       - "scripts/provision-private-tool-catalog.py"
       - "scripts/provision-foundry-routine.py"
       - "scripts/provision-foundry-a2a.py"
+      - "scripts/tests/test_voice_provider_catalog.py"
       - ".github/workflows/app-ci.yml"
   push:
     branches: [main]
@@ -21,14 +25,18 @@ on:
       - "app/**"
       - "infra/models.json"
       - "infra/mcp-servers.json"
+      - "infra/voice-providers.json"
+      - "infra/voice-providers.schema.json"
       - "foundry/**"
       - "scripts/gen-model-catalog.py"
       - "scripts/gen-mcp-catalog.py"
+      - "scripts/gen-voice-provider-catalog.py"
       - "scripts/provision-foundry-toolbox.py"
       - "scripts/provision-foundry-skills.py"
       - "scripts/provision-private-tool-catalog.py"
       - "scripts/provision-foundry-routine.py"
       - "scripts/provision-foundry-a2a.py"
+      - "scripts/tests/test_voice_provider_catalog.py"
 
 permissions:
   contents: read
@@ -82,6 +90,9 @@ jobs:
       - name: MCP catalog drift check
         working-directory: .
         run: python scripts/gen-mcp-catalog.py --check
+      - name: Voice provider catalog drift check
+        working-directory: .
+        run: python scripts/gen-voice-provider-catalog.py --check
       - name: Lint (ruff)
         run: ruff check .
       - name: Type check (pyright)

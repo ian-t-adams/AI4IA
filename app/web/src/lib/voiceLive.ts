@@ -19,6 +19,12 @@ import {
 } from "react";
 
 import { getApiAccessToken, isEntraEnabled } from "./auth";
+import {
+  DEFAULT_VOICE_PROVIDER_ID,
+  voiceProviderCatalog,
+  type VoiceProvider,
+  type VoiceProviderId,
+} from "./data/voice_provider_catalog";
 
 // Azure realtime speaks 24 kHz mono PCM16 in both directions.
 export const PCM_SAMPLE_RATE = 24000;
@@ -50,6 +56,17 @@ export function encodeDevCredential(devUser: string): string {
   return SUBPROTOCOL_TOKEN_RE.test(devUser)
     ? devUser
     : `${DEV_CREDENTIAL_B64URL_PREFIX}${toBase64Url(devUser)}`;
+}
+
+export type { VoiceProvider, VoiceProviderId };
+export const DEFAULT_VOICE_PROVIDER = DEFAULT_VOICE_PROVIDER_ID;
+export type AzureOpenAIVoiceProvider = Extract<VoiceProvider, { id: "azure_openai" }>;
+export type SpeechVoiceProvider = Extract<VoiceProvider, { id: "speech_voice_live" }>;
+
+export interface VoiceLiveProviderCatalogResponse {
+  defaultProviderId: VoiceProviderId;
+  enabledProviderIds: VoiceProviderId[];
+  providers: VoiceProvider[];
 }
 
 export interface VoiceLiveConfig {
@@ -90,6 +107,40 @@ export const DEFAULT_VOICE: RealtimeVoice = "alloy";
 export function isRealtimeVoice(value: string): value is RealtimeVoice {
   return (REALTIME_VOICES as readonly string[]).includes(value);
 }
+
+export const DEFAULT_SPEECH_VOICE = "en-US-Ava:DragonHDLatestNeural";
+export const DEFAULT_SPEECH_LOCALE = "en-US";
+export const DEFAULT_SPEECH_TRANSCRIPTION = "azure-speech";
+export const DEFAULT_SPEECH_TURN_DETECTION = "azure_semantic_vad";
+export const DEFAULT_SPEECH_NOISE_SUPPRESSION = "azure_deep_noise_suppression";
+export const DEFAULT_SPEECH_ECHO_CANCELLATION = "server_echo_cancellation";
+
+export interface SpeechVoiceLiveSettings {
+  instructions: string;
+  temperature: number | null;
+  voice: string;
+  locale: string;
+  transcription: string;
+  turnDetection: "azure_semantic_vad" | "azure_semantic_vad_multilingual";
+  noiseSuppression: "azure_deep_noise_suppression";
+  echoCancellation: "server_echo_cancellation";
+  interruptResponse: boolean;
+  autoTruncate: boolean;
+}
+
+export const DEFAULT_SPEECH_VOICE_LIVE_SETTINGS: SpeechVoiceLiveSettings = {
+  instructions:
+    "You are a helpful, concise voice assistant. Keep spoken replies brief and natural.",
+  temperature: null,
+  voice: DEFAULT_SPEECH_VOICE,
+  locale: DEFAULT_SPEECH_LOCALE,
+  transcription: DEFAULT_SPEECH_TRANSCRIPTION,
+  turnDetection: DEFAULT_SPEECH_TURN_DETECTION,
+  noiseSuppression: DEFAULT_SPEECH_NOISE_SUPPRESSION,
+  echoCancellation: DEFAULT_SPEECH_ECHO_CANCELLATION,
+  interruptResponse: true,
+  autoTruncate: false,
+};
 
 export type LiveTurnRole = "user" | "assistant";
 
@@ -272,6 +323,16 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSessionSettings = {
   language: "",
 };
 
+const SPEECH_PROVIDER = voiceProviderCatalog.providers.find(
+  (provider): provider is SpeechVoiceProvider => provider.id === "speech_voice_live",
+);
+
+export function isSpeechVoiceProvider(
+  provider: VoiceProvider | undefined,
+): provider is SpeechVoiceProvider {
+  return provider?.id === "speech_voice_live";
+}
+
 export function isVadType(value: string): value is VadType {
   return (VAD_TYPES as readonly string[]).includes(value);
 }
@@ -317,6 +378,106 @@ export function sessionUpdate(
   };
   if (settings.temperature != null) session.temperature = settings.temperature;
   return JSON.stringify({ type: "session.update", session });
+}
+
+export function speechSessionUpdate(
+  settings: SpeechVoiceLiveSettings = DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+): string {
+  const provider = SPEECH_PROVIDER;
+  const allowedVoices: readonly string[] =
+    provider?.capabilities.voices.options ?? [DEFAULT_SPEECH_VOICE];
+  const allowedLocales: readonly string[] =
+    provider?.capabilities.locale?.options ?? [DEFAULT_SPEECH_LOCALE];
+  const allowedTranscriptions =
+    (provider?.capabilities.inputTranscription.options ?? [
+      DEFAULT_SPEECH_TRANSCRIPTION,
+    ]) as readonly string[];
+  const allowedTurnDetection =
+    (provider?.capabilities.turnDetection.options ?? [
+      DEFAULT_SPEECH_TURN_DETECTION,
+      "azure_semantic_vad_multilingual",
+    ]) as readonly string[];
+  const allowedNoiseSuppression =
+    (provider?.capabilities.noiseSuppression?.options ?? [
+      DEFAULT_SPEECH_NOISE_SUPPRESSION,
+    ]) as readonly string[];
+  const allowedEchoCancellation =
+    (provider?.capabilities.echoCancellation?.options ?? [
+      DEFAULT_SPEECH_ECHO_CANCELLATION,
+    ]) as readonly string[];
+  const voice =
+    typeof settings.voice === "string" && allowedVoices.includes(settings.voice)
+      ? settings.voice
+      : allowedVoices[0] ?? DEFAULT_SPEECH_VOICE;
+  const locale =
+    typeof settings.locale === "string" && allowedLocales.includes(settings.locale)
+      ? settings.locale
+      : allowedLocales[0] ?? DEFAULT_SPEECH_LOCALE;
+  const transcription =
+    typeof settings.transcription === "string" &&
+    allowedTranscriptions.includes(settings.transcription)
+      ? settings.transcription
+      : allowedTranscriptions[0] ?? DEFAULT_SPEECH_TRANSCRIPTION;
+  const turnDetection =
+    typeof settings.turnDetection === "string" &&
+    allowedTurnDetection.includes(settings.turnDetection)
+      ? settings.turnDetection
+      : allowedTurnDetection[0] ?? DEFAULT_SPEECH_TURN_DETECTION;
+  const noiseSuppression =
+    typeof settings.noiseSuppression === "string" &&
+    allowedNoiseSuppression.includes(settings.noiseSuppression)
+      ? settings.noiseSuppression
+      : allowedNoiseSuppression[0] ?? DEFAULT_SPEECH_NOISE_SUPPRESSION;
+  const echoCancellation =
+    typeof settings.echoCancellation === "string" &&
+    allowedEchoCancellation.includes(settings.echoCancellation)
+      ? settings.echoCancellation
+      : allowedEchoCancellation[0] ?? DEFAULT_SPEECH_ECHO_CANCELLATION;
+  const session: Record<string, unknown> = {
+    instructions: settings.instructions,
+    voice: {
+      type: provider?.capabilities.voices.kind ?? "azure-standard",
+      name: voice,
+      locale,
+    },
+    input_audio_transcription: {
+      model: transcription,
+      language: locale,
+    },
+    turn_detection: {
+      type: turnDetection,
+      interrupt_response: settings.interruptResponse,
+      auto_truncate: settings.autoTruncate,
+    },
+    input_audio_noise_reduction: { type: noiseSuppression },
+    input_audio_echo_cancellation: { type: echoCancellation },
+  };
+  if (typeof settings.temperature === "number" && Number.isFinite(settings.temperature)) {
+    session.temperature = Math.min(2, Math.max(0, settings.temperature));
+  }
+  return JSON.stringify({ type: "session.update", session });
+}
+
+export function buildVoiceLiveWebSocketUrl(
+  baseUrl: string,
+  input: {
+    providerId: VoiceProviderId;
+    model?: string | null;
+    region?: string | null;
+    agent?: string | null;
+    tools?: boolean;
+  },
+): string {
+  const params = new URLSearchParams();
+  params.set("provider", input.providerId);
+  if (input.providerId === "azure_openai") {
+    if (input.model) params.set("model", input.model);
+    if (input.region) params.set("region", input.region);
+  }
+  if (input.agent) params.set("agent", input.agent);
+  if (input.tools) params.set("tools", "1");
+  const qs = params.toString();
+  return qs ? `${baseUrl}?${qs}` : baseUrl;
 }
 
 // A readable label for a server-executed tool name (e.g. "get_current_time" ->
@@ -415,12 +576,15 @@ interface PendingLiveSession {
 // lifecycle and tears everything down on stop or unmount.
 export function useVoiceLive(
   config: VoiceLiveConfig,
+  providerId: VoiceProviderId,
   model: string | null,
+  region: string | null,
   voice: string,
   onError: (message: string) => void,
   agent: string | null = null,
   history: VoiceSeedTurn[] = [],
   settings: VoiceSessionSettings = DEFAULT_VOICE_SETTINGS,
+  speechSettings: SpeechVoiceLiveSettings = DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   tools: boolean = false,
 ): VoiceLiveController {
   const [status, setStatus] = useState<VoiceLiveStatus>("idle");
@@ -454,6 +618,14 @@ export function useVoiceLive(
   useEffect(() => {
     voiceRef.current = voice;
   }, [voice]);
+  const providerIdRef = useRef(providerId);
+  useEffect(() => {
+    providerIdRef.current = providerId;
+  }, [providerId]);
+  const regionRef = useRef(region);
+  useEffect(() => {
+    regionRef.current = region;
+  }, [region]);
 
   // Recent text-chat history to seed into the next live session, kept in a ref so
   // updates don't re-create ``start`` or restart a live session mid-conversation.
@@ -468,6 +640,10 @@ export function useVoiceLive(
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
+  const speechSettingsRef = useRef(speechSettings);
+  useEffect(() => {
+    speechSettingsRef.current = speechSettings;
+  }, [speechSettings]);
   const toolsRef = useRef(tools);
   useEffect(() => {
     toolsRef.current = tools;
@@ -596,14 +772,13 @@ export function useVoiceLive(
       // The relay resolves the realtime deployment and (when ?agent= is set) the
       // agent's server-authoritative persona + tool allowlist; the browser only
       // names them. An unknown/disabled agent falls back to the generic assistant.
-      const params = new URLSearchParams();
-      if (model) params.set("model", model);
-      if (agent) params.set("agent", agent);
-      // Per-session governed-tools opt-in. The relay also requires the server flag,
-      // so this only matters when tools are advertised available.
-      if (toolsRef.current) params.set("tools", "1");
-      const qs = params.toString();
-      const wsUrl = qs ? `${config.wsUrl}?${qs}` : config.wsUrl;
+      const wsUrl = buildVoiceLiveWebSocketUrl(config.wsUrl, {
+        providerId: providerIdRef.current,
+        model,
+        region: regionRef.current,
+        agent,
+        tools: toolsRef.current,
+      });
       const ws = new WebSocket(wsUrl, subprotocols);
       ws.binaryType = "arraybuffer";
 
@@ -620,6 +795,13 @@ export function useVoiceLive(
       sessionRef.current = session;
       pendingRef.current = null;
 
+      let activeResponseId: string | null = null;
+      let activeAssistantItemId: string | null = null;
+      let activeAssistantContentIndex: number | null = null;
+      let responseAudioStartTime: number | null = null;
+      let responseAudioDurationMs = 0;
+      let cancellationRequested = false;
+
       const enqueuePlayback = (b64: string) => {
         const int16 = base64ToInt16(b64);
         if (int16.length === 0) return;
@@ -630,6 +812,8 @@ export function useVoiceLive(
         node.buffer = buffer;
         node.connect(ctx.destination);
         const startAt = Math.max(ctx.currentTime, session.nextPlayTime);
+        if (responseAudioStartTime === null) responseAudioStartTime = startAt;
+        responseAudioDurationMs += buffer.duration * 1000;
         node.start(startAt);
         session.nextPlayTime = startAt + buffer.duration;
         session.scheduled.add(node);
@@ -637,6 +821,22 @@ export function useVoiceLive(
       };
 
       const bargeIn = () => {
+        if (
+          providerIdRef.current === "speech_voice_live" &&
+          !speechSettingsRef.current.interruptResponse
+        ) {
+          return;
+        }
+        const playedMs =
+          responseAudioStartTime === null
+            ? 0
+            : Math.max(
+                0,
+                Math.min(
+                  responseAudioDurationMs,
+                  Math.round(ctx.currentTime * 1000 - responseAudioStartTime * 1000),
+                ),
+              );
         for (const node of session.scheduled) {
           try {
             node.stop();
@@ -646,6 +846,25 @@ export function useVoiceLive(
         }
         session.scheduled.clear();
         session.nextPlayTime = 0;
+        if (activeResponseId && !cancellationRequested) {
+          ws.send(JSON.stringify({ type: "response.cancel" }));
+          cancellationRequested = true;
+          if (
+            activeAssistantItemId &&
+            activeAssistantContentIndex !== null &&
+            !speechSettingsRef.current.autoTruncate &&
+            playedMs > 0
+          ) {
+            ws.send(
+              JSON.stringify({
+                type: "conversation.item.truncate",
+                item_id: activeAssistantItemId,
+                content_index: activeAssistantContentIndex,
+                audio_end_ms: Math.max(0, Math.min(Math.round(playedMs), responseAudioDurationMs)),
+              }),
+            );
+          }
+        }
       };
 
       // --- live timeline state (per session; closed over by the event handler) ---
@@ -689,29 +908,80 @@ export function useVoiceLive(
 
       const handleServerEvent = (ev: MessageEvent) => {
         if (typeof ev.data !== "string") return;
-        let msg: Record<string, unknown>;
+        let msg: {
+          type?: unknown;
+          delta?: unknown;
+          response_id?: unknown;
+          id?: unknown;
+          response?: { id?: unknown };
+          item_id?: unknown;
+          item?: { id?: unknown };
+          content_index?: unknown;
+          content?: { index?: unknown };
+          name?: unknown;
+          transcript?: unknown;
+          error?: { message?: unknown };
+        } | null = null;
         try {
-          msg = JSON.parse(ev.data) as Record<string, unknown>;
+          msg = JSON.parse(ev.data);
         } catch {
           return;
         }
+        if (!msg) return;
         const type = typeof msg.type === "string" ? msg.type : "";
         switch (type) {
           case "response.audio.delta": {
+            if (cancellationRequested) break;
             const delta = typeof msg.delta === "string" ? msg.delta : "";
             if (delta) {
+              const responseId =
+                typeof msg.response_id === "string"
+                  ? msg.response_id
+                  : typeof msg.response?.id === "string"
+                    ? msg.response.id
+                    : activeResponseId;
+              if (responseId) activeResponseId = responseId;
+              const itemId =
+                typeof msg.item_id === "string"
+                  ? msg.item_id
+                  : typeof msg.item?.id === "string"
+                    ? msg.item.id
+                    : null;
+              if (itemId) activeAssistantItemId = itemId;
+              const contentIndex =
+                typeof msg.content_index === "number"
+                  ? msg.content_index
+                  : typeof msg.content?.index === "number"
+                    ? msg.content.index
+                    : null;
+              if (contentIndex !== null) activeAssistantContentIndex = contentIndex;
               enqueuePlayback(delta);
               if (mountedRef.current) setSpeaking(true);
             }
             break;
           }
           case "response.audio_transcript.delta": {
+            if (cancellationRequested) break;
             const delta = typeof msg.delta === "string" ? msg.delta : "";
             if (delta && mountedRef.current) {
               setAssistantTranscript((p) => p + delta);
               const id = ensureAssistantTurn();
               patchTurn(id, (t) => ({ ...t, text: t.text + delta, streaming: true }));
             }
+            const itemId =
+              typeof msg.item_id === "string"
+                ? msg.item_id
+                : typeof msg.item?.id === "string"
+                  ? msg.item.id
+                  : null;
+            if (itemId) activeAssistantItemId = itemId;
+            const contentIndex =
+              typeof msg.content_index === "number"
+                ? msg.content_index
+                : typeof msg.content?.index === "number"
+                  ? msg.content.index
+                  : null;
+            if (contentIndex !== null) activeAssistantContentIndex = contentIndex;
             break;
           }
           case "response.function_call_arguments.done": {
@@ -754,6 +1024,20 @@ export function useVoiceLive(
             break;
           }
           case "response.created": {
+            cancellationRequested = false;
+            responseAudioStartTime = null;
+            responseAudioDurationMs = 0;
+            activeAssistantItemId = null;
+            activeAssistantContentIndex = null;
+            const responseId =
+              typeof msg.response_id === "string"
+                ? msg.response_id
+                : typeof msg.response?.id === "string"
+                  ? msg.response.id
+                  : typeof msg.id === "string"
+                    ? msg.id
+                    : null;
+            if (responseId) activeResponseId = responseId;
             if (mountedRef.current) setAssistantTranscript("");
             break;
           }
@@ -765,6 +1049,12 @@ export function useVoiceLive(
               setSpeaking(false);
               if (assistantTurnId) patchTurn(assistantTurnId, (t) => ({ ...t, streaming: false }));
             }
+            activeResponseId = null;
+            activeAssistantItemId = null;
+            activeAssistantContentIndex = null;
+            responseAudioStartTime = null;
+            responseAudioDurationMs = 0;
+            cancellationRequested = false;
             break;
           }
           case "input_audio_buffer.speech_started": {
@@ -820,7 +1110,11 @@ export function useVoiceLive(
 
       ws.onopen = () => {
         session.opened = true;
-        ws.send(sessionUpdate(voiceRef.current, settingsRef.current));
+        ws.send(
+          providerIdRef.current === "speech_voice_live"
+            ? speechSessionUpdate(speechSettingsRef.current)
+            : sessionUpdate(voiceRef.current, settingsRef.current),
+        );
         // Seed the session with recent text history so voice continues the same
         // conversation. Sent after session.update; passes through the relay as-is.
         for (const frame of seedFrames(historyRef.current)) ws.send(frame);
@@ -918,5 +1212,7 @@ export function useVoiceLive(
     start,
     toggle,
     stop,
+    // Back-compat with the inline controller: provider-aware start remains off
+    // when the selected provider/model combination is not usable yet.
   };
 }

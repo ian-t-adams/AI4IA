@@ -18,10 +18,12 @@ from ai4ia_api.agents.tool_exec import build_tools
 from ai4ia_api.auth.base import AuthCredentials, AuthError, AuthenticatedUser
 from ai4ia_api.catalog import DeploymentOption, ModelCatalog, ModelEntry
 from ai4ia_api.config import GatewayAuthMode
+from ai4ia_api.voice_provider_catalog import load_voice_provider_catalog
 from ai4ia_api.routers.realtime import (
     BEARER_SUBPROTOCOL,
     DEV_SUBPROTOCOL,
     AuthSubprotocol,
+    LiveVoiceProviderError,
     RealtimeFunctionCall,
     RealtimeResolutionError,
     ToolBridge,
@@ -34,11 +36,13 @@ from ai4ia_api.routers.realtime import (
     decode_dev_credential,
     flatten_realtime_tools,
     inject_session_tools,
+    normalize_speech_session_update,
     origin_allowed,
     parse_auth_subprotocols,
     parse_function_call_done,
     parse_tools_opt_in,
     resolve_realtime_deployment,
+    _resolve_live_voice_provider,
 )
 from tests.conftest import make_settings
 
@@ -216,6 +220,92 @@ def test_resolve_no_realtime_models_available():
         resolve_realtime_deployment(chat_only, None, None)
 
 
+def test_resolve_speech_provider_uses_managed_metering_target():
+    settings = make_settings(
+        env="dev",
+        realtime_enabled=True,
+        realtime_allowed_origins="https://web.example",
+        model_gateway_auth_mode="api_key",
+        model_gateway_api_key="proxy-ingress-key",
+        realtime_base_url="https://replacement.azure-api.net/openai",
+        realtime_gateway_api_key="realtime-key",
+        speech_voice_live_enabled=True,
+        voice_provider_allowlist="azure_openai,speech_voice_live",
+        voice_default_provider="azure_openai",
+        speech_voice_live_base_url="https://replacement.azure-api.net/speech/voice-live",
+        speech_voice_live_gateway_api_key="speech-key",
+    )
+    state = SimpleNamespace(catalog=_catalog(), voice_provider_catalog=load_voice_provider_catalog())
+    resolution = _resolve_live_voice_provider(
+        state,
+        settings,
+        "speech_voice_live",
+        model="gpt-realtime",
+        region="eastus2",
+    )
+    assert resolution.deployment is None
+    assert resolution.usage_target.provider == "speech_voice_live"
+    assert resolution.usage_target.deployment is None
+    assert resolution.usage_target.target == "managed_voice_live"
+    assert resolution.usage_target.region == "eastus2"
+
+
+def test_missing_provider_uses_the_server_advertised_default():
+    settings = make_settings(
+        env="dev",
+        realtime_enabled=True,
+        voice_provider_allowlist="azure_openai,speech_voice_live",
+        voice_default_provider="speech_voice_live",
+        speech_voice_live_enabled=True,
+        speech_voice_live_base_url="https://replacement.azure-api.net/speech/voice-live",
+        speech_voice_live_gateway_api_key="speech-key",
+    )
+    state = SimpleNamespace(catalog=_catalog(), voice_provider_catalog=load_voice_provider_catalog())
+
+    resolution = _resolve_live_voice_provider(
+        state,
+        settings,
+        None,
+        model=None,
+        region=None,
+    )
+
+    assert resolution.provider.id == "speech_voice_live"
+    assert resolution.target_param == "model"
+
+
+@pytest.mark.parametrize(
+    ("enabled", "base_url", "api_key", "message"),
+    [
+        (False, "https://replacement.azure-api.net/speech/voice-live", "speech-key", "disabled"),
+        (True, "", "speech-key", "not fully configured"),
+        (True, "https://replacement.azure-api.net/speech/voice-live", "", "not fully configured"),
+    ],
+)
+def test_disabled_or_incomplete_speech_provider_fails_before_resolution(
+    enabled, base_url, api_key, message
+):
+    settings = make_settings(
+        env="dev",
+        realtime_enabled=True,
+        voice_provider_allowlist="azure_openai,speech_voice_live",
+        voice_default_provider="azure_openai",
+        speech_voice_live_enabled=enabled,
+        speech_voice_live_base_url=base_url,
+        speech_voice_live_gateway_api_key=api_key,
+    )
+    state = SimpleNamespace(catalog=_catalog(), voice_provider_catalog=load_voice_provider_catalog())
+
+    with pytest.raises(LiveVoiceProviderError, match=message):
+        _resolve_live_voice_provider(
+            state,
+            settings,
+            "speech_voice_live",
+            model=None,
+            region=None,
+        )
+
+
 # --------------------------------------------------------------------------- #
 # build_upstream_url
 # --------------------------------------------------------------------------- #
@@ -243,6 +333,16 @@ def test_build_url_strips_trailing_slash():
 def test_build_url_encodes_deployment_and_version():
     url = build_upstream_url("https://h/openai", "2025-04-01-preview", "dep name/special")
     assert "deployment=dep%20name%2Fspecial" in url
+
+
+def test_build_url_supports_fixed_model_target():
+    url = build_upstream_url(
+        "https://h/speech/voice-live",
+        "2026-04-10",
+        "gpt-realtime",
+        target_param="model",
+    )
+    assert url == "wss://h/speech/voice-live/realtime?api-version=2026-04-10&model=gpt-realtime"
 
 
 # --------------------------------------------------------------------------- #
@@ -274,6 +374,151 @@ def test_headers_none_mode_has_no_credential():
 def test_headers_api_key_mode_without_key_omits_header():
     headers = build_upstream_headers(GatewayAuthMode.api_key, None, None)
     assert headers == {}
+
+
+def _speech_provider():
+    return load_voice_provider_catalog().get("speech_voice_live")
+
+
+def test_normalize_speech_session_update_strips_custom_voice_fields():
+    provider = _speech_provider()
+    assert provider is not None
+    frame = json.dumps(
+        {
+            "type": "session.update",
+            "session": {
+                "voice": {
+                    "type": "azure-standard",
+                    "name": "en-US-AndrewNeural",
+                    "endpointId": "custom-endpoint",
+                },
+                "input_audio_transcription": {"model": "azure-speech", "provider": "bad"},
+                "turn_detection": {
+                    "type": "azure_semantic_vad_multilingual",
+                    "threshold": 2,
+                    "silence_duration_ms": 750,
+                    "interrupt_response": True,
+                    "auto_truncate": False,
+                },
+                "locale": "en-US",
+                "input_audio_noise_reduction": {"type": "azure_deep_noise_suppression"},
+                "input_audio_echo_cancellation": {"type": "server_echo_cancellation"},
+                "voiceEndpointId": "custom-endpoint",
+                "lexicons": ["bad"],
+                "personalVoice": {"name": "bad"},
+                "tools": [{"type": "function", "name": "untrusted"}],
+            },
+        }
+    )
+    out = json.loads(normalize_speech_session_update(frame, provider))
+    session = out["session"]
+    assert session["voice"] == {
+        "type": "azure-standard",
+        "name": "en-US-AndrewNeural",
+        "locale": "en-US",
+    }
+    assert session["input_audio_transcription"] == {
+        "model": "azure-speech",
+        "language": "en-US",
+    }
+    assert session["turn_detection"] == {
+        "type": "azure_semantic_vad_multilingual",
+        "create_response": True,
+        "interrupt_response": True,
+        "auto_truncate": False,
+        "threshold": 1.0,
+        "silence_duration_ms": 750,
+    }
+    assert session["input_audio_noise_reduction"] == {
+        "type": "azure_deep_noise_suppression"
+    }
+    assert session["input_audio_echo_cancellation"] == {
+        "type": "server_echo_cancellation"
+    }
+    assert session["input_audio_sampling_rate"] == 24_000
+    assert "voiceEndpointId" not in session
+    assert "lexicons" not in session
+    assert "personalVoice" not in session
+    assert "tools" not in session
+
+
+def test_normalize_speech_session_update_reconstructs_and_bounds_hostile_payload():
+    provider = _speech_provider()
+    assert provider is not None
+    out = json.loads(
+        normalize_speech_session_update(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "host": "attacker.example",
+                    "path": "/other",
+                    "api-version": "future",
+                    "model": "attacker-model",
+                    "deployment": "attacker-deployment",
+                    "session": {
+                        "instructions": "Speech only.",
+                        "temperature": 99,
+                        "voice": {
+                            "type": "custom",
+                            "name": "personal-voice",
+                            "locale": "xx-XX",
+                            "endpointId": "custom-endpoint",
+                        },
+                        "input_audio_transcription": {
+                            "model": "custom-transcriber",
+                            "endpoint": "https://attacker.example",
+                        },
+                        "turn_detection": {
+                            "type": "custom-vad",
+                            "threshold": -10,
+                            "silence_duration_ms": 999_999,
+                            "interrupt_response": "yes",
+                            "auto_truncate": "yes",
+                        },
+                        "input_audio_noise_reduction": {"type": "custom-noise"},
+                        "input_audio_echo_cancellation": {"type": "custom-echo"},
+                        "tools": [{"type": "function", "name": "untrusted"}],
+                        "customVoice": {"secret": "never-forward"},
+                    },
+                }
+            ),
+            provider,
+        )
+    )
+
+    assert set(out) == {"type", "session"}
+    session = out["session"]
+    assert set(session) == {
+        "voice",
+        "input_audio_transcription",
+        "turn_detection",
+        "input_audio_format",
+        "output_audio_format",
+        "input_audio_sampling_rate",
+        "modalities",
+        "instructions",
+        "temperature",
+        "input_audio_noise_reduction",
+        "input_audio_echo_cancellation",
+    }
+    assert session["voice"] == {
+        "type": "azure-standard",
+        "name": provider.capabilities.voices.default,
+        "locale": provider.sessionDefaults.locale,
+    }
+    assert session["input_audio_transcription"] == {
+        "model": provider.capabilities.inputTranscription.default,
+        "language": provider.sessionDefaults.locale,
+    }
+    assert session["turn_detection"] == {
+        "type": provider.capabilities.turnDetection.default,
+        "create_response": True,
+        "interrupt_response": provider.sessionDefaults.interruptResponse,
+        "auto_truncate": provider.sessionDefaults.autoTruncate,
+        "threshold": 0.0,
+        "silence_duration_ms": 60_000,
+    }
+    assert session["temperature"] == 2.0
 
 
 # --------------------------------------------------------------------------- #

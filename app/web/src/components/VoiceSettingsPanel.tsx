@@ -11,10 +11,12 @@ import { useId } from "react";
 
 import type { AgentSummary } from "@/lib/types";
 import {
-  REALTIME_VOICES,
+  isSpeechVoiceProvider,
   VAD_TYPES,
-  type RealtimeVoice,
+  type SpeechVoiceLiveSettings,
   type VadType,
+  type VoiceProvider,
+  type VoiceProviderId,
   type VoiceSessionSettings,
 } from "@/lib/voiceLive";
 import {
@@ -36,8 +38,18 @@ export interface VoiceSettingsModel {
   displayName: string;
 }
 
+export interface VoiceSettingsProvider {
+  id: VoiceProviderId;
+  displayLabel: string;
+  description: string;
+}
+
 export interface VoiceSettingsPanelProps {
   agents: AgentSummary[];
+  providers: VoiceSettingsProvider[];
+  provider: VoiceProviderId;
+  onProviderChange: (provider: VoiceProviderId) => void;
+  activeProvider: VoiceProvider;
   // Label for the "use the default" agent option, e.g. naming the agent the
   // active chat is currently using (or "the generic assistant" when none).
   defaultAgentLabel: string;
@@ -47,13 +59,15 @@ export interface VoiceSettingsPanelProps {
   defaultModelLabel: string;
   explicitModel: string | null;
   onModelChange: (model: string | null) => void;
-  voice: RealtimeVoice;
-  onVoiceChange: (voice: RealtimeVoice) => void;
+  voice: string;
+  onVoiceChange: (voice: string) => void;
   toolsAvailable: boolean;
   tools: boolean;
   onToolsChange: (enabled: boolean) => void;
   settings: VoiceSessionSettings;
   onSettingsChange: (settings: VoiceSessionSettings) => void;
+  speechSettings: SpeechVoiceLiveSettings;
+  onSpeechSettingsChange: (settings: SpeechVoiceLiveSettings) => void;
   onReset: () => void;
   // True while a live session is connecting/live/closing or a transcript save
   // is in flight — controls disable but stay visible; edits apply next
@@ -80,6 +94,10 @@ const CONTROL_STYLE: React.CSSProperties = {
 
 export function VoiceSettingsPanel({
   agents,
+  providers,
+  provider,
+  onProviderChange,
+  activeProvider,
   defaultAgentLabel,
   explicitAgent,
   onAgentChange,
@@ -94,14 +112,32 @@ export function VoiceSettingsPanel({
   onToolsChange,
   settings,
   onSettingsChange,
+  speechSettings,
+  onSpeechSettingsChange,
   onReset,
   locked,
 }: VoiceSettingsPanelProps) {
   const idPrefix = useId();
   const enabledAgents = agents.filter((agent) => agent.enabled);
+  const isSpeechProvider = provider === "speech_voice_live";
+  const speechProvider = isSpeechVoiceProvider(activeProvider) ? activeProvider : undefined;
+  const voiceOptions: readonly string[] = activeProvider.capabilities.voices.options;
+  const localeOptions: readonly string[] = speechProvider?.capabilities.locale?.options ?? [];
+  const transcriptionOptions: readonly string[] =
+    speechProvider?.capabilities.inputTranscription.options ?? [];
+  const turnDetectionOptions: readonly SpeechVoiceLiveSettings["turnDetection"][] =
+    speechProvider?.capabilities.turnDetection.options ?? [];
+  const noiseSuppressionOptions: readonly SpeechVoiceLiveSettings["noiseSuppression"][] =
+    speechProvider?.capabilities.noiseSuppression?.options ?? [];
+  const echoCancellationOptions: readonly SpeechVoiceLiveSettings["echoCancellation"][] =
+    speechProvider?.capabilities.echoCancellation?.options ?? [];
 
   function patchSettings(patch: Partial<VoiceSessionSettings>) {
     onSettingsChange({ ...settings, ...patch });
+  }
+
+  function patchSpeechSettings(patch: Partial<SpeechVoiceLiveSettings>) {
+    onSpeechSettingsChange({ ...speechSettings, ...patch });
   }
 
   return (
@@ -131,6 +167,80 @@ export function VoiceSettingsPanel({
           padding: "4px 10px 10px",
         }}
       >
+        <label style={FIELD_STYLE} htmlFor={`${idPrefix}-provider`}>
+          Provider
+          <select
+            id={`${idPrefix}-provider`}
+            value={provider}
+            disabled={locked}
+            onChange={(e) => onProviderChange(e.target.value as VoiceProviderId)}
+            style={CONTROL_STYLE}
+          >
+            {providers.map((entry) => (
+              <option key={entry.id} value={entry.id} title={entry.description}>
+                {entry.displayLabel}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {isSpeechProvider ? (
+          <div
+            style={{
+              ...FIELD_STYLE,
+              flexBasis: "100%",
+              padding: "6px 8px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+            }}
+          >
+            <span>Managed model</span>
+            <strong>
+              {speechProvider?.managedModel
+                ? `${speechProvider.managedModel.modelId} · ${speechProvider.managedModel.initialRegion}`
+                : "Managed speech provider"}
+            </strong>
+          </div>
+        ) : (
+          <label style={FIELD_STYLE} htmlFor={`${idPrefix}-model`}>
+            Realtime model
+            <select
+              id={`${idPrefix}-model`}
+              value={explicitModel ?? DEFAULT_OPTION_VALUE}
+              disabled={locked}
+              onChange={(e) =>
+                onModelChange(e.target.value === DEFAULT_OPTION_VALUE ? null : e.target.value)
+              }
+              style={CONTROL_STYLE}
+            >
+              <option value={DEFAULT_OPTION_VALUE}>{defaultModelLabel}</option>
+              {models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.displayName}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        <label style={FIELD_STYLE} htmlFor={`${idPrefix}-voice`}>
+          Voice
+          <select
+            id={`${idPrefix}-voice`}
+            value={voice}
+            disabled={locked}
+            onChange={(e) => onVoiceChange(e.target.value)}
+            style={CONTROL_STYLE}
+          >
+            {voiceOptions.map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </label>
+
         <label style={FIELD_STYLE} htmlFor={`${idPrefix}-agent`}>
           Agent
           <select
@@ -146,43 +256,6 @@ export function VoiceSettingsPanel({
             {enabledAgents.map((agent) => (
               <option key={agent.name} value={agent.name}>
                 {agent.displayName}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label style={FIELD_STYLE} htmlFor={`${idPrefix}-model`}>
-          Realtime model
-          <select
-            id={`${idPrefix}-model`}
-            value={explicitModel ?? DEFAULT_OPTION_VALUE}
-            disabled={locked}
-            onChange={(e) =>
-              onModelChange(e.target.value === DEFAULT_OPTION_VALUE ? null : e.target.value)
-            }
-            style={CONTROL_STYLE}
-          >
-            <option value={DEFAULT_OPTION_VALUE}>{defaultModelLabel}</option>
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.displayName}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label style={FIELD_STYLE} htmlFor={`${idPrefix}-voice`}>
-          Voice
-          <select
-            id={`${idPrefix}-voice`}
-            value={voice}
-            disabled={locked}
-            onChange={(e) => onVoiceChange(e.target.value as RealtimeVoice)}
-            style={CONTROL_STYLE}
-          >
-            {REALTIME_VOICES.map((v) => (
-              <option key={v} value={v}>
-                {v}
               </option>
             ))}
           </select>
@@ -236,9 +309,15 @@ export function VoiceSettingsPanel({
               Instructions
               <textarea
                 id={`${idPrefix}-instructions`}
-                value={settings.instructions}
+                value={
+                  isSpeechProvider ? speechSettings.instructions : settings.instructions
+                }
                 disabled={locked}
-                onChange={(e) => patchSettings({ instructions: e.target.value })}
+                onChange={(e) =>
+                  isSpeechProvider
+                    ? patchSpeechSettings({ instructions: e.target.value })
+                    : patchSettings({ instructions: e.target.value })
+                }
                 rows={2}
                 style={{ ...CONTROL_STYLE, resize: "vertical", fontFamily: "inherit" }}
               />
@@ -252,99 +331,262 @@ export function VoiceSettingsPanel({
                 min={TEMPERATURE_MIN}
                 max={TEMPERATURE_MAX}
                 step={0.1}
-                value={settings.temperature ?? ""}
+                value={
+                  (isSpeechProvider
+                    ? speechSettings.temperature
+                    : settings.temperature) ?? ""
+                }
                 disabled={locked}
                 placeholder="Model default"
                 onChange={(e) =>
-                  patchSettings({
-                    temperature: e.target.value === "" ? null : Number(e.target.value),
-                  })
+                  isSpeechProvider
+                    ? patchSpeechSettings({
+                        temperature:
+                          e.target.value === "" ? null : Number(e.target.value),
+                      })
+                    : patchSettings({
+                        temperature:
+                          e.target.value === "" ? null : Number(e.target.value),
+                      })
                 }
                 style={CONTROL_STYLE}
               />
             </label>
 
-            <label style={FIELD_STYLE} htmlFor={`${idPrefix}-vad-type`}>
-              Turn detection
-              <select
-                id={`${idPrefix}-vad-type`}
-                value={settings.vadType}
-                disabled={locked}
-                onChange={(e) => patchSettings({ vadType: e.target.value as VadType })}
-                style={CONTROL_STYLE}
-              >
-                {VAD_TYPES.map((v) => (
-                  <option key={v} value={v}>
-                    {v === "server_vad" ? "Energy threshold (server_vad)" : "Semantic (semantic_vad)"}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {isSpeechProvider ? (
+              <>
+                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-locale`}>
+                  Locale
+                  <select
+                    id={`${idPrefix}-locale`}
+                    value={speechSettings.locale}
+                    disabled={locked || localeOptions.length === 0}
+                    onChange={(e) => patchSpeechSettings({ locale: e.target.value })}
+                    style={CONTROL_STYLE}
+                  >
+                    {localeOptions.map((value) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-            <label style={FIELD_STYLE} htmlFor={`${idPrefix}-vad-threshold`}>
-              VAD threshold
-              <input
-                id={`${idPrefix}-vad-threshold`}
-                type="number"
-                min={VAD_THRESHOLD_MIN}
-                max={VAD_THRESHOLD_MAX}
-                step={0.05}
-                value={settings.vadThreshold ?? ""}
-                disabled={locked || settings.vadType !== "server_vad"}
-                placeholder="Model default"
-                onChange={(e) =>
-                  patchSettings({
-                    vadThreshold: e.target.value === "" ? null : Number(e.target.value),
-                  })
-                }
-                style={CONTROL_STYLE}
-              />
-            </label>
+                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-speech-transcription`}>
+                  Transcription
+                  <select
+                    id={`${idPrefix}-speech-transcription`}
+                    value={speechSettings.transcription}
+                    disabled={locked || transcriptionOptions.length === 0}
+                    onChange={(e) => patchSpeechSettings({ transcription: e.target.value })}
+                    style={CONTROL_STYLE}
+                  >
+                    {transcriptionOptions.map((value) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-            <label style={FIELD_STYLE} htmlFor={`${idPrefix}-vad-silence`}>
-              Silence (ms)
-              <input
-                id={`${idPrefix}-vad-silence`}
-                type="number"
-                min={VAD_SILENCE_MIN_MS}
-                max={VAD_SILENCE_MAX_MS}
-                step={50}
-                value={settings.vadSilenceMs ?? ""}
-                disabled={locked || settings.vadType !== "server_vad"}
-                placeholder="Model default"
-                onChange={(e) =>
-                  patchSettings({
-                    vadSilenceMs: e.target.value === "" ? null : Number(e.target.value),
-                  })
-                }
-                style={CONTROL_STYLE}
-              />
-            </label>
+                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-speech-turn`}>
+                  Turn detection
+                  <select
+                    id={`${idPrefix}-speech-turn`}
+                    value={speechSettings.turnDetection}
+                    disabled={locked || turnDetectionOptions.length === 0}
+                    onChange={(e) =>
+                      patchSpeechSettings({
+                        turnDetection: e.target.value as SpeechVoiceLiveSettings["turnDetection"],
+                      })
+                    }
+                    style={CONTROL_STYLE}
+                  >
+                    {turnDetectionOptions.map((value: SpeechVoiceLiveSettings["turnDetection"]) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-            <label style={FIELD_STYLE} htmlFor={`${idPrefix}-transcription-model`}>
-              Transcription model
-              <input
-                id={`${idPrefix}-transcription-model`}
-                type="text"
-                value={settings.transcriptionModel}
-                disabled={locked}
-                onChange={(e) => patchSettings({ transcriptionModel: e.target.value })}
-                style={CONTROL_STYLE}
-              />
-            </label>
+                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-noise-suppression`}>
+                  Noise suppression
+                  <select
+                    id={`${idPrefix}-noise-suppression`}
+                    value={speechSettings.noiseSuppression}
+                    disabled={locked || noiseSuppressionOptions.length === 0}
+                    onChange={(e) =>
+                      patchSpeechSettings({
+                        noiseSuppression:
+                          e.target.value as SpeechVoiceLiveSettings["noiseSuppression"],
+                      })
+                    }
+                    style={CONTROL_STYLE}
+                  >
+                    {noiseSuppressionOptions.map(
+                      (value: SpeechVoiceLiveSettings["noiseSuppression"]) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </label>
 
-            <label style={FIELD_STYLE} htmlFor={`${idPrefix}-language`}>
-              Language hint
-              <input
-                id={`${idPrefix}-language`}
-                type="text"
-                value={settings.language}
-                disabled={locked}
-                placeholder="Auto"
-                onChange={(e) => patchSettings({ language: e.target.value })}
-                style={{ ...CONTROL_STYLE, width: 90 }}
-              />
-            </label>
+                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-echo-cancellation`}>
+                  Echo cancellation
+                  <select
+                    id={`${idPrefix}-echo-cancellation`}
+                    value={speechSettings.echoCancellation}
+                    disabled={locked || echoCancellationOptions.length === 0}
+                    onChange={(e) =>
+                      patchSpeechSettings({
+                        echoCancellation:
+                          e.target.value as SpeechVoiceLiveSettings["echoCancellation"],
+                      })
+                    }
+                    style={CONTROL_STYLE}
+                  >
+                    {echoCancellationOptions.map(
+                      (value: SpeechVoiceLiveSettings["echoCancellation"]) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </label>
+
+                <label
+                  style={{
+                    ...FIELD_STYLE,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                    alignSelf: "flex-end",
+                  }}
+                  htmlFor={`${idPrefix}-speech-interrupt`}
+                >
+                  <input
+                    id={`${idPrefix}-speech-interrupt`}
+                    type="checkbox"
+                    checked={speechSettings.interruptResponse}
+                    disabled={locked}
+                    onChange={(e) =>
+                      patchSpeechSettings({ interruptResponse: e.target.checked })
+                    }
+                  />
+                  Interrupt response on barge-in
+                </label>
+
+                <label
+                  style={{
+                    ...FIELD_STYLE,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                    alignSelf: "flex-end",
+                  }}
+                  htmlFor={`${idPrefix}-speech-truncate`}
+                >
+                  <input
+                    id={`${idPrefix}-speech-truncate`}
+                    type="checkbox"
+                    checked={speechSettings.autoTruncate}
+                    disabled={locked}
+                    onChange={(e) => patchSpeechSettings({ autoTruncate: e.target.checked })}
+                  />
+                  Auto truncate on barge-in
+                </label>
+              </>
+            ) : (
+              <>
+                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-vad-type`}>
+                  Turn detection
+                  <select
+                    id={`${idPrefix}-vad-type`}
+                    value={settings.vadType}
+                    disabled={locked}
+                    onChange={(e) => patchSettings({ vadType: e.target.value as VadType })}
+                    style={CONTROL_STYLE}
+                  >
+                    {VAD_TYPES.map((v) => (
+                      <option key={v} value={v}>
+                        {v === "server_vad"
+                          ? "Energy threshold (server_vad)"
+                          : "Semantic (semantic_vad)"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-vad-threshold`}>
+                  VAD threshold
+                  <input
+                    id={`${idPrefix}-vad-threshold`}
+                    type="number"
+                    min={VAD_THRESHOLD_MIN}
+                    max={VAD_THRESHOLD_MAX}
+                    step={0.05}
+                    value={settings.vadThreshold ?? ""}
+                    disabled={locked || settings.vadType !== "server_vad"}
+                    placeholder="Model default"
+                    onChange={(e) =>
+                      patchSettings({
+                        vadThreshold: e.target.value === "" ? null : Number(e.target.value),
+                      })
+                    }
+                    style={CONTROL_STYLE}
+                  />
+                </label>
+
+                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-vad-silence`}>
+                  Silence (ms)
+                  <input
+                    id={`${idPrefix}-vad-silence`}
+                    type="number"
+                    min={VAD_SILENCE_MIN_MS}
+                    max={VAD_SILENCE_MAX_MS}
+                    step={50}
+                    value={settings.vadSilenceMs ?? ""}
+                    disabled={locked || settings.vadType !== "server_vad"}
+                    placeholder="Model default"
+                    onChange={(e) =>
+                      patchSettings({
+                        vadSilenceMs: e.target.value === "" ? null : Number(e.target.value),
+                      })
+                    }
+                    style={CONTROL_STYLE}
+                  />
+                </label>
+
+                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-transcription-model`}>
+                  Transcription model
+                  <input
+                    id={`${idPrefix}-transcription-model`}
+                    type="text"
+                    value={settings.transcriptionModel}
+                    disabled={locked}
+                    onChange={(e) => patchSettings({ transcriptionModel: e.target.value })}
+                    style={CONTROL_STYLE}
+                  />
+                </label>
+
+                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-language`}>
+                  Language hint
+                  <input
+                    id={`${idPrefix}-language`}
+                    type="text"
+                    value={settings.language}
+                    disabled={locked}
+                    placeholder="Auto"
+                    onChange={(e) => patchSettings({ language: e.target.value })}
+                    style={{ ...CONTROL_STYLE, width: 90 }}
+                  />
+                </label>
+              </>
+            )}
 
             <button
               type="button"

@@ -1,0 +1,410 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AI4IA voice provider catalog",
+  "description": "Authoritative voice provider and capability catalog consumed by the generator, packaged into the API image, and projected into a typed web module.",
+  "type": "object",
+  "required": [
+    "defaultProviderId",
+    "providers"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "_comment": {
+      "type": "string"
+    },
+    "defaultProviderId": {
+      "type": "string",
+      "const": "azure_openai"
+    },
+    "providers": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "displayName",
+          "displayLabel",
+          "description",
+          "transport",
+          "selectionMode",
+          "endpointPath",
+          "sessionDefaults",
+          "capabilities"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "enum": [
+              "azure_openai",
+              "speech_voice_live"
+            ]
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "displayLabel": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string"
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "websocket"
+            ]
+          },
+          "selectionMode": {
+            "type": "string",
+            "enum": [
+              "deployment_catalog",
+              "fixed_managed_model"
+            ]
+          },
+          "endpointPath": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "modelCatalogRef": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "sourceJson",
+              "filter",
+              "defaultModelId"
+            ],
+            "properties": {
+              "sourceJson": {
+                "type": "string",
+                "const": "infra/models.json"
+              },
+              "filter": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "category"
+                ],
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "const": "realtime"
+                  }
+                }
+              },
+              "defaultModelId": {
+                "type": "string",
+                "const": "gpt-realtime"
+              }
+            }
+          },
+          "managedModel": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "modelId",
+              "apiVersion",
+              "initialRegion",
+              "audioFormat",
+              "sampleRateHz"
+            ],
+            "properties": {
+              "modelId": {
+                "type": "string",
+                "const": "gpt-realtime"
+              },
+              "apiVersion": {
+                "type": "string",
+                "const": "2026-04-10"
+              },
+              "initialRegion": {
+                "type": "string",
+                "const": "eastus2"
+              },
+              "audioFormat": {
+                "type": "string",
+                "const": "pcm16"
+              },
+              "sampleRateHz": {
+                "type": "integer",
+                "const": 24000
+              }
+            }
+          },
+          "sessionDefaults": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "voice": {
+                "type": "string"
+              },
+              "inputTranscription": {
+                "type": "string"
+              },
+              "turnDetection": {
+                "type": "string"
+              },
+              "locale": {
+                "type": "string"
+              },
+              "noiseSuppression": {
+                "type": "string"
+              },
+              "echoCancellation": {
+                "type": "string"
+              },
+              "interruptResponse": {
+                "type": "boolean"
+              },
+              "autoTruncate": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "voice",
+              "inputTranscription",
+              "turnDetection",
+              "interruptResponse",
+              "autoTruncate"
+            ]
+          },
+          "capabilities": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "voices",
+              "inputTranscription",
+              "turnDetection",
+              "interruption",
+              "customVoice"
+            ],
+            "properties": {
+              "voices": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "default",
+                  "options"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "openai-realtime",
+                      "azure-standard"
+                    ]
+                  },
+                  "default": {
+                    "type": "string"
+                  },
+                  "options": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "inputTranscription": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "provider",
+                  "default",
+                  "options"
+                ],
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "openai",
+                      "azure-speech"
+                    ]
+                  },
+                  "default": {
+                    "type": "string"
+                  },
+                  "options": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "turnDetection": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "default",
+                  "options"
+                ],
+                "properties": {
+                  "default": {
+                    "type": "string"
+                  },
+                  "options": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "noiseSuppression": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "default",
+                  "options"
+                ],
+                "properties": {
+                  "default": {
+                    "type": "string"
+                  },
+                  "options": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "echoCancellation": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "default",
+                  "options"
+                ],
+                "properties": {
+                  "default": {
+                    "type": "string"
+                  },
+                  "options": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "locale": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "default",
+                  "options"
+                ],
+                "properties": {
+                  "default": {
+                    "type": "string"
+                  },
+                  "options": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "interruption": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "interruptResponse",
+                  "autoTruncate"
+                ],
+                "properties": {
+                  "interruptResponse": {
+                    "type": "boolean"
+                  },
+                  "autoTruncate": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "customVoice": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "enabled",
+                  "allowEndpointIds",
+                  "allowLexicons",
+                  "allowPersonalVoice"
+                ],
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "allowEndpointIds": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "allowLexicons": {
+                    "type": "boolean",
+                    "const": false
+                  },
+                  "allowPersonalVoice": {
+                    "type": "boolean",
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "id": {
+                  "const": "azure_openai"
+                }
+              },
+              "required": [
+                "id"
+              ]
+            },
+            "then": {
+              "required": [
+                "modelCatalogRef"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "id": {
+                  "const": "speech_voice_live"
+                }
+              },
+              "required": [
+                "id"
+              ]
+            },
+            "then": {
+              "required": [
+                "managedModel"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "additionalProperties": false
+}

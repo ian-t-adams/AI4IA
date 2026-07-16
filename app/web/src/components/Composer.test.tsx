@@ -5,6 +5,8 @@ import userEvent from "@testing-library/user-event";
 
 import { Composer } from "./Composer";
 import type { AgentSummary } from "@/lib/types";
+import { DEFAULT_SPEECH_VOICE_LIVE_SETTINGS } from "@/lib/voiceLive";
+import { voiceProviderCatalog } from "@/lib/data/voice_provider_catalog";
 
 // The voice recorder hook owns MediaRecorder/getUserMedia plumbing that jsdom
 // doesn't implement, and it pulls in the API client transitively. Stub it with a
@@ -287,6 +289,16 @@ describe("Composer", () => {
         stop: vi.fn(),
         settings: {
           agents: [],
+          providers: voiceProviderCatalog.providers.map(
+            (provider: (typeof voiceProviderCatalog.providers)[number]) => ({
+            id: provider.id,
+            displayLabel: provider.displayLabel,
+            description: provider.description,
+            }),
+          ),
+          provider: "azure_openai",
+          onProviderChange: vi.fn(),
+          activeProvider: voiceProviderCatalog.providers[0],
           defaultAgentLabel: "Current chat agent",
           explicitAgent: null,
           onAgentChange: vi.fn(),
@@ -308,7 +320,9 @@ describe("Composer", () => {
             transcriptionModel: "whisper-1",
             language: "",
           },
+          speechSettings: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
           onSettingsChange: vi.fn(),
+          onSpeechSettingsChange: vi.fn(),
           onReset: vi.fn(),
         },
       },

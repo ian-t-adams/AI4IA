@@ -29,9 +29,17 @@ services. Legend: **G**=GlobalStandard, **Z**=DataZoneStandard, **S**=Standard, 
 > Voice Live API is broadly listed, but it consumes realtime/audio models which only deploy
 > in eastus2 + swedencentral — so those are the practical Voice Live regions.
 
+**AI4IA's `speech_voice_live` provider** is currently pinned to a single region and
+account: the fixed managed model `gpt-realtime` at API version `2026-04-10`,
+reused against the existing `eastus2` AIServices account that already backs a
+Foundry model deployment (no new account is created for it). It is not yet
+multi-region; adding `swedencentral` as a second Speech Voice Live region is a
+later change requiring its own catalog entry, APIM wiring, and RBAC.
+
 ## Recommended region strategy
 - **Primary US — East US 2:** richest overall; the only region with `gpt-4o-mini-tts`, plus
-  full voice/realtime/audio, image, sora, model-router, evaluations. US data zone.
+  full voice/realtime/audio, image, sora, model-router, evaluations. US data zone. Also the
+  initial region for the `speech_voice_live` voice provider.
 - **Primary EU — Sweden Central:** mirrors eastus2 for voice/realtime/audio/sora/model-router/
   image, **adds tts/tts-hd**, EU data residency, evaluations confirmed.
 - **Add West US (targeted):** the **MAI-Image-2.x** family and **o3-deep-research** live here

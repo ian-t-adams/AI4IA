@@ -1,10 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { VoiceSettingsPanel, type VoiceSettingsPanelProps } from "./VoiceSettingsPanel";
-import { DEFAULT_VOICE_SETTINGS } from "@/lib/voiceLive";
+import {
+  DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+  DEFAULT_VOICE_SETTINGS,
+} from "@/lib/voiceLive";
+import { voiceProviderCatalog } from "@/lib/data/voice_provider_catalog";
 import type { AgentSummary } from "@/lib/types";
 
 afterEach(() => {
@@ -22,15 +26,29 @@ const MODELS = [
   { id: "gpt-realtime-mini", displayName: "GPT Realtime Mini" },
 ];
 
+const PROVIDERS = voiceProviderCatalog.providers.map(
+  (provider: (typeof voiceProviderCatalog.providers)[number]) => ({
+  id: provider.id,
+  displayLabel: provider.displayLabel,
+  description: provider.description,
+  }),
+);
+
 function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
   const onAgentChange = vi.fn();
+  const onProviderChange = vi.fn();
   const onModelChange = vi.fn();
   const onVoiceChange = vi.fn();
   const onToolsChange = vi.fn();
   const onSettingsChange = vi.fn();
+  const onSpeechSettingsChange = vi.fn();
   const onReset = vi.fn();
   const props: VoiceSettingsPanelProps = {
     agents: AGENTS,
+    providers: PROVIDERS,
+    provider: "azure_openai",
+    onProviderChange,
+    activeProvider: voiceProviderCatalog.providers[0],
     defaultAgentLabel: "Current chat agent",
     explicitAgent: null,
     onAgentChange,
@@ -45,6 +63,8 @@ function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
     onToolsChange,
     settings: DEFAULT_VOICE_SETTINGS,
     onSettingsChange,
+    speechSettings: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+    onSpeechSettingsChange,
     onReset,
     locked: false,
     ...overrides,
@@ -54,10 +74,12 @@ function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
   return {
     user,
     onAgentChange,
+    onProviderChange,
     onModelChange,
     onVoiceChange,
     onToolsChange,
     onSettingsChange,
+    onSpeechSettingsChange,
     onReset,
   };
 }
@@ -81,6 +103,15 @@ describe("VoiceSettingsPanel", () => {
       "Current chat agent",
       "Analyst",
       "Writer",
+    ]);
+  });
+
+  it("offers the server-advertised providers and defaults to Azure OpenAI", () => {
+    setup();
+    const select = screen.getByRole("combobox", { name: "Provider" });
+    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Azure OpenAI",
+      "Azure Speech",
     ]);
   });
 
@@ -136,6 +167,51 @@ describe("VoiceSettingsPanel", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Language hint" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reset defaults" })).toBeInTheDocument();
+  });
+
+  it("shows speech-specific controls when Azure Speech is selected", () => {
+    setup({
+      provider: "speech_voice_live",
+      activeProvider: voiceProviderCatalog.providers[1],
+      voice: voiceProviderCatalog.providers[1].capabilities.voices.default,
+      speechSettings: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+    });
+    expect(screen.getByRole("combobox", { name: "Locale" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Transcription" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Turn detection" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Noise suppression" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Echo cancellation" })).toBeInTheDocument();
+  });
+
+  it("edits Speech instructions and temperature without changing Azure OpenAI settings", async () => {
+    const { user, onSettingsChange, onSpeechSettingsChange } = setup({
+      provider: "speech_voice_live",
+      activeProvider: voiceProviderCatalog.providers[1],
+      voice: voiceProviderCatalog.providers[1].capabilities.voices.default,
+      settings: { ...DEFAULT_VOICE_SETTINGS, instructions: "OpenAI instructions" },
+      speechSettings: {
+        ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+        instructions: "Speech instructions",
+      },
+    });
+
+    const instructions = screen.getByRole("textbox", { name: "Instructions" });
+    expect(instructions).toHaveValue("Speech instructions");
+    fireEvent.change(instructions, { target: { value: "Updated speech" } });
+    await user.type(screen.getByRole("spinbutton", { name: "Temperature" }), "0.7");
+
+    expect(onSpeechSettingsChange).toHaveBeenCalled();
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      instructions: "Speech instructions",
+      temperature: 0.7,
+    });
+    expect(
+      onSpeechSettingsChange.mock.calls.some(
+        ([next]) => next.instructions === "Updated speech",
+      ),
+    ).toBe(true);
+    expect(onSettingsChange).not.toHaveBeenCalled();
   });
 
   it("calls onReset when Reset defaults is clicked", async () => {

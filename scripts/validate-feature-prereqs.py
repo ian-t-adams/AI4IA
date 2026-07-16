@@ -78,6 +78,45 @@ def main() -> int:
         if not text(parameter_value(parameters, "realtimeAllowedOrigins")):
             errors.append("voiceLiveEnabled=true outside dev requires realtimeAllowedOrigins.")
 
+    # Speech Voice Live is a second, additive realtime provider. It must never be
+    # reachable unless the master Voice Live gate is also on, its allowlist entry
+    # is present, and its default (if pointed at Speech) is actually allowlisted.
+    # These mirror the fail-closed checks app/api/src/ai4ia_api/config.py enforces
+    # at runtime, so a contradictory deployment fails here (at plan time) too.
+    speech_voice_live_enabled = truthy(parameter_value(parameters, "speechVoiceLiveEnabled", False))
+    voice_provider_allowlist = [
+        entry.strip().lower()
+        for entry in text(parameter_value(parameters, "voiceProviderAllowlist", "azure_openai")).split(",")
+        if entry.strip()
+    ]
+    voice_default_provider = text(parameter_value(parameters, "voiceDefaultProvider", "azure_openai")).lower()
+
+    if speech_voice_live_enabled and not truthy(parameter_value(parameters, "voiceLiveEnabled", False)):
+        errors.append("speechVoiceLiveEnabled=true is inert unless voiceLiveEnabled=true.")
+
+    if "azure_openai" not in voice_provider_allowlist:
+        errors.append("voiceProviderAllowlist must always include azure_openai.")
+
+    if voice_default_provider and voice_provider_allowlist and voice_default_provider not in voice_provider_allowlist:
+        errors.append("voiceDefaultProvider must be a member of voiceProviderAllowlist.")
+
+    if speech_voice_live_enabled and "speech_voice_live" not in voice_provider_allowlist:
+        errors.append(
+            "speechVoiceLiveEnabled=true requires voiceProviderAllowlist to include speech_voice_live."
+        )
+
+    if not speech_voice_live_enabled and "speech_voice_live" in voice_provider_allowlist:
+        errors.append(
+            "voiceProviderAllowlist includes speech_voice_live but speechVoiceLiveEnabled is not true; "
+            "the provider would be allowlisted but never reachable (or the enablement flag was forgotten)."
+        )
+
+    if not text(parameter_value(parameters, "speechVoiceLiveManagedIdentityAudience", "https://ai.azure.com")):
+        errors.append(
+            "speechVoiceLiveManagedIdentityAudience must not be blanked out; "
+            "leave it at its documented default unless a live-validated override is available."
+        )
+
     if truthy(parameter_value(parameters, "documentComputeEnabled", False)) and not truthy(
         parameter_value(parameters, "documentUnderstandingEnabled", False)
     ):

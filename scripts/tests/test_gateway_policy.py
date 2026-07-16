@@ -497,6 +497,143 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("<authentication-managed-identity", policy)
         gateway_generator.validate_realtime_policy(policy, "realtime-routing.xml")
 
+    def test_speech_voice_live_shared_api_is_a_websocket_api_with_supported_policy(self) -> None:
+        gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
+        policy = (ROOT / "infra/policies/speech-voice-live.xml").read_text(encoding="utf-8")
+        self.assertIn("resource sharedSpeechVoiceLiveApi", gateway)
+        replacement = gateway.split("resource sharedSpeechVoiceLiveApi ", 1)[1].split(
+            "resource sharedSpeechVoiceLiveHandshake", 1
+        )[0]
+        self.assertIn("type: 'websocket'", replacement)
+        self.assertIn("'wss'", replacement)
+        self.assertIn("path: 'speech/voice-live/realtime'", replacement)
+        self.assertIn("serviceUrl: '${speechVoiceLiveWssBase}/voice-live/realtime'", replacement)
+        self.assertIn("resource sharedSpeechVoiceLiveHandshake", gateway)
+        self.assertIn("name: 'onHandshake'", gateway)
+        self.assertIn("resource speechVoiceLiveWssEndpointValue", gateway)
+        self.assertIn("resource speechVoiceLiveAudienceValue", gateway)
+        self.assertIn("resource sharedSpeechVoiceLiveSubscription", gateway)
+        self.assertIn("name: 'ai4ia-api-speech-voice-live'", gateway)
+        gateway_generator.validate_policy_expressions(policy, "speech-voice-live.xml")
+        gateway_generator.validate_speech_voice_live_policy(policy, "speech-voice-live.xml")
+
+    def test_speech_voice_live_is_additive_and_isolated_from_other_gateway_planes(self) -> None:
+        gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
+        main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
+        api = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
+
+        # Every pre-existing plane (legacy Consumption rollback, the shared
+        # active /openai + /openai/realtime APIs, and their subscriptions) is
+        # untouched: still present and unrenamed.
+        for untouched in (
+            "resource legacyConsumptionApim",
+            "resource realtimeApi", "resource apiRealtimeSubscription",
+            "resource sharedModelsApi", "resource sharedProxyModelSubscription",
+            "resource sharedProxyIngressSubscription", "resource sharedRealtimeApi",
+            "resource sharedApiRealtimeSubscription",
+        ):
+            self.assertIn(untouched, gateway)
+
+        # The new API/operation/policy/subscription/named values are their own,
+        # distinctly named resources -- not edits to any of the above.
+        for new_resource in (
+            "resource speechVoiceLiveWssEndpointValue",
+            "resource speechVoiceLiveAudienceValue",
+            "resource sharedSpeechVoiceLiveApi",
+            "resource sharedSpeechVoiceLiveHandshake",
+            "resource sharedSpeechVoiceLiveApiPolicy",
+            "resource sharedSpeechVoiceLiveSubscription",
+            "resource speechVoiceLiveAccount",
+            "resource sharedApimSpeechVoiceLiveFoundryUser",
+        ):
+            self.assertIn(new_resource, gateway)
+
+        # Distinct subscription scope/name from every other gateway credential.
+        self.assertIn("scope: sharedSpeechVoiceLiveApi.id", gateway)
+        self.assertIn("name: 'ai4ia-api-speech-voice-live'", gateway)
+
+        # Cognitive Services User remains supplied by the existing account loop.
+        # The additional Foundry User grant is scoped to ONE selected account,
+        # never the foundryBackends loop, and has a disambiguated guid seed.
+        self.assertIn("resource sharedApimCognitiveUsers", gateway)
+        self.assertIn(
+            "var cognitiveUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'",
+            gateway,
+        )
+        cognitive_rbac = gateway.split("resource sharedApimCognitiveUsers ", 1)[1].split(
+            "resource speechVoiceLiveAccount", 1
+        )[0]
+        self.assertIn("for (backend, i) in foundryBackends", cognitive_rbac)
+        self.assertIn("scope: foundryAccounts[i]", cognitive_rbac)
+        self.assertIn(
+            "roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveUserRoleId)",
+            cognitive_rbac,
+        )
+        self.assertIn(
+            "var foundryUserRoleId = '53ca6127-db72-4b80-b1b0-d745d6d5456d'",
+            gateway,
+        )
+        speech_rbac = gateway.split(
+            "resource sharedApimSpeechVoiceLiveFoundryUser ", 1
+        )[1]
+        self.assertIn("scope: speechVoiceLiveAccount", speech_rbac)
+        self.assertNotIn("for (backend, i) in foundryBackends", speech_rbac.split("}", 1)[0])
+        self.assertIn(
+            "guid(speechVoiceLiveAccount.id, sharedApimResourceId, foundryUserRoleId, 'speech-voice-live')",
+            gateway,
+        )
+
+        # main.bicep wires the dedicated account (reused, not created) and
+        # gateway outputs (never a repo/user-suppliable secret) to the api.
+        self.assertIn("speechVoiceLiveAccountName: speechVoiceLiveAccountName", main)
+        self.assertIn("speechVoiceLiveAccountEndpoint: speechVoiceLiveAccountEndpoint", main)
+        self.assertIn(
+            "var speechVoiceLiveAccountName = foundry[speechVoiceLiveIndex].outputs.accountName",
+            main,
+        )
+        self.assertIn(
+            "var speechVoiceLiveAccountEndpoint = foundry[speechVoiceLiveIndex].outputs.endpoint",
+            main,
+        )
+        self.assertIn("speechVoiceLiveBaseUrl: gateway.outputs.speechVoiceLiveGatewayUrl", main)
+        self.assertIn("speechVoiceLiveGatewayApiKey: gateway.outputs.speechVoiceLiveGatewayKey", main)
+        self.assertIn("var speechVoiceLiveRegionName = 'eastus2'", main)
+
+        # api.bicep never lets the Speech key flow anywhere but its own env var,
+        # and never emits it unless BOTH the master gate and the feature flag
+        # are on.
+        self.assertIn("AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY", api)
+        self.assertIn("AI4IA_SPEECH_VOICE_LIVE_BASE_URL", api)
+        self.assertIn("AI4IA_VOICE_PROVIDER_ALLOWLIST", api)
+        self.assertIn("AI4IA_VOICE_DEFAULT_PROVIDER", api)
+        self.assertIn(
+            "var hasSpeechVoiceLiveGatewayKey = realtimeEnabled && speechVoiceLiveEnabled && !empty(speechVoiceLiveGatewayApiKey)",
+            api,
+        )
+        self.assertIn("speech-voice-live-gateway-api-key", api)
+        # web.bicep never receives any Speech Voice Live setting: the browser
+        # only ever talks to the FastAPI relay, never APIM, for voice.
+        web = (ROOT / "infra/modules/web.bicep").read_text(encoding="utf-8")
+        self.assertNotIn("speechVoiceLive", web)
+        self.assertNotIn("SpeechVoiceLive", web)
+        self.assertNotIn("SPEECH_VOICE_LIVE", web)
+
+        policy = (ROOT / "infra/policies/speech-voice-live.xml").read_text(encoding="utf-8")
+        self.assertIn(
+            '<set-backend-service base-url="{{speech-voice-live-wss-endpoint}}/voice-live/realtime" />',
+            policy,
+        )
+        self.assertIn('<value>gpt-realtime</value>', policy)
+        self.assertIn('<value>2026-04-10</value>', policy)
+        self.assertIn(
+            '<set-query-parameter name="deployment" exists-action="delete" />',
+            policy,
+        )
+        self.assertNotIn("/openai", policy)
+        self.assertNotIn("proxy-ingress", policy)
+        self.assertNotIn("mcp", policy.lower())
+        self.assertNotIn("consumption", policy.lower())
+
     def _build_bicep_template(self, path: Path) -> dict[str, object]:
         bicep = shutil.which("bicep")
         if bicep:
@@ -580,6 +717,52 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("parameters('sharedApimName')", json.dumps(gateway_resources["sharedModelsApi"]))
         self.assertIn("parameters('sharedApimPrincipalId')", json.dumps(gateway_resources["sharedApimOpenAiUsers"]))
         self.assertIn("parameters('sharedApimGatewayUrl')", json.dumps(gateway_template["variables"]["hostEnv"]))
+
+        speech_api = gateway_resources["sharedSpeechVoiceLiveApi"]["properties"]
+        self.assertEqual("websocket", speech_api["type"])
+        self.assertEqual(["wss"], speech_api["protocols"])
+        self.assertEqual("speech/voice-live/realtime", speech_api["path"])
+        self.assertNotEqual(gateway_resources["sharedSpeechVoiceLiveApi"]["name"], gateway_resources["sharedRealtimeApi"]["name"])
+        self.assertTrue(gateway_resources["sharedSpeechVoiceLiveHandshake"].get("existing"))
+        self.assertEqual(
+            "Microsoft.ApiManagement/service/apis/operations/policies",
+            gateway_resources["sharedSpeechVoiceLiveApiPolicy"]["type"],
+        )
+        self.assertIn(
+            "onHandshake",
+            json.dumps(gateway_resources["sharedSpeechVoiceLiveApiPolicy"]["name"]),
+        )
+        speech_subscription = gateway_resources["sharedSpeechVoiceLiveSubscription"]["properties"]
+        self.assertIn("ai4ia-api-speech-voice-live", json.dumps(gateway_resources["sharedSpeechVoiceLiveSubscription"]["name"]))
+        self.assertNotEqual(
+            speech_subscription["scope"],
+            gateway_resources["sharedApiRealtimeSubscription"]["properties"]["scope"],
+        )
+        speech_rbac = gateway_resources[
+            "sharedApimSpeechVoiceLiveFoundryUser"
+        ]["properties"]
+        self.assertEqual("ServicePrincipal", speech_rbac["principalType"])
+        self.assertIn("parameters('sharedApimPrincipalId')", json.dumps(speech_rbac))
+        # Voice Live 2026-04-10 requires both roles. The existing account loop
+        # supplies Cognitive Services User; the scalar assignment supplies
+        # Foundry User (formerly Azure AI User) only to the selected account.
+        self.assertEqual(
+            "a97b65f3-24c7-4388-baec-2e87135dc908",
+            gateway_template["variables"]["cognitiveUserRoleId"],
+        )
+        self.assertEqual(
+            "53ca6127-db72-4b80-b1b0-d745d6d5456d",
+            gateway_template["variables"]["foundryUserRoleId"],
+        )
+        self.assertIn("sharedApimCognitiveUsers", gateway_resources)
+        self.assertIn("foundryUserRoleId", json.dumps(speech_rbac))
+        self.assertTrue(gateway_resources["speechVoiceLiveAccount"].get("existing"))
+        # RBAC is a single scalar assignment (one account), never a `copy`/array
+        # loop like sharedApimCognitiveUsers/sharedApimOpenAiUsers above.
+        self.assertNotIn(
+            "copy", gateway_resources["sharedApimSpeechVoiceLiveFoundryUser"]
+        )
+        self.assertNotIn("sharedApimSpeechVoiceLiveUser", gateway_resources)
 
         apimcore_template = template["resources"]["apimcore"]["properties"]["template"]
         apimcore_text = json.dumps(apimcore_template["resources"])
@@ -828,6 +1011,96 @@ class FeaturePrerequisiteTests(unittest.TestCase):
         )
         self.assertEqual(result, 1)
         self.assertIn("requires vnetIsolationEnabled=true", output)
+
+    def test_speech_voice_live_requires_master_voice_live_gate(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "voiceLiveEnabled": False,
+                "speechVoiceLiveEnabled": True,
+                "voiceProviderAllowlist": "azure_openai,speech_voice_live",
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("speechVoiceLiveEnabled=true is inert unless voiceLiveEnabled=true", output)
+
+    def test_speech_voice_live_requires_allowlist_membership(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "voiceLiveEnabled": True,
+                "speechVoiceLiveEnabled": True,
+                "voiceProviderAllowlist": "azure_openai",
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn(
+            "requires voiceProviderAllowlist to include speech_voice_live", output
+        )
+
+    def test_allowlist_without_enablement_is_rejected(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "voiceLiveEnabled": True,
+                "speechVoiceLiveEnabled": False,
+                "voiceProviderAllowlist": "azure_openai,speech_voice_live",
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("but speechVoiceLiveEnabled is not true", output)
+
+    def test_allowlist_always_requires_azure_openai(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "voiceProviderAllowlist": "speech_voice_live",
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("must always include azure_openai", output)
+
+    def test_default_provider_must_be_allowlisted(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "voiceProviderAllowlist": "azure_openai",
+                "voiceDefaultProvider": "speech_voice_live",
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("voiceDefaultProvider must be a member of voiceProviderAllowlist", output)
+
+    def test_speech_voice_live_complete_configuration_passes(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "voiceLiveEnabled": True,
+                "speechVoiceLiveEnabled": True,
+                "voiceProviderAllowlist": "azure_openai,speech_voice_live",
+                "voiceDefaultProvider": "azure_openai",
+                "realtimeAllowedOrigins": "https://example.test",
+            }
+        )
+        self.assertEqual(result, 0)
+        self.assertIn("look sane", output)
+
+    def test_speech_voice_live_audience_must_not_be_blanked(self) -> None:
+        result, output = self.run_validator(
+            {
+                "owner": "operator",
+                "apimPublisherEmail": "ops@contoso.test",
+                "speechVoiceLiveManagedIdentityAudience": "",
+            }
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("speechVoiceLiveManagedIdentityAudience must not be blanked out", output)
 
 
 if __name__ == "__main__":

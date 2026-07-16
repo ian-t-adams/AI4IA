@@ -13,11 +13,14 @@ aggregate shape returned by ``GET /api/usage``.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+from ..catalog import DeploymentOption
 
 UsageStatus = Literal["complete", "cancelled", "error"]
 
@@ -84,14 +87,56 @@ class TokenUsage(BaseModel):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class UsageTarget:
+    """Typed descriptor for a governed usage target."""
+
+    provider: str = "azure_openai"
+    deployment: str | None = None
+    target: str | None = None
+    region: str | None = None
+    dataZone: str | None = None
+
+    @classmethod
+    def from_deployment(
+        cls, deployment: DeploymentOption, *, provider: str = "azure_openai"
+    ) -> "UsageTarget":
+        return cls(
+            provider=provider,
+            deployment=deployment.deploymentName,
+            target=deployment.deploymentName,
+            region=deployment.region,
+            dataZone=deployment.dataZone,
+        )
+
+    @classmethod
+    def managed_service(
+        cls,
+        *,
+        provider: str,
+        target: str,
+        region: str,
+        data_zone: str | None = None,
+    ) -> "UsageTarget":
+        return cls(
+            provider=provider,
+            deployment=None,
+            target=target,
+            region=region,
+            dataZone=data_zone,
+        )
+
+
 class UsageRecord(BaseModel):
     """One metered chat turn in the per-user ledger (Cosmos PK ``/userId``)."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     userId: str
     sessionId: str
+    provider: str = "azure_openai"
     model: str
-    deployment: str
+    deployment: str | None = None
+    target: str | None = None
     region: str | None = None
     dataZone: str | None = None
     agent: str | None = None

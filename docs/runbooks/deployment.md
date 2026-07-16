@@ -153,7 +153,10 @@ tests:
    model URL.
 3. APIM's `openai` API service URL terminates at Foundry, never at `ca-proxy`.
 4. The proxy `Host1` terminates at APIM and its subscription key is an ACA secret.
-5. Voice Live uses `AZURE_REALTIME_GATEWAY_URL` through the FastAPI relay.
+5. Voice Live uses `AZURE_REALTIME_GATEWAY_URL` through the FastAPI relay for
+   `azure_openai`, and, when enabled, a second distinct
+   `AI4IA_SPEECH_VOICE_LIVE_BASE_URL`/key pair for `speech_voice_live` — never the
+   proxy.
 6. `AZURE_PROXY_APP_NAME` names the Container App used for revision-level
    inspection and rollback.
 
@@ -169,7 +172,11 @@ before application image deployment.
 ARM what-if validates resource changes, not APIM's policy-expression compiler.
 Likewise, a policy-fragment `PUT` can return `201 InProgress` before its
 `Azure-AsyncOperation` later fails. Neither result proves that the production
-include chain compiles.
+include chain compiles. This applies equally to the model/priority policy
+fragments and to the Speech Voice Live `onHandshake` operation policy
+(`infra/policies/speech-voice-live.xml`); APIM's immutable `onHandshake` operation
+does not support `validate-parameters`, so that policy relies on `choose` /
+`return-response` / `set-query-parameter` instead, and still needs a real compile.
 
 Before merging an APIM policy-fragment change, run the disposable full-chain
 compiler harness against the target APIM:
@@ -187,7 +194,10 @@ fragment's async compiler operation, and applies the generated API wrapper with
 the complete fragment chain in production order. Its `finally` path deletes
 only those exact temporary names and verifies that all are absent. It never
 modifies a production API, policy, or fragment. A successful full-chain compile
-plus cleanup verification is the decisive APIM service validation.
+plus cleanup verification is the decisive APIM service validation. Running this
+harness — for either the model/priority fragments or the Speech Voice Live
+policy — requires its own separate, explicit approval; it is never triggered
+automatically because it creates temporary Azure resources.
 
 #### Gateway canary and rollback
 
@@ -198,10 +208,14 @@ canary:
 1. deploy the branch to the parallel environment with a separate proxy hostname;
 2. verify `/startup`, `/liveness`, and `/readiness` on the proxy revision;
 3. send one non-streaming and one streaming model request through the proxy URL;
-4. run a Voice Live session through the API relay and confirm its upstream is the
-   APIM realtime URL, not the proxy;
-5. verify APIM logs show the proxy subscription for HTTP/SSE and the realtime
-   subscription only for `/openai/realtime`; and
+4. run a Voice Live session through the API relay for each enabled provider and
+   confirm each one's upstream is the matching APIM WebSocket URL
+   (`/openai/realtime` for `azure_openai`, `/speech/voice-live/realtime` for
+   `speech_voice_live`), never the proxy;
+5. verify APIM logs show the proxy subscription for HTTP/SSE, the
+   `/openai/realtime` subscription only for Azure OpenAI Realtime, and — when
+   Speech Voice Live is enabled — its own distinct subscription only for
+   `/speech/voice-live/realtime`; and
 6. move the production DNS/custom-domain binding only after those checks pass.
 
 For rollback, redeploy the known-good commit. If only the proxy image regressed,
@@ -213,6 +227,11 @@ APIM.
 For an API-policy-only emergency rollback, apply
 `infra/policies/simplel7proxy-rollback-policy.xml` through an explicitly
 authorized operator change. Bicep never deploys this preserved live policy.
+Rolling back Speech Voice Live specifically does not need a policy revert at all:
+setting `speechVoiceLiveEnabled=false` (or dropping `speech_voice_live` from
+`voiceProviderAllowlist`) is immediate and non-destructive, and leaves its APIM
+API/policy/subscription dormant for diagnosis rather than deleting them — see
+[`feature-enablement.md`](./feature-enablement.md#speech-voice-live-second-voice-provider).
 
 Generated model-policy fragments use content-addressed names. Incremental
 deployment intentionally retains superseded generations for rollback. After a
@@ -411,14 +430,67 @@ The value is a global repo variable, so use the first of the month in which the 
 A brand-new environment created in a later month should use that later month (a monthly budget's start
 date cannot be more than the current period in the past).
 
+### 7.3 Speech Voice Live fails startup or handshake
+
+Symptom — the API refuses to start with an `AI4IA_SPEECH_VOICE_LIVE_*`/`AI4IA_VOICE_PROVIDER_ALLOWLIST`
+error, or a Speech Voice Live connection gets a bounded handshake failure instead
+of audio.
+
+Cause and fix, by message:
+
+| Error | Cause | Fix |
+|---|---|---|
+| `speech_voice_live requires AI4IA_SPEECH_VOICE_LIVE_ENABLED=true` | Provider listed in the allowlist without the feature flag | Set `AI4IA_SPEECH_VOICE_LIVE_ENABLED=true` or drop it from the allowlist |
+| `Speech Voice Live requires AI4IA_REALTIME_ENABLED=true` | Speech enabled while the master Voice Live gate is off | Enable `AI4IA_REALTIME_ENABLED` first, or leave Speech off |
+| `Speech Voice Live requires AI4IA_VOICE_PROVIDER_ALLOWLIST to include speech_voice_live` | Flag on but allowlist missing the provider | Add `speech_voice_live` to `AI4IA_VOICE_PROVIDER_ALLOWLIST` |
+| `Speech Voice Live requires AI4IA_SPEECH_VOICE_LIVE_BASE_URL and AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY` | One or both are empty | Confirm the gateway module outputs are wired through; do not hand-enter these |
+| `Speech Voice Live requires an APIM-style HTTPS/WSS base URL at /speech/voice-live` | URL is not HTTPS/WSS, missing a host, wrong path, or points at `*.services.ai.azure.com` / `*.cognitiveservices.azure.com` directly | The URL must be the shared APIM gateway's `/speech/voice-live` path, never a Foundry/AIServices hostname |
+| `Speech Voice Live requires a distinct gateway key; do not reuse ...` | The Speech key equals the Azure OpenAI realtime key or the model-gateway key | Regenerate/rotate so all three keys are distinct |
+| Handshake fails with a bounded, provider-neutral error and no audio | The Speech Voice Live APIM API, its subscription, or the selected AIServices account's RBAC/audience is unhealthy | Check APIM diagnostics for the `speech-voice-live-realtime` API; confirm the managed identity still holds Cognitive Services User + Foundry User on the selected account and that the audience matches (see [`configuration-reference.md`](../configuration-reference.md#speech-voice-live-second-voice-provider)) |
+
+Speech Voice Live never falls back to Azure OpenAI, the proxy, another host, or
+Consumption APIM on failure — a failed Speech connection surfaces a bounded error
+to the browser rather than silently degrading to a different provider or
+deployment.
+
 ## APIM Basic v2 migration guardrail
 
-The active model/realtime/MCP plane is the existing `apim-mcp-<workload>-<environmentName>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and Voice Live share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.
+The active model/realtime/MCP plane is the existing `apim-mcp-<workload>-<environmentName>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the additive `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the existing `/openai/realtime` API and subscription. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and both voice providers share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic — it never receives Speech Voice Live traffic either. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.
 
 The superseded PR-only `apim-v2-*` design was never deployed. The corrected what-if
 must contain no `apim-v2-*` creation. If resource inventory unexpectedly finds such
 a service, stop and handle it through a separate explicitly approved cleanup rather
 than folding a deletion into this migration.
+
+### Current 403 inventory/what-if blocker (Speech Voice Live)
+
+As of this writing, the available identity cannot read the target subscription or
+resource group (`403 AuthorizationFailed` on a direct read of
+`rg-ai4ia-slurmfactory`), so Speech Voice Live's account kind/endpoint/location,
+APIM SKU/capacity/identity/APIs/subscriptions/backends, roles, provider
+registration, policy support, health, and quotas/limits have **not** been
+independently verified against live Azure state — the supplied production
+inventory is expected context, not confirmed fact. `speechVoiceLiveEnabled`
+therefore stays `false` in the checked-in parameters, and the following remain
+required, separately authorized, and outstanding before any deployment can be
+proposed:
+
+1. An authorized identity regains subscription/resource-group read and
+   `Microsoft.Resources/deployments/whatIf/action` access and re-verifies the
+   selected `eastus2` AIServices account and shared APIM against live state.
+2. The live APIM WebSocket policy compiler
+   (`scripts/test-apim-policy-compiler.ps1`) validates the Speech Voice Live
+   `onHandshake` operation, under its own separate approval, with verified
+   temporary-resource cleanup.
+3. A zero-delete production what-if is run and reviewed, containing no deletes,
+   replacements, APIM SKU changes, or legacy Consumption mutations.
+
+If subscription/resource-group read or `whatIf/action` remains `403`, if compiler
+validation fails, or if what-if includes a delete/replace/APIM-SKU-change/legacy
+Consumption mutation or unplanned resource/RBAC creation: **stop and do not
+deploy.** Live APIM compiler validation, production deployment, and merging the
+implementation to `main` are each separate, explicit approvals this repository's
+documentation cannot substitute for.
 
 ### Post-stabilization Consumption cleanup
 
@@ -426,12 +498,13 @@ The two APIM services are a temporary migration overlap, not the steady-state de
 Delete the Consumption service only in a separate destructive change after:
 
 1. HTTP and SSE smoke tests pass through SimpleL7Proxy -> shared Basic v2 APIM;
-2. FastAPI -> shared Basic v2 APIM returns WebSocket 101 and completes a real voice turn;
+2. FastAPI -> shared Basic v2 APIM returns WebSocket 101 and completes a real voice turn
+   for each enabled provider;
 3. gateway logs confirm only `apim-mcp-*` receives active traffic for the agreed stabilization period;
 4. operators confirm the Consumption HTTP rollback is no longer required; and
 5. a deletion-specific what-if is reviewed and explicitly approved.
 
-Realtime has no working Consumption rollback path. During stabilization, HTTP/SSE
-rollback means restoring the previous proxy revision/key that targets Consumption;
-do not delete or mutate the legacy APIs, fragments, policies, subscriptions, or
-identity before the cleanup approval.
+Realtime has no working Consumption rollback path for either voice provider.
+During stabilization, HTTP/SSE rollback means restoring the previous proxy
+revision/key that targets Consumption; do not delete or mutate the legacy APIs,
+fragments, policies, subscriptions, or identity before the cleanup approval.

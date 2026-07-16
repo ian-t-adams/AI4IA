@@ -1,0 +1,63 @@
+<policies>
+  <inbound>
+    <base />
+    <!-- Speech Voice Live is a single fully managed model at a fixed API
+         contract version. Both values are always overwritten, never merely
+         validated, so nothing the caller (browser or relay) sends can select
+         a different model, version, or (via api-version) protocol surface.
+         onHandshake does not support validate-parameters
+         (https://learn.microsoft.com/azure/api-management/websocket-api#unsupported-policies),
+         so the fix is applied with set-query-parameter instead of a reject. -->
+    <set-query-parameter name="model" exists-action="override">
+      <value>gpt-realtime</value>
+    </set-query-parameter>
+    <set-query-parameter name="api-version" exists-action="override">
+      <value>2026-04-10</value>
+    </set-query-parameter>
+    <!-- The other realtime provider's ?deployment= selector has no meaning for
+         this fully managed, single-model surface; drop it so it can never be
+         mistaken for a routing hint. -->
+    <set-query-parameter name="deployment" exists-action="delete" />
+    <!-- Route only to the approved existing AIServices account's
+         /voice-live/realtime path. The host is the catalog/environment-derived
+         named value (see infra/modules/gateway.bicep); the path suffix is fixed
+         and never caller-influenced, and there is no choose/otherwise fallback
+         to any other host, product, or API. -->
+    <set-backend-service base-url="{{speech-voice-live-wss-endpoint}}/voice-live/realtime" />
+    <!-- Bounded, non-identifying correlation only; no audio, transcript, or
+         prompt content is ever logged by this policy. -->
+    <set-header name="x-correlation-id" exists-action="override">
+      <value>@(context.RequestId.ToString())</value>
+    </set-header>
+    <!-- Strip every caller/internal auth or app-identity header before the
+         backend ever sees the request. APIM authenticates to the backend
+         itself, below, with its own managed identity. -->
+    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-header name="Authorization" exists-action="delete" />
+    <set-header name="X-AI4IA-App-Id" exists-action="delete" />
+    <set-header name="X-AI4IA-User-Id" exists-action="delete" />
+    <set-header name="X-UserProfile" exists-action="delete" />
+    <!-- Audience is a named value, never a literal or caller-influenced string.
+         Default matches the audience the azure-ai-voicelive SDK requests by
+         default (https://ai.azure.com/.default) for this exact api-version;
+         confirming the selected account accepts it is a pending live-validation
+         gate recorded in .azure/plan.md, so the value stays overridable via the
+         named value without a policy change. -->
+    <authentication-managed-identity resource="{{speech-voice-live-mi-audience}}" />
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+    <set-header name="x-correlation-id" exists-action="override">
+      <value>@(context.RequestId.ToString())</value>
+    </set-header>
+    <return-response>
+      <set-status code="502" reason="Speech Voice Live handshake failed" />
+    </return-response>
+  </on-error>
+</policies>

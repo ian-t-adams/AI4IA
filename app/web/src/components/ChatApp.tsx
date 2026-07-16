@@ -23,15 +23,30 @@ import { SystemPromptEditor } from "./SystemPromptEditor";
 import { SettingsPanel } from "./SettingsPanel";
 import { StudioPanel } from "./StudioPanel";
 import { ImageStudioPanel } from "./ImageStudioPanel";
-import { realtimeModels, type RealtimeVoice } from "@/lib/voiceLive";
+import {
+  DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+  DEFAULT_VOICE_PROVIDER,
+  isRealtimeVoice,
+  isSpeechVoiceProvider,
+  realtimeModels,
+  type SpeechVoiceLiveSettings,
+  type VoiceLiveProviderCatalogResponse,
+  type VoiceProvider,
+} from "@/lib/voiceLive";
 import {
   DEFAULT_VOICE_PREFERENCES,
+  hasStoredVoicePreferences,
   loadVoicePreferences,
+  normalizeSpeechVoiceLiveSettings,
+  normalizeVoiceSessionSettings,
   resolveEffectiveAgent,
   resolveEffectiveModel,
+  resolveEffectiveVoiceProvider,
+  normalizeVoicePreferences,
   saveVoicePreferences,
   type VoicePreferences,
 } from "@/lib/voicePreferences";
+import { voiceProviderCatalog } from "@/lib/data/voice_provider_catalog";
 import { LibraryPanel } from "./LibraryPanel";
 import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage } from "./MessageList";
@@ -79,6 +94,107 @@ function reconcileMessages(
   );
 }
 
+function fallbackVoiceProviders(): VoiceProvider[] {
+  return voiceProviderCatalog.providers.filter(
+    (provider) => provider.id === DEFAULT_VOICE_PROVIDER,
+  );
+}
+
+function getProviderDefaultVoice(provider: VoiceProvider): string {
+  const voices = provider.capabilities.voices.options as readonly string[];
+  return provider.capabilities.voices.default ?? voices[0] ?? "";
+}
+
+function sanitizeSpeechPreferences(
+  speech: VoicePreferences["speech"],
+  provider: VoiceProvider | undefined,
+): VoicePreferences["speech"] {
+  const normalized = normalizeSpeechVoiceLiveSettings(speech);
+  const speechProvider = isSpeechVoiceProvider(provider) ? provider : undefined;
+  const voices: readonly string[] =
+    speechProvider?.capabilities.voices.options ?? [normalized.voice];
+  const locales: readonly string[] =
+    speechProvider?.capabilities.locale?.options ?? [normalized.locale];
+  const transcriptions: readonly string[] =
+    speechProvider?.capabilities.inputTranscription.options ?? [normalized.transcription];
+  const turnDetections: readonly SpeechVoiceLiveSettings["turnDetection"][] =
+    speechProvider?.capabilities.turnDetection.options ?? [normalized.turnDetection];
+  const noiseSuppression: readonly SpeechVoiceLiveSettings["noiseSuppression"][] =
+    speechProvider?.capabilities.noiseSuppression?.options ?? [normalized.noiseSuppression];
+  const echoCancellation: readonly SpeechVoiceLiveSettings["echoCancellation"][] =
+    speechProvider?.capabilities.echoCancellation?.options ?? [normalized.echoCancellation];
+  return {
+    ...normalized,
+    voice:
+      voices.includes(normalized.voice) && speechProvider
+        ? normalized.voice
+        : getProviderDefaultVoice(provider ?? voiceProviderCatalog.providers[0]),
+    locale:
+      locales.includes(normalized.locale) && speechProvider
+        ? normalized.locale
+        : speechProvider?.capabilities.locale?.default ?? normalized.locale,
+    transcription:
+      transcriptions.includes(normalized.transcription) && speechProvider
+        ? normalized.transcription
+        : speechProvider?.capabilities.inputTranscription.default ?? normalized.transcription,
+    turnDetection:
+      turnDetections.includes(normalized.turnDetection) && speechProvider
+        ? normalized.turnDetection
+        : speechProvider?.capabilities.turnDetection.default ?? normalized.turnDetection,
+    noiseSuppression:
+      noiseSuppression.includes(normalized.noiseSuppression) && speechProvider
+        ? normalized.noiseSuppression
+        : speechProvider?.capabilities.noiseSuppression?.default ?? normalized.noiseSuppression,
+    echoCancellation:
+      echoCancellation.includes(normalized.echoCancellation) && speechProvider
+        ? normalized.echoCancellation
+        : speechProvider?.capabilities.echoCancellation?.default ?? normalized.echoCancellation,
+  };
+}
+
+function sanitizeVoicePreferencesForProviders(
+  prefs: VoicePreferences,
+  providers: VoiceProvider[],
+  realtimeModelIds: ReadonlySet<string>,
+  defaultRealtimeModelId: string | null,
+  voiceToolsAvailable: boolean,
+  defaultProviderId: VoicePreferences["provider"],
+  hasStoredPreferences: boolean,
+): VoicePreferences {
+  let provider = resolveEffectiveVoiceProvider(
+    prefs.provider,
+    providers.map((entry) => entry.id),
+    defaultProviderId,
+    hasStoredPreferences,
+  );
+  if (provider === "azure_openai" && realtimeModelIds.size === 0) {
+    provider =
+      (providers.find((entry) => entry.id === "speech_voice_live")?.id ??
+        provider) as VoicePreferences["provider"];
+  }
+  const providerEntry =
+    providers.find((entry) => entry.id === provider) ?? providers[0];
+  const defaultModel = defaultRealtimeModelId ?? null;
+  return {
+    ...normalizeVoicePreferences(prefs),
+    provider,
+    model:
+      provider === "azure_openai"
+        ? resolveEffectiveModel(prefs.model, realtimeModelIds, defaultModel)
+        : null,
+    voice: isRealtimeVoice(prefs.voice) ? prefs.voice : DEFAULT_VOICE_PREFERENCES.voice,
+    tools: voiceToolsAvailable && prefs.tools,
+    settings: normalizeVoiceSessionSettings(prefs.settings),
+    speech: sanitizeSpeechPreferences(prefs.speech, providerEntry),
+  };
+}
+
+function providerModelRegion(models: ModelEntry[], modelId: string | null): string | null {
+  if (!modelId) return null;
+  const model = models.find((entry) => entry.id === modelId);
+  return model?.options[0]?.region ?? null;
+}
+
 export function ChatApp() {
   const voiceLiveConfig = useVoiceLiveConfig();
   const libraryConfig = useLibraryConfig();
@@ -108,6 +224,8 @@ export function ChatApp() {
     max_tokens: 1024,
   });
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [voiceProviderConfig, setVoiceProviderConfig] =
+    useState<VoiceLiveProviderCatalogResponse | null>(null);
 
   const [streaming, setStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState("");
@@ -188,6 +306,25 @@ export function ChatApp() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (!voiceLiveConfig.enabled) {
+    setVoiceProviderConfig(null);
+    return;
+    }
+    let cancelled = false;
+    void api
+    .getVoiceLiveConfig()
+    .then((config) => {
+      if (!cancelled) setVoiceProviderConfig(config);
+    })
+    .catch(() => {
+      if (!cancelled) setVoiceProviderConfig(null);
+    });
+    return () => {
+    cancelled = true;
+    };
+  }, [voiceLiveConfig.enabled]);
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -399,9 +536,57 @@ export function ChatApp() {
     [refreshSessions],
   );
 
+  // Voice Live settings disclosure: persisted picks (agent/model/voice/tools/
+  // advanced settings), loaded once on mount (localStorage is client-only —
+  // starting from the default keeps SSR/first paint stable).
+  const [voicePrefs, setVoicePrefs] = useState<VoicePreferences>(
+    DEFAULT_VOICE_PREFERENCES,
+  );
+  const [hasSavedVoicePrefs, setHasSavedVoicePrefs] = useState(false);
+  useEffect(() => {
+    setHasSavedVoicePrefs(hasStoredVoicePreferences());
+    setVoicePrefs(loadVoicePreferences());
+  }, []);
+  const updateVoicePrefs = useCallback((next: VoicePreferences) => {
+    setHasSavedVoicePrefs(true);
+    setVoicePrefs(next);
+    saveVoicePreferences(next);
+  }, []);
+
   const realtimeModelList = useMemo(() => realtimeModels(models), [models]);
+  const voiceProviders = useMemo(() => {
+    if (voiceProviderConfig) {
+      const enabled = new Set(voiceProviderConfig.enabledProviderIds);
+      return voiceProviderConfig.providers.filter((provider) => enabled.has(provider.id));
+    }
+    return voiceLiveConfig.enabled ? fallbackVoiceProviders() : [];
+  }, [voiceLiveConfig.enabled, voiceProviderConfig]);
   const voiceLiveEnabled =
-    voiceLiveConfig.enabled && realtimeModelList.length > 0;
+    voiceLiveConfig.enabled &&
+    voiceProviders.some(
+      (provider) =>
+        provider.selectionMode === "fixed_managed_model" || realtimeModelList.length > 0,
+    );
+  const voicePrefsResolved = useMemo(
+    () =>
+      sanitizeVoicePreferencesForProviders(
+        voicePrefs,
+        voiceProviders,
+        new Set(realtimeModelList.map((model) => model.id)),
+        realtimeModelList[0]?.id ?? null,
+        voiceLiveConfig.toolsAvailable,
+        voiceProviderConfig?.defaultProviderId ?? DEFAULT_VOICE_PROVIDER,
+        hasSavedVoicePrefs,
+      ),
+    [
+      hasSavedVoicePrefs,
+      realtimeModelList,
+      voiceLiveConfig.toolsAvailable,
+      voicePrefs,
+      voiceProviderConfig?.defaultProviderId,
+      voiceProviders,
+    ],
+  );
   const currentVoiceAgent = useMemo(() => {
     const enabled = new Set(
       agents.filter((agent) => agent.enabled).map((agent) => agent.name),
@@ -419,27 +604,9 @@ export function ChatApp() {
     return null;
   }, [agents, messages]);
 
-  // Voice Live settings disclosure: persisted picks (agent/model/voice/tools/
-  // advanced settings), loaded once on mount (localStorage is client-only —
-  // starting from the default keeps SSR/first paint stable).
-  const [voicePrefs, setVoicePrefs] = useState<VoicePreferences>(
-    DEFAULT_VOICE_PREFERENCES,
-  );
-  useEffect(() => {
-    setVoicePrefs(loadVoicePreferences());
-  }, []);
-  const updateVoicePrefs = useCallback((next: VoicePreferences) => {
-    setVoicePrefs(next);
-    saveVoicePreferences(next);
-  }, []);
-
   const enabledAgentNames = useMemo(
     () => new Set(agents.filter((a) => a.enabled).map((a) => a.name)),
     [agents],
-  );
-  const realtimeModelIds = useMemo(
-    () => new Set(realtimeModelList.map((m) => m.id)),
-    [realtimeModelList],
   );
   // The explicit pick (agent/model) wins when it is still valid; otherwise the
   // active chat's current agent / the catalog default. Switching the active
@@ -447,26 +614,39 @@ export function ChatApp() {
   // from the unchanged stored value on every render, so a stale pick resumes
   // automatically once it becomes valid again (e.g. the agent is re-enabled).
   const effectiveVoiceAgent = resolveEffectiveAgent(
-    voicePrefs.explicitAgent,
+    voicePrefsResolved.explicitAgent,
     enabledAgentNames,
     currentVoiceAgent,
   );
-  const effectiveVoiceModel = resolveEffectiveModel(
-    voicePrefs.model,
-    realtimeModelIds,
-    realtimeModelList[0]?.id ?? null,
+  const effectiveVoiceModel =
+    voicePrefsResolved.provider === "azure_openai" ? voicePrefsResolved.model : null;
+  const effectiveVoiceRegion = providerModelRegion(
+    realtimeModelList,
+    effectiveVoiceModel,
   );
   const voiceToolsAvailable = voiceLiveConfig.toolsAvailable;
+  const activeVoiceProvider =
+    voiceProviders.find((provider) => provider.id === voicePrefsResolved.provider) ??
+    voiceProviders[0] ??
+    fallbackVoiceProviders()[0] ??
+    voiceProviderCatalog.providers[0];
+  const activeVoiceVoice =
+    voicePrefsResolved.provider === "speech_voice_live"
+      ? voicePrefsResolved.speech.voice
+      : voicePrefsResolved.voice;
 
   const inlineVoice = useInlineVoiceLive({
     config: voiceLiveConfig,
+    providerId: voicePrefsResolved.provider,
     model: effectiveVoiceModel,
+    region: effectiveVoiceRegion,
+    voice: activeVoiceVoice,
     agent: effectiveVoiceAgent,
     agents,
     history: voiceHistory,
-    voice: voicePrefs.voice,
-    settings: voicePrefs.settings,
-    tools: voiceToolsAvailable && voicePrefs.tools,
+    settings: voicePrefsResolved.settings,
+    speechSettings: voicePrefsResolved.speech,
+    tools: voiceToolsAvailable && voicePrefsResolved.tools,
     activeSessionId: activeId,
     ensureSession,
     persistConversation: persistVoiceConversation,
@@ -498,44 +678,76 @@ export function ChatApp() {
   const voiceSettingsProps = useMemo(
     () => ({
       agents,
+      providers: voiceProviders.map((provider) => ({
+        id: provider.id,
+        displayLabel: provider.displayLabel,
+        description: provider.description,
+      })),
+      provider: voicePrefsResolved.provider,
+      onProviderChange: (nextProvider: VoicePreferences["provider"]) =>
+        updateVoicePrefs({ ...voicePrefsResolved, provider: nextProvider }),
+      activeProvider: activeVoiceProvider,
       defaultAgentLabel: currentVoiceAgent
         ? `Current chat agent (${
             agents.find((a) => a.name === currentVoiceAgent)?.displayName ??
             currentVoiceAgent
           })`
         : "Current chat agent (generic assistant)",
-      explicitAgent: voicePrefs.explicitAgent,
+      explicitAgent: voicePrefsResolved.explicitAgent,
       onAgentChange: (nextAgent: string | null) =>
-        updateVoicePrefs({ ...voicePrefs, explicitAgent: nextAgent }),
+        updateVoicePrefs({ ...voicePrefsResolved, explicitAgent: nextAgent }),
       models: realtimeModelList.map((m) => ({ id: m.id, displayName: m.displayName })),
       defaultModelLabel: realtimeModelList[0]
         ? `Default (${realtimeModelList[0].displayName})`
         : "Default",
-      explicitModel: voicePrefs.model,
+      explicitModel: voicePrefsResolved.model,
       onModelChange: (nextModel: string | null) =>
-        updateVoicePrefs({ ...voicePrefs, model: nextModel }),
-      voice: voicePrefs.voice,
-      onVoiceChange: (nextVoice: RealtimeVoice) =>
-        updateVoicePrefs({ ...voicePrefs, voice: nextVoice }),
+        updateVoicePrefs({ ...voicePrefsResolved, model: nextModel }),
+      voice: activeVoiceVoice,
+      onVoiceChange: (nextVoice: string) =>
+        voicePrefsResolved.provider === "speech_voice_live"
+          ? updateVoicePrefs({
+              ...voicePrefsResolved,
+              speech: { ...voicePrefsResolved.speech, voice: nextVoice },
+            })
+          : updateVoicePrefs({
+              ...voicePrefsResolved,
+              voice: nextVoice as VoicePreferences["voice"],
+            }),
       toolsAvailable: voiceToolsAvailable,
-      tools: voicePrefs.tools,
+      tools: voicePrefsResolved.tools,
       onToolsChange: (nextTools: boolean) =>
-        updateVoicePrefs({ ...voicePrefs, tools: nextTools }),
-      settings: voicePrefs.settings,
-      onSettingsChange: (nextSettings: typeof voicePrefs.settings) =>
-        updateVoicePrefs({ ...voicePrefs, settings: nextSettings }),
+        updateVoicePrefs({ ...voicePrefsResolved, tools: nextTools }),
+      settings: voicePrefsResolved.settings,
+      onSettingsChange: (nextSettings: VoicePreferences["settings"]) =>
+        updateVoicePrefs({ ...voicePrefsResolved, settings: nextSettings }),
+      speechSettings: voicePrefsResolved.speech,
+      onSpeechSettingsChange: (nextSpeech: VoicePreferences["speech"]) =>
+        updateVoicePrefs({ ...voicePrefsResolved, speech: nextSpeech }),
       onReset: () =>
-        updateVoicePrefs({
-          ...voicePrefs,
-          settings: DEFAULT_VOICE_PREFERENCES.settings,
-        }),
+        updateVoicePrefs(
+          voicePrefsResolved.provider === "speech_voice_live"
+            ? {
+                ...voicePrefsResolved,
+                speech: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+              }
+            : {
+                ...voicePrefsResolved,
+                voice: DEFAULT_VOICE_PREFERENCES.voice,
+                model: null,
+                settings: DEFAULT_VOICE_PREFERENCES.settings,
+              },
+        ),
     }),
     [
       agents,
       currentVoiceAgent,
       realtimeModelList,
+      activeVoiceProvider,
+      activeVoiceVoice,
       updateVoicePrefs,
-      voicePrefs,
+      voicePrefsResolved,
+      voiceProviders,
       voiceToolsAvailable,
     ],
   );

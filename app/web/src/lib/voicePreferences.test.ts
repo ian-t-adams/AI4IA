@@ -1,17 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_VOICE_PREFERENCES,
+  hasStoredVoicePreferences,
   loadVoicePreferences,
   normalizeVoicePreferences,
   normalizeVoiceSessionSettings,
   resolveEffectiveAgent,
   resolveEffectiveModel,
+  resolveEffectiveVoiceProvider,
   saveVoicePreferences,
   VOICE_PREFERENCES_STORAGE_NAME,
   type PreferencesStorage,
   type VoicePreferences,
 } from "./voicePreferences";
-import { DEFAULT_VOICE_SETTINGS } from "./voiceLive";
+import {
+  DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+  DEFAULT_VOICE_SETTINGS,
+} from "./voiceLive";
 
 function fakeStorage(initial: Record<string, string> = {}): PreferencesStorage & {
   data: Record<string, string>;
@@ -36,6 +41,7 @@ describe("normalizeVoicePreferences", () => {
 
   it("round-trips a fully valid preferences object", () => {
     const valid: VoicePreferences = {
+      provider: "azure_openai",
       explicitAgent: "analyst",
       model: "gpt-realtime",
       voice: "marin",
@@ -47,8 +53,44 @@ describe("normalizeVoicePreferences", () => {
         vadSilenceMs: 400,
         language: "en-US",
       },
+      speech: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
     };
     expect(normalizeVoicePreferences(valid)).toEqual(valid);
+  });
+
+  it("migrates legacy v1 data into the v2 shape deterministically", () => {
+    const storage = fakeStorage({
+      "ai4ia.voiceLive.prefs.v1": JSON.stringify({
+        explicitAgent: "analyst",
+        model: "gpt-realtime-mini",
+        voice: "cedar",
+        tools: true,
+        settings: {
+          instructions: "Keep it brief.",
+          temperature: 0.5,
+          vadType: "semantic_vad",
+          transcriptionModel: "whisper-1",
+          language: "en",
+        },
+      }),
+    });
+    expect(loadVoicePreferences(storage)).toEqual({
+      provider: "azure_openai",
+      explicitAgent: "analyst",
+      model: "gpt-realtime-mini",
+      voice: "cedar",
+      tools: true,
+      settings: {
+        instructions: "Keep it brief.",
+        temperature: 0.5,
+        vadType: "semantic_vad",
+        vadThreshold: null,
+        vadSilenceMs: null,
+        transcriptionModel: "whisper-1",
+        language: "en",
+      },
+      speech: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+    });
   });
 
   it("drops an unknown voice, non-boolean tools, and blank agent/model to defaults", () => {
@@ -159,7 +201,70 @@ describe("resolveEffectiveModel", () => {
   });
 });
 
+describe("resolveEffectiveVoiceProvider", () => {
+  const enabled = ["azure_openai", "speech_voice_live"] as const;
+
+  it("honors the server default only when no usable preference is stored", () => {
+    expect(
+      resolveEffectiveVoiceProvider("azure_openai", enabled, "speech_voice_live", false),
+    ).toBe("speech_voice_live");
+    expect(
+      resolveEffectiveVoiceProvider("azure_openai", enabled, "speech_voice_live", true),
+    ).toBe("azure_openai");
+  });
+
+  it("falls back safely when a persisted provider or server default is disabled", () => {
+    expect(
+      resolveEffectiveVoiceProvider(
+        "speech_voice_live",
+        ["azure_openai"],
+        "azure_openai",
+        true,
+      ),
+    ).toBe("azure_openai");
+    expect(
+      resolveEffectiveVoiceProvider(
+        "speech_voice_live",
+        ["azure_openai"],
+        "speech_voice_live",
+        true,
+      ),
+    ).toBe("azure_openai");
+  });
+});
+
 describe("loadVoicePreferences / saveVoicePreferences", () => {
+  it("reports whether current or legacy preferences exist", () => {
+    expect(hasStoredVoicePreferences(fakeStorage())).toBe(false);
+    expect(
+      hasStoredVoicePreferences(
+        fakeStorage({ "ai4ia.voiceLive.prefs.v1": JSON.stringify({ voice: "alloy" }) }),
+      ),
+    ).toBe(true);
+    expect(
+      hasStoredVoicePreferences(
+        fakeStorage({
+          [VOICE_PREFERENCES_STORAGE_NAME]: JSON.stringify(DEFAULT_VOICE_PREFERENCES),
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not treat a stale or malformed v2 provider as a usable preference", () => {
+    expect(
+      hasStoredVoicePreferences(
+        fakeStorage({
+          [VOICE_PREFERENCES_STORAGE_NAME]: JSON.stringify({ provider: "retired-provider" }),
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      hasStoredVoicePreferences(
+        fakeStorage({ [VOICE_PREFERENCES_STORAGE_NAME]: "{not json" }),
+      ),
+    ).toBe(false);
+  });
+
   it("returns defaults when nothing is stored", () => {
     expect(loadVoicePreferences(fakeStorage())).toEqual(DEFAULT_VOICE_PREFERENCES);
   });
