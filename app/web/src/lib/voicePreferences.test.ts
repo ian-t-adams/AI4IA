@@ -10,6 +10,7 @@ import {
   resolveEffectiveVoiceProvider,
   saveVoicePreferences,
   VOICE_PREFERENCES_STORAGE_NAME,
+  V2_VOICE_PREFERENCES_STORAGE_NAME,
   type PreferencesStorage,
   type VoicePreferences,
 } from "./voicePreferences";
@@ -44,6 +45,7 @@ describe("normalizeVoicePreferences", () => {
       provider: "azure_openai",
       explicitAgent: "analyst",
       model: "gpt-realtime",
+      speechModel: "gpt-4.1",
       voice: "marin",
       tools: true,
       settings: {
@@ -58,7 +60,7 @@ describe("normalizeVoicePreferences", () => {
     expect(normalizeVoicePreferences(valid)).toEqual(valid);
   });
 
-  it("migrates legacy v1 data into the v2 shape deterministically", () => {
+  it("migrates legacy v1 data into the v3 shape deterministically", () => {
     const storage = fakeStorage({
       "ai4ia.voiceLive.prefs.v1": JSON.stringify({
         explicitAgent: "analyst",
@@ -78,6 +80,7 @@ describe("normalizeVoicePreferences", () => {
       provider: "azure_openai",
       explicitAgent: "analyst",
       model: "gpt-realtime-mini",
+      speechModel: "gpt-realtime",
       voice: "cedar",
       tools: true,
       settings: {
@@ -91,6 +94,30 @@ describe("normalizeVoicePreferences", () => {
       },
       speech: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
     });
+  });
+
+  it("migrates v2 while ignoring legacy Speech transcription", () => {
+    const storage = fakeStorage({
+      [V2_VOICE_PREFERENCES_STORAGE_NAME]: JSON.stringify({
+        provider: "speech_voice_live",
+        explicitAgent: "analyst",
+        model: "gpt-realtime-mini",
+        voice: "cedar",
+        speech: {
+          ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+          voice: "en-US-AndrewNeural",
+          transcription: "user-controlled-transcriber",
+        },
+      }),
+    });
+
+    const migrated = loadVoicePreferences(storage);
+    expect(migrated.provider).toBe("speech_voice_live");
+    expect(migrated.model).toBe("gpt-realtime-mini");
+    expect(migrated.speechModel).toBe("gpt-realtime");
+    expect(migrated.speech.voice).toBe("en-US-AndrewNeural");
+    expect(migrated.speech).not.toHaveProperty("transcription");
+    expect(JSON.parse(storage.data[VOICE_PREFERENCES_STORAGE_NAME])).toEqual(migrated);
   });
 
   it("drops an unknown voice, non-boolean tools, and blank agent/model to defaults", () => {
@@ -250,6 +277,11 @@ describe("loadVoicePreferences / saveVoicePreferences", () => {
     expect(
       hasStoredVoicePreferences(
         fakeStorage({ "ai4ia.voiceLive.prefs.v1": JSON.stringify({ voice: "alloy" }) }),
+      ),
+    ).toBe(true);
+    expect(
+      hasStoredVoicePreferences(
+        fakeStorage({ [V2_VOICE_PREFERENCES_STORAGE_NAME]: JSON.stringify({ voice: "alloy" }) }),
       ),
     ).toBe(true);
     expect(

@@ -95,7 +95,10 @@ Speech Voice Live routes `Browser -> FastAPI /api/voice/live -> a second,
 separately scoped APIM WebSocket API (/speech/voice-live/realtime) on the same
 shared active Basic v2 APIM -> the existing eastus2 AIServices account`. It never
 traverses SimpleL7Proxy and never adds a new APIM service or Foundry account. The
-model/API version are fixed (`gpt-realtime`, `2026-04-10`); only curated
+stable `2026-04-10` catalog allows native-audio `gpt-realtime` (the default) and
+`gpt-realtime-mini` with `gpt-4o-transcribe`, plus `gpt-4.1`, `gpt-4.1-mini`,
+`gpt-5-mini`, and `gpt-5.1` through the Azure Speech chain with `azure-speech`
+transcription. All are initially `eastus2`; only curated
 `azure-standard` built-in voices/capabilities from the generated voice provider
 catalog are offered, and no custom endpoint, lexicon, or personal voice is
 accepted. The shared APIM managed identity additionally needs **Cognitive
@@ -125,8 +128,15 @@ intentionally blocked behind approvals this runbook cannot satisfy on its own:
    theoretical one. Deployment does not proceed while that inventory/what-if
    access remains forbidden.
 5. Only after steps 1-4 close does `azd provision` / `azd deploy` and a merge to
-   `main` become separate, explicitly authorized decisions. No step in this
-   runbook authorizes deployment or merge on its own.
+   `main` become separate, explicitly authorized decisions.
+6. After deployment, run `scripts/voice-live-canary.py` with an operator Entra
+   token against the authenticated FastAPI `wss://.../api/voice/live` path for
+   each enabled model, then manually retest a signed-in microphone session,
+   provider/model changes on the next connection, and transcript persistence.
+   Direct APIM handshakes are infrastructure diagnostics, not app proof.
+
+No step in this runbook authorizes deployment or merge on its own, and this page
+does not claim a live canary, compiler, what-if, deploy, or manual retest occurred.
 
 **Rollback and retained resources.** Disabling Speech Voice Live is immediate
 and non-destructive:
@@ -138,8 +148,10 @@ and non-destructive:
    and a fresh deployment does not create the conditional Speech APIM
    API/policy/subscription/named values or Speech-specific Foundry User role
    assignment.
-2. Roll back the API/web revision if needed; `ai4ia.voiceLive.prefs.v2` preference
-   values safely default back to Azure OpenAI when Speech is absent.
+2. For a managed-model regression, narrow the Speech catalog allowlist/default to
+   `gpt-realtime`; roll back the API/web revision if needed. v2 browser preferences
+   migrate into `ai4ia.voiceLive.prefs.v3`, where Speech's model defaults to
+   `gpt-realtime` and remains isolated from the Azure OpenAI deployment choice.
 3. ARM Incremental mode does **not** delete a Speech API, operation policy,
    subscription, named values, or deterministic Speech-specific Foundry User
    assignment created by an earlier deployment. The retained API remains
@@ -156,6 +168,11 @@ and non-destructive:
    use complete deployment mode on the shared resource group or APIM.
 5. The inactive Consumption APIM rollback plane is untouched by any of this — it
    carries no Speech Voice Live traffic in either direction and needs no action.
+
+Provider/model/settings changes in the inline selector are persisted separately
+and apply only to the next connection; they never reconnect or mutate an active
+session. Incident rollback is therefore allowlist/default narrowing plus the prior
+app revision, not teardown or deletion of shared APIM/AIServices resources.
 
 ### Multi-application gateway controls
 

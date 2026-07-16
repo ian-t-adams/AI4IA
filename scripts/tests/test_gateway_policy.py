@@ -571,6 +571,20 @@ class GatewayPolicyTests(unittest.TestCase):
                 f'<set-header name="{header_name}" exists-action="delete" />',
                 policy,
             )
+        self.assertIn("<choose>", policy)
+        self.assertIn('<set-status code="400"', policy)
+        self.assertIn("String.IsNullOrWhiteSpace", policy)
+        self.assertIn("StringComparison.Ordinal", policy)
+        for model_id in (
+            "gpt-realtime",
+            "gpt-realtime-mini",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-5-mini",
+            "gpt-5.1",
+        ):
+            self.assertIn(f"&quot;{model_id}&quot;.Equals(model", policy)
+        self.assertNotIn("<set-body>", policy)
         gateway_generator.validate_policy_expressions(policy, "speech-voice-live.xml")
         gateway_generator.validate_speech_voice_live_policy(policy, "speech-voice-live.xml")
 
@@ -750,7 +764,7 @@ class GatewayPolicyTests(unittest.TestCase):
             '<set-backend-service base-url="{{speech-voice-live-wss-endpoint}}/voice-live/realtime" />',
             policy,
         )
-        self.assertIn('<value>gpt-realtime</value>', policy)
+        self.assertIn('? "gpt-realtime" :', policy)
         self.assertIn('<value>2026-04-10</value>', policy)
         self.assertIn(
             '<set-query-parameter name="deployment" exists-action="delete" />',

@@ -44,11 +44,8 @@ PRIORITY_OUTPUT_PATHS = tuple(
     for fragment_id in PRIORITY_FRAGMENT_IDS
 )
 REALTIME_OUTPUT_PATH = ROOT / "infra" / "policies" / "realtime-routing.xml"
-# Hand-authored (not catalog-generated): Speech Voice Live is a single fixed
-# model/api-version/backend, so there is no per-deployment enumeration to
-# generate. Still statically validated on every run (see
-# validate_speech_voice_live_policy) so drift is caught the same way as the
-# generated realtime policy.
+# Generated from infra/voice-providers.json by gen-voice-provider-catalog.py,
+# then independently validated here with the other gateway policies.
 SPEECH_VOICE_LIVE_POLICY_PATH = ROOT / "infra" / "policies" / "speech-voice-live.xml"
 CATALOG_MARKER = "__AI4IA_BACKEND_CATALOG_MERGE__"
 ATTEMPTS_MARKER = "__AI4IA_MAX_IMMEDIATE_ATTEMPTS__"
@@ -749,13 +746,14 @@ def validate_realtime_policy(policy: str, source: str) -> None:
 def validate_speech_voice_live_policy(policy: str, source: str) -> None:
     """Statically pin the Speech Voice Live onHandshake policy to the approved,
     additive, isolated topology: only WebSocket-handshake-supported elements, a
-    single fixed backend/model/api-version, managed-identity backend auth via a
-    named value, and no reference to any other host, product, or API."""
+    curated model allowlist, one fixed backend/API version, managed-identity
+    backend auth via a named value, and no reference to another host or API."""
     root = ElementTree.fromstring(policy)
     allowed = {
         "policies", "inbound", "backend", "outbound", "on-error", "base",
         "set-backend-service", "set-query-parameter", "value", "set-header",
         "authentication-managed-identity", "return-response", "set-status",
+        "choose", "when",
     }
     unsupported = {element.tag for element in root.iter() if element.tag not in allowed}
     if unsupported:
@@ -764,8 +762,6 @@ def validate_speech_voice_live_policy(policy: str, source: str) -> None:
         raise ValueError(f"{source}: set-body is unsupported for WebSocket onHandshake")
     if root.findall(".//validate-parameters"):
         raise ValueError(f"{source}: validate-parameters is unsupported for WebSocket onHandshake")
-    if root.findall(".//choose"):
-        raise ValueError(f"{source}: this policy must be a single fixed route, not a choose/otherwise fallback")
     inbound = root.find("./inbound")
     if inbound is None:
         raise ValueError(f"{source}: expected an inbound policy section")
@@ -791,8 +787,49 @@ def validate_speech_voice_live_policy(policy: str, source: str) -> None:
         for query_param in query_params
         if query_param.attrib.get("exists-action") == "override"
     }
-    if fixed_params.get("model") != "gpt-realtime":
-        raise ValueError(f"{source}: model query parameter must be fixed to gpt-realtime")
+    model_ids = (
+        "gpt-realtime",
+        "gpt-realtime-mini",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "gpt-5-mini",
+        "gpt-5.1",
+    )
+    model_override = fixed_params.get("model", "")
+    if (
+        "String.IsNullOrWhiteSpace" not in model_override
+        or '? "gpt-realtime" :' not in model_override
+    ):
+        raise ValueError(
+            f"{source}: model query parameter must default blank values to gpt-realtime"
+        )
+    choices = inbound.findall("./choose")
+    if len(choices) != 1:
+        raise ValueError(f"{source}: expected exactly one inbound model allowlist")
+    reject_branches = choices[0].findall("./when")
+    if len(reject_branches) != 1:
+        raise ValueError(f"{source}: expected exactly one model rejection branch")
+    reject_condition = html.unescape(reject_branches[0].attrib.get("condition", ""))
+    allowed_model_literals = tuple(
+        re.findall(
+            r'"([^"]+)"\.Equals\(model,\s*StringComparison\.Ordinal\)',
+            reject_condition,
+        )
+    )
+    if (
+        "String.IsNullOrWhiteSpace" not in reject_condition
+        or "StringComparison.Ordinal" not in reject_condition
+        or allowed_model_literals != model_ids
+    ):
+        raise ValueError(
+            f"{source}: model rejection branch must allow exactly the managed-model catalog"
+        )
+    rejection_statuses = reject_branches[0].findall("./return-response/set-status")
+    if (
+        len(rejection_statuses) != 1
+        or rejection_statuses[0].attrib.get("code") != "400"
+    ):
+        raise ValueError(f"{source}: unsupported models must receive a bodyless 400 response")
     if fixed_params.get("api-version") != "2026-04-10":
         raise ValueError(f"{source}: api-version query parameter must be fixed to 2026-04-10")
     deleted_params = {

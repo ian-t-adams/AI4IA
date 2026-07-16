@@ -5,13 +5,21 @@ import json
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Annotated, Literal, Sequence, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 AZURE_OPENAI_PROVIDER_ID = "azure_openai"
 SPEECH_VOICE_LIVE_PROVIDER_ID = "speech_voice_live"
 EXPECTED_PROVIDER_IDS = (AZURE_OPENAI_PROVIDER_ID, SPEECH_VOICE_LIVE_PROVIDER_ID)
+EXPECTED_SPEECH_MANAGED_MODEL_IDS = (
+    "gpt-realtime",
+    "gpt-realtime-mini",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-5-mini",
+    "gpt-5.1",
+)
 DEFAULT_VOICE_PROVIDER_ID = AZURE_OPENAI_PROVIDER_ID
 
 _PACKAGED = Path(__file__).resolve().parent / "data" / "voice_provider_catalog.json"
@@ -23,7 +31,7 @@ class VoiceProviderTransport(str, Enum):
 
 class VoiceProviderSelectionMode(str, Enum):
     deployment_catalog = "deployment_catalog"
-    fixed_managed_model = "fixed_managed_model"
+    managed_model_catalog = "managed_model_catalog"
 
 
 class VoiceProviderVoices(BaseModel):
@@ -72,28 +80,46 @@ class VoiceProviderCustomVoice(BaseModel):
     allowPersonalVoice: bool
 
 
-class VoiceProviderCapabilities(BaseModel):
+class AzureOpenAIVoiceProviderCapabilities(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     voices: VoiceProviderVoices
     inputTranscription: VoiceProviderInputTranscription
     turnDetection: VoiceProviderTurnDetection
-    noiseSuppression: VoiceProviderSimpleOptions | None = None
-    echoCancellation: VoiceProviderSimpleOptions | None = None
-    locale: VoiceProviderSimpleOptions | None = None
     interruption: VoiceProviderInterruption
     customVoice: VoiceProviderCustomVoice
 
 
-class VoiceProviderSessionDefaults(BaseModel):
+class SpeechVoiceProviderCapabilities(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    voices: VoiceProviderVoices
+    turnDetection: VoiceProviderTurnDetection
+    noiseSuppression: VoiceProviderSimpleOptions
+    echoCancellation: VoiceProviderSimpleOptions
+    locale: VoiceProviderSimpleOptions
+    interruption: VoiceProviderInterruption
+    customVoice: VoiceProviderCustomVoice
+
+
+class AzureOpenAIVoiceProviderSessionDefaults(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     voice: str
     inputTranscription: str
     turnDetection: str
-    locale: str | None = None
-    noiseSuppression: str | None = None
-    echoCancellation: str | None = None
+    interruptResponse: bool
+    autoTruncate: bool
+
+
+class SpeechVoiceProviderSessionDefaults(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    voice: str
+    turnDetection: str
+    locale: str
+    noiseSuppression: str
+    echoCancellation: str
     interruptResponse: bool
     autoTruncate: bool
 
@@ -112,48 +138,133 @@ class VoiceProviderModelCatalogRef(BaseModel):
     defaultModelId: str
 
 
-class VoiceProviderManagedModel(BaseModel):
+class VoiceProviderOpenAIManagedTranscription(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    modelId: str
-    apiVersion: str
-    initialRegion: str
-    audioFormat: str
-    sampleRateHz: int
+    provider: Literal["openai"]
+    model: Literal["gpt-4o-transcribe"]
 
 
-class VoiceProvider(BaseModel):
+class VoiceProviderAzureSpeechManagedTranscription(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str
+    provider: Literal["azure_speech"]
+    model: Literal["azure-speech"]
+
+
+class _VoiceProviderManagedModelBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    displayName: str
+    description: str
+    apiVersion: Literal["2026-04-10"]
+    initialRegion: Literal["eastus2"]
+    audioFormat: Literal["pcm16"]
+    sampleRateHz: Literal[24000]
+
+
+class VoiceProviderNativeAudioManagedModel(_VoiceProviderManagedModelBase):
+    id: Literal["gpt-realtime", "gpt-realtime-mini"]
+    profile: Literal["native_audio"]
+    inputTranscription: VoiceProviderOpenAIManagedTranscription
+
+
+class VoiceProviderAzureSpeechChainManagedModel(_VoiceProviderManagedModelBase):
+    id: Literal["gpt-4.1", "gpt-4.1-mini", "gpt-5-mini", "gpt-5.1"]
+    profile: Literal["azure_speech_chain"]
+    inputTranscription: VoiceProviderAzureSpeechManagedTranscription
+
+
+VoiceProviderManagedModel: TypeAlias = Annotated[
+    VoiceProviderNativeAudioManagedModel | VoiceProviderAzureSpeechChainManagedModel,
+    Field(discriminator="profile"),
+]
+
+
+class _VoiceProviderBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     displayName: str
     displayLabel: str
     description: str
     transport: VoiceProviderTransport
-    selectionMode: VoiceProviderSelectionMode
     endpointPath: str
-    modelCatalogRef: VoiceProviderModelCatalogRef | None = None
-    managedModel: VoiceProviderManagedModel | None = None
-    sessionDefaults: VoiceProviderSessionDefaults
-    capabilities: VoiceProviderCapabilities
-
-    def public_view(self) -> "VoiceProviderPublic":
-        data = self.model_dump(exclude={"endpointPath", "modelCatalogRef"})
-        return VoiceProviderPublic.model_validate(data)
 
 
-class VoiceProviderPublic(BaseModel):
+class _VoiceProviderPublicBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str
     displayName: str
     displayLabel: str
     description: str
     transport: VoiceProviderTransport
-    selectionMode: VoiceProviderSelectionMode
-    managedModel: VoiceProviderManagedModel | None = None
-    sessionDefaults: VoiceProviderSessionDefaults
-    capabilities: VoiceProviderCapabilities
+
+
+class AzureOpenAIVoiceProviderPublic(_VoiceProviderPublicBase):
+    id: Literal["azure_openai"]
+    selectionMode: Literal["deployment_catalog"]
+    sessionDefaults: AzureOpenAIVoiceProviderSessionDefaults
+    capabilities: AzureOpenAIVoiceProviderCapabilities
+
+
+class SpeechVoiceProviderPublic(_VoiceProviderPublicBase):
+    id: Literal["speech_voice_live"]
+    selectionMode: Literal["managed_model_catalog"]
+    defaultManagedModelId: Literal["gpt-realtime"]
+    managedModels: list[VoiceProviderManagedModel]
+    sessionDefaults: SpeechVoiceProviderSessionDefaults
+    capabilities: SpeechVoiceProviderCapabilities
+
+
+VoiceProviderPublic: TypeAlias = Annotated[
+    AzureOpenAIVoiceProviderPublic | SpeechVoiceProviderPublic,
+    Field(discriminator="id"),
+]
+
+
+class AzureOpenAIVoiceProvider(_VoiceProviderBase):
+    id: Literal["azure_openai"]
+    selectionMode: Literal["deployment_catalog"]
+    modelCatalogRef: VoiceProviderModelCatalogRef
+    sessionDefaults: AzureOpenAIVoiceProviderSessionDefaults
+    capabilities: AzureOpenAIVoiceProviderCapabilities
+
+    def public_view(self) -> AzureOpenAIVoiceProviderPublic:
+        return AzureOpenAIVoiceProviderPublic.model_validate(
+            self.model_dump(exclude={"endpointPath", "modelCatalogRef"})
+        )
+
+
+class SpeechVoiceProvider(_VoiceProviderBase):
+    id: Literal["speech_voice_live"]
+    selectionMode: Literal["managed_model_catalog"]
+    defaultManagedModelId: Literal["gpt-realtime"]
+    managedModels: list[VoiceProviderManagedModel]
+    sessionDefaults: SpeechVoiceProviderSessionDefaults
+    capabilities: SpeechVoiceProviderCapabilities
+
+    @model_validator(mode="after")
+    def validate_managed_models(self) -> "SpeechVoiceProvider":
+        model_ids = [model.id for model in self.managedModels]
+        if tuple(model_ids) != EXPECTED_SPEECH_MANAGED_MODEL_IDS:
+            raise ValueError(
+                "Speech Voice Live managed models must match the governed catalog."
+            )
+        return self
+
+    def get_managed_model(self, model_id: str) -> VoiceProviderManagedModel | None:
+        return next((model for model in self.managedModels if model.id == model_id), None)
+
+    def public_view(self) -> SpeechVoiceProviderPublic:
+        return SpeechVoiceProviderPublic.model_validate(
+            self.model_dump(exclude={"endpointPath"})
+        )
+
+
+VoiceProvider: TypeAlias = Annotated[
+    AzureOpenAIVoiceProvider | SpeechVoiceProvider,
+    Field(discriminator="id"),
+]
 
 
 class VoiceLiveRuntimeConfig(BaseModel):
@@ -200,14 +311,18 @@ class VoiceProviderCatalog(BaseModel):
         return out
 
 
-def _load_raw(explicit_path: str | None) -> dict[str, Any]:
+def _load_raw(explicit_path: str | None) -> dict[str, object]:
     path = Path(explicit_path) if explicit_path else _PACKAGED
     if not path.exists():
         raise FileNotFoundError(f"No voice provider catalog found at {path}.")
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw: object = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(raw, dict):
-        return {k: raw[k] for k in ("defaultProviderId", "providers") if k in raw}
-    return raw
+        return {
+            key: value
+            for key, value in raw.items()
+            if isinstance(key, str) and key in ("defaultProviderId", "providers")
+        }
+    raise ValueError("Voice provider catalog must be a JSON object.")
 
 
 def _validate_catalog(catalog: VoiceProviderCatalog) -> VoiceProviderCatalog:

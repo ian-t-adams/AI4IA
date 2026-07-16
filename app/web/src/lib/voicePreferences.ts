@@ -14,6 +14,7 @@ import {
   DEFAULT_VOICE,
   DEFAULT_VOICE_SETTINGS,
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+  DEFAULT_SPEECH_MODEL_ID,
   DEFAULT_VOICE_PROVIDER,
   isRealtimeVoice,
   isVadType,
@@ -22,8 +23,9 @@ import {
   type VoiceSessionSettings,
 } from "./voiceLive";
 
-export const VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v2";
-const LEGACY_VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v1";
+export const VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v3";
+export const V2_VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v2";
+const V1_VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v1";
 
 export interface VoicePreferences {
   provider: "azure_openai" | "speech_voice_live";
@@ -34,6 +36,9 @@ export interface VoicePreferences {
   // The user's explicit realtime model pick, or null to use the catalog default
   // (the first realtime model).
   model: string | null;
+  // Azure Speech managed-model selection is isolated from the Azure OpenAI
+  // deployment selection above.
+  speechModel: string;
   voice: RealtimeVoice;
   // Per-session governed-tools opt-in. Only ever honored when the server
   // advertises tools as available; the raw preference is kept regardless.
@@ -46,6 +51,7 @@ export const DEFAULT_VOICE_PREFERENCES: VoicePreferences = {
   provider: DEFAULT_VOICE_PROVIDER,
   explicitAgent: null,
   model: null,
+  speechModel: DEFAULT_SPEECH_MODEL_ID,
   voice: DEFAULT_VOICE,
   tools: false,
   settings: DEFAULT_VOICE_SETTINGS,
@@ -144,6 +150,7 @@ export function normalizeVoicePreferences(raw: unknown): VoicePreferences {
     provider,
     explicitAgent: normalizeNullableString(r.explicitAgent),
     model: normalizeNullableString(r.model),
+    speechModel: normalizeNullableString(r.speechModel) ?? DEFAULT_SPEECH_MODEL_ID,
     voice:
       typeof r.voice === "string" && isRealtimeVoice(r.voice) ? r.voice : DEFAULT_VOICE,
     tools: typeof r.tools === "boolean" ? r.tools : false,
@@ -215,10 +222,6 @@ export function normalizeSpeechVoiceLiveSettings(
     typeof r.locale === "string" && r.locale.trim().length > 0
       ? r.locale.trim()
       : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.locale;
-  const transcription =
-    typeof r.transcription === "string" && r.transcription.trim().length > 0
-      ? r.transcription.trim()
-      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.transcription;
   const turnDetection =
     typeof r.turnDetection === "string" && r.turnDetection.trim().length > 0
       ? (r.turnDetection.trim() as SpeechVoiceLiveSettings["turnDetection"])
@@ -244,7 +247,6 @@ export function normalizeSpeechVoiceLiveSettings(
     temperature,
     voice,
     locale,
-    transcription,
     turnDetection,
     noiseSuppression,
     echoCancellation,
@@ -278,11 +280,17 @@ export function loadVoicePreferences(
   try {
     const raw = storage.getItem(VOICE_PREFERENCES_STORAGE_NAME);
     if (raw) return normalizeVoicePreferences(JSON.parse(raw));
-    const legacy = storage.getItem(LEGACY_VOICE_PREFERENCES_STORAGE_NAME);
-    if (!legacy) return { ...DEFAULT_VOICE_PREFERENCES };
-    const migrated = normalizeVoicePreferences(JSON.parse(legacy));
-    saveVoicePreferences(migrated, storage);
-    return migrated;
+    for (const legacyName of [
+      V2_VOICE_PREFERENCES_STORAGE_NAME,
+      V1_VOICE_PREFERENCES_STORAGE_NAME,
+    ]) {
+      const legacy = storage.getItem(legacyName);
+      if (!legacy) continue;
+      const migrated = normalizeVoicePreferences(JSON.parse(legacy));
+      saveVoicePreferences(migrated, storage);
+      return migrated;
+    }
+    return { ...DEFAULT_VOICE_PREFERENCES };
   } catch {
     return { ...DEFAULT_VOICE_PREFERENCES };
   }
@@ -300,10 +308,16 @@ export function hasStoredVoicePreferences(
       const provider = (parsed as Record<string, unknown>).provider;
       return provider === "azure_openai" || provider === "speech_voice_live";
     }
-    const legacy = storage.getItem(LEGACY_VOICE_PREFERENCES_STORAGE_NAME);
-    if (legacy === null) return false;
-    const parsed = JSON.parse(legacy) as unknown;
-    return Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed));
+    for (const legacyName of [
+      V2_VOICE_PREFERENCES_STORAGE_NAME,
+      V1_VOICE_PREFERENCES_STORAGE_NAME,
+    ]) {
+      const legacy = storage.getItem(legacyName);
+      if (legacy === null) continue;
+      const parsed = JSON.parse(legacy) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return true;
+    }
+    return false;
   } catch {
     return false;
   }

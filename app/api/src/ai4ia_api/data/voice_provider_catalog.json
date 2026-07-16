@@ -72,20 +72,99 @@
       "id": "speech_voice_live",
       "displayName": "Azure Speech Voice Live",
       "displayLabel": "Azure Speech",
-      "description": "Fixed managed Voice Live provider backed by Azure Speech in Foundry Tools.",
+      "description": "Catalog-driven managed Voice Live provider backed by Azure Speech in Foundry Tools.",
       "transport": "websocket",
-      "selectionMode": "fixed_managed_model",
+      "selectionMode": "managed_model_catalog",
       "endpointPath": "/voice-live/realtime",
-      "managedModel": {
-        "modelId": "gpt-realtime",
-        "apiVersion": "2026-04-10",
-        "initialRegion": "eastus2",
-        "audioFormat": "pcm16",
-        "sampleRateHz": 24000
-      },
+      "defaultManagedModelId": "gpt-realtime",
+      "managedModels": [
+        {
+          "id": "gpt-realtime",
+          "displayName": "GPT Realtime",
+          "description": "Native-audio realtime model with GPT-4o transcription.",
+          "profile": "native_audio",
+          "inputTranscription": {
+            "provider": "openai",
+            "model": "gpt-4o-transcribe"
+          },
+          "apiVersion": "2026-04-10",
+          "initialRegion": "eastus2",
+          "audioFormat": "pcm16",
+          "sampleRateHz": 24000
+        },
+        {
+          "id": "gpt-realtime-mini",
+          "displayName": "GPT Realtime Mini",
+          "description": "Lower-cost native-audio realtime model with GPT-4o transcription.",
+          "profile": "native_audio",
+          "inputTranscription": {
+            "provider": "openai",
+            "model": "gpt-4o-transcribe"
+          },
+          "apiVersion": "2026-04-10",
+          "initialRegion": "eastus2",
+          "audioFormat": "pcm16",
+          "sampleRateHz": 24000
+        },
+        {
+          "id": "gpt-4.1",
+          "displayName": "GPT-4.1",
+          "description": "GPT-4.1 response model paired with the Azure Speech chain.",
+          "profile": "azure_speech_chain",
+          "inputTranscription": {
+            "provider": "azure_speech",
+            "model": "azure-speech"
+          },
+          "apiVersion": "2026-04-10",
+          "initialRegion": "eastus2",
+          "audioFormat": "pcm16",
+          "sampleRateHz": 24000
+        },
+        {
+          "id": "gpt-4.1-mini",
+          "displayName": "GPT-4.1 Mini",
+          "description": "GPT-4.1 Mini response model paired with the Azure Speech chain.",
+          "profile": "azure_speech_chain",
+          "inputTranscription": {
+            "provider": "azure_speech",
+            "model": "azure-speech"
+          },
+          "apiVersion": "2026-04-10",
+          "initialRegion": "eastus2",
+          "audioFormat": "pcm16",
+          "sampleRateHz": 24000
+        },
+        {
+          "id": "gpt-5-mini",
+          "displayName": "GPT-5 Mini",
+          "description": "GPT-5 Mini response model paired with the Azure Speech chain.",
+          "profile": "azure_speech_chain",
+          "inputTranscription": {
+            "provider": "azure_speech",
+            "model": "azure-speech"
+          },
+          "apiVersion": "2026-04-10",
+          "initialRegion": "eastus2",
+          "audioFormat": "pcm16",
+          "sampleRateHz": 24000
+        },
+        {
+          "id": "gpt-5.1",
+          "displayName": "GPT-5.1",
+          "description": "GPT-5.1 response model paired with the Azure Speech chain.",
+          "profile": "azure_speech_chain",
+          "inputTranscription": {
+            "provider": "azure_speech",
+            "model": "azure-speech"
+          },
+          "apiVersion": "2026-04-10",
+          "initialRegion": "eastus2",
+          "audioFormat": "pcm16",
+          "sampleRateHz": 24000
+        }
+      ],
       "sessionDefaults": {
         "voice": "en-US-Ava:DragonHDLatestNeural",
-        "inputTranscription": "gpt-4o-transcribe",
         "turnDetection": "azure_semantic_vad",
         "locale": "en-US",
         "noiseSuppression": "azure_deep_noise_suppression",
@@ -104,13 +183,6 @@
             "en-US-Brian:DragonHDLatestNeural",
             "en-US-Emma:DragonHDLatestNeural",
             "en-US-Jenny:DragonHDLatestNeural"
-          ]
-        },
-        "inputTranscription": {
-          "provider": "openai",
-          "default": "gpt-4o-transcribe",
-          "options": [
-            "gpt-4o-transcribe"
           ]
         },
         "turnDetection": {

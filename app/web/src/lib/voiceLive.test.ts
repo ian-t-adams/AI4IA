@@ -3,6 +3,7 @@ import {
   DEFAULT_VOICE,
   DEFAULT_VOICE_SETTINGS,
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+  buildInitialVoiceFrames,
   buildVoiceLiveWebSocketUrl,
   isVadType,
   realtimeModels,
@@ -140,7 +141,9 @@ describe("sessionUpdate settings round-trip", () => {
 
 describe("speechSessionUpdate", () => {
   it("builds the managed speech payload with only catalog-safe settings", () => {
-    const parsed = JSON.parse(speechSessionUpdate(DEFAULT_SPEECH_VOICE_LIVE_SETTINGS));
+    const parsed = JSON.parse(
+      speechSessionUpdate("gpt-realtime", DEFAULT_SPEECH_VOICE_LIVE_SETTINGS),
+    );
     expect(parsed).toEqual({
       type: "session.update",
       session: {
@@ -151,7 +154,7 @@ describe("speechSessionUpdate", () => {
           locale: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.locale,
         },
         input_audio_transcription: {
-          model: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.transcription,
+          model: "gpt-4o-transcribe",
           language: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.locale,
         },
         turn_detection: {
@@ -171,23 +174,23 @@ describe("speechSessionUpdate", () => {
 
   it("reconstructs stale settings from catalog defaults and clamps temperature", () => {
     const parsed = JSON.parse(
-      speechSessionUpdate({
-        ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
-        temperature: 99,
-        voice: "custom-voice",
-        locale: "xx-XX",
-        transcription: "custom-transcriber",
-        turnDetection: "custom-vad" as never,
-        noiseSuppression: "custom-noise" as never,
-        echoCancellation: "custom-echo" as never,
-      }),
+      speechSessionUpdate("not-a-managed-model", {
+          ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+          temperature: 99,
+          voice: "custom-voice",
+          locale: "xx-XX",
+          transcription: "custom-transcriber",
+          turnDetection: "custom-vad" as never,
+          noiseSuppression: "custom-noise" as never,
+          echoCancellation: "custom-echo" as never,
+        } as typeof DEFAULT_SPEECH_VOICE_LIVE_SETTINGS),
     );
 
     expect(parsed.session.temperature).toBe(2);
     expect(parsed.session.voice.name).toBe(DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.voice);
     expect(parsed.session.voice.locale).toBe(DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.locale);
     expect(parsed.session.input_audio_transcription.model).toBe(
-      DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.transcription,
+      "gpt-4o-transcribe",
     );
     expect(parsed.session.turn_detection.type).toBe(
       DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.turnDetection,
@@ -199,6 +202,19 @@ describe("speechSessionUpdate", () => {
       DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.echoCancellation,
     );
   });
+
+  it.each(voiceProviderCatalog.providers[1].managedModels)(
+    "uses the catalog transcription for $id ($profile)",
+    (model) => {
+      const transcription = JSON.parse(
+        speechSessionUpdate(model.id, DEFAULT_SPEECH_VOICE_LIVE_SETTINGS),
+      ).session.input_audio_transcription.model;
+      expect(transcription).toBe(model.inputTranscription.model);
+      expect(transcription).toBe(
+        model.profile === "native_audio" ? "gpt-4o-transcribe" : "azure-speech",
+      );
+    },
+  );
 });
 
 describe("buildVoiceLiveWebSocketUrl", () => {
@@ -214,7 +230,7 @@ describe("buildVoiceLiveWebSocketUrl", () => {
     ).toBe("wss://api.example.test/api/voice/live?provider=azure_openai&model=gpt-realtime&region=eastus2&agent=analyst&tools=1");
   });
 
-  it("omits model and region for managed speech", () => {
+  it("keeps model but omits region for managed speech", () => {
     expect(
       buildVoiceLiveWebSocketUrl("wss://api.example.test/api/voice/live", {
         providerId: "speech_voice_live",
@@ -223,7 +239,40 @@ describe("buildVoiceLiveWebSocketUrl", () => {
         agent: "analyst",
         tools: true,
       }),
-    ).toBe("wss://api.example.test/api/voice/live?provider=speech_voice_live&agent=analyst&tools=1");
+    ).toBe("wss://api.example.test/api/voice/live?provider=speech_voice_live&model=gpt-realtime&agent=analyst&tools=1");
+  });
+});
+
+describe("buildInitialVoiceFrames", () => {
+  it("preserves exact Azure OpenAI session bytes before oldest-to-newest seeds", () => {
+    const frames = buildInitialVoiceFrames({
+      providerId: "azure_openai",
+      model: "gpt-realtime",
+      voice: "alloy",
+      history: [
+        { role: "user", text: "first" },
+        { role: "assistant", text: "second" },
+      ],
+    });
+    expect(frames[0]).toBe(DEFAULT_SESSION_UPDATE);
+    expect(frames.slice(1).map((frame) => JSON.parse(frame))).toEqual([
+      {
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "first" }],
+        },
+      },
+      {
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "second" }],
+        },
+      },
+    ]);
   });
 });
 

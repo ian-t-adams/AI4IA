@@ -39,6 +39,7 @@ function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
   const onProviderChange = vi.fn();
   const onModelChange = vi.fn();
   const onVoiceChange = vi.fn();
+  const onSpeechModelChange = vi.fn();
   const onToolsChange = vi.fn();
   const onSettingsChange = vi.fn();
   const onSpeechSettingsChange = vi.fn();
@@ -56,6 +57,8 @@ function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
     defaultModelLabel: "Default (GPT Realtime)",
     explicitModel: null,
     onModelChange,
+    speechModel: "gpt-realtime",
+    onSpeechModelChange,
     voice: "alloy",
     onVoiceChange,
     toolsAvailable: true,
@@ -77,6 +80,7 @@ function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
     onProviderChange,
     onModelChange,
     onVoiceChange,
+    onSpeechModelChange,
     onToolsChange,
     onSettingsChange,
     onSpeechSettingsChange,
@@ -177,14 +181,31 @@ describe("VoiceSettingsPanel", () => {
       speechSettings: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
     });
     expect(screen.getByRole("combobox", { name: "Locale" })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Transcription" })).toBeInTheDocument();
-    expect(
-      within(screen.getByRole("combobox", { name: "Transcription" }))
-        .getByRole("option", { name: "GPT-4o Transcribe" }),
-    ).toHaveValue("gpt-4o-transcribe");
+    const model = screen.getByRole("combobox", { name: "Speech model" });
+    expect(within(model).getAllByRole("option")).toHaveLength(6);
+    expect(screen.queryByRole("combobox", { name: "Transcription" })).toBeNull();
+    expect(screen.getByText(/Native audio · GPT-4o Transcribe · eastus2/)).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Turn detection" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Noise suppression" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Echo cancellation" })).toBeInTheDocument();
+  });
+
+  it("selects a Speech model and shows its catalog profile without changing OpenAI", async () => {
+    const { user, onSpeechModelChange, onModelChange } = setup({
+      provider: "speech_voice_live",
+      activeProvider: voiceProviderCatalog.providers[1],
+      voice: voiceProviderCatalog.providers[1].capabilities.voices.default,
+      speechModel: "gpt-4.1",
+    });
+
+    expect(screen.getByText(/Azure Speech chain · Azure Speech · eastus2/)).toBeInTheDocument();
+    expect(screen.getByText(/GPT-4.1 response model paired/)).toBeInTheDocument();
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Speech model" }),
+      "gpt-5.1",
+    );
+    expect(onSpeechModelChange).toHaveBeenCalledWith("gpt-5.1");
+    expect(onModelChange).not.toHaveBeenCalled();
   });
 
   it("edits Speech instructions and temperature without changing Azure OpenAI settings", async () => {

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Generate the packaged voice-provider catalog from infra/voice-providers.json.
+"""Generate voice-provider artifacts from infra/voice-providers.json.
 
 The infra catalog is the source of truth for both providers:
 
 - ``azure_openai`` stays deployment-catalog driven and references
   ``infra/models.json`` for realtime deployments.
-- ``speech_voice_live`` is fixed to the managed Voice Live model/API version and
+- ``speech_voice_live`` exposes only the curated managed-model catalog and
   carries curated azure-standard built-in Speech voices plus safe capability
   defaults/options.
 
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import html
 import json
 import sys
 from pathlib import Path
@@ -27,6 +28,7 @@ API_TARGET = (
     REPO_ROOT / "app" / "api" / "src" / "ai4ia_api" / "data" / "voice_provider_catalog.json"
 )
 WEB_TARGET = REPO_ROOT / "app" / "web" / "src" / "lib" / "data" / "voice_provider_catalog.ts"
+POLICY_TARGET = REPO_ROOT / "infra" / "policies" / "speech-voice-live.xml"
 
 EXPECTED_PROVIDER_IDS = ("azure_openai", "speech_voice_live")
 EXPECTED_DEFAULT_PROVIDER_ID = "azure_openai"
@@ -50,9 +52,62 @@ SPEECH_VOICES = (
     "en-US-Emma:DragonHDLatestNeural",
     "en-US-Jenny:DragonHDLatestNeural",
 )
-SPEECH_TRANSCRIPTION_COMPATIBILITY = {
-    ("gpt-realtime", "2026-04-10"): ("gpt-4o-transcribe",),
-}
+SPEECH_DEFAULT_MANAGED_MODEL_ID = "gpt-realtime"
+SPEECH_API_VERSION = "2026-04-10"
+SPEECH_INITIAL_REGION = "eastus2"
+SPEECH_AUDIO_FORMAT = "pcm16"
+SPEECH_SAMPLE_RATE_HZ = 24000
+SPEECH_MANAGED_MODEL_SPECS = (
+    (
+        "gpt-realtime",
+        "GPT Realtime",
+        "Native-audio realtime model with GPT-4o transcription.",
+        "native_audio",
+        "openai",
+        "gpt-4o-transcribe",
+    ),
+    (
+        "gpt-realtime-mini",
+        "GPT Realtime Mini",
+        "Lower-cost native-audio realtime model with GPT-4o transcription.",
+        "native_audio",
+        "openai",
+        "gpt-4o-transcribe",
+    ),
+    (
+        "gpt-4.1",
+        "GPT-4.1",
+        "GPT-4.1 response model paired with the Azure Speech chain.",
+        "azure_speech_chain",
+        "azure_speech",
+        "azure-speech",
+    ),
+    (
+        "gpt-4.1-mini",
+        "GPT-4.1 Mini",
+        "GPT-4.1 Mini response model paired with the Azure Speech chain.",
+        "azure_speech_chain",
+        "azure_speech",
+        "azure-speech",
+    ),
+    (
+        "gpt-5-mini",
+        "GPT-5 Mini",
+        "GPT-5 Mini response model paired with the Azure Speech chain.",
+        "azure_speech_chain",
+        "azure_speech",
+        "azure-speech",
+    ),
+    (
+        "gpt-5.1",
+        "GPT-5.1",
+        "GPT-5.1 response model paired with the Azure Speech chain.",
+        "azure_speech_chain",
+        "azure_speech",
+        "azure-speech",
+    ),
+)
+SPEECH_MANAGED_MODEL_IDS = tuple(spec[0] for spec in SPEECH_MANAGED_MODEL_SPECS)
 
 
 def _require(errors: list[str], condition: bool, message: str) -> None:
@@ -103,6 +158,10 @@ def _validate_voice_membership(
 def _validate_common_provider(
     errors: list[str], provider: dict[str, Any], *, expected_display_label: str
 ) -> None:
+    provider_specific_fields = {
+        "azure_openai": ("modelCatalogRef",),
+        "speech_voice_live": ("defaultManagedModelId", "managedModels"),
+    }.get(provider.get("id"), ())
     _exact_keys(
         errors,
         provider,
@@ -114,10 +173,9 @@ def _validate_common_provider(
             "transport",
             "selectionMode",
             "endpointPath",
-            "modelCatalogRef",
-            "managedModel",
             "sessionDefaults",
             "capabilities",
+            *provider_specific_fields,
         ),
         label=f"{provider.get('id', '<unknown>')}",
     )
@@ -269,49 +327,113 @@ def _validate_azure_openai(errors: list[str], provider: dict[str, Any]) -> None:
 def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> None:
     _require(
         errors,
-        provider.get("selectionMode") == "fixed_managed_model",
-        "speech_voice_live: selectionMode must be fixed_managed_model",
+        provider.get("selectionMode") == "managed_model_catalog",
+        "speech_voice_live: selectionMode must be managed_model_catalog",
     )
     _require(
         errors,
         provider.get("endpointPath") == "/voice-live/realtime",
         "speech_voice_live: endpointPath must be /voice-live/realtime",
     )
-    managed = provider.get("managedModel", {})
-    _exact_keys(
-        errors,
-        managed,
-        allowed=("modelId", "apiVersion", "initialRegion", "audioFormat", "sampleRateHz"),
-        label="speech_voice_live.managedModel",
-    )
-    _require(errors, managed.get("modelId") == "gpt-realtime", "speech_voice_live: modelId must be gpt-realtime")
     _require(
         errors,
-        managed.get("apiVersion") == "2026-04-10",
-        "speech_voice_live: apiVersion must be 2026-04-10",
+        provider.get("defaultManagedModelId") == SPEECH_DEFAULT_MANAGED_MODEL_ID,
+        f"speech_voice_live: defaultManagedModelId must be {SPEECH_DEFAULT_MANAGED_MODEL_ID}",
     )
+    raw_managed_models = provider.get("managedModels", [])
     _require(
         errors,
-        managed.get("initialRegion") == "eastus2",
-        "speech_voice_live: initialRegion must be eastus2",
+        isinstance(raw_managed_models, list),
+        "speech_voice_live: managedModels must be an array",
+    )
+    managed_models = raw_managed_models if isinstance(raw_managed_models, list) else []
+    managed_model_ids = tuple(
+        model.get("id", "") for model in managed_models if isinstance(model, dict)
     )
     _require(
         errors,
-        managed.get("audioFormat") == "pcm16",
-        "speech_voice_live: audioFormat must be pcm16",
+        managed_model_ids == SPEECH_MANAGED_MODEL_IDS,
+        "speech_voice_live: managed model ids must be "
+        f"{SPEECH_MANAGED_MODEL_IDS!r} in that order (got {managed_model_ids!r})",
     )
     _require(
         errors,
-        managed.get("sampleRateHz") == 24000,
-        "speech_voice_live: sampleRateHz must be 24000",
+        len(managed_model_ids) == len(set(managed_model_ids)),
+        "speech_voice_live: managed model ids must be unique",
     )
+    _require(
+        errors,
+        provider.get("defaultManagedModelId") in managed_model_ids,
+        "speech_voice_live: defaultManagedModelId must identify a managedModels entry",
+    )
+    model_fields = (
+        "id",
+        "displayName",
+        "description",
+        "profile",
+        "inputTranscription",
+        "apiVersion",
+        "initialRegion",
+        "audioFormat",
+        "sampleRateHz",
+    )
+    for index, spec in enumerate(SPEECH_MANAGED_MODEL_SPECS):
+        if index >= len(managed_models) or not isinstance(managed_models[index], dict):
+            errors.append(f"speech_voice_live.managedModels[{index}] must be an object")
+            continue
+        model = managed_models[index]
+        (
+            expected_id,
+            expected_display_name,
+            expected_description,
+            expected_profile,
+            expected_transcription_provider,
+            expected_transcription_model,
+        ) = spec
+        label = f"speech_voice_live.managedModels[{index}]"
+        _exact_keys(errors, model, allowed=model_fields, label=label)
+        for field, expected in (
+            ("id", expected_id),
+            ("displayName", expected_display_name),
+            ("description", expected_description),
+            ("profile", expected_profile),
+            ("apiVersion", SPEECH_API_VERSION),
+            ("initialRegion", SPEECH_INITIAL_REGION),
+            ("audioFormat", SPEECH_AUDIO_FORMAT),
+            ("sampleRateHz", SPEECH_SAMPLE_RATE_HZ),
+        ):
+            _require(
+                errors,
+                model.get(field) == expected,
+                f"{label}.{field} must be {expected!r}",
+            )
+        raw_transcription = model.get("inputTranscription", {})
+        _exact_keys(
+            errors,
+            raw_transcription,
+            allowed=("provider", "model"),
+            label=f"{label}.inputTranscription",
+        )
+        transcription = raw_transcription if isinstance(raw_transcription, dict) else {}
+        _require(
+            errors,
+            transcription.get("provider") == expected_transcription_provider,
+            f"{label}.inputTranscription.provider must be "
+            f"{expected_transcription_provider!r}",
+        )
+        _require(
+            errors,
+            transcription.get("model") == expected_transcription_model,
+            f"{label}.inputTranscription.model must be "
+            f"{expected_transcription_model!r}",
+        )
+
     defaults = provider.get("sessionDefaults", {})
     _exact_keys(
         errors,
         defaults,
         allowed=(
             "voice",
-            "inputTranscription",
             "turnDetection",
             "locale",
             "noiseSuppression",
@@ -325,17 +447,6 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
         errors,
         defaults.get("voice") == "en-US-Ava:DragonHDLatestNeural",
         "speech_voice_live: default voice must be en-US-Ava:DragonHDLatestNeural",
-    )
-    compatible_transcriptions = SPEECH_TRANSCRIPTION_COMPATIBILITY.get(
-        (managed.get("modelId"), managed.get("apiVersion")),
-        (),
-    )
-    _require(
-        errors,
-        defaults.get("inputTranscription") in compatible_transcriptions,
-        "speech_voice_live: default inputTranscription is incompatible with "
-        f"{managed.get('modelId')} at {managed.get('apiVersion')}; expected one of "
-        f"{compatible_transcriptions}",
     )
     _require(
         errors,
@@ -370,7 +481,6 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
         capabilities,
         allowed=(
             "voices",
-            "inputTranscription",
             "turnDetection",
             "noiseSuppression",
             "echoCancellation",
@@ -385,25 +495,6 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
         capabilities.get("voices", {}),
         allowed=("kind", "default", "options"),
         label="speech_voice_live.capabilities.voices",
-    )
-    input_transcription = capabilities.get("inputTranscription", {})
-    _exact_keys(
-        errors,
-        input_transcription,
-        allowed=("provider", "default", "options"),
-        label="speech_voice_live.capabilities.inputTranscription",
-    )
-    _require(
-        errors,
-        input_transcription.get("provider") == "openai",
-        "speech_voice_live: inputTranscription.provider must be openai",
-    )
-    _require(
-        errors,
-        tuple(input_transcription.get("options", [])) == compatible_transcriptions,
-        "speech_voice_live: inputTranscription.options must exactly match the "
-        f"compatibility matrix for {managed.get('modelId')} at "
-        f"{managed.get('apiVersion')}",
     )
     turn_detection = capabilities.get("turnDetection", {})
     _exact_keys(
@@ -477,6 +568,12 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
 
 def build_catalog(raw: dict[str, Any]) -> dict[str, Any]:
     errors: list[str] = []
+    _exact_keys(
+        errors,
+        raw,
+        allowed=("$schema", "_comment", "defaultProviderId", "providers"),
+        label="catalog",
+    )
     _require(errors, raw.get("defaultProviderId") == EXPECTED_DEFAULT_PROVIDER_ID, "defaultProviderId must be azure_openai")
     providers = raw.get("providers", [])
     _require(errors, isinstance(providers, list), "providers must be an array")
@@ -540,6 +637,88 @@ def render_ts(catalog: dict[str, Any], provider_ids: tuple[str, ...]) -> str:
     )
 
 
+def render_speech_voice_live_policy(catalog: dict[str, Any]) -> str:
+    speech = next(
+        provider
+        for provider in catalog["providers"]
+        if provider["id"] == "speech_voice_live"
+    )
+    model_ids = tuple(model["id"] for model in speech["managedModels"])
+    default_model_id = speech["defaultManagedModelId"]
+    api_version = speech["managedModels"][0]["apiVersion"]
+    allowed_expression = " ||\n              ".join(
+        f'"{model_id}".Equals(model, StringComparison.Ordinal)'
+        for model_id in model_ids
+    )
+    reject_expression = (
+        "@{\n"
+        '            string model = context.Request.Url.Query.GetValueOrDefault("model", "");\n'
+        "            return !String.IsNullOrWhiteSpace(model) &&\n"
+        "              !(\n"
+        f"              {allowed_expression}\n"
+        "              );\n"
+        "          }"
+    )
+    model_expression = (
+        "@(String.IsNullOrWhiteSpace("
+        'context.Request.Url.Query.GetValueOrDefault("model", "")) '
+        f'? "{default_model_id}" : '
+        'context.Request.Url.Query.GetValueOrDefault("model", ""))'
+    )
+    return (
+        "<policies>\n"
+        "  <inbound>\n"
+        "    <base />\n"
+        "    <!-- GENERATED by scripts/gen-voice-provider-catalog.py from the managed-model catalog. -->\n"
+        "    <choose>\n"
+        f'      <when condition="{html.escape(reject_expression, quote=True)}">\n'
+        "        <return-response>\n"
+        '          <set-status code="400" reason="Voice Live model is not in the AI4IA catalog" />\n'
+        "        </return-response>\n"
+        "      </when>\n"
+        "    </choose>\n"
+        '    <set-query-parameter name="model" exists-action="override">\n'
+        f"      <value>{html.escape(model_expression, quote=False)}</value>\n"
+        "    </set-query-parameter>\n"
+        '    <set-query-parameter name="api-version" exists-action="override">\n'
+        f"      <value>{api_version}</value>\n"
+        "    </set-query-parameter>\n"
+        '    <set-query-parameter name="deployment" exists-action="delete" />\n'
+        '    <set-query-parameter name="subscription-key" exists-action="delete" />\n'
+        '    <set-query-parameter name="api-key" exists-action="delete" />\n'
+        '    <set-query-parameter name="agent_id" exists-action="delete" />\n'
+        '    <set-query-parameter name="project_id" exists-action="delete" />\n'
+        '    <set-backend-service base-url="{{speech-voice-live-wss-endpoint}}/voice-live/realtime" />\n'
+        '    <set-header name="x-correlation-id" exists-action="override">\n'
+        "      <value>@(context.RequestId.ToString())</value>\n"
+        "    </set-header>\n"
+        '    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />\n'
+        '    <set-header name="api-key" exists-action="delete" />\n'
+        '    <set-header name="Authorization" exists-action="delete" />\n'
+        '    <set-header name="X-AI4IA-App-Id" exists-action="delete" />\n'
+        '    <set-header name="X-AI4IA-User-Id" exists-action="delete" />\n'
+        '    <set-header name="X-UserProfile" exists-action="delete" />\n'
+        '    <authentication-managed-identity resource="{{speech-voice-live-mi-audience}}" />\n'
+        "  </inbound>\n"
+        "  <backend>\n"
+        "    <base />\n"
+        "  </backend>\n"
+        "  <outbound>\n"
+        "    <base />\n"
+        "  </outbound>\n"
+        "  <on-error>\n"
+        "    <base />\n"
+        '    <set-header name="x-correlation-id" exists-action="override">\n'
+        "      <value>@(context.RequestId.ToString())</value>\n"
+        "    </set-header>\n"
+        "    <return-response>\n"
+        '      <set-status code="502" reason="Speech Voice Live handshake failed" />\n'
+        "    </return-response>\n"
+        "  </on-error>\n"
+        "</policies>\n"
+    )
+
+
 def _write_if_needed(path: Path, content: str, *, check: bool) -> None:
     if check:
         current = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -565,17 +744,21 @@ def main() -> int:
     api_json = json.dumps(catalog, indent=2, ensure_ascii=False) + "\n"
     # ``providers_ids`` is a tiny helper for TS rendering, never written to disk.
     web_ts = render_ts(catalog, tuple(provider["id"] for provider in catalog["providers"])) + "\n"
+    policy_xml = render_speech_voice_live_policy(catalog)
 
     if args.check:
         _write_if_needed(API_TARGET, api_json, check=True)
         _write_if_needed(WEB_TARGET, web_ts, check=True)
-        print("voice_provider_catalog outputs are up to date.")
+        _write_if_needed(POLICY_TARGET, policy_xml, check=True)
+        print("voice provider catalog and policy outputs are up to date.")
         return 0
 
     _write_if_needed(API_TARGET, api_json, check=False)
     _write_if_needed(WEB_TARGET, web_ts, check=False)
+    _write_if_needed(POLICY_TARGET, policy_xml, check=False)
     print(
-        f"Wrote {API_TARGET.relative_to(REPO_ROOT)} and {WEB_TARGET.relative_to(REPO_ROOT)} "
+        f"Wrote {API_TARGET.relative_to(REPO_ROOT)}, {WEB_TARGET.relative_to(REPO_ROOT)}, "
+        f"and {POLICY_TARGET.relative_to(REPO_ROOT)} "
         f"({len(catalog['providers'])} providers)."
     )
     return 0

@@ -29,12 +29,24 @@ services. Legend: **G**=GlobalStandard, **Z**=DataZoneStandard, **S**=Standard, 
 > Voice Live API is broadly listed, but it consumes realtime/audio models which only deploy
 > in eastus2 + swedencentral — so those are the practical Voice Live regions.
 
-**AI4IA's `speech_voice_live` provider** is currently pinned to a single region and
-account: the fixed managed model `gpt-realtime` at API version `2026-04-10`,
-reused against the existing `eastus2` AIServices account that already backs a
-Foundry model deployment (no new account is created for it). It is not yet
-multi-region; adding `swedencentral` as a second Speech Voice Live region is a
-later change requiring its own catalog entry, APIM wiring, and RBAC.
+### Speech Voice Live managed-model matrix
+
+AI4IA's `speech_voice_live` provider remains pinned to the existing `eastus2`
+AIServices account and stable API version `2026-04-10` (no new account). The
+server accepts exactly this catalog:
+
+| Managed model | Response path | Input transcription |
+|---|---|---|
+| `gpt-realtime` (default) | native audio | `gpt-4o-transcribe` |
+| `gpt-realtime-mini` | native audio | `gpt-4o-transcribe` |
+| `gpt-4.1` | Azure Speech chain | `azure-speech` |
+| `gpt-4.1-mini` | Azure Speech chain | `azure-speech` |
+| `gpt-5-mini` | Azure Speech chain | `azure-speech` |
+| `gpt-5.1` | Azure Speech chain | `azure-speech` |
+
+Azure OpenAI Realtime remains the app's default provider. Speech Voice Live is
+not yet multi-region; adding `swedencentral` requires a separate catalog, APIM,
+and RBAC change.
 
 ## Recommended region strategy
 - **Primary US — East US 2:** richest overall; the only region with `gpt-4o-mini-tts`, plus

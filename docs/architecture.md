@@ -31,7 +31,7 @@ flowchart TB
   APIM --> EUS2[Foundry East US 2]
   APIM --> SWC[Foundry Sweden Central]
   APIM --> WUS[Foundry West US]
-  APIM -.->|MI + fixed model/version| SpeechAcct[Existing AIServices account<br/>voice-live/realtime]
+  APIM -.->|MI + curated model / 2026-04-10| SpeechAcct[Existing AIServices account<br/>voice-live/realtime]
 ```
 
 Voice Live connects directly from the browser to the API because the Next.js HTTP
@@ -39,8 +39,8 @@ proxy cannot proxy WebSockets. The API relay still enforces auth, Origin checks,
 entitlements, metering, deployment resolution, and optional governed tool calling.
 Its upstream WebSocket goes to one of two separately scoped APIM WebSocket APIs on
 the same shared active Basic v2 APIM, selected by the `provider` the browser sent:
-`azure_openai` (catalog deployment routing) or `speech_voice_live` (fixed managed
-model, second provider, default OFF). SimpleL7Proxy is deliberately bypassed for
+`azure_openai` (catalog deployment routing) or `speech_voice_live` (curated managed
+models, second provider, default OFF). SimpleL7Proxy is deliberately bypassed for
 both because it supports HTTP/SSE, not WebSockets.
 
 ### Voice providers
@@ -55,22 +55,26 @@ flowchart LR
   API -->|"azure_openai<br/>scoped key"| AOAIAPI["APIM WebSocket API<br/>/openai/realtime"]
   API -->|"speech_voice_live<br/>distinct scoped key"| SpeechAPI["APIM WebSocket API<br/>/speech/voice-live/realtime"]
   AOAIAPI -->|"MI + deployment routing"| AOAI["Foundry Azure OpenAI Realtime"]
-  SpeechAPI -->|"MI + fixed gpt-realtime / 2026-04-10"| Speech["Existing AIServices account<br/>eastus2 · /voice-live/realtime"]
+  SpeechAPI -->|"MI + approved model / 2026-04-10"| Speech["Existing AIServices account<br/>eastus2 · /voice-live/realtime"]
 ```
 
 - `azure_openai` is the default-safe provider: it stays enabled and default unless
   an operator deliberately reconfigures `AI4IA_VOICE_DEFAULT_PROVIDER`. It resolves
   a realtime model/region from `infra/models.json` exactly as before.
-- `speech_voice_live` is an additive, default-off second provider. It is fixed to
-  the managed `gpt-realtime` model at API version `2026-04-10` against the initial
-  existing `eastus2` AIServices account, with only curated `azure-standard`
-  built-in voices/capabilities from the generated voice provider catalog — no
-  custom endpoint, lexicon, or personal voice is accepted.
+- `speech_voice_live` is an additive, default-off second provider. Its stable
+  `2026-04-10` contract on the existing `eastus2` AIServices account allows six
+  catalog models: native-audio `gpt-realtime` / `gpt-realtime-mini` with
+  `gpt-4o-transcribe`, and `gpt-4.1`, `gpt-4.1-mini`, `gpt-5-mini`, and `gpt-5.1`
+  through the Azure Speech chain with `azure-speech` transcription. Only curated
+  `azure-standard` built-in voices/capabilities are accepted; custom endpoints,
+  lexicons, and personal voices remain blocked.
 - Both providers share the same governed relay path (auth, Origin, feature and
   entitlement checks, agents/tools, transcript persistence, provider-aware usage
   metering, and cleanup) and the same inline transcript/session. A provider switch
   applies only to the **next** connection; it never triggers a silent reconnect of
-  an active session.
+  an active session. Azure OpenAI deployment preferences and Speech managed-model
+  preferences are stored independently, so switching providers does not overwrite
+  either provider's settings.
 - Each provider holds a distinct APIM subscription key scoped to its own
   WebSocket API, so neither key can invoke the other provider's API, the normal
   model API, the MCP plane, or the proxy ingress product.
@@ -141,6 +145,11 @@ sequenceDiagram
 6. **Telemetry without blocking the hot path.** Usage writes, custom events,
    resource metrics, and optional App Insights export are best-effort and never
    break a chat turn.
+
+Voice Live completion telemetry is metadata-only: correlation id, provider, model
+or usage target, outcome, bounded protocol-error/close metadata, source event, and
+directional text/binary frame counts and event types. It excludes credentials,
+raw frames, audio, transcripts, prompts/history, and tool arguments/results.
 
 ## Gateway execution boundaries
 

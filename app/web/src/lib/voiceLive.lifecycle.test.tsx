@@ -83,7 +83,7 @@ class FakeWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event?: Pick<CloseEvent, "code" | "reason">) => void) | null = null;
   send = vi.fn();
   close = vi.fn(() => {
     this.readyState = FakeWebSocket.CLOSED;
@@ -339,6 +339,94 @@ describe("useVoiceLive lifecycle", () => {
     expect(result.current.status).toBe("idle");
   });
 
+    it("retains and reports the first safe protocol error exactly once before close", async () => {
+      auth.getToken.mockResolvedValue("token");
+      const track = { stop: vi.fn() };
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        value: {
+          getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }),
+        },
+      });
+      const onError = vi.fn();
+      const { result } = renderHook(() =>
+        useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+      );
+
+      act(() => {
+        result.current.start();
+      });
+      await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+      const socket = FakeWebSocket.instances[0];
+      act(() => {
+        socket.readyState = FakeWebSocket.OPEN;
+        socket.onopen?.();
+        socket.onmessage?.(
+          new MessageEvent("message", {
+            data: JSON.stringify({
+              type: "error",
+              error: {
+                type: "invalid_request_error",
+                code: "invalid_value",
+                param: "session.voice",
+                event_id: "evt-1",
+                message:
+                  "Rejected Bearer secret eyJaaaa.bbbbb.ccccc api_key=supersecret\u0000",
+                transcript: "must never be retained",
+              },
+            }),
+          }),
+        );
+        socket.onmessage?.(
+          new MessageEvent("message", {
+            data: JSON.stringify({
+              type: "error",
+              error: { message: "second error must not win" },
+            }),
+          }),
+        );
+        socket.onclose?.({ code: 1011, reason: "token=also-secret" });
+      });
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(
+        "Rejected Bearer [REDACTED] [REDACTED] api_key=[REDACTED] (type: invalid_request_error; code: invalid_value; param: session.voice; event_id: evt-1)",
+      );
+      expect(onError.mock.calls[0][0]).not.toContain("transcript");
+      expect(track.stop).toHaveBeenCalledTimes(1);
+      expect(FakeAudioContext.instances[0].close).toHaveBeenCalledTimes(1);
+      expect(socket.close).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports bounded and redacted close metadata when no protocol error exists", async () => {
+      auth.getToken.mockResolvedValue("token");
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        value: {
+          getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }),
+        },
+      });
+      const onError = vi.fn();
+      const { result } = renderHook(() =>
+        useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+      );
+
+      act(() => {
+        result.current.start();
+      });
+      await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+      const socket = FakeWebSocket.instances[0];
+      act(() => {
+        socket.readyState = FakeWebSocket.OPEN;
+        socket.onopen?.();
+        socket.onclose?.({ code: 1011, reason: "token=supersecret\nupstream closed" });
+      });
+
+      expect(onError).toHaveBeenCalledWith(
+        "Live voice connection error. (code: 1011; reason: token=[REDACTED] upstream closed)",
+      );
+      expect(onError.mock.calls[0][0].length).toBeLessThanOrEqual(512);
+    });
   it("does not report a spurious error when the user stops a live session cleanly", async () => {
     auth.getToken.mockResolvedValue("token");
     Object.defineProperty(navigator, "mediaDevices", {
@@ -582,11 +670,17 @@ describe("useVoiceLive lifecycle", () => {
       },
     });
     const { result, rerender } = renderHook(
-      ({ provider }: { provider: "azure_openai" | "speech_voice_live" }) =>
-        useVoiceLive(CONFIG, provider, "catalog-model", "eastus2", "alloy", vi.fn()),
+      ({
+        provider,
+        model,
+      }: {
+        provider: "azure_openai" | "speech_voice_live";
+        model: string;
+      }) => useVoiceLive(CONFIG, provider, model, "eastus2", "alloy", vi.fn()),
       {
         initialProps: {
           provider: "azure_openai" as "azure_openai" | "speech_voice_live",
+          model: "catalog-model",
         },
       },
     );
@@ -596,7 +690,7 @@ describe("useVoiceLive lifecycle", () => {
     });
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     expect(FakeWebSocket.instances[0].url).toContain("provider=azure_openai");
-    rerender({ provider: "speech_voice_live" });
+    rerender({ provider: "speech_voice_live", model: "gpt-4.1" });
     expect(FakeWebSocket.instances).toHaveLength(1);
 
     act(() => result.current.stop());
@@ -605,7 +699,7 @@ describe("useVoiceLive lifecycle", () => {
     });
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
     expect(FakeWebSocket.instances[1].url).toContain("provider=speech_voice_live");
-    expect(FakeWebSocket.instances[1].url).not.toContain("model=");
+    expect(FakeWebSocket.instances[1].url).toContain("model=gpt-4.1");
     expect(FakeWebSocket.instances[1].url).not.toContain("region=");
   });
 });

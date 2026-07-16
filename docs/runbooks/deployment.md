@@ -208,7 +208,8 @@ canary:
 1. deploy the branch to the parallel environment with a separate proxy hostname;
 2. verify `/startup`, `/liveness`, and `/readiness` on the proxy revision;
 3. send one non-streaming and one streaming model request through the proxy URL;
-4. run a Voice Live session through the API relay for each enabled provider and
+4. run the authenticated app-path Voice Live canary through the API relay for each
+   enabled provider/model, then perform a signed-in browser microphone retest, and
    confirm each one's upstream is the matching APIM WebSocket URL
    (`/openai/realtime` for `azure_openai`, `/speech/voice-live/realtime` for
    `speech_voice_live`), never the proxy;
@@ -217,6 +218,34 @@ canary:
    Speech Voice Live is enabled — its own distinct subscription only for
    `/speech/voice-live/realtime`; and
 6. move the production DNS/custom-domain binding only after those checks pass.
+
+Use an operator-obtained Entra API token in an environment variable, never a CLI
+argument. The canary sends no audio or real conversation:
+
+```powershell
+python scripts/voice-live-canary.py `
+  --url wss://<api-host>/api/voice/live `
+  --origin https://<web-origin> `
+  --provider azure_openai `
+  --model gpt-realtime `
+  --region eastus2 `
+  --token-env AI4IA_VOICE_CANARY_TOKEN
+```
+
+Repeat without `--region` for each enabled Speech managed model. Success requires
+`session.created` then `session.updated`; there is no automatic provider fallback.
+Correlate failures with `voice_live_completion`: provider, model/usage target,
+outcome, bounded protocol error or close metadata, source event, and directional
+frame counts/event types. Telemetry must not contain credentials, raw frames,
+audio, transcripts, prompts/history, or tool arguments/results. Direct APIM bare
+handshakes are infrastructure diagnostics only and are not proof of the
+authenticated app path.
+
+Stage this work: offline script/unit/catalog/docs checks; reviewed zero-delete
+what-if and policy compile under separate approval; deployment; authenticated
+app-path canary; then a manual signed-in microphone/selector/transcript retest.
+This runbook does not claim that a live canary, compiler, what-if, deployment, or
+manual retest has been run.
 
 For rollback, redeploy the known-good commit. If only the proxy image regressed,
 restore the previous Container App revision while preparing the source revert. If
@@ -237,6 +266,12 @@ deployment. The retained API is still subscription-key protected and the running
 API has no Speech key, so it is unreachable through the app, but the retained
 objects remain dormant privilege and inventory. No automatic teardown occurs; see
 [`feature-enablement.md`](./feature-enablement.md#speech-voice-live-second-voice-provider).
+
+For a managed-model/selector regression, first narrow the Speech model allowlist
+and default back to `gpt-realtime`, then restore the prior API/web Container App
+revision. If necessary, narrow the provider allowlist to `azure_openai`. Do not
+delete the shared APIM, AIServices account, role assignments, or other shared
+resources as an incident rollback.
 
 Full deactivation requires a separately approved targeted teardown. Refresh live
 inventory, suspend or revoke `ai4ia-api-speech-voice-live` first, and then target
@@ -465,6 +500,13 @@ Speech Voice Live never falls back to Azure OpenAI, the proxy, another host, or
 Consumption APIM on failure — a failed Speech connection surfaces a bounded error
 to the browser rather than silently degrading to a different provider or
 deployment.
+
+The safe protocol-error/close capture, correlation/outcome/frame-count completion
+record, deterministic cleanup, retry messaging, and isolated inline selectors are
+confirmed code-level diagnostics/UX fixes. They do **not** establish a root cause
+for any Azure OpenAI Realtime failure. Until the authenticated canary and manual
+signed-in microphone retest produce correlated evidence, an Azure OpenAI upstream
+service or model cause remains unproven.
 
 ## APIM Basic v2 migration guardrail
 

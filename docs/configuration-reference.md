@@ -31,7 +31,7 @@ procedure: [`runbooks/deployment.md` §3](runbooks/deployment.md#3-moving-to-a-n
 | --- | --- | --- | --- | --- |
 | Voice Live | `AI4IA_REALTIME_ENABLED` | `voiceLiveEnabled` | `AI4IA_REALTIME_ENABLED`, `VOICE_LIVE_ENABLED`, `API_PUBLIC_URL` | `realtimeAllowedOrigins` outside local/dev. |
 | Voice Live tools | `AI4IA_REALTIME_TOOLS_ENABLED` | `voiceLiveToolsEnabled` | `AI4IA_REALTIME_TOOLS_ENABLED`, `VOICE_LIVE_TOOLS_ENABLED` | Requires Voice Live. |
-| Speech Voice Live (second voice provider) | checked-in parameter | `speechVoiceLiveEnabled` | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | Requires `AI4IA_REALTIME_ENABLED=true`, `AI4IA_VOICE_PROVIDER_ALLOWLIST` to include `speech_voice_live`, and both `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`. Default OFF; enablement additionally waits on the live-validation gate below. |
+| Speech Voice Live (second voice provider) | checked-in parameter | `speechVoiceLiveEnabled` | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | Requires `AI4IA_REALTIME_ENABLED=true`, `AI4IA_VOICE_PROVIDER_ALLOWLIST` to include `speech_voice_live`, and both `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`. The six managed models and default are catalog-controlled. Default OFF; enablement additionally waits on the live-validation gate below. |
 | Voice provider allowlist / default | n/a (server-authoritative) | `voiceProviderAllowlist`, `voiceDefaultProvider` | `AI4IA_VOICE_PROVIDER_ALLOWLIST` (default `azure_openai`), `AI4IA_VOICE_DEFAULT_PROVIDER` (default `azure_openai`) | Allowlist must always include `azure_openai`; default provider must be an allowlist member. The browser may only select an advertised, allowlisted provider. |
 | Document library / Content Understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `documentUnderstandingEnabled` | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`, `DOCUMENT_LIBRARY_ENABLED` | Cosmos + blob storage; CU endpoint defaults to the primary Foundry endpoint unless overridden. |
 | Library compute / export | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | `documentComputeEnabled` | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | Requires document understanding. Code Interpreter endpoint/model default to primary Foundry + `gpt-4.1-mini-*` unless overridden. |
@@ -119,11 +119,13 @@ server-authoritative default). It routes
   must be a secret distinct from both `AI4IA_REALTIME_GATEWAY_API_KEY` and
   `AI4IA_MODEL_GATEWAY_API_KEY`. Startup fails closed if either is missing,
   malformed, or reused.
-- The model/API version are fixed, not caller-suppliable: `gpt-realtime` at API
-  version `2026-04-10`, against the initial existing `eastus2` AIServices account —
-  the same account already used as a Foundry model backend, not a new resource.
-  Input transcription is pinned to the stable `gpt-4o-transcribe` model supported
-  by managed `gpt-realtime` at that API version. Voice/locale/VAD/noise/echo
+- The account, region, and API version remain fixed: the initial existing
+  `eastus2` AIServices account at stable `2026-04-10` — the same account already
+  used as a Foundry model backend, not a new resource. The managed-model selector
+  accepts only the six catalog entries documented in the
+  [region matrix](region-capability-matrix.md#speech-voice-live-managed-model-matrix).
+  Native-audio models use `gpt-4o-transcribe`; GPT text response models use the
+  Azure Speech chain and `azure-speech` transcription. Voice/locale/VAD/noise/echo
   capabilities come from the generated voice provider catalog
   (`infra/voice-providers.json`); only curated
   `azure-standard` built-in voices are offered and no custom endpoint, lexicon, or
@@ -154,6 +156,41 @@ server-authoritative default). It routes
   metered against a truthful `managed_voice_live` target rather than inventing a
   deployment name. When Voice Live usage is not present on a response, the turn is
   persisted as `usageKnown=false`, `billable=false` — never a fabricated zero cost.
+
+Browser preferences now use `ai4ia.voiceLive.prefs.v3`. A valid v2 value is
+normalized and copied forward once; the new Speech managed-model preference
+defaults to `gpt-realtime`. Azure OpenAI's deployment choice and Speech's managed
+model/settings are separate fields. Inline changes are applied only when the next
+Voice Live connection opens.
+
+### Authenticated Voice Live operator canary
+
+`scripts/voice-live-canary.py` is an operator-only diagnostic, not an API endpoint.
+It requires the FastAPI app's exact secure `wss://.../api/voice/live` URL, an
+allowed HTTPS Origin, provider, model, and an Entra API token read from a named
+environment variable (default `AI4IA_VOICE_CANARY_TOKEN`). It sends the same
+default `session.update` and bounded synthetic history frame shapes as the browser,
+then succeeds only on `session.created` followed by `session.updated`:
+
+```powershell
+python scripts/voice-live-canary.py `
+  --url wss://<api-host>/api/voice/live `
+  --origin https://<web-origin> `
+  --provider speech_voice_live `
+  --model gpt-realtime `
+  --token-env AI4IA_VOICE_CANARY_TOKEN
+```
+
+Populate the environment variable through the approved operator sign-in flow;
+never put the token on the command line. `--region` is Azure OpenAI-only.
+`--agent` and `--tools` are explicit governed opt-ins and default off. A direct
+bare APIM handshake tests infrastructure only; it does not prove app auth, Origin,
+entitlement, catalog resolution, normalization, or relay behavior.
+
+The relay's `voice_live_completion` record carries `correlationId`, provider,
+model/usage target, outcome, bounded protocol error and close metadata, source
+event, and directional frame counts/event types. It deliberately excludes tokens,
+keys, raw frames, audio, transcripts, prompts/history, and tool arguments/results.
 
 APIM owns bounded immediate backend attempts. When all compatible regions are
 throttled it returns `429`, `S7PREQUEUE: true`, and `retry-after-ms`.

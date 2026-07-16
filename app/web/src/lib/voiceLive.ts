@@ -62,6 +62,11 @@ export type { VoiceProvider, VoiceProviderId };
 export const DEFAULT_VOICE_PROVIDER = DEFAULT_VOICE_PROVIDER_ID;
 export type AzureOpenAIVoiceProvider = Extract<VoiceProvider, { id: "azure_openai" }>;
 export type SpeechVoiceProvider = Extract<VoiceProvider, { id: "speech_voice_live" }>;
+export type SpeechManagedModel = SpeechVoiceProvider["managedModels"][number];
+
+const SPEECH_PROVIDER = voiceProviderCatalog.providers.find(
+  (provider): provider is SpeechVoiceProvider => provider.id === "speech_voice_live",
+);
 
 export interface VoiceLiveProviderCatalogResponse {
   defaultProviderId: VoiceProviderId;
@@ -129,7 +134,8 @@ export function isRealtimeVoice(value: string): value is RealtimeVoice {
 
 export const DEFAULT_SPEECH_VOICE = "en-US-Ava:DragonHDLatestNeural";
 export const DEFAULT_SPEECH_LOCALE = "en-US";
-export const DEFAULT_SPEECH_TRANSCRIPTION = "gpt-4o-transcribe";
+export const DEFAULT_SPEECH_MODEL_ID =
+  SPEECH_PROVIDER?.defaultManagedModelId ?? "gpt-realtime";
 export const DEFAULT_SPEECH_TURN_DETECTION = "azure_semantic_vad";
 export const DEFAULT_SPEECH_NOISE_SUPPRESSION = "azure_deep_noise_suppression";
 export const DEFAULT_SPEECH_ECHO_CANCELLATION = "server_echo_cancellation";
@@ -139,7 +145,6 @@ export interface SpeechVoiceLiveSettings {
   temperature: number | null;
   voice: string;
   locale: string;
-  transcription: string;
   turnDetection: "azure_semantic_vad" | "azure_semantic_vad_multilingual";
   noiseSuppression: "azure_deep_noise_suppression";
   echoCancellation: "server_echo_cancellation";
@@ -153,7 +158,6 @@ export const DEFAULT_SPEECH_VOICE_LIVE_SETTINGS: SpeechVoiceLiveSettings = {
   temperature: null,
   voice: DEFAULT_SPEECH_VOICE,
   locale: DEFAULT_SPEECH_LOCALE,
-  transcription: DEFAULT_SPEECH_TRANSCRIPTION,
   turnDetection: DEFAULT_SPEECH_TURN_DETECTION,
   noiseSuppression: DEFAULT_SPEECH_NOISE_SUPPRESSION,
   echoCancellation: DEFAULT_SPEECH_ECHO_CANCELLATION,
@@ -342,14 +346,22 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSessionSettings = {
   language: "",
 };
 
-const SPEECH_PROVIDER = voiceProviderCatalog.providers.find(
-  (provider): provider is SpeechVoiceProvider => provider.id === "speech_voice_live",
-);
-
 export function isSpeechVoiceProvider(
   provider: VoiceProvider | undefined,
 ): provider is SpeechVoiceProvider {
   return provider?.id === "speech_voice_live";
+}
+
+export function resolveSpeechManagedModel(
+  modelId: string | null | undefined,
+  provider: SpeechVoiceProvider | undefined = SPEECH_PROVIDER,
+): SpeechManagedModel | undefined {
+  if (!provider) return undefined;
+  return (
+    provider.managedModels.find((model) => model.id === modelId) ??
+    provider.managedModels.find((model) => model.id === provider.defaultManagedModelId) ??
+    provider.managedModels[0]
+  );
 }
 
 export function isVadType(value: string): value is VadType {
@@ -400,17 +412,15 @@ export function sessionUpdate(
 }
 
 export function speechSessionUpdate(
+  modelId: string | null | undefined,
   settings: SpeechVoiceLiveSettings = DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
 ): string {
   const provider = SPEECH_PROVIDER;
+  const managedModel = resolveSpeechManagedModel(modelId, provider);
   const allowedVoices: readonly string[] =
     provider?.capabilities.voices.options ?? [DEFAULT_SPEECH_VOICE];
   const allowedLocales: readonly string[] =
     provider?.capabilities.locale?.options ?? [DEFAULT_SPEECH_LOCALE];
-  const allowedTranscriptions =
-    (provider?.capabilities.inputTranscription.options ?? [
-      DEFAULT_SPEECH_TRANSCRIPTION,
-    ]) as readonly string[];
   const allowedTurnDetection =
     (provider?.capabilities.turnDetection.options ?? [
       DEFAULT_SPEECH_TURN_DETECTION,
@@ -432,11 +442,6 @@ export function speechSessionUpdate(
     typeof settings.locale === "string" && allowedLocales.includes(settings.locale)
       ? settings.locale
       : allowedLocales[0] ?? DEFAULT_SPEECH_LOCALE;
-  const transcription =
-    typeof settings.transcription === "string" &&
-    allowedTranscriptions.includes(settings.transcription)
-      ? settings.transcription
-      : allowedTranscriptions[0] ?? DEFAULT_SPEECH_TRANSCRIPTION;
   const turnDetection =
     typeof settings.turnDetection === "string" &&
     allowedTurnDetection.includes(settings.turnDetection)
@@ -460,7 +465,11 @@ export function speechSessionUpdate(
       locale,
     },
     input_audio_transcription: {
-      model: transcription,
+      model:
+        managedModel?.inputTranscription.model ??
+        (managedModel?.profile === "azure_speech_chain"
+          ? "azure-speech"
+          : "gpt-4o-transcribe"),
       language: locale,
     },
     turn_detection: {
@@ -492,6 +501,8 @@ export function buildVoiceLiveWebSocketUrl(
   if (input.providerId === "azure_openai") {
     if (input.model) params.set("model", input.model);
     if (input.region) params.set("region", input.region);
+  } else if (input.providerId === "speech_voice_live" && input.model) {
+    params.set("model", input.model);
   }
   if (input.agent) params.set("agent", input.agent);
   if (input.tools) params.set("tools", "1");
@@ -522,7 +533,7 @@ const MAX_SEED_CHARS = 6000;
 // are kept within the char budget, then emitted oldest-first to preserve order.
 // Seeded items are passive context — they do not trigger a model response (only
 // the user speaking does), so the session opens silently with memory of the chat.
-function seedFrames(history: VoiceSeedTurn[]): string[] {
+export function seedFrames(history: VoiceSeedTurn[]): string[] {
   const recent = history
     .filter((t) => t.text && t.text.trim())
     .slice(-MAX_SEED_TURNS);
@@ -533,6 +544,7 @@ function seedFrames(history: VoiceSeedTurn[]): string[] {
     selected.unshift({ role: recent[i].role, text });
     budget -= text.length;
   }
+
   return selected.map((t) =>
     JSON.stringify({
       type: "conversation.item.create",
@@ -545,6 +557,21 @@ function seedFrames(history: VoiceSeedTurn[]): string[] {
       },
     }),
   );
+}
+
+export function buildInitialVoiceFrames(input: {
+  providerId: VoiceProviderId;
+  model?: string | null;
+  voice: string;
+  history?: VoiceSeedTurn[];
+  settings?: VoiceSessionSettings;
+  speechSettings?: SpeechVoiceLiveSettings;
+}): string[] {
+  const sessionFrame =
+    input.providerId === "speech_voice_live"
+      ? speechSessionUpdate(input.model, input.speechSettings)
+      : sessionUpdate(input.voice, input.settings);
+  return [sessionFrame, ...seedFrames(input.history ?? [])];
 }
 
 // Builds the WebSocket auth subprotocols. Under Entra we pass a real bearer token;
@@ -575,6 +602,9 @@ interface LiveSession {
   // gateway) from a drop of an already-live session, so onerror/onclose can
   // report the right message.
   opened: boolean;
+  cleaned: boolean;
+  errorReported: boolean;
+  protocolError: SafeProtocolError | null;
 }
 
 // The message shown when the WebSocket fails or closes before ever reaching
@@ -589,6 +619,80 @@ const LIVE_CONNECTION_ERROR_MESSAGE = "Live voice connection error.";
 interface PendingLiveSession {
   ctx: AudioContext | null;
   stream: MediaStream | null;
+  cleaned: boolean;
+}
+
+const MAX_SAFE_ERROR_CHARS = 512;
+const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f-\u009f]/g;
+const JWT_RE = /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b/g;
+const BEARER_RE = /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi;
+const SECRET_QUERY_RE =
+  /([?&](?:api[_-]?key|access[_-]?token|token|sig)=)[^&#\s]+/gi;
+const SECRET_VALUE_RE =
+  /(\b(?:api[_-]?key|access[_-]?token|token|authorization)\b\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi;
+
+export function sanitizeVoiceErrorValue(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const safe = value
+    .replace(CONTROL_CHARS_RE, " ")
+    .replace(BEARER_RE, "Bearer [REDACTED]")
+    .replace(JWT_RE, "[REDACTED]")
+    .replace(SECRET_QUERY_RE, "$1[REDACTED]")
+    .replace(SECRET_VALUE_RE, "$1[REDACTED]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_SAFE_ERROR_CHARS);
+  return safe || null;
+}
+
+export interface SafeProtocolError {
+  type: string | null;
+  code: string | null;
+  param: string | null;
+  eventId: string | null;
+  message: string;
+}
+
+export function parseVoiceProtocolError(value: unknown): SafeProtocolError {
+  const error =
+    value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const metadataValue = (field: unknown) =>
+    sanitizeVoiceErrorValue(field)?.slice(0, 96) ?? null;
+  return {
+    type: metadataValue(error.type),
+    code: metadataValue(error.code),
+    param: metadataValue(error.param),
+    eventId: metadataValue(error.event_id),
+    message:
+      sanitizeVoiceErrorValue(error.message) ?? "Live voice reported an error.",
+  };
+}
+
+export function formatVoiceProtocolError(error: SafeProtocolError): string {
+  const metadata = [
+    error.type ? `type: ${error.type}` : null,
+    error.code ? `code: ${error.code}` : null,
+    error.param ? `param: ${error.param}` : null,
+    error.eventId ? `event_id: ${error.eventId}` : null,
+  ].filter(Boolean);
+  const suffix = metadata.length ? ` (${metadata.join("; ")})` : "";
+  return `${error.message.slice(0, MAX_SAFE_ERROR_CHARS - suffix.length)}${suffix}`;
+}
+
+export function formatVoiceCloseError(
+  opened: boolean,
+  event?: Pick<CloseEvent, "code" | "reason"> | null,
+): string {
+  const base = opened ? LIVE_CONNECTION_ERROR_MESSAGE : GATEWAY_UNAVAILABLE_MESSAGE;
+  const reason = sanitizeVoiceErrorValue(event?.reason);
+  const details = [
+    typeof event?.code === "number" && event.code > 0 ? `code: ${event.code}` : null,
+    reason ? `reason: ${reason}` : null,
+  ].filter(Boolean);
+  return `${base}${details.length ? ` (${details.join("; ")})` : ""}`.slice(
+    0,
+    MAX_SAFE_ERROR_CHARS,
+  );
 }
 
 // Real-time speech-to-speech controller. Owns the WS + mic capture + playback
@@ -645,6 +749,10 @@ export function useVoiceLive(
   useEffect(() => {
     regionRef.current = region;
   }, [region]);
+  const modelRef = useRef(model);
+  useEffect(() => {
+    modelRef.current = model;
+  }, [model]);
 
   // Recent text-chat history to seed into the next live session, kept in a ref so
   // updates don't re-create ``start`` or restart a live session mid-conversation.
@@ -668,19 +776,22 @@ export function useVoiceLive(
     toolsRef.current = tools;
   }, [tools]);
 
-  const teardown = useCallback(() => {
-    const pending = pendingRef.current;
-    pendingRef.current = null;
+  const cleanupPending = useCallback((pending: PendingLiveSession) => {
+    if (pending.cleaned) return;
+    pending.cleaned = true;
+    if (pendingRef.current === pending) pendingRef.current = null;
     if (pending?.stream) {
       for (const track of pending.stream.getTracks()) track.stop();
     }
     if (pending?.ctx) {
       void pending.ctx.close().catch(() => {});
     }
+  }, []);
 
-    const s = sessionRef.current;
-    sessionRef.current = null;
-    if (!s) return;
+  const cleanupSession = useCallback((s: LiveSession) => {
+    if (s.cleaned) return;
+    s.cleaned = true;
+    if (sessionRef.current === s) sessionRef.current = null;
     try {
       for (const node of s.scheduled) {
         try {
@@ -711,6 +822,13 @@ export function useVoiceLive(
     void s.ctx.close().catch(() => {});
   }, []);
 
+  const teardown = useCallback(() => {
+    const pending = pendingRef.current;
+    if (pending) cleanupPending(pending);
+    const session = sessionRef.current;
+    if (session) cleanupSession(session);
+  }, [cleanupPending, cleanupSession]);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -740,7 +858,7 @@ export function useVoiceLive(
     setTurns([]);
     setListening(false);
     setSpeaking(false);
-    const pending: PendingLiveSession = { ctx: null, stream: null };
+    const pending: PendingLiveSession = { ctx: null, stream: null, cleaned: false };
     pendingRef.current = pending;
     try {
       // Begin permission-gated browser APIs before the first await so this work is
@@ -793,7 +911,7 @@ export function useVoiceLive(
       // names them. An unknown/disabled agent falls back to the generic assistant.
       const wsUrl = buildVoiceLiveWebSocketUrl(config.wsUrl, {
         providerId: providerIdRef.current,
-        model,
+        model: modelRef.current,
         region: regionRef.current,
         agent,
         tools: toolsRef.current,
@@ -810,6 +928,9 @@ export function useVoiceLive(
         scheduled: new Set(),
         nextPlayTime: 0,
         opened: false,
+        cleaned: false,
+        errorReported: false,
+        protocolError: null,
       };
       sessionRef.current = session;
       pendingRef.current = null;
@@ -926,7 +1047,7 @@ export function useVoiceLive(
       };
 
       const handleServerEvent = (ev: MessageEvent) => {
-        if (typeof ev.data !== "string") return;
+        if (session.cleaned || typeof ev.data !== "string") return;
         let msg: {
           type?: unknown;
           delta?: unknown;
@@ -939,7 +1060,7 @@ export function useVoiceLive(
           content?: { index?: unknown };
           name?: unknown;
           transcript?: unknown;
-          error?: { message?: unknown };
+          error?: unknown;
         } | null = null;
         try {
           msg = JSON.parse(ev.data);
@@ -1106,8 +1227,10 @@ export function useVoiceLive(
             break;
           }
           case "error": {
-            const err = msg.error as { message?: string } | undefined;
-            onErrorRef.current(err?.message || "Live voice reported an error.");
+            if (!session.protocolError) {
+              session.protocolError = parseVoiceProtocolError(msg.error);
+            }
+            finishSession(formatVoiceProtocolError(session.protocolError));
             break;
           }
           default:
@@ -1128,15 +1251,19 @@ export function useVoiceLive(
       };
 
       ws.onopen = () => {
+        if (sessionRef.current !== session || session.cleaned) return;
         session.opened = true;
-        ws.send(
-          providerIdRef.current === "speech_voice_live"
-            ? speechSessionUpdate(speechSettingsRef.current)
-            : sessionUpdate(voiceRef.current, settingsRef.current),
-        );
-        // Seed the session with recent text history so voice continues the same
-        // conversation. Sent after session.update; passes through the relay as-is.
-        for (const frame of seedFrames(historyRef.current)) ws.send(frame);
+        for (const frame of
+          buildInitialVoiceFrames({
+            providerId: providerIdRef.current,
+            model: modelRef.current,
+            voice: voiceRef.current,
+            history: historyRef.current,
+            settings: settingsRef.current,
+            speechSettings: speechSettingsRef.current,
+          })) {
+          ws.send(frame);
+        }
         // Connect the capture graph. The worklet emits silence to the
         // destination (it only forwards mic frames via its port), so wiring it to
         // the destination keeps it in the active render graph without echo.
@@ -1156,20 +1283,31 @@ export function useVoiceLive(
       // onerror/onclose fires first) tears down and reports exactly once. The
       // message depends on whether the session ever reached "live"
       // (session.opened).
-      const reportConnectionFailure = () => {
+      function finishSession(message: string) {
         if (sessionRef.current !== session) return;
-        onErrorRef.current(
-          session.opened ? LIVE_CONNECTION_ERROR_MESSAGE : GATEWAY_UNAVAILABLE_MESSAGE,
-        );
-        teardown();
+        if (!session.errorReported) {
+          session.errorReported = true;
+          onErrorRef.current(message);
+        }
+        cleanupSession(session);
         if (mountedRef.current) {
           setListening(false);
           setSpeaking(false);
           setStatus("idle");
         }
-      };
-      ws.onerror = reportConnectionFailure;
-      ws.onclose = reportConnectionFailure;
+      }
+      ws.onerror = () =>
+        finishSession(
+          session.protocolError
+            ? formatVoiceProtocolError(session.protocolError)
+            : formatVoiceCloseError(session.opened),
+        );
+      ws.onclose = (event) =>
+        finishSession(
+          session.protocolError
+            ? formatVoiceProtocolError(session.protocolError)
+            : formatVoiceCloseError(session.opened, event),
+        );
     } catch (e) {
       const cancelled =
         attempt !== attemptRef.current ||
@@ -1178,11 +1316,7 @@ export function useVoiceLive(
         // A later retry may already own the shared refs. Only clean resources that
         // still belong to this cancelled attempt; never tear down the newer start.
         if (pendingRef.current === pending) {
-          pendingRef.current = null;
-          if (pending.stream) {
-            for (const track of pending.stream.getTracks()) track.stop();
-          }
-          if (pending.ctx) void pending.ctx.close().catch(() => {});
+          cleanupPending(pending);
         }
       } else {
         onErrorRef.current((e as Error).message || "Couldn't start live voice.");
@@ -1199,7 +1333,7 @@ export function useVoiceLive(
     } finally {
       if (attempt === attemptRef.current) startingRef.current = false;
     }
-  }, [config, model, agent, teardown]);
+  }, [agent, cleanupPending, cleanupSession, config, teardown]);
 
   const stop = useCallback(() => {
     attemptRef.current += 1;

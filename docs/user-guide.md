@@ -64,23 +64,27 @@ Sharing is tenant-scoped:
   The normal transcript and composer stay available, and finalized spoken turns
   are saved into that same session.
 - Open **Voice settings** beside the composer to choose the current/default or an
-  enabled agent, a **provider**, a voice, and optional governed tools.
+  enabled agent, a **provider**, that provider's model, a voice, and optional
+  governed tools.
   **Advanced** includes instructions, temperature, turn detection, transcription,
   and a language hint. Settings are stored in this browser, stale values fall back
   safely, and controls lock while connected because changes apply to the next
   session.
 - Two providers are available when an operator enables both: **Azure OpenAI**
   (the default, with a catalog realtime model and its usual voice/turn-detection
-  options) and **Azure Speech** (a second, opt-in provider fixed to one managed
-  model and a curated set of built-in voices, locale, Speech noise suppression,
-  echo cancellation, and turn-detection choices, with stable
-  **GPT-4o Transcribe** input transcription - there is no custom voice, custom
-  endpoint, or free-text voice name option). If only Azure OpenAI is configured,
-  the provider control is not shown.
+  options) and **Azure Speech** (a second, opt-in provider with six curated
+  `eastus2` / stable `2026-04-10` managed models). `gpt-realtime` (the Speech
+  default) and `gpt-realtime-mini` are native audio with GPT-4o Transcribe;
+  `gpt-4.1`, `gpt-4.1-mini`, `gpt-5-mini`, and `gpt-5.1` use the Azure Speech
+  chain and Azure Speech transcription. Speech also offers curated built-in
+  voices, locale, noise suppression, echo cancellation, and turn detection;
+  there is no custom endpoint, lexicon, personal voice, or free-text model.
 - Changing the provider (or any other voice setting) applies starting with the
   **next** connection, not the current one; it never triggers a silent reconnect
   mid-session. The chat transcript and session are shared across both providers,
-  so switching providers keeps the same conversation.
+  so switching providers keeps the same conversation. Azure OpenAI and Speech
+  retain separate model/settings selections. Existing v2 browser preferences are
+  migrated to v3; the new Speech model choice defaults to `gpt-realtime`.
 - You can type while Voice Live is connected. Typed turns are saved immediately
   in the shared transcript; because an open realtime socket cannot be reseeded,
   they become Voice Live context the next time it connects.
@@ -172,4 +176,6 @@ missing; a `—` cell means no data for that metric, not an error.
 | Voice Live reports that the gateway or realtime service is unavailable | The active provider's APIM WebSocket API, its scoped key, or its upstream backend (Foundry for Azure OpenAI, the AIServices account for Azure Speech) is unavailable. Retry after gateway health is restored; each provider's API and key are independent, so one provider's outage does not necessarily affect the other. |
 | Voice Live fails before opening the socket | API public URL, Origin allowlist, browser microphone permission, or auth is misconfigured. |
 | Azure Speech is not offered as a provider | The operator has not enabled it (`AI4IA_SPEECH_VOICE_LIVE_ENABLED` off, or it is not in the server's voice provider allowlist). Azure OpenAI remains available. |
+| A provider/model change appears not to apply | Voice settings intentionally affect the next connection. Stop and reconnect; the current socket is never silently replaced. |
+| Azure OpenAI Voice Live fails while other paths work | The UI now reports bounded protocol/close details for operator correlation, but that alone does not prove an Azure OpenAI upstream cause. Report the time, provider/model, and safe correlation/error shown; do not paste tokens, audio, transcripts, prompts, or tool data. |
 | Admin resource panel is unavailable | The resource id is empty, the API identity lacks Monitoring Reader, or Azure Monitor data is unavailable. |
