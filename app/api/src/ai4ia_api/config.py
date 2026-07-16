@@ -12,6 +12,7 @@ from __future__ import annotations
 from enum import Enum
 from functools import lru_cache
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -147,6 +148,8 @@ class Settings(BaseSettings):
     # separately from the SimpleL7Proxy model gateway URL. Local-only setups may
     # omit it and use the model-gateway fallback. http(s) is converted to ws(s).
     realtime_base_url: str | None = None
+    # Scoped APIM realtime subscription. It must never reuse the proxy ingress key.
+    realtime_gateway_api_key: str | None = None
     # Upstream connect/handshake timeout (seconds).
     realtime_timeout_seconds: float = 30.0
     # Optional hard clamp on a single live session's total duration (seconds);
@@ -703,6 +706,27 @@ class Settings(BaseSettings):
                 "AI4IA_USAGE_METERING_ENABLED=true, or disable enforcement with "
                 "AI4IA_ENTITLEMENTS_ENABLED=false."
             )
+        if self.realtime_enabled:
+            if not self.realtime_base_url or not self.realtime_gateway_api_key:
+                raise RuntimeError(
+                    "Voice Live requires AI4IA_REALTIME_BASE_URL and "
+                    "AI4IA_REALTIME_GATEWAY_API_KEY."
+                )
+            if self.realtime_gateway_api_key == self.model_gateway_api_key:
+                raise RuntimeError(
+                    "Voice Live requires a distinct realtime gateway key; do not reuse "
+                    "AI4IA_MODEL_GATEWAY_API_KEY."
+                )
+            realtime_url = urlparse(self.realtime_base_url)
+            if (
+                realtime_url.scheme not in {"https", "wss"}
+                or not realtime_url.netloc
+                or realtime_url.path.rstrip("/") != "/openai"
+            ):
+                raise RuntimeError(
+                    "Voice Live requires a WebSocket-capable replacement APIM /openai "
+                    "gateway URL (https:// or wss://)."
+                )
         if self.realtime_enabled and self.env != Environment.local and (
             not self.realtime_allowed_origin_list
         ):

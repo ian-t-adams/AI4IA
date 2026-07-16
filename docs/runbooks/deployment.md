@@ -410,3 +410,23 @@ gh variable set AI4IA_BUDGET_START_DATE --body "2026-07-01"
 The value is a global repo variable, so use the first of the month in which the budget is (re)created.
 A brand-new environment created in a later month should use that later month (a monthly budget's start
 date cannot be more than the current period in the past).
+
+## APIM Basic v2 migration guardrail
+
+The active model/realtime plane is `apim-v2-<workload>-<environmentName>` (Basic v2, capacity 1). Provisioning must be reviewed as an incremental cutover: the template retains the Consumption APIM and all children unchanged as an inactive rollback plane. The replacement APIs, policies, scoped keys, Foundry RBAC, and diagnostics are configured before proxy/API caller revisions can update. Review the creator-approved what-if for zero deletes; do not delete the Consumption plane during this operation. Roll back by rewiring callers only after stabilization.
+
+### Post-stabilization Consumption cleanup
+
+The two APIM services are a temporary migration overlap, not the steady-state design.
+Delete the Consumption service only in a separate destructive change after:
+
+1. HTTP and SSE smoke tests pass through SimpleL7Proxy -> Basic v2;
+2. FastAPI -> Basic v2 returns WebSocket 101 and completes a real voice turn;
+3. gateway logs confirm only the replacement receives active traffic for the agreed stabilization period;
+4. operators confirm the Consumption HTTP rollback is no longer required; and
+5. a deletion-specific what-if is reviewed and explicitly approved.
+
+Realtime has no working Consumption rollback path. During stabilization, HTTP/SSE
+rollback means restoring the previous proxy revision/key that targets Consumption;
+do not delete or mutate the legacy APIs, fragments, policies, subscriptions, or
+identity before the cleanup approval.

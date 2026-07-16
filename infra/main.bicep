@@ -657,6 +657,14 @@ module apicenter 'modules/apicenter.bicep' = if (enablePrivateToolCatalog) {
 // --- Backend API (FastAPI) Container App ---
 module api 'modules/api.bicep' = {
   name: 'api'
+  // Do not create a caller revision until the replacement gateway module has
+  // completed its APIs, policies, scoped subscriptions, and ACA secrets.
+  dependsOn: [
+    // Output references also create this edge; retain it explicitly so a future
+    // wiring refactor cannot update an API revision before gateway completion.
+    #disable-next-line no-unnecessary-dependson
+    gateway
+  ]
   scope: rg
   params: {
     location: location
@@ -667,13 +675,16 @@ module api 'modules/api.bicep' = {
     apiIdentityResourceId: apiIdentity.resourceId
     apiIdentityClientId: apiIdentity.clientId
     acrLoginServer: platform.outputs.acrLoginServer
-    modelGatewayUrl: gateway.outputs.modelGatewayUrl
+    // FastAPI calls the proxy with an opaque ingress key; it never receives the
+    // replacement model APIM subscription held by SimpleL7Proxy.
+    modelGatewayUrl: gateway.outputs.proxyIngressUrl
     modelGatewayAuthMode: 'api_key'
-    modelGatewayApiKey: gateway.outputs.apiGatewayKey
+    modelGatewayApiKey: gateway.outputs.proxyIngressKey
     // Realtime stays on the FastAPI relay -> APIM path because the proxy does
     // not support WebSockets. The separately scoped subscription key cannot call
     // the normal APIM model API, so compatible traffic cannot bypass the proxy.
     realtimeBaseUrl: gateway.outputs.realtimeGatewayUrl
+    realtimeGatewayApiKey: gateway.outputs.realtimeGatewayKey
     cosmosEndpoint: data.outputs.cosmosEndpoint
     cosmosDatabase: data.outputs.cosmosDatabaseName
     // Per-user memory: real mem0 (LLM extraction + pgvector) when Postgres is
@@ -882,7 +893,7 @@ output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = platform.outputs.container
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = platform.outputs.containerEnvId
 output AZURE_EVENTHUBS_NAMESPACE_FQDN string = eventhubs.outputs.namespaceFqdn
 output AZURE_EVENTHUBS_TELEMETRY_HUB string = eventhubs.outputs.telemetryHubName
-output AZURE_MODEL_GATEWAY_URL string = gateway.outputs.modelGatewayUrl
+output AZURE_MODEL_GATEWAY_URL string = gateway.outputs.proxyIngressUrl
 output AZURE_APIM_GATEWAY_URL string = gateway.outputs.apimGatewayUrl
 output AZURE_REALTIME_GATEWAY_URL string = gateway.outputs.realtimeGatewayUrl
 output AZURE_PROXY_URL string = gateway.outputs.proxyUrl

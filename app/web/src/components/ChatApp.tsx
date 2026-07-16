@@ -23,7 +23,15 @@ import { SystemPromptEditor } from "./SystemPromptEditor";
 import { SettingsPanel } from "./SettingsPanel";
 import { StudioPanel } from "./StudioPanel";
 import { ImageStudioPanel } from "./ImageStudioPanel";
-import { realtimeModels } from "@/lib/voiceLive";
+import { realtimeModels, type RealtimeVoice } from "@/lib/voiceLive";
+import {
+  DEFAULT_VOICE_PREFERENCES,
+  loadVoicePreferences,
+  resolveEffectiveAgent,
+  resolveEffectiveModel,
+  saveVoicePreferences,
+  type VoicePreferences,
+} from "@/lib/voicePreferences";
 import { LibraryPanel } from "./LibraryPanel";
 import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage } from "./MessageList";
@@ -32,6 +40,7 @@ import {
   InlineVoiceLiveStatus,
   mergeDisplayMessages,
   useInlineVoiceLive,
+  voiceMessagesForSession,
 } from "./InlineVoiceLive";
 import { UserMenu } from "./UserMenu";
 import { AdminLink } from "./AdminLink";
@@ -39,6 +48,7 @@ import { DOCS_PORTAL_URL } from "@/lib/docs";
 import { useVoiceLiveConfig } from "./VoiceLiveProvider";
 import { useLibraryConfig } from "./LibraryProvider";
 import { useCustomToolsConfig } from "./CustomToolsProvider";
+
 
 function pickDefaultModel(models: ModelEntry[]): string | null {
   // Never default to a capability model: prefer a plain "chat" model, then any
@@ -138,6 +148,8 @@ export function ChatApp() {
   // when an upload is quickly followed by a send.
   const sessionIdRef = useRef<string | null>(null);
   const voiceNavigationLockedRef = useRef(false);
+  const voiceActiveRef = useRef(false);
+  const voiceStopRef = useRef<() => void>(() => {});
   useEffect(() => {
     sessionIdRef.current = activeId;
   }, [activeId]);
@@ -188,6 +200,9 @@ export function ChatApp() {
   const selectSession = useCallback(
     async (id: string) => {
       if (streamingRef.current || voiceNavigationLockedRef.current) return;
+      if (id !== sessionIdRef.current && voiceActiveRef.current) {
+        voiceStopRef.current();
+      }
       setActiveId(id);
       setError(null);
       try {
@@ -216,6 +231,7 @@ export function ChatApp() {
 
   const newChat = useCallback(() => {
     if (streamingRef.current || voiceNavigationLockedRef.current) return;
+    if (voiceActiveRef.current) voiceStopRef.current();
     setActiveId(null);
     setMessages([]);
     setDocuments([]);
@@ -244,6 +260,7 @@ export function ChatApp() {
   const deleteSession = useCallback(
     async (id: string) => {
       if (streamingRef.current || voiceNavigationLockedRef.current) return;
+      if (id === activeId && voiceActiveRef.current) voiceStopRef.current();
       try {
         await api.deleteSession(id);
         if (id === activeId) newChat();
@@ -402,22 +419,67 @@ export function ChatApp() {
     return null;
   }, [agents, messages]);
 
+  // Voice Live settings disclosure: persisted picks (agent/model/voice/tools/
+  // advanced settings), loaded once on mount (localStorage is client-only —
+  // starting from the default keeps SSR/first paint stable).
+  const [voicePrefs, setVoicePrefs] = useState<VoicePreferences>(
+    DEFAULT_VOICE_PREFERENCES,
+  );
+  useEffect(() => {
+    setVoicePrefs(loadVoicePreferences());
+  }, []);
+  const updateVoicePrefs = useCallback((next: VoicePreferences) => {
+    setVoicePrefs(next);
+    saveVoicePreferences(next);
+  }, []);
+
+  const enabledAgentNames = useMemo(
+    () => new Set(agents.filter((a) => a.enabled).map((a) => a.name)),
+    [agents],
+  );
+  const realtimeModelIds = useMemo(
+    () => new Set(realtimeModelList.map((m) => m.id)),
+    [realtimeModelList],
+  );
+  // The explicit pick (agent/model) wins when it is still valid; otherwise the
+  // active chat's current agent / the catalog default. Switching the active
+  // chat agent never overwrites a stored explicit pick — this is re-derived
+  // from the unchanged stored value on every render, so a stale pick resumes
+  // automatically once it becomes valid again (e.g. the agent is re-enabled).
+  const effectiveVoiceAgent = resolveEffectiveAgent(
+    voicePrefs.explicitAgent,
+    enabledAgentNames,
+    currentVoiceAgent,
+  );
+  const effectiveVoiceModel = resolveEffectiveModel(
+    voicePrefs.model,
+    realtimeModelIds,
+    realtimeModelList[0]?.id ?? null,
+  );
+  const voiceToolsAvailable = voiceLiveConfig.toolsAvailable;
+
   const inlineVoice = useInlineVoiceLive({
     config: voiceLiveConfig,
-    model: realtimeModelList[0]?.id ?? null,
-    agent: currentVoiceAgent,
+    model: effectiveVoiceModel,
+    agent: effectiveVoiceAgent,
     agents,
     history: voiceHistory,
+    voice: voicePrefs.voice,
+    settings: voicePrefs.settings,
+    tools: voiceToolsAvailable && voicePrefs.tools,
+    activeSessionId: activeId,
     ensureSession,
     persistConversation: persistVoiceConversation,
   });
-  const voiceExitLocked =
-    inlineVoice.active ||
-    inlineVoice.saving ||
-    Boolean(inlineVoice.persistenceError);
+  // Session/chat navigation is blocked only while there is voice data that
+  // would actually be lost — an open mic with no exchanges yet never blocks a
+  // switch (see useInlineVoiceLive.hasUnsavedTurns).
+  const voiceExitLocked = inlineVoice.exitLocked;
   useLayoutEffect(() => {
     voiceNavigationLockedRef.current = voiceExitLocked;
-  }, [voiceExitLocked]);
+    voiceActiveRef.current = inlineVoice.active;
+    voiceStopRef.current = inlineVoice.stop;
+  }, [inlineVoice.active, inlineVoice.stop, voiceExitLocked]);
   useEffect(() => {
     if (!voiceExitLocked) return;
     const warnBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -427,6 +489,57 @@ export function ChatApp() {
     window.addEventListener("beforeunload", warnBeforeUnload);
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
   }, [voiceExitLocked]);
+
+  // Props for the compact inline Voice settings disclosure (agent, realtime
+  // model, voice, governed tools, advanced session settings). Built once here
+  // so both the labels (which need the live catalog/agent list) and the
+  // persisted picks stay in one place; Composer only adds the transient
+  // `locked` flag (derived from the live connection's own status).
+  const voiceSettingsProps = useMemo(
+    () => ({
+      agents,
+      defaultAgentLabel: currentVoiceAgent
+        ? `Current chat agent (${
+            agents.find((a) => a.name === currentVoiceAgent)?.displayName ??
+            currentVoiceAgent
+          })`
+        : "Current chat agent (generic assistant)",
+      explicitAgent: voicePrefs.explicitAgent,
+      onAgentChange: (nextAgent: string | null) =>
+        updateVoicePrefs({ ...voicePrefs, explicitAgent: nextAgent }),
+      models: realtimeModelList.map((m) => ({ id: m.id, displayName: m.displayName })),
+      defaultModelLabel: realtimeModelList[0]
+        ? `Default (${realtimeModelList[0].displayName})`
+        : "Default",
+      explicitModel: voicePrefs.model,
+      onModelChange: (nextModel: string | null) =>
+        updateVoicePrefs({ ...voicePrefs, model: nextModel }),
+      voice: voicePrefs.voice,
+      onVoiceChange: (nextVoice: RealtimeVoice) =>
+        updateVoicePrefs({ ...voicePrefs, voice: nextVoice }),
+      toolsAvailable: voiceToolsAvailable,
+      tools: voicePrefs.tools,
+      onToolsChange: (nextTools: boolean) =>
+        updateVoicePrefs({ ...voicePrefs, tools: nextTools }),
+      settings: voicePrefs.settings,
+      onSettingsChange: (nextSettings: typeof voicePrefs.settings) =>
+        updateVoicePrefs({ ...voicePrefs, settings: nextSettings }),
+      onReset: () =>
+        updateVoicePrefs({
+          ...voicePrefs,
+          settings: DEFAULT_VOICE_PREFERENCES.settings,
+        }),
+    }),
+    [
+      agents,
+      currentVoiceAgent,
+      realtimeModelList,
+      updateVoicePrefs,
+      voicePrefs,
+      voiceToolsAvailable,
+    ],
+  );
+
   const removeDocument = useCallback(
     async (documentId: string) => {
       if (!activeId) return;
@@ -652,7 +765,14 @@ export function ChatApp() {
         steps: liveSteps,
       });
     }
-    return mergeDisplayMessages(base, inlineVoice.messages);
+    return mergeDisplayMessages(
+      base,
+      voiceMessagesForSession(
+        inlineVoice.messages,
+        inlineVoice.boundSessionId,
+        activeId,
+      ),
+    );
   }, [
     messages,
     streaming,
@@ -660,6 +780,8 @@ export function ChatApp() {
     streamingStartedAt,
     liveSteps,
     inlineVoice.messages,
+    inlineVoice.boundSessionId,
+    activeId,
   ]);
 
   // Hydrate panel-collapse preferences from localStorage on mount (after SSR).
@@ -845,6 +967,7 @@ export function ChatApp() {
                   retrying: Boolean(inlineVoice.error),
                   start: inlineVoice.start,
                   stop: inlineVoice.stop,
+                  settings: voiceSettingsProps,
                 }
               : undefined
           }

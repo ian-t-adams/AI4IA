@@ -194,9 +194,131 @@ describe("useVoiceLive lifecycle", () => {
     const socket = FakeWebSocket.instances[0];
     act(() => socket.onerror?.());
 
-    expect(onError).toHaveBeenCalledWith("Live voice connection error.");
+    // The socket never reached onopen, so the browser-invisible handshake
+    // failure (e.g. a 503 from the gateway) gets the actionable message
+    // instead of the generic "connection error" text.
+    expect(onError).toHaveBeenCalledWith(
+      "Voice gateway or realtime service is unavailable. Try again.",
+    );
     expect(result.current.status).toBe("idle");
     expect(secondTrack.stop).toHaveBeenCalledTimes(1);
     expect(FakeAudioContext.instances[1].close).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the actionable gateway message and fully cleans up on a pre-open close with no onerror", async () => {
+    auth.getToken.mockResolvedValue("token");
+    const track = { stop: vi.fn() };
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "catalog-model", "alloy", onError),
+    );
+
+    act(() => {
+      result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+
+    // Some browsers fire only onclose (no onerror) for a rejected upgrade.
+    act(() => socket.onclose?.());
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(
+      "Voice gateway or realtime service is unavailable. Try again.",
+    );
+    expect(result.current.status).toBe("idle");
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(FakeAudioContext.instances[0].close).toHaveBeenCalledTimes(1);
+    expect(socket.close).toHaveBeenCalled();
+  });
+
+  it("reports the pre-open message exactly once when both onerror and onclose fire", async () => {
+    auth.getToken.mockResolvedValue("token");
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }),
+      },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "catalog-model", "alloy", onError),
+    );
+
+    act(() => {
+      result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+
+    act(() => {
+      socket.onerror?.();
+      socket.onclose?.();
+    });
+
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the generic connection-error message once the session is live", async () => {
+    auth.getToken.mockResolvedValue("token");
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }),
+      },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "catalog-model", "alloy", onError),
+    );
+
+    act(() => {
+      result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.onopen?.());
+    await waitFor(() => expect(result.current.status).toBe("live"));
+
+    act(() => socket.onerror?.());
+
+    expect(onError).toHaveBeenCalledWith("Live voice connection error.");
+    expect(result.current.status).toBe("idle");
+  });
+
+  it("does not report a spurious error when the user stops a live session cleanly", async () => {
+    auth.getToken.mockResolvedValue("token");
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }),
+      },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "catalog-model", "alloy", onError),
+    );
+
+    act(() => {
+      result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.onopen?.());
+    await waitFor(() => expect(result.current.status).toBe("live"));
+
+    act(() => {
+      result.current.stop();
+    });
+    // The browser eventually fires close for the socket we asked to close;
+    // it must not be mistaken for an unexpected failure.
+    act(() => socket.onclose?.());
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(result.current.status).toBe("idle");
   });
 });

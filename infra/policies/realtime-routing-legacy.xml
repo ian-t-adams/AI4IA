@@ -3,23 +3,24 @@
     <base />
     <choose>
       <when condition="@(&quot;gpt-realtime-slurmfactory-eastus2-glbl&quot;.Equals(context.Request.Url.Query.GetValueOrDefault(&quot;deployment&quot;, &quot;&quot;), StringComparison.OrdinalIgnoreCase))">
-        <set-backend-service base-url="{{foundry-eastus2-realtime-wss-endpoint}}/openai/realtime" />
+        <set-backend-service base-url="{{foundry-eastus2-endpoint}}/openai/realtime" />
       </when>
       <when condition="@(&quot;gpt-realtime-slurmfactory-swedencentral-glbl&quot;.Equals(context.Request.Url.Query.GetValueOrDefault(&quot;deployment&quot;, &quot;&quot;), StringComparison.OrdinalIgnoreCase))">
-        <set-backend-service base-url="{{foundry-swedencentral-realtime-wss-endpoint}}/openai/realtime" />
+        <set-backend-service base-url="{{foundry-swedencentral-endpoint}}/openai/realtime" />
       </when>
       <when condition="@(&quot;gpt-realtime-2-slurmfactory-eastus2-glbl&quot;.Equals(context.Request.Url.Query.GetValueOrDefault(&quot;deployment&quot;, &quot;&quot;), StringComparison.OrdinalIgnoreCase))">
-        <set-backend-service base-url="{{foundry-eastus2-realtime-wss-endpoint}}/openai/realtime" />
+        <set-backend-service base-url="{{foundry-eastus2-endpoint}}/openai/realtime" />
       </when>
       <when condition="@(&quot;gpt-realtime-mini-slurmfactory-eastus2-glbl&quot;.Equals(context.Request.Url.Query.GetValueOrDefault(&quot;deployment&quot;, &quot;&quot;), StringComparison.OrdinalIgnoreCase))">
-        <set-backend-service base-url="{{foundry-eastus2-realtime-wss-endpoint}}/openai/realtime" />
+        <set-backend-service base-url="{{foundry-eastus2-endpoint}}/openai/realtime" />
       </when>
       <when condition="@(&quot;gpt-realtime-mini-slurmfactory-swedencentral-glbl&quot;.Equals(context.Request.Url.Query.GetValueOrDefault(&quot;deployment&quot;, &quot;&quot;), StringComparison.OrdinalIgnoreCase))">
-        <set-backend-service base-url="{{foundry-swedencentral-realtime-wss-endpoint}}/openai/realtime" />
+        <set-backend-service base-url="{{foundry-swedencentral-endpoint}}/openai/realtime" />
       </when>
       <otherwise>
         <return-response>
           <set-status code="404" reason="Realtime deployment is not in the AI4IA catalog" />
+          <set-body>{"error":{"code":"model_not_allowed","message":"The requested realtime deployment is not allowed by the gateway catalog."}}</set-body>
         </return-response>
       </otherwise>
     </choose>

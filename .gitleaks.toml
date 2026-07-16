@@ -50,3 +50,13 @@ regexes = ['''kvSecrets(User|Officer)RoleId''']
 [[allowlists]]
 description = "Vendored microsoft/SimpleL7Proxy upstream source; not modifiable in this repo."
 paths = ['''proxy/SimpleL7Proxy/.*''']
+
+# 4) Browser localStorage namespace for Voice Live preferences.
+#    This fixed public identifier only names a browser storage slot; it is not an
+#    API key or credential. Scope the exception to the exact source path and
+#    literal so any other high-entropy assignment remains blocking.
+[[allowlists]]
+description = "Voice Live localStorage namespace (public identifier, not a credential)."
+condition = "AND"
+paths = ['''app/web/src/lib/voicePreferences\.ts''']
+regexes = ['''ai4ia\.voiceLive\.prefs\.v1''']
