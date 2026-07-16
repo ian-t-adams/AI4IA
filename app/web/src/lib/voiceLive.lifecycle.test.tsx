@@ -143,6 +143,35 @@ afterEach(() => {
 });
 
 describe("useVoiceLive lifecycle", () => {
+  it("does not request auth, microphone access, or an Azure OpenAI socket while disabled", () => {
+    const getUserMedia = vi.fn();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(
+        { ...CONFIG, enabled: false },
+        "azure_openai",
+        "gpt-realtime",
+        "eastus2",
+        "alloy",
+        onError,
+      ),
+    );
+
+    act(() => {
+      result.current.start();
+    });
+
+    expect(onError).toHaveBeenCalledWith("Live voice isn't available.");
+    expect(auth.getToken).not.toHaveBeenCalled();
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(FakeAudioContext.instances).toHaveLength(0);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
   it("stops a microphone stream that resolves after another startup step fails", async () => {
     auth.getToken.mockRejectedValue(new Error("token acquisition failed"));
     const microphone = deferred<{ getTracks: () => { stop: () => void }[] }>();

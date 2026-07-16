@@ -634,6 +634,7 @@ module gateway 'modules/gateway.bicep' = {
     customDomain: proxyCustomDomain
     managedCertificateName: proxyManagedCertName
     containerEnvName: platform.outputs.containerEnvName
+    speechVoiceLiveEnabled: speechVoiceLiveEnabled
     // Speech Voice Live reuses the existing eastus2 AIServices account computed
     // above; no new AIServices account is provisioned for this capability.
     speechVoiceLiveAccountName: speechVoiceLiveAccountName

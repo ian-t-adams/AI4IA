@@ -224,8 +224,7 @@
                   "provider": {
                     "type": "string",
                     "enum": [
-                      "openai",
-                      "azure-speech"
+                      "openai"
                     ]
                   },
                   "default": {

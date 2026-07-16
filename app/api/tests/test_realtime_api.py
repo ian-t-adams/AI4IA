@@ -335,7 +335,7 @@ def test_live_speech_provider_uses_fixed_upstream_and_normalizes_session():
             "locale": "en-US",
         }
         assert session["input_audio_transcription"] == {
-            "model": "azure-speech",
+            "model": "gpt-4o-transcribe",
             "language": "en-US",
         }
         assert session["turn_detection"] == {
@@ -380,6 +380,41 @@ def test_live_speech_rejects_nonmatching_model_or_region():
         c.__exit__(None, None, None)
 
 
+def test_live_speech_reconstructs_response_create_before_forwarding():
+    c = _speech_client()
+    try:
+        connector = FakeRealtimeConnector()
+        c.app.state.realtime_connector = connector
+        with c.websocket_connect(
+            "/api/voice/live?provider=speech_voice_live",
+            subprotocols=[DEV_SUBPROTOCOL, "u"],
+            headers=_origin(),
+        ) as ws:
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "response.create",
+                        "response": {
+                            "voice": {
+                                "type": "azure-custom",
+                                "name": "private",
+                                "endpoint_id": "custom-endpoint",
+                            },
+                            "tools": [{"type": "function", "name": "untrusted"}],
+                        },
+                    }
+                )
+            )
+            assert json.loads(ws.receive_text().removeprefix("echo:")) == {
+                "type": "response.create"
+            }
+        assert [json.loads(frame) for frame in connector.upstream.sent_text] == [
+            {"type": "response.create"}
+        ]
+    finally:
+        c.__exit__(None, None, None)
+
+
 def test_live_speech_upstream_failure_is_bounded_and_cleans_up():
     c = _speech_client()
     try:
@@ -415,7 +450,11 @@ def test_live_config_exposes_safe_provider_catalog():
         assert "endpointPath" not in providers["speech_voice_live"]
         assert "managedModel" in providers["speech_voice_live"]
         assert providers["speech_voice_live"]["capabilities"]["voices"]["kind"] == "azure-standard"
-        assert providers["speech_voice_live"]["capabilities"]["inputTranscription"]["provider"] == "azure-speech"
+        assert providers["speech_voice_live"]["capabilities"]["inputTranscription"] == {
+            "provider": "openai",
+            "default": "gpt-4o-transcribe",
+            "options": ["gpt-4o-transcribe"],
+        }
     finally:
         c.__exit__(None, None, None)
 
@@ -445,8 +484,10 @@ def test_live_speech_session_records_managed_voice_usage():
             subprotocols=[DEV_SUBPROTOCOL, "speechmeter"],
             headers=_origin(),
         ) as ws:
-            ws.send_text("ping")
-            assert ws.receive_text() == "echo:ping"
+            ws.send_text('{"type":"input_audio_buffer.commit"}')
+            assert json.loads(ws.receive_text().removeprefix("echo:")) == {
+                "type": "input_audio_buffer.commit"
+            }
 
         assert len(usage.calls) == 1
         call = usage.calls[0]

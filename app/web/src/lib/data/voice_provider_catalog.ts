@@ -87,7 +87,7 @@ export const voiceProviderCatalog = {
       },
       "sessionDefaults": {
         "voice": "en-US-Ava:DragonHDLatestNeural",
-        "inputTranscription": "azure-speech",
+        "inputTranscription": "gpt-4o-transcribe",
         "turnDetection": "azure_semantic_vad",
         "locale": "en-US",
         "noiseSuppression": "azure_deep_noise_suppression",
@@ -109,10 +109,10 @@ export const voiceProviderCatalog = {
           ]
         },
         "inputTranscription": {
-          "provider": "azure-speech",
-          "default": "azure-speech",
+          "provider": "openai",
+          "default": "gpt-4o-transcribe",
           "options": [
-            "azure-speech"
+            "gpt-4o-transcribe"
           ]
         },
         "turnDetection": {

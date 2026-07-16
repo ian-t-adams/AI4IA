@@ -6,10 +6,12 @@ import {
   buildVoiceLiveWebSocketUrl,
   isVadType,
   realtimeModels,
+  resolveAuthorizedVoiceProviders,
   sessionUpdate,
   speechSessionUpdate,
   type VoiceSessionSettings,
 } from "./voiceLive";
+import { voiceProviderCatalog } from "./data/voice_provider_catalog";
 
 // The exact session.update the relay has always received. Locked byte-for-byte so a
 // regression in the default payload (key order, extra fields) fails loudly.
@@ -28,6 +30,39 @@ describe("realtimeModels", () => {
       "gpt-realtime",
       "gpt-realtime-mini",
     ]);
+  });
+
+  describe("resolveAuthorizedVoiceProviders", () => {
+    it("stays fail-closed while server provider config is loading or unavailable", () => {
+      expect(resolveAuthorizedVoiceProviders(null)).toEqual({
+        defaultProviderId: null,
+        providers: [],
+      });
+    });
+
+    it("uses a Speech-only server allowlist and default without adding Azure OpenAI", () => {
+      const speech = voiceProviderCatalog.providers[1];
+      expect(
+        resolveAuthorizedVoiceProviders({
+          defaultProviderId: "speech_voice_live",
+          enabledProviderIds: ["speech_voice_live"],
+          providers: [...voiceProviderCatalog.providers],
+        }),
+      ).toEqual({
+        defaultProviderId: "speech_voice_live",
+        providers: [speech],
+      });
+    });
+
+    it("rejects a server default that is not in the enabled provider set", () => {
+      expect(
+        resolveAuthorizedVoiceProviders({
+          defaultProviderId: "azure_openai",
+          enabledProviderIds: ["speech_voice_live"],
+          providers: [...voiceProviderCatalog.providers],
+        }).defaultProviderId,
+      ).toBeNull();
+    });
   });
 
   it("returns an empty list when nothing is realtime", () => {

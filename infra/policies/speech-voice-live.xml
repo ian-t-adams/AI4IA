@@ -18,6 +18,10 @@
          this fully managed, single-model surface; drop it so it can never be
          mistaken for a routing hint. -->
     <set-query-parameter name="deployment" exists-action="delete" />
+    <set-query-parameter name="subscription-key" exists-action="delete" />
+    <set-query-parameter name="api-key" exists-action="delete" />
+    <set-query-parameter name="agent_id" exists-action="delete" />
+    <set-query-parameter name="project_id" exists-action="delete" />
     <!-- Route only to the approved existing AIServices account's
          /voice-live/realtime path. The host is the catalog/environment-derived
          named value (see infra/modules/gateway.bicep); the path suffix is fixed
@@ -33,6 +37,7 @@
          backend ever sees the request. APIM authenticates to the backend
          itself, below, with its own managed identity. -->
     <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-header name="api-key" exists-action="delete" />
     <set-header name="Authorization" exists-action="delete" />
     <set-header name="X-AI4IA-App-Id" exists-action="delete" />
     <set-header name="X-AI4IA-User-Id" exists-action="delete" />

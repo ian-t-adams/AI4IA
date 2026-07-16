@@ -119,8 +119,10 @@ server-authoritative default). It routes
 - The model/API version are fixed, not caller-suppliable: `gpt-realtime` at API
   version `2026-04-10`, against the initial existing `eastus2` AIServices account —
   the same account already used as a Foundry model backend, not a new resource.
-  Voices/locale/transcription/VAD/noise/echo capabilities come from the generated
-  voice provider catalog (`infra/voice-providers.json`); only curated
+  Input transcription is pinned to the stable `gpt-4o-transcribe` model supported
+  by managed `gpt-realtime` at that API version. Voice/locale/VAD/noise/echo
+  capabilities come from the generated voice provider catalog
+  (`infra/voice-providers.json`); only curated
   `azure-standard` built-in voices are offered and no custom endpoint, lexicon, or
   personal voice value is ever accepted.
 - The shared active APIM's system-assigned managed identity authenticates to that

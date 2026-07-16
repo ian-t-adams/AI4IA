@@ -213,6 +213,17 @@ describe("resolveEffectiveVoiceProvider", () => {
     ).toBe("azure_openai");
   });
 
+  it("selects Speech when it is the only server-authorized provider", () => {
+    expect(
+      resolveEffectiveVoiceProvider(
+        "azure_openai",
+        ["speech_voice_live"],
+        "speech_voice_live",
+        false,
+      ),
+    ).toBe("speech_voice_live");
+  });
+
   it("falls back safely when a persisted provider or server default is disabled", () => {
     expect(
       resolveEffectiveVoiceProvider(

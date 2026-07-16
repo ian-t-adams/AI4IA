@@ -178,6 +178,10 @@ describe("VoiceSettingsPanel", () => {
     });
     expect(screen.getByRole("combobox", { name: "Locale" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Transcription" })).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("combobox", { name: "Transcription" }))
+        .getByRole("option", { name: "GPT-4o Transcribe" }),
+    ).toHaveValue("gpt-4o-transcribe");
     expect(screen.getByRole("combobox", { name: "Turn detection" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Noise suppression" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Echo cancellation" })).toBeInTheDocument();
