@@ -1,0 +1,92 @@
+// Shared active APIM plane: adopts the existing apim-mcp-* Basic v2 service so
+// model/realtime and optional official-MCP children attach to one gateway.
+@description('Location for the shared active APIM service.')
+param location string
+
+@description('Tags applied to the shared active APIM service.')
+param tags object
+
+@description('Workload token (e.g. ai4ia).')
+param workload string
+
+@description('Environment name (e.g. ai4ia-dev).')
+param environmentName string
+
+@description('Central Log Analytics workspace resource ID for diagnostic settings.')
+param logAnalyticsWorkspaceId string
+
+@description('APIM publisher email (required by APIM).')
+param apimPublisherEmail string
+
+@description('APIM publisher org name.')
+param apimPublisherName string = 'AI4IA'
+
+
+resource apim 'Microsoft.ApiManagement/service@2024-05-01' = {
+  name: take('apim-mcp-${workload}-${environmentName}', 50)
+  location: location
+  tags: tags
+  sku: {
+    name: 'BasicV2'
+    capacity: 1
+  }
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    publisherEmail: apimPublisherEmail
+    publisherName: apimPublisherName
+  }
+}
+
+resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'to-log-analytics'
+  scope: apim
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      { category: 'GatewayLogs', enabled: true }
+    ]
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
+  }
+}
+
+// Always narrow the pre-existing MCP credential before model/realtime APIs are
+// attached to this shared service. This must not depend on enableOfficialMcp:
+// otherwise an older all-APIs subscription could authorize the new model APIs.
+resource mcpProduct 'Microsoft.ApiManagement/service/products@2024-05-01' = {
+  parent: apim
+  name: 'ai4ia-mcp'
+  properties: {
+    displayName: 'AI4IA official MCP'
+    description: 'Curated official MCP APIs only.'
+    subscriptionRequired: true
+    approvalRequired: false
+    state: 'published'
+  }
+}
+
+resource mcpSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
+  parent: apim
+  name: 'ai4ia-mcp'
+  properties: {
+    displayName: 'AI4IA backend MCP gateway'
+    scope: '/products/ai4ia-mcp'
+    state: 'active'
+    allowTracing: false
+  }
+  dependsOn: [
+    mcpProduct
+  ]
+}
+
+output apimName string = apim.name
+output apimId string = apim.id
+output gatewayUrl string = apim.properties.gatewayUrl
+output principalId string = apim.identity.principalId
+
+@description('Product-scoped subscription key for the optional official MCP APIs.')
+#disable-next-line outputs-should-not-contain-secrets
+output mcpSubscriptionKey string = mcpSubscription.listSecrets().primaryKey

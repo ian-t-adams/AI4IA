@@ -28,5 +28,5 @@ def test_voice_live_requires_a_distinct_websocket_gateway_contract():
         _settings(realtime_gateway_api_key="").validate_runtime()
     with pytest.raises(RuntimeError, match="distinct realtime gateway key"):
         _settings(realtime_gateway_api_key="proxy-ingress-key").validate_runtime()
-    with pytest.raises(RuntimeError, match="WebSocket-capable replacement APIM"):
+    with pytest.raises(RuntimeError, match="WebSocket-capable shared active APIM"):
         _settings(realtime_base_url="https://replacement.azure-api.net/not-openai").validate_runtime()

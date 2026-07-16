@@ -323,7 +323,7 @@ class GatewayPolicyTests(unittest.TestCase):
     def test_topology_is_proxy_then_apim_then_foundry(self) -> None:
         gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
         main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
-        self.assertIn("host=${replacementApim.properties.gatewayUrl};mode=apim", gateway)
+        self.assertIn("host=${sharedApimGatewayUrl};mode=apim", gateway)
         self.assertIn("output proxyIngressUrl string = '${proxyUrl}/openai'", gateway)
         self.assertIn("serviceUrl: foundryOpenAiUrl", gateway)
         self.assertNotIn("serviceUrl: '${proxyUrl}", gateway)
@@ -381,13 +381,14 @@ class GatewayPolicyTests(unittest.TestCase):
             "var nativeFoundryPrincipalIds =", 1
         )[1].split("]", 1)[0])
 
-    def test_basic_v2_replacement_retains_consumption_rollback_and_rewires_callers(self) -> None:
+    def test_shared_basic_v2_apim_retains_consumption_rollback_and_rewires_callers(self) -> None:
         gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
+        apimcore = (ROOT / "infra/modules/apimcore.bicep").read_text(encoding="utf-8")
+        mcp = (ROOT / "infra/modules/mcpgateway.bicep").read_text(encoding="utf-8")
         main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
         api = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
 
-        # The declared Consumption service and every legacy child remain the rollback
-        # plane. Active caller expressions refer only to the replacement.
+        # Consumption and every original child stay as the inactive rollback plane.
         self.assertIn("name: take('apim-${workload}-${environmentName}', 50)", gateway)
         self.assertIn("name: 'Consumption'", gateway)
         for legacy_child in (
@@ -398,46 +399,83 @@ class GatewayPolicyTests(unittest.TestCase):
         ):
             self.assertIn(f"resource {legacy_child} ", gateway)
 
-        self.assertIn("name: take('apim-v2-${workload}-${environmentName}', 50)", gateway)
-        self.assertIn("name: 'BasicV2'", gateway)
-        self.assertIn("capacity: 1", gateway)
-        self.assertIn("loadTextContent('../policies/realtime-routing-legacy.xml')", gateway)
-        self.assertIn("resource replacementFoundryEndpointValues", gateway)
-        self.assertIn("resource replacementModelPolicyFragments", gateway)
-        self.assertIn("resource replacementModelsApi", gateway)
-        self.assertIn("resource replacementModelOperations", gateway)
-        self.assertIn("resource replacementModelsApiPolicy", gateway)
-        self.assertIn("resource replacementProxyModelSubscription", gateway)
-        self.assertIn("resource replacementApimDiagnostics", gateway)
-        self.assertIn("resource replacementApimOpenAiUsers", gateway)
-        self.assertIn("resource replacementApimCognitiveUsers", gateway)
-        self.assertIn("value: replacementProxyModelSubscription.listSecrets().primaryKey", gateway)
-        self.assertIn("value: replacementProxyIngressSubscription.listSecrets().primaryKey", gateway)
+        # gateway creates no BasicV2 service; it consumes apimcore's shared contract.
+        self.assertIn("param sharedApimName string", gateway)
+        self.assertIn("param sharedApimResourceId string", gateway)
+        self.assertIn("param sharedApimGatewayUrl string", gateway)
+        self.assertIn("param sharedApimPrincipalId string", gateway)
+        self.assertIn("resource sharedApim 'Microsoft.ApiManagement/service@2024-06-01-preview' existing", gateway)
+        self.assertNotIn("name: 'BasicV2'", gateway)
+        self.assertNotIn("resource sharedApimDiagnostics", gateway)
+        for shared_child in (
+            "sharedFoundryEndpointValues", "sharedModelPolicyFragments",
+            "sharedModelsApi", "sharedModelOperations", "sharedModelsApiPolicy",
+            "sharedProxyModelSubscription", "sharedRealtimeApi",
+            "sharedRealtimeApiPolicy", "sharedApiRealtimeSubscription",
+            "sharedApimOpenAiUsers", "sharedApimCognitiveUsers",
+        ):
+            self.assertIn(f"resource {shared_child}", gateway)
+        self.assertIn("principalId: sharedApimPrincipalId", gateway)
+        self.assertIn("guid(foundryAccounts[i].id, sharedApimResourceId", gateway)
+        self.assertIn("host=${sharedApimGatewayUrl};mode=apim", gateway)
+        self.assertIn("value: sharedProxyModelSubscription.listSecrets().primaryKey", gateway)
+        self.assertIn("value: sharedProxyIngressSubscription.listSecrets().primaryKey", gateway)
+
+        # The shared service is unconditional; official MCP children are conditional.
+        self.assertIn("module apimcore 'modules/apimcore.bicep'", main)
+        self.assertIn("sharedApimName: apimcore.outputs.apimName", main)
+        self.assertIn("sharedApimResourceId: apimcore.outputs.apimId", main)
+        self.assertIn("sharedApimGatewayUrl: apimcore.outputs.gatewayUrl", main)
+        self.assertIn("sharedApimPrincipalId: apimcore.outputs.principalId", main)
+        self.assertIn("module mcpgateway 'modules/mcpgateway.bicep' = if (enableOfficialMcp)", main)
+        self.assertIn("apimName: apimcore.outputs.apimName", main)
+        self.assertIn("gatewayBaseUrl: apimcore.outputs.gatewayUrl", main)
+        self.assertIn("[apimcore.outputs.principalId]", main)
+
+        self.assertIn("name: take('apim-mcp-${workload}-${environmentName}', 50)", apimcore)
+        self.assertIn("name: 'BasicV2'", apimcore)
+        self.assertIn("resource apimDiagnostics", apimcore)
+
+        self.assertIn("param apimName string", mcp)
+        self.assertIn("resource apim 'Microsoft.ApiManagement/service@2024-06-01-preview' existing", mcp)
+        self.assertNotIn("param enableOfficialMcp", mcp)
+        self.assertNotIn("resource apimDiagnostics", mcp)
+        self.assertNotIn("name: 'BasicV2'", mcp)
+        self.assertNotIn("take('apim-mcp-${workload}-${environmentName}', 50)", mcp)
+        self.assertIn("resource mcpProduct", mcp)
+        self.assertIn("resource mcpProductApis", mcp)
+        self.assertIn("scope: '/products/ai4ia-mcp'", apimcore)
+        self.assertNotIn("scope: '/products/ai4ia-mcp'", mcp)
+        self.assertNotIn("scope: '/apis'", mcp)
+        self.assertIn("output mcpGatewayBaseUrl string = gatewayBaseUrl", mcp)
+        self.assertIn(
+            "officialMcpSubscriptionKey: enableOfficialMcp ? apimcore.outputs.mcpSubscriptionKey : ''",
+            main,
+        )
+
         self.assertIn("modelGatewayUrl: gateway.outputs.proxyIngressUrl", main)
         self.assertIn("modelGatewayApiKey: gateway.outputs.proxyIngressKey", main)
         self.assertIn("realtimeGatewayApiKey: gateway.outputs.realtimeGatewayKey", main)
         self.assertIn("#disable-next-line no-unnecessary-dependson\n    gateway", main)
-        self.assertIn("replacementModelsApiPolicy", gateway.split("resource proxyApp", 1)[1])
-
-        # A product with no API association produces the opaque proxy ingress key.
-        self.assertIn("resource replacementProxyIngressProduct", gateway)
+        # Product has no API association, making this ingress credential opaque.
+        self.assertIn("resource sharedProxyIngressProduct", gateway)
         self.assertIn("scope: '/products/ai4ia-proxy-ingress'", gateway)
-        self.assertNotIn("replacementProxyIngressProductApi", gateway)
+        self.assertNotIn("sharedProxyIngressProductApi", gateway)
         self.assertIn("AI4IA_REALTIME_GATEWAY_API_KEY", api)
         self.assertIn("realtime-gateway-api-key", api)
 
-    def test_realtime_replacement_is_a_websocket_api_with_supported_policy(self) -> None:
+    def test_realtime_shared_api_is_a_websocket_api_with_supported_policy(self) -> None:
         gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
         policy = (ROOT / "infra/policies/realtime-routing.xml").read_text(encoding="utf-8")
-        self.assertIn("resource replacementRealtimeApi", gateway)
-        replacement = gateway.split("resource replacementRealtimeApi ", 1)[1].split(
-            "resource replacementRealtimeApiPolicy", 1
+        self.assertIn("resource sharedRealtimeApi", gateway)
+        replacement = gateway.split("resource sharedRealtimeApi ", 1)[1].split(
+            "resource sharedRealtimeApiPolicy", 1
         )[0]
-        self.assertIn("apiType: 'websocket'", replacement)
+        self.assertIn("type: 'websocket'", replacement)
         self.assertIn("'wss'", replacement)
         self.assertIn("serviceUrl: primaryFoundryRealtimeWssUrl", replacement)
-        self.assertNotIn("resource replacementRealtimeOperation", gateway)
-        self.assertIn("replacementRealtimeWssEndpointValues", gateway)
+        self.assertNotIn("resource sharedRealtimeOperation", gateway)
+        self.assertIn("sharedRealtimeWssEndpointValues", gateway)
         self.assertIn("replace(endsWith(backend.endpoint, '/')", gateway)
         self.assertIn("'https://', 'wss://'", gateway)
         self.assertIn("/openai/realtime", policy)
@@ -448,36 +486,124 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("<authentication-managed-identity", policy)
         gateway_generator.validate_realtime_policy(policy, "realtime-routing.xml")
 
-    def test_compiled_arm_declares_both_services_and_active_replacement_shape(self) -> None:
-        gateway_path = ROOT / "infra/modules/gateway.bicep"
+    def _build_bicep_template(self, path: Path) -> dict[str, object]:
         bicep = shutil.which("bicep")
         if bicep:
-            command = [bicep, "build", str(gateway_path), "--stdout"]
+            command = [bicep, "build", str(path), "--stdout"]
         else:
             az = shutil.which("az")
             if not az:
                 self.skipTest("Bicep CLI and Azure CLI are unavailable")
-            command = [az, "bicep", "build", "--file", str(gateway_path), "--stdout", "--only-show-errors"]
+            command = [
+                az,
+                "bicep",
+                "build",
+                "--file",
+                str(path),
+                "--stdout",
+                "--only-show-errors",
+            ]
         completed = subprocess.run(
-            command, check=True, capture_output=True, text=True, encoding="utf-8"
+            command, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace"
         )
-        template = json.loads(completed.stdout.lstrip("\ufeff"))
-        resources = template["resources"]
-        self.assertEqual(resources["legacyConsumptionApim"]["sku"], {"name": "Consumption", "capacity": 0})
-        self.assertEqual(resources["replacementApim"]["sku"], {"name": "BasicV2", "capacity": 1})
-        self.assertEqual(resources["replacementApim"]["identity"]["type"], "SystemAssigned")
-        realtime = resources["replacementRealtimeApi"]["properties"]
-        self.assertEqual(realtime["apiType"], "websocket")
-        self.assertEqual(realtime["protocols"], ["wss"])
+        return json.loads(completed.stdout.lstrip("﻿"))
+
+    @staticmethod
+    def _collect_resources(template: dict[str, object]) -> list[dict[str, object]]:
+        collected: list[dict[str, object]] = []
+        resources = template.get("resources", {})
+        values = resources.values() if isinstance(resources, dict) else resources
+        for resource in values:
+            if not isinstance(resource, dict):
+                continue
+            collected.append(resource)
+            properties = resource.get("properties", {})
+            nested = properties.get("template") if isinstance(properties, dict) else None
+            if isinstance(nested, dict):
+                collected.extend(GatewayPolicyTests._collect_resources(nested))
+        return collected
+
+    def test_compiled_arm_reuses_single_shared_basic_v2_apim_and_keeps_consumption_rollback(self) -> None:
+        template = self._build_bicep_template(ROOT / "infra/main.bicep")
+        all_resources = self._collect_resources(template)
+        service_resources = [
+            resource for resource in all_resources
+            if resource.get("type", "").lower() == "microsoft.apimanagement/service"
+            and not resource.get("existing")
+        ]
+        self.assertEqual(2, len(service_resources))
+        serialized = json.dumps(template)
+        self.assertNotIn("apim-v2-", serialized)
+        self.assertNotIn("apim-rt-", serialized)
+        legacy = next(resource for resource in service_resources if resource["sku"]["name"] == "Consumption")
+        shared = next(resource for resource in service_resources if resource["sku"]["name"] == "BasicV2")
+        self.assertEqual({"name": "Consumption", "capacity": 0}, legacy["sku"])
+        self.assertEqual({"name": "BasicV2", "capacity": 1}, shared["sku"])
+        self.assertEqual("SystemAssigned", shared["identity"]["type"])
+        self.assertIn("apim-mcp-", json.dumps(shared["name"]))
+
+        gateway_template = template["resources"]["gateway"]["properties"]["template"]
+        self.assertIn("mcpgateway", template["resources"]["gateway"]["dependsOn"])
+        gateway_resources = gateway_template["resources"]
+        self.assertIn("sharedApim", gateway_resources)
+        self.assertTrue(gateway_resources["sharedApim"].get("existing"))
+        self.assertNotIn("sharedApimDiagnostics", gateway_resources)
+        realtime = gateway_resources["sharedRealtimeApi"]["properties"]
+        self.assertEqual("websocket", realtime["type"])
+        self.assertEqual(["wss"], realtime["protocols"])
         self.assertIn("primaryFoundryRealtimeWssUrl", json.dumps(realtime["serviceUrl"]))
-        self.assertIn("wss://", json.dumps(template["variables"]["primaryFoundryRealtimeWssUrl"]))
-        self.assertNotIn("replacementRealtimeOperation", resources)
-        self.assertIn("replacementModelsApiPolicy", resources["replacementProxyModelSubscription"]["dependsOn"])
-        self.assertIn("replacementRealtimeApiPolicy", resources["replacementApiRealtimeSubscription"]["dependsOn"])
-        self.assertIn("replacementApimOpenAiUsers", resources["proxyApp"]["dependsOn"])
-        self.assertIn("replacementApimCognitiveUsers", resources["proxyApp"]["dependsOn"])
-        self.assertIn("replacementApimDiagnostics", resources)
-        resource_types = {resource["type"].lower() for resource in resources.values()}
+        self.assertNotIn("sharedRealtimeOperation", gateway_resources)
+        self.assertIn("sharedModelsApiPolicy", gateway_resources["sharedProxyModelSubscription"]["dependsOn"])
+        self.assertIn("sharedRealtimeApiPolicy", gateway_resources["sharedApiRealtimeSubscription"]["dependsOn"])
+        self.assertIn("sharedApimOpenAiUsers", gateway_resources["proxyApp"]["dependsOn"])
+        self.assertIn("sharedApimCognitiveUsers", gateway_resources["proxyApp"]["dependsOn"])
+        self.assertIn("parameters('sharedApimName')", json.dumps(gateway_resources["sharedModelsApi"]))
+        self.assertIn("parameters('sharedApimPrincipalId')", json.dumps(gateway_resources["sharedApimOpenAiUsers"]))
+        self.assertIn("parameters('sharedApimGatewayUrl')", json.dumps(gateway_template["variables"]["hostEnv"]))
+
+        apimcore_template = template["resources"]["apimcore"]["properties"]["template"]
+        apimcore_text = json.dumps(apimcore_template["resources"])
+        self.assertIn("Microsoft.ApiManagement/service", apimcore_text)
+        self.assertIn("Microsoft.Insights/diagnosticSettings", apimcore_text)
+
+        mcp_template = template["resources"]["mcpgateway"]["properties"]["template"]
+        mcp_resources = mcp_template["resources"]
+        mcp_text = json.dumps(mcp_resources)
+        self.assertIn("Microsoft.ApiManagement/service/products/apis", mcp_text)
+        self.assertNotIn('"scope": "/apis"', mcp_text)
+        self.assertIn("\"condition\": \"[parameters('enableOfficialMcp')]\"", json.dumps(template["resources"]["mcpgateway"]))
+        self.assertIn("parameters('apimName')", mcp_text)
+        mcp_values = mcp_resources.values() if isinstance(mcp_resources, dict) else mcp_resources
+        mcp_types = {resource["type"] for resource in mcp_values if isinstance(resource, dict) and "type" in resource}
+        self.assertNotIn("Microsoft.ApiManagement/service", mcp_types)
+        self.assertNotIn("Microsoft.Insights/diagnosticSettings", mcp_types)
+        self.assertIn("mcpGatewayBaseUrl", mcp_template["outputs"])
+        self.assertNotIn("mcpGatewaySubscriptionKey", mcp_template["outputs"])
+        self.assertIn("mcpSubscriptionKey", apimcore_template["outputs"])
+        apimcore_resources = apimcore_template["resources"]
+        apimcore_values = (
+            list(apimcore_resources.values())
+            if isinstance(apimcore_resources, dict)
+            else apimcore_resources
+        )
+        core_subscription = next(
+            resource
+            for resource in apimcore_values
+            if resource["type"] == "Microsoft.ApiManagement/service/subscriptions"
+        )
+        self.assertIn("/products/ai4ia-mcp", json.dumps(apimcore_resources))
+        self.assertEqual(
+            "/products/ai4ia-mcp",
+            core_subscription["properties"]["scope"],
+        )
+        self.assertTrue(
+            any(
+                resource["type"] == "Microsoft.ApiManagement/service/products"
+                for resource in apimcore_values
+            )
+        )
+
+        resource_types = {resource["type"].lower() for resource in all_resources if "type" in resource}
         self.assertFalse(any(resource_type.endswith("/delete") for resource_type in resource_types))
 
     def test_compiled_arm_creates_fragments_before_api_policy(self) -> None:

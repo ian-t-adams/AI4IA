@@ -39,24 +39,22 @@ Normal model traffic is DNS/custom domain -> SimpleL7Proxy -> APIM -> Foundry.
 The FastAPI Voice Live relay bypasses SimpleL7Proxy and uses the separately scoped
 APIM realtime API because the proxy does not support WebSockets.
 
-### APIM Basic v2 cutover posture
+### Shared APIM cutover posture
 
-`gateway.bicep` retains the original Consumption APIM and every one of its child
-resources as an **inactive rollback plane**. It is not deleted or repurposed. The
-active deterministic `apim-v2-<workload>-<environmentName>` service is Basic v2
-(capacity 1, system-assigned identity) and is fully populated with the catalog
-named values, content-addressed HTTP/SSE policy fragments, model API/operations,
-scoped subscriptions, diagnostics, and Foundry RBAC before either Container App
-caller can change. SimpleL7Proxy then uses the replacement model subscription;
-FastAPI uses an opaque proxy-ingress key plus a different realtime-only key.
+`apimcore.bicep` owns/adopts the unconditional existing `apim-mcp-<workload>-<environmentName>`
+Basic v2 service (capacity 1), its system identity, and its sole diagnostic setting.
+`gateway.bicep` references it as existing and adds catalog model/realtime APIs, scoped
+subscriptions, policy fragments, and Foundry RBAC. The official MCP APIs are feature-gated
+inside `mcpgateway.bicep`; their product-scoped key is associated only with MCP APIs, so it cannot
+call `openai` or `openai/realtime` after consolidation. SimpleL7Proxy holds the model key;
+FastAPI holds distinct opaque proxy-ingress and realtime keys.
 
-The replacement `openai-realtime` API is an APIM WebSocket API (`wss` backend),
-not a synthetic GET operation. Its generated onHandshake policy selects only
-catalog endpoints, preserves the request query, strips caller credentials, adds
-correlation/managed identity, and returns status-only rejection for an unknown
-deployment. Basic v2 has a fixed cost while active. Rollback is an operator-led
-caller rewire to the still-present Consumption service; deleting the legacy plane
-is intentionally deferred to a separately approved operation.
+The original Consumption APIM and every child remain unchanged as an inactive HTTP/SSE rollback
+plane; it receives no active traffic and is not deleted. Reusing `apim-mcp-*` adds no additional
+roughly $150/month APIM base charge. The tradeoff is a shared gateway blast radius: capacity,
+health, and resiliency monitoring now protect MCP, HTTP/SSE, and Voice Live together. Rewire
+callers only after the shared APIs/RBAC are ready. Delete Consumption only in a separately
+approved post-stabilization destructive change.
 
 Regenerate and validate policy routing after any `models.json` change:
 
@@ -80,9 +78,3 @@ azd up
 
 Validate in a parallel resource group before replacing a live stack; see
 [`../docs/runbooks/teardown.md`](../docs/runbooks/teardown.md).
-
-## APIM Basic v2 cutover posture
-
-`gateway.bicep` retains the original Consumption APIM and every child resource as an **inactive rollback plane**. It is not deleted or repurposed. The active deterministic `apim-v2-<workload>-<environmentName>` service is Basic v2 (capacity 1, system-assigned identity) and is fully populated with catalog named values, content-addressed HTTP/SSE policy fragments, model API/operations, scoped subscriptions, diagnostics, and Foundry RBAC before either Container App caller changes. SimpleL7Proxy uses the replacement model subscription; FastAPI uses an opaque proxy-ingress key plus a different realtime-only key.
-
-The replacement `openai-realtime` API is an APIM WebSocket API (`wss` backend), not a synthetic GET operation. Its generated onHandshake policy selects only catalog endpoints, preserves query parameters, strips caller credentials, adds correlation/managed identity, and returns status-only rejection for an unknown deployment. Basic v2 has a fixed cost while active. Rollback is an operator-led caller rewire to the still-present Consumption service; deleting the legacy plane is deferred to a separately approved operation.

@@ -1,7 +1,7 @@
 """Read-only listing of the curated **official** MCP servers — for discovery.
 
 ``/api/agents/official-mcp-servers`` lets the agent-builder UI enumerate the
-admin-curated MCP servers (reached through the dedicated MCP APIM front door) and
+admin-curated MCP servers (reached through the shared active APIM front door) and
 their discovered tools, so a user can *attach* official tools to an agent the same
 way they attach their own BYO tools. Unlike the BYO surface this is **read-only**:
 the catalog is provisioned by operators, the credential is app-global, and no

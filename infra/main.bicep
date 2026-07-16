@@ -31,16 +31,16 @@ param budgetStartDate string = ''
 @description('Internal fallback: first of the current month. utcNow() is only valid in a parameter default, so it lives here and is used only when budgetStartDate is empty (greenfield budget creation). Do not set this.')
 param budgetStartDateCurrentMonth string = utcNow('yyyy-MM-01')
 
-@description('APIM publisher email for the model gateway front door. Override per deployment.')
+@description('APIM publisher email for the shared active and rollback APIM front doors. Override per deployment.')
 param apimPublisherEmail string = 'ai4ia@example.com'
 
-@description('Opt-in: provision a dedicated APIM (Basic v2) front door for curated "official" MCP servers (infra/mcp-servers.json), so MCP traffic is gated on an APIM subscription key. The param DEFAULT is false (a fresh consumer of this template provisions no MCP gateway); this repo sets it true in main.parameters.json to front the Foundry toolbox. Basic v2 is required because the native MCP feature is unsupported on the Consumption model gateway.')
+@description('Opt-in: provision curated "official" MCP backends/APIs/policies/subscription on the shared active Basic v2 APIM (infra/modules/mcpgateway.bicep), so MCP traffic is gated on an APIM subscription key. The param DEFAULT is false (a fresh consumer of this template provisions no MCP APIs); this repo sets it true in main.parameters.json to front the Foundry toolbox. The shared Basic v2 APIM is created/adopted unconditionally because model and realtime traffic also require it.')
 param enableOfficialMcp bool = false
 
-@description('Opt-in: enable the Foundry Agent Service toolbox bridge. Grants the official-MCP APIM system-assigned identity the "Foundry User" role on the primary Foundry project so it can mint the AAD bearer the toolbox MCP endpoint requires, and emits AZURE_FOUNDRY_PROJECT_ENDPOINT for the provisioning scripts. Requires enableOfficialMcp=true to have any effect (the toolbox is consumed as an official MCP server fronted by that APIM). Default OFF; no toolbox is created by the deploy itself (provisioning is a documented, opt-in script step).')
+@description('Opt-in: enable the Foundry Agent Service toolbox bridge. Grants the shared active APIM system-assigned identity the "Foundry User" role on the primary Foundry project so it can mint the AAD bearer the toolbox MCP endpoint requires, and emits AZURE_FOUNDRY_PROJECT_ENDPOINT for the provisioning scripts. Requires enableOfficialMcp=true to have any effect (the toolbox is consumed as an official MCP server fronted by that APIM). Default OFF; no toolbox is created by the deploy itself (provisioning is a documented, opt-in script step).')
 param enableFoundryToolbox bool = false
 
-@description('Opt-in: provision an Azure API Center to act as a private tool catalog that inventories the official MCP servers fronted by the MCP APIM (discoverable/governable, and integratable with Microsoft Foundry private tool catalogs). Default OFF so the checked-in deploy provisions no API Center. Registering each MCP server as an asset is a documented, opt-in script step (scripts/provision-private-tool-catalog.py).')
+@description('Opt-in: provision an Azure API Center to act as a private tool catalog that inventories the official MCP servers fronted by the shared active APIM (discoverable/governable, and integratable with Microsoft Foundry private tool catalogs). Default OFF so the checked-in deploy provisions no API Center. Registering each MCP server as an asset is a documented, opt-in script step (scripts/provision-private-tool-catalog.py).')
 param enablePrivateToolCatalog bool = false
 
 @description('Region for the API Center (private tool catalog). API Center is only available in a subset of regions (e.g. eastus, westeurope, swedencentral) and NOT in eastus2, so it needs its own region knob independent of the primary `location`. The catalog only inventories URLs, so its region is not latency-sensitive. Override via AI4IA_API_CENTER_LOCATION if eastus is unsuitable.')
@@ -528,7 +528,7 @@ module cost 'modules/cost.bicep' = {
   }
 }
 
-// --- Model gateway (SimpleL7Proxy + APIM front door) ---
+// --- Model gateway (SimpleL7Proxy + shared APIM front door) ---
 // The proxy is the public HTTP/SSE entry point. Its single backend is APIM; APIM
 // selects and rewrites to catalog-compatible regional Foundry deployments.
 var regionNames = map(regionList, r => r.name)
@@ -546,8 +546,27 @@ var effectiveCuBaseUrl = !empty(cuBaseUrl) ? cuBaseUrl : primaryFoundryEndpoint
 var effectiveCodeInterpreterBaseUrl = !empty(codeInterpreterBaseUrl) ? codeInterpreterBaseUrl : primaryFoundryEndpoint
 var effectiveCodeInterpreterModel = !empty(codeInterpreterModel) ? codeInterpreterModel : 'gpt-4.1-mini-${subscriptionToken}-${location}-glbl'
 
+module apimcore 'modules/apimcore.bicep' = {
+  name: 'apimcore'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    workload: workload
+    environmentName: environmentName
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
+    apimPublisherEmail: apimPublisherEmail
+  }
+}
+
 module gateway 'modules/gateway.bicep' = {
   name: 'gateway'
+  // APIM serializes service child updates. When official MCP is enabled, first
+  // move its legacy all-APIs key to the MCP-only product; only then add model and
+  // realtime APIs so the MCP credential never has a cross-API authorization window.
+  dependsOn: [
+    mcpgateway
+  ]
   scope: rg
   params: {
     location: location
@@ -555,6 +574,10 @@ module gateway 'modules/gateway.bicep' = {
     workload: workload
     environmentName: environmentName
     containerEnvId: platform.outputs.containerEnvId
+    sharedApimName: apimcore.outputs.apimName
+    sharedApimResourceId: apimcore.outputs.apimId
+    sharedApimGatewayUrl: apimcore.outputs.gatewayUrl
+    sharedApimPrincipalId: apimcore.outputs.principalId
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     proxyIdentityResourceId: proxyIdentity.resourceId
     proxyIdentityClientId: proxyIdentity.clientId
@@ -589,11 +612,11 @@ module gateway 'modules/gateway.bicep' = {
   }
 }
 
-// --- Official MCP gateway (dedicated APIM Basic v2; opt-in) ---
-// Curated MCP servers (infra/mcp-servers.json) fronted by their own APIM so MCP
-// traffic is gated on an APIM subscription key, isolated from the Consumption
-// model gateway. Ships with the Foundry toolbox registered; provisioned only when
-// enableOfficialMcp is true.
+// --- Official MCP children on the shared Basic v2 APIM (opt-in) ---
+// Curated MCP servers (infra/mcp-servers.json) are fronted by the shared active
+// APIM so MCP traffic is gated on an APIM subscription key while model/realtime
+// reuse the same Basic v2 gateway. Ships with the Foundry toolbox registered;
+// provisioned only when enableOfficialMcp is true.
 //
 // Portability: an entry flagged `foundryToolbox: true` deliberately omits its
 // upstreamUrl in the JSON so the catalog is not pinned to one project/tenant. We
@@ -604,7 +627,7 @@ module gateway 'modules/gateway.bicep' = {
 // The endpoint is built from the SAME start-computable naming the foundry module
 // uses (foundryToken + environmentName + primary region), NOT from foundry's module
 // output -- that avoids a cycle, since the foundry module already depends on the MCP
-// gateway's identity for the toolbox role grant. Must stay in sync with
+// shared APIM identity for the toolbox role grant. Must stay in sync with
 // foundry.bicep's `projectEndpoint` output and the account/project names below.
 var primaryRegionName = regionNames[primaryFoundryIndex]
 var primaryFoundryAccountNameComputed = take('mf-${foundryToken}-${environmentName}-${primaryRegionName}', 60)
@@ -620,23 +643,18 @@ module mcpgateway 'modules/mcpgateway.bicep' = if (enableOfficialMcp) {
   name: 'mcpgateway'
   scope: rg
   params: {
-    location: location
-    tags: tags
-    workload: workload
-    environmentName: environmentName
-    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
-    apimPublisherEmail: apimPublisherEmail
+    apimName: apimcore.outputs.apimName
+    gatewayBaseUrl: apimcore.outputs.gatewayUrl
     servers: officialMcpServers
   }
 }
 
 // Foundry-toolbox bridge (opt-in): when both the official MCP gateway and the
-// toolbox bridge are enabled, the MCP APIM's system-assigned identity needs the
-// "Foundry User" role on the PRIMARY project so it can mint the toolbox bearer.
-// Guarded on enableOfficialMcp so the conditional-module output is only read when
-// the module exists; empty otherwise => no role assignment, unchanged deploy.
-#disable-next-line BCP318
-var foundryToolboxApimPrincipal = (enableOfficialMcp && enableFoundryToolbox) ? [mcpgateway.outputs.mcpApimPrincipalId] : []
+// toolbox bridge are enabled, the shared active APIM's system-assigned identity
+// needs the "Foundry User" role on the PRIMARY project so it can mint the
+// toolbox bearer. Guarded on enableOfficialMcp so the role is granted only when
+// the official MCP APIs exist.
+var foundryToolboxApimPrincipal = (enableOfficialMcp && enableFoundryToolbox) ? [apimcore.outputs.principalId] : []
 
 // --- Private tool catalog (Azure API Center; opt-in) ---
 // Inventories the APIM-fronted official MCP servers as a discoverable/governable
@@ -657,7 +675,7 @@ module apicenter 'modules/apicenter.bicep' = if (enablePrivateToolCatalog) {
 // --- Backend API (FastAPI) Container App ---
 module api 'modules/api.bicep' = {
   name: 'api'
-  // Do not create a caller revision until the replacement gateway module has
+  // Do not create a caller revision until the shared active gateway module has
   // completed its APIs, policies, scoped subscriptions, and ACA secrets.
   dependsOn: [
     // Output references also create this edge; retain it explicitly so a future
@@ -676,7 +694,7 @@ module api 'modules/api.bicep' = {
     apiIdentityClientId: apiIdentity.clientId
     acrLoginServer: platform.outputs.acrLoginServer
     // FastAPI calls the proxy with an opaque ingress key; it never receives the
-    // replacement model APIM subscription held by SimpleL7Proxy.
+    // shared active model APIM subscription held by SimpleL7Proxy.
     modelGatewayUrl: gateway.outputs.proxyIngressUrl
     modelGatewayAuthMode: 'api_key'
     modelGatewayApiKey: gateway.outputs.proxyIngressKey
@@ -763,19 +781,14 @@ module api 'modules/api.bicep' = {
     webSearchEnabled: webSearchEnabled
     webIqApiKey: webIqApiKey
     webIqBaseUrl: webIqBaseUrl
-    // Official MCP plane (default OFF). Wires the dedicated MCP APIM front door's
-    // base URL + subscription key (from the conditional mcpgateway module) into the
+    // Official MCP plane (default OFF). Wires the shared active APIM's
+    // base URL + subscription key into the
     // api so OfficialMcpService can reach curated servers gated on the APIM key.
     // Guarded by the same flag so the conditional module's outputs are only
     // referenced when it is deployed; empty strings keep the api path inert.
     officialMcpEnabled: enableOfficialMcp
-    // Guarded by enableOfficialMcp, but Bicep can't statically tie the ternary to
-    // the conditional module's deploy condition, so suppress BCP318 (matches the
-    // AZURE_OFFICIAL_MCP_GATEWAY_URL output's handling).
-    #disable-next-line BCP318
-    officialMcpGatewayUrl: enableOfficialMcp ? mcpgateway.outputs.mcpGatewayBaseUrl : ''
-    #disable-next-line BCP318
-    officialMcpSubscriptionKey: enableOfficialMcp ? mcpgateway.outputs.mcpGatewaySubscriptionKey : ''
+    officialMcpGatewayUrl: enableOfficialMcp ? apimcore.outputs.gatewayUrl : ''
+    officialMcpSubscriptionKey: enableOfficialMcp ? apimcore.outputs.mcpSubscriptionKey : ''
   }
 }
 
@@ -900,8 +913,7 @@ output AZURE_PROXY_URL string = gateway.outputs.proxyUrl
 output AZURE_PROXY_APP_NAME string = gateway.outputs.proxyAppName
 // Empty unless enableOfficialMcp; subscription key is intentionally NOT output
 // (it is wired module->module to the api during the runtime phase).
-#disable-next-line BCP318
-output AZURE_OFFICIAL_MCP_GATEWAY_URL string = enableOfficialMcp ? mcpgateway.outputs.mcpGatewayBaseUrl : ''
+output AZURE_OFFICIAL_MCP_GATEWAY_URL string = enableOfficialMcp ? apimcore.outputs.gatewayUrl : ''
 // Primary Foundry project (Agent Service data-plane) endpoint, emitted only when
 // the toolbox bridge is enabled. The provisioning scripts read this to create the
 // toolbox; the toolbox MCP URL registered in mcp-servers.json is

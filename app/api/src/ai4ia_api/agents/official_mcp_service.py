@@ -4,7 +4,7 @@ This is the official-server analogue of :class:`~ai4ia_api.agents.mcp_service.
 McpServerService`. Where that service owns a *per-user* registry of BYO remote
 MCP servers (called directly behind the SSRF guard, with per-user Key Vault
 secrets), this one owns a small, *admin-curated* set of servers reached
-**through the dedicated MCP APIM gateway** (``infra/modules/mcpgateway.bicep``)
+**through the shared active APIM gateway** (``infra/modules/mcpgateway.bicep``)
 and gated on a single app-global APIM subscription key.
 
 It deliberately exposes the **same execution seam** the per-turn tool builders

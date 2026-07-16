@@ -164,7 +164,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         else:
             app.state.mcp_service = None
-        # Curated "official" MCP plane reached through the dedicated MCP APIM
+        # Curated "official" MCP plane reached through the shared active APIM
         # front door, gated on an app-global subscription key. Feature-flagged +
         # safe-off by default; an empty catalog wires no tools, while this repo's
         # packaged catalog contains the activated ai4ia-toolbox entry. When enabled,

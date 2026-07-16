@@ -22,7 +22,7 @@ feature posture.
 | Image generation | `AI4IA_IMAGE_BLOB_ACCOUNT_URL` when provisioned | Settings / imagery UI | `imageGenerationEnabled` | Image-capable model deployment and media blob storage |
 | Video generation | `AI4IA_VIDEO_BLOB_ACCOUNT_URL` when provisioned | inline attachment rendering | `videoGenerationEnabled` | Sora-capable deployment and media blob storage |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | Cosmos, Key Vault URI, Entra auth outside local |
-| Official MCP plane | `AI4IA_OFFICIAL_MCP_ENABLED` | none | `enableOfficialMcp` | Dedicated MCP APIM front door + ≥1 server in `infra/mcp-servers.json`; gateway URL + subscription key auto-wired |
+| Official MCP plane | `AI4IA_OFFICIAL_MCP_ENABLED` | none | `enableOfficialMcp` | MCP-only product/subscription on the shared active Basic v2 APIM + ≥1 server in `infra/mcp-servers.json`; gateway URL + key auto-wired |
 | Foundry toolbox (bridge) | consumed via the official MCP plane (no dedicated flag) | none | `enableFoundryToolbox` (+ `enableOfficialMcp`) | Provisioned toolbox in the default Foundry project + a `foundry-toolbox` entry in `infra/mcp-servers.json`; grants APIM MI the project "Foundry User" role. See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
 | Private tool catalog (API Center) | admin/IaC only (no app-runtime env) | none | `enablePrivateToolCatalog` | Provisions an Azure API Center to inventory the APIM-fronted MCP servers; asset registration is a documented script step (`scripts/provision-private-tool-catalog.py`). See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
 | Web IQ search tools | `AI4IA_WEB_SEARCH_ENABLED` | none | `webSearchEnabled` | Web IQ API key or Entra managed identity outside local |
@@ -187,12 +187,13 @@ the same governed executor used by built-ins.
 
 ### Official MCP plane
 
-A curated, admin-defined set of MCP servers reached **through a dedicated MCP
-APIM front door** (`infra/modules/mcpgateway.bicep`, APIM Basic v2) gated on a
-single app-global subscription key — distinct from per-user BYO MCP, which the
-API calls directly behind the SSRF guard. The bicep defaults are empty and OFF,
-but this repo's live parameters enable the plane and register the portable
-`ai4ia-toolbox` Foundry toolbox entry.
+A curated, admin-defined set of MCP servers reached **through the shared active
+APIM front door** (`infra/modules/apimcore.bicep` owns the Basic v2 service;
+`infra/modules/mcpgateway.bicep` owns its MCP children), gated on an
+MCP-product-scoped app-global subscription key — distinct from
+per-user BYO MCP, which the API calls directly behind the SSRF guard. The bicep
+defaults are empty and OFF, but this repo's live parameters enable the plane and
+register the portable `ai4ia-toolbox` Foundry toolbox entry. The MCP product contains only MCP APIs, so this key cannot invoke model or realtime APIs.
 
 To register a server and enable the plane:
 
@@ -214,7 +215,7 @@ To register a server and enable the plane:
 
 3. Set `enableOfficialMcp=true`.
 
-Provision then deploys the MCP APIM, exposes one governed MCP server per entry at
+Provision creates/retains the shared `apim-mcp-*` Basic v2 APIM and, when enabled, exposes one governed MCP server per entry at
 `https://<mcp-apim>/<name>/mcp`, and wires the gateway URL + subscription key into
 the API (`AI4IA_OFFICIAL_MCP_GATEWAY_URL` plus a Container App secret). Startup
 fails closed if the plane is enabled without both. Official servers are

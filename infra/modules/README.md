@@ -11,9 +11,13 @@ Composable modules consumed by [`../main.bicep`](../main.bicep). Each module:
 
 Gateway-specific modules:
 
-- `gateway.bicep` owns the public SimpleL7Proxy Container App, the internal APIM
-  model and realtime APIs, scoped subscriptions, the bounded API-policy wrapper,
-  ordered generated fragments, and APIM-to-Foundry RBAC.
+- `apimcore.bicep` owns/adopts the unconditional shared `apim-mcp-*` Basic v2 service,
+  its system identity, and diagnostic setting.
+- `mcpgateway.bicep` references that service as existing and owns the feature-gated
+  official MCP backends/APIs/policies/product/key.
+- `gateway.bicep` references that service as existing and owns the public
+  SimpleL7Proxy app plus model/realtime API children, scoped subscriptions, generated
+  fragments, and Foundry role assignments. The Consumption APIM remains rollback-only.
 - `proxyasync.bicep` owns optional MI-only Blob/Service Bus resources for durable
   async work. It is not the synchronous priority queue, which remains in-memory
   per proxy replica.

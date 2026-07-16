@@ -44,19 +44,19 @@ window.AI4IA_SERVICES = [
     docs: [["Azure Container Registry", "https://learn.microsoft.com/azure/container-registry/container-registry-intro"]],
   },
   {
-    key: "apim", name: "API Management — model gateway", azureType: "Microsoft.ApiManagement/service",
+    key: "apim", name: "API Management — Consumption rollback", azureType: "Microsoft.ApiManagement/service",
     group: "Gateway", icon: "🚪", module: "gateway.bicep", resourcePattern: "apim-ai4ia-*",
-    summary: "Internal model-policy hop on the Consumption SKU. It receives proxy-authenticated HTTP/SSE traffic, " +
-      "performs catalog routing and bounded regional failover, exposes a separate realtime API, and reaches Foundry with MI.",
-    identity: "system-assigned; granted OpenAI User + Cognitive Services User on the Foundry accounts",
+    summary: "Inactive HTTP/SSE rollback plane on the Consumption SKU. Its APIs, policies, subscriptions, " +
+      "diagnostics, and Foundry access remain intact during stabilization, but active callers use apim-mcp.",
+    identity: "system-assigned; legacy Foundry roles retained only for rollback",
     docs: [["APIM AI gateway", "https://learn.microsoft.com/azure/api-management/genai-gateway-capabilities"]],
   },
   {
-    key: "apim-mcp", name: "API Management — MCP gateway", azureType: "Microsoft.ApiManagement/service",
-    group: "Gateway", icon: "🔌", module: "mcpgateway.bicep", resourcePattern: "apim-mcp-ai4ia-*",
-    summary: "A second, dedicated APIM (Basic v2) front door that exposes and governs the curated 'official' " +
-      "MCP servers using APIM's native MCP feature, gated on one subscription key. Kept separate because the native " +
-      "MCP feature is unsupported on the model gateway's Consumption tier.",
+    key: "apim-mcp", name: "API Management — shared AI gateway", azureType: "Microsoft.ApiManagement/service",
+    group: "Gateway", icon: "🔌", module: "apimcore.bicep", resourcePattern: "apim-mcp-ai4ia-*",
+    summary: "The shared active APIM (Basic v2) that exposes and governs the curated 'official' " +
+      "MCP servers using APIM's native MCP feature, gated on one subscription key, while also hosting the active " +
+      "model/realtime APIs. The legacy Consumption service is retained only as temporary rollback.",
     identity: "system-assigned; may be granted Foundry User to mint the toolbox bearer",
     docs: [["Expose MCP servers in APIM", "https://learn.microsoft.com/azure/api-management/export-rest-mcp-server"]],
   },
