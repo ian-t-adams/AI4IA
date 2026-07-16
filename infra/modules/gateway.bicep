@@ -118,7 +118,7 @@ var primaryFoundryRealtimeWssUrl = '${replace(endsWith(primaryFoundryEndpoint, '
 var proxyAppName = 'ca-proxy-${environmentName}'
 
 // ---------------- APIM trust boundary ----------------
-resource apim 'Microsoft.ApiManagement/service@2024-05-01' = {
+resource legacyConsumptionApim 'Microsoft.ApiManagement/service@2024-05-01' = {
   name: take('apim-${workload}-${environmentName}', 50)
   location: location
   tags: tags
@@ -137,7 +137,7 @@ resource apim 'Microsoft.ApiManagement/service@2024-05-01' = {
 
 // Active replacement for every model and realtime call. The legacy Consumption APIM
 // below stays intact as an inactive rollback plane; do not reparent its children.
-resource apimV2 'Microsoft.ApiManagement/service@2024-05-01' = {
+resource replacementApim 'Microsoft.ApiManagement/service@2024-05-01' = {
   name: take('apim-v2-${workload}-${environmentName}', 50)
   location: location
   tags: tags
@@ -155,7 +155,7 @@ resource apimV2 'Microsoft.ApiManagement/service@2024-05-01' = {
 }
 
 resource foundryEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = [for backend in foundryBackends: {
-  parent: apim
+  parent: legacyConsumptionApim
   name: 'foundry-${backend.region}-endpoint'
   properties: {
     displayName: 'foundry-${backend.region}-endpoint'
@@ -240,7 +240,7 @@ var modelApiPolicyValue = reduce(
 )
 
 resource modelPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in modelPolicyFragmentDefinitions: {
-  parent: apim
+  parent: legacyConsumptionApim
   name: '${definition.baseName}-${uniqueString(definition.value)}'
   properties: {
     description: definition.description
@@ -253,7 +253,7 @@ resource modelPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2
 }]
 
 resource modelsApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
-  parent: apim
+  parent: legacyConsumptionApim
   name: 'openai'
   properties: {
     displayName: 'SimpleL7Proxy model backend'
@@ -309,7 +309,7 @@ resource modelsApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-
 // Only the proxy receives this subscription. It is injected from an ACA secret
 // into Host1-api-key and never returned to application callers.
 resource proxyModelSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
-  parent: apim
+  parent: legacyConsumptionApim
   name: 'ai4ia-proxy-models'
   properties: {
     displayName: 'AI4IA SimpleL7Proxy model hop'
@@ -323,7 +323,7 @@ resource proxyModelSubscription 'Microsoft.ApiManagement/service/subscriptions@2
 // Its key cannot invoke the normal model API, preventing callers from bypassing
 // the proxy for compatible HTTP/SSE traffic.
 resource realtimeApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
-  parent: apim
+  parent: legacyConsumptionApim
   name: 'openai-realtime'
   properties: {
     displayName: 'FastAPI realtime relay backend'
@@ -360,7 +360,7 @@ resource realtimeApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-0
 }
 
 resource apiRealtimeSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
-  parent: apim
+  parent: legacyConsumptionApim
   name: 'ai4ia-api-realtime'
   properties: {
     displayName: 'AI4IA FastAPI realtime relay'
@@ -379,31 +379,31 @@ resource foundryAccounts 'Microsoft.CognitiveServices/accounts@2025-04-01-previe
 }]
 
 resource apimOpenAiUsers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (backend, i) in foundryBackends: {
-  name: guid(foundryAccounts[i].id, apim.id, openAiUserRoleId)
+  name: guid(foundryAccounts[i].id, legacyConsumptionApim.id, openAiUserRoleId)
   scope: foundryAccounts[i]
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', openAiUserRoleId)
-    principalId: apim.identity.principalId
+    principalId: legacyConsumptionApim.identity.principalId
     principalType: 'ServicePrincipal'
   }
 }]
 
 resource apimCognitiveUsers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (backend, i) in foundryBackends: {
-  name: guid(foundryAccounts[i].id, apim.id, cognitiveUserRoleId)
+  name: guid(foundryAccounts[i].id, legacyConsumptionApim.id, cognitiveUserRoleId)
   scope: foundryAccounts[i]
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveUserRoleId)
-    principalId: apim.identity.principalId
+    principalId: legacyConsumptionApim.identity.principalId
     principalType: 'ServicePrincipal'
   }
 }]
 
 // ---------------- Active Basic v2 APIM parity ----------------
 // These resources deliberately duplicate the active HTTP/SSE configuration onto
-// apimV2. The Consumption service and every child above remain untouched for
+// replacementApim. The Consumption service and every child above remain untouched for
 // rollback; only callers below move once this complete replacement is ready.
 resource replacementFoundryEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = [for backend in foundryBackends: {
-  parent: apimV2
+  parent: replacementApim
   name: 'foundry-${backend.region}-endpoint'
   properties: {
     displayName: 'foundry-${backend.region}-endpoint'
@@ -415,7 +415,7 @@ resource replacementFoundryEndpointValues 'Microsoft.ApiManagement/service/named
 // WebSocket APIs require a WSS backend. The catalog policy references only these
 // named values, so account endpoints stay catalog-derived and never hard-coded.
 resource replacementRealtimeWssEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = [for backend in foundryBackends: {
-  parent: apimV2
+  parent: replacementApim
   name: 'foundry-${backend.region}-realtime-wss-endpoint'
   properties: {
     displayName: 'foundry-${backend.region}-realtime-wss-endpoint'
@@ -425,7 +425,7 @@ resource replacementRealtimeWssEndpointValues 'Microsoft.ApiManagement/service/n
 }]
 
 resource replacementModelPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in modelPolicyFragmentDefinitions: {
-  parent: apimV2
+  parent: replacementApim
   name: '${definition.baseName}-${uniqueString(definition.value)}'
   properties: {
     description: definition.description
@@ -438,7 +438,7 @@ resource replacementModelPolicyFragments 'Microsoft.ApiManagement/service/policy
 }]
 
 resource replacementModelsApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
-  parent: apimV2
+  parent: replacementApim
   name: 'openai'
   properties: {
     displayName: 'SimpleL7Proxy model backend'
@@ -483,7 +483,7 @@ resource replacementModelsApiPolicy 'Microsoft.ApiManagement/service/apis/polici
 
 // This scoped key is injected only into SimpleL7Proxy's Host1 configuration.
 resource replacementProxyModelSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
-  parent: apimV2
+  parent: replacementApim
   name: 'ai4ia-proxy-models'
   properties: {
     displayName: 'AI4IA SimpleL7Proxy model hop'
@@ -500,7 +500,7 @@ resource replacementProxyModelSubscription 'Microsoft.ApiManagement/service/subs
 // The API-to-proxy credential is deliberately an APIM subscription to a product
 // with no APIs. It authenticates only at SimpleL7Proxy and cannot invoke models.
 resource replacementProxyIngressProduct 'Microsoft.ApiManagement/service/products@2024-05-01' = {
-  parent: apimV2
+  parent: replacementApim
   name: 'ai4ia-proxy-ingress'
   properties: {
     displayName: 'AI4IA FastAPI proxy ingress'
@@ -512,7 +512,7 @@ resource replacementProxyIngressProduct 'Microsoft.ApiManagement/service/product
 }
 
 resource replacementProxyIngressSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
-  parent: apimV2
+  parent: replacementApim
   name: 'ai4ia-api-proxy-ingress'
   properties: {
     displayName: 'AI4IA FastAPI proxy ingress credential'
@@ -528,7 +528,7 @@ resource replacementProxyIngressSubscription 'Microsoft.ApiManagement/service/su
 // A WebSocket API has APIM's generated onHandshake operation; no HTTP GET
 // operation is declared here. serviceUrl and the routing policy use WSS exactly.
 resource replacementRealtimeApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
-  parent: apimV2
+  parent: replacementApim
   name: 'openai-realtime'
   properties: {
     displayName: 'FastAPI realtime relay backend'
@@ -558,7 +558,7 @@ resource replacementRealtimeApiPolicy 'Microsoft.ApiManagement/service/apis/poli
 }
 
 resource replacementApiRealtimeSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
-  parent: apimV2
+  parent: replacementApim
   name: 'ai4ia-api-realtime'
   properties: {
     displayName: 'AI4IA FastAPI realtime relay'
@@ -574,21 +574,21 @@ resource replacementApiRealtimeSubscription 'Microsoft.ApiManagement/service/sub
 // Least privilege is duplicated for the active identity only; legacy APIM RBAC
 // is retained above so the inactive rollback service remains complete.
 resource replacementApimOpenAiUsers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (backend, i) in foundryBackends: {
-  name: guid(foundryAccounts[i].id, apimV2.id, openAiUserRoleId)
+  name: guid(foundryAccounts[i].id, replacementApim.id, openAiUserRoleId)
   scope: foundryAccounts[i]
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', openAiUserRoleId)
-    principalId: apimV2.identity.principalId
+    principalId: replacementApim.identity.principalId
     principalType: 'ServicePrincipal'
   }
 }]
 
 resource replacementApimCognitiveUsers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (backend, i) in foundryBackends: {
-  name: guid(foundryAccounts[i].id, apimV2.id, cognitiveUserRoleId)
+  name: guid(foundryAccounts[i].id, replacementApim.id, cognitiveUserRoleId)
   scope: foundryAccounts[i]
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveUserRoleId)
-    principalId: apimV2.identity.principalId
+    principalId: replacementApim.identity.principalId
     principalType: 'ServicePrincipal'
   }
 }]
@@ -597,7 +597,7 @@ resource replacementApimCognitiveUsers 'Microsoft.Authorization/roleAssignments@
 var hostEnv = [
   {
     name: 'Host1'
-    value: 'host=${apimV2.properties.gatewayUrl};mode=apim;probe=/openai/status;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=true'
+    value: 'host=${replacementApim.properties.gatewayUrl};mode=apim;probe=/openai/status;processor=OpenAI;api-key-header=Ocp-Apim-Subscription-Key;retryafter=true'
   }
   {
     name: 'Host1-api-key'
@@ -849,7 +849,7 @@ resource proxyApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
 // ---------------- Observability ----------------
 resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: 'to-log-analytics'
-  scope: apim
+  scope: legacyConsumptionApim
   properties: {
     workspaceId: logAnalyticsWorkspaceId
     logs: [
@@ -863,7 +863,7 @@ resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-previ
 
 resource replacementApimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: 'to-log-analytics'
-  scope: apimV2
+  scope: replacementApim
   properties: {
     workspaceId: logAnalyticsWorkspaceId
     logs: [
@@ -890,14 +890,14 @@ var proxyUrl = 'https://${proxyApp.properties.configuration.ingress.fqdn}'
 
 output proxyAppName string = proxyApp.name
 output proxyUrl string = proxyUrl
-output legacyConsumptionApimGatewayUrl string = apim.properties.gatewayUrl
-output apimGatewayUrl string = apimV2.properties.gatewayUrl
-output modelGatewayUrl string = '${apimV2.properties.gatewayUrl}/openai'
+output legacyConsumptionApimGatewayUrl string = legacyConsumptionApim.properties.gatewayUrl
+output apimGatewayUrl string = replacementApim.properties.gatewayUrl
+output modelGatewayUrl string = '${replacementApim.properties.gatewayUrl}/openai'
 @secure()
 output modelGatewayKey string = replacementProxyModelSubscription.listSecrets().primaryKey
 output proxyIngressUrl string = '${proxyUrl}/openai'
 @secure()
 output proxyIngressKey string = replacementProxyIngressSubscription.listSecrets().primaryKey
-output realtimeGatewayUrl string = '${apimV2.properties.gatewayUrl}/openai'
+output realtimeGatewayUrl string = '${replacementApim.properties.gatewayUrl}/openai'
 @secure()
 output realtimeGatewayKey string = replacementApiRealtimeSubscription.listSecrets().primaryKey

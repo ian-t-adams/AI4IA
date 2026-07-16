@@ -323,7 +323,7 @@ class GatewayPolicyTests(unittest.TestCase):
     def test_topology_is_proxy_then_apim_then_foundry(self) -> None:
         gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
         main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
-        self.assertIn("host=${apimV2.properties.gatewayUrl};mode=apim", gateway)
+        self.assertIn("host=${replacementApim.properties.gatewayUrl};mode=apim", gateway)
         self.assertIn("output proxyIngressUrl string = '${proxyUrl}/openai'", gateway)
         self.assertIn("serviceUrl: foundryOpenAiUrl", gateway)
         self.assertNotIn("serviceUrl: '${proxyUrl}", gateway)
@@ -463,9 +463,9 @@ class GatewayPolicyTests(unittest.TestCase):
         )
         template = json.loads(completed.stdout.lstrip("\ufeff"))
         resources = template["resources"]
-        self.assertEqual(resources["apim"]["sku"], {"name": "Consumption", "capacity": 0})
-        self.assertEqual(resources["apimV2"]["sku"], {"name": "BasicV2", "capacity": 1})
-        self.assertEqual(resources["apimV2"]["identity"]["type"], "SystemAssigned")
+        self.assertEqual(resources["legacyConsumptionApim"]["sku"], {"name": "Consumption", "capacity": 0})
+        self.assertEqual(resources["replacementApim"]["sku"], {"name": "BasicV2", "capacity": 1})
+        self.assertEqual(resources["replacementApim"]["identity"]["type"], "SystemAssigned")
         realtime = resources["replacementRealtimeApi"]["properties"]
         self.assertEqual(realtime["apiType"], "websocket")
         self.assertEqual(realtime["protocols"], ["wss"])
