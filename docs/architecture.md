@@ -276,4 +276,4 @@ strategy uses:
 
 ### APIM replacement cutover
 
-The active APIM is a deterministic Basic v2 service with system-assigned identity. It carries both catalog-routed HTTP/SSE and the WSS realtime onHandshake API. The prior Consumption APIM remains fully configured but receives no active traffic, retaining a separately approved rollback target rather than being deleted during cutover.
+The active APIM is a deterministic Basic v2 service with system-assigned identity. It carries both catalog-routed HTTP/SSE and the WSS realtime onHandshake API from one gateway base with separately scoped keys. The prior Consumption APIM remains fully configured but receives no active traffic during a temporary stabilization window. This overlap is migration state, not permanent architecture; removing Consumption is a later destructive change with separate approval.
