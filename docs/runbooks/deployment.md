@@ -413,16 +413,21 @@ date cannot be more than the current period in the past).
 
 ## APIM Basic v2 migration guardrail
 
-The active model/realtime plane is `apim-v2-<workload>-<environmentName>` (Basic v2, capacity 1). Provisioning must be reviewed as an incremental cutover: the template retains the Consumption APIM and all children unchanged as an inactive rollback plane. The replacement APIs, policies, scoped keys, Foundry RBAC, and diagnostics are configured before proxy/API caller revisions can update. Review the creator-approved what-if for zero deletes; do not delete the Consumption plane during this operation. Roll back by rewiring callers only after stabilization.
+The active model/realtime/MCP plane is the existing `apim-mcp-<workload>-<environmentName>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and Voice Live share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.
+
+The superseded PR-only `apim-v2-*` design was never deployed. The corrected what-if
+must contain no `apim-v2-*` creation. If resource inventory unexpectedly finds such
+a service, stop and handle it through a separate explicitly approved cleanup rather
+than folding a deletion into this migration.
 
 ### Post-stabilization Consumption cleanup
 
 The two APIM services are a temporary migration overlap, not the steady-state design.
 Delete the Consumption service only in a separate destructive change after:
 
-1. HTTP and SSE smoke tests pass through SimpleL7Proxy -> Basic v2;
-2. FastAPI -> Basic v2 returns WebSocket 101 and completes a real voice turn;
-3. gateway logs confirm only the replacement receives active traffic for the agreed stabilization period;
+1. HTTP and SSE smoke tests pass through SimpleL7Proxy -> shared Basic v2 APIM;
+2. FastAPI -> shared Basic v2 APIM returns WebSocket 101 and completes a real voice turn;
+3. gateway logs confirm only `apim-mcp-*` receives active traffic for the agreed stabilization period;
 4. operators confirm the Consumption HTTP rollback is no longer required; and
 5. a deletion-specific what-if is reviewed and explicitly approved.
 

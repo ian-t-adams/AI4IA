@@ -58,7 +58,7 @@ window.AI4IA_META = {
     { name: "Custom (bring-your-own) MCP tools", on: true, param: "customToolsEnabled",
       note: "Per-user MCP servers behind an SSRF guard; credentials in per-user Key Vault; approval-gated." },
     { name: "Official MCP plane (MCP APIM front door + Foundry toolbox)", on: true,
-      note: "Curated servers reached through a dedicated APIM, gated on one subscription key." },
+      note: "Curated servers reached through the shared active APIM, gated on one subscription key." },
     { name: "Private tool catalog (API Center)", on: true,
       note: "Inventories the official MCP servers for governance + Foundry discovery." },
     { name: "Automatic context summarization (auto-fold)", on: true, param: "autoSummarizationEnabled" },

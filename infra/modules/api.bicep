@@ -103,11 +103,11 @@ param adminApiSecret string = ''
 @description('Enable the Voice Live realtime WebSocket relay. Default OFF (the /api/voice/live route refuses, so the app is inert).')
 param realtimeEnabled bool = false
 
-@description('WebSocket-capable replacement APIM /openai URL for the realtime relay. This intentionally differs from modelGatewayUrl, which points at SimpleL7Proxy.')
+@description('WebSocket-capable shared active APIM /openai URL for the realtime relay. This intentionally differs from modelGatewayUrl, which points at SimpleL7Proxy.')
 param realtimeBaseUrl string = ''
 
 @secure()
-@description('Replacement APIM realtime subscription key. Kept separate from the proxy ingress key and model subscription.')
+@description('Shared active APIM realtime subscription key. Kept separate from the proxy ingress key and model subscription.')
 param realtimeGatewayApiKey string = ''
 
 @description('Azure OpenAI realtime api-version the relay uses for the upstream WebSocket.')
@@ -198,7 +198,7 @@ param webIqApiKey string = ''
 @description('Optional Web IQ base URL override. Emitted as AI4IA_WEBIQ_BASE_URL only when webSearchEnabled and set; empty uses the SDK default endpoint.')
 param webIqBaseUrl string = ''
 
-@description('Enable the curated "official" MCP plane reached through the dedicated MCP APIM front door. Default OFF: the OfficialMcpService is not constructed and no official tool is advertised. When on, supply officialMcpGatewayUrl + officialMcpSubscriptionKey (config.validate_runtime fails closed without them).')
+@description('Enable the curated "official" MCP plane reached through the shared active APIM front door. Default OFF: the OfficialMcpService is not constructed and no official tool is advertised. When on, supply officialMcpGatewayUrl + officialMcpSubscriptionKey (config.validate_runtime fails closed without them).')
 param officialMcpEnabled bool = false
 
 @description('Base URL of the MCP APIM gateway (e.g. https://apim-mcp-….azure-api.net). Surfaced as AI4IA_OFFICIAL_MCP_GATEWAY_URL only when officialMcpEnabled.')

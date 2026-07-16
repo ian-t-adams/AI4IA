@@ -1,6 +1,6 @@
 """Loads the curated "official" MCP server catalog (APIM-fronted servers).
 
-These are admin-curated MCP servers reached **through the dedicated MCP APIM
+These are admin-curated MCP servers reached **through the shared active APIM
 front door** (provisioned by ``infra/modules/mcpgateway.bicep``), gated on an
 APIM subscription key. This is distinct from per-user BYO remote MCP servers,
 which the backend calls directly behind the SSRF guard.

@@ -38,7 +38,7 @@ procedure: [`runbooks/deployment.md` §3](runbooks/deployment.md#3-moving-to-a-n
 | Image generation | checked-in parameter | `imageGenerationEnabled` | `AI4IA_IMAGE_BLOB_ACCOUNT_URL` when provisioned | Image-capable model deployment and generated-media storage. |
 | Video generation | checked-in parameter | `videoGenerationEnabled` | `AI4IA_VIDEO_BLOB_ACCOUNT_URL` when provisioned | Video-capable model deployment and generated-media storage. |
 | Custom MCP tools | checked-in parameter | `customToolsEnabled` | `AI4IA_CUSTOM_TOOLS_ENABLED`, `CUSTOM_TOOLS_ENABLED` | Cosmos + Key Vault; Entra auth outside local/dev. |
-| Official MCP plane (APIM-fronted) | checked-in parameter | `enableOfficialMcp` | `AI4IA_OFFICIAL_MCP_ENABLED`, `AI4IA_OFFICIAL_MCP_GATEWAY_URL`, `AI4IA_OFFICIAL_MCP_SUBSCRIPTION_KEY` (secret) | Dedicated MCP APIM (Basic v2) + at least one entry in `infra/mcp-servers.json`. Gateway URL + key are wired module→module; enabled-without-both fails closed at startup. |
+| Official MCP plane (APIM-fronted) | checked-in parameter | `enableOfficialMcp` | `AI4IA_OFFICIAL_MCP_ENABLED`, `AI4IA_OFFICIAL_MCP_GATEWAY_URL`, `AI4IA_OFFICIAL_MCP_SUBSCRIPTION_KEY` (secret) | MCP-only product and subscription on the shared active Basic v2 APIM + at least one entry in `infra/mcp-servers.json`. Gateway URL + key are wired module→module; enabled-without-both fails closed at startup. |
 | Foundry toolbox (bridge) | checked-in parameter | `enableFoundryToolbox` (+ `enableOfficialMcp`) | consumed via the official MCP plane; `AZURE_FOUNDRY_PROJECT_ENDPOINT` output feeds `scripts/provision-foundry-*.py` | Toolbox is consumed as one `infra/mcp-servers.json` entry (no app runtime setting). Flag grants the MCP APIM MI the project "Foundry User" role. Provision the toolbox first; preview. See [`foundry-toolbox.md`](foundry-toolbox.md). |
 | Private tool catalog (API Center) | `AI4IA_API_CENTER_LOCATION` | `enablePrivateToolCatalog`, `apiCenterLocation` | `AZURE_API_CENTER_NAME` output feeds `scripts/provision-private-tool-catalog.py` | Provisions an Azure API Center to inventory the APIM-fronted MCP servers (admin/IaC only, no app runtime setting). `apiCenterLocation` defaults to `eastus` because API Center is unavailable in some regions (notably `eastus2`). Asset registration is a documented script step; preview. See [`foundry-toolbox.md`](foundry-toolbox.md). |
 | Web IQ search tools | `AI4IA_WEBIQ_API_KEY` (secret) | `webSearchEnabled`, `webIqApiKey` | `AI4IA_WEB_SEARCH_ENABLED`, `AI4IA_WEBIQ_API_KEY` (secret) | API key **or** an Entra managed identity entitled to Web IQ. In CI the key is a `production` environment secret; if unset, the api falls back to the managed identity and calls 401 unless it is entitled. Diagnose with the admin **Web search health** panel. |
@@ -81,19 +81,19 @@ tokens.
 live API policy as an explicit operator rollback target. Bicep never deploys it
 automatically.
 
-Voice Live uses `AI4IA_REALTIME_BASE_URL=https://<replacement-apim>/openai` and
+Voice Live uses `AI4IA_REALTIME_BASE_URL=https://<shared-active-apim>/openai` and
 the separate secret `AI4IA_REALTIME_GATEWAY_API_KEY` from the FastAPI relay. The
-replacement API is a WebSocket API and its subscription is scoped only to
+shared active API is a WebSocket API and its subscription is scoped only to
 `/openai/realtime`, so it cannot bypass the proxy for normal model calls. FastAPI
 uses `AI4IA_MODEL_GATEWAY_URL=https://<proxy>/openai` with a distinct opaque
 proxy-ingress key that belongs to an APIM product with no APIs; it cannot invoke
-the model API. The replacement model subscription is held only by SimpleL7Proxy.
+the model API. The shared active model subscription is held only by SimpleL7Proxy.
 Caller `Authorization`, APIM key, and internal app/user headers are stripped at
 the proxy; APIM derives correlation from the proxy-owned request ID and uses
 managed identity for Foundry. Voice Live fails startup if its URL/key are empty,
 not distinct, or do not describe an HTTPS/WSS `/openai` gateway endpoint.
 
-The active APIM is deterministic Basic v2 (capacity 1). The prior Consumption
+The active APIM is the existing shared `apim-mcp-*` Basic v2 service (capacity 1); no additional APIM base charge is added. The prior Consumption
 APIM and all of its children remain configured but inactive as the rollback plane;
 they are not deleted by this migration.
 
@@ -140,6 +140,6 @@ public/private posture and emit diagnostics to the shared Log Analytics workspac
 
 ### Basic v2 model/realtime gateway cutover
 
-`AI4IA_MODEL_GATEWAY_URL` remains the SimpleL7Proxy `/openai` URL. Its API key is an opaque proxy-ingress key from an APIM product with no APIs, so FastAPI cannot invoke the model API directly. SimpleL7Proxy alone holds the replacement model subscription. Voice Live uses `AI4IA_REALTIME_BASE_URL=https://<replacement-apim>/openai` and the distinct secret `AI4IA_REALTIME_GATEWAY_API_KEY`, scoped only to `/openai/realtime`. Voice Live startup fails when the URL/key are missing, equal to the proxy ingress key, or do not name an HTTPS/WSS `/openai` endpoint.
+`AI4IA_MODEL_GATEWAY_URL` remains the SimpleL7Proxy `/openai` URL. Its API key is an opaque proxy-ingress key from an APIM product with no APIs, so FastAPI cannot invoke the model API directly. SimpleL7Proxy alone holds the shared model subscription. Voice Live uses `AI4IA_REALTIME_BASE_URL=https://<shared-active-apim>/openai` and the distinct secret `AI4IA_REALTIME_GATEWAY_API_KEY`, scoped only to `/openai/realtime`. Voice Live startup fails when the URL/key are missing, equal to the proxy ingress key, or do not name an HTTPS/WSS `/openai` endpoint.
 
-The active APIM is deterministic Basic v2 (capacity 1). The previous Consumption APIM and all its children remain fully configured but inactive for rollback; this migration does not delete them.
+The active APIM is the existing shared `apim-mcp-*` Basic v2 service (capacity 1); no additional APIM base charge is added. The previous Consumption APIM and all its children remain fully configured but inactive for rollback; this migration does not delete them.

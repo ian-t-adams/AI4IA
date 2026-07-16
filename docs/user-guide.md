@@ -156,6 +156,6 @@ missing; a `—` cell means no data for that metric, not an error.
 | Feature controls are missing | The web feature flag is off or the API feature is disabled. |
 | A library route returns disabled/not found | Document understanding is not enabled or prerequisites failed startup validation. |
 | A document does not appear in chat | It is not `ready`, not accessible to you, or retrieval is capped for the turn. |
-| Voice Live reports that the gateway or realtime service is unavailable | The replacement APIM WebSocket API, its scoped key, or the Foundry realtime backend is unavailable. Retry after gateway health is restored. |
+| Voice Live reports that the gateway or realtime service is unavailable | The shared active APIM WebSocket API, its scoped key, or the Foundry realtime backend is unavailable. Retry after gateway health is restored. |
 | Voice Live fails before opening the socket | API public URL, Origin allowlist, browser microphone permission, or auth is misconfigured. |
 | Admin resource panel is unavailable | The resource id is empty, the API identity lacks Monitoring Reader, or Azure Monitor data is unavailable. |

@@ -263,9 +263,9 @@ class Settings(BaseSettings):
     # only — see ``validate_runtime``).
     custom_tools_secret_vault_uri: str | None = None
 
-    # --- Official MCP plane (curated servers behind the dedicated MCP APIM) ---
+    # --- Official MCP plane (curated servers behind the shared active APIM) ---
     # Distinct from BYO custom tools above. These are admin-curated MCP servers
-    # reached **through the dedicated MCP APIM front door** (provisioned by
+    # reached **through the shared active APIM front door** (provisioned by
     # ``infra/modules/mcpgateway.bicep``) and gated on an APIM subscription key,
     # so MCP egress is governed by APIM auth rather than called directly. The
     # catalog is packaged (``official_mcp_catalog.json``, projected from
@@ -724,7 +724,7 @@ class Settings(BaseSettings):
                 or realtime_url.path.rstrip("/") != "/openai"
             ):
                 raise RuntimeError(
-                    "Voice Live requires a WebSocket-capable replacement APIM /openai "
+                    "Voice Live requires a WebSocket-capable shared active APIM /openai "
                     "gateway URL (https:// or wss://)."
                 )
         if self.realtime_enabled and self.env != Environment.local and (

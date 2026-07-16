@@ -22,10 +22,10 @@ flowchart TB
   API --> CU[Content Understanding]
   API --> Tools[Built-in tools + BYO MCP]
   API --> OffMCP[Official MCP tools]
-  OffMCP --> MCPGW[MCP APIM front door<br/>Basic v2 + subscription key]
-  MCPGW --> MCPUp[Curated upstream MCP servers]
+  OffMCP --> APIM[Shared apim-mcp<br/>Basic v2 + scoped keys + MI]
+  APIM --> MCPUp[Curated upstream MCP servers]
   API --> Proxy[SimpleL7Proxy<br/>HTTP/SSE queue + requeue]
-  Proxy --> APIM[Basic v2 APIM<br/>catalog routing + MI]
+  Proxy --> APIM
   API -. Voice Live WS relay .-> APIM
   APIM --> EUS2[Foundry East US 2]
   APIM --> SWC[Foundry Sweden Central]
@@ -150,8 +150,8 @@ flowchart LR
     ProxyCA["ca-proxy · SimpleL7Proxy"]
   end
   subgraph Gateways["API Management"]
-    Apim["apim · model gateway"]
-    ApimMcp["apim-mcp · MCP gateway"]
+    Apim["apim · Consumption rollback"]
+    ApimMcp["apim-mcp · shared model/realtime/MCP gateway"]
     Apic["API Center · tool catalog"]
   end
   subgraph Compute["Container Apps env + registry"]
@@ -226,10 +226,11 @@ governed per-turn executor:
   credentials in per-user Key Vault. Untrusted by default, so their tools are
   approval-gated.
 - **Official (curated).** An admin-defined catalog (`infra/mcp-servers.json`)
-  reached **through a dedicated MCP APIM front door** (`mcpgateway.bicep`, APIM
-  Basic v2) gated on one app-global subscription key. Trusted ⇒ pre-approved. The
-  model gateway stays a separate APIM so model traffic keeps its scale-to-zero
-  economics.
+  reached **through the shared `apim-mcp-*` APIM** (`apimcore.bicep` owns the
+  Basic v2 service; `mcpgateway.bicep` owns its MCP children)
+  with a product-scoped app-global subscription key. Trusted ⇒ pre-approved. The
+  MCP product associates only MCP APIs, so its key cannot call the model/realtime
+  APIs. The legacy Consumption model gateway remains a temporary rollback plane.
 
 The BYO plane is **default-OFF**. The official plane's bicep params default off too, but in this
 repo it is **activated**: `enableOfficialMcp=true` and the catalog registers the Foundry toolbox
@@ -242,7 +243,7 @@ flowchart TB
   Turn["Chat turn executor<br/>(per-turn budget + approvals)"]
   Turn --> Official["Official plane (trusted, pre-approved)"]
   Turn --> Byo["BYO plane (untrusted, approval-gated)"]
-  Official --> ApimMcp["MCP APIM front door<br/>(Basic v2 + subscription key)"]
+  Official --> ApimMcp["Shared apim-mcp APIM<br/>(Basic v2 + MCP-only product key)"]
   ApimMcp --> Curated["Curated upstream MCP servers<br/>(infra/mcp-servers.json)"]
   Byo -. "SSRF guard (DNS-rebind re-check)" .-> UserSrv["Per-user MCP servers"]
   UserSrv --> Kv["Per-user secrets in Key Vault"]

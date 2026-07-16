@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "AI4IA official MCP server catalog",
-  "description": "Curated 'official' MCP servers exposed and governed through the dedicated MCP APIM front door (infra/modules/mcpgateway.bicep), gated on an APIM subscription key. Source of truth consumed by Bicep (provisions one APIM MCP server per entry) and projected into the packaged runtime catalog by scripts/gen-mcp-catalog.py.",
+  "description": "Curated 'official' MCP servers exposed and governed through the shared active APIM front door (infra/modules/mcpgateway.bicep), gated on an APIM subscription key. Source of truth consumed by Bicep (provisions one APIM MCP server per entry) and projected into the packaged runtime catalog by scripts/gen-mcp-catalog.py.",
   "type": "object",
   "required": ["servers"],
   "properties": {

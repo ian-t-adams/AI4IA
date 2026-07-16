@@ -1,61 +1,17 @@
-// Dedicated MCP gateway: a second APIM (Basic v2) front door that exposes and
-// governs a curated set of "official" MCP servers (infra/mcp-servers.json) using
-// APIM's native "expose an existing MCP server" feature. MCP traffic is gated on
-// an APIM subscription key, isolated from the Consumption model gateway so MCP
-// gets the required v2 capabilities without changing the model APIM tier (the
-// MCP feature is NOT supported on the Consumption SKU).
-//
-// Provisioned only when enableOfficialMcp is true. The param DEFAULT is false (a
-// fresh consumer of this template provisions no MCP gateway); this repo enables it
-// in main.parameters.json to front the Foundry toolbox registered in mcp-servers.json.
-@description('Location for the MCP gateway resources.')
-param location string
+// Official MCP children on the shared active APIM. This module is conditional,
+// but the underlying Basic v2 service is created/adopted unconditionally by
+// infra/modules/apimcore.bicep so model/realtime and MCP share one gateway.
+@description('Name of the shared active APIM service that owns the MCP children.')
+param apimName string
 
-@description('Tags applied to all resources.')
-param tags object
+@description('Gateway base URL of the shared active APIM service.')
+param gatewayBaseUrl string
 
-@description('Workload token (e.g. ai4ia).')
-param workload string
-
-@description('Environment name (e.g. ai4ia-dev).')
-param environmentName string
-
-@description('Central Log Analytics workspace resource ID for diagnostic settings.')
-param logAnalyticsWorkspaceId string
-
-@description('APIM publisher email (required by APIM).')
-param apimPublisherEmail string
-
-@description('APIM publisher org name.')
-param apimPublisherName string = 'AI4IA'
-
-@description('SKU capacity (scale units) for the Basic v2 MCP APIM.')
-param skuCapacity int = 1
-
-@description('''Curated MCP servers to expose, loaded by main.bicep from infra/mcp-servers.json. Each item:
-{ name: string, displayName: string, description?: string, upstreamUrl: string, upstreamAuthMode: 'none'|'managed_identity', upstreamMiResource?: string, upstreamHeaders?: object, upstreamQueryParams?: object }
-upstreamHeaders / upstreamQueryParams are optional string maps of static values APIM injects outbound to the upstream (e.g. a Foundry toolbox needs header Foundry-Features=Toolboxes=V1Preview and query api-version=v1).''')
+@description('Curated MCP servers to expose, loaded by main.bicep from infra/mcp-servers.json.')
 param servers array
 
-// ---------------- MCP APIM front door (Basic v2) ----------------
-// Basic v2 is the cheapest tier that supports the native MCP server feature
-// (Consumption is excluded). System-assigned identity backs optional
-// managed-identity auth to Azure-hosted upstreams.
-resource apim 'Microsoft.ApiManagement/service@2024-06-01-preview' = {
-  name: take('apim-mcp-${workload}-${environmentName}', 50)
-  location: location
-  tags: tags
-  sku: {
-    name: 'BasicV2'
-    capacity: skuCapacity
-  }
-  identity: {
-    type: 'SystemAssigned'
-  }
-  properties: {
-    publisherEmail: apimPublisherEmail
-    publisherName: apimPublisherName
-  }
+resource apim 'Microsoft.ApiManagement/service@2024-06-01-preview' existing = {
+  name: apimName
 }
 
 // One APIM backend per curated server, targeting the upstream Streamable-HTTP
@@ -77,7 +33,7 @@ resource mcpBackends 'Microsoft.ApiManagement/service/backends@2024-06-01-previe
 
 // One MCP API (type: 'mcp') per curated server. subscriptionRequired:true is the
 // inbound gate — APIM rejects calls without a valid subscription key. The route
-// is https://<mcp-apim>/<name>/mcp (Streamable HTTP).
+// is https://<shared-apim>/<name>/mcp (Streamable HTTP).
 @batchSize(1)
 resource mcpApis 'Microsoft.ApiManagement/service/apis@2024-06-01-preview' = [for (s, i) in servers: {
   parent: apim
@@ -135,42 +91,20 @@ resource mcpPolicies 'Microsoft.ApiManagement/service/apis/policies@2024-06-01-p
   }
 }]
 
-// Single all-APIs-scoped subscription whose key the backend presents as
-// Ocp-Apim-Subscription-Key. This keeps the MCP gateway from being an
-// unauthenticated open relay to the curated tool servers.
-resource mcpSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-06-01-preview' = {
+// The unconditional APIM core owns the product and narrows the legacy key even
+// when official MCP is disabled. This module only associates enabled MCP APIs.
+resource mcpProduct 'Microsoft.ApiManagement/service/products@2024-06-01-preview' existing = {
   parent: apim
   name: 'ai4ia-mcp'
-  properties: {
-    displayName: 'AI4IA backend MCP gateway'
-    scope: '/apis'
-    state: 'active'
-    allowTracing: false
-  }
 }
 
-// Diagnostic settings -> central Log Analytics (GatewayLogs + metrics), matching
-// the model gateway so MCP request logs land in the same workspace.
-resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
-  name: 'to-log-analytics'
-  scope: apim
-  properties: {
-    workspaceId: logAnalyticsWorkspaceId
-    logs: [
-      { category: 'GatewayLogs', enabled: true }
-    ]
-    metrics: [
-      { category: 'AllMetrics', enabled: true }
-    ]
-  }
-}
+resource mcpProductApis 'Microsoft.ApiManagement/service/products/apis@2024-06-01-preview' = [for (server, i) in servers: {
+  parent: mcpProduct
+  name: mcpApis[i].name
+  dependsOn: [
+    mcpApis[i]
+  ]
+}]
 
 output mcpApimName string = apim.name
-output mcpGatewayBaseUrl string = apim.properties.gatewayUrl
-
-@description('System-assigned managed identity principalId of the MCP APIM. Used by main.bicep to grant the gateway the Foundry User role on the primary project when the Foundry-toolbox bridge is enabled, so APIM can mint the AAD bearer the toolbox MCP endpoint requires.')
-output mcpApimPrincipalId string = apim.identity.principalId
-
-@description('All-APIs-scoped subscription key the backend presents to the MCP gateway (Ocp-Apim-Subscription-Key).')
-#disable-next-line outputs-should-not-contain-secrets
-output mcpGatewaySubscriptionKey string = mcpSubscription.listSecrets().primaryKey
+output mcpGatewayBaseUrl string = gatewayBaseUrl
