@@ -77,7 +77,14 @@ class FakeRealtimeConnector:
 
 
 def _client(**overrides) -> TestClient:
-    settings = make_settings(admin_subjects="alice", **overrides)
+    defaults = {
+        "model_gateway_auth_mode": "api_key",
+        "model_gateway_api_key": "proxy-ingress-key",
+        "realtime_base_url": "https://realtime-gateway.test/openai",
+        "realtime_gateway_api_key": "realtime-key",
+    }
+    defaults.update(overrides)
+    settings = make_settings(admin_subjects="alice", **defaults)
     c = TestClient(app := create_app(settings))
     c.__enter__()
     c.app.state.realtime_connector = FakeRealtimeConnector()
@@ -179,7 +186,7 @@ def test_live_relay_pumps_both_directions(client):
     # Upstream was opened exactly once with the gateway-derived URL + credential.
     assert len(connector.connects) == 1
     opened = connector.connects[0]
-    assert opened["url"].startswith("ws://gateway.test/realtime")
+    assert opened["url"].startswith("wss://realtime-gateway.test/openai/realtime")
     assert "deployment=" in opened["url"]
     assert connector.upstream.sent_text == ['{"type":"session.update"}']
     assert connector.upstream.sent_bytes == [b"\x01\x02pcm"]

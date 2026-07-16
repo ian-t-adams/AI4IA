@@ -390,7 +390,21 @@ interface LiveSession {
   source: MediaStreamAudioSourceNode;
   scheduled: Set<AudioBufferSourceNode>;
   nextPlayTime: number;
+  // Set once ws.onopen fires. Distinguishes a handshake failure (the browser
+  // can't surface the HTTP status of a rejected upgrade, e.g. a 503 from the
+  // gateway) from a drop of an already-live session, so onerror/onclose can
+  // report the right message.
+  opened: boolean;
 }
+
+// The message shown when the WebSocket fails or closes before ever reaching
+// ws.onopen. A rejected upgrade handshake (e.g. the gateway or upstream
+// realtime service returning a non-101 status) is invisible to the browser as
+// anything but a bare error/close — there is no HTTP status to read — so this
+// is the most specific, actionable message that can be shown.
+const GATEWAY_UNAVAILABLE_MESSAGE =
+  "Voice gateway or realtime service is unavailable. Try again.";
+const LIVE_CONNECTION_ERROR_MESSAGE = "Live voice connection error.";
 
 interface PendingLiveSession {
   ctx: AudioContext | null;
@@ -601,6 +615,7 @@ export function useVoiceLive(
         source,
         scheduled: new Set(),
         nextPlayTime: 0,
+        opened: false,
       };
       sessionRef.current = session;
       pendingRef.current = null;
@@ -804,6 +819,7 @@ export function useVoiceLive(
       };
 
       ws.onopen = () => {
+        session.opened = true;
         ws.send(sessionUpdate(voiceRef.current, settingsRef.current));
         // Seed the session with recent text history so voice continues the same
         // conversation. Sent after session.update; passes through the relay as-is.
@@ -816,27 +832,31 @@ export function useVoiceLive(
         if (mountedRef.current) setStatus("live");
       };
       ws.onmessage = handleServerEvent;
-      ws.onerror = () => {
-        onErrorRef.current("Live voice connection error.");
-        if (sessionRef.current === session) {
-          teardown();
-          if (mountedRef.current) {
-            setListening(false);
-            setSpeaking(false);
-            setStatus("idle");
-          }
+      // A handshake the browser can't complete (e.g. the gateway or upstream
+      // realtime service rejects the upgrade with a 503) surfaces only as a
+      // bare error/close — the HTTP status is not readable from WebSocket. Both
+      // onerror and onclose can fire for the same failure (and both fire for a
+      // clean, user-initiated stop() too), so this is guarded on
+      // ``sessionRef.current === session``: stop()'s teardown() nulls that ref
+      // synchronously before closing the socket, so a later, expected onclose
+      // is a no-op here, while an unhandled failure (whichever of
+      // onerror/onclose fires first) tears down and reports exactly once. The
+      // message depends on whether the session ever reached "live"
+      // (session.opened).
+      const reportConnectionFailure = () => {
+        if (sessionRef.current !== session) return;
+        onErrorRef.current(
+          session.opened ? LIVE_CONNECTION_ERROR_MESSAGE : GATEWAY_UNAVAILABLE_MESSAGE,
+        );
+        teardown();
+        if (mountedRef.current) {
+          setListening(false);
+          setSpeaking(false);
+          setStatus("idle");
         }
       };
-      ws.onclose = () => {
-        if (sessionRef.current === session) {
-          teardown();
-          if (mountedRef.current) {
-            setListening(false);
-            setSpeaking(false);
-            setStatus("idle");
-          }
-        }
-      };
+      ws.onerror = reportConnectionFailure;
+      ws.onclose = reportConnectionFailure;
     } catch (e) {
       const cancelled =
         attempt !== attemptRef.current ||

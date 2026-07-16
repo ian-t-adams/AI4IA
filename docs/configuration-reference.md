@@ -81,12 +81,21 @@ tokens.
 live API policy as an explicit operator rollback target. Bicep never deploys it
 automatically.
 
-Voice Live uses `AI4IA_REALTIME_BASE_URL=https://<apim>/openai` from the FastAPI
-relay. Its APIM subscription is scoped only to `/openai/realtime`, so it cannot
-be used to bypass the proxy for normal model calls. The normal-model APIM key is
-held only by the proxy. Caller `Authorization`, APIM key, and internal app/user
-headers are stripped at the proxy; APIM derives correlation from the proxy-owned
-request ID and uses managed identity for Foundry.
+Voice Live uses `AI4IA_REALTIME_BASE_URL=https://<replacement-apim>/openai` and
+the separate secret `AI4IA_REALTIME_GATEWAY_API_KEY` from the FastAPI relay. The
+replacement API is a WebSocket API and its subscription is scoped only to
+`/openai/realtime`, so it cannot bypass the proxy for normal model calls. FastAPI
+uses `AI4IA_MODEL_GATEWAY_URL=https://<proxy>/openai` with a distinct opaque
+proxy-ingress key that belongs to an APIM product with no APIs; it cannot invoke
+the model API. The replacement model subscription is held only by SimpleL7Proxy.
+Caller `Authorization`, APIM key, and internal app/user headers are stripped at
+the proxy; APIM derives correlation from the proxy-owned request ID and uses
+managed identity for Foundry. Voice Live fails startup if its URL/key are empty,
+not distinct, or do not describe an HTTPS/WSS `/openai` gateway endpoint.
+
+The active APIM is deterministic Basic v2 (capacity 1). The prior Consumption
+APIM and all of its children remain configured but inactive as the rollback plane;
+they are not deleted by this migration.
 
 APIM owns bounded immediate backend attempts. When all compatible regions are
 throttled it returns `429`, `S7PREQUEUE: true`, and `retry-after-ms`.
@@ -128,3 +137,9 @@ tests the HTTP/SSE endpoint fragment and realtime routing policy against
 The proxy Container App also uses the upstream listener on port `8080` for
 startup, liveness, and readiness. Optional async resources inherit the data-tier
 public/private posture and emit diagnostics to the shared Log Analytics workspace.
+
+### Basic v2 model/realtime gateway cutover
+
+`AI4IA_MODEL_GATEWAY_URL` remains the SimpleL7Proxy `/openai` URL. Its API key is an opaque proxy-ingress key from an APIM product with no APIs, so FastAPI cannot invoke the model API directly. SimpleL7Proxy alone holds the replacement model subscription. Voice Live uses `AI4IA_REALTIME_BASE_URL=https://<replacement-apim>/openai` and the distinct secret `AI4IA_REALTIME_GATEWAY_API_KEY`, scoped only to `/openai/realtime`. Voice Live startup fails when the URL/key are missing, equal to the proxy ingress key, or do not name an HTTPS/WSS `/openai` endpoint.
+
+The active APIM is deterministic Basic v2 (capacity 1). The previous Consumption APIM and all its children remain fully configured but inactive for rollback; this migration does not delete them.

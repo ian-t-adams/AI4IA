@@ -211,4 +211,111 @@ describe("Composer", () => {
       }),
     ).toBeDisabled();
   });
+
+  it("disables dictation while Voice Live is closing (ending), not just while active", () => {
+    recorderState.supported = true;
+    setup({
+      voiceLive: {
+        active: false,
+        supported: true,
+        connecting: false,
+        ending: true,
+        saving: false,
+        saveBlocked: false,
+        retrying: false,
+        start: vi.fn(),
+        stop: vi.fn(),
+      },
+    });
+    expect(
+      screen.getByRole("button", {
+        name: "Voice dictation unavailable while Voice Live is active",
+      }),
+    ).toBeDisabled();
+  });
+
+  it("disables dictation while a Voice Live transcript is saving", () => {
+    recorderState.supported = true;
+    setup({
+      voiceLive: {
+        active: false,
+        supported: true,
+        connecting: false,
+        ending: false,
+        saving: true,
+        saveBlocked: false,
+        retrying: false,
+        start: vi.fn(),
+        stop: vi.fn(),
+      },
+    });
+    expect(
+      screen.getByRole("button", {
+        name: "Voice dictation unavailable while Voice Live is active",
+      }),
+    ).toBeDisabled();
+  });
+
+  it("does not render the voice settings disclosure when no settings prop is supplied", () => {
+    setup({
+      voiceLive: {
+        active: false,
+        supported: true,
+        connecting: false,
+        ending: false,
+        saving: false,
+        saveBlocked: false,
+        retrying: false,
+        start: vi.fn(),
+        stop: vi.fn(),
+      },
+    });
+    expect(screen.queryByText("Voice settings")).toBeNull();
+  });
+
+  it("renders the inline voice settings disclosure (no dialog) and locks it while Voice Live is busy", () => {
+    setup({
+      voiceLive: {
+        active: true,
+        supported: true,
+        connecting: false,
+        ending: false,
+        saving: false,
+        saveBlocked: false,
+        retrying: false,
+        start: vi.fn(),
+        stop: vi.fn(),
+        settings: {
+          agents: [],
+          defaultAgentLabel: "Current chat agent",
+          explicitAgent: null,
+          onAgentChange: vi.fn(),
+          models: [{ id: "gpt-realtime", displayName: "GPT Realtime" }],
+          defaultModelLabel: "Default (GPT Realtime)",
+          explicitModel: null,
+          onModelChange: vi.fn(),
+          voice: "alloy",
+          onVoiceChange: vi.fn(),
+          toolsAvailable: false,
+          tools: false,
+          onToolsChange: vi.fn(),
+          settings: {
+            instructions: "Be brief.",
+            temperature: null,
+            vadType: "server_vad",
+            vadThreshold: null,
+            vadSilenceMs: null,
+            transcriptionModel: "whisper-1",
+            language: "",
+          },
+          onSettingsChange: vi.fn(),
+          onReset: vi.fn(),
+        },
+      },
+    });
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText("Voice settings")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Voice" })).toBeDisabled();
+  });
 });

@@ -16,8 +16,10 @@ import {
   DEFAULT_VOICE_SETTINGS,
   useVoiceLive,
   type LiveTurn,
+  type RealtimeVoice,
   type VoiceLiveConfig,
   type VoiceSeedTurn,
+  type VoiceSessionSettings,
 } from "@/lib/voiceLive";
 
 export type InlineVoicePhase =
@@ -34,6 +36,16 @@ interface InlineVoiceLiveOptions {
   agent: string | null;
   agents: AgentSummary[];
   history: VoiceSeedTurn[];
+  // Voice/session settings + the governed-tools opt-in, threaded straight into
+  // useVoiceLive. Optional so existing callers keep today's behavior (default
+  // voice/settings, tools off) until they opt into the settings panel.
+  voice?: RealtimeVoice;
+  settings?: VoiceSessionSettings;
+  tools?: boolean;
+  // Existing chat at the moment Voice Live starts. Binding this without
+  // calling ensureSession avoids empty-chat creation while ensuring a later
+  // finalized turn cannot drift into a different chat after navigation.
+  activeSessionId?: string | null;
   ensureSession: () => Promise<string>;
   persistConversation: (
     sessionId: string,
@@ -53,6 +65,16 @@ export interface InlineVoiceLiveState {
   agentLabel: string;
   error: string | null;
   persistenceError: string | null;
+  // True while there are finalized-but-unsaved voice turns (or a save is in
+  // flight / failed) that would be lost by navigating away. False for a live
+  // connection that has produced no exchanges yet, so switching sessions is
+  // never blocked merely because the microphone happens to be open.
+  hasUnsavedTurns: boolean;
+  // Alias of hasUnsavedTurns for callers gating session/chat navigation.
+  exitLocked: boolean;
+  // Existing chat captured when this Voice Live cycle started. Null means the
+  // cycle began in an empty chat and may bind lazily when its first turn saves.
+  boundSessionId: string | null;
   start: () => void;
   stop: () => void;
   retryPersistence: () => void;
@@ -76,6 +98,14 @@ export function mergeDisplayMessages(
     if (!left.createdAt || !right.createdAt) return 0;
     return Date.parse(left.createdAt) - Date.parse(right.createdAt);
   });
+}
+
+export function voiceMessagesForSession(
+  messages: DisplayMessage[],
+  boundSessionId: string | null,
+  activeSessionId: string | null,
+): DisplayMessage[] {
+  return boundSessionId === activeSessionId ? messages : [];
 }
 
 function phaseFor(
@@ -117,6 +147,10 @@ export function useInlineVoiceLive({
   agent,
   agents,
   history,
+  voice = DEFAULT_VOICE,
+  settings = DEFAULT_VOICE_SETTINGS,
+  tools = false,
+  activeSessionId = null,
   ensureSession,
   persistConversation,
 }: InlineVoiceLiveOptions): InlineVoiceLiveState {
@@ -125,16 +159,17 @@ export function useInlineVoiceLive({
   const [persisted, setPersisted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [cycleId, setCycleId] = useState("initial");
+  const [boundSessionId, setBoundSessionId] = useState<string | null>(null);
 
   const live = useVoiceLive(
     config,
     model,
-    DEFAULT_VOICE,
+    voice,
     setConnectionError,
     agent,
     history,
-    DEFAULT_VOICE_SETTINGS,
-    false,
+    settings,
+    tools,
   );
   const startLive = live.start;
   const stopLive = live.stop;
@@ -148,6 +183,7 @@ export function useInlineVoiceLive({
   const persistedRef = useRef(false);
   const wasActiveRef = useRef(false);
   const conversationIdRef = useRef("");
+  const bindingCommittedRef = useRef(false);
 
   const persist = useCallback((): Promise<void> => {
     if (persistedRef.current) return Promise.resolve();
@@ -160,9 +196,11 @@ export function useInlineVoiceLive({
     setPersistenceError(null);
     setSaving(true);
     const request = sessionPromise
-      .then((sessionId) =>
-        persistConversation(sessionId, conversationIdRef.current, turns),
-      )
+      .then((sessionId) => {
+        bindingCommittedRef.current = true;
+        setBoundSessionId(sessionId);
+        return persistConversation(sessionId, conversationIdRef.current, turns);
+      })
       .then(() => {
         persistedRef.current = true;
         setPersisted(true);
@@ -200,19 +238,21 @@ export function useInlineVoiceLive({
         : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     conversationIdRef.current = nextConversationId;
     setCycleId(nextConversationId);
+    sessionPromiseRef.current = activeSessionId
+      ? Promise.resolve(activeSessionId)
+      : null;
+    bindingCommittedRef.current = activeSessionId !== null;
+    setBoundSessionId(activeSessionId);
 
     // The controller begins getUserMedia/AudioContext work synchronously here,
-    // directly inside the original button gesture. Session creation can proceed
-    // concurrently and is awaited only when finalized turns need persistence.
+    // directly inside the original button gesture. The relay does not need a
+    // session id to open a live connection, so no session is created here: an
+    // empty chat that never produces a finalized turn (denied mic permission,
+    // a gateway failure, a bare retry) never creates one. Session creation is
+    // deferred entirely to persist(), which lazily calls ensureSession() only
+    // once there is a finalized turn that actually needs saving.
     startLive();
-    const sessionPromise = ensureSession();
-    sessionPromiseRef.current = sessionPromise;
-    void sessionPromise.catch(() => {
-      if (sessionPromiseRef.current === sessionPromise) {
-        sessionPromiseRef.current = null;
-      }
-    });
-  }, [ensureSession, persist, persistenceError, startLive]);
+  }, [activeSessionId, persist, persistenceError, startLive]);
 
   const stop = useCallback(() => {
     void persist();
@@ -228,6 +268,40 @@ export function useInlineVoiceLive({
     }
     wasActiveRef.current = live.active;
   }, [live.active, persist]);
+
+  // A cycle that began in an empty chat may follow navigation only while it is
+  // still truly silent. As soon as the upstream emits its first pending or
+  // finalized turn, commit the current chat binding; that turn is then hidden
+  // from every other chat and persistence cannot drift later.
+  useEffect(() => {
+    if (bindingCommittedRef.current) {
+      // Text remains available during Voice Live. If a text send creates the
+      // session for the same formerly-empty chat, adopt that new id so the live
+      // transcript stays visible. Once a non-null id is bound, navigation locks
+      // prevent it from drifting to another chat while turns are unsaved.
+      if (
+        live.active &&
+        boundSessionId === null &&
+        activeSessionId !== null
+      ) {
+        setBoundSessionId(activeSessionId);
+        sessionPromiseRef.current = Promise.resolve(activeSessionId);
+      }
+      return;
+    }
+    if (live.turns.length === 0) {
+      setBoundSessionId(activeSessionId);
+      sessionPromiseRef.current = activeSessionId
+        ? Promise.resolve(activeSessionId)
+        : null;
+      return;
+    }
+    bindingCommittedRef.current = true;
+    setBoundSessionId(activeSessionId);
+    sessionPromiseRef.current = activeSessionId
+      ? Promise.resolve(activeSessionId)
+      : null;
+  }, [activeSessionId, boundSessionId, live.active, live.turns.length]);
 
   const phase = phaseFor(
     live.status,
@@ -258,6 +332,12 @@ export function useInlineVoiceLive({
       }));
   }, [agent, cycleId, live.turns, persisted]);
 
+  // Whether leaving now would lose data. A live (or connecting) session with
+  // no exchanges yet is NOT unsaved — only finalized turns awaiting/failing
+  // persistence (or an in-flight save) make navigating away destructive.
+  const hasUnsavedTurns =
+    saving || Boolean(persistenceError) || (!persisted && live.turns.length > 0);
+
   return {
     messages,
     enabled: config.enabled && model !== null,
@@ -269,6 +349,9 @@ export function useInlineVoiceLive({
     agentLabel,
     error: connectionError,
     persistenceError,
+    hasUnsavedTurns,
+    exitLocked: hasUnsavedTurns,
+    boundSessionId,
     start,
     stop,
     retryPersistence: () => void persist(),

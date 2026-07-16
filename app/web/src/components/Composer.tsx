@@ -16,6 +16,7 @@ import type { AgentSummary, DocumentSummary } from "@/lib/types";
 import type { LibraryDocument } from "@/lib/library";
 import { SLASH_COMMANDS, type SlashCommand } from "@/lib/commands";
 import { useVoiceRecorder } from "@/lib/voice";
+import { VoiceSettingsPanel, type VoiceSettingsPanelProps } from "./VoiceSettingsPanel";
 
 // Mirrors the backend cap (routers/documents.py MAX_DOCS_PER_SESSION).
 const MAX_DOCS = 8;
@@ -121,6 +122,10 @@ export function Composer({
     retrying: boolean;
     start: () => void;
     stop: () => void;
+    // Present only when the settings disclosure should render (i.e. Voice
+    // Live is enabled). Omitted keeps the composer identical to before the
+    // settings panel existed.
+    settings?: Omit<VoiceSettingsPanelProps, "locked">;
   };
 }) {
   const [text, setText] = useState("");
@@ -174,6 +179,15 @@ export function Composer({
   };
 
   const voice = useVoiceRecorder(appendTranscript, (msg) => onError?.(msg));
+
+  // True whenever Voice Live occupies the microphone in a way that makes
+  // dictation unsafe to start: connecting, live, closing ("ending"), or
+  // saving the just-finished transcript. Broader than voiceLive.active (which
+  // only covers connecting/live) so the mic buttons never race during
+  // teardown/save.
+  const voiceLiveBusy = Boolean(
+    voiceLive && (voiceLive.active || voiceLive.ending || voiceLive.saving),
+  );
 
   const enabledAgents = useMemo(
     () => agents.filter((a) => a.enabled),
@@ -640,13 +654,11 @@ export function Composer({
         <button
           type="button"
           onClick={voice.toggle}
-          disabled={
-            !voice.supported || voice.transcribing || Boolean(voiceLive?.active)
-          }
+          disabled={!voice.supported || voice.transcribing || voiceLiveBusy}
           aria-pressed={voice.recording}
           aria-busy={voice.transcribing}
           aria-label={
-            voiceLive?.active
+            voiceLiveBusy
               ? "Voice dictation unavailable while Voice Live is active"
               : voice.transcribing
               ? "Transcribing audio"
@@ -655,7 +667,7 @@ export function Composer({
                 : "Record a voice message"
           }
           title={
-            voiceLive?.active
+            voiceLiveBusy
               ? "Stop Voice Live before recording a dictated message"
               : !voice.supported
               ? "Voice input isn't supported in this browser"
@@ -676,10 +688,10 @@ export function Composer({
             fontSize: "1.15em",
             lineHeight: 1,
             cursor:
-              !voice.supported || voice.transcribing || voiceLive?.active
+              !voice.supported || voice.transcribing || voiceLiveBusy
                 ? "not-allowed"
                 : "pointer",
-            opacity: voice.supported && !voiceLive?.active ? 1 : 0.45,
+            opacity: voice.supported && !voiceLiveBusy ? 1 : 0.45,
           }}
         >
           {voice.transcribing ? "…" : voice.recording ? "■" : "🎙"}
@@ -815,6 +827,12 @@ export function Composer({
           </button>
         )}
       </div>
+
+      {voiceLive?.settings && (
+        <div style={{ marginTop: 8 }}>
+          <VoiceSettingsPanel {...voiceLive.settings} locked={voiceLiveBusy} />
+        </div>
+      )}
 
       <div
         aria-live="polite"

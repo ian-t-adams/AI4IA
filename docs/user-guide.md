@@ -63,9 +63,19 @@ Sharing is tenant-scoped:
 - The orange live microphone starts and stops Voice Live inside the current chat.
   The normal transcript and composer stay available, and finalized spoken turns
   are saved into that same session.
+- Open **Voice settings** beside the composer to choose the current/default or an
+  enabled agent, a catalog realtime model, a voice, and optional governed tools.
+  **Advanced** includes instructions, temperature, turn detection, transcription,
+  and a language hint. Settings are stored in this browser, stale values fall back
+  safely, and controls lock while connected because changes apply to the next
+  session.
 - You can type while Voice Live is connected. Typed turns are saved immediately
   in the shared transcript; because an open realtime socket cannot be reseeded,
   they become Voice Live context the next time it connects.
+- Starting Voice Live in an empty chat does not create a chat record until a real
+  finalized voice turn needs saving. Denied microphone access or a gateway failure
+  leaves the session list unchanged; use the inline **Retry** action after fixing
+  connectivity.
 
 If Voice Live controls are hidden, the feature is disabled for that environment.
 
@@ -146,5 +156,6 @@ missing; a `—` cell means no data for that metric, not an error.
 | Feature controls are missing | The web feature flag is off or the API feature is disabled. |
 | A library route returns disabled/not found | Document understanding is not enabled or prerequisites failed startup validation. |
 | A document does not appear in chat | It is not `ready`, not accessible to you, or retrieval is capped for the turn. |
-| Voice Live fails to connect | API public URL, Origin allowlist, auth, or realtime deployment routing is misconfigured. |
+| Voice Live reports that the gateway or realtime service is unavailable | The replacement APIM WebSocket API, its scoped key, or the Foundry realtime backend is unavailable. Retry after gateway health is restored. |
+| Voice Live fails before opening the socket | API public URL, Origin allowlist, browser microphone permission, or auth is misconfigured. |
 | Admin resource panel is unavailable | The resource id is empty, the API identity lacks Monitoring Reader, or Azure Monitor data is unavailable. |

@@ -410,3 +410,7 @@ gh variable set AI4IA_BUDGET_START_DATE --body "2026-07-01"
 The value is a global repo variable, so use the first of the month in which the budget is (re)created.
 A brand-new environment created in a later month should use that later month (a monthly budget's start
 date cannot be more than the current period in the past).
+
+## APIM Basic v2 migration guardrail
+
+The active model/realtime plane is `apim-v2-<workload>-<environmentName>` (Basic v2, capacity 1). Provisioning must be reviewed as an incremental cutover: the template retains the Consumption APIM and all children unchanged as an inactive rollback plane. The replacement APIs, policies, scoped keys, Foundry RBAC, and diagnostics are configured before proxy/API caller revisions can update. Review the creator-approved what-if for zero deletes; do not delete the Consumption plane during this operation. Roll back by rewiring callers only after stabilization.

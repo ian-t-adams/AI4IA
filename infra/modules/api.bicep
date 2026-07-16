@@ -103,8 +103,12 @@ param adminApiSecret string = ''
 @description('Enable the Voice Live realtime WebSocket relay. Default OFF (the /api/voice/live route refuses, so the app is inert).')
 param realtimeEnabled bool = false
 
-@description('APIM /openai base URL for the realtime relay. This intentionally differs from modelGatewayUrl, which points at SimpleL7Proxy.')
+@description('WebSocket-capable replacement APIM /openai URL for the realtime relay. This intentionally differs from modelGatewayUrl, which points at SimpleL7Proxy.')
 param realtimeBaseUrl string = ''
+
+@secure()
+@description('Replacement APIM realtime subscription key. Kept separate from the proxy ingress key and model subscription.')
+param realtimeGatewayApiKey string = ''
 
 @description('Azure OpenAI realtime api-version the relay uses for the upstream WebSocket.')
 param realtimeApiVersion string = '2025-04-01-preview'
@@ -331,6 +335,20 @@ var memoryEnv = concat([
 // app's default behavior is unchanged. When enabled, the relay uses the APIM-only
 // realtime base URL (SimpleL7Proxy does not support WebSockets) while reusing the
 // separately scoped server-side credential.
+var hasRealtimeGatewayKey = realtimeEnabled && !empty(realtimeGatewayApiKey)
+var realtimeGatewaySecrets = hasRealtimeGatewayKey ? [
+  {
+    name: 'realtime-gateway-api-key'
+    value: realtimeGatewayApiKey
+  }
+] : []
+var realtimeGatewayKeyEnv = hasRealtimeGatewayKey ? [
+  {
+    name: 'AI4IA_REALTIME_GATEWAY_API_KEY'
+    secretRef: 'realtime-gateway-api-key'
+  }
+] : []
+
 var realtimeEnv = realtimeEnabled ? [
   {
     name: 'AI4IA_REALTIME_ENABLED'
@@ -613,7 +631,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv)
+], gatewayKeyEnv, realtimeGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName
@@ -631,7 +649,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
     managedEnvironmentId: containerEnvId
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: concat(gatewaySecrets, adminSecrets, webIqSecrets, officialMcpSecrets)
+      secrets: concat(gatewaySecrets, realtimeGatewaySecrets, adminSecrets, webIqSecrets, officialMcpSecrets)
       ingress: {
         // External for v1 so the api is directly testable before the web app
         // exists. Flip to internal once web is the only public frontend.

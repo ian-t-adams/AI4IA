@@ -39,6 +39,25 @@ Normal model traffic is DNS/custom domain -> SimpleL7Proxy -> APIM -> Foundry.
 The FastAPI Voice Live relay bypasses SimpleL7Proxy and uses the separately scoped
 APIM realtime API because the proxy does not support WebSockets.
 
+### APIM Basic v2 cutover posture
+
+`gateway.bicep` retains the original Consumption APIM and every one of its child
+resources as an **inactive rollback plane**. It is not deleted or repurposed. The
+active deterministic `apim-v2-<workload>-<environmentName>` service is Basic v2
+(capacity 1, system-assigned identity) and is fully populated with the catalog
+named values, content-addressed HTTP/SSE policy fragments, model API/operations,
+scoped subscriptions, diagnostics, and Foundry RBAC before either Container App
+caller can change. SimpleL7Proxy then uses the replacement model subscription;
+FastAPI uses an opaque proxy-ingress key plus a different realtime-only key.
+
+The replacement `openai-realtime` API is an APIM WebSocket API (`wss` backend),
+not a synthetic GET operation. Its generated onHandshake policy selects only
+catalog endpoints, preserves the request query, strips caller credentials, adds
+correlation/managed identity, and returns status-only rejection for an unknown
+deployment. Basic v2 has a fixed cost while active. Rollback is an operator-led
+caller rewire to the still-present Consumption service; deleting the legacy plane
+is intentionally deferred to a separately approved operation.
+
 Regenerate and validate policy routing after any `models.json` change:
 
 ```powershell
@@ -61,3 +80,9 @@ azd up
 
 Validate in a parallel resource group before replacing a live stack; see
 [`../docs/runbooks/teardown.md`](../docs/runbooks/teardown.md).
+
+## APIM Basic v2 cutover posture
+
+`gateway.bicep` retains the original Consumption APIM and every child resource as an **inactive rollback plane**. It is not deleted or repurposed. The active deterministic `apim-v2-<workload>-<environmentName>` service is Basic v2 (capacity 1, system-assigned identity) and is fully populated with catalog named values, content-addressed HTTP/SSE policy fragments, model API/operations, scoped subscriptions, diagnostics, and Foundry RBAC before either Container App caller changes. SimpleL7Proxy uses the replacement model subscription; FastAPI uses an opaque proxy-ingress key plus a different realtime-only key.
+
+The replacement `openai-realtime` API is an APIM WebSocket API (`wss` backend), not a synthetic GET operation. Its generated onHandshake policy selects only catalog endpoints, preserves query parameters, strips caller credentials, adds correlation/managed identity, and returns status-only rejection for an unknown deployment. Basic v2 has a fixed cost while active. Rollback is an operator-led caller rewire to the still-present Consumption service; deleting the legacy plane is deferred to a separately approved operation.

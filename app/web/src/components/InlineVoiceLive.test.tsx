@@ -17,9 +17,16 @@ import {
   InlineVoiceLiveStatus,
   mergeDisplayMessages,
   useInlineVoiceLive,
+  voiceMessagesForSession,
 } from "./InlineVoiceLive";
 import type { VoiceTurnInput } from "@/lib/types";
-import type { VoiceLiveController } from "@/lib/voiceLive";
+import {
+  DEFAULT_VOICE,
+  DEFAULT_VOICE_SETTINGS,
+  type RealtimeVoice,
+  type VoiceLiveController,
+  type VoiceSessionSettings,
+} from "@/lib/voiceLive";
 
 const mocks = vi.hoisted(() => ({
   start: vi.fn(),
@@ -90,6 +97,10 @@ function Harness({
   persist = vi.fn(async () => {}),
   onSend = vi.fn(),
   ensureSession = async () => "session-1",
+  activeSessionId = null,
+  voice: voiceOverride,
+  settings: settingsOverride,
+  tools: toolsOverride,
 }: {
   persist?: (
     sessionId: string,
@@ -98,6 +109,10 @@ function Harness({
   ) => Promise<void>;
   onSend?: (text: string) => void;
   ensureSession?: () => Promise<string>;
+  activeSessionId?: string | null;
+  voice?: RealtimeVoice;
+  settings?: VoiceSessionSettings;
+  tools?: boolean;
 }) {
   const [persistedMessages, setPersistedMessages] = useState<DisplayMessage[]>([]);
   const persistConversation = useCallback(
@@ -125,6 +140,10 @@ function Harness({
     agent: "analyst",
     agents: AGENTS,
     history: [{ role: "user", text: "Earlier text turn" }],
+    voice: voiceOverride,
+    settings: settingsOverride,
+    tools: toolsOverride,
+    activeSessionId,
     ensureSession,
     persistConversation,
   });
@@ -201,6 +220,17 @@ describe("inline Voice Live chat", () => {
     ]);
   });
 
+  it("shows live turns only in the chat captured when voice started", () => {
+    const turns: DisplayMessage[] = [
+      { id: "voice", role: "user", content: "Bound turn", source: "voice" },
+    ];
+
+    expect(voiceMessagesForSession(turns, "chat-a", "chat-a")).toBe(turns);
+    expect(voiceMessagesForSession(turns, "chat-a", "chat-b")).toEqual([]);
+    expect(voiceMessagesForSession(turns, null, "chat-b")).toEqual([]);
+    expect(voiceMessagesForSession(turns, null, null)).toBe(turns);
+  });
+
   it("starts on the microphone click without opening a dialog or replacing the transcript", async () => {
     render(<Harness />);
 
@@ -219,9 +249,25 @@ describe("inline Voice Live chat", () => {
 
     const args = mocks.useVoiceLive.mock.calls.at(-1);
     expect(args?.[1]).toBe("catalog-realtime-model");
+    expect(args?.[2]).toBe(DEFAULT_VOICE);
     expect(args?.[4]).toBe("analyst");
     expect(args?.[5]).toEqual([{ role: "user", text: "Earlier text turn" }]);
+    expect(args?.[6]).toEqual(DEFAULT_VOICE_SETTINGS);
     expect(args?.[7]).toBe(false);
+  });
+
+  it("threads a custom voice, session settings, and the tools opt-in into useVoiceLive", () => {
+    const customSettings: VoiceSessionSettings = {
+      ...DEFAULT_VOICE_SETTINGS,
+      instructions: "Be terse.",
+      temperature: 0.4,
+    };
+    render(<Harness voice="marin" settings={customSettings} tools={true} />);
+
+    const args = mocks.useVoiceLive.mock.calls.at(-1);
+    expect(args?.[2]).toBe("marin");
+    expect(args?.[6]).toEqual(customSettings);
+    expect(args?.[7]).toBe(true);
   });
 
   it("shows inline connecting, listening, thinking, and speaking phases", () => {
@@ -398,7 +444,7 @@ describe("inline Voice Live chat", () => {
     expect(mocks.start).toHaveBeenCalledTimes(1);
   });
 
-  it("does not strand retry when eager session creation fails before any voice turn", async () => {
+  it("denied microphone permission / a gateway failure with no turns never creates a session", async () => {
     const ensureSession = vi.fn().mockRejectedValue(new Error("store unavailable"));
     render(<Harness ensureSession={ensureSession} />);
 
@@ -406,30 +452,20 @@ describe("inline Voice Live chat", () => {
       name: "Start live voice conversation",
     });
     await userEvent.click(microphone);
-    await waitFor(() => expect(ensureSession).toHaveBeenCalledTimes(1));
+    // No finalized turns exist yet, so ensureSession is never called on start —
+    // it is only ever invoked lazily by persist() once a turn needs saving.
+    expect(ensureSession).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Retry saving" })).toBeNull();
 
+    // A bare retry with still no turns behaves identically: no session created.
     await userEvent.click(microphone);
     expect(mocks.start).toHaveBeenCalledTimes(2);
-    expect(ensureSession).toHaveBeenCalledTimes(2);
+    expect(ensureSession).not.toHaveBeenCalled();
   });
 
-  it("retries session creation after persistence-time creation fails", async () => {
-    const ensureSession = vi
-      .fn<() => Promise<string>>()
-      .mockRejectedValueOnce(new Error("eager create failed"))
-      .mockRejectedValueOnce(new Error("save create failed"))
-      .mockResolvedValue("session-1");
+  it("creates exactly one session on the first finalized turn and does not duplicate on repeated stop clicks", async () => {
+    const ensureSession = vi.fn().mockResolvedValue("session-1");
     const persist = vi.fn(async () => {});
-    const { rerender } = render(
-      <Harness ensureSession={ensureSession} persist={persist} />,
-    );
-
-    await userEvent.click(
-      screen.getByRole("button", { name: "Start live voice conversation" }),
-    );
-    await waitFor(() => expect(ensureSession).toHaveBeenCalledTimes(1));
-
     controller = makeController({
       status: "live",
       active: true,
@@ -444,21 +480,186 @@ describe("inline Voice Live chat", () => {
         },
       ],
     });
-    rerender(<Harness ensureSession={ensureSession} persist={persist} />);
+    render(<Harness ensureSession={ensureSession} persist={persist} />);
+
+    const stopButton = screen.getByRole("button", {
+      name: "Stop live voice conversation",
+    });
+    // Two rapid stop clicks (e.g. an impatient double-click) must not create
+    // two sessions or persist twice — persist()'s in-flight/persisted guards
+    // dedupe them to a single ensureSession + persistConversation call.
+    await userEvent.click(stopButton);
+    await userEvent.click(stopButton);
+
+    await waitFor(() => expect(ensureSession).toHaveBeenCalledTimes(1));
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(mocks.stop).toHaveBeenCalledTimes(2);
+  });
+
+  it("binds finalized turns to the chat that was active when voice started", async () => {
+    const ensureSession = vi.fn(async () => "different-session");
+    const persist = vi.fn(async () => {});
+    controller = makeController();
+    const { rerender } = render(
+      <Harness
+        activeSessionId="original-session"
+        ensureSession={ensureSession}
+        persist={persist}
+      />,
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start live voice conversation" }),
+    );
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "Stay with the original chat",
+          pending: false,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    rerender(
+      <Harness
+        activeSessionId="different-session"
+        ensureSession={ensureSession}
+        persist={persist}
+      />,
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+
+    await waitFor(() =>
+      expect(persist).toHaveBeenCalledWith(
+        "original-session",
+        expect.any(String),
+        [{ role: "user", text: "Stay with the original chat" }],
+      ),
+    );
+    expect(ensureSession).not.toHaveBeenCalled();
+  });
+
+  it("retries session creation after a persistence-time creation failure without duplicating", async () => {
+    const ensureSession = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error("save create failed"))
+      .mockResolvedValue("session-1");
+    const persist = vi.fn(async () => {});
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "Keep this turn",
+          pending: false,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    render(<Harness ensureSession={ensureSession} persist={persist} />);
+
     await userEvent.click(
       screen.getByRole("button", { name: "Stop live voice conversation" }),
     );
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Retry saving" })).toBeEnabled(),
     );
-    expect(
-      screen.getByRole("button", {
-        name: "Retry saving the voice transcript below",
-      }),
-    ).toBeDisabled();
+    expect(ensureSession).toHaveBeenCalledTimes(1);
 
     await userEvent.click(screen.getByRole("button", { name: "Retry saving" }));
     await waitFor(() => expect(persist).toHaveBeenCalledTimes(1));
-    expect(ensureSession).toHaveBeenCalledTimes(3);
+    expect(ensureSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("exposes hasUnsavedTurns/exitLocked only once real data would be lost, not merely while live", () => {
+    function LockHarness() {
+      const voice = useInlineVoiceLive({
+        config: CONFIG,
+        model: "catalog-realtime-model",
+        agent: "analyst",
+        agents: AGENTS,
+        history: [],
+        ensureSession: async () => "session-1",
+        persistConversation: async () => {},
+      });
+      return <span data-testid="locked">{String(voice.exitLocked)}</span>;
+    }
+
+    controller = makeController({ status: "live", active: true, turns: [] });
+    const { rerender, getByTestId } = render(<LockHarness />);
+    // A live connection with zero exchanges never blocks navigation.
+    expect(getByTestId("locked").textContent).toBe("false");
+
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "",
+          pending: true,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    rerender(<LockHarness />);
+    // Speech has started, so even its pending turn is real unsaved data.
+    expect(getByTestId("locked").textContent).toBe("true");
+  });
+
+  it("adopts a session created by a text send in the same empty chat", async () => {
+    function BindingHarness({
+      activeSessionId,
+    }: {
+      activeSessionId: string | null;
+    }) {
+      const voice = useInlineVoiceLive({
+        config: CONFIG,
+        model: "catalog-realtime-model",
+        agent: "analyst",
+        agents: AGENTS,
+        history: [],
+        activeSessionId,
+        ensureSession: async () => "created-session",
+        persistConversation: async () => {},
+      });
+      return <span data-testid="binding">{voice.boundSessionId ?? "empty"}</span>;
+    }
+
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "",
+          pending: true,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    const { rerender, getByTestId } = render(
+      <BindingHarness activeSessionId={null} />,
+    );
+    expect(getByTestId("binding").textContent).toBe("empty");
+
+    rerender(<BindingHarness activeSessionId="created-session" />);
+    await waitFor(() =>
+      expect(getByTestId("binding").textContent).toBe("created-session"),
+    );
   });
 });

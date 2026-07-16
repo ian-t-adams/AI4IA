@@ -842,7 +842,7 @@ async def voice_live(websocket: WebSocket) -> None:
         deployment.deploymentName,
     )
     headers = build_upstream_headers(
-        settings.model_gateway_auth_mode, settings.model_gateway_api_key, correlation_id
+        settings.model_gateway_auth_mode, settings.realtime_gateway_api_key, correlation_id
     )
     connector: RealtimeConnector = state.realtime_connector
     # Agent-aware live voice: when the browser names an agent (?agent=), bind that

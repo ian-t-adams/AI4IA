@@ -60,7 +60,15 @@ allowlist is allowed only in local.
 
 The upstream socket is `FastAPI -> APIM -> Foundry`. It does **not** traverse
 SimpleL7Proxy because that worker does not support WebSockets. The relay's APIM
-subscription is scoped to the realtime API only.
+subscription is scoped to the realtime API only. The active APIM must be the
+WebSocket-capable Basic v2 replacement; Consumption does not support WebSocket
+APIs. Startup fails closed when the replacement `/openai` URL or distinct realtime
+subscription key is absent or malformed.
+
+Basic v2 capacity 1 has an approximately $150/month base cost before calls and is
+a single-region, single-unit production gateway. The prior Consumption service is
+retained unchanged only as an inactive HTTP/SSE rollback plane during stabilization;
+its deletion is a later destructive operation requiring separate approval.
 
 ### Multi-application gateway controls
 

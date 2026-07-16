@@ -687,7 +687,7 @@ def generate_realtime_policy(models: dict[str, Any]) -> str:
                 "StringComparison.OrdinalIgnoreCase))\">\n"
                 "        <set-backend-service base-url=\"{{foundry-"
                 + deployment["region"]
-                + "-endpoint}}/openai/realtime\" />\n"
+                + "-realtime-wss-endpoint}}/openai/realtime\" />\n"
                 "      </when>"
             )
 
@@ -704,7 +704,6 @@ def generate_realtime_policy(models: dict[str, Any]) -> str:
         "      <otherwise>\n"
         "        <return-response>\n"
         "          <set-status code=\"404\" reason=\"Realtime deployment is not in the AI4IA catalog\" />\n"
-        "          <set-body>{\"error\":{\"code\":\"model_not_allowed\",\"message\":\"The requested realtime deployment is not allowed by the gateway catalog.\"}}</set-body>\n"
         "        </return-response>\n"
         "      </otherwise>\n"
         "    </choose>\n"
@@ -720,6 +719,25 @@ def generate_realtime_policy(models: dict[str, Any]) -> str:
         "  <on-error><base /></on-error>\n"
         "</policies>\n"
     )
+
+
+def validate_realtime_policy(policy: str, source: str) -> None:
+    """Reject policies unsupported during an APIM WebSocket onHandshake phase."""
+    root = ElementTree.fromstring(policy)
+    allowed = {
+        "policies", "inbound", "backend", "outbound", "on-error", "base",
+        "choose", "when", "otherwise", "set-backend-service", "return-response",
+        "set-status", "set-header", "value", "authentication-managed-identity",
+    }
+    unsupported = {element.tag for element in root.iter() if element.tag not in allowed}
+    if unsupported:
+        raise ValueError(f"{source}: unsupported WebSocket handshake policy element(s): {sorted(unsupported)}")
+    if root.findall(".//set-body"):
+        raise ValueError(f"{source}: set-body is unsupported for WebSocket onHandshake")
+    for backend in root.findall(".//set-backend-service"):
+        url = backend.attrib.get("base-url", "")
+        if "-realtime-wss-endpoint}}/openai/realtime" not in url:
+            raise ValueError(f"{source}: realtime backend must use the WSS named value and exact /openai/realtime path")
 
 
 def main() -> int:
@@ -753,6 +771,7 @@ def main() -> int:
             validate_policy_fragment(policy, str(path.relative_to(ROOT)))
         for path, policy in policies[len(fragments) :]:
             validate_policy_expressions(policy, str(path.relative_to(ROOT)))
+        validate_realtime_policy(realtime_generated, str(REALTIME_OUTPUT_PATH.relative_to(ROOT)))
         if len(priority_generated.encode("utf-8")) > APIM_API_POLICY_MAX_BYTES:
             raise ValueError(
                 f"{PRIORITY_OUTPUT_PATH.relative_to(ROOT)} exceeds "

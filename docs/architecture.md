@@ -25,7 +25,7 @@ flowchart TB
   OffMCP --> MCPGW[MCP APIM front door<br/>Basic v2 + subscription key]
   MCPGW --> MCPUp[Curated upstream MCP servers]
   API --> Proxy[SimpleL7Proxy<br/>HTTP/SSE queue + requeue]
-  Proxy --> APIM[APIM<br/>catalog routing + MI]
+  Proxy --> APIM[Basic v2 APIM<br/>catalog routing + MI]
   API -. Voice Live WS relay .-> APIM
   APIM --> EUS2[Foundry East US 2]
   APIM --> SWC[Foundry Sweden Central]
@@ -273,3 +273,7 @@ strategy uses:
 - The library UI does not yet expose custom analyzer authoring or first-class
   non-document modality uploads.
 - Memory lacks a global user-facing toggle and recalled-memory indicator.
+
+### APIM replacement cutover
+
+The active APIM is a deterministic Basic v2 service with system-assigned identity. It carries both catalog-routed HTTP/SSE and the WSS realtime onHandshake API. The prior Consumption APIM remains fully configured but receives no active traffic, retaining a separately approved rollback target rather than being deleted during cutover.

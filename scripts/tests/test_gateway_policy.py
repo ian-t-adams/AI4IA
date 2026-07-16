@@ -114,6 +114,12 @@ class GatewayPolicyTests(unittest.TestCase):
         gateway_generator.validate_policy_expressions(
             realtime_output, "infra/policies/realtime-routing.xml"
         )
+        gateway_generator.validate_realtime_policy(
+            realtime_output, "infra/policies/realtime-routing.xml"
+        )
+        legacy_realtime = ROOT / "infra/policies/realtime-routing-legacy.xml"
+        ElementTree.parse(legacy_realtime)
+        self.assertIn("<set-body>", legacy_realtime.read_text(encoding="utf-8"))
 
     def test_catalog_expressions_stay_below_apim_limit(self) -> None:
         output, catalog_fragments = gateway_generator.generate_endpoint_policies()
@@ -310,15 +316,15 @@ class GatewayPolicyTests(unittest.TestCase):
                 )
                 self.assertIn(name, policy)
                 self.assertIn(
-                    f"{{{{foundry-{deployment['region']}-endpoint}}}}/openai/realtime",
+                    f"{{{{foundry-{deployment['region']}-realtime-wss-endpoint}}}}/openai/realtime",
                     policy,
                 )
 
     def test_topology_is_proxy_then_apim_then_foundry(self) -> None:
         gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
         main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
-        self.assertIn("host=${apim.properties.gatewayUrl};mode=apim", gateway)
-        self.assertIn("output modelGatewayUrl string = '${proxyUrl}/openai'", gateway)
+        self.assertIn("host=${apimV2.properties.gatewayUrl};mode=apim", gateway)
+        self.assertIn("output proxyIngressUrl string = '${proxyUrl}/openai'", gateway)
         self.assertIn("serviceUrl: foundryOpenAiUrl", gateway)
         self.assertNotIn("serviceUrl: '${proxyUrl}", gateway)
         self.assertNotIn("foundryBackends[0]", gateway)
@@ -374,6 +380,105 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertNotIn("proxyIdentity.principalId\n]", main.split(
             "var nativeFoundryPrincipalIds =", 1
         )[1].split("]", 1)[0])
+
+    def test_basic_v2_replacement_retains_consumption_rollback_and_rewires_callers(self) -> None:
+        gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
+        main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
+        api = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
+
+        # The declared Consumption service and every legacy child remain the rollback
+        # plane. Active caller expressions refer only to the replacement.
+        self.assertIn("name: take('apim-${workload}-${environmentName}', 50)", gateway)
+        self.assertIn("name: 'Consumption'", gateway)
+        for legacy_child in (
+            "foundryEndpointValues", "modelPolicyFragments", "modelsApi",
+            "modelOperations", "modelsApiPolicy", "proxyModelSubscription",
+            "realtimeApi", "realtimeOperation", "realtimeApiPolicy",
+            "apiRealtimeSubscription", "apimOpenAiUsers", "apimCognitiveUsers",
+        ):
+            self.assertIn(f"resource {legacy_child} ", gateway)
+
+        self.assertIn("name: take('apim-v2-${workload}-${environmentName}', 50)", gateway)
+        self.assertIn("name: 'BasicV2'", gateway)
+        self.assertIn("capacity: 1", gateway)
+        self.assertIn("loadTextContent('../policies/realtime-routing-legacy.xml')", gateway)
+        self.assertIn("resource replacementFoundryEndpointValues", gateway)
+        self.assertIn("resource replacementModelPolicyFragments", gateway)
+        self.assertIn("resource replacementModelsApi", gateway)
+        self.assertIn("resource replacementModelOperations", gateway)
+        self.assertIn("resource replacementModelsApiPolicy", gateway)
+        self.assertIn("resource replacementProxyModelSubscription", gateway)
+        self.assertIn("resource replacementApimDiagnostics", gateway)
+        self.assertIn("resource replacementApimOpenAiUsers", gateway)
+        self.assertIn("resource replacementApimCognitiveUsers", gateway)
+        self.assertIn("value: replacementProxyModelSubscription.listSecrets().primaryKey", gateway)
+        self.assertIn("value: replacementProxyIngressSubscription.listSecrets().primaryKey", gateway)
+        self.assertIn("modelGatewayUrl: gateway.outputs.proxyIngressUrl", main)
+        self.assertIn("modelGatewayApiKey: gateway.outputs.proxyIngressKey", main)
+        self.assertIn("realtimeGatewayApiKey: gateway.outputs.realtimeGatewayKey", main)
+        self.assertIn("#disable-next-line no-unnecessary-dependson\n    gateway", main)
+        self.assertIn("replacementModelsApiPolicy", gateway.split("resource proxyApp", 1)[1])
+
+        # A product with no API association produces the opaque proxy ingress key.
+        self.assertIn("resource replacementProxyIngressProduct", gateway)
+        self.assertIn("scope: '/products/ai4ia-proxy-ingress'", gateway)
+        self.assertNotIn("replacementProxyIngressProductApi", gateway)
+        self.assertIn("AI4IA_REALTIME_GATEWAY_API_KEY", api)
+        self.assertIn("realtime-gateway-api-key", api)
+
+    def test_realtime_replacement_is_a_websocket_api_with_supported_policy(self) -> None:
+        gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
+        policy = (ROOT / "infra/policies/realtime-routing.xml").read_text(encoding="utf-8")
+        self.assertIn("resource replacementRealtimeApi", gateway)
+        replacement = gateway.split("resource replacementRealtimeApi ", 1)[1].split(
+            "resource replacementRealtimeApiPolicy", 1
+        )[0]
+        self.assertIn("apiType: 'websocket'", replacement)
+        self.assertIn("'wss'", replacement)
+        self.assertIn("serviceUrl: primaryFoundryRealtimeWssUrl", replacement)
+        self.assertNotIn("resource replacementRealtimeOperation", gateway)
+        self.assertIn("replacementRealtimeWssEndpointValues", gateway)
+        self.assertIn("replace(endsWith(backend.endpoint, '/')", gateway)
+        self.assertIn("'https://', 'wss://'", gateway)
+        self.assertIn("/openai/realtime", policy)
+        self.assertIn("-realtime-wss-endpoint", policy)
+        self.assertNotIn("<set-body>", policy)
+        self.assertIn("<set-status code=\"404\"", policy)
+        self.assertIn("<set-backend-service", policy)
+        self.assertIn("<authentication-managed-identity", policy)
+        gateway_generator.validate_realtime_policy(policy, "realtime-routing.xml")
+
+    def test_compiled_arm_declares_both_services_and_active_replacement_shape(self) -> None:
+        gateway_path = ROOT / "infra/modules/gateway.bicep"
+        bicep = shutil.which("bicep")
+        if bicep:
+            command = [bicep, "build", str(gateway_path), "--stdout"]
+        else:
+            az = shutil.which("az")
+            if not az:
+                self.skipTest("Bicep CLI and Azure CLI are unavailable")
+            command = [az, "bicep", "build", "--file", str(gateway_path), "--stdout", "--only-show-errors"]
+        completed = subprocess.run(
+            command, check=True, capture_output=True, text=True, encoding="utf-8"
+        )
+        template = json.loads(completed.stdout.lstrip("\ufeff"))
+        resources = template["resources"]
+        self.assertEqual(resources["apim"]["sku"], {"name": "Consumption", "capacity": 0})
+        self.assertEqual(resources["apimV2"]["sku"], {"name": "BasicV2", "capacity": 1})
+        self.assertEqual(resources["apimV2"]["identity"]["type"], "SystemAssigned")
+        realtime = resources["replacementRealtimeApi"]["properties"]
+        self.assertEqual(realtime["apiType"], "websocket")
+        self.assertEqual(realtime["protocols"], ["wss"])
+        self.assertIn("primaryFoundryRealtimeWssUrl", json.dumps(realtime["serviceUrl"]))
+        self.assertIn("wss://", json.dumps(template["variables"]["primaryFoundryRealtimeWssUrl"]))
+        self.assertNotIn("replacementRealtimeOperation", resources)
+        self.assertIn("replacementModelsApiPolicy", resources["replacementProxyModelSubscription"]["dependsOn"])
+        self.assertIn("replacementRealtimeApiPolicy", resources["replacementApiRealtimeSubscription"]["dependsOn"])
+        self.assertIn("replacementApimOpenAiUsers", resources["proxyApp"]["dependsOn"])
+        self.assertIn("replacementApimCognitiveUsers", resources["proxyApp"]["dependsOn"])
+        self.assertIn("replacementApimDiagnostics", resources)
+        resource_types = {resource["type"].lower() for resource in resources.values()}
+        self.assertFalse(any(resource_type.endswith("/delete") for resource_type in resource_types))
 
     def test_compiled_arm_creates_fragments_before_api_policy(self) -> None:
         gateway_path = ROOT / "infra/modules/gateway.bicep"
