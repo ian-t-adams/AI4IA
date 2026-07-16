@@ -75,7 +75,29 @@ def test_speech_voice_live_runtime_contradictions_are_fail_closed():
         _speech_settings(speech_voice_live_gateway_api_key="realtime-key").validate_runtime()
     with pytest.raises(RuntimeError, match="distinct gateway key"):
         _speech_settings(speech_voice_live_gateway_api_key="proxy-ingress-key").validate_runtime()
+
+
+@pytest.mark.parametrize(
+    "foundry_host",
+    (
+        "services.ai.azure.com",
+        "resource.services.ai.azure.com",
+        "cognitiveservices.azure.com",
+        "resource.cognitiveservices.azure.com",
+    ),
+)
+def test_speech_voice_live_rejects_direct_foundry_host_boundaries(
+    foundry_host: str,
+):
     with pytest.raises(RuntimeError, match="APIM-style HTTPS/WSS base URL"):
         _speech_settings(
-            speech_voice_live_base_url="https://services.ai.azure.com/speech/voice-live",
+            speech_voice_live_base_url=f"https://{foundry_host}/speech/voice-live",
         ).validate_runtime()
+
+
+def test_speech_voice_live_does_not_reject_apim_lookalike_hostname():
+    _speech_settings(
+        speech_voice_live_base_url=(
+            "https://services.ai.azure.com.gateway.example/speech/voice-live"
+        ),
+    ).validate_runtime()

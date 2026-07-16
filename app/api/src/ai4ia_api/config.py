@@ -797,13 +797,19 @@ class Settings(BaseSettings):
                     "AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY."
                 )
             speech_url = urlparse(self.speech_voice_live_base_url)
-            host = (speech_url.netloc or "").lower()
+            host = (speech_url.hostname or "").lower()
+            direct_foundry_host = any(
+                host == domain or host.endswith(f".{domain}")
+                for domain in (
+                    "services.ai.azure.com",
+                    "cognitiveservices.azure.com",
+                )
+            )
             if (
                 speech_url.scheme not in {"https", "wss"}
                 or not speech_url.netloc
                 or speech_url.path.rstrip("/") != "/speech/voice-live"
-                or "services.ai.azure.com" in host
-                or "cognitiveservices.azure.com" in host
+                or direct_foundry_host
             ):
                 raise RuntimeError(
                     "Speech Voice Live requires an APIM-style HTTPS/WSS base URL at "
