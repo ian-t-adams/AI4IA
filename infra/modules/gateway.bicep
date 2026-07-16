@@ -547,8 +547,15 @@ resource sharedRealtimeApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
   ]
 }
 
-resource sharedRealtimeApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = {
+// APIM does not allow policies at API scope for WebSocket APIs. It creates the
+// immutable onHandshake operation with the API; attach supported policies there.
+resource sharedRealtimeHandshake 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' existing = {
   parent: sharedRealtimeApi
+  name: 'onHandshake'
+}
+
+resource sharedRealtimeApiPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = {
+  parent: sharedRealtimeHandshake
   name: 'policy'
   properties: {
     format: 'rawxml'
