@@ -35,6 +35,43 @@ docs_generator = load_script("gen_docs_catalog", "scripts/gen-docs-catalog.py")
 
 
 class GatewayPolicyTests(unittest.TestCase):
+    def test_policy_fragments_normalize_crlf_before_hashing_and_storage(
+        self,
+    ) -> None:
+        gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "var normalizedModelPolicyFragmentDefinitions = [for definition in modelPolicyFragmentDefinitions:",
+            gateway,
+        )
+        self.assertIn(
+            r"value: replace(definition.value, '\r\n', '\n')",
+            gateway,
+        )
+        self.assertIn(
+            "reduce(\n  normalizedModelPolicyFragmentDefinitions,",
+            gateway,
+        )
+        self.assertEqual(
+            2,
+            gateway.count(
+                "for definition in normalizedModelPolicyFragmentDefinitions"
+            ),
+        )
+        self.assertNotIn(
+            "reduce(\n  modelPolicyFragmentDefinitions,",
+            gateway,
+        )
+        self.assertNotIn(
+            "for definition in modelPolicyFragmentDefinitions: {\n  parent:",
+            gateway,
+        )
+
+        lf_value = "<fragment>\n  <set-header />\n</fragment>\n"
+        crlf_value = lf_value.replace("\n", "\r\n")
+        self.assertEqual(lf_value, lf_value.replace("\r\n", "\n"))
+        self.assertEqual(lf_value, crlf_value.replace("\r\n", "\n"))
+
     def test_generated_fragment_is_current_and_well_formed(self) -> None:
         expected, expected_catalog_fragments = (
             gateway_generator.generate_endpoint_policies()
@@ -986,6 +1023,51 @@ class GatewayPolicyTests(unittest.TestCase):
         )
         fragment_resource = resources["modelPolicyFragments"]
         self.assertIn("uniqueString", fragment_resource["name"])
+        normalized_copy = next(
+            variable
+            for variable in template["variables"]["copy"]
+            if variable["name"] == "normalizedModelPolicyFragmentDefinitions"
+        )
+        self.assertEqual(
+            "[length(variables('modelPolicyFragmentDefinitions'))]",
+            normalized_copy["count"],
+        )
+        self.assertEqual(
+            "[replace(variables('modelPolicyFragmentDefinitions')[copyIndex('normalizedModelPolicyFragmentDefinitions')].value, '\r\n', '\n')]",
+            normalized_copy["input"]["value"],
+        )
+        for resource_name in (
+            "modelPolicyFragments",
+            "sharedModelPolicyFragments",
+        ):
+            compiled_fragment = resources[resource_name]
+            self.assertIn(
+                "normalizedModelPolicyFragmentDefinitions",
+                compiled_fragment["name"],
+            )
+            self.assertEqual(
+                "[variables('normalizedModelPolicyFragmentDefinitions')[copyIndex()].value]",
+                compiled_fragment["properties"]["value"],
+            )
+        self.assertIn(
+            "reduce(variables('normalizedModelPolicyFragmentDefinitions')",
+            template["variables"]["modelApiPolicyValue"],
+        )
+        compiled_fragment_contract = json.dumps(
+            {
+                "policy": template["variables"]["modelApiPolicyValue"],
+                "legacy": resources["modelPolicyFragments"],
+                "shared": resources["sharedModelPolicyFragments"],
+            }
+        )
+        self.assertNotIn(
+            "uniqueString(variables('modelPolicyFragmentDefinitions')",
+            compiled_fragment_contract,
+        )
+        self.assertNotIn(
+            "variables('modelPolicyFragmentDefinitions')[copyIndex()].value",
+            compiled_fragment_contract,
+        )
         self.assertIn(
             "modelApiPolicyValue",
             resources["modelsApiPolicy"]["properties"]["value"],

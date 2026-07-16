@@ -245,12 +245,20 @@ var modelPolicyFragmentDefinitions = concat(
   priorityPolicyFragmentDefinitions
 )
 
+// Normalize checkout-specific CRLF before content-addressing and deployment.
+// LF inputs are unchanged, so existing Linux/GitHub fragment names stay stable.
+var normalizedModelPolicyFragmentDefinitions = [for definition in modelPolicyFragmentDefinitions: {
+  baseName: definition.baseName
+  description: definition.description
+  value: replace(definition.value, '\r\n', '\n')
+}]
+
 // Content-addressed names prevent mixed generations during incremental deploys.
 // Superseded generations are retained for rollback and cleaned up only through
 // the explicit post-stabilization procedure in docs/runbooks/deployment.md.
 var modelApiPolicyTemplate = loadTextContent('../policies/simplel7proxy-priority-policy.xml')
 var modelApiPolicyValue = reduce(
-  modelPolicyFragmentDefinitions,
+  normalizedModelPolicyFragmentDefinitions,
   modelApiPolicyTemplate,
   (policy, definition) => replace(
     policy,
@@ -259,7 +267,7 @@ var modelApiPolicyValue = reduce(
   )
 )
 
-resource modelPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in modelPolicyFragmentDefinitions: {
+resource modelPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in normalizedModelPolicyFragmentDefinitions: {
   parent: legacyConsumptionApim
   name: '${definition.baseName}-${uniqueString(definition.value)}'
   properties: {
@@ -446,7 +454,7 @@ resource sharedRealtimeWssEndpointValues 'Microsoft.ApiManagement/service/namedV
   }
 }]
 
-resource sharedModelPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in modelPolicyFragmentDefinitions: {
+resource sharedModelPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in normalizedModelPolicyFragmentDefinitions: {
   parent: sharedApim
   name: '${definition.baseName}-${uniqueString(definition.value)}'
   properties: {
