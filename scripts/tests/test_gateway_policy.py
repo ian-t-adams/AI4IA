@@ -475,6 +475,12 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("'wss'", replacement)
         self.assertIn("serviceUrl: primaryFoundryRealtimeWssUrl", replacement)
         self.assertNotIn("resource sharedRealtimeOperation", gateway)
+        self.assertIn("resource sharedRealtimeHandshake", gateway)
+        self.assertIn("name: 'onHandshake'", gateway)
+        self.assertIn(
+            "Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01",
+            gateway,
+        )
         self.assertIn("sharedRealtimeWssEndpointValues", gateway)
         self.assertIn("replace(endsWith(backend.endpoint, '/')", gateway)
         self.assertIn("'https://', 'wss://'", gateway)
@@ -553,6 +559,15 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertEqual(["wss"], realtime["protocols"])
         self.assertIn("primaryFoundryRealtimeWssUrl", json.dumps(realtime["serviceUrl"]))
         self.assertNotIn("sharedRealtimeOperation", gateway_resources)
+        self.assertTrue(gateway_resources["sharedRealtimeHandshake"].get("existing"))
+        self.assertEqual(
+            "Microsoft.ApiManagement/service/apis/operations/policies",
+            gateway_resources["sharedRealtimeApiPolicy"]["type"],
+        )
+        self.assertIn(
+            "onHandshake",
+            json.dumps(gateway_resources["sharedRealtimeApiPolicy"]["name"]),
+        )
         self.assertIn("sharedModelsApiPolicy", gateway_resources["sharedProxyModelSubscription"]["dependsOn"])
         self.assertIn("sharedRealtimeApiPolicy", gateway_resources["sharedApiRealtimeSubscription"]["dependsOn"])
         self.assertIn("sharedApimOpenAiUsers", gateway_resources["proxyApp"]["dependsOn"])
