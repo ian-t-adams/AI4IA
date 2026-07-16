@@ -229,9 +229,22 @@ For an API-policy-only emergency rollback, apply
 authorized operator change. Bicep never deploys this preserved live policy.
 Rolling back Speech Voice Live specifically does not need a policy revert at all:
 setting `speechVoiceLiveEnabled=false` (or dropping `speech_voice_live` from
-`voiceProviderAllowlist`) is immediate and non-destructive, and leaves its APIM
-API/policy/subscription dormant for diagnosis rather than deleting them — see
+`voiceProviderAllowlist`) is immediate and non-destructive. The flag prevents app
+wiring and fresh conditional Speech APIM/RBAC creation, but ARM Incremental mode
+does not remove a Speech API, operation policy, subscription, named values, or
+deterministic Speech-specific Foundry User assignment created by an earlier
+deployment. The retained API is still subscription-key protected and the running
+API has no Speech key, so it is unreachable through the app, but the retained
+objects remain dormant privilege and inventory. No automatic teardown occurs; see
 [`feature-enablement.md`](./feature-enablement.md#speech-voice-live-second-voice-provider).
+
+Full deactivation requires a separately approved targeted teardown. Refresh live
+inventory, suspend or revoke `ai4ia-api-speech-voice-live` first, and then target
+only the Speech API and operation policy, its two named values, and the
+deterministic Speech-specific Foundry User role assignment. Review a targeted
+what-if that contains no unplanned deletes and obtain explicit approval before
+applying it. Never use complete deployment mode on the shared resource group or
+shared APIM.
 
 Generated model-policy fragments use content-addressed names. Incremental
 deployment intentionally retains superseded generations for rollback. After a

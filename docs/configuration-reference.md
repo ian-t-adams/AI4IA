@@ -109,7 +109,10 @@ server-authoritative default). It routes
 
 - `AI4IA_SPEECH_VOICE_LIVE_ENABLED` (`speechVoiceLiveEnabled` in Bicep, default
   `false`) is the master gate. It requires `AI4IA_REALTIME_ENABLED=true` and
-  `speech_voice_live` present in `AI4IA_VOICE_PROVIDER_ALLOWLIST`.
+  `speech_voice_live` present in `AI4IA_VOICE_PROVIDER_ALLOWLIST`. When `false`,
+  the deployment emits no Speech URL/key into the API or web app and fresh
+  deployments do not create the conditional Speech APIM children or
+  Speech-specific Foundry User role assignment.
 - `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` must be an HTTPS/WSS APIM URL ending in
   `/speech/voice-live` (never a `services.ai.azure.com` or
   `cognitiveservices.azure.com` host), and `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`
@@ -140,6 +143,12 @@ server-authoritative default). It routes
   only to the `/speech/voice-live/realtime` WebSocket API; it cannot invoke
   `/openai/realtime`, the normal model API, the MCP plane, or the proxy ingress
   product, and none of those keys can invoke it.
+- ARM Incremental mode does not remove Speech resources created by an earlier
+  deployment when the flag is later set to `false`. A retained Speech API remains
+  subscription-key protected, and no Speech subscription key is wired into the
+  running API, but its APIM inventory and account-scoped role assignment remain
+  dormant privilege until a separately approved targeted teardown removes them.
+  No automatic teardown occurs.
 - Usage records add a `provider` field (default `azure_openai`, back-compatible
   with existing records) and a nullable `deployment`; Speech Voice Live turns are
   metered against a truthful `managed_voice_live` target rather than inventing a
