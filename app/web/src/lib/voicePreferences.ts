@@ -19,7 +19,7 @@ import {
   type VoiceSessionSettings,
 } from "./voiceLive";
 
-export const VOICE_PREFERENCES_STORAGE_KEY = "ai4ia.voiceLive.prefs.v1";
+export const VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v1";
 
 export interface VoicePreferences {
   // The user's explicit agent pick, or null to always follow the active chat
@@ -192,7 +192,7 @@ export function loadVoicePreferences(
 ): VoicePreferences {
   if (!storage) return { ...DEFAULT_VOICE_PREFERENCES };
   try {
-    const raw = storage.getItem(VOICE_PREFERENCES_STORAGE_KEY);
+    const raw = storage.getItem(VOICE_PREFERENCES_STORAGE_NAME);
     if (!raw) return { ...DEFAULT_VOICE_PREFERENCES };
     return normalizeVoicePreferences(JSON.parse(raw));
   } catch {
@@ -209,7 +209,7 @@ export function saveVoicePreferences(
 ): void {
   if (!storage) return;
   try {
-    storage.setItem(VOICE_PREFERENCES_STORAGE_KEY, JSON.stringify(prefs));
+    storage.setItem(VOICE_PREFERENCES_STORAGE_NAME, JSON.stringify(prefs));
   } catch {
     /* best-effort persistence only */
   }

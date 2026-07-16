@@ -7,7 +7,7 @@ import {
   resolveEffectiveAgent,
   resolveEffectiveModel,
   saveVoicePreferences,
-  VOICE_PREFERENCES_STORAGE_KEY,
+  VOICE_PREFERENCES_STORAGE_NAME,
   type PreferencesStorage,
   type VoicePreferences,
 } from "./voicePreferences";
@@ -165,7 +165,7 @@ describe("loadVoicePreferences / saveVoicePreferences", () => {
   });
 
   it("returns defaults for malformed JSON instead of throwing", () => {
-    const storage = fakeStorage({ [VOICE_PREFERENCES_STORAGE_KEY]: "{not json" });
+    const storage = fakeStorage({ [VOICE_PREFERENCES_STORAGE_NAME]: "{not json" });
     expect(() => loadVoicePreferences(storage)).not.toThrow();
     expect(loadVoicePreferences(storage)).toEqual(DEFAULT_VOICE_PREFERENCES);
   });
@@ -184,7 +184,7 @@ describe("loadVoicePreferences / saveVoicePreferences", () => {
 
   it("normalizes a stale/invalid stored value on load", () => {
     const storage = fakeStorage({
-      [VOICE_PREFERENCES_STORAGE_KEY]: JSON.stringify({
+      [VOICE_PREFERENCES_STORAGE_NAME]: JSON.stringify({
         explicitAgent: 123,
         voice: "not-a-voice",
         tools: "true",
