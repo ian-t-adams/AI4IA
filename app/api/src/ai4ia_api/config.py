@@ -265,8 +265,8 @@ class Settings(BaseSettings):
 
     # --- Official MCP plane (curated servers behind the shared active APIM) ---
     # Distinct from BYO custom tools above. These are admin-curated MCP servers
-    # reached **through the shared active APIM front door** (provisioned by
-    # ``infra/modules/mcpgateway.bicep``) and gated on an APIM subscription key,
+    # reached **through the shared active APIM front door** (service owned by
+    # ``apimcore.bicep``; MCP children by ``mcpgateway.bicep``) and gated on an APIM subscription key,
     # so MCP egress is governed by APIM auth rather than called directly. The
     # catalog is packaged (``official_mcp_catalog.json``, projected from
     # ``infra/mcp-servers.json``). This repo's packaged catalog contains the
