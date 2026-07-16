@@ -69,6 +69,25 @@ export interface VoiceLiveProviderCatalogResponse {
   providers: VoiceProvider[];
 }
 
+export interface AuthorizedVoiceProviders {
+  defaultProviderId: VoiceProviderId | null;
+  providers: VoiceProvider[];
+}
+
+export function resolveAuthorizedVoiceProviders(
+  config: VoiceLiveProviderCatalogResponse | null,
+): AuthorizedVoiceProviders {
+  if (!config) return { defaultProviderId: null, providers: [] };
+  const enabled = new Set(config.enabledProviderIds);
+  const providers = config.providers.filter((provider) => enabled.has(provider.id));
+  const defaultProviderId = providers.some(
+    (provider) => provider.id === config.defaultProviderId,
+  )
+    ? config.defaultProviderId
+    : null;
+  return { defaultProviderId, providers };
+}
+
 export interface VoiceLiveConfig {
   enabled: boolean;
   // wss:// URL of the relay endpoint (API external ingress + /api/voice/live).
@@ -110,7 +129,7 @@ export function isRealtimeVoice(value: string): value is RealtimeVoice {
 
 export const DEFAULT_SPEECH_VOICE = "en-US-Ava:DragonHDLatestNeural";
 export const DEFAULT_SPEECH_LOCALE = "en-US";
-export const DEFAULT_SPEECH_TRANSCRIPTION = "azure-speech";
+export const DEFAULT_SPEECH_TRANSCRIPTION = "gpt-4o-transcribe";
 export const DEFAULT_SPEECH_TURN_DETECTION = "azure_semantic_vad";
 export const DEFAULT_SPEECH_NOISE_SUPPRESSION = "azure_deep_noise_suppression";
 export const DEFAULT_SPEECH_ECHO_CANCELLATION = "server_echo_cancellation";

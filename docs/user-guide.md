@@ -72,10 +72,11 @@ Sharing is tenant-scoped:
 - Two providers are available when an operator enables both: **Azure OpenAI**
   (the default, with a catalog realtime model and its usual voice/turn-detection
   options) and **Azure Speech** (a second, opt-in provider fixed to one managed
-  model and a curated set of built-in voices, locale, transcription, noise
-  suppression, echo cancellation, and turn-detection choices — there is no custom
-  voice, custom endpoint, or free-text voice name option). If only Azure OpenAI is
-  configured, the provider control is not shown.
+  model and a curated set of built-in voices, locale, Speech noise suppression,
+  echo cancellation, and turn-detection choices, with stable
+  **GPT-4o Transcribe** input transcription - there is no custom voice, custom
+  endpoint, or free-text voice name option). If only Azure OpenAI is configured,
+  the provider control is not shown.
 - Changing the provider (or any other voice setting) applies starting with the
   **next** connection, not the current one; it never triggers a silent reconnect
   mid-session. The chat transcript and session are shared across both providers,

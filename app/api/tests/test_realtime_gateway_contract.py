@@ -95,9 +95,17 @@ def test_speech_voice_live_rejects_direct_foundry_host_boundaries(
         ).validate_runtime()
 
 
-def test_speech_voice_live_does_not_reject_apim_lookalike_hostname():
+@pytest.mark.parametrize(
+    "gateway_host",
+    (
+        "services.ai.azure.com.attacker.test",
+        "attacker-services.ai.azure.com",
+        "gateway.example-services.ai.azure.com.attacker.test",
+    ),
+)
+def test_speech_voice_live_does_not_misclassify_apim_lookalike_hostname(
+    gateway_host: str,
+):
     _speech_settings(
-        speech_voice_live_base_url=(
-            "https://services.ai.azure.com.gateway.example/speech/voice-live"
-        ),
+        speech_voice_live_base_url=f"https://{gateway_host}/speech/voice-live",
     ).validate_runtime()

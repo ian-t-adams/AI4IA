@@ -25,10 +25,10 @@ import { StudioPanel } from "./StudioPanel";
 import { ImageStudioPanel } from "./ImageStudioPanel";
 import {
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
-  DEFAULT_VOICE_PROVIDER,
   isRealtimeVoice,
   isSpeechVoiceProvider,
   realtimeModels,
+  resolveAuthorizedVoiceProviders,
   type SpeechVoiceLiveSettings,
   type VoiceLiveProviderCatalogResponse,
   type VoiceProvider,
@@ -46,7 +46,6 @@ import {
   saveVoicePreferences,
   type VoicePreferences,
 } from "@/lib/voicePreferences";
-import { voiceProviderCatalog } from "@/lib/data/voice_provider_catalog";
 import { LibraryPanel } from "./LibraryPanel";
 import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage } from "./MessageList";
@@ -94,12 +93,6 @@ function reconcileMessages(
   );
 }
 
-function fallbackVoiceProviders(): VoiceProvider[] {
-  return voiceProviderCatalog.providers.filter(
-    (provider) => provider.id === DEFAULT_VOICE_PROVIDER,
-  );
-}
-
 function getProviderDefaultVoice(provider: VoiceProvider): string {
   const voices = provider.capabilities.voices.options as readonly string[];
   return provider.capabilities.voices.default ?? voices[0] ?? "";
@@ -128,7 +121,9 @@ function sanitizeSpeechPreferences(
     voice:
       voices.includes(normalized.voice) && speechProvider
         ? normalized.voice
-        : getProviderDefaultVoice(provider ?? voiceProviderCatalog.providers[0]),
+        : speechProvider
+          ? getProviderDefaultVoice(speechProvider)
+          : normalized.voice,
     locale:
       locales.includes(normalized.locale) && speechProvider
         ? normalized.locale
@@ -308,21 +303,18 @@ export function ChatApp() {
   }, []);
 
   useEffect(() => {
-    if (!voiceLiveConfig.enabled) {
-    setVoiceProviderConfig(null);
-    return;
-    }
+    if (!voiceLiveConfig.enabled) return;
     let cancelled = false;
     void api
-    .getVoiceLiveConfig()
-    .then((config) => {
-      if (!cancelled) setVoiceProviderConfig(config);
-    })
-    .catch(() => {
-      if (!cancelled) setVoiceProviderConfig(null);
-    });
+      .getVoiceLiveConfig()
+      .then((config) => {
+        if (!cancelled) setVoiceProviderConfig(config);
+      })
+      .catch(() => {
+        if (!cancelled) setVoiceProviderConfig(null);
+      });
     return () => {
-    cancelled = true;
+      cancelled = true;
     };
   }, [voiceLiveConfig.enabled]);
 
@@ -554,36 +546,44 @@ export function ChatApp() {
   }, []);
 
   const realtimeModelList = useMemo(() => realtimeModels(models), [models]);
-  const voiceProviders = useMemo(() => {
-    if (voiceProviderConfig) {
-      const enabled = new Set(voiceProviderConfig.enabledProviderIds);
-      return voiceProviderConfig.providers.filter((provider) => enabled.has(provider.id));
-    }
-    return voiceLiveConfig.enabled ? fallbackVoiceProviders() : [];
-  }, [voiceLiveConfig.enabled, voiceProviderConfig]);
-  const voiceLiveEnabled =
+  const authorizedVoiceProviders = useMemo(
+    () => resolveAuthorizedVoiceProviders(voiceProviderConfig),
+    [voiceProviderConfig],
+  );
+  const voiceProviders = authorizedVoiceProviders.providers;
+  const voiceLiveEnabled = Boolean(
     voiceLiveConfig.enabled &&
-    voiceProviders.some(
-      (provider) =>
-        provider.selectionMode === "fixed_managed_model" || realtimeModelList.length > 0,
-    );
+      authorizedVoiceProviders.defaultProviderId &&
+      voiceProviders.some(
+        (provider) =>
+          provider.selectionMode === "fixed_managed_model" ||
+          realtimeModelList.length > 0,
+      ),
+  );
   const voicePrefsResolved = useMemo(
-    () =>
-      sanitizeVoicePreferencesForProviders(
+    () => {
+      if (!authorizedVoiceProviders.defaultProviderId) {
+        return {
+          ...normalizeVoicePreferences(voicePrefs),
+          tools: false,
+        };
+      }
+      return sanitizeVoicePreferencesForProviders(
         voicePrefs,
         voiceProviders,
         new Set(realtimeModelList.map((model) => model.id)),
         realtimeModelList[0]?.id ?? null,
         voiceLiveConfig.toolsAvailable,
-        voiceProviderConfig?.defaultProviderId ?? DEFAULT_VOICE_PROVIDER,
+        authorizedVoiceProviders.defaultProviderId,
         hasSavedVoicePrefs,
-      ),
+      );
+    },
     [
+      authorizedVoiceProviders.defaultProviderId,
       hasSavedVoicePrefs,
       realtimeModelList,
       voiceLiveConfig.toolsAvailable,
       voicePrefs,
-      voiceProviderConfig?.defaultProviderId,
       voiceProviders,
     ],
   );
@@ -624,19 +624,21 @@ export function ChatApp() {
     realtimeModelList,
     effectiveVoiceModel,
   );
-  const voiceToolsAvailable = voiceLiveConfig.toolsAvailable;
+  const voiceToolsAvailable = voiceLiveEnabled && voiceLiveConfig.toolsAvailable;
   const activeVoiceProvider =
     voiceProviders.find((provider) => provider.id === voicePrefsResolved.provider) ??
-    voiceProviders[0] ??
-    fallbackVoiceProviders()[0] ??
-    voiceProviderCatalog.providers[0];
+    voiceProviders[0];
   const activeVoiceVoice =
     voicePrefsResolved.provider === "speech_voice_live"
       ? voicePrefsResolved.speech.voice
       : voicePrefsResolved.voice;
 
+  const authorizedVoiceLiveConfig = useMemo(
+    () => ({ ...voiceLiveConfig, enabled: voiceLiveEnabled }),
+    [voiceLiveConfig, voiceLiveEnabled],
+  );
   const inlineVoice = useInlineVoiceLive({
-    config: voiceLiveConfig,
+    config: authorizedVoiceLiveConfig,
     providerId: voicePrefsResolved.provider,
     model: effectiveVoiceModel,
     region: effectiveVoiceRegion,
@@ -676,69 +678,75 @@ export function ChatApp() {
   // persisted picks stay in one place; Composer only adds the transient
   // `locked` flag (derived from the live connection's own status).
   const voiceSettingsProps = useMemo(
-    () => ({
-      agents,
-      providers: voiceProviders.map((provider) => ({
-        id: provider.id,
-        displayLabel: provider.displayLabel,
-        description: provider.description,
-      })),
-      provider: voicePrefsResolved.provider,
-      onProviderChange: (nextProvider: VoicePreferences["provider"]) =>
-        updateVoicePrefs({ ...voicePrefsResolved, provider: nextProvider }),
-      activeProvider: activeVoiceProvider,
-      defaultAgentLabel: currentVoiceAgent
-        ? `Current chat agent (${
-            agents.find((a) => a.name === currentVoiceAgent)?.displayName ??
-            currentVoiceAgent
-          })`
-        : "Current chat agent (generic assistant)",
-      explicitAgent: voicePrefsResolved.explicitAgent,
-      onAgentChange: (nextAgent: string | null) =>
-        updateVoicePrefs({ ...voicePrefsResolved, explicitAgent: nextAgent }),
-      models: realtimeModelList.map((m) => ({ id: m.id, displayName: m.displayName })),
-      defaultModelLabel: realtimeModelList[0]
-        ? `Default (${realtimeModelList[0].displayName})`
-        : "Default",
-      explicitModel: voicePrefsResolved.model,
-      onModelChange: (nextModel: string | null) =>
-        updateVoicePrefs({ ...voicePrefsResolved, model: nextModel }),
-      voice: activeVoiceVoice,
-      onVoiceChange: (nextVoice: string) =>
-        voicePrefsResolved.provider === "speech_voice_live"
-          ? updateVoicePrefs({
-              ...voicePrefsResolved,
-              speech: { ...voicePrefsResolved.speech, voice: nextVoice },
-            })
-          : updateVoicePrefs({
-              ...voicePrefsResolved,
-              voice: nextVoice as VoicePreferences["voice"],
-            }),
-      toolsAvailable: voiceToolsAvailable,
-      tools: voicePrefsResolved.tools,
-      onToolsChange: (nextTools: boolean) =>
-        updateVoicePrefs({ ...voicePrefsResolved, tools: nextTools }),
-      settings: voicePrefsResolved.settings,
-      onSettingsChange: (nextSettings: VoicePreferences["settings"]) =>
-        updateVoicePrefs({ ...voicePrefsResolved, settings: nextSettings }),
-      speechSettings: voicePrefsResolved.speech,
-      onSpeechSettingsChange: (nextSpeech: VoicePreferences["speech"]) =>
-        updateVoicePrefs({ ...voicePrefsResolved, speech: nextSpeech }),
-      onReset: () =>
-        updateVoicePrefs(
-          voicePrefsResolved.provider === "speech_voice_live"
-            ? {
-                ...voicePrefsResolved,
-                speech: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
-              }
-            : {
-                ...voicePrefsResolved,
-                voice: DEFAULT_VOICE_PREFERENCES.voice,
-                model: null,
-                settings: DEFAULT_VOICE_PREFERENCES.settings,
-              },
-        ),
-    }),
+    () =>
+      activeVoiceProvider
+        ? {
+            agents,
+            providers: voiceProviders.map((provider) => ({
+              id: provider.id,
+              displayLabel: provider.displayLabel,
+              description: provider.description,
+            })),
+            provider: voicePrefsResolved.provider,
+            onProviderChange: (nextProvider: VoicePreferences["provider"]) =>
+              updateVoicePrefs({ ...voicePrefsResolved, provider: nextProvider }),
+            activeProvider: activeVoiceProvider,
+            defaultAgentLabel: currentVoiceAgent
+              ? `Current chat agent (${
+                  agents.find((a) => a.name === currentVoiceAgent)?.displayName ??
+                  currentVoiceAgent
+                })`
+              : "Current chat agent (generic assistant)",
+            explicitAgent: voicePrefsResolved.explicitAgent,
+            onAgentChange: (nextAgent: string | null) =>
+              updateVoicePrefs({ ...voicePrefsResolved, explicitAgent: nextAgent }),
+            models: realtimeModelList.map((m) => ({
+              id: m.id,
+              displayName: m.displayName,
+            })),
+            defaultModelLabel: realtimeModelList[0]
+              ? `Default (${realtimeModelList[0].displayName})`
+              : "Default",
+            explicitModel: voicePrefsResolved.model,
+            onModelChange: (nextModel: string | null) =>
+              updateVoicePrefs({ ...voicePrefsResolved, model: nextModel }),
+            voice: activeVoiceVoice,
+            onVoiceChange: (nextVoice: string) =>
+              voicePrefsResolved.provider === "speech_voice_live"
+                ? updateVoicePrefs({
+                    ...voicePrefsResolved,
+                    speech: { ...voicePrefsResolved.speech, voice: nextVoice },
+                  })
+                : updateVoicePrefs({
+                    ...voicePrefsResolved,
+                    voice: nextVoice as VoicePreferences["voice"],
+                  }),
+            toolsAvailable: voiceToolsAvailable,
+            tools: voicePrefsResolved.tools,
+            onToolsChange: (nextTools: boolean) =>
+              updateVoicePrefs({ ...voicePrefsResolved, tools: nextTools }),
+            settings: voicePrefsResolved.settings,
+            onSettingsChange: (nextSettings: VoicePreferences["settings"]) =>
+              updateVoicePrefs({ ...voicePrefsResolved, settings: nextSettings }),
+            speechSettings: voicePrefsResolved.speech,
+            onSpeechSettingsChange: (nextSpeech: VoicePreferences["speech"]) =>
+              updateVoicePrefs({ ...voicePrefsResolved, speech: nextSpeech }),
+            onReset: () =>
+              updateVoicePrefs(
+                voicePrefsResolved.provider === "speech_voice_live"
+                  ? {
+                      ...voicePrefsResolved,
+                      speech: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+                    }
+                  : {
+                      ...voicePrefsResolved,
+                      voice: DEFAULT_VOICE_PREFERENCES.voice,
+                      model: null,
+                      settings: DEFAULT_VOICE_PREFERENCES.settings,
+                    },
+              ),
+          }
+        : undefined,
     [
       agents,
       currentVoiceAgent,
@@ -1168,7 +1176,7 @@ export function ChatApp() {
           onRemoveLibraryDocument={removeLibraryDocument}
           onError={setError}
           voiceLive={
-            voiceLiveEnabled
+            voiceLiveEnabled && voiceSettingsProps
               ? {
                   active: inlineVoice.active,
                   supported: inlineVoice.supported,

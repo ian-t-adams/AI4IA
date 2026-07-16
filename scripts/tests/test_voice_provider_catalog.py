@@ -79,12 +79,38 @@ class VoiceProviderCatalogTests(unittest.TestCase):
             speech["capabilities"]["echoCancellation"]["options"],
             ["server_echo_cancellation"],
         )
+        self.assertEqual(
+            speech["capabilities"]["inputTranscription"],
+            {
+                "provider": "openai",
+                "default": "gpt-4o-transcribe",
+                "options": ["gpt-4o-transcribe"],
+            },
+        )
         self.assertEqual(speech["capabilities"]["locale"]["options"], ["en-US"])
         self.assertFalse(speech["capabilities"]["customVoice"]["allowPersonalVoice"])
 
     def test_generator_rejects_custom_voice_and_endpoint_leaks(self) -> None:
         mutated = copy.deepcopy(self.raw)
         mutated["providers"][1]["capabilities"]["customVoice"]["enabled"] = True
+        with self.assertRaises(SystemExit):
+            self.gen.build_catalog(mutated)
+
+    def test_generator_rejects_unsupported_managed_model_transcription_pair(self) -> None:
+        mutated = copy.deepcopy(self.raw)
+        speech = mutated["providers"][1]
+        speech["sessionDefaults"]["inputTranscription"] = "azure-speech"
+        speech["capabilities"]["inputTranscription"] = {
+            "provider": "azure-speech",
+            "default": "azure-speech",
+            "options": ["azure-speech"],
+        }
+        with self.assertRaises(SystemExit):
+            self.gen.build_catalog(mutated)
+
+        mutated = copy.deepcopy(self.raw)
+        speech = mutated["providers"][1]
+        speech["managedModel"]["apiVersion"] = "2025-10-01"
         with self.assertRaises(SystemExit):
             self.gen.build_catalog(mutated)
 

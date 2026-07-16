@@ -766,10 +766,16 @@ def validate_speech_voice_live_policy(policy: str, source: str) -> None:
         raise ValueError(f"{source}: validate-parameters is unsupported for WebSocket onHandshake")
     if root.findall(".//choose"):
         raise ValueError(f"{source}: this policy must be a single fixed route, not a choose/otherwise fallback")
+    inbound = root.find("./inbound")
+    if inbound is None:
+        raise ValueError(f"{source}: expected an inbound policy section")
+    inbound_children = list(inbound)
 
     backends = root.findall(".//set-backend-service")
     if len(backends) != 1:
         raise ValueError(f"{source}: expected exactly one set-backend-service")
+    if backends[0] not in inbound_children:
+        raise ValueError(f"{source}: set-backend-service must be a direct inbound policy")
     backend_url = backends[0].attrib.get("base-url", "")
     if backend_url != "{{speech-voice-live-wss-endpoint}}/voice-live/realtime":
         raise ValueError(
@@ -777,16 +783,37 @@ def validate_speech_voice_live_policy(policy: str, source: str) -> None:
             "/voice-live/realtime path, and nothing else"
         )
 
+    query_params = root.findall(".//set-query-parameter")
+    if any(query_param not in inbound_children for query_param in query_params):
+        raise ValueError(f"{source}: set-query-parameter must be a direct inbound policy")
     fixed_params = {
         query_param.attrib.get("name"): (query_param.findtext("value") or "").strip()
-        for query_param in root.findall(".//set-query-parameter")
+        for query_param in query_params
         if query_param.attrib.get("exists-action") == "override"
     }
     if fixed_params.get("model") != "gpt-realtime":
         raise ValueError(f"{source}: model query parameter must be fixed to gpt-realtime")
     if fixed_params.get("api-version") != "2026-04-10":
         raise ValueError(f"{source}: api-version query parameter must be fixed to 2026-04-10")
-    for query_param in root.findall(".//set-query-parameter"):
+    deleted_params = {
+        query_param.attrib.get("name")
+        for query_param in query_params
+        if query_param.attrib.get("exists-action") == "delete"
+    }
+    required_deleted_params = {
+        "deployment",
+        "subscription-key",
+        "api-key",
+        "agent_id",
+        "project_id",
+    }
+    missing_param_strips = required_deleted_params - deleted_params
+    if missing_param_strips:
+        raise ValueError(
+            f"{source}: must strip caller selectors/credentials before the backend: "
+            f"{sorted(missing_param_strips)}"
+        )
+    for query_param in query_params:
         if query_param.attrib.get("exists-action") not in {"override", "delete"}:
             raise ValueError(
                 f"{source}: set-query-parameter must override (fix) or delete a value, "
@@ -796,24 +823,48 @@ def validate_speech_voice_live_policy(policy: str, source: str) -> None:
     identities = root.findall(".//authentication-managed-identity")
     if len(identities) != 1:
         raise ValueError(f"{source}: expected exactly one authentication-managed-identity policy")
+    if identities[0] not in inbound_children:
+        raise ValueError(
+            f"{source}: authentication-managed-identity must be a direct inbound policy"
+        )
     if identities[0].attrib.get("resource") != "{{speech-voice-live-mi-audience}}":
         raise ValueError(
             f"{source}: managed-identity resource must be the named-value audience, "
             "never a literal or caller-influenced host"
         )
 
+    headers = inbound.findall("./set-header")
     strip_headers = {
         header.attrib.get("name")
-        for header in root.findall(".//set-header")
+        for header in headers
         if header.attrib.get("exists-action") == "delete"
     }
     required_stripped = {
-        "Ocp-Apim-Subscription-Key", "Authorization",
+        "Ocp-Apim-Subscription-Key", "api-key", "Authorization",
         "X-AI4IA-App-Id", "X-AI4IA-User-Id", "X-UserProfile",
     }
     missing_strips = required_stripped - strip_headers
     if missing_strips:
         raise ValueError(f"{source}: must strip caller/internal headers before the backend: {sorted(missing_strips)}")
+    identity_index = inbound_children.index(identities[0])
+    required_strip_elements = [
+        element
+        for element in inbound_children
+        if (
+            element.tag == "set-query-parameter"
+            and element.attrib.get("name") in required_deleted_params
+            and element.attrib.get("exists-action") == "delete"
+        )
+        or (
+            element.tag == "set-header"
+            and element.attrib.get("name") in required_stripped
+            and element.attrib.get("exists-action") == "delete"
+        )
+    ]
+    if any(inbound_children.index(element) > identity_index for element in required_strip_elements):
+        raise ValueError(
+            f"{source}: must strip caller selectors/credentials before managed-identity authentication"
+        )
 
     # No fallback to Azure OpenAI, another host, the proxy/MCP APIs, or the
     # Consumption rollback plane. This deliberately scans the whole document

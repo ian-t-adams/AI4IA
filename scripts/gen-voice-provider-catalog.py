@@ -50,6 +50,9 @@ SPEECH_VOICES = (
     "en-US-Emma:DragonHDLatestNeural",
     "en-US-Jenny:DragonHDLatestNeural",
 )
+SPEECH_TRANSCRIPTION_COMPATIBILITY = {
+    ("gpt-realtime", "2026-04-10"): ("gpt-4o-transcribe",),
+}
 
 
 def _require(errors: list[str], condition: bool, message: str) -> None:
@@ -323,10 +326,16 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
         defaults.get("voice") == "en-US-Ava:DragonHDLatestNeural",
         "speech_voice_live: default voice must be en-US-Ava:DragonHDLatestNeural",
     )
+    compatible_transcriptions = SPEECH_TRANSCRIPTION_COMPATIBILITY.get(
+        (managed.get("modelId"), managed.get("apiVersion")),
+        (),
+    )
     _require(
         errors,
-        defaults.get("inputTranscription") == "azure-speech",
-        "speech_voice_live: default inputTranscription must be azure-speech",
+        defaults.get("inputTranscription") in compatible_transcriptions,
+        "speech_voice_live: default inputTranscription is incompatible with "
+        f"{managed.get('modelId')} at {managed.get('apiVersion')}; expected one of "
+        f"{compatible_transcriptions}",
     )
     _require(
         errors,
@@ -386,13 +395,15 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
     )
     _require(
         errors,
-        input_transcription.get("provider") == "azure-speech",
-        "speech_voice_live: inputTranscription.provider must be azure-speech",
+        input_transcription.get("provider") == "openai",
+        "speech_voice_live: inputTranscription.provider must be openai",
     )
     _require(
         errors,
-        tuple(input_transcription.get("options", [])) == ("azure-speech",),
-        "speech_voice_live: inputTranscription.options must contain only azure-speech",
+        tuple(input_transcription.get("options", [])) == compatible_transcriptions,
+        "speech_voice_live: inputTranscription.options must exactly match the "
+        f"compatibility matrix for {managed.get('modelId')} at "
+        f"{managed.get('apiVersion')}",
     )
     turn_detection = capabilities.get("turnDetection", {})
     _exact_keys(

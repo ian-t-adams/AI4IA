@@ -191,7 +191,7 @@ class LiveVoiceProviderResolution:
     target_name: str
     auth_mode: GatewayAuthMode
     api_key: str
-    rewrite_client_frame: Callable[[str], str]
+    rewrite_client_frame: Callable[[str], str | None]
 
 
 class LiveVoiceProviderError(Exception):
@@ -252,8 +252,8 @@ def _resolve_live_voice_provider(
     if region and region.strip().lower() != managed.initialRegion.lower():
         raise LiveVoiceProviderError("Speech Voice Live region is fixed.")
 
-    def rewrite_client_frame(frame: str) -> str:
-        return normalize_speech_session_update(frame, provider)
+    def rewrite_client_frame(frame: str) -> str | None:
+        return normalize_speech_client_frame(frame, provider)
 
     return LiveVoiceProviderResolution(
         provider=provider,
@@ -429,21 +429,28 @@ def _speech_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def normalize_speech_session_update(frame: str, provider: VoiceProvider) -> str:
-    """Normalize a browser ``session.update`` for Voice Live Speech.
+def normalize_speech_client_frame(frame: str, provider: VoiceProvider) -> str | None:
+    """Parse and normalize every browser text frame for Voice Live Speech.
 
-    The browser still sends the existing Azure OpenAI-shaped payload. For Speech we
-    keep the shared instruction/tool bridge but overwrite the model-specific voice
-    settings with catalog-backed safe values.
+    Every frame is decoded before forwarding to avoid parser differentials and
+    escaped event-type bypasses. Session configuration is rebuilt from catalog
+    allowlists, while response.create is reduced to a configuration-free trigger so
+    per-response voices, tools, endpoint ids, and other overrides cannot reach Azure.
+    Malformed/non-event JSON is rejected by returning ``None``.
     """
-    if _SESSION_UPDATE_HINT not in frame:
-        return frame
     try:
         payload = json.loads(frame)
     except (ValueError, TypeError):
-        return frame
-    if not isinstance(payload, dict) or payload.get("type") != SESSION_UPDATE_TYPE:
-        return frame
+        logger.info("voice-live rejected a non-JSON Speech client frame")
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("type"), str):
+        logger.info("voice-live rejected a Speech client frame without an event type")
+        return None
+    event_type = payload["type"]
+    if event_type == RESPONSE_CREATE_TYPE:
+        return json.dumps({"type": RESPONSE_CREATE_TYPE})
+    if event_type != SESSION_UPDATE_TYPE:
+        return json.dumps(payload)
     requested = payload.get("session")
     session = dict(requested) if isinstance(requested, dict) else {}
     locale = _speech_locale(provider, session)
@@ -605,6 +612,7 @@ class AiohttpRealtimeConnector:
 # --------------------------------------------------------------------------- #
 
 SESSION_UPDATE_TYPE = "session.update"
+RESPONSE_CREATE_TYPE = "response.create"
 FUNCTION_CALL_DONE_TYPE = "response.function_call_arguments.done"
 RESPONSE_CREATE_FRAME = '{"type":"response.create"}'
 # Cheap pre-filters so the hot path only full-parses the two frame kinds the
@@ -946,7 +954,7 @@ async def _pump_client_to_upstream(
     client_ws: WebSocket,
     upstream: UpstreamConnection,
     lock: anyio.Lock,
-    rewrite_client_frame: Callable[[str], str],
+    rewrite_client_frame: Callable[[str], str | None],
     cancel_scope: anyio.CancelScope,
 ) -> None:
     try:
@@ -956,9 +964,9 @@ async def _pump_client_to_upstream(
                 return
             text = message.get("text")
             if text is not None:
-                # Inert (returns the frame unchanged) unless tools are enabled AND
-                # this is a session.update, where the relay injects its tool set.
-                await _send_upstream(upstream, lock, text=rewrite_client_frame(text))
+                rewritten = rewrite_client_frame(text)
+                if rewritten is not None:
+                    await _send_upstream(upstream, lock, text=rewritten)
                 continue
             data = message.get("bytes")
             if data is not None:
@@ -1001,7 +1009,7 @@ async def relay(
     *,
     max_seconds: float,
     bridge: ToolBridge,
-    rewrite_client_frame: Callable[[str], str] | None = None,
+    rewrite_client_frame: Callable[[str], str | None] | None = None,
 ) -> None:
     """Pump frames both ways until either side closes (or the optional clamp)."""
 
@@ -1126,8 +1134,11 @@ async def voice_live(websocket: WebSocket) -> None:
         tools_requested=parse_tools_opt_in(websocket.query_params.get("tools")),
     )
 
-    def rewrite_client_frame(frame: str) -> str:
-        return bridge.rewrite_client_frame(provider_resolution.rewrite_client_frame(frame))
+    def rewrite_client_frame(frame: str) -> str | None:
+        provider_frame = provider_resolution.rewrite_client_frame(frame)
+        if provider_frame is None:
+            return None
+        return bridge.rewrite_client_frame(provider_frame)
 
     try:
         async with connector.connect(

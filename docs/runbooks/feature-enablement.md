@@ -128,18 +128,33 @@ intentionally blocked behind approvals this runbook cannot satisfy on its own:
    `main` become separate, explicitly authorized decisions. No step in this
    runbook authorizes deployment or merge on its own.
 
-**Rollback.** Disabling Speech Voice Live is immediate and non-destructive:
+**Rollback and retained resources.** Disabling Speech Voice Live is immediate
+and non-destructive:
 
 1. Set `speechVoiceLiveEnabled=false`, or drop `speech_voice_live` from
    `voiceProviderAllowlist` — either alone returns the app to Azure OpenAI-only,
-   which remains the default and does not require Speech to be present.
+   which remains the default and does not require Speech to be present. With the
+   flag `false`, no Speech URL or subscription key is wired into the running API,
+   and a fresh deployment does not create the conditional Speech APIM
+   API/policy/subscription/named values or Speech-specific Foundry User role
+   assignment.
 2. Roll back the API/web revision if needed; `ai4ia.voiceLive.prefs.v2` preference
    values safely default back to Azure OpenAI when Speech is absent.
-3. Leave the Speech Voice Live APIM API, operation policy, and subscription
-   **dormant** for diagnosis; do not delete them as part of an incident response.
-   Deleting those children later is a separate destructive cleanup requiring its
-   own plan, what-if, and approval.
-4. The inactive Consumption APIM rollback plane is untouched by any of this — it
+3. ARM Incremental mode does **not** delete a Speech API, operation policy,
+   subscription, named values, or deterministic Speech-specific Foundry User
+   assignment created by an earlier deployment. The retained API remains
+   subscription-key protected and the app has no Speech key, so it cannot call
+   the API; nevertheless, the retained objects are dormant privilege and
+   inventory. No automatic teardown occurs.
+4. Leave those retained objects dormant for diagnosis during an incident. Full
+   deactivation is a separate destructive change: refresh the live inventory,
+   suspend or revoke `ai4ia-api-speech-voice-live` first, then target only the
+   Speech API and operation policy, the `speech-voice-live-wss-endpoint` and
+   `speech-voice-live-mi-audience` named values, and the deterministic
+   Speech-specific Foundry User role assignment. Review a targeted what-if with
+   no unplanned deletes and obtain explicit approval before applying it. Never
+   use complete deployment mode on the shared resource group or APIM.
+5. The inactive Consumption APIM rollback plane is untouched by any of this — it
    carries no Speech Voice Live traffic in either direction and needs no action.
 
 ### Multi-application gateway controls

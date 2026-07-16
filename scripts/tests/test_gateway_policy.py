@@ -35,6 +35,43 @@ docs_generator = load_script("gen_docs_catalog", "scripts/gen-docs-catalog.py")
 
 
 class GatewayPolicyTests(unittest.TestCase):
+    def test_policy_fragments_normalize_crlf_before_hashing_and_storage(
+        self,
+    ) -> None:
+        gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "var normalizedModelPolicyFragmentDefinitions = [for definition in modelPolicyFragmentDefinitions:",
+            gateway,
+        )
+        self.assertIn(
+            r"value: replace(definition.value, '\r\n', '\n')",
+            gateway,
+        )
+        self.assertIn(
+            "reduce(\n  normalizedModelPolicyFragmentDefinitions,",
+            gateway,
+        )
+        self.assertEqual(
+            2,
+            gateway.count(
+                "for definition in normalizedModelPolicyFragmentDefinitions"
+            ),
+        )
+        self.assertNotIn(
+            "reduce(\n  modelPolicyFragmentDefinitions,",
+            gateway,
+        )
+        self.assertNotIn(
+            "for definition in modelPolicyFragmentDefinitions: {\n  parent:",
+            gateway,
+        )
+
+        lf_value = "<fragment>\n  <set-header />\n</fragment>\n"
+        crlf_value = lf_value.replace("\n", "\r\n")
+        self.assertEqual(lf_value, lf_value.replace("\r\n", "\n"))
+        self.assertEqual(lf_value, crlf_value.replace("\r\n", "\n"))
+
     def test_generated_fragment_is_current_and_well_formed(self) -> None:
         expected, expected_catalog_fragments = (
             gateway_generator.generate_endpoint_policies()
@@ -514,8 +551,91 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("resource speechVoiceLiveAudienceValue", gateway)
         self.assertIn("resource sharedSpeechVoiceLiveSubscription", gateway)
         self.assertIn("name: 'ai4ia-api-speech-voice-live'", gateway)
+        for query_name in (
+            "deployment",
+            "subscription-key",
+            "api-key",
+            "agent_id",
+            "project_id",
+        ):
+            self.assertIn(
+                f'<set-query-parameter name="{query_name}" exists-action="delete" />',
+                policy,
+            )
+        for header_name in (
+            "Ocp-Apim-Subscription-Key",
+            "api-key",
+            "Authorization",
+        ):
+            self.assertIn(
+                f'<set-header name="{header_name}" exists-action="delete" />',
+                policy,
+            )
         gateway_generator.validate_policy_expressions(policy, "speech-voice-live.xml")
         gateway_generator.validate_speech_voice_live_policy(policy, "speech-voice-live.xml")
+
+    def test_speech_voice_live_policy_rejects_missing_selector_or_credential_strip(
+        self,
+    ) -> None:
+        policy = (ROOT / "infra/policies/speech-voice-live.xml").read_text(
+            encoding="utf-8"
+        )
+        cases = (
+            '<set-query-parameter name="subscription-key" exists-action="delete" />',
+            '<set-query-parameter name="agent_id" exists-action="delete" />',
+            '<set-header name="api-key" exists-action="delete" />',
+        )
+        for required_strip in cases:
+            with self.subTest(required_strip=required_strip):
+                with self.assertRaisesRegex(ValueError, "must strip caller"):
+                    gateway_generator.validate_speech_voice_live_policy(
+                        policy.replace(required_strip, "", 1),
+                        "speech-voice-live.xml",
+                    )
+
+    def test_speech_voice_live_policy_rejects_strip_after_managed_identity(
+        self,
+    ) -> None:
+        policy = (ROOT / "infra/policies/speech-voice-live.xml").read_text(
+            encoding="utf-8"
+        )
+        strip = '<set-query-parameter name="api-key" exists-action="delete" />'
+        identity = (
+            '<authentication-managed-identity '
+            'resource="{{speech-voice-live-mi-audience}}" />'
+        )
+        reordered = policy.replace(strip, "", 1).replace(
+            identity,
+            f"{identity}\n    {strip}",
+            1,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "before managed-identity authentication",
+        ):
+            gateway_generator.validate_speech_voice_live_policy(
+                reordered,
+                "speech-voice-live.xml",
+            )
+
+    def test_speech_voice_live_policy_rejects_extra_non_inbound_backend_or_identity(
+        self,
+    ) -> None:
+        policy = (ROOT / "infra/policies/speech-voice-live.xml").read_text(
+            encoding="utf-8"
+        )
+        additions = (
+            '<set-backend-service base-url="wss://other.example/realtime" />',
+            '<authentication-managed-identity resource="https://other.example" />',
+        )
+        for addition in additions:
+            with self.subTest(addition=addition):
+                mutated = policy.replace("<backend>", f"<backend>\n    {addition}", 1)
+                with self.assertRaisesRegex(ValueError, "expected exactly one"):
+                    gateway_generator.validate_speech_voice_live_policy(
+                        mutated,
+                        "speech-voice-live.xml",
+                    )
 
     def test_speech_voice_live_is_additive_and_isolated_from_other_gateway_planes(self) -> None:
         gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
@@ -547,6 +667,12 @@ class GatewayPolicyTests(unittest.TestCase):
             "resource sharedApimSpeechVoiceLiveFoundryUser",
         ):
             self.assertIn(new_resource, gateway)
+            declaration = gateway.split(new_resource, 1)[1].split("{", 1)[0]
+            self.assertIn(
+                "if (speechVoiceLiveEnabled)",
+                declaration,
+                f"{new_resource} must remain default-off",
+            )
 
         # Distinct subscription scope/name from every other gateway credential.
         self.assertIn("scope: sharedSpeechVoiceLiveApi.id", gateway)
@@ -587,6 +713,7 @@ class GatewayPolicyTests(unittest.TestCase):
         # gateway outputs (never a repo/user-suppliable secret) to the api.
         self.assertIn("speechVoiceLiveAccountName: speechVoiceLiveAccountName", main)
         self.assertIn("speechVoiceLiveAccountEndpoint: speechVoiceLiveAccountEndpoint", main)
+        self.assertIn("speechVoiceLiveEnabled: speechVoiceLiveEnabled", main)
         self.assertIn(
             "var speechVoiceLiveAccountName = foundry[speechVoiceLiveIndex].outputs.accountName",
             main,
@@ -754,6 +881,48 @@ class GatewayPolicyTests(unittest.TestCase):
             "53ca6127-db72-4b80-b1b0-d745d6d5456d",
             gateway_template["variables"]["foundryUserRoleId"],
         )
+        self.assertFalse(
+            gateway_template["parameters"]["speechVoiceLiveEnabled"]["defaultValue"]
+        )
+        self.assertFalse(
+            template["parameters"]["speechVoiceLiveEnabled"]["defaultValue"]
+        )
+        self.assertEqual(
+            {"value": "[parameters('speechVoiceLiveEnabled')]"},
+            template["resources"]["gateway"]["properties"]["parameters"][
+                "speechVoiceLiveEnabled"
+            ],
+        )
+        speech_resource_names = (
+            "speechVoiceLiveWssEndpointValue",
+            "speechVoiceLiveAudienceValue",
+            "sharedSpeechVoiceLiveApi",
+            "sharedSpeechVoiceLiveHandshake",
+            "sharedSpeechVoiceLiveApiPolicy",
+            "sharedSpeechVoiceLiveSubscription",
+            "speechVoiceLiveAccount",
+            "sharedApimSpeechVoiceLiveFoundryUser",
+        )
+        for name in speech_resource_names:
+            self.assertEqual(
+                "[parameters('speechVoiceLiveEnabled')]",
+                gateway_resources[name].get("condition"),
+                f"{name} must be controlled by the Speech feature flag",
+            )
+        speech_url_output = gateway_template["outputs"]["speechVoiceLiveGatewayUrl"][
+            "value"
+        ]
+        speech_key_output = gateway_template["outputs"]["speechVoiceLiveGatewayKey"][
+            "value"
+        ]
+        self.assertEqual(
+            "[if(parameters('speechVoiceLiveEnabled'), format('{0}/speech/voice-live', parameters('sharedApimGatewayUrl')), '')]",
+            speech_url_output,
+        )
+        self.assertEqual(
+            "[if(parameters('speechVoiceLiveEnabled'), listSecrets('sharedSpeechVoiceLiveSubscription', '2024-05-01').primaryKey, '')]",
+            speech_key_output,
+        )
         self.assertIn("sharedApimCognitiveUsers", gateway_resources)
         self.assertIn("foundryUserRoleId", json.dumps(speech_rbac))
         self.assertTrue(gateway_resources["speechVoiceLiveAccount"].get("existing"))
@@ -854,6 +1023,51 @@ class GatewayPolicyTests(unittest.TestCase):
         )
         fragment_resource = resources["modelPolicyFragments"]
         self.assertIn("uniqueString", fragment_resource["name"])
+        normalized_copy = next(
+            variable
+            for variable in template["variables"]["copy"]
+            if variable["name"] == "normalizedModelPolicyFragmentDefinitions"
+        )
+        self.assertEqual(
+            "[length(variables('modelPolicyFragmentDefinitions'))]",
+            normalized_copy["count"],
+        )
+        self.assertEqual(
+            "[replace(variables('modelPolicyFragmentDefinitions')[copyIndex('normalizedModelPolicyFragmentDefinitions')].value, '\r\n', '\n')]",
+            normalized_copy["input"]["value"],
+        )
+        for resource_name in (
+            "modelPolicyFragments",
+            "sharedModelPolicyFragments",
+        ):
+            compiled_fragment = resources[resource_name]
+            self.assertIn(
+                "normalizedModelPolicyFragmentDefinitions",
+                compiled_fragment["name"],
+            )
+            self.assertEqual(
+                "[variables('normalizedModelPolicyFragmentDefinitions')[copyIndex()].value]",
+                compiled_fragment["properties"]["value"],
+            )
+        self.assertIn(
+            "reduce(variables('normalizedModelPolicyFragmentDefinitions')",
+            template["variables"]["modelApiPolicyValue"],
+        )
+        compiled_fragment_contract = json.dumps(
+            {
+                "policy": template["variables"]["modelApiPolicyValue"],
+                "legacy": resources["modelPolicyFragments"],
+                "shared": resources["sharedModelPolicyFragments"],
+            }
+        )
+        self.assertNotIn(
+            "uniqueString(variables('modelPolicyFragmentDefinitions')",
+            compiled_fragment_contract,
+        )
+        self.assertNotIn(
+            "variables('modelPolicyFragmentDefinitions')[copyIndex()].value",
+            compiled_fragment_contract,
+        )
         self.assertIn(
             "modelApiPolicyValue",
             resources["modelsApiPolicy"]["properties"]["value"],

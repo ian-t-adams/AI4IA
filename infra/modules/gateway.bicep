@@ -124,6 +124,9 @@ param managedCertificateName string = ''
 @description('Container Apps managed environment name (parent of the managed certificate).')
 param containerEnvName string
 
+@description('Provision the additive Speech Voice Live APIM API, subscription, named values, and account-scoped RBAC. Default OFF.')
+param speechVoiceLiveEnabled bool = false
+
 @description('Name of the existing AIServices account Speech Voice Live routes to. This is the SAME account already used as a Foundry model backend (see foundryBackends); no new AIServices account is created for this capability.')
 param speechVoiceLiveAccountName string
 
@@ -242,12 +245,20 @@ var modelPolicyFragmentDefinitions = concat(
   priorityPolicyFragmentDefinitions
 )
 
+// Normalize checkout-specific CRLF before content-addressing and deployment.
+// LF inputs are unchanged, so existing Linux/GitHub fragment names stay stable.
+var normalizedModelPolicyFragmentDefinitions = [for definition in modelPolicyFragmentDefinitions: {
+  baseName: definition.baseName
+  description: definition.description
+  value: replace(definition.value, '\r\n', '\n')
+}]
+
 // Content-addressed names prevent mixed generations during incremental deploys.
 // Superseded generations are retained for rollback and cleaned up only through
 // the explicit post-stabilization procedure in docs/runbooks/deployment.md.
 var modelApiPolicyTemplate = loadTextContent('../policies/simplel7proxy-priority-policy.xml')
 var modelApiPolicyValue = reduce(
-  modelPolicyFragmentDefinitions,
+  normalizedModelPolicyFragmentDefinitions,
   modelApiPolicyTemplate,
   (policy, definition) => replace(
     policy,
@@ -256,7 +267,7 @@ var modelApiPolicyValue = reduce(
   )
 )
 
-resource modelPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in modelPolicyFragmentDefinitions: {
+resource modelPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in normalizedModelPolicyFragmentDefinitions: {
   parent: legacyConsumptionApim
   name: '${definition.baseName}-${uniqueString(definition.value)}'
   properties: {
@@ -443,7 +454,7 @@ resource sharedRealtimeWssEndpointValues 'Microsoft.ApiManagement/service/namedV
   }
 }]
 
-resource sharedModelPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in modelPolicyFragmentDefinitions: {
+resource sharedModelPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in normalizedModelPolicyFragmentDefinitions: {
   parent: sharedApim
   name: '${definition.baseName}-${uniqueString(definition.value)}'
   properties: {
@@ -603,7 +614,7 @@ resource sharedApiRealtimeSubscription 'Microsoft.ApiManagement/service/subscrip
 // one new subscription, and one new named-scoped role assignment; it does not
 // modify, reparent, or share credentials with /openai/realtime, the legacy
 // Consumption plane, the model/MCP/proxy APIs, or their subscriptions above.
-resource speechVoiceLiveWssEndpointValue 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = {
+resource speechVoiceLiveWssEndpointValue 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = if (speechVoiceLiveEnabled) {
   parent: sharedApim
   name: 'speech-voice-live-wss-endpoint'
   properties: {
@@ -613,7 +624,7 @@ resource speechVoiceLiveWssEndpointValue 'Microsoft.ApiManagement/service/namedV
   }
 }
 
-resource speechVoiceLiveAudienceValue 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = {
+resource speechVoiceLiveAudienceValue 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = if (speechVoiceLiveEnabled) {
   parent: sharedApim
   name: 'speech-voice-live-mi-audience'
   properties: {
@@ -625,7 +636,7 @@ resource speechVoiceLiveAudienceValue 'Microsoft.ApiManagement/service/namedValu
 
 // A WebSocket API has APIM's generated onHandshake operation; no HTTP GET
 // operation is declared here, matching the /openai/realtime pattern above.
-resource sharedSpeechVoiceLiveApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
+resource sharedSpeechVoiceLiveApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = if (speechVoiceLiveEnabled) {
   parent: sharedApim
   name: 'speech-voice-live-realtime'
   properties: {
@@ -645,12 +656,12 @@ resource sharedSpeechVoiceLiveApi 'Microsoft.ApiManagement/service/apis@2024-05-
 
 // APIM does not allow policies at API scope for WebSocket APIs; it creates the
 // immutable onHandshake operation with the API, as with sharedRealtimeHandshake.
-resource sharedSpeechVoiceLiveHandshake 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' existing = {
+resource sharedSpeechVoiceLiveHandshake 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' existing = if (speechVoiceLiveEnabled) {
   parent: sharedSpeechVoiceLiveApi
   name: 'onHandshake'
 }
 
-resource sharedSpeechVoiceLiveApiPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = {
+resource sharedSpeechVoiceLiveApiPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = if (speechVoiceLiveEnabled) {
   parent: sharedSpeechVoiceLiveHandshake
   name: 'policy'
   properties: {
@@ -666,7 +677,7 @@ resource sharedSpeechVoiceLiveApiPolicy 'Microsoft.ApiManagement/service/apis/op
 // Distinct, API-scoped subscription for FastAPI only. Its key cannot invoke
 // /openai/realtime, the normal model API, MCP, or the proxy ingress product --
 // each of those is a different subscription scope declared above.
-resource sharedSpeechVoiceLiveSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
+resource sharedSpeechVoiceLiveSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = if (speechVoiceLiveEnabled) {
   parent: sharedApim
   name: 'ai4ia-api-speech-voice-live'
   properties: {
@@ -706,7 +717,7 @@ resource sharedApimCognitiveUsers 'Microsoft.Authorization/roleAssignments@2022-
 // separately from foundryAccounts[] (which is indexed by foundryBackends) so
 // this grant is scoped ONLY to the one account Speech Voice Live is approved
 // to reach, never broadened to every regional backend.
-resource speechVoiceLiveAccount 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = {
+resource speechVoiceLiveAccount 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = if (speechVoiceLiveEnabled) {
   name: speechVoiceLiveAccountName
 }
 
@@ -714,7 +725,7 @@ resource speechVoiceLiveAccount 'Microsoft.CognitiveServices/accounts@2025-04-01
 // (formerly Azure AI User). sharedApimCognitiveUsers already grants the first
 // role to every account in foundryBackends, including this selected account.
 // Add only the second role here to avoid a duplicate role assignment tuple.
-resource sharedApimSpeechVoiceLiveFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource sharedApimSpeechVoiceLiveFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (speechVoiceLiveEnabled) {
   name: guid(speechVoiceLiveAccount.id, sharedApimResourceId, foundryUserRoleId, 'speech-voice-live')
   scope: speechVoiceLiveAccount
   properties: {
@@ -1021,6 +1032,7 @@ output realtimeGatewayUrl string = '${sharedApimGatewayUrl}/openai'
 output realtimeGatewayKey string = sharedApiRealtimeSubscription.listSecrets().primaryKey
 // Speech Voice Live base URL intentionally omits /realtime (the relay appends
 // it), matching the realtimeGatewayUrl convention above exactly.
-output speechVoiceLiveGatewayUrl string = '${sharedApimGatewayUrl}/speech/voice-live'
+output speechVoiceLiveGatewayUrl string = speechVoiceLiveEnabled ? '${sharedApimGatewayUrl}/speech/voice-live' : ''
 @secure()
-output speechVoiceLiveGatewayKey string = sharedSpeechVoiceLiveSubscription.listSecrets().primaryKey
+#disable-next-line BCP422
+output speechVoiceLiveGatewayKey string = speechVoiceLiveEnabled ? sharedSpeechVoiceLiveSubscription.listSecrets().primaryKey : ''

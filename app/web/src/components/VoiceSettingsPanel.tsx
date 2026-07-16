@@ -383,7 +383,7 @@ export function VoiceSettingsPanel({
                   >
                     {transcriptionOptions.map((value) => (
                       <option key={value} value={value}>
-                        {value}
+                        {value === "gpt-4o-transcribe" ? "GPT-4o Transcribe" : value}
                       </option>
                     ))}
                   </select>
