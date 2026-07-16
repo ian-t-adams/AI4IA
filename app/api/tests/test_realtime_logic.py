@@ -8,6 +8,7 @@ disabled-by-default config posture. No network, no WebSocket — just functions.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from types import SimpleNamespace
 
@@ -1039,7 +1040,14 @@ def test_relay_frame_stats_are_bounded_and_never_retain_content():
 
 
 def test_sanitize_realtime_metadata_bounds_controls_and_credentials():
-    jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature-value"
+    jwt = ".".join(
+        base64.urlsafe_b64encode(part).decode("ascii").rstrip("=")
+        for part in (
+            b'{"alg":"RS256"}',
+            b'{"sub":"1234567890"}',
+            b"signature-value",
+        )
+    )
     value = (
         "\x00Authorization: Bearer auth-secret; "
         "api_key=query-secret; "
