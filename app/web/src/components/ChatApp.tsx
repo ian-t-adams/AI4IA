@@ -25,6 +25,7 @@ import { StudioPanel } from "./StudioPanel";
 import { ImageStudioPanel } from "./ImageStudioPanel";
 import {
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+  DEFAULT_SPEECH_MODEL_ID,
   isRealtimeVoice,
   isSpeechVoiceProvider,
   realtimeModels,
@@ -108,8 +109,6 @@ function sanitizeSpeechPreferences(
     speechProvider?.capabilities.voices.options ?? [normalized.voice];
   const locales: readonly string[] =
     speechProvider?.capabilities.locale?.options ?? [normalized.locale];
-  const transcriptions: readonly string[] =
-    speechProvider?.capabilities.inputTranscription.options ?? [normalized.transcription];
   const turnDetections: readonly SpeechVoiceLiveSettings["turnDetection"][] =
     speechProvider?.capabilities.turnDetection.options ?? [normalized.turnDetection];
   const noiseSuppression: readonly SpeechVoiceLiveSettings["noiseSuppression"][] =
@@ -128,10 +127,6 @@ function sanitizeSpeechPreferences(
       locales.includes(normalized.locale) && speechProvider
         ? normalized.locale
         : speechProvider?.capabilities.locale?.default ?? normalized.locale,
-    transcription:
-      transcriptions.includes(normalized.transcription) && speechProvider
-        ? normalized.transcription
-        : speechProvider?.capabilities.inputTranscription.default ?? normalized.transcription,
     turnDetection:
       turnDetections.includes(normalized.turnDetection) && speechProvider
         ? normalized.turnDetection
@@ -167,20 +162,29 @@ function sanitizeVoicePreferencesForProviders(
       (providers.find((entry) => entry.id === "speech_voice_live")?.id ??
         provider) as VoicePreferences["provider"];
   }
-  const providerEntry =
-    providers.find((entry) => entry.id === provider) ?? providers[0];
+  const speechProvider = providers.find(
+    (entry) => entry.id === "speech_voice_live",
+  );
   const defaultModel = defaultRealtimeModelId ?? null;
+  const speechModelIds = isSpeechVoiceProvider(speechProvider)
+    ? new Set(speechProvider.managedModels.map((model) => model.id))
+    : new Set<string>();
+  const defaultSpeechModel = isSpeechVoiceProvider(speechProvider)
+    ? speechProvider.defaultManagedModelId
+    : DEFAULT_SPEECH_MODEL_ID;
   return {
     ...normalizeVoicePreferences(prefs),
     provider,
-    model:
-      provider === "azure_openai"
-        ? resolveEffectiveModel(prefs.model, realtimeModelIds, defaultModel)
-        : null,
+    model: resolveEffectiveModel(prefs.model, realtimeModelIds, defaultModel),
+    speechModel: speechModelIds.has(prefs.speechModel)
+      ? prefs.speechModel
+      : speechModelIds.has(defaultSpeechModel)
+        ? defaultSpeechModel
+        : [...speechModelIds][0] ?? DEFAULT_SPEECH_MODEL_ID,
     voice: isRealtimeVoice(prefs.voice) ? prefs.voice : DEFAULT_VOICE_PREFERENCES.voice,
     tools: voiceToolsAvailable && prefs.tools,
     settings: normalizeVoiceSessionSettings(prefs.settings),
-    speech: sanitizeSpeechPreferences(prefs.speech, providerEntry),
+    speech: sanitizeSpeechPreferences(prefs.speech, speechProvider),
   };
 }
 
@@ -556,7 +560,7 @@ export function ChatApp() {
       authorizedVoiceProviders.defaultProviderId &&
       voiceProviders.some(
         (provider) =>
-          provider.selectionMode === "fixed_managed_model" ||
+          provider.selectionMode === "managed_model_catalog" ||
           realtimeModelList.length > 0,
       ),
   );
@@ -619,11 +623,13 @@ export function ChatApp() {
     currentVoiceAgent,
   );
   const effectiveVoiceModel =
-    voicePrefsResolved.provider === "azure_openai" ? voicePrefsResolved.model : null;
-  const effectiveVoiceRegion = providerModelRegion(
-    realtimeModelList,
-    effectiveVoiceModel,
-  );
+    voicePrefsResolved.provider === "speech_voice_live"
+      ? voicePrefsResolved.speechModel
+      : voicePrefsResolved.model;
+  const effectiveVoiceRegion =
+    voicePrefsResolved.provider === "azure_openai"
+      ? providerModelRegion(realtimeModelList, effectiveVoiceModel)
+      : null;
   const voiceToolsAvailable = voiceLiveEnabled && voiceLiveConfig.toolsAvailable;
   const activeVoiceProvider =
     voiceProviders.find((provider) => provider.id === voicePrefsResolved.provider) ??
@@ -710,6 +716,9 @@ export function ChatApp() {
             explicitModel: voicePrefsResolved.model,
             onModelChange: (nextModel: string | null) =>
               updateVoicePrefs({ ...voicePrefsResolved, model: nextModel }),
+            speechModel: voicePrefsResolved.speechModel,
+            onSpeechModelChange: (nextModel: string) =>
+              updateVoicePrefs({ ...voicePrefsResolved, speechModel: nextModel }),
             voice: activeVoiceVoice,
             onVoiceChange: (nextVoice: string) =>
               voicePrefsResolved.provider === "speech_voice_live"
@@ -736,6 +745,7 @@ export function ChatApp() {
                 voicePrefsResolved.provider === "speech_voice_live"
                   ? {
                       ...voicePrefsResolved,
+                      speechModel: DEFAULT_SPEECH_MODEL_ID,
                       speech: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
                     }
                   : {

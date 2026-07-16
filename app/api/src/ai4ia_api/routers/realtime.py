@@ -15,9 +15,8 @@ this relay:
 4. resolves the realtime deployment from the catalog (the browser never sees it),
 5. runs the entitlement gate BEFORE opening the upstream socket,
 6. opens the upstream realtime WS through the model gateway with the gateway
-   credential, meters one "unknown" call for the session, then pumps text+binary
-   frames in both directions until either side closes (with an optional hard clamp
-   on session duration).
+   credential, pumps text+binary frames in both directions until either side closes
+   (with an optional hard clamp), then meters one classified "unknown" call.
 
 The event protocol itself stays client-driven (the relay is a mostly-transparent
 pump): the browser sends ``session.update`` / ``input_audio_buffer.append`` and
@@ -32,15 +31,19 @@ import base64
 import binascii
 import json
 import logging
+import re
+import time
+import unicodedata
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from dataclasses import dataclass, field
+from typing import Any, Callable, Literal, Protocol
 from urllib.parse import quote
 
 import aiohttp
 import anyio
 from fastapi import APIRouter, WebSocket
+from starlette.websockets import WebSocketDisconnect
 
 from ..agents.agent_catalog import AgentSpec
 from ..agents.tool_exec import ToolContext, ToolExecutor
@@ -48,15 +51,18 @@ from ..agents.tools import ToolRegistry
 from ..auth.base import AuthCredentials, AuthError, AuthenticatedUser
 from ..catalog import DeploymentOption, ModelCatalog
 from ..config import Environment, GatewayAuthMode, Settings
-from ..logging_setup import new_correlation_id
+from ..logging_setup import new_correlation_id, set_correlation_id
 from ..voice_provider_catalog import (
     AZURE_OPENAI_PROVIDER_ID,
     SPEECH_VOICE_LIVE_PROVIDER_ID,
+    AzureOpenAIVoiceProvider,
+    SpeechVoiceProvider,
     VoiceProvider,
     VoiceProviderCatalog,
+    VoiceProviderManagedModel,
     load_voice_provider_catalog,
 )
-from ..usage.models import TokenUsage, UsageTarget
+from ..usage.models import TokenUsage, UsageStatus, UsageTarget
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +190,7 @@ class LiveVoiceProviderResolution:
     provider: VoiceProvider
     model_id: str
     deployment: DeploymentOption | None
+    managed_model: VoiceProviderManagedModel | None
     usage_target: UsageTarget
     base_url: str
     api_version: str
@@ -218,6 +225,8 @@ def _resolve_live_voice_provider(
         raise LiveVoiceProviderError(f"Unknown voice provider: {requested}")
 
     if requested == AZURE_OPENAI_PROVIDER_ID:
+        if not isinstance(provider, AzureOpenAIVoiceProvider):
+            raise LiveVoiceProviderError("Azure OpenAI voice catalog entry is invalid.")
         model_id, deployment = resolve_realtime_deployment(
             state.catalog,
             model,
@@ -227,6 +236,7 @@ def _resolve_live_voice_provider(
             provider=provider,
             model_id=model_id,
             deployment=deployment,
+            managed_model=None,
             usage_target=UsageTarget.from_deployment(deployment),
             base_url=settings.realtime_effective_base_url,
             api_version=settings.realtime_api_version,
@@ -243,22 +253,24 @@ def _resolve_live_voice_provider(
         raise LiveVoiceProviderError("Speech Voice Live is disabled.")
     if not settings.speech_voice_live_base_url or not settings.speech_voice_live_gateway_api_key:
         raise LiveVoiceProviderError("Speech Voice Live is not fully configured.")
+    if not isinstance(provider, SpeechVoiceProvider):
+        raise LiveVoiceProviderError("Speech Voice Live catalog entry is invalid.")
 
-    managed = provider.managedModel
+    selected_model_id = provider.defaultManagedModelId if model is None else model
+    managed = provider.get_managed_model(selected_model_id)
     if managed is None:
-        raise LiveVoiceProviderError("Speech Voice Live catalog entry is incomplete.")
-    if model and model.strip().lower() != managed.modelId.lower():
-        raise LiveVoiceProviderError("Speech Voice Live model is fixed.")
-    if region and region.strip().lower() != managed.initialRegion.lower():
-        raise LiveVoiceProviderError("Speech Voice Live region is fixed.")
+        raise LiveVoiceProviderError("Speech Voice Live model is not available.")
+    if region is not None and region != managed.initialRegion:
+        raise LiveVoiceProviderError("Speech Voice Live model is not available in that region.")
 
     def rewrite_client_frame(frame: str) -> str | None:
-        return normalize_speech_client_frame(frame, provider)
+        return normalize_speech_client_frame(frame, provider, managed)
 
     return LiveVoiceProviderResolution(
         provider=provider,
-        model_id=managed.modelId,
+        model_id=managed.id,
         deployment=None,
+        managed_model=managed,
         usage_target=UsageTarget.managed_service(
             provider=SPEECH_VOICE_LIVE_PROVIDER_ID,
             target="managed_voice_live",
@@ -267,7 +279,7 @@ def _resolve_live_voice_provider(
         base_url=settings.speech_voice_live_base_url,
         api_version=managed.apiVersion,
         target_param="model",
-        target_name=managed.modelId,
+        target_name=managed.id,
         auth_mode=GatewayAuthMode.api_key,
         api_key=settings.speech_voice_live_gateway_api_key,
         rewrite_client_frame=rewrite_client_frame,
@@ -318,9 +330,9 @@ def build_upstream_url(
     )
 
 
-def _speech_locale(provider: VoiceProvider, session: dict[str, Any]) -> str:
-    options = list(provider.capabilities.locale.options) if provider.capabilities.locale else []
-    default = provider.sessionDefaults.locale or (options[0] if options else "en-US")
+def _speech_locale(provider: SpeechVoiceProvider, session: dict[str, Any]) -> str:
+    options = list(provider.capabilities.locale.options)
+    default = provider.sessionDefaults.locale
     raw_voice = session.get("voice")
     candidates = [
         raw_voice.get("locale") if isinstance(raw_voice, dict) else None,
@@ -334,7 +346,7 @@ def _speech_locale(provider: VoiceProvider, session: dict[str, Any]) -> str:
 
 
 def _speech_session_voice(
-    provider: VoiceProvider, session: dict[str, Any], locale: str
+    provider: SpeechVoiceProvider, session: dict[str, Any], locale: str
 ) -> dict[str, Any]:
     default_name = provider.capabilities.voices.default
     allowed = set(provider.capabilities.voices.options)
@@ -362,29 +374,9 @@ def _speech_session_voice(
     }
 
 
-def _speech_input_transcription(
-    provider: VoiceProvider, session: dict[str, Any], locale: str
+def _speech_turn_detection(
+    provider: SpeechVoiceProvider, session: dict[str, Any]
 ) -> dict[str, Any]:
-    default = provider.capabilities.inputTranscription.default
-    allowed = set(provider.capabilities.inputTranscription.options)
-    raw = session.get("input_audio_transcription")
-    selected = default
-    if isinstance(raw, str):
-        candidate = raw.strip()
-        if candidate in allowed:
-            selected = candidate
-    elif isinstance(raw, dict):
-        for key in ("model", "provider", "type"):
-            candidate = raw.get(key)
-            if isinstance(candidate, str):
-                candidate = candidate.strip()
-                if candidate in allowed:
-                    selected = candidate
-                    break
-    return {"model": selected, "language": locale}
-
-
-def _speech_turn_detection(provider: VoiceProvider, session: dict[str, Any]) -> dict[str, Any]:
     default = provider.capabilities.turnDetection.default
     allowed = set(provider.capabilities.turnDetection.options)
     raw = session.get("turn_detection")
@@ -429,7 +421,25 @@ def _speech_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def normalize_speech_client_frame(frame: str, provider: VoiceProvider) -> str | None:
+def _speech_simple_option(
+    raw: object,
+    *,
+    options: Sequence[str],
+    default: str,
+) -> str:
+    candidate: object = raw
+    if isinstance(raw, dict):
+        candidate = raw.get("type")
+    if isinstance(candidate, str) and candidate in options:
+        return candidate
+    return default
+
+
+def normalize_speech_client_frame(
+    frame: str,
+    provider: SpeechVoiceProvider,
+    managed_model: VoiceProviderManagedModel | None = None,
+) -> str | None:
     """Parse and normalize every browser text frame for Voice Live Speech.
 
     Every frame is decoded before forwarding to avoid parser differentials and
@@ -453,15 +463,23 @@ def normalize_speech_client_frame(frame: str, provider: VoiceProvider) -> str | 
         return json.dumps(payload)
     requested = payload.get("session")
     session = dict(requested) if isinstance(requested, dict) else {}
+    selected_model = managed_model or provider.get_managed_model(
+        provider.defaultManagedModelId
+    )
+    if selected_model is None:
+        logger.error("voice-live Speech catalog has no default managed model")
+        return None
     locale = _speech_locale(provider, session)
-    managed = provider.managedModel
     normalized: dict[str, Any] = {
         "voice": _speech_session_voice(provider, session, locale),
-        "input_audio_transcription": _speech_input_transcription(provider, session, locale),
+        "input_audio_transcription": {
+            "model": selected_model.inputTranscription.model,
+            "language": locale,
+        },
         "turn_detection": _speech_turn_detection(provider, session),
-        "input_audio_format": managed.audioFormat if managed else "pcm16",
-        "output_audio_format": managed.audioFormat if managed else "pcm16",
-        "input_audio_sampling_rate": managed.sampleRateHz if managed else 24_000,
+        "input_audio_format": selected_model.audioFormat,
+        "output_audio_format": selected_model.audioFormat,
+        "input_audio_sampling_rate": selected_model.sampleRateHz,
         "modalities": ["text", "audio"],
     }
     instructions = session.get("instructions")
@@ -470,14 +488,20 @@ def normalize_speech_client_frame(frame: str, provider: VoiceProvider) -> str | 
     temperature = session.get("temperature")
     if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
         normalized["temperature"] = max(0.0, min(float(temperature), 2.0))
-    if provider.sessionDefaults.noiseSuppression is not None:
-        normalized["input_audio_noise_reduction"] = {
-            "type": provider.sessionDefaults.noiseSuppression
-        }
-    if provider.sessionDefaults.echoCancellation is not None:
-        normalized["input_audio_echo_cancellation"] = {
-            "type": provider.sessionDefaults.echoCancellation
-        }
+    normalized["input_audio_noise_reduction"] = {
+        "type": _speech_simple_option(
+            session.get("input_audio_noise_reduction"),
+            options=provider.capabilities.noiseSuppression.options,
+            default=provider.sessionDefaults.noiseSuppression,
+        )
+    }
+    normalized["input_audio_echo_cancellation"] = {
+        "type": _speech_simple_option(
+            session.get("input_audio_echo_cancellation"),
+            options=provider.capabilities.echoCancellation.options,
+            default=provider.sessionDefaults.echoCancellation,
+        )
+    }
     return json.dumps({"type": SESSION_UPDATE_TYPE, "session": normalized})
 
 
@@ -528,11 +552,106 @@ async def authenticate_subprotocol(
 # --------------------------------------------------------------------------- #
 
 
-@dataclass
+UpstreamMessageKind = Literal["text", "binary", "close", "error"]
+_SAFE_TEXT_MAX_CHARS = 512
+_SAFE_EVENT_NAME_MAX_CHARS = 128
+_SAFE_TEXT_SCAN_CHARS = 4096
+_REDACTED = "[REDACTED]"
+_SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"""(?ix)
+    (
+        ["']?
+        (?:authorization|bearer|api(?:[-_]|\s)?key|access[-_]?token|id[-_]?token|
+           ocp[-_]?apim[-_]?subscription[-_]?key|subscription(?:[-_]|\s)?key|
+           credential|password|secret|sig|token|key)
+        ["']?
+        \s*[:=]\s*
+        ["']?
+    )
+    ([^"'\s&,;]+)
+    """
+)
+_AUTHORIZATION_RE = re.compile(
+    r"(?i)(\bAuthorization\s*[:=]\s*)(?:Bearer\s+)?[^\s,;]+(?:\s+[^\s,;]+)?"
+)
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_JWT_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])"
+    r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    r"(?![A-Za-z0-9_-])"
+)
+_SAFE_EVENT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+
+
+def sanitize_realtime_metadata(value: object, *, max_chars: int = _SAFE_TEXT_MAX_CHARS) -> str:
+    """Return bounded, control-free metadata with common credential forms redacted."""
+
+    if not isinstance(value, str):
+        return ""
+    clean = "".join(
+        char for char in value[:_SAFE_TEXT_SCAN_CHARS] if not unicodedata.category(char).startswith("C")
+    )
+    clean = _AUTHORIZATION_RE.sub(lambda match: f"{match.group(1)}{_REDACTED}", clean)
+    clean = _BEARER_RE.sub(f"Bearer {_REDACTED}", clean)
+    clean = _SENSITIVE_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{_REDACTED}", clean)
+    clean = _JWT_RE.sub(_REDACTED, clean)
+    return clean[: max(0, max_chars)]
+
+
+def _safe_exception_parts(exc: object) -> tuple[str | None, str | None]:
+    if isinstance(exc, BaseException):
+        exception_class = _safe_exception_class(type(exc).__name__)
+        try:
+            message = sanitize_realtime_metadata(str(exc))
+        except Exception:  # noqa: BLE001 - hostile exception __str__
+            message = ""
+        return exception_class, message or None
+    if isinstance(exc, str):
+        message = sanitize_realtime_metadata(exc)
+        return "UpstreamWebSocketError", message or None
+    return None, None
+
+
+def _safe_source_event(value: object) -> str | None:
+    candidate = sanitize_realtime_metadata(value, max_chars=_SAFE_EVENT_NAME_MAX_CHARS)
+    return candidate if _SAFE_EVENT_NAME_RE.fullmatch(candidate) else None
+
+
+def _safe_exception_class(value: object) -> str | None:
+    candidate = sanitize_realtime_metadata(value, max_chars=_SAFE_EVENT_NAME_MAX_CHARS)
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,127}", candidate):
+        return None
+    return candidate
+
+
+def _safe_close_code(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 65_535:
+        return value
+    return None
+
+
+@dataclass(frozen=True, slots=True)
 class UpstreamMessage:
-    kind: str  # "text" | "binary" | "close"
+    kind: UpstreamMessageKind
     text: str | None = None
     data: bytes | None = None
+    close_code: int | None = None
+    close_reason: str | None = None
+    exception_class: str | None = None
+    exception_message: str | None = None
+    source_event: str | None = None
+
+    @property
+    def code(self) -> int | None:
+        return self.close_code
+
+    @property
+    def reason(self) -> str | None:
+        return self.close_reason
+
+    @property
+    def source_ws_event(self) -> str | None:
+        return self.source_event
 
 
 class UpstreamConnection(Protocol):
@@ -560,12 +679,38 @@ class _AiohttpUpstream:
 
     async def receive(self) -> UpstreamMessage:
         msg = await self._ws.receive()
+        source_event = _safe_source_event(getattr(msg.type, "name", None))
         if msg.type == aiohttp.WSMsgType.TEXT:
-            return UpstreamMessage("text", text=msg.data)
+            text = msg.data if isinstance(msg.data, str) else ""
+            return UpstreamMessage("text", text=text, source_event=source_event)
         if msg.type == aiohttp.WSMsgType.BINARY:
-            return UpstreamMessage("binary", data=msg.data)
-        # CLOSE/CLOSING/CLOSED/ERROR all terminate the relay.
-        return UpstreamMessage("close")
+            data = msg.data if isinstance(msg.data, bytes) else bytes(msg.data)
+            return UpstreamMessage("binary", data=data, source_event=source_event)
+        if msg.type == aiohttp.WSMsgType.ERROR:
+            error = msg.data if isinstance(msg.data, BaseException) else self._ws.exception()
+            exception_class, exception_message = _safe_exception_parts(error or msg.data)
+            return UpstreamMessage(
+                "error",
+                close_code=_safe_close_code(self._ws.close_code),
+                exception_class=exception_class,
+                exception_message=exception_message,
+                source_event=source_event,
+            )
+        # Preserve close details for CLOSE/CLOSING/CLOSED instead of collapsing the
+        # event into an untyped terminator.
+        message_close_code = _safe_close_code(msg.data)
+        close_code = (
+            message_close_code
+            if message_close_code is not None
+            else _safe_close_code(self._ws.close_code)
+        )
+        close_reason = sanitize_realtime_metadata(msg.extra) or None
+        return UpstreamMessage(
+            "close",
+            close_code=close_code,
+            close_reason=close_reason,
+            source_event=source_event,
+        )
 
     async def close(self) -> None:
         await self._ws.close()
@@ -809,7 +954,12 @@ class ToolBridge:
         try:
             result = await self.executor.execute(call.name, args, self.ctx)
         except Exception as exc:  # noqa: BLE001 - any tool failure -> structured error
-            logger.info("voice-live tool '%s' failed: %s", call.name, exc)
+            exception_class, _ = _safe_exception_parts(exc)
+            logger.info(
+                "voice-live tool '%s' failed (%s)",
+                call.name,
+                exception_class or "Exception",
+            )
             return _tool_error(str(exc))
         return _tool_output(result)
 
@@ -920,13 +1070,275 @@ async def build_session_bridge(
 
 # --------------------------------------------------------------------------- #
 # Bidirectional pump.
-#
-# Starlette runs on anyio, so the relay uses an anyio task group rather than raw
-# asyncio tasks: when one direction ends it cancels the group's scope, and — just
-# as importantly — the framework's own teardown cancellation (e.g. the client
-# going away) stays anyio-native and is recognized by the enclosing cancel scope
-# instead of leaking out and cancelling the whole request task.
 # --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class ProtocolErrorMetadata:
+    error_type: str | None = None
+    code: str | None = None
+    param: str | None = None
+    event_id: str | None = None
+    message: str | None = None
+
+    @property
+    def type(self) -> str | None:
+        return self.error_type
+
+    def as_log_dict(self) -> dict[str, str | None]:
+        return {
+            "type": self.error_type,
+            "code": self.code,
+            "param": self.param,
+            "event_id": self.event_id,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RelayFrameStats:
+    text_frames: int = 0
+    binary_frames: int = 0
+    first_monotonic: float | None = None
+    last_monotonic: float | None = None
+    event_types: tuple[str, ...] = ()
+
+    def as_log_dict(self) -> dict[str, object]:
+        return {
+            "textFrames": self.text_frames,
+            "binaryFrames": self.binary_frames,
+            "firstMonotonic": self.first_monotonic,
+            "lastMonotonic": self.last_monotonic,
+            "eventTypes": list(self.event_types),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RelayStats:
+    client_to_upstream: RelayFrameStats = field(default_factory=RelayFrameStats)
+    upstream_to_client: RelayFrameStats = field(default_factory=RelayFrameStats)
+
+    def as_log_dict(self) -> dict[str, object]:
+        return {
+            "clientToUpstream": self.client_to_upstream.as_log_dict(),
+            "upstreamToClient": self.upstream_to_client.as_log_dict(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RelayMetadata:
+    protocol_error: ProtocolErrorMetadata | None = None
+    close_code: int | None = None
+    close_reason: str | None = None
+    exception_class: str | None = None
+    exception_message: str | None = None
+    source_event: str | None = None
+
+    def as_log_dict(self) -> dict[str, object]:
+        return {
+            "protocolError": (
+                self.protocol_error.as_log_dict() if self.protocol_error is not None else None
+            ),
+            "closeCode": self.close_code,
+            "closeReason": self.close_reason,
+            "exceptionClass": self.exception_class,
+            "exceptionMessage": self.exception_message,
+            "sourceEvent": self.source_event,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RelayOutcome:
+    status: UsageStatus
+    metadata: RelayMetadata = field(default_factory=RelayMetadata)
+    stats: RelayStats = field(default_factory=RelayStats)
+
+    @property
+    def close_code(self) -> int | None:
+        return self.metadata.close_code
+
+    @property
+    def close_reason(self) -> str | None:
+        return self.metadata.close_reason
+
+    @property
+    def protocol_error(self) -> ProtocolErrorMetadata | None:
+        return self.metadata.protocol_error
+
+    @property
+    def exception_class(self) -> str | None:
+        return self.metadata.exception_class
+
+    @property
+    def exception_message(self) -> str | None:
+        return self.metadata.exception_message
+
+    @classmethod
+    def from_exception(
+        cls,
+        exc: BaseException,
+        *,
+        status: UsageStatus = "error",
+        source_event: str,
+    ) -> "RelayOutcome":
+        exception_class, exception_message = _safe_exception_parts(exc)
+        return cls(
+            status=status,
+            metadata=RelayMetadata(
+                exception_class=exception_class,
+                exception_message=exception_message,
+                source_event=_safe_source_event(source_event),
+            ),
+        )
+
+
+@dataclass(slots=True)
+class _MutableFrameStats:
+    text_frames: int = 0
+    binary_frames: int = 0
+    first_monotonic: float | None = None
+    last_monotonic: float | None = None
+    event_types: list[str] = field(default_factory=list)
+
+    def observe(self, *, text: bool, event_type: str | None = None) -> None:
+        now = time.monotonic()
+        if self.first_monotonic is None:
+            self.first_monotonic = now
+        self.last_monotonic = now
+        if text:
+            self.text_frames += 1
+            if event_type is not None and len(self.event_types) < 32:
+                self.event_types.append(event_type)
+        else:
+            self.binary_frames += 1
+
+    def freeze(self) -> RelayFrameStats:
+        return RelayFrameStats(
+            text_frames=self.text_frames,
+            binary_frames=self.binary_frames,
+            first_monotonic=self.first_monotonic,
+            last_monotonic=self.last_monotonic,
+            event_types=tuple(self.event_types),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _RelayTermination:
+    status: UsageStatus
+    close_code: int | None = None
+    close_reason: str | None = None
+    exception_class: str | None = None
+    exception_message: str | None = None
+    source_event: str | None = None
+
+
+@dataclass(slots=True)
+class _RelayState:
+    stopped: anyio.Event
+    client_stats: _MutableFrameStats = field(default_factory=_MutableFrameStats)
+    upstream_stats: _MutableFrameStats = field(default_factory=_MutableFrameStats)
+    protocol_error: ProtocolErrorMetadata | None = None
+    termination: _RelayTermination | None = None
+
+    def stop(self, termination: _RelayTermination) -> None:
+        if self.termination is None:
+            self.termination = termination
+            self.stopped.set()
+
+    def outcome(self) -> RelayOutcome:
+        termination = self.termination or _RelayTermination(
+            status="cancelled", source_event="local_stop"
+        )
+        status: UsageStatus = "error" if self.protocol_error is not None else termination.status
+        return RelayOutcome(
+            status=status,
+            metadata=RelayMetadata(
+                protocol_error=self.protocol_error,
+                close_code=_safe_close_code(termination.close_code),
+                close_reason=sanitize_realtime_metadata(termination.close_reason) or None,
+                exception_class=(
+                    _safe_exception_class(termination.exception_class)
+                ),
+                exception_message=(
+                    sanitize_realtime_metadata(termination.exception_message) or None
+                ),
+                source_event=_safe_source_event(termination.source_event),
+            ),
+            stats=RelayStats(
+                client_to_upstream=self.client_stats.freeze(),
+                upstream_to_client=self.upstream_stats.freeze(),
+            ),
+        )
+
+
+def _validated_event_type(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > _SAFE_EVENT_NAME_MAX_CHARS:
+        return None
+    return value if _SAFE_EVENT_NAME_RE.fullmatch(value) else None
+
+
+def _safe_protocol_field(value: object) -> str | None:
+    sanitized = sanitize_realtime_metadata(value, max_chars=_SAFE_EVENT_NAME_MAX_CHARS)
+    return sanitized or None
+
+
+def inspect_realtime_text_frame(
+    frame: str, *, include_protocol_error: bool
+) -> tuple[str | None, ProtocolErrorMetadata | None]:
+    """Extract only a validated event name and bounded protocol-error metadata."""
+
+    try:
+        payload = json.loads(frame)
+    except (TypeError, ValueError):
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    event_type = _validated_event_type(payload.get("type"))
+    if not include_protocol_error or event_type != "error":
+        return event_type, None
+    error = payload.get("error")
+    error_fields = error if isinstance(error, dict) else {}
+    protocol_event_id = error_fields.get("event_id")
+    if not isinstance(protocol_event_id, str):
+        protocol_event_id = payload.get("event_id")
+    return event_type, ProtocolErrorMetadata(
+        error_type=_safe_protocol_field(error_fields.get("type")),
+        code=_safe_protocol_field(error_fields.get("code")),
+        param=_safe_protocol_field(error_fields.get("param")),
+        event_id=_safe_protocol_field(protocol_event_id),
+        message=(
+            sanitize_realtime_metadata(error_fields.get("message")) or None
+        ),
+    )
+
+
+def _termination_from_exception(
+    exc: BaseException, *, status: UsageStatus, source_event: str
+) -> _RelayTermination:
+    exception_class, exception_message = _safe_exception_parts(exc)
+    return _RelayTermination(
+        status=status,
+        exception_class=exception_class,
+        exception_message=exception_message,
+        source_event=_safe_source_event(source_event),
+    )
+
+
+def _client_termination_from_exception(exc: BaseException) -> _RelayTermination:
+    if isinstance(exc, WebSocketDisconnect):
+        return _RelayTermination(
+            status="cancelled",
+            close_code=_safe_close_code(exc.code),
+            close_reason=sanitize_realtime_metadata(exc.reason) or None,
+            source_event="websocket.disconnect",
+        )
+    exception_class, exception_message = _safe_exception_parts(exc)
+    return _RelayTermination(
+        status="cancelled",
+        exception_class=exception_class,
+        exception_message=exception_message,
+        source_event="client.disconnect",
+    )
 
 
 async def _send_upstream(
@@ -955,25 +1367,50 @@ async def _pump_client_to_upstream(
     upstream: UpstreamConnection,
     lock: anyio.Lock,
     rewrite_client_frame: Callable[[str], str | None],
-    cancel_scope: anyio.CancelScope,
+    state: _RelayState,
 ) -> None:
     try:
         while True:
-            message = await client_ws.receive()
+            try:
+                message = await client_ws.receive()
+            except RuntimeError as exc:
+                state.stop(_client_termination_from_exception(exc))
+                return
             if message["type"] == "websocket.disconnect":
+                state.stop(
+                    _RelayTermination(
+                        status="cancelled",
+                        close_code=_safe_close_code(message.get("code")),
+                        close_reason=sanitize_realtime_metadata(message.get("reason")) or None,
+                        source_event="websocket.disconnect",
+                    )
+                )
                 return
             text = message.get("text")
             if text is not None:
+                event_type, _ = inspect_realtime_text_frame(
+                    text, include_protocol_error=False
+                )
+                state.client_stats.observe(text=True, event_type=event_type)
                 rewritten = rewrite_client_frame(text)
                 if rewritten is not None:
                     await _send_upstream(upstream, lock, text=rewritten)
                 continue
             data = message.get("bytes")
             if data is not None:
+                state.client_stats.observe(text=False)
                 await _send_upstream(upstream, lock, data=data)
-    finally:
-        # The client side is done -> stop the upstream pump too.
-        cancel_scope.cancel()
+                continue
+            state.stop(_RelayTermination(status="cancelled", source_event="client_stop"))
+            return
+    except WebSocketDisconnect as exc:
+        state.stop(_client_termination_from_exception(exc))
+    except Exception as exc:  # noqa: BLE001 - converted to bounded relay metadata
+        state.stop(
+            _termination_from_exception(
+                exc, status="error", source_event="client_to_upstream"
+            )
+        )
 
 
 async def _pump_upstream_to_client(
@@ -981,15 +1418,49 @@ async def _pump_upstream_to_client(
     client_ws: WebSocket,
     lock: anyio.Lock,
     bridge: ToolBridge,
-    cancel_scope: anyio.CancelScope,
+    state: _RelayState,
 ) -> None:
     try:
         while True:
             msg = await upstream.receive()
             if msg.kind == "close":
+                state.stop(
+                    _RelayTermination(
+                        status=(
+                            "complete"
+                            if msg.close_code in (None, WS_NORMAL_CLOSURE)
+                            else "error"
+                        ),
+                        close_code=msg.close_code,
+                        close_reason=msg.close_reason,
+                        source_event=msg.source_event or "upstream.close",
+                    )
+                )
+                return
+            if msg.kind == "error":
+                state.stop(
+                    _RelayTermination(
+                        status="error",
+                        close_code=msg.close_code,
+                        close_reason=msg.close_reason,
+                        exception_class=msg.exception_class,
+                        exception_message=msg.exception_message,
+                        source_event=msg.source_event or "upstream.error",
+                    )
+                )
                 return
             if msg.kind == "text" and msg.text is not None:
-                await client_ws.send_text(msg.text)
+                event_type, protocol_error = inspect_realtime_text_frame(
+                    msg.text, include_protocol_error=True
+                )
+                state.upstream_stats.observe(text=True, event_type=event_type)
+                if protocol_error is not None and state.protocol_error is None:
+                    state.protocol_error = protocol_error
+                try:
+                    await client_ws.send_text(msg.text)
+                except (WebSocketDisconnect, RuntimeError) as exc:
+                    state.stop(_client_termination_from_exception(exc))
+                    return
                 # Governed tool calling: a function-call event is executed in-process
                 # and its result returned upstream. No-op (and no JSON parse) for
                 # every other frame, and entirely skipped when tools are disabled.
@@ -997,10 +1468,23 @@ async def _pump_upstream_to_client(
                     for frame in await bridge.handle_upstream_frame(msg.text):
                         await _send_upstream(upstream, lock, text=frame)
             elif msg.kind == "binary" and msg.data is not None:
-                await client_ws.send_bytes(msg.data)
-    finally:
-        # The upstream side is done -> stop the client pump too.
-        cancel_scope.cancel()
+                state.upstream_stats.observe(text=False)
+                try:
+                    await client_ws.send_bytes(msg.data)
+                except (WebSocketDisconnect, RuntimeError) as exc:
+                    state.stop(_client_termination_from_exception(exc))
+                    return
+            else:
+                state.stop(_RelayTermination(status="error", source_event="upstream.invalid"))
+                return
+    except WebSocketDisconnect as exc:
+        state.stop(_client_termination_from_exception(exc))
+    except Exception as exc:  # noqa: BLE001 - converted to bounded relay metadata
+        state.stop(
+            _termination_from_exception(
+                exc, status="error", source_event="upstream_to_client"
+            )
+        )
 
 
 async def relay(
@@ -1010,11 +1494,12 @@ async def relay(
     max_seconds: float,
     bridge: ToolBridge,
     rewrite_client_frame: Callable[[str], str | None] | None = None,
-) -> None:
-    """Pump frames both ways until either side closes (or the optional clamp)."""
+) -> RelayOutcome:
+    """Pump frames both ways and return a content-free, typed terminal outcome."""
 
     send_lock = anyio.Lock()
     rewrite = rewrite_client_frame or bridge.rewrite_client_frame
+    state = _RelayState(stopped=anyio.Event())
 
     async def run() -> None:
         async with anyio.create_task_group() as tg:
@@ -1024,7 +1509,7 @@ async def relay(
                 upstream,
                 send_lock,
                 rewrite,
-                tg.cancel_scope,
+                state,
             )
             tg.start_soon(
                 _pump_upstream_to_client,
@@ -1032,16 +1517,34 @@ async def relay(
                 client_ws,
                 send_lock,
                 bridge,
-                tg.cancel_scope,
+                state,
             )
+            await state.stopped.wait()
+            tg.cancel_scope.cancel()
 
-    if max_seconds and max_seconds > 0:
-        with anyio.move_on_after(max_seconds) as scope:
+    cancelled_exc_class = anyio.get_cancelled_exc_class()
+    try:
+        if max_seconds and max_seconds > 0:
+            with anyio.move_on_after(max_seconds) as scope:
+                await run()
+            if scope.cancelled_caught:
+                state.stop(
+                    _RelayTermination(
+                        status="cancelled", source_event="max_duration_timeout"
+                    )
+                )
+        else:
             await run()
-        if scope.cancelled_caught:
-            logger.info("voice-live session hit max duration clamp (%ss)", max_seconds)
-    else:
-        await run()
+    except cancelled_exc_class as exc:
+        state.stop(
+            _RelayTermination(status="cancelled", source_event="framework.cancelled")
+        )
+        try:
+            setattr(exc, "_ai4ia_relay_outcome", state.outcome())
+        except Exception:  # pragma: no cover - cancellation type may prohibit attributes
+            pass
+        raise
+    return state.outcome()
 
 
 # --------------------------------------------------------------------------- #
@@ -1055,6 +1558,104 @@ async def _deny(client_ws: WebSocket, code: int) -> None:
     except RuntimeError:
         # Already closed/disconnected; nothing to do.
         pass
+
+
+def _outcome_with_exception(
+    outcome: RelayOutcome | None,
+    exc: BaseException,
+    *,
+    status: UsageStatus,
+    source_event: str,
+) -> RelayOutcome:
+    exception_class, exception_message = _safe_exception_parts(exc)
+    if outcome is None:
+        return RelayOutcome.from_exception(
+            exc, status=status, source_event=source_event
+        )
+    metadata = outcome.metadata
+    resolved_status: UsageStatus = (
+        "error" if metadata.protocol_error is not None else status
+    )
+    return RelayOutcome(
+        status=resolved_status,
+        metadata=RelayMetadata(
+            protocol_error=metadata.protocol_error,
+            close_code=metadata.close_code,
+            close_reason=metadata.close_reason,
+            exception_class=exception_class,
+            exception_message=exception_message,
+            source_event=_safe_source_event(source_event),
+        ),
+        stats=outcome.stats,
+    )
+
+
+def _emit_relay_completion(
+    *,
+    correlation_id: str,
+    resolution: LiveVoiceProviderResolution,
+    outcome: RelayOutcome,
+    usage_error: tuple[str | None, str | None] | None,
+) -> None:
+    target = resolution.usage_target
+    payload: dict[str, object] = {
+        "event": "voice_live_completion",
+        "correlationId": correlation_id,
+        "provider": resolution.provider.id,
+        "usageTarget": {
+            "provider": target.provider,
+            "deployment": target.deployment,
+            "target": target.target,
+            "region": target.region,
+            "dataZone": target.dataZone,
+        },
+        "model": resolution.model_id,
+        "outcome": outcome.status,
+        "metadata": outcome.metadata.as_log_dict(),
+        "stats": outcome.stats.as_log_dict(),
+    }
+    if usage_error is not None:
+        payload["usageError"] = {
+            "exceptionClass": usage_error[0],
+            "exceptionMessage": usage_error[1],
+        }
+    logger.info(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+
+
+async def _finalize_relay(
+    *,
+    websocket: WebSocket,
+    state,
+    user: AuthenticatedUser,
+    correlation_id: str,
+    resolution: LiveVoiceProviderResolution,
+    outcome: RelayOutcome,
+) -> None:
+    usage_error: tuple[str | None, str | None] | None = None
+    cancelled_exc_class = anyio.get_cancelled_exc_class()
+    try:
+        await state.usage.record_completion(
+            user_id=user.internal_user_id,
+            session_id=LIVE_SESSION_ID,
+            model_id=resolution.model_id,
+            target=resolution.usage_target,
+            usage=_session_usage(),
+            status=outcome.status,
+            correlation_id=correlation_id,
+        )
+    except cancelled_exc_class:
+        raise
+    except Exception as exc:  # noqa: BLE001 - metering is best effort by convention
+        usage_error = _safe_exception_parts(exc)
+
+    _emit_relay_completion(
+        correlation_id=correlation_id,
+        resolution=resolution,
+        outcome=outcome,
+        usage_error=usage_error,
+    )
+    close_code = WS_INTERNAL_ERROR if outcome.status == "error" else WS_NORMAL_CLOSURE
+    await _deny(websocket, close_code)
 
 
 @router.websocket("/api/voice/live")
@@ -1110,6 +1711,7 @@ async def voice_live(websocket: WebSocket) -> None:
     await websocket.accept(subprotocol=auth.marker)
 
     correlation_id = new_correlation_id()
+    set_correlation_id(correlation_id)
     url = build_upstream_url(
         provider_resolution.base_url,
         provider_resolution.api_version,
@@ -1140,36 +1742,68 @@ async def voice_live(websocket: WebSocket) -> None:
             return None
         return bridge.rewrite_client_frame(provider_frame)
 
+    outcome: RelayOutcome | None = None
+    cancelled_exc_class = anyio.get_cancelled_exc_class()
     try:
         async with connector.connect(
             url=url, headers=headers, timeout=settings.realtime_timeout_seconds
         ) as upstream:
-            await state.usage.record_completion(
-                user_id=user.internal_user_id,
-                session_id=LIVE_SESSION_ID,
-                model_id=provider_resolution.model_id,
-                target=provider_resolution.usage_target,
-                usage=_session_usage(),
-                status="complete",
-                correlation_id=correlation_id,
-            )
-            await relay(
+            outcome = await relay(
                 websocket,
                 upstream,
                 max_seconds=settings.realtime_max_session_seconds,
                 bridge=bridge,
                 rewrite_client_frame=rewrite_client_frame,
             )
-    except Exception:  # noqa: BLE001 - any upstream/relay failure -> clean client close
-        logger.warning(
-            "voice-live relay error (provider=%s, target=%s, model=%s, correlation_id=%s)",
-            provider_resolution.provider.id,
-            provider_resolution.usage_target.target,
-            provider_resolution.model_id,
-            correlation_id,
-            exc_info=True,
+    except cancelled_exc_class as exc:
+        partial_outcome = getattr(exc, "_ai4ia_relay_outcome", None)
+        if isinstance(partial_outcome, RelayOutcome):
+            outcome = partial_outcome
+        metadata = outcome.metadata if outcome is not None else RelayMetadata()
+        outcome = RelayOutcome(
+            status=(
+                "error"
+                if metadata.protocol_error is not None
+                else "cancelled"
+            ),
+            metadata=RelayMetadata(
+                protocol_error=metadata.protocol_error,
+                close_code=metadata.close_code,
+                close_reason=metadata.close_reason,
+                exception_class=metadata.exception_class,
+                exception_message=metadata.exception_message,
+                source_event="framework.cancelled",
+            ),
+            stats=outcome.stats if outcome is not None else RelayStats(),
         )
-        await _deny(websocket, WS_INTERNAL_ERROR)
-        return
+        with anyio.CancelScope(shield=True):
+            await _finalize_relay(
+                websocket=websocket,
+                state=state,
+                user=user,
+                correlation_id=correlation_id,
+                resolution=provider_resolution,
+                outcome=outcome,
+            )
+        raise
+    except Exception as exc:  # noqa: BLE001 - converted to bounded relay metadata
+        outcome = _outcome_with_exception(
+            outcome,
+            exc,
+            status="error",
+            source_event="upstream.connect_or_relay",
+        )
 
-    await _deny(websocket, WS_NORMAL_CLOSURE)
+    if outcome is None:
+        outcome = RelayOutcome(
+            status="cancelled",
+            metadata=RelayMetadata(source_event="local_stop"),
+        )
+    await _finalize_relay(
+        websocket=websocket,
+        state=state,
+        user=user,
+        correlation_id=correlation_id,
+        resolution=provider_resolution,
+        outcome=outcome,
+    )

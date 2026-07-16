@@ -59,6 +59,8 @@ export interface VoiceSettingsPanelProps {
   defaultModelLabel: string;
   explicitModel: string | null;
   onModelChange: (model: string | null) => void;
+  speechModel: string;
+  onSpeechModelChange: (model: string) => void;
   voice: string;
   onVoiceChange: (voice: string) => void;
   toolsAvailable: boolean;
@@ -105,6 +107,8 @@ export function VoiceSettingsPanel({
   defaultModelLabel,
   explicitModel,
   onModelChange,
+  speechModel,
+  onSpeechModelChange,
   voice,
   onVoiceChange,
   toolsAvailable,
@@ -123,8 +127,9 @@ export function VoiceSettingsPanel({
   const speechProvider = isSpeechVoiceProvider(activeProvider) ? activeProvider : undefined;
   const voiceOptions: readonly string[] = activeProvider.capabilities.voices.options;
   const localeOptions: readonly string[] = speechProvider?.capabilities.locale?.options ?? [];
-  const transcriptionOptions: readonly string[] =
-    speechProvider?.capabilities.inputTranscription.options ?? [];
+  const selectedSpeechModel = speechProvider?.managedModels.find(
+    (model) => model.id === speechModel,
+  );
   const turnDetectionOptions: readonly SpeechVoiceLiveSettings["turnDetection"][] =
     speechProvider?.capabilities.turnDetection.options ?? [];
   const noiseSuppressionOptions: readonly SpeechVoiceLiveSettings["noiseSuppression"][] =
@@ -185,23 +190,50 @@ export function VoiceSettingsPanel({
         </label>
 
         {isSpeechProvider ? (
-          <div
-            style={{
-              ...FIELD_STYLE,
-              flexBasis: "100%",
-              padding: "6px 8px",
-              borderRadius: 6,
-              border: "1px solid var(--border)",
-              background: "var(--bg)",
-            }}
-          >
-            <span>Managed model</span>
-            <strong>
-              {speechProvider?.managedModel
-                ? `${speechProvider.managedModel.modelId} · ${speechProvider.managedModel.initialRegion}`
-                : "Managed speech provider"}
-            </strong>
-          </div>
+          <>
+            <label style={FIELD_STYLE} htmlFor={`${idPrefix}-speech-model`}>
+              Speech model
+              <select
+                id={`${idPrefix}-speech-model`}
+                value={speechModel}
+                disabled={locked || !speechProvider?.managedModels.length}
+                onChange={(event) => onSpeechModelChange(event.target.value)}
+                style={CONTROL_STYLE}
+              >
+                {speechProvider?.managedModels.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.displayName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {selectedSpeechModel && (
+              <div
+                style={{
+                  ...FIELD_STYLE,
+                  flexBasis: "100%",
+                  padding: "6px 8px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                }}
+              >
+                <span>{selectedSpeechModel.description}</span>
+                <strong>
+                  {selectedSpeechModel.profile === "native_audio"
+                    ? "Native audio"
+                    : "Azure Speech chain"}
+                  {" · "}
+                  {selectedSpeechModel.inputTranscription.model ===
+                  "gpt-4o-transcribe"
+                    ? "GPT-4o Transcribe"
+                    : "Azure Speech"}
+                  {" · "}
+                  {selectedSpeechModel.initialRegion}
+                </strong>
+              </div>
+            )}
+          </>
         ) : (
           <label style={FIELD_STYLE} htmlFor={`${idPrefix}-model`}>
             Realtime model
@@ -367,23 +399,6 @@ export function VoiceSettingsPanel({
                     {localeOptions.map((value) => (
                       <option key={value} value={value}>
                         {value}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label style={FIELD_STYLE} htmlFor={`${idPrefix}-speech-transcription`}>
-                  Transcription
-                  <select
-                    id={`${idPrefix}-speech-transcription`}
-                    value={speechSettings.transcription}
-                    disabled={locked || transcriptionOptions.length === 0}
-                    onChange={(e) => patchSpeechSettings({ transcription: e.target.value })}
-                    style={CONTROL_STYLE}
-                  >
-                    {transcriptionOptions.map((value) => (
-                      <option key={value} value={value}>
-                        {value === "gpt-4o-transcribe" ? "GPT-4o Transcribe" : value}
                       </option>
                     ))}
                   </select>

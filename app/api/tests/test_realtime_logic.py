@@ -18,7 +18,10 @@ from ai4ia_api.agents.tool_exec import build_tools
 from ai4ia_api.auth.base import AuthCredentials, AuthError, AuthenticatedUser
 from ai4ia_api.catalog import DeploymentOption, ModelCatalog, ModelEntry
 from ai4ia_api.config import GatewayAuthMode
-from ai4ia_api.voice_provider_catalog import load_voice_provider_catalog
+from ai4ia_api.voice_provider_catalog import (
+    SpeechVoiceProvider,
+    load_voice_provider_catalog,
+)
 from ai4ia_api.routers.realtime import (
     BEARER_SUBPROTOCOL,
     DEV_SUBPROTOCOL,
@@ -26,7 +29,9 @@ from ai4ia_api.routers.realtime import (
     LiveVoiceProviderError,
     RealtimeFunctionCall,
     RealtimeResolutionError,
+    RelayOutcome,
     ToolBridge,
+    UpstreamMessage,
     authenticate_subprotocol,
     build_function_call_output,
     build_session_bridge,
@@ -42,6 +47,8 @@ from ai4ia_api.routers.realtime import (
     parse_function_call_done,
     parse_tools_opt_in,
     resolve_realtime_deployment,
+    relay,
+    sanitize_realtime_metadata,
     _resolve_live_voice_provider,
 )
 from tests.conftest import make_settings
@@ -220,7 +227,20 @@ def test_resolve_no_realtime_models_available():
         resolve_realtime_deployment(chat_only, None, None)
 
 
-def test_resolve_speech_provider_uses_managed_metering_target():
+@pytest.mark.parametrize(
+    ("model_id", "profile", "transcription_provider", "transcription_model"),
+    [
+        ("gpt-realtime", "native_audio", "openai", "gpt-4o-transcribe"),
+        ("gpt-realtime-mini", "native_audio", "openai", "gpt-4o-transcribe"),
+        ("gpt-4.1", "azure_speech_chain", "azure_speech", "azure-speech"),
+        ("gpt-4.1-mini", "azure_speech_chain", "azure_speech", "azure-speech"),
+        ("gpt-5-mini", "azure_speech_chain", "azure_speech", "azure-speech"),
+        ("gpt-5.1", "azure_speech_chain", "azure_speech", "azure-speech"),
+    ],
+)
+def test_resolve_speech_provider_uses_managed_catalog_model(
+    model_id, profile, transcription_provider, transcription_model
+):
     settings = make_settings(
         env="dev",
         realtime_enabled=True,
@@ -240,14 +260,98 @@ def test_resolve_speech_provider_uses_managed_metering_target():
         state,
         settings,
         "speech_voice_live",
-        model="gpt-realtime",
+        model=model_id,
         region="eastus2",
     )
     assert resolution.deployment is None
+    assert resolution.model_id == model_id
+    assert resolution.managed_model is not None
+    assert resolution.managed_model.profile == profile
+    assert resolution.managed_model.inputTranscription.provider == transcription_provider
+    assert resolution.managed_model.inputTranscription.model == transcription_model
+    assert resolution.target_name == model_id
+    assert resolution.api_version == "2026-04-10"
     assert resolution.usage_target.provider == "speech_voice_live"
     assert resolution.usage_target.deployment is None
     assert resolution.usage_target.target == "managed_voice_live"
     assert resolution.usage_target.region == "eastus2"
+
+
+def test_resolve_speech_provider_absent_model_uses_catalog_default():
+    settings = make_settings(
+        env="dev",
+        realtime_enabled=True,
+        speech_voice_live_enabled=True,
+        voice_provider_allowlist="azure_openai,speech_voice_live",
+        speech_voice_live_base_url="https://replacement.azure-api.net/speech/voice-live",
+        speech_voice_live_gateway_api_key="speech-key",
+    )
+    state = SimpleNamespace(catalog=_catalog(), voice_provider_catalog=load_voice_provider_catalog())
+
+    resolution = _resolve_live_voice_provider(
+        state,
+        settings,
+        "speech_voice_live",
+        model=None,
+        region=None,
+    )
+
+    provider = state.voice_provider_catalog.get("speech_voice_live")
+    assert isinstance(provider, SpeechVoiceProvider)
+    assert resolution.model_id == provider.defaultManagedModelId == "gpt-realtime"
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "",
+        "GPT-REALTIME",
+        "gpt-realtime-preview",
+        "gpt-4.1-preview",
+        "arbitrary",
+    ],
+)
+def test_resolve_speech_provider_rejects_non_catalog_model_exactly(model_id):
+    settings = make_settings(
+        env="dev",
+        realtime_enabled=True,
+        speech_voice_live_enabled=True,
+        voice_provider_allowlist="azure_openai,speech_voice_live",
+        speech_voice_live_base_url="https://replacement.azure-api.net/speech/voice-live",
+        speech_voice_live_gateway_api_key="speech-key",
+    )
+    state = SimpleNamespace(catalog=_catalog(), voice_provider_catalog=load_voice_provider_catalog())
+
+    with pytest.raises(LiveVoiceProviderError, match="not available"):
+        _resolve_live_voice_provider(
+            state,
+            settings,
+            "speech_voice_live",
+            model=model_id,
+            region=None,
+        )
+
+
+@pytest.mark.parametrize("region", ["EastUS2", "westus", "eastus2-preview", " eastus2 "])
+def test_resolve_speech_provider_region_match_is_exact(region):
+    settings = make_settings(
+        env="dev",
+        realtime_enabled=True,
+        speech_voice_live_enabled=True,
+        voice_provider_allowlist="azure_openai,speech_voice_live",
+        speech_voice_live_base_url="https://replacement.azure-api.net/speech/voice-live",
+        speech_voice_live_gateway_api_key="speech-key",
+    )
+    state = SimpleNamespace(catalog=_catalog(), voice_provider_catalog=load_voice_provider_catalog())
+
+    with pytest.raises(LiveVoiceProviderError, match="not available in that region"):
+        _resolve_live_voice_provider(
+            state,
+            settings,
+            "speech_voice_live",
+            model="gpt-realtime",
+            region=region,
+        )
 
 
 def test_missing_provider_uses_the_server_advertised_default():
@@ -380,6 +484,57 @@ def _speech_provider():
     return load_voice_provider_catalog().get("speech_voice_live")
 
 
+@pytest.mark.parametrize(
+    ("model_id", "expected_transcription"),
+    [
+        ("gpt-realtime", "gpt-4o-transcribe"),
+        ("gpt-realtime-mini", "gpt-4o-transcribe"),
+        ("gpt-4.1", "azure-speech"),
+        ("gpt-4.1-mini", "azure-speech"),
+        ("gpt-5-mini", "azure-speech"),
+        ("gpt-5.1", "azure-speech"),
+    ],
+)
+def test_normalize_speech_session_uses_selected_model_profile(
+    model_id, expected_transcription
+):
+    provider = _speech_provider()
+    assert isinstance(provider, SpeechVoiceProvider)
+    managed_model = provider.get_managed_model(model_id)
+    assert managed_model is not None
+
+    out = json.loads(
+        normalize_speech_client_frame(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {
+                        "input_audio_transcription": {
+                            "provider": "attacker",
+                            "model": "attacker-model",
+                        },
+                        "input_audio_format": "g711_ulaw",
+                        "output_audio_format": "g711_ulaw",
+                        "input_audio_sampling_rate": 8_000,
+                    },
+                }
+            ),
+            provider,
+            managed_model,
+        )
+        or "{}"
+    )
+
+    session = out["session"]
+    assert session["input_audio_transcription"] == {
+        "model": expected_transcription,
+        "language": "en-US",
+    }
+    assert session["input_audio_format"] == managed_model.audioFormat
+    assert session["output_audio_format"] == managed_model.audioFormat
+    assert session["input_audio_sampling_rate"] == managed_model.sampleRateHz
+
+
 def test_normalize_speech_session_update_strips_custom_voice_fields():
     provider = _speech_provider()
     assert provider is not None
@@ -508,7 +663,9 @@ def test_normalize_speech_session_update_reconstructs_and_bounds_hostile_payload
         "locale": provider.sessionDefaults.locale,
     }
     assert session["input_audio_transcription"] == {
-        "model": provider.capabilities.inputTranscription.default,
+        "model": provider.get_managed_model(
+            provider.defaultManagedModelId
+        ).inputTranscription.model,
         "language": provider.sessionDefaults.locale,
     }
     assert session["turn_detection"] == {
@@ -567,6 +724,285 @@ def test_normalize_speech_client_frame_rejects_invalid_text_and_preserves_events
     assert normalize_speech_client_frame("not-json", provider) is None
     event = {"type": "input_audio_buffer.append", "audio": "AAEC"}
     assert json.loads(normalize_speech_client_frame(json.dumps(event), provider) or "{}") == event
+
+
+# --------------------------------------------------------------------------- #
+# Typed relay outcomes, safe metadata, and content-free frame statistics.
+# --------------------------------------------------------------------------- #
+
+
+class _RelayClient:
+    def __init__(self, messages=()):
+        self._queue = asyncio.Queue()
+        for message in messages:
+            self._queue.put_nowait(message)
+        self.sent_text: list[str] = []
+        self.sent_bytes: list[bytes] = []
+
+    async def receive(self):
+        return await self._queue.get()
+
+    async def send_text(self, data: str) -> None:
+        self.sent_text.append(data)
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.sent_bytes.append(data)
+
+
+class _RelayUpstream:
+    def __init__(self, messages=()):
+        self._queue = asyncio.Queue()
+        for message in messages:
+            self._queue.put_nowait(message)
+        self.sent_text: list[str] = []
+        self.sent_bytes: list[bytes] = []
+
+    async def send_text(self, data: str) -> None:
+        self.sent_text.append(data)
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.sent_bytes.append(data)
+
+    async def receive(self) -> UpstreamMessage:
+        return await self._queue.get()
+
+    async def close(self) -> None:
+        return None
+
+
+def _relay_bridge() -> ToolBridge:
+    state = SimpleNamespace()
+    state.tool_registry, state.tool_executor = build_tools()
+    return build_tool_bridge(
+        state,
+        make_settings(realtime_tools_enabled=False),
+        "relay-correlation",
+    )
+
+
+async def _run_direct_relay(
+    *,
+    client_messages=(),
+    upstream_messages=(),
+    max_seconds: float = 1,
+):
+    client = _RelayClient(client_messages)
+    upstream = _RelayUpstream(upstream_messages)
+    outcome = await relay(
+        client,
+        upstream,
+        max_seconds=max_seconds,
+        bridge=_relay_bridge(),
+    )
+    return outcome, client, upstream
+
+
+def test_relay_protocol_error_then_normal_close_stays_error_and_redacts():
+    raw = json.dumps(
+        {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "code": "bad_request",
+                "param": "session.input",
+                "event_id": "evt-1",
+                "message": "Authorization: Bearer secret-token api_key=also-secret",
+            },
+            "audio": "BASE64-MUST-NOT-BE-RETAINED",
+            "history": ["private transcript"],
+        }
+    )
+    outcome, client, _ = asyncio.run(
+        _run_direct_relay(
+            upstream_messages=[
+                UpstreamMessage("text", text=raw, source_event="TEXT"),
+                UpstreamMessage(
+                    "close",
+                    close_code=1000,
+                    close_reason="token=close-secret",
+                    source_event="CLOSE",
+                ),
+            ]
+        )
+    )
+
+    assert isinstance(outcome, RelayOutcome)
+    assert outcome.status == "error"
+    assert client.sent_text == [raw]
+    assert outcome.metadata.close_code == 1000
+    assert outcome.metadata.close_reason == "token=[REDACTED]"
+    protocol_error = outcome.metadata.protocol_error
+    assert protocol_error is not None
+    assert protocol_error.error_type == "invalid_request_error"
+    assert protocol_error.code == "bad_request"
+    assert protocol_error.param == "session.input"
+    assert protocol_error.event_id == "evt-1"
+    assert protocol_error.message is not None
+    assert "secret-token" not in protocol_error.message
+    assert "also-secret" not in protocol_error.message
+    assert "BASE64-MUST-NOT-BE-RETAINED" not in repr(outcome)
+    assert "private transcript" not in repr(outcome)
+
+
+def test_relay_upstream_error_event_is_error_with_safe_exception_metadata():
+    outcome, _, _ = asyncio.run(
+        _run_direct_relay(
+            upstream_messages=[
+                UpstreamMessage(
+                    "error",
+                    exception_class="RuntimeError",
+                    exception_message="Bearer upstream-secret",
+                    source_event="ERROR",
+                )
+            ]
+        )
+    )
+
+    assert outcome.status == "error"
+    assert outcome.metadata.exception_class == "RuntimeError"
+    assert outcome.metadata.exception_message is not None
+    assert "upstream-secret" not in outcome.metadata.exception_message
+    assert outcome.metadata.source_event == "ERROR"
+
+
+def test_relay_non_normal_upstream_close_is_error():
+    outcome, _, _ = asyncio.run(
+        _run_direct_relay(
+            upstream_messages=[
+                UpstreamMessage(
+                    "close",
+                    close_code=1012,
+                    close_reason="service restart api_key=secret",
+                    source_event="CLOSE",
+                )
+            ]
+        )
+    )
+
+    assert outcome.status == "error"
+    assert outcome.metadata.close_code == 1012
+    assert outcome.metadata.close_reason == "service restart api_key=[REDACTED]"
+
+
+def test_relay_normal_upstream_close_is_complete():
+    outcome, _, _ = asyncio.run(
+        _run_direct_relay(
+            upstream_messages=[
+                UpstreamMessage("close", close_code=1000, source_event="CLOSE")
+            ]
+        )
+    )
+
+    assert outcome.status == "complete"
+    assert outcome.metadata.close_code == 1000
+
+
+def test_relay_client_disconnect_is_cancelled():
+    outcome, _, _ = asyncio.run(
+        _run_direct_relay(
+            client_messages=[
+                {"type": "websocket.disconnect", "code": 1000, "reason": "client left"}
+            ],
+            max_seconds=1,
+        )
+    )
+
+    assert outcome.status == "cancelled"
+    assert outcome.metadata.source_event == "websocket.disconnect"
+    assert outcome.metadata.close_code == 1000
+
+
+def test_relay_tracks_client_text_and_binary_without_retaining_payloads():
+    text_frame = json.dumps(
+        {
+            "type": "input_audio_buffer.append",
+            "audio": "private-client-base64",
+            "instructions": "private client prompt",
+        }
+    )
+    outcome, _, upstream = asyncio.run(
+        _run_direct_relay(
+            client_messages=[
+                {"type": "websocket.receive", "text": text_frame},
+                {"type": "websocket.receive", "bytes": b"private-client-audio"},
+                {"type": "websocket.disconnect", "code": 1000},
+            ],
+            max_seconds=1,
+        )
+    )
+
+    stats = outcome.stats.client_to_upstream
+    assert outcome.status == "cancelled"
+    assert stats.text_frames == 1
+    assert stats.binary_frames == 1
+    assert stats.event_types == ("input_audio_buffer.append",)
+    assert upstream.sent_text == [text_frame]
+    assert upstream.sent_bytes == [b"private-client-audio"]
+    assert "private-client-base64" not in repr(outcome)
+    assert "private client prompt" not in repr(outcome)
+    assert "private-client-audio" not in repr(outcome)
+
+
+def test_relay_max_duration_is_cancelled():
+    outcome, _, _ = asyncio.run(_run_direct_relay(max_seconds=0.01))
+
+    assert outcome.status == "cancelled"
+    assert outcome.metadata.source_event == "max_duration_timeout"
+
+
+def test_relay_frame_stats_are_bounded_and_never_retain_content():
+    upstream_messages = [
+        UpstreamMessage(
+            "text",
+            text=json.dumps(
+                {
+                    "type": f"response.event_{index}",
+                    "audio": f"private-base64-{index}",
+                    "transcript": f"private-transcript-{index}",
+                }
+            ),
+        )
+        for index in range(40)
+    ]
+    upstream_messages.extend(
+        [
+            UpstreamMessage("binary", data=b"\x00private-audio"),
+            UpstreamMessage("close", close_code=1000),
+        ]
+    )
+    outcome, _, _ = asyncio.run(
+        _run_direct_relay(upstream_messages=upstream_messages)
+    )
+
+    stats = outcome.stats.upstream_to_client
+    assert stats.text_frames == 40
+    assert stats.binary_frames == 1
+    assert stats.first_monotonic is not None
+    assert stats.last_monotonic is not None
+    assert stats.first_monotonic <= stats.last_monotonic
+    assert len(stats.event_types) == 32
+    assert stats.event_types[0] == "response.event_0"
+    assert "private-base64" not in repr(outcome)
+    assert "private-transcript" not in repr(outcome)
+    assert "private-audio" not in repr(outcome)
+
+
+def test_sanitize_realtime_metadata_bounds_controls_and_credentials():
+    jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature-value"
+    value = (
+        "\x00Authorization: Bearer auth-secret; "
+        "api_key=query-secret; "
+        f"token={jwt}; "
+        + ("x" * 1_000)
+    )
+
+    sanitized = sanitize_realtime_metadata(value)
+
+    assert "\x00" not in sanitized
+    assert "auth-secret" not in sanitized
+    assert "query-secret" not in sanitized
+    assert jwt not in sanitized
+    assert len(sanitized) <= 512
 
 
 # --------------------------------------------------------------------------- #

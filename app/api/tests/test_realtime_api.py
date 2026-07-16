@@ -9,6 +9,7 @@ gateway.
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import asynccontextmanager
 
 import pytest
@@ -77,6 +78,44 @@ class FakeRealtimeConnector:
             await self.upstream.close()
 
 
+class ScriptedUpstream:
+    def __init__(self, messages: list[UpstreamMessage]) -> None:
+        import asyncio
+
+        self._queue: asyncio.Queue[UpstreamMessage] = asyncio.Queue()
+        for message in messages:
+            self._queue.put_nowait(message)
+        self.sent_text: list[str] = []
+        self.sent_bytes: list[bytes] = []
+        self.close_calls = 0
+
+    async def send_text(self, data: str) -> None:
+        self.sent_text.append(data)
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.sent_bytes.append(data)
+
+    async def receive(self) -> UpstreamMessage:
+        return await self._queue.get()
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+class ScriptedRealtimeConnector:
+    def __init__(self, messages: list[UpstreamMessage]) -> None:
+        self.upstream = ScriptedUpstream(messages)
+        self.connects: list[dict] = []
+
+    @asynccontextmanager
+    async def connect(self, *, url: str, headers: dict[str, str], timeout: float):
+        self.connects.append({"url": url, "headers": headers, "timeout": timeout})
+        try:
+            yield self.upstream
+        finally:
+            await self.upstream.close()
+
+
 class FakeUsageService:
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -89,6 +128,33 @@ class FakeUsageService:
 
     async def close(self) -> None:
         return None
+
+
+class FailingUsageService(FakeUsageService):
+    async def record_completion(self, **kwargs):
+        await super().record_completion(**kwargs)
+        raise RuntimeError("api_key=metering-secret")
+
+
+def _completion_payloads(caplog) -> list[dict]:
+    payloads = []
+    for record in caplog.records:
+        try:
+            payload = json.loads(record.getMessage())
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict) and payload.get("event") == "voice_live_completion":
+            payloads.append(payload)
+    return payloads
+
+
+def _attach_completion_capture(caplog):
+    target = logging.getLogger("ai4ia_api.routers.realtime")
+    if caplog.handler in target.handlers or caplog.handler in logging.getLogger().handlers:
+        return None
+    target.addHandler(caplog.handler)
+    target.setLevel(logging.INFO)
+    return target
 
 
 def _client(**overrides) -> TestClient:
@@ -241,13 +307,28 @@ def test_live_speech_enforces_shared_auth_origin_and_entitlement_before_connect(
         c.__exit__(None, None, None)
 
 
-def test_live_upstream_failure_closes(client):
-    client.app.state.realtime_connector = FakeRealtimeConnector(fail=True)
-    with client.websocket_connect(
-        "/api/voice/live", subprotocols=[DEV_SUBPROTOCOL, "u"], headers=_origin()
-    ) as ws:
-        with pytest.raises(WebSocketDisconnect):
-            ws.receive_text()
+def test_live_upstream_failure_closes_and_records_once(client, caplog):
+    caplog.set_level("INFO", logger="ai4ia_api.routers.realtime")
+    capture = _attach_completion_capture(caplog)
+    usage = FakeUsageService()
+    try:
+        client.app.state.usage = usage
+        client.app.state.realtime_connector = FakeRealtimeConnector(fail=True)
+        with client.websocket_connect(
+            "/api/voice/live", subprotocols=[DEV_SUBPROTOCOL, "u"], headers=_origin()
+        ) as ws:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_text()
+        assert exc.value.code == 1011
+        assert len(usage.calls) == 1
+        assert usage.calls[0]["status"] == "error"
+        payloads = _completion_payloads(caplog)
+        assert len(payloads) == 1
+        assert payloads[0]["outcome"] == "error"
+        assert payloads[0]["metadata"]["exceptionClass"] == "RuntimeError"
+    finally:
+        if capture is not None:
+            capture.removeHandler(caplog.handler)
 
 
 # --------------------------------------------------------------------------- #
@@ -365,12 +446,68 @@ def test_live_speech_provider_uses_fixed_upstream_and_normalizes_session():
         c.__exit__(None, None, None)
 
 
-def test_live_speech_rejects_nonmatching_model_or_region():
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "gpt-realtime",
+        "gpt-realtime-mini",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "gpt-5-mini",
+        "gpt-5.1",
+    ],
+)
+def test_live_speech_selected_model_controls_url_and_metering(model_id):
+    c = _speech_client()
+    try:
+        connector = ScriptedRealtimeConnector(
+            [UpstreamMessage("close", close_code=1000, source_event="CLOSE")]
+        )
+        usage = FakeUsageService()
+        c.app.state.realtime_connector = connector
+        c.app.state.usage = usage
+
+        with c.websocket_connect(
+            f"/api/voice/live?provider=speech_voice_live&model={model_id}&region=eastus2",
+            subprotocols=[DEV_SUBPROTOCOL, "speechmodel"],
+            headers=_origin(),
+        ) as ws:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_text()
+
+        assert exc.value.code == 1000
+        assert connector.connects[0]["url"] == (
+            "wss://speech-gateway.test/speech/voice-live/realtime"
+            f"?api-version=2026-04-10&model={model_id}"
+        )
+        assert connector.upstream.close_calls == 1
+        assert len(usage.calls) == 1
+        assert usage.calls[0]["model_id"] == model_id
+        assert usage.calls[0]["status"] == "complete"
+        assert usage.calls[0]["target"].provider == "speech_voice_live"
+        assert usage.calls[0]["target"].target == "managed_voice_live"
+        assert usage.calls[0]["target"].region == "eastus2"
+    finally:
+        c.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "model=wrong",
+        "model=GPT-REALTIME",
+        "model=gpt-realtime-preview",
+        "model=gpt-4.1-preview",
+        "model=gpt-realtime&region=westus",
+        "model=gpt-realtime&region=EastUS2",
+    ],
+)
+def test_live_speech_rejects_nonmatching_model_or_region(query):
     c = _speech_client()
     try:
         with pytest.raises(WebSocketDisconnect):
             with c.websocket_connect(
-                "/api/voice/live?provider=speech_voice_live&model=wrong&region=westus",
+                f"/api/voice/live?provider=speech_voice_live&{query}",
                 subprotocols=[DEV_SUBPROTOCOL, "u"],
                 headers=_origin(),
             ):
@@ -447,14 +584,34 @@ def test_live_config_exposes_safe_provider_catalog():
         assert body["defaultProviderId"] == "azure_openai"
         assert body["enabledProviderIds"] == ["azure_openai", "speech_voice_live"]
         providers = {provider["id"]: provider for provider in body["providers"]}
+        assert "endpointPath" not in providers["azure_openai"]
+        assert "modelCatalogRef" not in providers["azure_openai"]
         assert "endpointPath" not in providers["speech_voice_live"]
-        assert "managedModel" in providers["speech_voice_live"]
+        assert "modelCatalogRef" not in providers["speech_voice_live"]
+        assert providers["speech_voice_live"]["defaultManagedModelId"] == "gpt-realtime"
+        assert [model["id"] for model in providers["speech_voice_live"]["managedModels"]] == [
+            "gpt-realtime",
+            "gpt-realtime-mini",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-5-mini",
+            "gpt-5.1",
+        ]
         assert providers["speech_voice_live"]["capabilities"]["voices"]["kind"] == "azure-standard"
-        assert providers["speech_voice_live"]["capabilities"]["inputTranscription"] == {
-            "provider": "openai",
-            "default": "gpt-4o-transcribe",
-            "options": ["gpt-4o-transcribe"],
-        }
+        assert "inputTranscription" not in providers["speech_voice_live"]["capabilities"]
+        assert "inputTranscription" not in providers["speech_voice_live"]["sessionDefaults"]
+        for model in providers["speech_voice_live"]["managedModels"]:
+            assert set(model) == {
+                "id",
+                "displayName",
+                "description",
+                "profile",
+                "inputTranscription",
+                "apiVersion",
+                "initialRegion",
+                "audioFormat",
+                "sampleRateHz",
+            }
     finally:
         c.__exit__(None, None, None)
 
@@ -471,8 +628,10 @@ def test_live_session_is_metered(client):
     assert summary["totalRequests"] >= 1
 
 
-def test_live_speech_session_records_managed_voice_usage():
+def test_live_speech_client_disconnect_records_cancelled_managed_voice_usage(caplog):
+    caplog.set_level("INFO", logger="ai4ia_api.routers.realtime")
     c = _speech_client()
+    capture = _attach_completion_capture(caplog)
     try:
         headers = {"X-Dev-User": "speechmeter"}
         uid = _internal_id(c, headers)
@@ -494,7 +653,7 @@ def test_live_speech_session_records_managed_voice_usage():
         assert call["user_id"] == uid
         assert call["session_id"] == "voice-live"
         assert call["model_id"] == "gpt-realtime"
-        assert call["status"] == "complete"
+        assert call["status"] == "cancelled"
         assert call["usage"].known is False
         assert call["usage"].complete is False
         assert call["usage"].calls == 1
@@ -503,7 +662,272 @@ def test_live_speech_session_records_managed_voice_usage():
         assert target.deployment is None
         assert target.target == "managed_voice_live"
         assert target.region == "eastus2"
+        payloads = _completion_payloads(caplog)
+        assert len(payloads) == 1
+        assert payloads[0]["outcome"] == "cancelled"
+        assert payloads[0]["metadata"]["sourceEvent"] in {
+            "websocket.disconnect",
+            "framework.cancelled",
+        }
     finally:
+        if capture is not None:
+            capture.removeHandler(caplog.handler)
+        c.__exit__(None, None, None)
+
+
+def test_live_normal_upstream_close_records_complete_once_and_logs_stats(caplog):
+    caplog.set_level("INFO", logger="ai4ia_api.routers.realtime")
+    c = _client(realtime_enabled=True)
+    capture = _attach_completion_capture(caplog)
+    try:
+        connector = ScriptedRealtimeConnector(
+            [
+                UpstreamMessage(
+                    "text",
+                    text='{"type":"response.done","transcript":"private"}',
+                    source_event="TEXT",
+                ),
+                UpstreamMessage("binary", data=b"private-audio", source_event="BINARY"),
+                UpstreamMessage("close", close_code=1000, source_event="CLOSE"),
+            ]
+        )
+        usage = FakeUsageService()
+        c.app.state.realtime_connector = connector
+        c.app.state.usage = usage
+
+        with c.websocket_connect(
+            "/api/voice/live",
+            subprotocols=[DEV_SUBPROTOCOL, "completeuser"],
+            headers=_origin(),
+        ) as ws:
+            assert json.loads(ws.receive_text())["type"] == "response.done"
+            assert ws.receive_bytes() == b"private-audio"
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_text()
+
+        assert exc.value.code == 1000
+        assert connector.upstream.close_calls == 1
+        assert len(usage.calls) == 1
+        assert usage.calls[0]["status"] == "complete"
+        payloads = _completion_payloads(caplog)
+        assert len(payloads) == 1
+        payload = payloads[0]
+        assert payload["outcome"] == "complete"
+        assert payload["metadata"]["closeCode"] == 1000
+        assert payload["stats"]["upstreamToClient"]["textFrames"] == 1
+        assert payload["stats"]["upstreamToClient"]["binaryFrames"] == 1
+        assert payload["stats"]["upstreamToClient"]["eventTypes"] == ["response.done"]
+        encoded = json.dumps(payload)
+        assert "private-audio" not in encoded
+        assert "private" not in encoded
+        assert "completeuser" not in encoded
+    finally:
+        if capture is not None:
+            capture.removeHandler(caplog.handler)
+        c.__exit__(None, None, None)
+
+
+def test_live_usage_failure_does_not_change_complete_outcome(caplog):
+    caplog.set_level("INFO", logger="ai4ia_api.routers.realtime")
+    c = _client(realtime_enabled=True)
+    capture = _attach_completion_capture(caplog)
+    try:
+        connector = ScriptedRealtimeConnector(
+            [UpstreamMessage("close", close_code=1000, source_event="CLOSE")]
+        )
+        usage = FailingUsageService()
+        c.app.state.realtime_connector = connector
+        c.app.state.usage = usage
+
+        with c.websocket_connect(
+            "/api/voice/live",
+            subprotocols=[DEV_SUBPROTOCOL, "usagefailure"],
+            headers=_origin(),
+        ) as ws:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_text()
+
+        assert exc.value.code == 1000
+        assert len(usage.calls) == 1
+        assert usage.calls[0]["status"] == "complete"
+        payloads = _completion_payloads(caplog)
+        assert len(payloads) == 1
+        assert payloads[0]["outcome"] == "complete"
+        assert payloads[0]["usageError"] == {
+            "exceptionClass": "RuntimeError",
+            "exceptionMessage": "api_key=[REDACTED]",
+        }
+        assert "metering-secret" not in json.dumps(payloads[0])
+    finally:
+        if capture is not None:
+            capture.removeHandler(caplog.handler)
+        c.__exit__(None, None, None)
+
+
+def test_live_protocol_error_then_close_records_error_and_logs_only_safe_fields(caplog):
+    caplog.set_level("INFO", logger="ai4ia_api.routers.realtime")
+    raw = json.dumps(
+        {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "code": "bad_request",
+                "param": "session.voice",
+                "event_id": "evt-safe",
+                "message": "Bearer protocol-secret api_key=second-secret",
+            },
+            "audio": "private-base64",
+            "instructions": "private prompt",
+        }
+    )
+    c = _speech_client()
+    capture = _attach_completion_capture(caplog)
+    try:
+        connector = ScriptedRealtimeConnector(
+            [
+                UpstreamMessage("text", text=raw, source_event="TEXT"),
+                UpstreamMessage(
+                    "close",
+                    close_code=1000,
+                    close_reason="token=close-secret",
+                    source_event="CLOSE",
+                ),
+            ]
+        )
+        usage = FakeUsageService()
+        c.app.state.realtime_connector = connector
+        c.app.state.usage = usage
+
+        with c.websocket_connect(
+            "/api/voice/live?provider=speech_voice_live",
+            subprotocols=[DEV_SUBPROTOCOL, "protocoluser"],
+            headers=_origin(),
+        ) as ws:
+            assert ws.receive_text() == raw
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_text()
+
+        assert exc.value.code == 1011
+        assert len(usage.calls) == 1
+        assert usage.calls[0]["status"] == "error"
+        payloads = _completion_payloads(caplog)
+        assert len(payloads) == 1
+        payload = payloads[0]
+        assert payload["outcome"] == "error"
+        assert payload["metadata"]["closeCode"] == 1000
+        assert payload["metadata"]["closeReason"] == "token=[REDACTED]"
+        assert payload["metadata"]["protocolError"] == {
+            "type": "invalid_request_error",
+            "code": "bad_request",
+            "param": "session.voice",
+            "event_id": "evt-safe",
+            "message": "Bearer [REDACTED] api_key=[REDACTED]",
+        }
+        encoded = json.dumps(payload)
+        for forbidden in (
+            "protocol-secret",
+            "second-secret",
+            "close-secret",
+            "private-base64",
+            "private prompt",
+            "protocoluser",
+        ):
+            assert forbidden not in encoded
+    finally:
+        if capture is not None:
+            capture.removeHandler(caplog.handler)
+        c.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_source", "expected_code"),
+    [
+        (
+            UpstreamMessage(
+                "error",
+                exception_class="RuntimeError",
+                exception_message="Authorization: Bearer upstream-secret",
+                source_event="ERROR",
+            ),
+            "ERROR",
+            None,
+        ),
+        (
+            UpstreamMessage(
+                "close",
+                close_code=1013,
+                close_reason="api_key=close-secret",
+                source_event="CLOSE",
+            ),
+            "CLOSE",
+            1013,
+        ),
+    ],
+)
+def test_live_upstream_error_or_abnormal_close_logs_safely(
+    caplog, message, expected_source, expected_code
+):
+    caplog.set_level("INFO", logger="ai4ia_api.routers.realtime")
+    c = _client(realtime_enabled=True)
+    capture = _attach_completion_capture(caplog)
+    try:
+        connector = ScriptedRealtimeConnector([message])
+        usage = FakeUsageService()
+        c.app.state.realtime_connector = connector
+        c.app.state.usage = usage
+
+        with c.websocket_connect(
+            "/api/voice/live",
+            subprotocols=[DEV_SUBPROTOCOL, "erroruser"],
+            headers=_origin(),
+        ) as ws:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_text()
+
+        assert exc.value.code == 1011
+        assert len(usage.calls) == 1
+        assert usage.calls[0]["status"] == "error"
+        payloads = _completion_payloads(caplog)
+        assert len(payloads) == 1
+        payload = payloads[0]
+        assert payload["outcome"] == "error"
+        assert payload["metadata"]["sourceEvent"] == expected_source
+        assert payload["metadata"]["closeCode"] == expected_code
+        encoded = json.dumps(payload)
+        assert "upstream-secret" not in encoded
+        assert "close-secret" not in encoded
+        assert "erroruser" not in encoded
+    finally:
+        if capture is not None:
+            capture.removeHandler(caplog.handler)
+        c.__exit__(None, None, None)
+
+
+def test_live_max_duration_records_cancelled_once(caplog):
+    caplog.set_level("INFO", logger="ai4ia_api.routers.realtime")
+    c = _client(realtime_enabled=True, realtime_max_session_seconds=0.01)
+    capture = _attach_completion_capture(caplog)
+    try:
+        usage = FakeUsageService()
+        c.app.state.usage = usage
+        with c.websocket_connect(
+            "/api/voice/live",
+            subprotocols=[DEV_SUBPROTOCOL, "timeoutuser"],
+            headers=_origin(),
+        ) as ws:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_text()
+
+        assert exc.value.code == 1000
+        assert len(usage.calls) == 1
+        assert usage.calls[0]["status"] == "cancelled"
+        payloads = _completion_payloads(caplog)
+        assert len(payloads) == 1
+        assert payloads[0]["outcome"] == "cancelled"
+        assert payloads[0]["metadata"]["sourceEvent"] == "max_duration_timeout"
+    finally:
+        if capture is not None:
+            capture.removeHandler(caplog.handler)
         c.__exit__(None, None, None)
 
 

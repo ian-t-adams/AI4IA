@@ -306,6 +306,8 @@ describe("Composer", () => {
           defaultModelLabel: "Default (GPT Realtime)",
           explicitModel: null,
           onModelChange: vi.fn(),
+          speechModel: "gpt-realtime",
+          onSpeechModelChange: vi.fn(),
           voice: "alloy",
           onVoiceChange: vi.fn(),
           toolsAvailable: false,
