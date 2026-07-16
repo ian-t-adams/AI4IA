@@ -50,6 +50,17 @@ def test_correlation_and_api_key_headers():
     assert req.headers["Ocp-Apim-Subscription-Key"] == "secret"
 
 
+def test_custom_api_key_header_separates_proxy_and_apim_credentials():
+    client = _client(
+        model_gateway_auth_mode="api_key",
+        model_gateway_api_key="secret",
+        model_gateway_api_key_header="S7P-KEY",
+    )
+    req = client.build_request(deployment="dep-1", messages=[])
+    assert req.headers["S7P-KEY"] == "secret"
+    assert "Ocp-Apim-Subscription-Key" not in req.headers
+
+
 def test_stream_flag_added_only_when_streaming():
     client = _client()
     assert "stream" not in client.build_request(deployment="d", messages=[]).json

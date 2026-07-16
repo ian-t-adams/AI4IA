@@ -63,6 +63,7 @@ def build_mem0_config(
     *,
     endpoint: str,
     api_key: str | None,
+    api_key_header: str = "Ocp-Apim-Subscription-Key",
     api_version: str,
     llm_deployment: str,
     embed_deployment: str,
@@ -74,9 +75,9 @@ def build_mem0_config(
     """Assemble the ``mem0`` config dict pointed at our APIM model gateway.
 
     Both the LLM and embedder use the ``azure_openai`` provider: ``api_key`` is
-    the APIM subscription key and ``default_headers`` carries it as
-    ``Ocp-Apim-Subscription-Key`` (the openai SDK also sends it as ``api-key``;
-    APIM only checks the former, so the duplicate is harmless). The deployment
+    the gateway key and ``default_headers`` carries it in ``api_key_header``
+    (the openai SDK also sends it as ``api-key``; the configured gateway checks
+    the explicit header, so the duplicate is harmless). The deployment
     name is both the path segment (``azure_deployment``) and the body ``model``.
     The pgvector store receives our pre-built AAD connection pool and is forced
     to an exact scan (``hnsw``/``diskann`` off) because 3072-dim embeddings
@@ -86,9 +87,7 @@ def build_mem0_config(
         "azure_endpoint": endpoint,
         "api_version": api_version,
         "api_key": api_key,
-        "default_headers": (
-            {"Ocp-Apim-Subscription-Key": api_key} if api_key else None
-        ),
+        "default_headers": ({api_key_header: api_key} if api_key else None),
     }
     return {
         "llm": {

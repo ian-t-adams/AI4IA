@@ -620,13 +620,13 @@ var staticEnv = [
   { name: 'MaxAttempts', value: '1' }
   { name: 'PriorityWorker', value: proxyPrioritiesEnabled ? proxyPriorityWorkers : '' }
   { name: 'DefaultPriority', value: '2' }
-  { name: 'ValidateAuthConfig', value: 'enabled=true;mode=key;header=Ocp-Apim-Subscription-Key' }
+  { name: 'ValidateAuthConfig', value: 'enabled=true;mode=key;header=S7P-KEY' }
   { name: 'ValidateAuthKey1', secretRef: 'api-proxy-inbound-key' }
   {
     name: 'StripRequestHeaders'
     value: string([
       'Authorization'
-      'Ocp-Apim-Subscription-Key'
+      'S7P-KEY'
       'X-AI4IA-App-Id'
       'X-AI4IA-User-Id'
       'X-UserProfile'
