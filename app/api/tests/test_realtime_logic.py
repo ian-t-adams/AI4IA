@@ -11,6 +11,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import anyio
 import pytest
 
 from ai4ia_api.agents.agent_catalog import AgentCatalog, AgentSpec
@@ -30,6 +31,7 @@ from ai4ia_api.routers.realtime import (
     RealtimeFunctionCall,
     RealtimeResolutionError,
     RelayOutcome,
+    RelayMetadata,
     ToolBridge,
     UpstreamMessage,
     authenticate_subprotocol,
@@ -49,6 +51,7 @@ from ai4ia_api.routers.realtime import (
     resolve_realtime_deployment,
     relay,
     sanitize_realtime_metadata,
+    _run_relay_with_finalization,
     _resolve_live_voice_provider,
 )
 from tests.conftest import make_settings
@@ -895,6 +898,54 @@ def test_relay_normal_upstream_close_is_complete():
 
     assert outcome.status == "complete"
     assert outcome.metadata.close_code == 1000
+
+
+def test_relay_post_exit_cancellation_finalizes_cancelled_once_and_reraises():
+    usage_records: list[dict[str, object]] = []
+    cancellation_propagated = False
+
+    async def scenario() -> bool:
+        nonlocal cancellation_propagated
+        reached_after_finalization = False
+        with anyio.CancelScope() as scope:
+
+            async def run_relay() -> RelayOutcome:
+                scope.cancel()
+                return RelayOutcome(
+                    status="complete",
+                    metadata=RelayMetadata(close_code=1000, source_event="CLOSE"),
+                )
+
+            async def finalize_relay(outcome: RelayOutcome) -> None:
+                usage_records.append(
+                    {
+                        "status": outcome.status,
+                        "close_code": outcome.metadata.close_code,
+                        "source_event": outcome.metadata.source_event,
+                    }
+                )
+                await anyio.sleep(0)
+
+            try:
+                await _run_relay_with_finalization(
+                    run_relay=run_relay,
+                    finalize_relay=finalize_relay,
+                )
+            except anyio.get_cancelled_exc_class():
+                cancellation_propagated = True
+                raise
+            reached_after_finalization = True
+        return reached_after_finalization
+
+    assert asyncio.run(scenario()) is False
+    assert cancellation_propagated is True
+    assert usage_records == [
+        {
+            "status": "cancelled",
+            "close_code": 1000,
+            "source_event": "framework.cancelled",
+        }
+    ]
 
 
 def test_relay_client_disconnect_is_cancelled():

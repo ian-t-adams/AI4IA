@@ -53,6 +53,7 @@ SYNTHETIC_HISTORY = (
     ("user", "voice-canary-user"),
     ("assistant", "voice-canary-assistant"),
 )
+SEED_ITEM_ID_PREFIX = "voice-canary-seed-"
 MAX_SEED_TURNS = 20
 MAX_SEED_CHARS = 6000
 
@@ -106,11 +107,13 @@ class CanaryCloseError(RuntimeError):
 
 
 class EventState:
-    def __init__(self) -> None:
+    def __init__(self, expected_history_item_ids: Sequence[str] = ()) -> None:
         self.created = False
         self.updated = False
         self.correlation: str | None = None
         self.received_frames = 0
+        self.expected_history_item_ids = tuple(expected_history_item_ids)
+        self.acknowledged_history_item_ids: set[str] = set()
 
 
 def compact_json(value: object) -> str:
@@ -268,7 +271,9 @@ def speech_session_update(model: str) -> str:
     )
 
 
-def seed_frames(history: Sequence[tuple[str, str]] = SYNTHETIC_HISTORY) -> list[str]:
+def _selected_history(
+    history: Sequence[tuple[str, str]] = SYNTHETIC_HISTORY,
+) -> list[tuple[str, str]]:
     recent = [
         (role, text.strip())
         for role, text in history
@@ -282,11 +287,26 @@ def seed_frames(history: Sequence[tuple[str, str]] = SYNTHETIC_HISTORY) -> list[
         bounded = text[:budget]
         selected.insert(0, (role, bounded))
         budget -= len(bounded)
+    return selected
+
+
+def expected_history_item_ids(
+    history: Sequence[tuple[str, str]] = SYNTHETIC_HISTORY,
+) -> tuple[str, ...]:
+    return tuple(
+        f"{SEED_ITEM_ID_PREFIX}{index:03d}"
+        for index, _ in enumerate(_selected_history(history), start=1)
+    )
+
+
+def seed_frames(history: Sequence[tuple[str, str]] = SYNTHETIC_HISTORY) -> list[str]:
+    selected = _selected_history(history)
     return [
         compact_json(
             {
                 "type": "conversation.item.create",
                 "item": {
+                    "id": f"{SEED_ITEM_ID_PREFIX}{index:03d}",
                     "type": "message",
                     "role": role,
                     "content": [
@@ -298,7 +318,7 @@ def seed_frames(history: Sequence[tuple[str, str]] = SYNTHETIC_HISTORY) -> list[
                 },
             }
         )
-        for role, text in selected
+        for index, (role, text) in enumerate(selected, start=1)
     ]
 
 
@@ -322,7 +342,7 @@ def _correlation_from(payload: dict[str, Any], token: str) -> str | None:
 
 
 def inspect_event(frame: str, state: EventState, *, token: str) -> bool:
-    """Consume safe event metadata and return true only after created -> updated."""
+    """Return true after session setup and every synthetic seed acknowledgement."""
 
     state.received_frames += 1
     try:
@@ -371,7 +391,21 @@ def inspect_event(frame: str, state: EventState, *, token: str) -> bool:
                 "session.updated arrived before session.created.", state.correlation
             )
         state.updated = True
-    return state.created and state.updated
+    elif event_type == "conversation.item.created":
+        raw_item = payload.get("item")
+        item = raw_item if isinstance(raw_item, dict) else {}
+        item_id = item.get("id")
+        if (
+            isinstance(item_id, str)
+            and item_id in state.expected_history_item_ids
+        ):
+            state.acknowledged_history_item_ids.add(item_id)
+    return (
+        state.created
+        and state.updated
+        and state.acknowledged_history_item_ids
+        == set(state.expected_history_item_ids)
+    )
 
 
 def _emit(
@@ -416,7 +450,8 @@ async def run_canary(
         )
         return 2
 
-    state = EventState()
+    initial_frames = build_initial_frames(provider, model)
+    state = EventState(expected_history_item_ids())
     ws: Any = None
     try:
         client_timeout = aiohttp.ClientTimeout(total=None, sock_connect=timeout)
@@ -433,7 +468,7 @@ async def run_canary(
                         raise CanaryOrderError(
                             "Server did not select the bearer auth subprotocol."
                         )
-                    for frame in build_initial_frames(provider, model):
+                    for frame in initial_frames:
                         await ws.send_str(frame)
 
                     async for message in ws:
@@ -505,7 +540,12 @@ async def run_canary(
             model,
             "timeout",
             correlation=state.correlation,
-            fields={"message": "Timed out before session.created then session.updated."},
+            fields={
+                "message": (
+                    "Timed out before session setup and every synthetic history "
+                    "item were acknowledged."
+                )
+            },
         )
         return 3
     except Exception:

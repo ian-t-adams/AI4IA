@@ -34,7 +34,7 @@ import logging
 import re
 import time
 import unicodedata
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Protocol
@@ -42,6 +42,7 @@ from urllib.parse import quote
 
 import aiohttp
 import anyio
+from anyio.lowlevel import checkpoint_if_cancelled
 from fastapi import APIRouter, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
@@ -1590,6 +1591,57 @@ def _outcome_with_exception(
     )
 
 
+def _cancelled_relay_outcome(outcome: RelayOutcome | None) -> RelayOutcome:
+    metadata = outcome.metadata if outcome is not None else RelayMetadata()
+    return RelayOutcome(
+        status="error" if metadata.protocol_error is not None else "cancelled",
+        metadata=RelayMetadata(
+            protocol_error=metadata.protocol_error,
+            close_code=metadata.close_code,
+            close_reason=metadata.close_reason,
+            exception_class=metadata.exception_class,
+            exception_message=metadata.exception_message,
+            source_event="framework.cancelled",
+        ),
+        stats=outcome.stats if outcome is not None else RelayStats(),
+    )
+
+
+async def _run_relay_with_finalization(
+    *,
+    run_relay: Callable[[], Awaitable[RelayOutcome]],
+    finalize_relay: Callable[[RelayOutcome], Awaitable[None]],
+) -> None:
+    outcome: RelayOutcome | None = None
+    cancelled_exc_class = anyio.get_cancelled_exc_class()
+    try:
+        try:
+            outcome = await run_relay()
+            # Deliver cancellation requested as the relay returned before entering
+            # the shielded finalizer, so the recorded outcome remains truthful.
+            await checkpoint_if_cancelled()
+        except cancelled_exc_class as exc:
+            partial_outcome = getattr(exc, "_ai4ia_relay_outcome", None)
+            if isinstance(partial_outcome, RelayOutcome):
+                outcome = partial_outcome
+            outcome = _cancelled_relay_outcome(outcome)
+            raise
+        except Exception as exc:  # noqa: BLE001 - converted to bounded relay metadata
+            outcome = _outcome_with_exception(
+                outcome,
+                exc,
+                status="error",
+                source_event="upstream.connect_or_relay",
+            )
+    finally:
+        final_outcome = outcome or RelayOutcome(
+            status="cancelled",
+            metadata=RelayMetadata(source_event="local_stop"),
+        )
+        with anyio.CancelScope(shield=True):
+            await finalize_relay(final_outcome)
+
+
 def _emit_relay_completion(
     *,
     correlation_id: str,
@@ -1742,68 +1794,29 @@ async def voice_live(websocket: WebSocket) -> None:
             return None
         return bridge.rewrite_client_frame(provider_frame)
 
-    outcome: RelayOutcome | None = None
-    cancelled_exc_class = anyio.get_cancelled_exc_class()
-    try:
+    async def run_relay() -> RelayOutcome:
         async with connector.connect(
             url=url, headers=headers, timeout=settings.realtime_timeout_seconds
         ) as upstream:
-            outcome = await relay(
+            return await relay(
                 websocket,
                 upstream,
                 max_seconds=settings.realtime_max_session_seconds,
                 bridge=bridge,
                 rewrite_client_frame=rewrite_client_frame,
             )
-    except cancelled_exc_class as exc:
-        partial_outcome = getattr(exc, "_ai4ia_relay_outcome", None)
-        if isinstance(partial_outcome, RelayOutcome):
-            outcome = partial_outcome
-        metadata = outcome.metadata if outcome is not None else RelayMetadata()
-        outcome = RelayOutcome(
-            status=(
-                "error"
-                if metadata.protocol_error is not None
-                else "cancelled"
-            ),
-            metadata=RelayMetadata(
-                protocol_error=metadata.protocol_error,
-                close_code=metadata.close_code,
-                close_reason=metadata.close_reason,
-                exception_class=metadata.exception_class,
-                exception_message=metadata.exception_message,
-                source_event="framework.cancelled",
-            ),
-            stats=outcome.stats if outcome is not None else RelayStats(),
-        )
-        with anyio.CancelScope(shield=True):
-            await _finalize_relay(
-                websocket=websocket,
-                state=state,
-                user=user,
-                correlation_id=correlation_id,
-                resolution=provider_resolution,
-                outcome=outcome,
-            )
-        raise
-    except Exception as exc:  # noqa: BLE001 - converted to bounded relay metadata
-        outcome = _outcome_with_exception(
-            outcome,
-            exc,
-            status="error",
-            source_event="upstream.connect_or_relay",
+
+    async def finalize_relay(outcome: RelayOutcome) -> None:
+        await _finalize_relay(
+            websocket=websocket,
+            state=state,
+            user=user,
+            correlation_id=correlation_id,
+            resolution=provider_resolution,
+            outcome=outcome,
         )
 
-    if outcome is None:
-        outcome = RelayOutcome(
-            status="cancelled",
-            metadata=RelayMetadata(source_event="local_stop"),
-        )
-    await _finalize_relay(
-        websocket=websocket,
-        state=state,
-        user=user,
-        correlation_id=correlation_id,
-        resolution=provider_resolution,
-        outcome=outcome,
+    await _run_relay_with_finalization(
+        run_relay=run_relay,
+        finalize_relay=finalize_relay,
     )

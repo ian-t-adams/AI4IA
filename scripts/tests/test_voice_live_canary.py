@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import io
 import json
@@ -7,6 +8,8 @@ import sys
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "voice-live-canary.py"
@@ -34,6 +37,7 @@ AZURE_UPDATE = (
 FIRST_SEED = {
     "type": "conversation.item.create",
     "item": {
+        "id": "voice-canary-seed-001",
         "type": "message",
         "role": "user",
         "content": [{"type": "input_text", "text": "voice-canary-user"}],
@@ -151,8 +155,9 @@ class VoiceLiveCanaryTests(unittest.TestCase):
                 model="arbitrary-model",
             )
 
-    def test_event_order_requires_created_then_updated_and_ignores_safe_events(self) -> None:
-        state = canary.EventState()
+    def test_event_order_requires_created_then_updated_and_all_history_acks(self) -> None:
+        expected_ids = canary.expected_history_item_ids()
+        state = canary.EventState(expected_ids)
         self.assertFalse(
             canary.inspect_event('{"type":"rate_limits.updated"}', state, token="secret")
         )
@@ -163,8 +168,34 @@ class VoiceLiveCanaryTests(unittest.TestCase):
                 token="secret",
             )
         )
-        self.assertTrue(
+        self.assertFalse(
             canary.inspect_event('{"type":"session.updated"}', state, token="secret")
+        )
+        self.assertEqual(state.acknowledged_history_item_ids, set())
+        self.assertFalse(
+            canary.inspect_event(
+                json.dumps(
+                    {
+                        "type": "conversation.item.created",
+                        "item": {"id": expected_ids[0]},
+                    }
+                ),
+                state,
+                token="secret",
+            )
+        )
+        self.assertEqual(state.acknowledged_history_item_ids, {expected_ids[0]})
+        self.assertTrue(
+            canary.inspect_event(
+                json.dumps(
+                    {
+                        "type": "conversation.item.created",
+                        "item": {"id": expected_ids[1]},
+                    }
+                ),
+                state,
+                token="secret",
+            )
         )
         self.assertEqual(state.correlation, "corr-123")
 
@@ -174,9 +205,56 @@ class VoiceLiveCanaryTests(unittest.TestCase):
                 '{"type":"session.updated"}', wrong_order, token="secret"
             )
 
+    def test_history_acknowledgements_may_arrive_out_of_order(self) -> None:
+        expected_ids = canary.expected_history_item_ids()
+        state = canary.EventState(expected_ids)
+        self.assertFalse(
+            canary.inspect_event('{"type":"session.created"}', state, token="secret")
+        )
+        self.assertFalse(
+            canary.inspect_event('{"type":"session.updated"}', state, token="secret")
+        )
+        self.assertFalse(
+            canary.inspect_event(
+                json.dumps(
+                    {
+                        "type": "conversation.item.created",
+                        "item": {"id": expected_ids[1]},
+                    }
+                ),
+                state,
+                token="secret",
+            )
+        )
+        self.assertTrue(
+            canary.inspect_event(
+                json.dumps(
+                    {
+                        "type": "conversation.item.created",
+                        "item": {"id": expected_ids[0]},
+                    }
+                ),
+                state,
+                token="secret",
+            )
+        )
+
     def test_protocol_output_is_bounded_redacted_and_never_contains_token(self) -> None:
         token = "header.payload.signature"
-        state = canary.EventState()
+        expected_ids = canary.expected_history_item_ids()
+        state = canary.EventState(expected_ids)
+        canary.inspect_event('{"type":"session.created"}', state, token=token)
+        canary.inspect_event('{"type":"session.updated"}', state, token=token)
+        canary.inspect_event(
+            json.dumps(
+                {
+                    "type": "conversation.item.created",
+                    "item": {"id": expected_ids[0]},
+                }
+            ),
+            state,
+            token=token,
+        )
         message = (
             f"Authorization: Bearer {token} token={token} "
             + "safe"
@@ -218,6 +296,110 @@ class VoiceLiveCanaryTests(unittest.TestCase):
             1008, f"Bearer {token}", token, correlation=None
         )
         self.assertNotIn(token, close.reason or "")
+
+    def test_close_while_waiting_for_history_ack_is_not_success(self) -> None:
+        expected_ids = canary.expected_history_item_ids()
+
+        class FakeWsMessageType:
+            TEXT = "text"
+            BINARY = "binary"
+            CLOSE = "close"
+            CLOSING = "closing"
+            CLOSED = "closed"
+            ERROR = "error"
+
+        messages = [
+            SimpleNamespace(
+                type=FakeWsMessageType.TEXT,
+                data='{"type":"session.created"}',
+                extra=None,
+            ),
+            SimpleNamespace(
+                type=FakeWsMessageType.TEXT,
+                data='{"type":"session.updated"}',
+                extra=None,
+            ),
+            SimpleNamespace(
+                type=FakeWsMessageType.TEXT,
+                data=json.dumps(
+                    {
+                        "type": "conversation.item.created",
+                        "item": {"id": expected_ids[0]},
+                    }
+                ),
+                extra=None,
+            ),
+            SimpleNamespace(
+                type=FakeWsMessageType.CLOSE,
+                data=None,
+                extra="provider stopped",
+            ),
+        ]
+
+        class FakeWebSocket:
+            protocol = canary.BEARER_SUBPROTOCOL
+            close_code = 1011
+            closed = False
+
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+
+            async def send_str(self, frame: str) -> None:
+                self.sent.append(frame)
+
+            async def close(self, **_kwargs) -> None:
+                self.closed = True
+
+            def __aiter__(self):
+                async def iterate():
+                    for message in messages:
+                        yield message
+
+                return iterate()
+
+        websocket = FakeWebSocket()
+
+        class FakeWebSocketContext:
+            async def __aenter__(self):
+                return websocket
+
+            async def __aexit__(self, *_args):
+                return None
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def ws_connect(self, *_args, **_kwargs):
+                return FakeWebSocketContext()
+
+        fake_aiohttp = SimpleNamespace(
+            ClientTimeout=lambda **_kwargs: object(),
+            ClientSession=lambda **_kwargs: FakeSession(),
+            WSMsgType=FakeWsMessageType,
+        )
+        output = io.StringIO()
+        with (
+            patch.dict(sys.modules, {"aiohttp": fake_aiohttp}),
+            redirect_stdout(output),
+        ):
+            result = asyncio.run(
+                canary.run_canary(
+                    url="wss://api.example.test/api/voice/live",
+                    origin="https://app.example.test",
+                    provider="azure_openai",
+                    model="gpt-realtime",
+                    token="header.payload.signature",
+                    timeout=1,
+                )
+            )
+
+        self.assertEqual(result, 5)
+        self.assertEqual(json.loads(output.getvalue())["outcome"], "closed")
+        self.assertEqual(len(websocket.sent), 3)
 
 
 if __name__ == "__main__":
