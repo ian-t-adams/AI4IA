@@ -22,6 +22,8 @@ site (the router falls back to the full history on any error).
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from ..sessions.models import Message, MessageRole
@@ -31,6 +33,19 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..sessions.repository import SessionRepository
 
 logger = logging.getLogger(__name__)
+
+
+class ManualSummaryStatus(str, Enum):
+    committed = "committed"
+    insufficient = "insufficient"
+    superseded = "superseded"
+
+
+@dataclass(frozen=True)
+class ManualSummaryResult:
+    status: ManualSummaryStatus
+    summary: str | None = None
+    committed_version: int | None = None
 
 # Approximate characters per token, used to translate a token-denominated
 # context window into a character budget for the transcript threshold.
@@ -204,7 +219,7 @@ class SummarizationService:
         prior: list[Message],
         api: str = "chat",
         correlation_id: str | None = None,
-    ) -> str | None:
+    ) -> ManualSummaryResult:
         """Manual ``/summarize``: fold all not-yet-summarized turns into the
         running summary, persist it on the session, and return the digest. Returns
         ``None`` when there is nothing to summarize so the caller can reply
@@ -214,7 +229,7 @@ class SummarizationService:
         live = self._live_messages(non_command, session.summarizedThroughMessageId)
         observed_version = session.summaryVersion
         if not live:
-            return None
+            return ManualSummaryResult(ManualSummaryStatus.insufficient)
         summary = await self._generate(
             gateway=gateway,
             deployment=deployment,
@@ -224,7 +239,7 @@ class SummarizationService:
             correlation_id=correlation_id,
         )
         if not summary:
-            return None
+            return ManualSummaryResult(ManualSummaryStatus.insufficient)
         committed = await repo.commit_summary_if_version(
             user_id,
             session.id,
@@ -233,11 +248,15 @@ class SummarizationService:
             summarized_through_message_id=live[-1].id,
         )
         if committed is None:
-            return None
+            return ManualSummaryResult(ManualSummaryStatus.superseded)
         session.summary = committed.summary
         session.summarizedThroughMessageId = committed.summarizedThroughMessageId
         session.summaryVersion = committed.summaryVersion
-        return summary
+        return ManualSummaryResult(
+            ManualSummaryStatus.committed,
+            summary=summary,
+            committed_version=committed.summaryVersion,
+        )
 
     async def apply(
         self,

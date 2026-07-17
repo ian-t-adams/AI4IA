@@ -24,7 +24,7 @@ from ..sessions.models import Message, MessageRole, MessageStatus, Session
 from ..sessions.repository import SessionRepository
 from .agent_catalog import AgentCatalog
 from .commands import CommandKind, ParsedInput
-from .summarization import SummarizationService
+from .summarization import ManualSummaryStatus, SummarizationService
 from .tool_exec import (
     ToolContext,
     ToolExecutionError,
@@ -89,6 +89,7 @@ async def execute_command(
         "systemPrompt": session.systemPrompt,
     }
     expected_summary_version: int | None = None
+    persist_reply = True
 
     # /clear wipes history (including the command itself), so it skips echoing
     # the user's command message; everything else records it for context.
@@ -116,7 +117,7 @@ async def execute_command(
         if command.kind is CommandKind.forget:
             reply = await _forget_reply(memory, user_id, session.id, command.args)
         elif command.kind is CommandKind.summarize:
-            reply, expected_summary_version = await _summarize_reply(
+            reply, expected_summary_version, persist_reply = await _summarize_reply(
                 summarizer, gateway, repo, catalog, user_id, session
             )
         else:
@@ -145,6 +146,8 @@ async def execute_command(
         fromCommand=True,
         summaryVersion=expected_summary_version,
     )
+    if not persist_reply:
+        return assistant
     if expected_summary_version is not None:
         persisted = await repo.add_message_if_summary_version(
             user_id,
@@ -305,26 +308,26 @@ async def _summarize_reply(
     catalog: ModelCatalog,
     user_id: str,
     session: Session,
-) -> tuple[str, int | None]:
+) -> tuple[str, int | None, bool]:
     """Manual ``/summarize``: condense the conversation into a running summary,
     persist it on the session (mutated in place; the caller's update_session
     commits it), and show the digest. Fail-soft: any model/store error degrades
     to a friendly message and never raises out of the command path."""
     if summarizer is None or gateway is None:
-        return "Summarizing long chats isn't available in this environment yet.", None
+        return "Summarizing long chats isn't available in this environment yet.", None, True
     if not session.model:
         return (
             "Choose a model for this conversation first (use /model <model-id> "
             "or the model menu), then run /summarize."
-        ), None
+        ), None, True
     deployment = catalog.resolve_deployment(session.model)
     if deployment is None:
-        return f"Can't summarize: '{session.model}' is not an available model.", None
+        return f"Can't summarize: '{session.model}' is not an available model.", None, True
     entry = catalog.get(session.model)
     api = entry.api if entry is not None else "chat"
     prior = await repo.list_messages(user_id, session.id)
     try:
-        summary = await summarizer.summarize_now(
+        result = await summarizer.summarize_now(
             gateway=gateway,
             repo=repo,
             session=session,
@@ -338,12 +341,16 @@ async def _summarize_reply(
         return (
             "Sorry — I couldn't summarize the conversation just now. "
             "Please try again in a moment."
-        ), None
-    if not summary:
-        return "There's not enough conversation here to summarize yet.", None
+        ), None, True
+    if result.status is ManualSummaryStatus.superseded:
+        return "Summary was superseded by a newer conversation state.", None, False
+    if result.status is ManualSummaryStatus.insufficient:
+        return "There's not enough conversation here to summarize yet.", None, True
+    assert result.summary is not None and result.committed_version is not None
     return (
-        f"Here's a running summary of the conversation so far:\n\n{summary}",
-        session.summaryVersion,
+        f"Here's a running summary of the conversation so far:\n\n{result.summary}",
+        result.committed_version,
+        True,
     )
 
 
