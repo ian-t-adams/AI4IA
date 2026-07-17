@@ -106,11 +106,26 @@ describe("responsive sidebar", () => {
     ).toHaveFocus();
 
     dialog = await open();
+    expect(screen.getByTestId("sidebar-scroll")).toHaveStyle({
+      minHeight: "0",
+      overflowY: "auto",
+      overflowX: "hidden",
+    });
+    expect(dialog).toHaveStyle({
+      maxWidth: "100vw",
+      maxHeight: "100dvh",
+      overflow: "hidden",
+    });
     expect(
       screen.getByRole("button", {
         name: "A very long conversation title that must not overlap controls",
       }),
     ).toHaveStyle({ overflow: "hidden", textOverflow: "ellipsis" });
+    const status = screen.getByRole("link", {
+      name: "Status (opens in new tab)",
+    });
+    status.focus();
+    expect(status).toHaveFocus();
     await user.click(screen.getByRole("button", { name: "Collapse sidebar" }));
     expect(
       await screen.findByRole("button", { name: "Open conversations" }),

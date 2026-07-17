@@ -363,6 +363,16 @@ describe("ChatApp uploads", () => {
 
     await user.click(sidebarOpener);
     expect(screen.getByRole("dialog", { name: "Chat sessions" })).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-scroll")).toHaveStyle({
+      minHeight: "0",
+      overflowY: "auto",
+      overflowX: "hidden",
+    });
+    const statusLink = screen.getByRole("link", {
+      name: "Status (opens in new tab)",
+    });
+    statusLink.focus();
+    expect(statusLink).toHaveFocus();
     expect(document.querySelector("main")).toHaveAttribute("inert");
     expect(screen.queryByRole("dialog", { name: "Conversation inspector" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Close conversation sidebar" }));

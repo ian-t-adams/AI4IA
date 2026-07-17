@@ -228,11 +228,11 @@ async def test_terminal_manifest_failure_never_emits_ready(monkeypatch):
             super().__init__()
             self.patches = 0
 
-        async def patch_ingest_fields(self, document, changes):
+        async def patch_ingest_fields(self, document, changes, **kwargs):
             self.patches += 1
             if self.patches == 2:
                 raise RuntimeError("manifest unavailable")
-            return await super().patch_ingest_fields(document, changes)
+            return await super().patch_ingest_fields(document, changes, **kwargs)
 
     library = FailingFinalRepository()
     ingestor = _make(
@@ -343,14 +343,14 @@ async def test_enrich_delete_between_recheck_and_commit_rolls_back():
             super().__init__()
             self._tripped = False
 
-        async def patch_ingest_fields(self, document, changes):
+        async def patch_ingest_fields(self, document, changes, **kwargs):
             # The terminal success write is the commit point; simulate the row
             # having just been deleted so the write loses to the concurrent delete.
             if changes.get("status") == DocumentStatus.ready and not self._tripped:
                 self._tripped = True
                 await super().delete_document(document.userId, document.id)
                 raise DocumentNotFoundError(document.id)
-            return await super().patch_ingest_fields(document, changes)
+            return await super().patch_ingest_fields(document, changes, **kwargs)
 
     library = _DeleteOnReadyRepo()
     chunks = InMemoryDocChunkStore(expected_dim=3)

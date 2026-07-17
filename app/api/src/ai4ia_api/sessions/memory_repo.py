@@ -9,7 +9,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from .models import Document, Message, Session
-from .repository import SessionNotFoundError
+from .repository import SessionConflictError, SessionNotFoundError
 
 
 class InMemorySessionRepository:
@@ -43,10 +43,9 @@ class InMemorySessionRepository:
         return sorted(items, key=lambda s: s.updatedAt, reverse=True)
 
     async def update_session(self, session: Session) -> Session:
-        async with self._lock:
-            await self._owned_session(session.userId, session.id)
-            self._sessions[session.id] = session
-            return session
+        raise SessionConflictError(
+            "Unversioned full session replacement is disabled; use patch_session."
+        )
 
     async def patch_session(
         self, user_id: str, session_id: str, changes: dict[str, object]

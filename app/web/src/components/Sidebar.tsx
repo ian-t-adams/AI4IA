@@ -49,12 +49,16 @@ export function Sidebar({
       aria-label="Chat sessions"
       style={{
         width: 280,
+        maxWidth: "100vw",
         flexShrink: 0,
         background: "var(--bg-sidebar)",
         color: "var(--sidebar-fg)",
         display: "flex",
         flexDirection: "column",
         height: "100%",
+        maxHeight: "100dvh",
+        minHeight: 0,
+        overflow: "hidden",
       }}
     >
       <div style={{ padding: 16, display: "flex", alignItems: "center", gap: 10 }}>
@@ -90,6 +94,18 @@ export function Sidebar({
           </button>
         )}
       </div>
+      <div
+        className="sidebar-scroll"
+        data-testid="sidebar-scroll"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          overflowX: "hidden",
+        }}
+      >
       <div style={{ padding: "0 12px 12px" }}>
         <button
           onClick={onNewChat}
@@ -114,8 +130,9 @@ export function Sidebar({
           listStyle: "none",
           margin: 0,
           padding: "0 8px",
-          overflowY: "auto",
-          flex: 1,
+          overflowY: "visible",
+          flex: "0 0 auto",
+          minHeight: 0,
         }}
       >
         {sessions.length === 0 && (
@@ -274,6 +291,7 @@ export function Sidebar({
           <AdminLink disabled={disabled} />
           <UserMenu disabled={disabled} />
         </div>
+      </div>
       </div>
     </nav>
   );

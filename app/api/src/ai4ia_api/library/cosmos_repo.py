@@ -187,7 +187,11 @@ class CosmosDocumentLibraryRepository:
         return document
 
     async def patch_ingest_fields(
-        self, document: UserDocument, changes: dict[str, object]
+        self,
+        document: UserDocument,
+        changes: dict[str, object],
+        *,
+        require_status: DocumentStatus | None = None,
     ) -> UserDocument:
         from azure.core import MatchConditions
         from azure.cosmos.exceptions import (
@@ -232,6 +236,12 @@ class CosmosDocumentLibraryRepository:
                     )
                 except CosmosResourceNotFoundError as exc:
                     raise DocumentNotFoundError(document.id) from exc
+                latest_document = self._from_document(latest)
+                if (
+                    require_status is not None
+                    and latest_document.status != require_status
+                ):
+                    return latest_document
                 etag = latest.get("_etag")
         raise RuntimeError("document ingest manifest update conflicted repeatedly")
 

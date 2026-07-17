@@ -121,6 +121,8 @@ export function HelpTooltip({
                 right: "auto",
                 maxHeight: "calc(100dvh - 32px)",
                 overflowY: "auto",
+                overflowX: "hidden",
+                overflowWrap: "anywhere",
               }}
             >
               {children}

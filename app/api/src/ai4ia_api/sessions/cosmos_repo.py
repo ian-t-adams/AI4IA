@@ -69,9 +69,9 @@ class CosmosSessionRepository:
         return items
 
     async def update_session(self, session: Session) -> Session:
-        await self._owned_session(session.userId, session.id)
-        await self._sessions.upsert_item(self._to_doc(session))
-        return session
+        raise SessionConflictError(
+            "Unversioned full session replacement is disabled; use patch_session."
+        )
 
     async def patch_session(
         self, user_id: str, session_id: str, changes: dict[str, object]

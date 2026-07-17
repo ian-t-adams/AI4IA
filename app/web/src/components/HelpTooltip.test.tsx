@@ -57,7 +57,7 @@ describe("HelpTooltip", () => {
     const user = userEvent.setup();
     render(
       <HelpTooltip label="Bounds">
-        {Array.from({ length: 30 }, () => "Long bounded help content. ").join("")}
+        {"X".repeat(500)}
       </HelpTooltip>,
     );
     const trigger = screen.getByRole("button", { name: "Help: Bounds" });
@@ -68,6 +68,8 @@ describe("HelpTooltip", () => {
       expect(tooltip).toHaveStyle({
         maxHeight: "calc(100dvh - 32px)",
         overflowY: "auto",
+        overflowX: "hidden",
+        overflowWrap: "anywhere",
       });
     });
     rect.mockRestore();

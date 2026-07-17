@@ -413,6 +413,9 @@ button:disabled {
   width: min(320px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
   overflow-y: auto;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   overscroll-behavior: contain;
   border: 1px solid var(--border);
   border-radius: 9px;

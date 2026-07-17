@@ -405,6 +405,62 @@ async def test_recover_interrupted_purges_partial_artifacts():
     assert await chunks.search("u1", _QUERY, top_k=50) == []
 
 
+async def test_recovery_preserves_concurrent_access_and_owner_metadata():
+    class RecoveryRaceRepository(InMemoryDocumentLibraryRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.interleaved = False
+
+        async def patch_ingest_fields(self, document, changes, **kwargs):
+            if not self.interleaved:
+                self.interleaved = True
+                latest = await self.get_document(document.userId, document.id)
+                latest.visibility = Visibility.private
+                latest.acl = []
+                latest.annotations.append(DocumentAnnotation(body="keep"))
+                latest.sessionLinks.append("session-new")
+                await self.update_document(latest)
+            return await super().patch_ingest_fields(document, changes, **kwargs)
+
+    library = RecoveryRaceRepository()
+    stuck = await library.create_document(
+        UserDocument(
+            userId="u1",
+            filename="x.pdf",
+            status=DocumentStatus.analyzing,
+            visibility=Visibility.shared,
+            acl=["bob@example.com"],
+        )
+    )
+    ingestor = _build(cu=_CU(""), library=library)
+    assert await ingestor.recover_interrupted() == 1
+    final = await library.get_document("u1", stuck.id)
+    assert final.status == DocumentStatus.failed
+    assert final.visibility == Visibility.private
+    assert final.acl == []
+    assert [annotation.body for annotation in final.annotations] == ["keep"]
+    assert final.sessionLinks == ["session-new"]
+
+
+async def test_recovery_skips_document_no_longer_analyzing():
+    class StatusRaceRepository(InMemoryDocumentLibraryRepository):
+        async def patch_ingest_fields(self, document, changes, **kwargs):
+            latest = await self.get_document(document.userId, document.id)
+            latest.status = DocumentStatus.ready
+            await self.update_document(latest)
+            return await super().patch_ingest_fields(document, changes, **kwargs)
+
+    library = StatusRaceRepository()
+    stuck = await library.create_document(
+        UserDocument(userId="u1", filename="x.pdf", status=DocumentStatus.analyzing)
+    )
+    ingestor = _build(cu=_CU(""), library=library)
+    assert await ingestor.recover_interrupted() == 0
+    assert (
+        await library.get_document("u1", stuck.id)
+    ).status == DocumentStatus.ready
+
+
 async def test_chunk_cap_truncates_and_batches():
     library = InMemoryDocumentLibraryRepository()
     chunks = InMemoryDocChunkStore(expected_dim=3)

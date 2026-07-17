@@ -819,6 +819,17 @@ export function AdminDashboard() {
         </div>
       ) : null}
 
+      {loading ? (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-label={`Loading dashboard data for the last ${days} days`}
+          style={{ ...card, ...muted }}
+        >
+          Loading dashboard data for the last {days} days…
+        </div>
+      ) : (
+      <>
       <div
         style={{
           display: "grid",
@@ -878,8 +889,6 @@ export function AdminDashboard() {
           value={s ? `${s.distinctModels} / ${s.distinctAgents}` : "—"}
         />
       </div>
-
-      {loading ? <div style={muted}>Loading…</div> : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 20 }}>
         <section style={card}>
@@ -961,6 +970,8 @@ export function AdminDashboard() {
           <WebSearchHealthPanel report={data.webSearch} />
         </section>
       </div>
+      </>
+      )}
     </Shell>
   );
 }

@@ -320,6 +320,7 @@ class DocumentIngestor:
         initial_outcome, committed = await self._safe_update(
             doc,
             {"status": DocumentStatus.analyzing, "error": None},
+            require_status=DocumentStatus.stored,
         )
         if initial_outcome != "committed" or committed is None:
             emit_custom_event(
@@ -400,6 +401,7 @@ class DocumentIngestor:
                         "chunksPath": doc.chunksPath,
                         "chunkCount": doc.chunkCount,
                     },
+                    require_status=DocumentStatus.analyzing,
                 )
                 if persistence_outcome == "missing":
                     await self.purge(user_id, document_id)
@@ -510,11 +512,17 @@ class DocumentIngestor:
             return False
 
     async def _safe_update(
-        self, doc: UserDocument, changes: dict[str, object]
+        self,
+        doc: UserDocument,
+        changes: dict[str, object],
+        *,
+        require_status: DocumentStatus | None = None,
     ) -> tuple[str, UserDocument | None]:
         """Atomically patch ingest-owned fields with bounded CAS retry."""
         try:
-            updated = await self._library.patch_ingest_fields(doc, changes)
+            updated = await self._library.patch_ingest_fields(
+                doc, changes, require_status=require_status
+            )
             return "committed", updated
         except DocumentNotFoundError:
             logger.info(
@@ -561,17 +569,22 @@ class DocumentIngestor:
             return 0
         swept = 0
         for doc in stuck:
-            doc.status = DocumentStatus.failed
-            doc.error = "Analysis was interrupted (service restart). Re-upload to retry."
-            doc.touch()
-            try:
-                await self._library.update_document(doc)
-            except DocumentNotFoundError:
-                continue
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "recover_interrupted: update failed id=%s", doc.id, exc_info=True
-                )
+            outcome, committed = await self._safe_update(
+                doc,
+                {
+                    "status": DocumentStatus.failed,
+                    "error": (
+                        "Analysis was interrupted (service restart). "
+                        "Re-upload to retry."
+                    ),
+                },
+                require_status=DocumentStatus.analyzing,
+            )
+            if (
+                outcome != "committed"
+                or committed is None
+                or committed.status != DocumentStatus.failed
+            ):
                 continue
             # An enrich cancelled inside _persist_enrichment (shutdown/crash) may
             # have written partial blob/pgvector artifacts before dying, with the
@@ -585,6 +598,7 @@ class DocumentIngestor:
                     "status": "failed",
                     "modality": doc.modality.value,
                     "stage": "recovery",
+                    "persistenceOutcome": outcome,
                     "latencyMs": 0,
                 },
             )

@@ -60,6 +60,9 @@ depend on color alone.
   cards inside cards.
 - On narrow screens, the conversation sidebar and inspector become labelled
   drawers with focus management, Escape close, and focus return.
+- At 200% text and short mobile heights, the sidebar keeps its header fixed and
+  scrolls conversations plus every destination/account utility as one reachable
+  vertical region.
 - The composer remains visible and usable without being covered by panels or
   clipped menus.
 - Use the existing 8px control radius and 12px surface radius as defaults.
@@ -105,6 +108,8 @@ bound to the conversation that started them.
 Risk, approval, scope, inherited/override state, ownership, freshness, and unknown
 values use text plus iconography. Unknown cost or telemetry displays "Unknown" or
 "Unavailable", never a fabricated zero.
+Admin window/identity refreshes replace prior data with a polite live loading state;
+an empty-state message is never shown while a request is still pending.
 
 ## Interaction and Motion
 

@@ -273,7 +273,14 @@ class SummarizationService:
             )
             session.summary = summary
             session.summarizedThroughMessageId = to_fold[-1].id
-            await repo.update_session(session)
+            await repo.patch_session(
+                user_id,
+                session.id,
+                {
+                    "summary": summary,
+                    "summarizedThroughMessageId": to_fold[-1].id,
+                },
+            )
             live = keep
 
         # When a fold already happened earlier, ``live`` is the post-summary

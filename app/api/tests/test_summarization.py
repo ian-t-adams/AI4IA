@@ -32,7 +32,7 @@ class _FakeRepo:
     def __init__(self) -> None:
         self.updates = 0
 
-    async def update_session(self, session) -> None:
+    async def patch_session(self, user_id, session_id, changes) -> None:
         self.updates += 1
 
 

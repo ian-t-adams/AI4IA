@@ -384,7 +384,9 @@ describe("AdminDashboard new analytics panels", () => {
       ],
     });
     render(<AdminDashboard />);
-    const tokens = await screen.findByText("Tokens");
+    const tokens = (await screen.findAllByText("Tokens")).find(
+      (element) => element.tagName === "DIV",
+    ) as HTMLElement;
     await waitFor(() =>
       expect(
         within(tokens.parentElement as HTMLElement).getByText("Unknown"),
@@ -429,12 +431,20 @@ describe("AdminDashboard new analytics panels", () => {
         }),
     );
     fireEvent.change(screen.getByLabelText("Window"), { target: { value: "7" } });
-    expect(await screen.findByText("Loading…")).toBeInTheDocument();
     expect(
-      within(activeUsers.parentElement as HTMLElement).queryByText("2"),
-    ).toBeNull();
+      await screen.findByRole("status", {
+        name: "Loading dashboard data for the last 7 days",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Active users")).toBeNull();
     resolveLatest({ ...summary, sinceDays: 7, activeUsers: 7 });
-    await waitFor(() => expect(screen.queryByText("Loading…")).toBeNull());
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("status", {
+          name: "Loading dashboard data for the last 7 days",
+        }),
+      ).toBeNull(),
+    );
     expect(screen.getByText("7")).toBeInTheDocument();
   });
 

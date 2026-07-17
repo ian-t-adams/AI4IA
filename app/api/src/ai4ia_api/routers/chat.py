@@ -408,8 +408,7 @@ async def _persist_local_reply(
         agent=agent,
     )
     await repo.add_message(uid, assistant)
-    session.updatedAt = _now()
-    await repo.update_session(session)
+    await repo.touch_session(uid, session.id)
     return assistant
 
 
@@ -952,14 +951,21 @@ async def chat(
 
     # Keep the session fresh + auto-title from the first real (non-command) turn.
     has_prior_chat = any(not m.fromCommand for m in prior)
-    session.updatedAt = datetime.now(timezone.utc)
+    session_changes: dict[str, object] = {}
     if session.title == "New chat" and not has_prior_chat:
         session.title = content_for_model[:60]
+        session_changes["title"] = session.title
     # Persist the model choice to the session unless it came purely from the
     # agent's per-turn default (which must not silently rebind the session).
     if not model_from_agent_default:
         session.model = model_id
-    await repo.update_session(session)
+        session_changes["model"] = model_id
+    if session_changes:
+        await repo.patch_session(
+            user.internal_user_id, session.id, session_changes
+        )
+    else:
+        await repo.touch_session(user.internal_user_id, session.id)
 
     # Tool-enabled / orchestrator agent turn: run the gateway-native tool-calling
     # loop governed by the tool-safety registry. The model picks/sequences tools;

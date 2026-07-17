@@ -137,6 +137,10 @@ Session policy fields use atomic repository patches, while library-document list
 changes use bounded ETag/CAS retry-and-merge. Concurrent model, prompt, tool, and
 document-selection writes therefore preserve disjoint changes in both Cosmos and
 the in-memory parity repository.
+All chat, workflow, command, and summarization writers use those field-scoped
+patch/touch APIs. Unversioned full-session replacement is a guarded failure in both
+repositories, preventing stale conversational workers from overwriting workspace
+policy or document selections.
 
 The admin operations plane runs fixed server-owned KQL through managed identity
 against the existing Log Analytics workspace. It accepts only a bounded time window,

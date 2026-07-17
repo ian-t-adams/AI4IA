@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from ..auth.base import AuthenticatedUser
@@ -69,10 +68,6 @@ _DIRECT_TOOL_ARGS: dict[str, Callable[[str], dict[str, Any]]] = {
 DIRECT_SLASH_TOOLS: frozenset[str] = frozenset(_DIRECT_TOOL_ARGS)
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 async def execute_command(
     *,
     parsed: ParsedInput,
@@ -89,6 +84,12 @@ async def execute_command(
     command = parsed.command
     assert command is not None, "execute_command requires a parsed command"
     user_id = user.internal_user_id
+    before = {
+        "model": session.model,
+        "systemPrompt": session.systemPrompt,
+        "summary": session.summary,
+        "summarizedThroughMessageId": session.summarizedThroughMessageId,
+    }
 
     # /clear wipes history (including the command itself), so it skips echoing
     # the user's command message; everything else records it for context.
@@ -124,8 +125,15 @@ async def execute_command(
 
     # Persist any session mutation (systemPrompt/model) BEFORE recording the
     # success reply, so a failed update can't leave a misleading transcript.
-    session.updatedAt = _now()
-    await repo.update_session(session)
+    changes = {
+        field_name: getattr(session, field_name)
+        for field_name, previous in before.items()
+        if getattr(session, field_name) != previous
+    }
+    if changes:
+        await repo.patch_session(user_id, session.id, changes)
+    else:
+        await repo.touch_session(user_id, session.id)
 
     assistant = Message(
         sessionId=session.id,
@@ -173,8 +181,7 @@ async def execute_tool_command(
         command.name, command.args, registry, executor, correlation_id
     )
 
-    session.updatedAt = _now()
-    await repo.update_session(session)
+    await repo.touch_session(user_id, session.id)
 
     assistant = Message(
         sessionId=session.id,

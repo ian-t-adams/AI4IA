@@ -91,7 +91,7 @@ class InMemoryDocumentLibraryRepository:
         wanted = set(statuses)
         async with self._lock:
             return [
-                doc
+                doc.model_copy(deep=True)
                 for bucket in self._docs.values()
                 for doc in bucket.values()
                 if doc.status in wanted
@@ -109,13 +109,19 @@ class InMemoryDocumentLibraryRepository:
             return document.model_copy(deep=True)
 
     async def patch_ingest_fields(
-        self, document: UserDocument, changes: dict[str, object]
+        self,
+        document: UserDocument,
+        changes: dict[str, object],
+        *,
+        require_status: DocumentStatus | None = None,
     ) -> UserDocument:
         async with self._lock:
             bucket = self._docs.get(document.userId, {})
             current = bucket.get(document.id)
             if current is None:
                 raise DocumentNotFoundError(document.id)
+            if require_status is not None and current.status != require_status:
+                return current.model_copy(deep=True)
             for field_name, value in changes.items():
                 setattr(current, field_name, value)
             current.touch()

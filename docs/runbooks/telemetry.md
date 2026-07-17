@@ -38,6 +38,9 @@ search.
 stored status is confirmed. ACLs, visibility, annotations, versions, and other
 owner-controlled fields are never part of that patch; CAS retries merge only the
 ingest-owned status/output fields.
+Startup recovery uses the same conditional patch and applies only while the stored
+status is still `analyzing`; a concurrent completion or owner metadata/access change
+is preserved rather than overwritten by the recovery snapshot.
 
 ## Privacy and cardinality
 
