@@ -1095,7 +1095,7 @@ async def build_session_bridge(
             state,
             settings,
             correlation_id,
-            tool_names=policy.effective_tools,
+            tool_names=policy.voice_tools,
             instructions=policy.instructions,
             tools_requested=True,
         )
@@ -1720,6 +1720,21 @@ def _emit_relay_completion(
             "exceptionMessage": usage_error[1],
         }
     logger.info(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+    timestamps = [
+        value
+        for value in (
+            outcome.stats.client_to_upstream.first_monotonic,
+            outcome.stats.client_to_upstream.last_monotonic,
+            outcome.stats.upstream_to_client.first_monotonic,
+            outcome.stats.upstream_to_client.last_monotonic,
+        )
+        if value is not None
+    ]
+    duration_ms = (
+        int((max(timestamps) - min(timestamps)) * 1000)
+        if len(timestamps) >= 2
+        else None
+    )
     emit_custom_event(
         "voice_live_completion",
         {
@@ -1733,6 +1748,7 @@ def _emit_relay_completion(
             "clientBinaryFrames": outcome.stats.client_to_upstream.binary_frames,
             "upstreamTextFrames": outcome.stats.upstream_to_client.text_frames,
             "upstreamBinaryFrames": outcome.stats.upstream_to_client.binary_frames,
+            "durationMs": duration_ms,
         },
     )
 

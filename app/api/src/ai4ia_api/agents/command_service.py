@@ -244,11 +244,27 @@ async def _reply_for(
         return _agents_text(agents)
 
     if kind is CommandKind.system:
+        selected_agent = agents.get(session.agentName) if session.agentName else None
+        if selected_agent is not None and selected_agent.enabled:
+            if args:
+                return (
+                    f"Instructions are owned by the selected agent "
+                    f"'{selected_agent.displayName}'. Edit that agent in "
+                    "Agents & workflows or select the generic assistant first."
+                )
+            return (
+                f"Effective instructions source: agent ({selected_agent.displayName}).\n"
+                f"{selected_agent.systemPrompt}"
+            )
         if not args:
             current = session.systemPrompt
-            return f"Current system prompt:\n{current}" if current else "No system prompt set."
+            return (
+                f"Effective instructions source: session.\n{current}"
+                if current
+                else "Effective instructions source: provider default."
+            )
         session.systemPrompt = args
-        return "System prompt updated."
+        return "Conversation instructions updated."
 
     if kind is CommandKind.model:
         if not args:

@@ -31,12 +31,17 @@ export function Sidebar({
   disabled?: boolean;
 }) {
   const mobileDrawer = useMediaQuery("(max-width: 720px)") && Boolean(onCollapse);
-  const drawerFocus = useModalFocus(onCollapse ?? (() => {}), mobileDrawer);
+  const drawerFocus = useModalFocus<HTMLElement>(
+    onCollapse ?? (() => {}),
+    mobileDrawer,
+  );
   return (
     <nav
       ref={drawerFocus.ref}
       onKeyDown={drawerFocus.onKeyDown}
       className="session-sidebar"
+      role={mobileDrawer ? "dialog" : "navigation"}
+      aria-modal={mobileDrawer ? true : undefined}
       aria-label="Chat sessions"
       style={{
         width: 280,

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from ..agents.tool_exec import SELECTABLE_SYNTHETIC_TOOL_NAMES
+from ..agents.mcp_servers import namespaced_tool_name
 from ..agents.tools import ToolRisk
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
@@ -30,6 +31,9 @@ class ToolCatalogItem(BaseModel):
     available: bool = True
     selectable: bool = False
     detail: str | None = None
+    ownership: str = "application"
+    typed: bool = True
+    voice: bool = False
 
 
 class ToolCatalogResponse(BaseModel):
@@ -39,7 +43,7 @@ class ToolCatalogResponse(BaseModel):
 @router.get("", response_model=ToolCatalogResponse)
 async def list_tools(
     request: Request,
-    _user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> ToolCatalogResponse:
     registry = request.app.state.tool_registry
     selectable = request.app.state.agent_service.attachable_tools
@@ -54,6 +58,7 @@ async def list_tools(
             scopes=sorted(spec.scopes),
             available=spec.enabled and registry.is_allowlisted(spec.name),
             selectable=spec.name in selectable,
+            voice=request.app.state.tool_executor.get(spec.name) is not None,
         )
         for spec in registry.list()
     ]
@@ -80,6 +85,51 @@ async def list_tools(
                 available=available,
                 selectable=name in selectable,
                 detail=detail,
+                voice=False,
             )
         )
+    mcp_service = getattr(request.app.state, "mcp_service", None)
+    if mcp_service is not None:
+        try:
+            for server in await mcp_service.list_for(user.internal_user_id):
+                for tool in server.discoveredTools:
+                    items.append(
+                        ToolCatalogItem(
+                            name=namespaced_tool_name(server.name, tool.name),
+                            label=tool.name.replace("_", " ").title(),
+                            description=tool.description or "User MCP tool",
+                            source=f"MCP: {server.name}",
+                            risk=ToolRisk.external,
+                            available=not bool(server.lastError),
+                            selectable=True,
+                            detail=server.lastError,
+                            ownership="user",
+                            typed=True,
+                            voice=False,
+                        )
+                    )
+        except Exception:
+            pass
+    official = getattr(request.app.state, "official_mcp_service", None)
+    if official is not None:
+        try:
+            for server in await official.list_all():
+                for tool in server.discoveredTools:
+                    items.append(
+                        ToolCatalogItem(
+                            name=namespaced_tool_name(server.name, tool.name),
+                            label=tool.name.replace("_", " ").title(),
+                            description=tool.description or "Official MCP tool",
+                            source=f"Official MCP: {server.name}",
+                            risk=ToolRisk.external,
+                            available=not bool(server.lastError),
+                            selectable=True,
+                            detail=server.lastError,
+                            ownership="application",
+                            typed=True,
+                            voice=False,
+                        )
+                    )
+        except Exception:
+            pass
     return ToolCatalogResponse(tools=sorted(items, key=lambda item: (item.source, item.label)))

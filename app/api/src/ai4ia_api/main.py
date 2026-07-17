@@ -55,6 +55,7 @@ from .logging_setup import (
     set_correlation_id,
 )
 from .routers import agents as agents_router
+from .routers import attachments as attachments_router
 from .routers import admin_usage as admin_usage_router
 from .routers import catalog as catalog_router
 from .routers import chat as chat_router
@@ -81,6 +82,7 @@ from .usage.factory import build_usage_repository
 from .usage.pricing import load_pricing
 from .usage.service import UsageService
 from .metrics.service import ResourceMetricsService
+from .metrics.operations import OperationsMetricsService
 from .websearch.factory import build_web_search_service
 from .websearch.health import WebSearchHealth
 from .workflows.factory import build_workflow_store
@@ -213,6 +215,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # diagnostics/resource ids exist. The querier (and its credential) is built lazily on
         # first use and closed in finally.
         app.state.resource_metrics = ResourceMetricsService(settings)
+        app.state.operations_metrics = OperationsMetricsService(settings)
         # Entitlement enforcement. Ships effectively unlimited: with
         # no per-user override and no global default cap, check() short-circuits
         # to allow with zero ledger IO. The store shares the session store's
@@ -359,6 +362,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.resource_metrics.close()
             except Exception:  # noqa: BLE001
                 logger.warning("resource metrics close failed", exc_info=True)
+            try:
+                await app.state.operations_metrics.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("operations metrics close failed", exc_info=True)
             try:
                 await app.state.entitlements.close()
             except Exception:  # noqa: BLE001
@@ -525,6 +532,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router.router)
     app.include_router(catalog_router.router)
     app.include_router(agents_router.router)
+    app.include_router(attachments_router.router)
     app.include_router(mcp_servers_router.router)
     app.include_router(memories_router.router)
     app.include_router(official_mcp_servers_router.router)

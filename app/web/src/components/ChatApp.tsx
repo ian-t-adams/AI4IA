@@ -14,7 +14,17 @@ import {
   useState,
 } from "react";
 import * as api from "@/lib/api";
-import type { ActivityStep, AgentSummary, ChatParams, DocumentSummary, Message, ModelEntry, Session, VoiceTurnInput } from "@/lib/types";
+import type {
+  ActivityStep,
+  AgentSummary,
+  AttachmentCapabilities,
+  ChatParams,
+  DocumentSummary,
+  Message,
+  ModelEntry,
+  Session,
+  VoiceTurnInput,
+} from "@/lib/types";
 import type { LibraryDocument } from "@/lib/library";
 import { Sidebar } from "./Sidebar";
 import { ConversationInspector } from "./ConversationInspector";
@@ -47,7 +57,7 @@ import {
 import { LibraryPanel } from "./LibraryPanel";
 import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage } from "./MessageList";
-import { Composer } from "./Composer";
+import { Composer, type UploadItem } from "./Composer";
 import {
   InlineVoiceLiveStatus,
   mergeDisplayMessages,
@@ -58,7 +68,14 @@ import { useVoiceLiveConfig } from "./VoiceLiveProvider";
 import { useLibraryConfig } from "./LibraryProvider";
 import { useCustomToolsConfig } from "./CustomToolsProvider";
 import { useMediaQuery } from "./useMediaQuery";
+import {
+  closeUnavailableMobileDrawer,
+  toggleMobileDrawer as nextMobileDrawer,
+  type MobileDrawer,
+} from "@/lib/workspaceLayout";
 
+const MOBILE_SIDEBAR_QUERY = "(max-width: 720px)";
+const MOBILE_INSPECTOR_QUERY = "(max-width: 1050px)";
 
 function pickDefaultModel(models: ModelEntry[]): string | null {
   // Never default to a capability model: prefer a plain "chat" model, then any
@@ -210,6 +227,12 @@ export function ChatApp() {
   // doc itself persists in the user's library and stays available to the agent.
   const [libraryDocs, setLibraryDocs] = useState<LibraryDocument[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [attachmentCapabilities, setAttachmentCapabilities] =
+    useState<AttachmentCapabilities | null>(null);
+  const [uploads, setUploads] = useState<UploadItem[]>([]);
+  const uploadFilesRef = useRef(new Map<string, File>());
+  const uploadChainRef = useRef<Promise<void>>(Promise.resolve());
+  const [inspectorVersion, setInspectorVersion] = useState(0);
 
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [params, setParams] = useState<ChatParams>({
@@ -237,6 +260,7 @@ export function ChatApp() {
   // mount to avoid a hydration mismatch.
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [mobileDrawer, setMobileDrawer] = useState<MobileDrawer>(null);
   // Citation deep-link: the audio/video doc a clicked chat citation
   // resolved to, plus the moment to seek. Opens the same MediaPlayer modal the
   // LibraryPanel uses. Null when no citation is open.
@@ -258,6 +282,7 @@ export function ChatApp() {
   // immediately (before the setActiveId state flush), preventing a double create
   // when an upload is quickly followed by a send.
   const sessionIdRef = useRef<string | null>(null);
+  const selectionGenerationRef = useRef(0);
   const voiceNavigationLockedRef = useRef(false);
   const voiceActiveRef = useRef(false);
   const voiceStopRef = useRef<() => void>(() => {});
@@ -280,6 +305,15 @@ export function ChatApp() {
             setSelectedModel(pickDefaultModel(catalog.models));
           },
           (e) => setError((e as Error).message),
+        ),
+        api.getAttachmentCapabilities().then(
+          setAttachmentCapabilities,
+          (e) =>
+            setError(
+              (prev) =>
+                prev ??
+                `Couldn't load attachment capabilities: ${(e as Error).message}`,
+            ),
         ),
         api.listSessions().then(
           (sess) => setSessions(sess),
@@ -330,6 +364,8 @@ export function ChatApp() {
       if (id !== sessionIdRef.current && voiceActiveRef.current) {
         voiceStopRef.current();
       }
+      const generation = ++selectionGenerationRef.current;
+      sessionIdRef.current = id;
       setActiveId(id);
       setError(null);
       try {
@@ -338,6 +374,7 @@ export function ChatApp() {
           api.listSessions(),
           api.listDocuments(id).catch(() => [] as DocumentSummary[]),
         ]);
+        if (generation !== selectionGenerationRef.current) return;
         setMessages(msgs);
         setDocuments(docs);
         // Library chips are a transient per-view confirmation; the docs persist
@@ -348,10 +385,14 @@ export function ChatApp() {
         if (s) {
           if (s.model) setSelectedModel(s.model);
           setSystemPrompt(s.systemPrompt ?? "");
-          if (libraryEnabled && s.libraryDocumentIds.length > 0) {
+          if (libraryEnabled) {
             const library = await api.listLibraryDocuments();
-            const selected = new Set(s.libraryDocumentIds);
-            setLibraryDocs(library.filter((document) => selected.has(document.id)));
+            if (s.libraryDocumentIds === null) {
+              setLibraryDocs(library);
+            } else {
+              const selected = new Set(s.libraryDocumentIds);
+              setLibraryDocs(library.filter((document) => selected.has(document.id)));
+            }
           } else {
             setLibraryDocs([]);
           }
@@ -366,6 +407,8 @@ export function ChatApp() {
   const newChat = useCallback(() => {
     if (streamingRef.current || voiceNavigationLockedRef.current) return;
     if (voiceActiveRef.current) voiceStopRef.current();
+    selectionGenerationRef.current += 1;
+    sessionIdRef.current = null;
     setActiveId(null);
     setMessages([]);
     setDocuments([]);
@@ -412,38 +455,13 @@ export function ChatApp() {
       if (activeId) {
         try {
           await api.updateSession(activeId, { model: modelId });
+          setInspectorVersion((value) => value + 1);
         } catch {
           /* non-fatal */
         }
       }
     },
     [activeId],
-  );
-
-  const saveSystemPrompt = useCallback(
-    async (prompt: string) => {
-      setSystemPrompt(prompt);
-      if (activeId) {
-        try {
-          await api.updateSession(activeId, { systemPrompt: prompt });
-        } catch (reason) {
-          setError((reason as Error).message);
-        }
-      } else if (prompt.trim()) {
-        try {
-          const created = await api.createSession({
-            model: selectedModel,
-            systemPrompt: prompt,
-          });
-          sessionIdRef.current = created.id;
-          setActiveId(created.id);
-          setSessions((current) => [created, ...current]);
-        } catch (reason) {
-          setError((reason as Error).message);
-        }
-      }
-    },
-    [activeId, selectedModel],
   );
 
   // Lazily create (or reuse) the active session. Shared by send + document
@@ -456,6 +474,7 @@ export function ChatApp() {
       const created = await api.createSession({
         model: selectedModel,
         systemPrompt: systemPrompt || null,
+        libraryDocumentIds: [],
       });
       sessionIdRef.current = created.id;
       setActiveId(created.id);
@@ -470,10 +489,15 @@ export function ChatApp() {
     }
   }, [selectedModel, systemPrompt]);
 
-  const uploadDocument = useCallback(
-    async (file: File) => {
+  const runUpload = useCallback(
+    async (uploadId: string, file: File) => {
       setError(null);
       setUploading(true);
+      setUploads((current) =>
+        current.map((item) =>
+          item.id === uploadId ? { ...item, status: "uploading", error: undefined } : item,
+        ),
+      );
       try {
         if (libraryEnabled) {
           // CU-ingest path: send the file to the user's library so it is
@@ -483,12 +507,12 @@ export function ChatApp() {
           const sid = await ensureSession();
           const doc = await api.uploadLibraryDocument(file);
           setLibraryDocs((prev) => [...prev.filter((d) => d.id !== doc.id), doc]);
-          const session = sessions.find((item) => item.id === sid);
-          const selected = new Set(session?.libraryDocumentIds ?? []);
-          selected.add(doc.id);
-          const updated = await api.updateSession(sid, {
-            libraryDocumentIds: [...selected],
-          });
+          setUploads((current) =>
+            current.map((item) =>
+              item.id === uploadId ? { ...item, status: "associating" } : item,
+            ),
+          );
+          const updated = await api.associateLibraryDocument(sid, doc.id);
           setSessions((current) =>
             current.map((item) => (item.id === updated.id ? updated : item)),
           );
@@ -499,14 +523,63 @@ export function ChatApp() {
           // Replace any same-id entry (defensive) and append.
           setDocuments((prev) => [...prev.filter((d) => d.id !== doc.id), doc]);
         }
+        uploadFilesRef.current.delete(uploadId);
+        setUploads((current) => current.filter((item) => item.id !== uploadId));
+        setInspectorVersion((value) => value + 1);
       } catch (e) {
-        setError((e as Error).message);
+        const message = (e as Error).message;
+        setError(message);
+        setUploads((current) =>
+          current.map((item) =>
+            item.id === uploadId
+              ? { ...item, status: "failed", error: message }
+              : item,
+          ),
+        );
       } finally {
         setUploading(false);
       }
     },
-    [ensureSession, libraryEnabled, sessions],
+    [ensureSession, libraryEnabled],
   );
+
+  const queueUpload = useCallback(
+    (uploadId: string, file: File): Promise<void> => {
+      const next = uploadChainRef.current.then(() => runUpload(uploadId, file));
+      uploadChainRef.current = next.catch(() => {});
+      return next;
+    },
+    [runUpload],
+  );
+
+  const uploadDocument = useCallback(
+    async (file: File) => {
+      const id =
+        typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      uploadFilesRef.current.set(id, file);
+      setUploads((current) => [
+        ...current,
+        { id, filename: file.name, status: "queued" },
+      ]);
+      await queueUpload(id, file);
+    },
+    [queueUpload],
+  );
+
+  const retryUpload = useCallback(
+    (uploadId: string) => {
+      const file = uploadFilesRef.current.get(uploadId);
+      if (file) void queueUpload(uploadId, file);
+    },
+    [queueUpload],
+  );
+
+  const dismissUpload = useCallback((uploadId: string) => {
+    uploadFilesRef.current.delete(uploadId);
+    setUploads((current) => current.filter((item) => item.id !== uploadId));
+  }, []);
 
   // Recent text-chat turns handed to Voice Live so a live session opens with the
   // conversation's context (the hook caps how much it actually replays). System
@@ -551,6 +624,7 @@ export function ChatApp() {
         }),
         refreshSessions(),
       ]);
+      setInspectorVersion((value) => value + 1);
     },
     [refreshSessions],
   );
@@ -817,12 +891,7 @@ export function ChatApp() {
       setLibraryDocs((cur) => cur.filter((d) => d.id !== documentId));
       try {
         if (!activeId) return;
-        const session = sessions.find((item) => item.id === activeId);
-        const updated = await api.updateSession(activeId, {
-          libraryDocumentIds: (session?.libraryDocumentIds ?? []).filter(
-            (id) => id !== documentId,
-          ),
-        });
+        const updated = await api.disassociateLibraryDocument(activeId, documentId);
         setSessions((current) =>
           current.map((item) => (item.id === updated.id ? updated : item)),
         );
@@ -831,7 +900,7 @@ export function ChatApp() {
         setError((e as Error).message);
       }
     },
-    [activeId, libraryDocs, sessions],
+    [activeId, libraryDocs],
   );
 
   // Resolve a clicked chat citation to a ready audio/video library
@@ -886,9 +955,14 @@ export function ChatApp() {
       try {
         const all = await api.listLibraryDocuments();
         const byId = new Map(all.map((d) => [d.id, d]));
+        const changed = libraryDocs.some((document) => {
+          const next = byId.get(document.id);
+          return next && next.status !== document.status;
+        });
         setLibraryDocs((prev) =>
           prev.map((d) => (tracked.has(d.id) ? byId.get(d.id) ?? d : d)),
         );
+        if (changed) setInspectorVersion((value) => value + 1);
       } catch {
         /* best effort: keep the last-known status */
       }
@@ -955,6 +1029,7 @@ export function ChatApp() {
               new Set([optimisticUser.id]),
             ),
           );
+          setInspectorVersion((value) => value + 1);
         } catch {
           /* keep optimistic view */
         }
@@ -1079,21 +1154,65 @@ export function ChatApp() {
       return next;
     });
   }, []);
-  const mobileSidebar = useMediaQuery("(max-width: 720px)");
-  const drawerInspector = useMediaQuery("(max-width: 1050px)");
+  const mobileSidebar = useMediaQuery(MOBILE_SIDEBAR_QUERY);
+  const drawerInspector = useMediaQuery(MOBILE_INSPECTOR_QUERY);
+  const mobileSidebarOpen = mobileSidebar && mobileDrawer === "sidebar";
+  const mobileInspectorOpen = drawerInspector && mobileDrawer === "inspector";
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const sidebarMedia = window.matchMedia(MOBILE_SIDEBAR_QUERY);
+    const inspectorMedia = window.matchMedia(MOBILE_INSPECTOR_QUERY);
+    const closeUnavailable = () => {
+      setMobileDrawer((current) =>
+        closeUnavailableMobileDrawer(
+          current,
+          sidebarMedia.matches,
+          inspectorMedia.matches,
+        ),
+      );
+    };
+    sidebarMedia.addEventListener("change", closeUnavailable);
+    inspectorMedia.addEventListener("change", closeUnavailable);
+    return () => {
+      sidebarMedia.removeEventListener("change", closeUnavailable);
+      inspectorMedia.removeEventListener("change", closeUnavailable);
+    };
+  }, []);
+  const leftIsCollapsed = mobileSidebar ? !mobileSidebarOpen : leftCollapsed;
+  const rightIsCollapsed = drawerInspector ? !mobileInspectorOpen : rightCollapsed;
+  const toggleLeftPanel = useCallback(() => {
+    if (mobileSidebar) {
+      setMobileDrawer((current) => nextMobileDrawer(current, "sidebar"));
+    } else {
+      toggleLeftCollapsed();
+    }
+  }, [mobileSidebar, toggleLeftCollapsed]);
+  const toggleRightPanel = useCallback(() => {
+    if (drawerInspector) {
+      setMobileDrawer((current) => nextMobileDrawer(current, "inspector"));
+    } else {
+      toggleRightCollapsed();
+    }
+  }, [drawerInspector, toggleRightCollapsed]);
 
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
-      {!leftCollapsed && mobileSidebar ? (
+      {!leftIsCollapsed && mobileSidebar ? (
         <button
           type="button"
           className="drawer-backdrop"
           aria-label="Close conversation sidebar"
-          onClick={toggleLeftCollapsed}
+          onClick={toggleLeftPanel}
         />
       ) : null}
-      {leftCollapsed ? (
-        <div
+      <div
+        className="sidebar-slot"
+        inert={mobileInspectorOpen ? true : undefined}
+        aria-hidden={mobileInspectorOpen ? true : undefined}
+      >
+        {leftIsCollapsed ? (
+          <div
+          className="sidebar-collapsed-trigger"
           aria-label="Chat sessions (collapsed)"
           style={{
             width: 48,
@@ -1116,9 +1235,9 @@ export function ChatApp() {
             style={{ borderRadius: 6, display: "block" }}
           />
           <button
-            onClick={toggleLeftCollapsed}
-            aria-label="Expand sidebar"
-            title="Expand sidebar"
+            onClick={toggleLeftPanel}
+            aria-label={mobileSidebar ? "Open conversation sidebar" : "Expand sidebar"}
+            title={mobileSidebar ? "Open conversations" : "Expand sidebar"}
             style={{
               border: "none",
               background: "transparent",
@@ -1131,9 +1250,9 @@ export function ChatApp() {
           >
             »
           </button>
-        </div>
-      ) : (
-        <Sidebar
+          </div>
+        ) : (
+          <Sidebar
           sessions={sessions}
           activeId={activeId}
           onSelect={selectSession}
@@ -1142,12 +1261,17 @@ export function ChatApp() {
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenStudio={() => setStudioOpen(true)}
           onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
-          onCollapse={toggleLeftCollapsed}
+          onCollapse={toggleLeftPanel}
           disabled={streaming || voiceExitLocked}
-        />
-      )}
+          />
+        )}
+      </div>
 
-      <main style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <main
+        inert={mobileSidebarOpen || mobileInspectorOpen ? true : undefined}
+        aria-hidden={mobileSidebarOpen || mobileInspectorOpen ? true : undefined}
+        style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}
+      >
         <header
           className="chat-header"
           style={{
@@ -1178,7 +1302,7 @@ export function ChatApp() {
             style={{
               padding: "10px max(16px, 6%)",
               background: "var(--danger)",
-              color: "#fff",
+              color: "var(--danger-fg)",
               display: "flex",
               justifyContent: "space-between",
               gap: 12,
@@ -1188,7 +1312,7 @@ export function ChatApp() {
             <button
               onClick={() => setError(null)}
               aria-label="Dismiss error"
-              style={{ border: "none", background: "transparent", color: "#fff" }}
+              style={{ border: "none", background: "transparent", color: "var(--danger-fg)" }}
             >
               ✕
             </button>
@@ -1208,9 +1332,13 @@ export function ChatApp() {
           documents={documents}
           libraryDocuments={libraryDocs}
           uploading={uploading}
+          capabilities={attachmentCapabilities}
+          uploads={uploads}
           onSend={send}
           onStop={stop}
           onUpload={uploadDocument}
+          onRetryUpload={retryUpload}
+          onDismissUpload={dismissUpload}
           onRemoveDocument={removeDocument}
           onRemoveLibraryDocument={removeLibraryDocument}
           onError={setError}
@@ -1232,39 +1360,46 @@ export function ChatApp() {
         />
       </main>
 
-      {!rightCollapsed && drawerInspector ? (
+      {!rightIsCollapsed && drawerInspector ? (
         <button
           type="button"
           className="drawer-backdrop inspector-backdrop"
           aria-label="Close conversation inspector"
-          onClick={toggleRightCollapsed}
+          onClick={toggleRightPanel}
         />
       ) : null}
-      <ConversationInspector
-        sessionId={activeId}
-        models={models}
-        agents={agents}
-        selectedModel={selectedModel}
-        onModelChange={changeModel}
-        params={params}
-        onParamsChange={setParams}
-        systemPrompt={systemPrompt}
-        onSystemPromptChange={saveSystemPrompt}
-        onSessionUpdated={(updated) => {
-          setSessions((current) =>
-            current.map((session) => (session.id === updated.id ? updated : session)),
-          );
-          if (updated.id === activeId) {
-            setSystemPrompt(updated.systemPrompt ?? "");
-            if (updated.model) setSelectedModel(updated.model);
-          }
-        }}
-        onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
-        voiceSettings={voiceSettingsProps}
-        voiceLocked={voiceExitLocked}
-        collapsed={rightCollapsed}
-        onToggle={toggleRightCollapsed}
-      />
+      <div
+        className="inspector-slot"
+        inert={mobileSidebarOpen ? true : undefined}
+        aria-hidden={mobileSidebarOpen ? true : undefined}
+      >
+        <ConversationInspector
+          key={activeId ?? "new-conversation"}
+          sessionId={activeId}
+          refreshKey={inspectorVersion}
+          models={models}
+          agents={agents}
+          selectedModel={selectedModel}
+          onModelChange={changeModel}
+          params={params}
+          onParamsChange={setParams}
+          systemPrompt={systemPrompt}
+          onSessionUpdated={(updated) => {
+            setSessions((current) =>
+              current.map((session) => (session.id === updated.id ? updated : session)),
+            );
+            if (updated.id === activeId) {
+              setSystemPrompt(updated.systemPrompt ?? "");
+              if (updated.model) setSelectedModel(updated.model);
+            }
+          }}
+          onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
+          voiceSettings={voiceSettingsProps}
+          voiceLocked={voiceExitLocked}
+          collapsed={rightIsCollapsed}
+          onToggle={toggleRightPanel}
+        />
+      </div>
 
       {settingsOpen && (
         <SettingsPanel models={models} onClose={() => setSettingsOpen(false)} />

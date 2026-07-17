@@ -162,6 +162,14 @@ function Harness({
         agents={AGENTS}
         documents={[]}
         uploading={false}
+        capabilities={{
+          ingestPath: "library",
+          maxBytes: 1_000_000,
+          maxDocuments: 8,
+          extensions: [".pdf", ".mp3"],
+          mimeTypes: ["application/pdf", "audio/*"],
+          modalities: ["document", "audio"],
+        }}
         onSend={onSend}
         onStop={vi.fn()}
         onUpload={vi.fn()}
@@ -265,7 +273,6 @@ describe("inline Voice Live chat", () => {
   it("threads a custom voice, session settings, and the tools opt-in into useVoiceLive", () => {
     const customSettings: VoiceSessionSettings = {
       ...DEFAULT_VOICE_SETTINGS,
-      instructions: "Be terse.",
       temperature: 0.4,
     };
     render(<Harness voice="marin" settings={customSettings} tools={true} />);

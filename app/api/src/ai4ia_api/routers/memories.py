@@ -1,6 +1,7 @@
 """Caller-owned memory insight and safe deletion."""
 from __future__ import annotations
 
+import time
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
@@ -33,6 +34,7 @@ async def list_memories(
     limit: int = Query(default=50, ge=1, le=200),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> MemoryListResponse:
+    started = time.monotonic()
     memory = request.app.state.memory
     if not getattr(memory, "enabled", False):
         return MemoryListResponse(status="disabled", detail="Memory is disabled.")
@@ -45,7 +47,11 @@ async def list_memories(
     records = await listing(user.internal_user_id, limit=limit)
     emit_custom_event(
         "memory_list",
-        {"status": "ok", "count": len(records)},
+        {
+            "status": "ok",
+            "count": len(records),
+            "latencyMs": int((time.monotonic() - started) * 1000),
+        },
     )
     return MemoryListResponse(
         status="ok",
@@ -70,6 +76,7 @@ async def delete_memory(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> None:
+    started = time.monotonic()
     memory = request.app.state.memory
     deleter = getattr(memory, "delete_memory", None)
     if not getattr(memory, "enabled", False) or deleter is None:
@@ -80,4 +87,10 @@ async def delete_memory(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found"
         )
-    emit_custom_event("memory_delete", {"status": "ok"})
+    emit_custom_event(
+        "memory_delete",
+        {
+            "status": "ok",
+            "latencyMs": int((time.monotonic() - started) * 1000),
+        },
+    )

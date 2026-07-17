@@ -19,7 +19,8 @@ generated media, MCP server management, and the admin dashboard.
 - Tools: agent builder, workflow builder, imagery/video output rendering, custom
   MCP server management, and Web IQ tools when enabled server-side.
 - Admin: usage rollups and Azure Monitor resource panels, hidden from non-admins
-  in the UI and enforced by the API.
+  in the UI and enforced by the API, plus fixed-KQL operations/security panels
+  with explicit source, freshness, partial, stale, and unavailable states.
 
 ## Local dev
 

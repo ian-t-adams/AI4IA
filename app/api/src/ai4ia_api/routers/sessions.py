@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
-from ..library.models import DocumentStatus
+from ..agents.mcp_servers import namespaced_tool_name
 from ..sessions.models import Message, MessageRole, MessageSource, Session, ToolOverrides
 from ..sessions.repository import SessionNotFoundError, SessionRepository
 
@@ -29,7 +29,7 @@ class CreateSessionRequest(BaseModel):
     systemPrompt: str | None = None
     agentName: str | None = None
     toolOverrides: ToolOverrides = Field(default_factory=ToolOverrides)
-    libraryDocumentIds: list[str] = Field(default_factory=list, max_length=20)
+    libraryDocumentIds: list[str] | None = Field(default=None, max_length=20)
 
 
 class UpdateSessionRequest(BaseModel):
@@ -45,17 +45,42 @@ def _repo(request: Request) -> SessionRepository:
     return request.app.state.session_repo
 
 
+async def _conversation_addable_tools(request: Request, user_id: str) -> set[str]:
+    allowed = set(request.app.state.agent_service.attachable_tools)
+    service = getattr(request.app.state, "mcp_service", None)
+    if service is not None:
+        try:
+            allowed.update(
+                namespaced_tool_name(server.name, tool.name)
+                for server in await service.list_for(user_id)
+                for tool in server.discoveredTools
+            )
+        except Exception:
+            pass
+    official = getattr(request.app.state, "official_mcp_service", None)
+    if official is not None:
+        try:
+            allowed.update(
+                namespaced_tool_name(server.name, tool.name)
+                for server in await official.list_all()
+                for tool in server.discoveredTools
+            )
+        except Exception:
+            pass
+    return allowed
+
+
 async def _validate_policy_fields(
     request: Request,
     user: AuthenticatedUser,
     *,
     agent_name: str | None,
     overrides: ToolOverrides,
-    library_document_ids: list[str],
+    library_document_ids: list[str] | None,
     validate_agent: bool = True,
     validate_tools: bool = True,
     validate_documents: bool = True,
-) -> tuple[str | None, ToolOverrides, list[str]]:
+) -> tuple[str | None, ToolOverrides, list[str] | None]:
     selected = (agent_name or "").strip() or None
     if selected and validate_agent:
         catalog = await request.app.state.agent_service.catalog_for(
@@ -80,7 +105,8 @@ async def _validate_policy_fields(
             detail="Too many conversation tool overrides.",
         )
     unavailable = (
-        set(added) - request.app.state.agent_service.attachable_tools
+        set(added)
+        - await _conversation_addable_tools(request, user.internal_user_id)
         if validate_tools
         else set()
     )
@@ -90,8 +116,16 @@ async def _validate_policy_fields(
             detail=f"Tools are not available for conversation overrides: {', '.join(sorted(unavailable))}",
         )
 
-    document_ids = list(
-        dict.fromkeys((value or "").strip() for value in library_document_ids if value.strip())
+    document_ids = (
+        None
+        if library_document_ids is None
+        else list(
+            dict.fromkeys(
+                (value or "").strip()
+                for value in library_document_ids
+                if value.strip()
+            )
+        )
     )
     if document_ids and validate_documents:
         library = getattr(request.app.state, "document_library", None)
@@ -102,17 +136,12 @@ async def _validate_policy_fields(
             )
         for document_id in document_ids:
             try:
-                document = await library.get_document(user.internal_user_id, document_id)
+                await library.get_document(user.internal_user_id, document_id)
             except Exception as exc:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Library document is unavailable: {document_id}",
                 ) from exc
-            if document.status != DocumentStatus.ready:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail=f"Library document is not ready: {document_id}",
-                )
     return selected, ToolOverrides(added=added, removed=removed), document_ids
 
 
@@ -192,6 +221,72 @@ async def update_session(
     data["libraryDocumentIds"] = next_document_ids
     for field_name, value in data.items():
         setattr(session, field_name, value)
+    session.updatedAt = datetime.now(timezone.utc)
+    return await repo.update_session(session)
+
+
+@router.post("/{session_id}/library-documents/{document_id}", response_model=Session)
+async def associate_library_document(
+    session_id: str,
+    document_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Session:
+    repo = _repo(request)
+    try:
+        session = await repo.get_session(user.internal_user_id, session_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    library = getattr(request.app.state, "document_library", None)
+    if library is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="The document library is not enabled.",
+        )
+    try:
+        await library.get_document(user.internal_user_id, document_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        ) from exc
+    if session.libraryDocumentIds is None:
+        # Legacy all-access mode already includes every owned document, including
+        # the newly associated one. Preserve the sentinel instead of narrowing it.
+        return session
+    selected = list(session.libraryDocumentIds)
+    if document_id not in selected:
+        selected.append(document_id)
+    session.libraryDocumentIds = selected
+    session.updatedAt = datetime.now(timezone.utc)
+    return await repo.update_session(session)
+
+
+@router.delete("/{session_id}/library-documents/{document_id}", response_model=Session)
+async def disassociate_library_document(
+    session_id: str,
+    document_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Session:
+    repo = _repo(request)
+    try:
+        session = await repo.get_session(user.internal_user_id, session_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    if session.libraryDocumentIds is None:
+        library = getattr(request.app.state, "document_library", None)
+        docs = (
+            await library.list_documents(user.internal_user_id)
+            if library is not None
+            else []
+        )
+        session.libraryDocumentIds = [
+            document.id for document in docs if document.id != document_id
+        ]
+    else:
+        session.libraryDocumentIds = [
+            value for value in session.libraryDocumentIds if value != document_id
+        ]
     session.updatedAt = datetime.now(timezone.utc)
     return await repo.update_session(session)
 

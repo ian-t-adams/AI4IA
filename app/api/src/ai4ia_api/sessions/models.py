@@ -141,7 +141,10 @@ class Session(BaseModel):
     # records remain valid without a migration.
     agentName: str | None = None
     toolOverrides: ToolOverrides = Field(default_factory=ToolOverrides)
-    libraryDocumentIds: list[str] = Field(default_factory=list)
+    # None preserves the legacy behavior: all accessible ready library documents
+    # may contribute. An explicit [] opts the conversation out of library context.
+    # A non-empty list is the exact selected-document allowlist.
+    libraryDocumentIds: list[str] | None = None
     # When rolling summarization has
     # folded older turns, ``summary`` holds the compact running digest of every
     # turn UP TO AND INCLUDING ``summarizedThroughMessageId``; turns after that

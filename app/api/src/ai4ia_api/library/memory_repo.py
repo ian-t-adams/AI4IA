@@ -46,7 +46,15 @@ class InMemoryDocumentLibraryRepository:
 
     async def list_documents(self, user_id: str) -> list[UserDocument]:
         docs = list(self._docs.get(user_id, {}).values())
-        return sorted(docs, key=lambda d: d.createdAt, reverse=True)
+        indexed = enumerate(docs)
+        return [
+            doc
+            for _, doc in sorted(
+                indexed,
+                key=lambda item: (item[1].createdAt, item[0]),
+                reverse=True,
+            )
+        ]
 
     async def list_shared_with(self, email: str) -> list[UserDocument]:
         principal = (email or "").strip().lower()
@@ -59,7 +67,14 @@ class InMemoryDocumentLibraryRepository:
                 for doc in bucket.values()
                 if doc.visibility == Visibility.shared and principal in doc.acl
             ]
-        return sorted(shared, key=lambda d: d.updatedAt, reverse=True)
+        return [
+            doc
+            for _, doc in sorted(
+                enumerate(shared),
+                key=lambda item: (item[1].updatedAt, item[0]),
+                reverse=True,
+            )
+        ]
 
     async def get_by_id(self, document_id: str) -> UserDocument | None:
         async with self._lock:

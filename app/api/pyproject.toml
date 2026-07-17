@@ -97,6 +97,9 @@ dependencies = [
     # MetricsQueryClient we used — and since only its metrics client was ever used
     # (no logs client), the whole package is dropped rather than pinned <2.
     "azure-monitor-querymetrics>=1,<2",
+    # Read-only Log Analytics queries for the admin operations/security dashboard.
+    # Fixed server-owned KQL only; no user-supplied query text.
+    "azure-monitor-query>=1.4,<2",
     # Azure Monitor OpenTelemetry distro: exports request/dependency/exception
     # traces, metrics, and custom usage events to Application Insights. Initialized
     # ONCE at startup (logging_setup.configure_telemetry)

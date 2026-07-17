@@ -17,6 +17,18 @@ transcripts.
 | Memory | `memory_list` and `memory_delete` metadata events | No memory text is emitted |
 | Platform resources | Azure Monitor Metrics | One-hour window; `—` means no datapoint |
 
+The admin API exposes:
+
+- `GET /api/admin/metrics/operations?minutes=15..1440`
+- `GET /api/admin/metrics/security?minutes=15..1440`
+
+Both routes require application admin authorization. The server chooses every KQL
+query; callers can only choose the bounded time window.
+
+Each panel returns `source`, `generatedAt`, `sourceTimestamp`, `lagSeconds`,
+`status` (`ok`, `partial`, `stale`, or `unavailable`), `reason`, and bounded rows.
+No rows is rendered as no matching telemetry, never as a numeric zero.
+
 ## Privacy and cardinality
 
 - Keep event names and dimensions stable and low-cardinality.
@@ -34,6 +46,14 @@ transcripts.
 3. Confirm the API identity can read the existing metric source.
 4. Check the panel detail and generated time before interpreting a blank value.
 5. Use the linked Azure diagnostics experience for raw investigation.
+
+## Explicitly unsupported
+
+The current first release does not claim exact SimpleL7Proxy admission queue depth,
+profile fairness, requeue, or circuit-breaker panels because the pinned proxy does
+not expose stable queryable event dimensions for all of them. Quota forecasting,
+shared realtime presence, Workbooks, and alert rules also remain backlog. Do not
+infer zero for any unsupported dimension.
 
 Do not add RBAC, a workspace, alerts, or a workbook during incident response without
 separate approval and an infrastructure what-if.

@@ -18,6 +18,13 @@ as reusable documents and show stored/analyzing/ready/failed state. A selected r
 library document is stored on the conversation and scopes retrieval; removing it
 from the conversation does not delete the durable library artifact.
 
+Selection is distinct from readiness: a fresh upload is associated while it is
+stored/analyzing, remains visible if processing fails, and automatically becomes
+effective context when it reaches `ready`. Missing/null selection on a legacy
+session means all accessible ready documents; explicit `[]` means none; a non-empty
+list is the exact allowlist used by summary/RAG, `fetch_document`, `run_code`,
+`export_document`, and `process_document`.
+
 ## Pipeline
 
 ```mermaid

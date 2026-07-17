@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -54,3 +54,25 @@ class ResourceMetricsReport(BaseModel):
     @property
     def anyAvailable(self) -> bool:
         return any(p.status == "ok" for p in self.panels)
+
+
+OperationalPanelStatus = Literal["ok", "partial", "stale", "unavailable"]
+
+
+class OperationalPanel(BaseModel):
+    key: str
+    displayName: str
+    status: OperationalPanelStatus
+    source: str
+    generatedAt: datetime = Field(default_factory=_now)
+    sourceTimestamp: datetime | None = None
+    lagSeconds: int | None = None
+    reason: str | None = None
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class OperationalMetricsReport(BaseModel):
+    generatedAt: datetime = Field(default_factory=_now)
+    windowMinutes: int
+    diagnosticsUrl: str | None = None
+    panels: list[OperationalPanel] = Field(default_factory=list)

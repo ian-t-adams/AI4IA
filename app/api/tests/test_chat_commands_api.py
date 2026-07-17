@@ -108,7 +108,7 @@ def test_command_messages_excluded_from_model_context(client):
     contents = [m["content"] for m in gw.last_messages]
     # The command echo + its reply must never be replayed to the model...
     assert "/system Be very terse." not in contents
-    assert "System prompt updated." not in contents
+    assert "Conversation instructions updated." not in contents
     # ...but the system prompt the command set must be applied.
     assert gw.last_messages[0] == {"role": "system", "content": "Be very terse."}
     assert {"role": "user", "content": "hello"} in gw.last_messages

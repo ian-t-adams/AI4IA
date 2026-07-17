@@ -26,8 +26,9 @@ SimpleL7Proxy.
   Content Understanding ingest, retrieval, code interpreter, annotations, sharing,
   media playback metadata, and processing/export tools.
 - Operations: usage ledger, entitlements, admin usage rollups, Azure Monitor
-  resource panels, structured logs, correlation ids, and Application Insights
-  export when configured.
+  resource panels, fixed bounded Log Analytics operations/security queries,
+  structured metadata events, correlation ids, and Application Insights export
+  when configured.
 
 ## Local dev
 

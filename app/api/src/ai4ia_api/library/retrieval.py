@@ -148,7 +148,7 @@ class DocumentRetrievalService:
             return ""
         if not ready:
             return ""
-        if document_ids:
+        if document_ids is not None:
             selected = set(document_ids)
             ready = [document for document in ready if document.id in selected]
             if not ready:

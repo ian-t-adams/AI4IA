@@ -190,6 +190,31 @@ export interface ResourceMetricsReport {
   panels: ResourcePanel[];
 }
 
+export type OperationalPanelStatus =
+  | "ok"
+  | "partial"
+  | "stale"
+  | "unavailable";
+
+export interface OperationalPanel {
+  key: string;
+  displayName: string;
+  status: OperationalPanelStatus;
+  source: string;
+  generatedAt: string;
+  sourceTimestamp?: string | null;
+  lagSeconds?: number | null;
+  reason?: string | null;
+  rows: Record<string, unknown>[];
+}
+
+export interface OperationalMetricsReport {
+  generatedAt: string;
+  windowMinutes: number;
+  diagnosticsUrl?: string | null;
+  panels: OperationalPanel[];
+}
+
 // ---- web search health (diagnostics for the fail-soft web-search path) ----
 
 export interface WebSearchFailure {
@@ -286,6 +311,20 @@ export function fetchResources(): Promise<ResourceMetricsReport> {
 
 export function fetchWebSearchHealth(): Promise<WebSearchHealthReport> {
   return getJson<WebSearchHealthReport>("/api/admin/metrics/web-search");
+}
+
+export function fetchOperations(minutes = 60): Promise<OperationalMetricsReport> {
+  return getJson<OperationalMetricsReport>(
+    `/api/admin/metrics/operations?minutes=${minutes}`,
+  );
+}
+
+export function fetchSecurityMetrics(
+  minutes = 60,
+): Promise<OperationalMetricsReport> {
+  return getJson<OperationalMetricsReport>(
+    `/api/admin/metrics/security?minutes=${minutes}`,
+  );
 }
 
 // ---- pure transforms / formatters (unit-tested) ----

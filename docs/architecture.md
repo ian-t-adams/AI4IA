@@ -101,7 +101,11 @@ flowchart LR
 
 The API owns the active conversation policy. Sessions add optional, backward-compatible
 `agentName`, `toolOverrides`, and `libraryDocumentIds` fields; existing Cosmos records
-need no migration. Instruction precedence is:
+need no migration. A missing/null `libraryDocumentIds` preserves legacy access to all
+accessible ready documents, an explicit empty list disables library context, and a
+non-empty list is an exact allowlist. Processing/failed documents may stay selected for
+status visibility, but only ready selected documents enter model context or document
+tools. Instruction precedence is:
 
 1. the selected governed agent persona;
 2. otherwise the session `systemPrompt`;
@@ -114,9 +118,18 @@ Tool overrides can only add server-approved tools or remove inherited tools, and
 execution still re-checks registry, scope, approval, target-host, MCP ownership, and
 SSRF rules.
 
+Tool metadata declares typed-chat and Voice Live availability. The realtime relay
+advertises only validated registry-backed voice-capable tools; synthetic document,
+image/video, and MCP tools remain typed-only until a safe authenticated realtime
+handler exists.
+
 `GET /api/sessions/{id}/inspector` provides a display-safe, ownership-scoped snapshot
 for the right Conversation Inspector. Focused APIs continue to own mutations and
 memory, library, tool-catalog, and usage detail.
+
+The admin operations plane runs fixed server-owned KQL through managed identity
+against the existing Log Analytics workspace. It accepts only a bounded time window,
+never user KQL, and returns per-panel source/freshness/partial/stale/unavailable state.
 
 ```mermaid
 sequenceDiagram

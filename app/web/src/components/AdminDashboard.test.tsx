@@ -20,6 +20,8 @@ vi.mock("@/lib/admin", async (importOriginal) => {
     fetchDistributions: vi.fn(),
     fetchResources: vi.fn(),
     fetchWebSearchHealth: vi.fn(),
+    fetchOperations: vi.fn(),
+    fetchSecurityMetrics: vi.fn(),
   };
 });
 
@@ -33,6 +35,8 @@ import {
   fetchSummary,
   fetchUserAgents,
   fetchWebSearchHealth,
+  fetchOperations,
+  fetchSecurityMetrics,
   fetchWhoAmI,
 } from "@/lib/admin";
 
@@ -143,6 +147,38 @@ beforeEach(() => {
     byCategory: [{ category: "auth", count: 5 }],
     recent: [{ category: "auth", detail: "401 not entitled", at: "2024-06-30T00:00:00Z" }],
   });
+  vi.mocked(fetchOperations).mockResolvedValue({
+    generatedAt: "2024-06-30T00:00:00Z",
+    windowMinutes: 60,
+    diagnosticsUrl: "https://portal.azure.com/#resource/test/logs",
+    panels: [
+      {
+        key: "requests",
+        displayName: "Requests and route latency",
+        status: "ok",
+        source: "Application Insights requests",
+        generatedAt: "2024-06-30T00:00:00Z",
+        sourceTimestamp: "2024-06-30T00:00:00Z",
+        lagSeconds: 5,
+        rows: [{ route: "POST /api/chat", requests: 4, p95Ms: 120 }],
+      },
+    ],
+  });
+  vi.mocked(fetchSecurityMetrics).mockResolvedValue({
+    generatedAt: "2024-06-30T00:00:00Z",
+    windowMinutes: 60,
+    panels: [
+      {
+        key: "security",
+        displayName: "Security and governance blocks",
+        status: "partial",
+        source: "Application Insights requests/traces",
+        generatedAt: "2024-06-30T00:00:00Z",
+        reason: "No matching telemetry in this window.",
+        rows: [],
+      },
+    ],
+  });
 });
 
 afterEach(() => {
@@ -162,6 +198,31 @@ async function panelByHeading(name: string): Promise<HTMLElement> {
 }
 
 describe("AdminDashboard new analytics panels", () => {
+  it("renders real operations freshness and explicit no-data states", async () => {
+    render(<AdminDashboard />);
+    const operations = await panelByHeading("Operations and latency");
+    expect(
+      await within(operations).findByText("Requests and route latency"),
+    ).toBeInTheDocument();
+    expect(within(operations).getByText("120")).toBeInTheDocument();
+    const security = await panelByHeading("Security and governance blocks");
+    expect(
+      within(security).getByText(/No matching telemetry/),
+    ).toBeInTheDocument();
+    expect(
+      within(security).getByText(/not a zero value/),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces rejected data sources instead of rendering silent empties", async () => {
+    vi.mocked(fetchOperations).mockRejectedValueOnce(new Error("workspace denied"));
+    render(<AdminDashboard />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Some admin data sources failed to load.",
+    );
+    expect(screen.getByText(/operations: workspace denied/)).toBeInTheDocument();
+  });
+
   it("renders the agent error count in the danger colour", async () => {
     render(<AdminDashboard />);
     const agents = await panelByHeading("Agents in use");

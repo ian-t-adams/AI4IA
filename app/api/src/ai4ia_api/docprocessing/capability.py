@@ -78,6 +78,7 @@ def build_document_processing_capability(
     session_id: str,
     settings: Settings,
     sink: list[MessageAttachment],
+    allowed_document_ids: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Handler]]:
     """Build the ``process_document`` tool bound to ``user_id`` + the turn's
     deployment.
@@ -143,6 +144,8 @@ def build_document_processing_capability(
         document_id = str(args.get("document_id") or "").strip()
         if not document_id:
             return {"error": "document_id must be a non-empty string."}
+        if allowed_document_ids is not None and document_id not in allowed_document_ids:
+            return {"error": "document is not selected for this conversation."}
         instruction = str(args.get("instruction") or "").strip()
         if not instruction:
             return {"error": "instruction must be a non-empty string."}

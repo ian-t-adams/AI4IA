@@ -39,6 +39,10 @@ export interface SessionUsageView {
   unknownUsageRequests: number;
   costUnknownRequests: number;
   latest: UsageRecordView | null;
+  truncated: boolean;
+  coveredRequests: number;
+  coverageStart: string | null;
+  coverageEnd: string | null;
 }
 
 export interface UsageSummaryView {
@@ -65,15 +69,21 @@ export interface InspectorSnapshot {
     value: string | null;
     agentName: string | null;
   };
-  agent: AgentSummary & { name: string | null; displayName: string | null };
+  agent: Omit<AgentSummary, "name" | "displayName" | "description"> & {
+    name: string | null;
+    displayName: string | null;
+    description: string | null;
+  };
   tools: {
     inherited: string[];
     added: string[];
     removed: string[];
     effective: string[];
+    voiceEffective: string[];
   };
   attachments: DocumentSummary[];
   libraryDocuments: LibraryDocument[];
+  librarySelectionMode: "legacy_all" | "explicit";
   sessionUsage: SessionUsageView;
   monthlyUsage: UsageSummaryView;
   voice: {

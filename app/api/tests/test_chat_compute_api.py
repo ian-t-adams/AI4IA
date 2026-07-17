@@ -50,11 +50,16 @@ class ScriptedGateway:
         self.doc_id = doc_id
         self.calls = 0
         self.tool_calls_seen = 0
+        self.tools_offered: list[str] = []
 
     async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
         self.calls += 1
         tools = (params or {}).get("tools")
-        if tools and self.tool_calls_seen == 0:
+        if tools:
+            self.tools_offered.extend(
+                tool.get("function", {}).get("name", "") for tool in tools
+            )
+        if "run_code" in self.tools_offered and self.tool_calls_seen == 0:
             self.tool_calls_seen += 1
             return {
                 "choices": [
@@ -96,8 +101,11 @@ def _uid(client: TestClient) -> str:
     return client.get("/api/entitlement").json()["userId"]
 
 
-def _new_session(client: TestClient) -> str:
-    resp = client.post("/api/sessions", json={"title": "Chat", "model": "gpt-5.2"})
+def _new_session(client: TestClient, library_document_ids=...) -> str:
+    body = {"title": "Chat", "model": "gpt-5.2"}
+    if library_document_ids is not ...:
+        body["libraryDocumentIds"] = library_document_ids
+    resp = client.post("/api/sessions", json=body)
     assert resp.status_code == 201, resp.text
     return resp.json()["id"]
 
@@ -163,6 +171,35 @@ async def test_compute_turn_invokes_run_code():
         # The Code Interpreter was actually invoked over the ready document.
         assert len(ci.calls) == 1
         assert "name,amount" in ci.calls[0]["user_input"]
+    finally:
+        client.__exit__(None, None, None)
+
+
+async def test_explicit_empty_selection_offers_no_plain_document_tools():
+    client = _make_client(
+        document_understanding_enabled=True,
+        document_compute_enabled=True,
+    )
+    try:
+        uid = _uid(client)
+        doc = await _seed_ready_doc(client, uid)
+        ci = FakeCI()
+        _inject_compute(client, ci)
+        gateway = ScriptedGateway(doc_id=doc.id)
+        client.app.state.gateway = gateway
+        sid = _new_session(client, [])
+        response = client.post(
+            "/api/chat",
+            json={
+                "sessionId": sid,
+                "content": "Sum the amounts in the spreadsheet.",
+                "stream": False,
+            },
+        )
+        assert response.status_code == 200
+        assert "run_code" not in gateway.tools_offered
+        assert "fetch_document" not in gateway.tools_offered
+        assert ci.calls == []
     finally:
         client.__exit__(None, None, None)
 

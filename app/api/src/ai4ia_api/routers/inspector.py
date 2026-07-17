@@ -42,6 +42,7 @@ class InspectorTools(BaseModel):
     added: list[str] = Field(default_factory=list)
     removed: list[str] = Field(default_factory=list)
     effective: list[str] = Field(default_factory=list)
+    voiceEffective: list[str] = Field(default_factory=list)
 
 
 class InspectorVoice(BaseModel):
@@ -60,6 +61,7 @@ class InspectorSnapshot(BaseModel):
     tools: InspectorTools
     attachments: list[DocumentSummary] = Field(default_factory=list)
     libraryDocuments: list[UserDocumentSummary] = Field(default_factory=list)
+    librarySelectionMode: str
     sessionUsage: SessionUsageSummary
     monthlyUsage: UsageSummary
     voice: InspectorVoice
@@ -91,14 +93,23 @@ async def get_inspector(
     library_documents: list[UserDocumentSummary] = []
     library = getattr(request.app.state, "document_library", None)
     if library is not None:
-        for document_id in session.libraryDocumentIds:
+        selected_ids = session.libraryDocumentIds
+        if selected_ids is None:
+            selected_documents = await library.list_documents(user.internal_user_id)
+        else:
+            selected_documents = []
+            for document_id in selected_ids:
+                try:
+                    selected_documents.append(
+                        await library.get_document(user.internal_user_id, document_id)
+                    )
+                except Exception:
+                    continue
+        for document in selected_documents:
             try:
-                document = await library.get_document(
-                    user.internal_user_id, document_id
-                )
+                library_documents.append(UserDocumentSummary.of(document))
             except Exception:
                 continue
-            library_documents.append(UserDocumentSummary.of(document))
 
     usage = request.app.state.usage
     session_usage = await usage.summarize_session(
@@ -134,9 +145,13 @@ async def get_inspector(
             added=list(policy.added_tools),
             removed=list(policy.removed_tools),
             effective=list(policy.effective_tools),
+            voiceEffective=list(policy.voice_tools),
         ),
         attachments=[DocumentSummary.of(document) for document in attachments],
         libraryDocuments=library_documents,
+        librarySelectionMode=(
+            "legacy_all" if session.libraryDocumentIds is None else "explicit"
+        ),
         sessionUsage=session_usage,
         monthlyUsage=monthly_usage,
         voice=InspectorVoice(

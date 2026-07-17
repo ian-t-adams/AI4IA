@@ -1,6 +1,7 @@
 "use client";
 
-import { useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 export function HelpTooltip({
   label,
@@ -11,9 +12,12 @@ export function HelpTooltip({
 }) {
   const id = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const contentRef = useRef<HTMLSpanElement>(null);
+  const pinnedRef = useRef(false);
   const [open, setOpen] = useState(false);
+  const [pinned, setPinned] = useState(false);
   const [position, setPosition] = useState({ top: 92, left: 16 });
-  const show = () => {
+  const updatePosition = useCallback(() => {
     const box = triggerRef.current?.getBoundingClientRect();
     if (box) {
       setPosition({
@@ -21,8 +25,34 @@ export function HelpTooltip({
         left: Math.max(16, Math.min(window.innerWidth - 336, box.left - 280)),
       });
     }
+  }, []);
+  const show = () => {
+    updatePosition();
     setOpen(true);
   };
+  useEffect(() => {
+    if (!open) return;
+    const reposition = () => updatePosition();
+    const outside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        !triggerRef.current?.contains(target) &&
+        !contentRef.current?.contains(target)
+      ) {
+        setOpen(false);
+        setPinned(false);
+        pinnedRef.current = false;
+      }
+    };
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    document.addEventListener("pointerdown", outside);
+    return () => {
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+      document.removeEventListener("pointerdown", outside);
+    };
+  }, [open, updatePosition]);
   return (
     <span className="help-tooltip">
       <button
@@ -31,27 +61,49 @@ export function HelpTooltip({
         className="help-trigger"
         aria-label={`Help: ${label}`}
         aria-describedby={open ? id : undefined}
-        onClick={show}
+        onClick={() => {
+          if (pinned) {
+            pinnedRef.current = false;
+            setPinned(false);
+            setOpen(false);
+          } else {
+            pinnedRef.current = true;
+            setPinned(true);
+            show();
+          }
+        }}
         onMouseEnter={show}
-        onMouseLeave={() => setOpen(false)}
+        onMouseLeave={() => {
+          if (!pinnedRef.current) setOpen(false);
+        }}
         onFocus={show}
-        onBlur={() => setOpen(false)}
+        onBlur={() => {
+          if (!pinnedRef.current) setOpen(false);
+        }}
         onKeyDown={(event) => {
-          if (event.key === "Escape") setOpen(false);
+          if (event.key === "Escape") {
+            setOpen(false);
+            setPinned(false);
+            pinnedRef.current = false;
+          }
         }}
       >
         ?
       </button>
-      {open ? (
-        <span
-          id={id}
-          role="tooltip"
-          className="help-content"
-          style={{ top: position.top, left: position.left, right: "auto" }}
-        >
-          {children}
-        </span>
-      ) : null}
+      {open && typeof document !== "undefined"
+        ? createPortal(
+            <span
+              ref={contentRef}
+              id={id}
+              role="tooltip"
+              className="help-content"
+              style={{ top: position.top, left: position.left, right: "auto" }}
+            >
+              {children}
+            </span>,
+            document.body,
+          )
+        : null}
     </span>
   );
 }

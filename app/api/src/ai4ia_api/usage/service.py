@@ -245,14 +245,20 @@ class UsageService:
         )
 
     async def summarize_session(
-        self, user_id: str, session_id: str, *, limit: int = 500
+        self, user_id: str, session_id: str, *, limit: int = 1000
     ) -> SessionUsageSummary:
         records = await self._repo.list_for_session(
-            user_id, session_id, limit=max(1, min(limit, 1000))
+            user_id, session_id, limit=max(2, min(limit, 5000)) + 1
         )
+        truncated = len(records) > limit
+        records = records[:limit]
         summary = SessionUsageSummary(sessionId=session_id)
+        summary.truncated = truncated
+        summary.coveredRequests = len(records)
         if records:
             summary.latest = records[0]
+            summary.coverageEnd = records[0].createdAt
+            summary.coverageStart = records[-1].createdAt
         for record in records:
             summary.totalRequests += 1
             if record.usageKnown:

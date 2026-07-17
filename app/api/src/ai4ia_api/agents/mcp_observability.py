@@ -29,6 +29,7 @@ from contextlib import contextmanager
 from typing import Iterator
 
 from .tools import redact
+from ..logging_setup import emit_custom_event
 
 logger = logging.getLogger("ai4ia_api.agents.mcp")
 
@@ -96,6 +97,16 @@ def emit(
         # ``key=value`` rendering keeps the line greppable and metrics-parseable.
         message = " ".join(f"{k}={v}" for k, v in fields.items())
         logger.log(level, message, extra={"mcp": fields})
+        if event == EVENT_TOOL_CALL:
+            emit_custom_event(
+                "mcp_tool_call",
+                {
+                    "source": "mcp",
+                    "tool": tool,
+                    "outcome": outcome,
+                    "latencyMs": latency_ms,
+                },
+            )
     except Exception:  # noqa: BLE001 - observability must never raise
         pass
 

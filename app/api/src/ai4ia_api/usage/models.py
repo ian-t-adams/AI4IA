@@ -245,6 +245,10 @@ class SessionUsageSummary(BaseModel):
     unknownUsageRequests: int = 0
     costUnknownRequests: int = 0
     latest: UsageRecord | None = None
+    truncated: bool = False
+    coveredRequests: int = 0
+    coverageStart: datetime | None = None
+    coverageEnd: datetime | None = None
 
 
 def summarize_records(

@@ -14,6 +14,7 @@ import type {
   UserAgentCreate,
   UserAgentUpdate,
   ToolCatalogItem,
+  AttachmentCapabilities,
   VoiceTurnInput,
   Workflow,
   WorkflowCreate,
@@ -377,7 +378,7 @@ export async function createSession(input: {
   systemPrompt?: string | null;
   agentName?: string | null;
   toolOverrides?: { added: string[]; removed: string[] };
-  libraryDocumentIds?: string[];
+  libraryDocumentIds?: string[] | null;
 }): Promise<Session> {
   return jsonOrThrow(
     await apiFetch("/api/sessions", {
@@ -396,7 +397,7 @@ export async function updateSession(
     systemPrompt?: string | null;
     agentName?: string | null;
     toolOverrides?: { added: string[]; removed: string[] };
-    libraryDocumentIds?: string[];
+    libraryDocumentIds?: string[] | null;
   },
 ): Promise<Session> {
   return jsonOrThrow(
@@ -413,6 +414,36 @@ export async function listTools(): Promise<ToolCatalogItem[]> {
     await apiFetch("/api/tools", { cache: "no-store" }),
   );
   return result.tools;
+}
+
+export async function getAttachmentCapabilities(): Promise<AttachmentCapabilities> {
+  return jsonOrThrow(
+    await apiFetch("/api/attachments/capabilities", { cache: "no-store" }),
+  );
+}
+
+export async function associateLibraryDocument(
+  sessionId: string,
+  documentId: string,
+): Promise<Session> {
+  return jsonOrThrow(
+    await apiFetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/library-documents/${encodeURIComponent(documentId)}`,
+      { method: "POST" },
+    ),
+  );
+}
+
+export async function disassociateLibraryDocument(
+  sessionId: string,
+  documentId: string,
+): Promise<Session> {
+  return jsonOrThrow(
+    await apiFetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/library-documents/${encodeURIComponent(documentId)}`,
+      { method: "DELETE" },
+    ),
+  );
 }
 
 export async function deleteSession(id: string): Promise<void> {

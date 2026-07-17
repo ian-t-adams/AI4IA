@@ -16,6 +16,7 @@ class EffectiveConversationPolicy:
     added_tools: tuple[str, ...]
     removed_tools: tuple[str, ...]
     effective_tools: tuple[str, ...]
+    voice_tools: tuple[str, ...]
 
 
 async def resolve_conversation_policy(
@@ -40,16 +41,21 @@ async def resolve_conversation_policy(
             agent = candidate
 
     inherited = tuple(dict.fromkeys(agent.tools if agent is not None else ()))
-    attachable = state.agent_service.attachable_tools
     added = tuple(
         dict.fromkeys(
             name
             for name in session.toolOverrides.added
-            if name in attachable and name not in inherited
+            if name not in inherited
         )
     )
     removed_set = set(session.toolOverrides.removed)
     effective = tuple(name for name in (*inherited, *added) if name not in removed_set)
+    voice_tools = tuple(
+        name
+        for name in effective
+        if state.tool_executor.get(name) is not None
+        and state.tool_registry.get(name) is not None
+    )
 
     if agent is not None:
         instructions = agent.systemPrompt
@@ -69,4 +75,5 @@ async def resolve_conversation_policy(
         added_tools=added,
         removed_tools=tuple(name for name in session.toolOverrides.removed if name in inherited),
         effective_tools=effective,
+        voice_tools=voice_tools,
     )

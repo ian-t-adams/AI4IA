@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..gateway.client import ModelGatewayClient
 from ..usage.models import TokenUsage
+from ..logging_setup import emit_custom_event
 from .tool_exec import ToolContext, ToolExecutor, ToolValidationError
 from .tools import ToolRegistry, redact, redact_obj
 
@@ -274,6 +276,15 @@ async def run_agent_turn(
             )
             if not decision.allowed:
                 reason = decision.reason.value if decision.reason else "denied"
+                emit_custom_event(
+                    "tool_authorization",
+                    {
+                        "tool": name,
+                        "source": "agent_runtime",
+                        "outcome": "denied",
+                        "reason": reason,
+                    },
+                )
                 convo.append(
                     _tool_message(
                         call_id,
@@ -289,9 +300,19 @@ async def run_agent_turn(
                 denied_once.add(name)
                 continue
 
+            started = time.monotonic()
             try:
                 raw_result = await executor.execute(name, parsed, ctx)
             except ToolValidationError as exc:
+                emit_custom_event(
+                    "tool_authorization",
+                    {
+                        "tool": name,
+                        "source": "agent_runtime",
+                        "outcome": "validation_error",
+                        "latencyMs": int((time.monotonic() - started) * 1000),
+                    },
+                )
                 convo.append(
                     _tool_message(
                         call_id,
@@ -308,6 +329,15 @@ async def run_agent_turn(
                 )
                 continue
             except Exception as exc:  # noqa: BLE001 - surface as a tool result, never crash the turn
+                emit_custom_event(
+                    "tool_authorization",
+                    {
+                        "tool": name,
+                        "source": "agent_runtime",
+                        "outcome": "execution_error",
+                        "latencyMs": int((time.monotonic() - started) * 1000),
+                    },
+                )
                 convo.append(
                     _tool_message(
                         call_id,
@@ -331,6 +361,15 @@ async def run_agent_turn(
                     "tool_call_id": call_id,
                     "content": _truncate(json.dumps(raw_result, default=str)),
                 }
+            )
+            emit_custom_event(
+                "tool_authorization",
+                {
+                    "tool": name,
+                    "source": "agent_runtime",
+                    "outcome": "approved" if name in ctx.approvals else "ok",
+                    "latencyMs": int((time.monotonic() - started) * 1000),
+                },
             )
             await record(
                 AgentStep(

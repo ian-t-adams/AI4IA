@@ -35,6 +35,9 @@ The committed CSS custom properties are authoritative:
   `--assistant-bubble`, `--assistant-bubble-fg`
 - Semantic: `--danger`
 
+Danger surfaces always pair `--danger` with `--danger-fg`; every theme must retain
+at least 4.5:1 contrast for normal-size text.
+
 Muted and placeholder text must retain at least 4.5:1 contrast. State must never
 depend on color alone.
 
@@ -69,6 +72,8 @@ Sections are Model, Instructions, Agent & Tools, Context, Memory, Usage, and Voi
 Each section owns its loading, empty, partial, unavailable, error, and saved states.
 Server-returned effective values and governance metadata take precedence over local
 preferences.
+Each section owns independent loading, error, empty, partial, saving, and saved
+feedback. Session changes discard stale responses before enabling mutation.
 
 ### Help
 

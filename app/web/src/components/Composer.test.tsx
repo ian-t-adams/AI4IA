@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { Composer } from "./Composer";
@@ -62,6 +62,14 @@ function setup(overrides: Partial<ComposerProps> = {}) {
     documents: [],
     libraryDocuments: [],
     uploading: false,
+    capabilities: {
+      ingestPath: "library",
+      maxBytes: 1_000_000,
+      maxDocuments: 8,
+      extensions: [".pdf", ".mp3"],
+      mimeTypes: ["application/pdf", "audio/*"],
+      modalities: ["document", "audio"],
+    },
     onSend,
     onStop,
     onUpload: vi.fn(),
@@ -179,5 +187,82 @@ describe("Composer", () => {
     expect(screen.getByRole("button", { name: "Start live voice conversation" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Record a voice message" })).toBeNull();
     expect(screen.queryByText("Voice settings")).toBeNull();
+  });
+
+  it("uploads multiple selected files sequentially", async () => {
+      let releaseFirst!: () => void;
+      const first = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const onUpload = vi
+        .fn<(file: File) => Promise<void>>()
+        .mockImplementationOnce(() => first)
+        .mockResolvedValue(undefined);
+      const { user } = setup({ onUpload });
+      const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+      const files = [
+        new File(["one"], "one.pdf", { type: "application/pdf" }),
+        new File(["two"], "two.mp3", { type: "audio/mpeg" }),
+      ];
+      const uploadPromise = user.upload(input, files);
+      await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(1));
+      releaseFirst();
+      await uploadPromise;
+      expect(onUpload).toHaveBeenCalledTimes(2);
+      expect(onUpload.mock.calls.map(([file]) => file.name)).toEqual([
+        "one.pdf",
+        "two.mp3",
+      ]);
+  });
+
+  it("uses server capabilities for client feedback without replacing API authority", async () => {
+      const onUpload = vi.fn(async () => {});
+      const onError = vi.fn();
+      const { user } = setup({
+        onUpload,
+        onError,
+        capabilities: {
+          ingestPath: "session",
+          maxBytes: 3,
+          maxDocuments: 8,
+          extensions: [".txt"],
+          mimeTypes: ["text/*"],
+          modalities: ["text"],
+        },
+      });
+      const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(
+        input,
+        new File(["oversize"], "large.txt", { type: "text/plain" }),
+      );
+      expect(onUpload).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenCalledWith(expect.stringContaining("exceeds"));
+  });
+
+  it("labels retry and dismiss actions with the failed filename", async () => {
+      const onRetryUpload = vi.fn();
+      const onDismissUpload = vi.fn();
+      const { user } = setup({
+        uploads: [
+          {
+            id: "u1",
+            filename: "meeting.mp3",
+            status: "failed",
+            error: "network error",
+          },
+        ],
+        onRetryUpload,
+        onDismissUpload,
+      });
+      await user.click(
+        screen.getByRole("button", { name: "Retry upload meeting.mp3" }),
+      );
+      expect(onRetryUpload).toHaveBeenCalledWith("u1");
+      await user.click(
+        screen.getByRole("button", {
+          name: "Dismiss failed upload meeting.mp3",
+        }),
+      );
+      expect(onDismissUpload).toHaveBeenCalledWith("u1");
   });
 });

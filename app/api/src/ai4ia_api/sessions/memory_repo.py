@@ -79,7 +79,7 @@ class InMemorySessionRepository:
         await self._owned_session(user_id, session_id)
         return sorted(
             self._messages.get(session_id, []),
-            key=lambda message: (message.createdAt, message.id),
+            key=lambda message: message.createdAt,
         )
 
     async def clear_messages(self, user_id: str, session_id: str) -> None:

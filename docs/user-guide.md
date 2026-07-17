@@ -37,11 +37,15 @@ and tool safety; the web app is the user interface.
 - A selected agent is the standing conversation persona. An explicit `@agent`
   mention remains a one-turn override. The inspector shows inherited and
   conversation-level tool changes; the API authorizes every call again at execution.
+- Tool rows state whether a capability is available in typed chat, Voice Live, or
+  both. Typed-only tools are never silently advertised to Voice Live.
 
 ## Documents and media
 
 The composer has one **Attach** action for documents, images, audio, and video.
-The API advertises and enforces the actual type, size, count, and feature limits.
+The API advertises and enforces the actual type, size, count, modality, and ingest
+path limits. Uploads are queued sequentially, show progress/failure, and can be
+retried or dismissed.
 AI4IA has two storage/context paths:
 
 - **Session attachments** add bounded text to the current chat only.
@@ -111,8 +115,9 @@ authenticated API routes rather than public blob URLs.
 
 When memory is enabled, AI4IA can recall prior user context and can save ready
 document summaries to memory. The inspector lists memories owned by the current
-user and supports individual deletion when the configured backend can verify and
-delete an owned record. There is no global consent/toggle yet.
+user and supports confirmed, item-labelled deletion with pending/error/retry state
+when the configured backend can verify and delete an owned record. There is no
+global consent/toggle yet.
 
 ## Custom tools and web search
 
@@ -151,6 +156,14 @@ App (requests, response time, replicas, restarts), Cosmos DB, Azure AI Search, a
 PostgreSQL (CPU, storage, connections). Each tile degrades to unavailable when its Azure resource id, the
 `azure-monitor-query` SDK, or the API identity's Monitoring Reader permission is
 missing; a `—` cell means no data for that metric, not an error.
+
+Operations and Security panels query the existing Log Analytics workspace with
+fixed bounded KQL. Every panel names its source, source timestamp, lag, and
+`ok`/`partial`/`stale`/`unavailable` state. Request and dependency panels include
+p50/p95/p99 latency where Application Insights data exists. Voice, tools/MCP,
+documents, memory, usage coverage, and governance blocks are metadata-only.
+Exact SimpleL7Proxy queue/fairness/circuit-breaker metrics remain unsupported unless
+the current proxy exports stable queryable events.
 
 ## Data boundaries
 

@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+import asyncio
 
 from ai4ia_api.main import create_app
+from ai4ia_api.library.models import DocumentStatus, UserDocument
 from ai4ia_api.memory.models import MemoryRecord
 from ai4ia_api.routers.realtime import inject_session_tools, reject_client_system_message
+from ai4ia_api.usage.models import UsageRecord
+from ai4ia_api.library.chat_capability import build_document_capability
+from ai4ia_api.library.compute_capability import build_compute_capability
+from ai4ia_api.docprocessing.capability import build_document_processing_capability
+from ai4ia_api.agents.tool_exec import ToolContext
 from tests.conftest import make_settings
 
 
@@ -113,6 +120,13 @@ def test_tool_catalog_is_display_safe():
         calculator = next(item for item in body["tools"] if item["name"] == "calculator")
         assert calculator["risk"] == "safe"
         assert calculator["selectable"] is True
+        assert calculator["typed"] is True
+        assert calculator["voice"] is True
+        generated = next(
+            item for item in body["tools"] if item["name"] == "generate_image"
+        )
+        assert generated["typed"] is True
+        assert generated["voice"] is False
         assert "secret_refs" not in calculator
         assert "egress_allowlist" not in calculator
 
@@ -153,3 +167,198 @@ def test_voice_rejects_client_system_items_for_every_provider():
     )
     assert reject_client_system_message(system) is None
     assert reject_client_system_message(user) == user
+
+
+def test_library_selection_preserves_legacy_none_and_explicit_empty():
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        legacy = client.post("/api/sessions", json={"model": "gpt-5.2"}).json()
+        explicit = client.post(
+            "/api/sessions",
+            json={"model": "gpt-5.2", "libraryDocumentIds": []},
+        ).json()
+        assert legacy["libraryDocumentIds"] is None
+        assert explicit["libraryDocumentIds"] == []
+
+
+def test_processing_documents_associate_and_activate_when_ready():
+    app = create_app(make_settings(document_understanding_enabled=True))
+    with TestClient(app) as client:
+        session = client.post(
+            "/api/sessions",
+            json={"model": "gpt-5.2", "libraryDocumentIds": []},
+        ).json()
+        document = UserDocument(
+            userId=session["userId"],
+            filename="call.mp3",
+            contentType="audio/mpeg",
+            size=42,
+            status=DocumentStatus.analyzing,
+        )
+        asyncio.run(client.app.state.document_library.create_document(document))
+
+        associated = client.post(
+            f"/api/sessions/{session['id']}/library-documents/{document.id}"
+        )
+        assert associated.status_code == 200, associated.text
+        assert associated.json()["libraryDocumentIds"] == [document.id]
+        pending = client.get(f"/api/sessions/{session['id']}/inspector").json()
+        assert pending["libraryDocuments"][0]["status"] == "analyzing"
+        assert pending["libraryDocuments"][0]["citationReady"] is False
+
+        document.status = DocumentStatus.ready
+        document.chunkCount = 3
+        awaitable = client.app.state.document_library.update_document(document)
+        asyncio.run(awaitable)
+        ready = client.get(f"/api/sessions/{session['id']}/inspector").json()
+        assert ready["libraryDocuments"][0]["status"] == "ready"
+        assert ready["libraryDocuments"][0]["citationReady"] is True
+
+        removed = client.delete(
+            f"/api/sessions/{session['id']}/library-documents/{document.id}"
+        )
+        assert removed.status_code == 200
+        assert removed.json()["libraryDocumentIds"] == []
+
+
+def test_multiple_associations_do_not_drop_prior_ids():
+    app = create_app(make_settings(document_understanding_enabled=True))
+    with TestClient(app) as client:
+        session = client.post(
+            "/api/sessions",
+            json={"model": "gpt-5.2", "libraryDocumentIds": []},
+        ).json()
+        documents = [
+            UserDocument(userId=session["userId"], filename=f"{index}.pdf")
+            for index in range(3)
+        ]
+        for document in documents:
+            asyncio.run(client.app.state.document_library.create_document(document))
+            response = client.post(
+                f"/api/sessions/{session['id']}/library-documents/{document.id}"
+            )
+            assert response.status_code == 200
+        stored = client.get(f"/api/sessions/{session['id']}").json()
+        assert stored["libraryDocumentIds"] == [document.id for document in documents]
+
+
+def test_association_preserves_legacy_all_documents_sentinel():
+    app = create_app(make_settings(document_understanding_enabled=True))
+    with TestClient(app) as client:
+        session = client.post(
+            "/api/sessions", json={"model": "gpt-5.2"}
+        ).json()
+        document = UserDocument(userId=session["userId"], filename="legacy.pdf")
+        asyncio.run(client.app.state.document_library.create_document(document))
+        response = client.post(
+            f"/api/sessions/{session['id']}/library-documents/{document.id}"
+        )
+        assert response.status_code == 200
+        assert response.json()["libraryDocumentIds"] is None
+
+
+def test_attachment_capabilities_are_server_advertised():
+    app = create_app(make_settings(document_understanding_enabled=True))
+    with TestClient(app) as client:
+        body = client.get("/api/attachments/capabilities").json()
+        assert body["ingestPath"] == "library"
+        assert "audio" in body["modalities"]
+        assert body["maxBytes"] > 0
+
+
+def test_session_usage_reports_explicit_coverage_when_truncated():
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        session = client.post(
+            "/api/sessions", json={"model": "gpt-5.2"}
+        ).json()
+        repo = client.app.state.usage._repo
+        for index in range(1002):
+            asyncio.run(
+                repo.record(
+                    UsageRecord(
+                        id=f"usage-{index}",
+                        userId=session["userId"],
+                        sessionId=session["id"],
+                        model="gpt-5.2",
+                    )
+                )
+            )
+        summary = client.get(f"/api/usage/sessions/{session['id']}").json()
+        assert summary["truncated"] is True
+        assert summary["coveredRequests"] == 1000
+        assert summary["totalRequests"] == 1000
+
+
+def test_document_tools_reject_unselected_ids_before_service_access():
+    context = ToolContext()
+    _, fetch_handlers = build_document_capability(
+        service=None,
+        user_id="u1",
+        nonce="n",
+        allowed_document_ids=set(),
+    )
+    fetch = asyncio.run(
+        fetch_handlers["fetch_document"]({"document_id": "doc"}, context)
+    )
+    assert fetch["error"] == "document is not selected for this conversation."
+
+    _, compute_handlers = build_compute_capability(
+        retrieval=None,
+        code_interpreter=None,
+        export=None,
+        settings=make_settings(),
+        user_id="u1",
+        nonce="n",
+        allowed_document_ids=set(),
+    )
+    run_code = asyncio.run(
+        compute_handlers["run_code"](
+            {"document_id": "doc", "task": "sum values"}, context
+        )
+    )
+    export = asyncio.run(
+        compute_handlers["export_document"](
+            {"document_id": "doc", "content": "x"}, context
+        )
+    )
+    assert run_code["error"] == "document is not selected for this conversation."
+    assert export["error"] == "document is not selected for this conversation."
+
+    _, process_handlers = build_document_processing_capability(
+        processing_service=None,
+        artifact_store=None,
+        entitlements=None,
+        metering=None,
+        deployment=None,
+        model_id="gpt-5.2",
+        user_id="u1",
+        session_id="s1",
+        settings=make_settings(),
+        sink=[],
+        allowed_document_ids=set(),
+    )
+    processed = asyncio.run(
+        process_handlers["process_document"](
+            {"document_id": "doc", "instruction": "summarize"}, context
+        )
+    )
+    assert processed["error"] == "document is not selected for this conversation."
+
+
+def test_voice_effective_tools_exclude_typed_only_synthetic_tools():
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        session = client.post(
+            "/api/sessions",
+            json={
+                "model": "gpt-5.2",
+                "toolOverrides": {
+                    "added": ["calculator", "generate_image"],
+                    "removed": [],
+                },
+            },
+        ).json()
+        inspector = client.get(f"/api/sessions/{session['id']}/inspector").json()
+        assert inspector["tools"]["effective"] == ["calculator", "generate_image"]
+        assert inspector["tools"]["voiceEffective"] == ["calculator"]

@@ -19,6 +19,8 @@ import {
   type DayUsageBucket,
   type DimensionBucket,
   type ModelUsageBucket,
+  type OperationalMetricsReport,
+  type OperationalPanel,
   type ResourcePanel,
   type UserAgentBucket,
   type WebSearchHealthReport,
@@ -33,6 +35,8 @@ import {
   fetchByUser,
   fetchDistributions,
   fetchResources,
+  fetchOperations,
+  fetchSecurityMetrics,
   fetchSummary,
   fetchUserAgents,
   fetchWebSearchHealth,
@@ -83,6 +87,9 @@ interface DashboardData {
   byStatus: DimensionBucket[];
   resources: ResourcePanel[];
   webSearch: WebSearchHealthReport | null;
+  operations: OperationalMetricsReport | null;
+  security: OperationalMetricsReport | null;
+  loadErrors: string[];
   truncated: boolean;
 }
 
@@ -99,6 +106,9 @@ const EMPTY: DashboardData = {
   byStatus: [],
   resources: [],
   webSearch: null,
+  operations: null,
+  security: null,
+  loadErrors: [],
   truncated: false,
 };
 
@@ -108,6 +118,73 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub?: s
       <div style={muted}>{label}</div>
       <div style={{ fontSize: "1.6em", fontWeight: 700, marginTop: 4 }}>{value}</div>
       {sub ? <div style={{ ...muted, marginTop: 2 }}>{sub}</div> : null}
+    </div>
+  );
+}
+
+function OperationalPanels({
+  report,
+  emptyLabel,
+}: {
+  report: OperationalMetricsReport | null;
+  emptyLabel: string;
+}) {
+  if (!report) return <div style={muted}>{emptyLabel}</div>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {report.panels.map((panel: OperationalPanel) => {
+        const columns = Array.from(
+          new Set(panel.rows.flatMap((row) => Object.keys(row))),
+        ).slice(0, 12);
+        return (
+          <article key={panel.key} style={{ borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+              <strong>{panel.displayName}</strong>
+              <span style={muted}>{panel.status} · {panel.source}</span>
+            </div>
+            <p style={{ ...muted, margin: "4px 0 8px" }}>
+              {panel.sourceTimestamp
+                ? `Source ${new Date(panel.sourceTimestamp).toLocaleString()}`
+                : "No source timestamp"}
+              {panel.lagSeconds != null ? ` · lag ${panel.lagSeconds}s` : ""}
+              {panel.reason ? ` · ${panel.reason}` : ""}
+            </p>
+            {panel.rows.length ? (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.78em" }}>
+                  <thead>
+                    <tr>
+                      {columns.map((column) => (
+                        <th key={column} style={{ textAlign: "left", padding: "4px 6px" }}>
+                          {column}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {panel.rows.slice(0, 100).map((row, index) => (
+                      <tr key={`${panel.key}-${index}`} style={{ borderTop: "1px solid var(--border)" }}>
+                        {columns.map((column) => (
+                          <td key={column} style={{ padding: "4px 6px" }}>
+                            {row[column] == null ? "—" : String(row[column])}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={muted}>No matching events; this is not a zero value.</div>
+            )}
+          </article>
+        );
+      })}
+      {report.diagnosticsUrl ? (
+        <a href={report.diagnosticsUrl} target="_blank" rel="noopener noreferrer">
+          Open Azure diagnostics (new tab)
+        </a>
+      ) : null}
     </div>
   );
 }
@@ -544,7 +621,19 @@ export function AdminDashboard() {
   const load = useCallback(async (window: number, identify: boolean) => {
     setLoading(true);
     setError(null);
-    const [summary, byModel, byDay, byUser, agents, userAgents, distributions, resources, webSearch] =
+    const [
+      summary,
+      byModel,
+      byDay,
+      byUser,
+      agents,
+      userAgents,
+      distributions,
+      resources,
+      webSearch,
+      operations,
+      security,
+    ] =
       await Promise.allSettled([
         fetchSummary(window),
         fetchByModel(window),
@@ -555,6 +644,8 @@ export function AdminDashboard() {
         fetchDistributions(window),
         fetchResources(),
         fetchWebSearchHealth(),
+        fetchOperations(60),
+        fetchSecurityMetrics(60),
       ]);
     const next: DashboardData = { ...EMPTY };
     if (summary.status === "fulfilled") next.summary = summary.value;
@@ -575,10 +666,32 @@ export function AdminDashboard() {
     }
     if (resources.status === "fulfilled") next.resources = resources.value.panels;
     if (webSearch.status === "fulfilled") next.webSearch = webSearch.value;
+    if (operations.status === "fulfilled") next.operations = operations.value;
+    if (security.status === "fulfilled") next.security = security.value;
     if (summary.status === "fulfilled") next.truncated = next.truncated || summary.value.truncated;
-    if (summary.status === "rejected") {
-      setError("Failed to load usage summary. Some panels may be empty.");
-    }
+    const namedResults = [
+      ["usage summary", summary],
+      ["model usage", byModel],
+      ["daily usage", byDay],
+      ["users", byUser],
+      ["agents", agents],
+      ["user agents", userAgents],
+      ["distributions", distributions],
+      ["resources", resources],
+      ["web search", webSearch],
+      ["operations", operations],
+      ["security", security],
+    ] as const;
+    next.loadErrors = namedResults
+      .filter(([, result]) => result.status === "rejected")
+      .map(([name, result]) =>
+        `${name}: ${
+          result.status === "rejected" && result.reason instanceof Error
+            ? result.reason.message
+            : "unavailable"
+        }`,
+      );
+    if (next.loadErrors.length) setError("Some admin data sources failed to load.");
     setData(next);
     setLoading(false);
   }, []);
@@ -654,6 +767,9 @@ export function AdminDashboard() {
       {error ? (
         <div role="alert" style={{ ...card, borderColor: "var(--danger)", marginBottom: 16, color: "var(--danger)" }}>
           {error}
+          {data.loadErrors.length ? (
+            <ul>{data.loadErrors.map((message) => <li key={message}>{message}</li>)}</ul>
+          ) : null}
         </div>
       ) : null}
       {data.truncated ? (
@@ -757,6 +873,22 @@ export function AdminDashboard() {
             source is not configured, fresh, or reporting; it never means zero.
           </p>
           <ResourcePanels panels={data.resources} />
+        </section>
+
+        <section style={card}>
+          <h2 style={sectionTitle}>Operations and latency</h2>
+          <OperationalPanels
+            report={data.operations}
+            emptyLabel="Operations telemetry is unavailable."
+          />
+        </section>
+
+        <section style={card}>
+          <h2 style={sectionTitle}>Security and governance blocks</h2>
+          <OperationalPanels
+            report={data.security}
+            emptyLabel="Security telemetry is unavailable."
+          />
         </section>
 
         <section style={card}>

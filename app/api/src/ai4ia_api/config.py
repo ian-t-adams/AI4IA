@@ -611,6 +611,11 @@ class Settings(BaseSettings):
     # (env AI4IA_METRICS_ENDPOINT). Required by the azure-monitor-querymetrics batch
     # client; unset -> panels degrade to "unavailable" rather than erroring.
     metrics_endpoint: str | None = None
+    # Existing Log Analytics workspace identifiers for bounded admin KQL.
+    # The customer/workspace GUID is used by LogsQueryClient; the ARM id is used
+    # only to build an Azure Portal diagnostics link.
+    log_analytics_workspace_id: str | None = None
+    log_analytics_workspace_resource_id: str | None = None
 
     # Optional path override for the bundled model catalog (tests/dev).
     model_catalog_path: str | None = None

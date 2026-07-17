@@ -52,6 +52,7 @@ resource monitorWorkspace 'Microsoft.Monitor/accounts@2023-04-03' = {
 
 output logAnalyticsId string = logAnalytics.id
 output logAnalyticsName string = logAnalytics.name
+output logAnalyticsCustomerId string = logAnalytics.properties.customerId
 output appInsightsId string = appInsights.id
 output appInsightsName string = appInsights.name
 @description('App Insights connection string (non-secret; safe to surface to apps).')

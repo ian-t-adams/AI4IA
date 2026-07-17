@@ -43,7 +43,7 @@ export interface Session {
   systemPrompt: string | null;
   agentName: string | null;
   toolOverrides: { added: string[]; removed: string[] };
-  libraryDocumentIds: string[];
+  libraryDocumentIds: string[] | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -199,6 +199,18 @@ export interface ToolCatalogItem {
   available: boolean;
   selectable: boolean;
   detail?: string | null;
+  ownership: string;
+  typed: boolean;
+  voice: boolean;
+}
+
+export interface AttachmentCapabilities {
+  ingestPath: "library" | "session";
+  maxBytes: number;
+  maxDocuments: number;
+  extensions: string[];
+  mimeTypes: string[];
+  modalities: string[];
 }
 
 // --- Image generation ---

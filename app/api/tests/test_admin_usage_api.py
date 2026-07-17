@@ -31,7 +31,18 @@ GATED_ROUTES = [
     "/api/admin/usage/by-user",
     "/api/admin/metrics/resources",
     "/api/admin/metrics/web-search",
+    "/api/admin/metrics/operations",
+    "/api/admin/metrics/security",
 ]
+
+
+def test_operations_window_is_bounded(client):
+    assert client.get(
+        "/api/admin/metrics/operations?minutes=14", headers=ADMIN
+    ).status_code == 422
+    assert client.get(
+        "/api/admin/metrics/security?minutes=1441", headers=ADMIN
+    ).status_code == 422
 
 
 def _client(**settings_overrides) -> TestClient:

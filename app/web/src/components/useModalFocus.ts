@@ -5,8 +5,11 @@ import { useEffect, useRef } from "react";
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-export function useModalFocus(onClose: () => void, enabled = true) {
-  const ref = useRef<HTMLDivElement>(null);
+export function useModalFocus<T extends HTMLElement = HTMLDivElement>(
+  onClose: () => void,
+  enabled = true,
+) {
+  const ref = useRef<T>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {

@@ -910,12 +910,15 @@ async def chat(
     # retrieval is off (default) or the library is empty, this is "".
     library_nonce = secrets.token_hex(4)
     library_block = ""
-    if retrieval is not None:
+    library_tools_enabled = (
+        session.libraryDocumentIds is None or bool(session.libraryDocumentIds)
+    )
+    if retrieval is not None and library_tools_enabled:
         try:
             library_block = await retrieval.context_block(
                 user.internal_user_id, content_for_model, nonce=library_nonce,
                 email=user.email,
-                document_ids=session.libraryDocumentIds or None,
+                document_ids=session.libraryDocumentIds,
             )
         except Exception:  # noqa: BLE001 - retrieval must never break a turn
             logger.warning("library context build failed", exc_info=True)
@@ -986,12 +989,17 @@ async def chat(
         # user's ready library, bound to this user + the turn's library nonce.
         # Merged alongside delegate_to_agent (disjoint names) so an orchestrator
         # can both delegate and read documents.
-        if retrieval is not None:
+        if retrieval is not None and library_tools_enabled:
             doc_tools, doc_handlers = build_document_capability(
                 service=retrieval,
                 user_id=user.internal_user_id,
                 nonce=library_nonce,
                 email=user.email,
+                allowed_document_ids=(
+                    None
+                    if session.libraryDocumentIds is None
+                    else set(session.libraryDocumentIds)
+                ),
             )
             extra_tools = [*extra_tools, *doc_tools]
             extra_handlers = {**extra_handlers, **doc_handlers}
@@ -1005,11 +1013,17 @@ async def chat(
             compute is not None
             and compute_decision is not None
             and compute_decision.offers_compute
+            and library_tools_enabled
         ):
             try:
                 c_tools, c_handlers = compute.build_capability(
                     user_id=user.internal_user_id, nonce=library_nonce,
                     email=user.email,
+                    allowed_document_ids=(
+                        None
+                        if session.libraryDocumentIds is None
+                        else set(session.libraryDocumentIds)
+                    ),
                 )
                 extra_tools = [*extra_tools, *c_tools]
                 extra_handlers = {**extra_handlers, **c_handlers}
@@ -1108,6 +1122,7 @@ async def chat(
             PROCESS_DOCUMENT_TOOL_NAME in agent.tools
             and document_artifacts is not None
             and retrieval is not None
+            and library_tools_enabled
         ):
             try:
                 settings = request.app.state.settings
@@ -1125,6 +1140,11 @@ async def chat(
                     session_id=body.sessionId,
                     settings=settings,
                     sink=doc_sink,
+                    allowed_document_ids=(
+                        None
+                        if session.libraryDocumentIds is None
+                        else set(session.libraryDocumentIds)
+                    ),
                 )
                 extra_tools = [*extra_tools, *p_tools]
                 extra_handlers = {**extra_handlers, **p_handlers}
@@ -1344,6 +1364,7 @@ async def chat(
         compute is not None
         and compute_decision is not None
         and compute_decision.offers_compute
+        and library_tools_enabled
     )
     if (plain_compute_active or web_search is not None) and api == "chat":
         try:
@@ -1354,15 +1375,25 @@ async def chat(
                 c_tools, c_handlers = compute.build_capability(  # pyright: ignore[reportOptionalMemberAccess]
                     user_id=user.internal_user_id, nonce=library_nonce,
                     email=user.email,
+                    allowed_document_ids=(
+                        None
+                        if session.libraryDocumentIds is None
+                        else set(session.libraryDocumentIds)
+                    ),
                 )
                 plain_tools = [*plain_tools, *c_tools]
                 plain_handlers = {**plain_handlers, **c_handlers}
-            if retrieval is not None:
+            if retrieval is not None and library_tools_enabled:
                 doc_tools, doc_handlers = build_document_capability(
                     service=retrieval,
                     user_id=user.internal_user_id,
                     nonce=library_nonce,
                     email=user.email,
+                    allowed_document_ids=(
+                        None
+                        if session.libraryDocumentIds is None
+                        else set(session.libraryDocumentIds)
+                    ),
                 )
                 plain_tools = [*plain_tools, *doc_tools]
                 plain_handlers = {**plain_handlers, **doc_handlers}

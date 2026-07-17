@@ -13,6 +13,7 @@ ships only the storage spine so the data model and governance are settled first.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 
 from fastapi import (
@@ -82,6 +83,8 @@ class UserDocumentSummary(BaseModel):
     analyzerId: str | None
     summary: str
     chunkCount: int
+    error: str | None = None
+    citationReady: bool = False
     visibility: Visibility
     createdAt: datetime
     updatedAt: datetime
@@ -100,6 +103,8 @@ class UserDocumentSummary(BaseModel):
             analyzerId=doc.analyzerId,
             summary=doc.summary,
             chunkCount=doc.chunkCount,
+            error=doc.error,
+            citationReady=doc.status == DocumentStatus.ready,
             visibility=doc.visibility,
             createdAt=doc.createdAt,
             updatedAt=doc.updatedAt,
@@ -282,6 +287,7 @@ async def upload_document(
     (same bytes + analyzer) return the existing manifest without re-cracking.
     Flag-gated: 404 when document understanding is disabled.
     """
+    started = time.monotonic()
     repo = _library(request)
     ingestor = _ingestor(request)
     uid = user.internal_user_id
@@ -367,6 +373,7 @@ async def upload_document(
             "contentType": doc.contentType,
             "size": doc.size,
             "deduped": result.deduped,
+            "latencyMs": int((time.monotonic() - started) * 1000),
         },
     )
     return UserDocumentSummary.of(doc)

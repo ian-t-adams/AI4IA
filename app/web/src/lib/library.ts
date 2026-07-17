@@ -18,6 +18,8 @@ export interface LibraryDocument {
   analyzerId: string | null;
   summary: string;
   chunkCount: number;
+  error?: string | null;
+  citationReady?: boolean;
   visibility: string;
   createdAt: string;
   updatedAt: string;
