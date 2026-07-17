@@ -163,6 +163,29 @@ class CosmosSessionRepository:
                 continue
         raise SessionConflictError(session_id)
 
+    async def _delete_summary_replies_before(
+        self, session_id: str, version: int
+    ) -> None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        query = (
+            "SELECT c.id FROM c WHERE c.sessionId = @sid "
+            "AND IS_DEFINED(c.summaryVersion) AND c.summaryVersion < @version"
+        )
+        params = [
+            {"name": "@sid", "value": session_id},
+            {"name": "@version", "value": version},
+        ]
+        async for item in self._messages.query_items(
+            query=query, parameters=params, partition_key=session_id
+        ):
+            try:
+                await self._messages.delete_item(
+                    item=item["id"], partition_key=session_id
+                )
+            except CosmosResourceNotFoundError:
+                pass
+
     async def invalidate_summary(
         self, user_id: str, session_id: str
     ) -> Session:
@@ -246,7 +269,11 @@ class CosmosSessionRepository:
                     etag=raw.get("_etag"),
                     match_condition=MatchConditions.IfNotModified,
                 )
-                return await self._owned_session(user_id, session_id)
+                committed = await self._owned_session(user_id, session_id)
+                await self._delete_summary_replies_before(
+                    session_id, committed.summaryVersion
+                )
+                return committed
             except CosmosAccessConditionFailedError:
                 continue
         raise SessionConflictError(session_id)
@@ -283,6 +310,28 @@ class CosmosSessionRepository:
         message.userId = user_id
         await self._messages.create_item(self._to_doc(message))
         return message
+
+    async def add_message_if_summary_version(
+        self, user_id: str, message: Message, *, expected_version: int
+    ) -> bool:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        session = await self._owned_session(user_id, message.sessionId)
+        if session.summaryVersion != expected_version:
+            return False
+        message.userId = user_id
+        message.summaryVersion = expected_version
+        await self._messages.create_item(self._to_doc(message))
+        latest = await self._owned_session(user_id, message.sessionId)
+        if latest.summaryVersion == expected_version:
+            return True
+        try:
+            await self._messages.delete_item(
+                item=message.id, partition_key=message.sessionId
+            )
+        except CosmosResourceNotFoundError:
+            pass
+        return False
 
     async def upsert_message(self, user_id: str, message: Message) -> Message:
         await self._owned_session(user_id, message.sessionId)

@@ -143,12 +143,46 @@ class _SummarySessions:
         return dict(self.item)
 
 
+class _SummaryMessages:
+    def __init__(self, sessions: _SummarySessions) -> None:
+        self.sessions = sessions
+        self.items: dict[str, dict] = {}
+        self.advance_after_create = False
+
+    async def create_item(self, body):
+        self.items[body["id"]] = dict(body)
+        if self.advance_after_create:
+            self.advance_after_create = False
+            self.sessions.item["summaryVersion"] += 1
+            self.sessions.item["_etag"] = "s-race"
+            self.items.pop(body["id"], None)
+        return body
+
+    async def delete_item(self, *, item, partition_key):
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        if item not in self.items:
+            raise CosmosResourceNotFoundError(message="already deleted")
+        self.items.pop(item)
+
+    async def query_items(self, *, query, parameters=None, partition_key=None):
+        version = next(
+            parameter["value"]
+            for parameter in parameters or []
+            if parameter["name"] == "@version"
+        )
+        for item in list(self.items.values()):
+            if item.get("summaryVersion") is not None and item["summaryVersion"] < version:
+                yield {"id": item["id"]}
+
+
 async def test_cosmos_summary_version_is_backward_compatible_and_conditional():
     session = Session(userId="u1")
     repo = object.__new__(CosmosSessionRepository)
     fake = _SummarySessions(session)
     fake.item.pop("summaryVersion")
     repo._sessions = fake
+    repo._messages = _SummaryMessages(fake)
 
     cleared = await repo.invalidate_summary("u1", session.id)
     assert cleared.summaryVersion == 1
@@ -174,6 +208,49 @@ async def test_cosmos_summary_version_is_backward_compatible_and_conditional():
     )
     assert stale is None
     assert (await repo.get_session("u1", session.id)).summary == "summary"
+
+
+async def test_cosmos_summary_reply_rechecks_and_compensates_cross_container_race():
+    session = Session(userId="u1", summary="summary", summaryVersion=1)
+    repo = object.__new__(CosmosSessionRepository)
+    sessions = _SummarySessions(session)
+    messages = _SummaryMessages(sessions)
+    repo._sessions = sessions
+    repo._messages = messages
+    raced = Message(
+        sessionId=session.id,
+        userId="u1",
+        role=MessageRole.assistant,
+        content="stale",
+    )
+    messages.advance_after_create = True
+    assert (
+        await repo.add_message_if_summary_version(
+            "u1", raced, expected_version=1
+        )
+        is False
+    )
+    assert messages.items == {}
+
+    current = Message(
+        sessionId=session.id,
+        userId="u1",
+        role=MessageRole.assistant,
+        content="current",
+    )
+    assert await repo.add_message_if_summary_version(
+        "u1", current, expected_version=2
+    )
+    assert current.id in messages.items
+    committed = await repo.commit_summary_if_version(
+        "u1",
+        session.id,
+        expected_version=2,
+        summary="newer",
+        summarized_through_message_id="m2",
+    )
+    assert committed is not None and committed.summaryVersion == 3
+    assert messages.items == {}
 
 
 async def test_stale_command_writer_preserves_model_tools_and_documents():

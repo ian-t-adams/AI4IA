@@ -22,6 +22,25 @@ class BlockingSummaryGateway:
         return {"choices": [{"message": {"content": self.text}}]}
 
 
+class BlockingSummaryReplyRepository(InMemorySessionRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reply_started = asyncio.Event()
+        self.release_reply = asyncio.Event()
+        self._blocked_once = False
+
+    async def add_message_if_summary_version(
+        self, user_id, message, *, expected_version
+    ):
+        if not self._blocked_once:
+            self._blocked_once = True
+            self.reply_started.set()
+            await self.release_reply.wait()
+        return await super().add_message_if_summary_version(
+            user_id, message, expected_version=expected_version
+        )
+
+
 def _service() -> SummarizationService:
     return SummarizationService(
         enabled=True,
@@ -149,3 +168,108 @@ async def test_two_summarizers_cannot_overwrite_newer_commit():
     final = await repo.get_session("u1", session.id)
     assert final.summary == "newer"
     assert final.summaryVersion == 1
+
+
+async def _run_summarize_command(
+    repo: InMemorySessionRepository,
+    session: Session,
+    gateway: BlockingSummaryGateway,
+):
+    gateway.release.set()
+    return await execute_command(
+        parsed=parse_input("/summarize"),
+        session=session,
+        user=AuthenticatedUser(
+            internal_user_id="u1", subject="sub", issuer="iss", provider="dev"
+        ),
+        repo=repo,
+        catalog=load_catalog(),
+        agents=load_agent_catalog(),
+        summarizer=_service(),
+        gateway=gateway,
+    )
+
+
+async def test_clear_fences_summary_reply_after_summary_commit():
+    repo = BlockingSummaryReplyRepository()
+    created = await repo.create_session(Session(userId="u1", model="gpt-5.2"))
+    for message in _prior(created.id):
+        await repo.add_message("u1", message)
+    pending = asyncio.create_task(
+        _run_summarize_command(
+            repo, await repo.get_session("u1", created.id), BlockingSummaryGateway("stale")
+        )
+    )
+    await repo.reply_started.wait()
+    await execute_command(
+        parsed=parse_input("/clear"),
+        session=await repo.get_session("u1", created.id),
+        user=AuthenticatedUser(
+            internal_user_id="u1", subject="sub", issuer="iss", provider="dev"
+        ),
+        repo=repo,
+        catalog=load_catalog(),
+        agents=load_agent_catalog(),
+    )
+    repo.release_reply.set()
+    stale_result = await pending
+    assert stale_result.content == "Summary was superseded by a newer conversation state."
+    final = await repo.get_session("u1", created.id)
+    assert final.summary is None
+    assert final.summarizedThroughMessageId is None
+    assert final.summaryVersion == 2
+    messages = await repo.list_messages("u1", created.id)
+    assert [message.content for message in messages] == ["Conversation cleared."]
+
+
+async def test_normal_summary_reply_persists_with_committed_version():
+    repo = InMemorySessionRepository()
+    created = await repo.create_session(Session(userId="u1", model="gpt-5.2"))
+    for message in _prior(created.id):
+        await repo.add_message("u1", message)
+    result = await _run_summarize_command(
+        repo, await repo.get_session("u1", created.id), BlockingSummaryGateway("current")
+    )
+    assert result.summaryVersion == 1
+    messages = await repo.list_messages("u1", created.id)
+    assert messages[-1].summaryVersion == 1
+    assert "current" in messages[-1].content
+
+
+async def test_newer_summary_commit_fences_older_reply():
+    repo = BlockingSummaryReplyRepository()
+    created = await repo.create_session(Session(userId="u1", model="gpt-5.2"))
+    for message in _prior(created.id):
+        await repo.add_message("u1", message)
+    older = asyncio.create_task(
+        _run_summarize_command(
+            repo, await repo.get_session("u1", created.id), BlockingSummaryGateway("older")
+        )
+    )
+    await repo.reply_started.wait()
+    newer_state = await repo.commit_summary_if_version(
+        "u1",
+        created.id,
+        expected_version=1,
+        summary="newer",
+        summarized_through_message_id="newer-cursor",
+    )
+    assert newer_state is not None and newer_state.summaryVersion == 2
+    newer_reply = Message(
+        sessionId=created.id,
+        userId="u1",
+        role=MessageRole.assistant,
+        content="newer summary reply",
+    )
+    assert await repo.add_message_if_summary_version(
+        "u1", newer_reply, expected_version=2
+    )
+    repo.release_reply.set()
+    await older
+    messages = await repo.list_messages("u1", created.id)
+    summary_replies = [
+        message for message in messages if message.summaryVersion is not None
+    ]
+    assert [message.summaryVersion for message in summary_replies] == [2]
+    assert "newer" in summary_replies[0].content
+    assert all("older" not in message.content for message in messages)

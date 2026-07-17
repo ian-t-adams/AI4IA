@@ -92,6 +92,12 @@ class InMemorySessionRepository:
             session.summarizedThroughMessageId = None
             session.summaryVersion += 1
             session.updatedAt = datetime.now(timezone.utc)
+            self._messages[session_id] = [
+                message
+                for message in self._messages.get(session_id, [])
+                if message.summaryVersion is None
+                or message.summaryVersion >= session.summaryVersion
+            ]
             return session.model_copy(deep=True)
 
     async def commit_summary_if_version(
@@ -111,6 +117,12 @@ class InMemorySessionRepository:
             session.summarizedThroughMessageId = summarized_through_message_id
             session.summaryVersion = expected_version + 1
             session.updatedAt = datetime.now(timezone.utc)
+            self._messages[session_id] = [
+                message
+                for message in self._messages.get(session_id, [])
+                if message.summaryVersion is None
+                or message.summaryVersion >= session.summaryVersion
+            ]
             return session.model_copy(deep=True)
 
     async def touch_session(self, user_id: str, session_id: str) -> None:
@@ -131,6 +143,18 @@ class InMemorySessionRepository:
             message.userId = user_id
             self._messages.setdefault(message.sessionId, []).append(message)
             return message
+
+    async def add_message_if_summary_version(
+        self, user_id: str, message: Message, *, expected_version: int
+    ) -> bool:
+        async with self._lock:
+            session = await self._owned_session(user_id, message.sessionId)
+            if session.summaryVersion != expected_version:
+                return False
+            message.userId = user_id
+            message.summaryVersion = expected_version
+            self._messages.setdefault(message.sessionId, []).append(message)
+            return True
 
     async def upsert_message(self, user_id: str, message: Message) -> Message:
         async with self._lock:

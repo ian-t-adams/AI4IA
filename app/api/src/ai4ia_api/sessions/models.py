@@ -121,6 +121,9 @@ class Message(BaseModel):
     # and their outcome, rendered as an expandable panel under the answer. None for
     # plain (no-tool) turns. Display-only, derived from the runtime's step trace.
     steps: list[ActivityStep] | None = None
+    # Present only on the assistant reply produced by /summarize. Repositories
+    # use it to fence and purge replies superseded by clear/newer summaries.
+    summaryVersion: int | None = None
     createdAt: datetime = Field(default_factory=_now)
 
 
