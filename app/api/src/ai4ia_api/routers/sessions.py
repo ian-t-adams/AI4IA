@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
-from ..sessions.models import Message, MessageRole, MessageSource, Session
+from ..library.models import DocumentStatus
+from ..sessions.models import Message, MessageRole, MessageSource, Session, ToolOverrides
 from ..sessions.repository import SessionNotFoundError, SessionRepository
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -26,16 +27,93 @@ class CreateSessionRequest(BaseModel):
     title: str | None = None
     model: str | None = None
     systemPrompt: str | None = None
+    agentName: str | None = None
+    toolOverrides: ToolOverrides = Field(default_factory=ToolOverrides)
+    libraryDocumentIds: list[str] = Field(default_factory=list, max_length=20)
 
 
 class UpdateSessionRequest(BaseModel):
     title: str | None = None
     model: str | None = None
     systemPrompt: str | None = None
+    agentName: str | None = None
+    toolOverrides: ToolOverrides | None = None
+    libraryDocumentIds: list[str] | None = Field(default=None, max_length=20)
 
 
 def _repo(request: Request) -> SessionRepository:
     return request.app.state.session_repo
+
+
+async def _validate_policy_fields(
+    request: Request,
+    user: AuthenticatedUser,
+    *,
+    agent_name: str | None,
+    overrides: ToolOverrides,
+    library_document_ids: list[str],
+    validate_agent: bool = True,
+    validate_tools: bool = True,
+    validate_documents: bool = True,
+) -> tuple[str | None, ToolOverrides, list[str]]:
+    selected = (agent_name or "").strip() or None
+    if selected and validate_agent:
+        catalog = await request.app.state.agent_service.catalog_for(
+            user.internal_user_id, request.app.state.agents
+        )
+        agent = catalog.get(selected)
+        if agent is None or not agent.enabled:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Unknown or disabled agent: {selected}",
+            )
+        selected = agent.name
+
+    def clean_tools(values: list[str]) -> list[str]:
+        return list(dict.fromkeys((value or "").strip() for value in values if value.strip()))
+
+    added = clean_tools(overrides.added)
+    removed = clean_tools(overrides.removed)
+    if len(added) > 8 or len(removed) > 16:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Too many conversation tool overrides.",
+        )
+    unavailable = (
+        set(added) - request.app.state.agent_service.attachable_tools
+        if validate_tools
+        else set()
+    )
+    if unavailable:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Tools are not available for conversation overrides: {', '.join(sorted(unavailable))}",
+        )
+
+    document_ids = list(
+        dict.fromkeys((value or "").strip() for value in library_document_ids if value.strip())
+    )
+    if document_ids and validate_documents:
+        library = getattr(request.app.state, "document_library", None)
+        if library is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="The document library is not enabled.",
+            )
+        for document_id in document_ids:
+            try:
+                document = await library.get_document(user.internal_user_id, document_id)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Library document is unavailable: {document_id}",
+                ) from exc
+            if document.status != DocumentStatus.ready:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Library document is not ready: {document_id}",
+                )
+    return selected, ToolOverrides(added=added, removed=removed), document_ids
 
 
 @router.post("", response_model=Session, status_code=status.HTTP_201_CREATED)
@@ -44,11 +122,21 @@ async def create_session(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> Session:
+    agent_name, overrides, document_ids = await _validate_policy_fields(
+        request,
+        user,
+        agent_name=body.agentName,
+        overrides=body.toolOverrides,
+        library_document_ids=body.libraryDocumentIds,
+    )
     session = Session(
         userId=user.internal_user_id,
         title=body.title or "New chat",
         model=body.model,
         systemPrompt=body.systemPrompt,
+        agentName=agent_name,
+        toolOverrides=overrides,
+        libraryDocumentIds=document_ids,
     )
     return await _repo(request).create_session(session)
 
@@ -86,6 +174,22 @@ async def update_session(
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     data = body.model_dump(exclude_unset=True)
+    next_agent = data.get("agentName", session.agentName)
+    next_overrides = data.get("toolOverrides", session.toolOverrides)
+    next_document_ids = data.get("libraryDocumentIds", session.libraryDocumentIds)
+    next_agent, next_overrides, next_document_ids = await _validate_policy_fields(
+        request,
+        user,
+        agent_name=next_agent,
+        overrides=next_overrides,
+        library_document_ids=next_document_ids,
+        validate_agent="agentName" in data,
+        validate_tools="toolOverrides" in data,
+        validate_documents="libraryDocumentIds" in data,
+    )
+    data["agentName"] = next_agent
+    data["toolOverrides"] = next_overrides
+    data["libraryDocumentIds"] = next_document_ids
     for field_name, value in data.items():
         setattr(session, field_name, value)
     session.updatedAt = datetime.now(timezone.utc)

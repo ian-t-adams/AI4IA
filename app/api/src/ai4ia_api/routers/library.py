@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..entitlements.service import EntitlementService
+from ..logging_setup import emit_custom_event
 from ..library.access import can_access, normalize_principal, require_owner
 from ..library.chunking import chunk_markdown
 from ..library.compute_factory import DocumentComputeService
@@ -115,6 +116,19 @@ class UserDocumentSummary(BaseModel):
                 for v in sorted(doc.versions, key=lambda v: v.n)
             ],
         )
+
+
+class LibrarySummary(BaseModel):
+    status: str = "ok"
+    total: int = 0
+    byStatus: dict[str, int] = Field(default_factory=dict)
+    byModality: dict[str, int] = Field(default_factory=dict)
+    recent: list[UserDocumentSummary] = Field(default_factory=list)
+    maxUploadBytes: int
+    maxDocuments: int
+    modalities: list[str] = Field(
+        default_factory=lambda: ["document", "text", "image", "audio", "video"]
+    )
 
 
 class AnalyzerCreate(BaseModel):
@@ -211,6 +225,34 @@ async def _accessible_document(
 
 
 # --- documents ---
+@router.get("/summary", response_model=LibrarySummary)
+async def library_summary(
+    request: Request,
+    recent: int = 5,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> LibrarySummary:
+    repo = _library(request)
+    docs = await repo.list_documents(user.internal_user_id)
+    docs.sort(key=lambda document: document.updatedAt, reverse=True)
+    by_status: dict[str, int] = {}
+    by_modality: dict[str, int] = {}
+    for document in docs:
+        by_status[document.status.value] = by_status.get(document.status.value, 0) + 1
+        by_modality[document.modality.value] = by_modality.get(document.modality.value, 0) + 1
+    settings = request.app.state.settings
+    return LibrarySummary(
+        total=len(docs),
+        byStatus=by_status,
+        byModality=by_modality,
+        recent=[
+            UserDocumentSummary.of(document)
+            for document in docs[: max(0, min(recent, 20))]
+        ],
+        maxUploadBytes=settings.document_max_upload_bytes,
+        maxDocuments=settings.document_max_per_user,
+    )
+
+
 @router.get("/documents", response_model=list[UserDocumentSummary])
 async def list_documents(
     request: Request,
@@ -316,6 +358,16 @@ async def upload_document(
     logger.info(
         "library upload user=%s id=%s status=%s deduped=%s",
         uid, doc.id, doc.status, result.deduped,
+    )
+    emit_custom_event(
+        "document_ingest",
+        {
+            "status": doc.status.value,
+            "modality": doc.modality.value,
+            "contentType": doc.contentType,
+            "size": doc.size,
+            "deduped": result.deduped,
+        },
     )
     return UserDocumentSummary.of(doc)
 

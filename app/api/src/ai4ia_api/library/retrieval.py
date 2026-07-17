@@ -129,7 +129,13 @@ class DocumentRetrievalService:
         return merged
 
     async def context_block(
-        self, user_id: str, query: str, *, nonce: str, email: str | None = None
+        self,
+        user_id: str,
+        query: str,
+        *,
+        nonce: str,
+        email: str | None = None,
+        document_ids: list[str] | None = None,
     ) -> str:
         """Tier 1 + Tier 2 context for ``user_id``'s accessible library (own
         documents plus those shared with ``email``), fenced with ``nonce``. Returns
@@ -142,6 +148,11 @@ class DocumentRetrievalService:
             return ""
         if not ready:
             return ""
+        if document_ids:
+            selected = set(document_ids)
+            ready = [document for document in ready if document.id in selected]
+            if not ready:
+                return ""
 
         cards: list[str] = []
         for doc in ready[: max(0, self._settings.document_context_max_docs)]:

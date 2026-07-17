@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..catalog import DeploymentOption, ModelCatalog, ModelEntry
+from ..conversations.policy import resolve_conversation_policy
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..logging_setup import get_correlation_id
 from ..sessions.models import (
@@ -662,7 +663,8 @@ async def chat(
     # a synthesized tool agent, which already carries its persona + single tool.
     agent: AgentSpec | None = tool_agent
     if tool_agent is None:
-        if parsed.agent is not None or (
+        selected_agent_name = parsed.agent or session.agentName
+        if selected_agent_name is not None or (
             parsed.command is not None and parsed.command.kind is CommandKind.agents
         ):
             agents = await request.app.state.agent_service.catalog_for(
@@ -672,20 +674,22 @@ async def chat(
         # Resolve an @mention to an agent BEFORE handling commands or the model, so
         # an invalid mention can never fall through to either. Disabled agents are
         # treated as unavailable.
-        if parsed.agent is not None:
-            agent = agents.get(parsed.agent)
+        if selected_agent_name is not None:
+            agent = agents.get(selected_agent_name)
             if agent is None or not agent.enabled:
-                assistant = await _persist_local_reply(
-                    repo=repo,
-                    session=session,
-                    user=user,
-                    user_content=parsed.raw,
-                    reply=(
-                        f"Unknown agent: @{parsed.agent}. "
-                        "Type /agents to see the agents you can mention."
-                    ),
-                )
-                return _local_reply_response(body.sessionId, assistant, body.stream)
+                if parsed.agent is not None:
+                    assistant = await _persist_local_reply(
+                        repo=repo,
+                        session=session,
+                        user=user,
+                        user_content=parsed.raw,
+                        reply=(
+                            f"Unknown agent: @{parsed.agent}. "
+                            "Type /agents to see the agents you can mention."
+                        ),
+                    )
+                    return _local_reply_response(body.sessionId, assistant, body.stream)
+                agent = None
 
         # Slash commands (/help, /clear, /system, /model, /agents, ...) are handled
         # locally and never reach a model. A command takes precedence over an agent
@@ -705,6 +709,23 @@ async def chat(
             )
             return _local_reply_response(body.sessionId, assistant, body.stream)
 
+    policy = await resolve_conversation_policy(
+        request.app.state,
+        user.internal_user_id,
+        session,
+        explicit_agent=parsed.agent,
+    )
+    if tool_agent is None and policy.agent is not None:
+        agent = policy.agent.model_copy(update={"tools": list(policy.effective_tools)})
+    elif tool_agent is None and policy.effective_tools:
+        agent = AgentSpec(
+            name="conversation",
+            displayName="Conversation",
+            description="Conversation-scoped tools",
+            systemPrompt=policy.instructions or "You are a helpful assistant.",
+            tools=list(policy.effective_tools),
+        )
+
     # Determine the system prompt, model, and the content the model actually
     # sees. For an agent turn the persona prompt replaces the session prompt
     # (this turn only) and the mention is stripped from the text.
@@ -723,7 +744,7 @@ async def chat(
                 agent=agent.name,
             )
             return _local_reply_response(body.sessionId, assistant, body.stream)
-        system_prompt = agent.systemPrompt
+        system_prompt = policy.instructions if tool_agent is None else agent.systemPrompt
         # Precedence: explicit body model > session's standing model > agent's
         # preferred model. The agent default is a per-turn fallback only and is
         # never written back to the session.
@@ -894,6 +915,7 @@ async def chat(
             library_block = await retrieval.context_block(
                 user.internal_user_id, content_for_model, nonce=library_nonce,
                 email=user.email,
+                document_ids=session.libraryDocumentIds or None,
             )
         except Exception:  # noqa: BLE001 - retrieval must never break a turn
             logger.warning("library context build failed", exc_info=True)

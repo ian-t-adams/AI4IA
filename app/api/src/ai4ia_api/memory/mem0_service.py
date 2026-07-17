@@ -38,6 +38,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from .formatting import format_memory_context
@@ -391,6 +392,56 @@ class Mem0MemoryService:
         removes by id the ones whose ``metadata.document_id`` matches."""
         mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
         return await self._forget_document(mem, user_id, document_id)
+
+    async def list_memories(self, user_id: str, *, limit: int = 100) -> list[MemoryRecord]:
+        mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
+        listing = await self._call(
+            lambda: mem.get_all(
+                filters={"user_id": user_id},
+                top_k=max(1, min(limit, _FORGET_LIST_CAP)),
+            ),
+            self._op_timeout_s,
+        )
+        records: list[MemoryRecord] = []
+        for item in _results(listing):
+            text = str(item.get("memory") or "").strip()
+            mem_id = item.get("id")
+            if not text or mem_id is None:
+                continue
+            raw_metadata = item.get("metadata")
+            metadata: dict[str, Any] = (
+                raw_metadata if isinstance(raw_metadata, dict) else {}
+            )
+            created = item.get("created_at") or item.get("updated_at")
+            created_at = None
+            if isinstance(created, str):
+                try:
+                    created_at = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                except ValueError:
+                    created_at = None
+            kwargs: dict[str, Any] = {
+                "id": str(mem_id),
+                "user_id": user_id,
+                "text": text,
+                "session_id": item.get("run_id"),
+                "document_id": metadata.get("document_id"),
+                "kind": "document" if metadata.get("document_id") else "user_message",
+            }
+            if created_at is not None:
+                kwargs["created_at"] = created_at
+            records.append(MemoryRecord(**kwargs))
+        return records
+
+    async def delete_memory(self, user_id: str, memory_id: str) -> bool:
+        mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
+        listing = await self._call(
+            lambda: mem.get_all(filters={"user_id": user_id}, top_k=_FORGET_LIST_CAP),
+            self._op_timeout_s,
+        )
+        if not any(str(item.get("id")) == memory_id for item in _results(listing)):
+            return False
+        await self._call(lambda: mem.delete(memory_id=memory_id), self._op_timeout_s)
+        return True
 
     async def _forget_document(self, mem: Any, user_id: str, document_id: str) -> int:
         """List the user's memories and delete by id those tagged with

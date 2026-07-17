@@ -124,12 +124,24 @@ class Message(BaseModel):
     createdAt: datetime = Field(default_factory=_now)
 
 
+class ToolOverrides(BaseModel):
+    """Chat-level tool changes relative to the selected agent/default baseline."""
+
+    added: list[str] = Field(default_factory=list)
+    removed: list[str] = Field(default_factory=list)
+
+
 class Session(BaseModel):
     id: str = Field(default_factory=_new_id)
     userId: str
     title: str = "New chat"
     model: str | None = None
     systemPrompt: str | None = None
+    # Standing conversation policy. All fields are additive so existing Cosmos
+    # records remain valid without a migration.
+    agentName: str | None = None
+    toolOverrides: ToolOverrides = Field(default_factory=ToolOverrides)
+    libraryDocumentIds: list[str] = Field(default_factory=list)
     # When rolling summarization has
     # folded older turns, ``summary`` holds the compact running digest of every
     # turn UP TO AND INCLUDING ``summarizedThroughMessageId``; turns after that

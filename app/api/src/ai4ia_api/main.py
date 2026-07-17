@@ -63,11 +63,14 @@ from .routers import documents as documents_router
 from .routers import entitlements as entitlements_router
 from .routers import health as health_router
 from .routers import images as images_router
+from .routers import inspector as inspector_router
 from .routers import library as library_router
 from .routers import mcp_servers as mcp_servers_router
+from .routers import memories as memories_router
 from .routers import official_mcp_servers as official_mcp_servers_router
 from .routers import realtime as realtime_router
 from .routers import sessions as sessions_router
+from .routers import tools as tools_router
 from .routers import usage as usage_router
 from .routers import videos as videos_router
 from .routers import voice as voice_router
@@ -523,12 +526,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(catalog_router.router)
     app.include_router(agents_router.router)
     app.include_router(mcp_servers_router.router)
+    app.include_router(memories_router.router)
     app.include_router(official_mcp_servers_router.router)
     app.include_router(workflows_router.router)
     app.include_router(sessions_router.router)
+    app.include_router(tools_router.router)
     app.include_router(chat_router.router)
     app.include_router(documents_router.router)
     app.include_router(images_router.router)
+    app.include_router(inspector_router.router)
     app.include_router(videos_router.router)
     app.include_router(docprocessing_router.router)
     app.include_router(library_router.router)

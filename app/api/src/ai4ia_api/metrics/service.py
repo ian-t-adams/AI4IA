@@ -67,6 +67,12 @@ PANEL_SPECS: tuple[_PanelSpec, ...] = (
         metrics=(
             MetricRequest(name="TotalRequestUnits", label="Request Units", aggregation="total", unit="RU"),
             MetricRequest(name="TotalRequests", label="Requests", aggregation="total"),
+            MetricRequest(
+                name="ServiceAvailability",
+                label="Availability",
+                aggregation="average",
+                unit="%",
+            ),
         ),
     ),
     _PanelSpec(
@@ -74,6 +80,13 @@ PANEL_SPECS: tuple[_PanelSpec, ...] = (
         display_name="Container Apps (API)",
         id_attr="metrics_container_app_resource_id",
         metrics=(
+            MetricRequest(name="Requests", label="Requests", aggregation="total"),
+            MetricRequest(
+                name="ResponseTime",
+                label="Response time",
+                aggregation="average",
+                unit="ms",
+            ),
             MetricRequest(name="Replicas", label="Replicas", aggregation="average"),
             MetricRequest(name="RestartCount", label="Restarts", aggregation="total"),
         ),

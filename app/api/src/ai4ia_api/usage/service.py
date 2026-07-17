@@ -25,6 +25,7 @@ from .models import (
     UsageRecord,
     UsageStatus,
     UsageSummary,
+    SessionUsageSummary,
     UsageTarget,
     WindowTotals,
 )
@@ -242,6 +243,29 @@ class UsageService:
         return await self._repo.summarize(
             user_id, since=since, since_days=days, now=now
         )
+
+    async def summarize_session(
+        self, user_id: str, session_id: str, *, limit: int = 500
+    ) -> SessionUsageSummary:
+        records = await self._repo.list_for_session(
+            user_id, session_id, limit=max(1, min(limit, 1000))
+        )
+        summary = SessionUsageSummary(sessionId=session_id)
+        if records:
+            summary.latest = records[0]
+        for record in records:
+            summary.totalRequests += 1
+            if record.usageKnown:
+                summary.totalPromptTokens += record.promptTokens or 0
+                summary.totalCompletionTokens += record.completionTokens or 0
+                summary.totalTokens += record.totalTokens or 0
+            else:
+                summary.unknownUsageRequests += 1
+            if record.costKnown and record.estCostMicroUsd is not None:
+                summary.totalCostMicroUsd += record.estCostMicroUsd
+            elif record.billable:
+                summary.costUnknownRequests += 1
+        return summary
 
     async def window_totals(
         self, user_id: str, *, since: datetime, now: datetime | None = None

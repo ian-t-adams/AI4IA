@@ -39,5 +39,16 @@ class InMemoryUsageRepository:
             records = records[:limit]
         return records
 
+    async def list_for_session(
+        self, user_id: str, session_id: str, *, limit: int
+    ) -> list[UsageRecord]:
+        records = [
+            record
+            for record in self._by_user.get(user_id, [])
+            if record.sessionId == session_id
+        ]
+        records.sort(key=lambda record: record.createdAt, reverse=True)
+        return records[: max(0, limit)]
+
     async def close(self) -> None:
         return None

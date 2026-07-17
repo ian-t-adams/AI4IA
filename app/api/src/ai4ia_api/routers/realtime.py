@@ -52,7 +52,9 @@ from ..agents.tools import ToolRegistry
 from ..auth.base import AuthCredentials, AuthError, AuthenticatedUser
 from ..catalog import DeploymentOption, ModelCatalog
 from ..config import Environment, GatewayAuthMode, Settings
-from ..logging_setup import new_correlation_id, set_correlation_id
+from ..conversations.policy import resolve_conversation_policy
+from ..logging_setup import emit_custom_event, new_correlation_id, set_correlation_id
+from ..sessions.repository import SessionNotFoundError
 from ..voice_provider_catalog import (
     AZURE_OPENAI_PROVIDER_ID,
     SPEECH_VOICE_LIVE_PROVIDER_ID,
@@ -506,6 +508,21 @@ def normalize_speech_client_frame(
     return json.dumps({"type": SESSION_UPDATE_TYPE, "session": normalized})
 
 
+def reject_client_system_message(frame: str) -> str | None:
+    """Reject client-created system/developer conversation items for every provider."""
+    try:
+        payload = json.loads(frame)
+    except (TypeError, ValueError):
+        return frame
+    if not isinstance(payload, dict) or payload.get("type") != "conversation.item.create":
+        return frame
+    item = payload.get("item")
+    if isinstance(item, dict) and item.get("role") in {"system", "developer"}:
+        logger.info("voice-live rejected client system conversation item")
+        return None
+    return frame
+
+
 def build_upstream_headers(
     auth_mode: GatewayAuthMode, api_key: str | None, correlation_id: str | None
 ) -> dict[str, str]:
@@ -803,6 +820,7 @@ def inject_session_tools(
     tool_choice: str,
     *,
     instructions: str | None = None,
+    instructions_authoritative: bool = False,
 ) -> str:
     """Merge relay-owned fields into a client ``session.update`` frame.
 
@@ -820,7 +838,11 @@ def inject_session_tools(
     A no-op (frame returned verbatim) when there is nothing to inject — neither
     tools nor instructions.
     """
-    if (not tools and instructions is None) or _SESSION_UPDATE_HINT not in frame:
+    if (
+        not tools
+        and instructions is None
+        and not instructions_authoritative
+    ) or _SESSION_UPDATE_HINT not in frame:
         return frame
     try:
         payload = json.loads(frame)
@@ -836,6 +858,8 @@ def inject_session_tools(
         session["tool_choice"] = tool_choice
     if instructions is not None:
         session["instructions"] = instructions
+    elif instructions_authoritative:
+        session.pop("instructions", None)
     payload["session"] = session
     return json.dumps(payload)
 
@@ -910,16 +934,25 @@ class ToolBridge:
     tools: list[dict]
     tool_choice: str = "auto"
     instructions: str | None = None
+    instructions_authoritative: bool = False
 
     @property
     def enabled(self) -> bool:
         return bool(self.tools)
 
     def rewrite_client_frame(self, frame: str) -> str:
-        if not self.tools and self.instructions is None:
+        if (
+            not self.tools
+            and self.instructions is None
+            and not self.instructions_authoritative
+        ):
             return frame
         return inject_session_tools(
-            frame, self.tools, self.tool_choice, instructions=self.instructions
+            frame,
+            self.tools,
+            self.tool_choice,
+            instructions=self.instructions,
+            instructions_authoritative=self.instructions_authoritative,
         )
 
     async def handle_upstream_frame(self, frame: str) -> list[str]:
@@ -1039,6 +1072,7 @@ async def build_session_bridge(
     *,
     user,
     agent_name: str | None,
+    session=None,
     tools_requested: bool = True,
 ) -> ToolBridge:
     """Build the relay bridge for a live session, agent-aware when ``agent_name`` is set.
@@ -1050,9 +1084,23 @@ async def build_session_bridge(
     Otherwise the session falls back to the generic assistant with every authorized
     builtin — the original transparent-pump behavior.
 
-    ``tools_requested`` is the per-session client opt-in; it gates tool advertisement
-    (combined with the server flag) without affecting the bound agent's persona.
+    Session-bound connections use the session's validated effective tool selection
+    as the opt-in. The legacy query-bound agent path still honors ``tools_requested``.
     """
+    if session is not None:
+        policy = await resolve_conversation_policy(
+            state, user.internal_user_id, session
+        )
+        bridge = build_tool_bridge(
+            state,
+            settings,
+            correlation_id,
+            tool_names=policy.effective_tools,
+            instructions=policy.instructions,
+            tools_requested=True,
+        )
+        bridge.instructions_authoritative = True
+        return bridge
     if agent_name:
         spec = await resolve_live_agent(state, user, agent_name)
         if spec is not None:
@@ -1672,6 +1720,21 @@ def _emit_relay_completion(
             "exceptionMessage": usage_error[1],
         }
     logger.info(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+    emit_custom_event(
+        "voice_live_completion",
+        {
+            "correlationId": correlation_id,
+            "provider": resolution.provider.id,
+            "model": resolution.model_id,
+            "outcome": outcome.status,
+            "sourceEvent": outcome.metadata.source_event,
+            "closeCode": outcome.metadata.close_code,
+            "clientTextFrames": outcome.stats.client_to_upstream.text_frames,
+            "clientBinaryFrames": outcome.stats.client_to_upstream.binary_frames,
+            "upstreamTextFrames": outcome.stats.upstream_to_client.text_frames,
+            "upstreamBinaryFrames": outcome.stats.upstream_to_client.binary_frames,
+        },
+    )
 
 
 async def _finalize_relay(
@@ -1740,6 +1803,17 @@ async def voice_live(websocket: WebSocket) -> None:
         await _deny(websocket, WS_POLICY_VIOLATION)
         return
 
+    session = None
+    session_id = (websocket.query_params.get("session") or "").strip()
+    if session_id:
+        try:
+            session = await state.session_repo.get_session(
+                user.internal_user_id, session_id
+            )
+        except SessionNotFoundError:
+            await _deny(websocket, WS_POLICY_VIOLATION)
+            return
+
     # 4. Resolve the provider + upstream target (browser never sees it).
     try:
         provider_resolution = _resolve_live_voice_provider(
@@ -1784,7 +1858,8 @@ async def voice_live(websocket: WebSocket) -> None:
         settings,
         correlation_id,
         user=user,
-        agent_name=websocket.query_params.get("agent"),
+        agent_name=None if session is not None else websocket.query_params.get("agent"),
+        session=session,
         tools_requested=parse_tools_opt_in(websocket.query_params.get("tools")),
     )
 
@@ -1792,7 +1867,10 @@ async def voice_live(websocket: WebSocket) -> None:
         provider_frame = provider_resolution.rewrite_client_frame(frame)
         if provider_frame is None:
             return None
-        return bridge.rewrite_client_frame(provider_frame)
+        safe_frame = reject_client_system_message(provider_frame)
+        if safe_frame is None:
+            return None
+        return bridge.rewrite_client_frame(safe_frame)
 
     async def run_relay() -> RelayOutcome:
         async with connector.connect(

@@ -235,6 +235,18 @@ class UsageSummary(BaseModel):
         return round(self.totalCostMicroUsd / 1_000_000, 6)
 
 
+class SessionUsageSummary(BaseModel):
+    sessionId: str
+    totalRequests: int = 0
+    totalPromptTokens: int = 0
+    totalCompletionTokens: int = 0
+    totalTokens: int = 0
+    totalCostMicroUsd: int = 0
+    unknownUsageRequests: int = 0
+    costUnknownRequests: int = 0
+    latest: UsageRecord | None = None
+
+
 def summarize_records(
     user_id: str,
     records: list[UsageRecord],
