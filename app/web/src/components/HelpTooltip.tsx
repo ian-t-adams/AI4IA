@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 
 export function HelpTooltip({
@@ -61,6 +68,9 @@ export function HelpTooltip({
       document.removeEventListener("pointerdown", outside);
     };
   }, [open, updatePosition]);
+  useLayoutEffect(() => {
+    if (open) updatePosition();
+  }, [children, open, updatePosition]);
   return (
     <span className="help-tooltip">
       <button
@@ -105,7 +115,13 @@ export function HelpTooltip({
               id={id}
               role="tooltip"
               className="help-content"
-              style={{ top: position.top, left: position.left, right: "auto" }}
+              style={{
+                top: position.top,
+                left: position.left,
+                right: "auto",
+                maxHeight: "calc(100dvh - 32px)",
+                overflowY: "auto",
+              }}
             >
               {children}
             </span>,

@@ -288,6 +288,10 @@ describe("ConversationInspector", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
     expect(screen.getByRole("alert")).toHaveTextContent("snapshot offline");
     expect(screen.queryByRole("textbox", { name: "System prompt" })).toBeNull();
+    await userEvent.click(screen.getByRole("tab", { name: "Usage" }));
+    const retry = screen.getByRole("button", { name: "Retry" });
+    await userEvent.click(retry);
+    expect(mocks.getInspector).toHaveBeenCalledTimes(2);
   });
 
   it("discards a late prompt save after switching conversations", async () => {

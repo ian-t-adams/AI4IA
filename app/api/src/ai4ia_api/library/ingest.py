@@ -317,25 +317,30 @@ class DocumentIngestor:
         analyzer = await self._resolve_analyzer(user_id, doc.analyzerId)
         cu_analyzer_id = resolve_cu_analyzer_id(analyzer, modality, self._settings)
 
-        doc.status = DocumentStatus.analyzing
-        doc.touch()
-        if not await self._safe_update(doc):
-            # Deleted in the (small) window before analysis began; nothing was
-            # persisted beyond the raw upload, which delete_document already purged.
+        initial_outcome, committed = await self._safe_update(
+            doc,
+            {"status": DocumentStatus.analyzing, "error": None},
+        )
+        if initial_outcome != "committed" or committed is None:
             emit_custom_event(
                 "document_ingest_terminal",
                 {
-                    "status": "cancelled",
+                    "status": (
+                        "cancelled" if initial_outcome == "missing" else "failed"
+                    ),
                     "modality": modality,
-                    "stage": "content_understanding",
+                    "stage": "manifest_start",
+                    "persistenceOutcome": initial_outcome,
                     "latencyMs": int((time.monotonic() - started) * 1000),
                 },
             )
             return
+        doc = committed
 
         meter_status = "complete"
         deleted_mid_flight = False
         terminal_status: str | None = None
+        persistence_outcome = "not_attempted"
         try:
             result = await self._cu.analyze(
                 cu_analyzer_id, data, content_type or "application/octet-stream"
@@ -383,22 +388,38 @@ class DocumentIngestor:
                 # manifest. purge is idempotent with delete_document's own purge.
                 await self.purge(user_id, document_id)
                 terminal_status = "cancelled"
+                persistence_outcome = "missing"
             else:
-                doc.touch()
-                # The terminal manifest write is the commit point. If the document was
-                # deleted between the re-check and here, update_document raises
-                # DocumentNotFoundError; roll back the just-written artifacts.
-                if not await self._safe_update(doc):
+                persistence_outcome, committed = await self._safe_update(
+                    doc,
+                    {
+                        "status": doc.status,
+                        "error": doc.error,
+                        "summary": doc.summary,
+                        "parsedPath": doc.parsedPath,
+                        "chunksPath": doc.chunksPath,
+                        "chunkCount": doc.chunkCount,
+                    },
+                )
+                if persistence_outcome == "missing":
                     await self.purge(user_id, document_id)
                     terminal_status = "cancelled"
+                elif persistence_outcome == "error" or committed is None:
+                    await self._purge_chunks(user_id, document_id)
+                    terminal_status = "failed"
                 else:
-                    terminal_status = doc.status.value
+                    terminal_status = (
+                        committed.status.value
+                        if committed.status == doc.status
+                        else "failed"
+                    )
             emit_custom_event(
                 "document_ingest_terminal",
                 {
                     "status": terminal_status,
                     "modality": modality,
                     "stage": "content_understanding",
+                    "persistenceOutcome": persistence_outcome,
                     "latencyMs": int((time.monotonic() - started) * 1000),
                 },
             )
@@ -488,26 +509,22 @@ class DocumentIngestor:
         except DocumentNotFoundError:
             return False
 
-    async def _safe_update(self, doc: UserDocument) -> bool:
-        """Persist the manifest during enrich.
-
-        Returns ``False`` only when the document was deleted mid-flight
-        (``update_document`` raised ``DocumentNotFoundError``) — the caller then
-        rolls back any artifacts so the delete wins. A transient error is logged
-        and returns ``True`` (best-effort; not a deletion, so no rollback).
-        """
+    async def _safe_update(
+        self, doc: UserDocument, changes: dict[str, object]
+    ) -> tuple[str, UserDocument | None]:
+        """Atomically patch ingest-owned fields with bounded CAS retry."""
         try:
-            await self._library.update_document(doc)
-            return True
+            updated = await self._library.patch_ingest_fields(doc, changes)
+            return "committed", updated
         except DocumentNotFoundError:
             logger.info(
                 "enrich: document deleted mid-flight id=%s; skipping manifest write",
                 doc.id,
             )
-            return False
-        except Exception:  # noqa: BLE001 - manifest write is best-effort in enrich
+            return "missing", None
+        except Exception:  # noqa: BLE001 - terminal telemetry reports persistence failure
             logger.warning("enrich manifest update failed id=%s", doc.id, exc_info=True)
-            return True
+            return "error", None
 
     async def close(self) -> None:
         """Cancel in-flight enrich tasks, then close owned IO resources."""

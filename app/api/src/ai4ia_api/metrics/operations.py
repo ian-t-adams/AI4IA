@@ -70,10 +70,12 @@ DOCUMENTS_KQL = """
 AppEvents
 | where Name == "document_ingest_terminal"
 | extend status=tostring(Properties["status"]), modality=tostring(Properties["modality"]),
-    stage=tostring(Properties["stage"]), latencyMs=tolong(Properties["latencyMs"])
+    stage=tostring(Properties["stage"]),
+    persistenceOutcome=tostring(Properties["persistenceOutcome"]),
+    latencyMs=tolong(Properties["latencyMs"])
 | summarize operations=count(), failures=countif(status == "failed"),
     p95LatencyMs=percentile(latencyMs, 95), sourceTimestamp=max(TimeGenerated)
-  by status, modality, stage
+  by status, modality, stage, persistenceOutcome
 """
 
 MEMORY_KQL = """
@@ -92,8 +94,10 @@ AppEvents
 | where Name == "chat_completion"
 | extend provider=tostring(Properties["provider"]), model=tostring(Properties["model"]),
     status=tostring(Properties["status"]), usageKnown=tobool(Properties["usageKnown"]),
-    costKnown=tobool(Properties["costKnown"]), totalTokens=tolong(Properties["totalTokens"])
+    costKnown=tobool(Properties["costKnown"]), totalTokens=tolong(Properties["totalTokens"]),
+    estCostUsd=todouble(Properties["estCostUsd"])
 | summarize requests=count(), tokens=sum(totalTokens),
+    knownCostUsd=sum(estCostUsd),
     unknownUsage=countif(usageKnown == false), unknownCost=countif(costKnown == false),
     sourceTimestamp=max(TimeGenerated)
   by provider, model, status

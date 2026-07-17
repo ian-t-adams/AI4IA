@@ -21,7 +21,11 @@ from ..sessions.models import (
     Session,
     ToolOverrides,
 )
-from ..sessions.repository import SessionNotFoundError, SessionRepository
+from ..sessions.repository import (
+    SessionConflictError,
+    SessionNotFoundError,
+    SessionRepository,
+)
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
@@ -234,13 +238,14 @@ async def update_session(
         validate_tools="toolOverrides" in data,
         validate_documents="libraryDocumentIds" in data,
     )
-    data["agentName"] = next_agent
-    data["toolOverrides"] = next_overrides
-    data["libraryDocumentIds"] = next_document_ids
-    for field_name, value in data.items():
-        setattr(session, field_name, value)
-    session.updatedAt = datetime.now(timezone.utc)
-    return await repo.update_session(session)
+    changes = dict(data)
+    if "agentName" in data:
+        changes["agentName"] = next_agent
+    if "toolOverrides" in data:
+        changes["toolOverrides"] = next_overrides
+    if "libraryDocumentIds" in data:
+        changes["libraryDocumentIds"] = next_document_ids
+    return await repo.patch_session(user.internal_user_id, session_id, changes)
 
 
 @router.post("/{session_id}/library-documents/{document_id}", response_model=Session)
@@ -252,7 +257,7 @@ async def associate_library_document(
 ) -> Session:
     repo = _repo(request)
     try:
-        session = await repo.get_session(user.internal_user_id, session_id)
+        await repo.get_session(user.internal_user_id, session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     library = getattr(request.app.state, "document_library", None)
@@ -272,16 +277,15 @@ async def associate_library_document(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
         ) from exc
-    if session.libraryDocumentIds is None:
-        # Legacy all-access mode already includes every owned document, including
-        # the newly associated one. Preserve the sentinel instead of narrowing it.
-        return session
-    selected = list(session.libraryDocumentIds)
-    if document_id not in selected:
-        selected.append(document_id)
-    session.libraryDocumentIds = selected
-    session.updatedAt = datetime.now(timezone.utc)
-    return await repo.update_session(session)
+    try:
+        return await repo.mutate_library_document_ids(
+            user.internal_user_id, session_id, document_id, add=True
+        )
+    except SessionConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conversation changed concurrently; retry the document selection.",
+        ) from exc
 
 
 @router.delete("/{session_id}/library-documents/{document_id}", response_model=Session)
@@ -296,6 +300,7 @@ async def disassociate_library_document(
         session = await repo.get_session(user.internal_user_id, session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    legacy_ids = None
     if session.libraryDocumentIds is None:
         library = getattr(request.app.state, "document_library", None)
         docs = (
@@ -305,15 +310,20 @@ async def disassociate_library_document(
             if library is not None
             else []
         )
-        session.libraryDocumentIds = [
-            document.id for document in docs if document.id != document_id
-        ]
-    else:
-        session.libraryDocumentIds = [
-            value for value in session.libraryDocumentIds if value != document_id
-        ]
-    session.updatedAt = datetime.now(timezone.utc)
-    return await repo.update_session(session)
+        legacy_ids = [document.id for document in docs]
+    try:
+        return await repo.mutate_library_document_ids(
+            user.internal_user_id,
+            session_id,
+            document_id,
+            add=False,
+            legacy_ids=legacy_ids,
+        )
+    except SessionConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conversation changed concurrently; retry the document selection.",
+        ) from exc
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)

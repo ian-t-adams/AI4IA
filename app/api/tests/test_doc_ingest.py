@@ -167,7 +167,13 @@ async def test_enrich_success_indexes_chunks_and_meters(monkeypatch):
     assert call["usage"].known is False and call["usage"].calls == 1
     assert events[-1][0] == "document_ingest_terminal"
     assert events[-1][1]["status"] == "ready"
-    assert set(events[-1][1]) == {"status", "modality", "stage", "latencyMs"}
+    assert set(events[-1][1]) == {
+        "status",
+        "modality",
+        "stage",
+        "persistenceOutcome",
+        "latencyMs",
+    }
 
 
 async def test_enrich_cu_failure_degrades_to_failed_and_meters_error(monkeypatch):
@@ -208,6 +214,48 @@ async def test_enrich_failed_status_result_degrades():
     )
     doc = await library.get_document("u1", stored.document.id)
     assert doc.status == DocumentStatus.failed
+
+
+async def test_terminal_manifest_failure_never_emits_ready(monkeypatch):
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.library.ingest.emit_custom_event",
+        lambda name, attributes: events.append((name, attributes)),
+    )
+
+    class FailingFinalRepository(InMemoryDocumentLibraryRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.patches = 0
+
+        async def patch_ingest_fields(self, document, changes):
+            self.patches += 1
+            if self.patches == 2:
+                raise RuntimeError("manifest unavailable")
+            return await super().patch_ingest_fields(document, changes)
+
+    library = FailingFinalRepository()
+    ingestor = _make(
+        cu=FakeCU(result=_succeeded("# ready")),
+        embedder=FakeEmbedder(),
+        chunks=InMemoryDocChunkStore(expected_dim=3),
+        library=library,
+    )
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"X"
+    )
+    await ingestor.enrich(
+        user_id="u1", document_id=stored.document.id, data=b"X", content_type="application/pdf"
+    )
+    final = await library.get_document("u1", stored.document.id)
+    assert final.status == DocumentStatus.analyzing
+    terminal = [
+        attributes
+        for name, attributes in events
+        if name == "document_ingest_terminal"
+    ][-1]
+    assert terminal["status"] == "failed"
+    assert terminal["persistenceOutcome"] == "error"
 
 
 async def test_enrich_is_noop_when_cu_disabled():
@@ -295,14 +343,14 @@ async def test_enrich_delete_between_recheck_and_commit_rolls_back():
             super().__init__()
             self._tripped = False
 
-        async def update_document(self, document):
+        async def patch_ingest_fields(self, document, changes):
             # The terminal success write is the commit point; simulate the row
             # having just been deleted so the write loses to the concurrent delete.
-            if document.status == DocumentStatus.ready and not self._tripped:
+            if changes.get("status") == DocumentStatus.ready and not self._tripped:
                 self._tripped = True
                 await super().delete_document(document.userId, document.id)
                 raise DocumentNotFoundError(document.id)
-            return await super().update_document(document)
+            return await super().patch_ingest_fields(document, changes)
 
     library = _DeleteOnReadyRepo()
     chunks = InMemoryDocChunkStore(expected_dim=3)

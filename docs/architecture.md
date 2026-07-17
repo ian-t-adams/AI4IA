@@ -133,6 +133,10 @@ memory, library, tool-catalog, and usage detail.
 Inspector sources load independently and all mutation results are session-generation
 guarded. The admin dashboard similarly aborts and discards superseded window/identity
 loads.
+Session policy fields use atomic repository patches, while library-document list
+changes use bounded ETag/CAS retry-and-merge. Concurrent model, prompt, tool, and
+document-selection writes therefore preserve disjoint changes in both Cosmos and
+the in-memory parity repository.
 
 The admin operations plane runs fixed server-owned KQL through managed identity
 against the existing Log Analytics workspace. It accepts only a bounded time window,

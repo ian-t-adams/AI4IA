@@ -483,6 +483,12 @@ export function ChatApp() {
   const deleteSession = useCallback(
     async (id: string) => {
       if (streamingRef.current || voiceNavigationLockedRef.current) return;
+      if (activeUploadCountRef.current > 0) {
+        setError(
+          "Wait for active attachments to finish before deleting this conversation.",
+        );
+        return;
+      }
       if (id === activeId && voiceActiveRef.current) voiceStopRef.current();
       try {
         await api.deleteSession(id);
@@ -630,9 +636,6 @@ export function ChatApp() {
             ),
           );
         }
-      } finally {
-        activeUploadCountRef.current = Math.max(0, activeUploadCountRef.current - 1);
-        setUploading(false);
       }
     },
     [attachmentCapabilities, ensureSession],
@@ -641,7 +644,18 @@ export function ChatApp() {
   const queueUpload = useCallback(
     (uploadId: string): Promise<void> => {
       activeUploadCountRef.current += 1;
-      const next = uploadChainRef.current.then(() => runUpload(uploadId));
+      setUploading(true);
+      const next = uploadChainRef.current.then(async () => {
+        try {
+          await runUpload(uploadId);
+        } finally {
+          activeUploadCountRef.current = Math.max(
+            0,
+            activeUploadCountRef.current - 1,
+          );
+          setUploading(activeUploadCountRef.current > 0);
+        }
+      });
       uploadChainRef.current = next.catch(() => {});
       return next;
     },

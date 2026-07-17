@@ -932,6 +932,7 @@ export function ConversationInspector({
             {phases.snapshot === "error" ? (
               <div className="inspector-error" role="alert">
                 {sectionErrors.snapshot}
+                <button type="button" onClick={() => void loadSnapshot()}>Retry</button>
               </div>
             ) : null}
             <dl className="usage-grid">

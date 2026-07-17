@@ -36,13 +36,14 @@ class InMemoryDocumentLibraryRepository:
     async def create_document(self, document: UserDocument) -> UserDocument:
         async with self._lock:
             self._docs.setdefault(document.userId, {})[document.id] = document
-            return document
+            document._etag = "1"
+            return document.model_copy(deep=True)
 
     async def get_document(self, user_id: str, document_id: str) -> UserDocument:
         doc = self._docs.get(user_id, {}).get(document_id)
         if doc is None or doc.userId != user_id:
             raise DocumentNotFoundError(document_id)
-        return doc
+        return doc.model_copy(deep=True)
 
     async def list_documents(self, user_id: str) -> list[UserDocument]:
         docs = list(self._docs.get(user_id, {}).values())
@@ -102,8 +103,24 @@ class InMemoryDocumentLibraryRepository:
             if document.id not in bucket:
                 raise DocumentNotFoundError(document.id)
             document.touch()
+            current = bucket[document.id]
+            document._etag = str(int(current._etag or "0") + 1)
             bucket[document.id] = document
-            return document
+            return document.model_copy(deep=True)
+
+    async def patch_ingest_fields(
+        self, document: UserDocument, changes: dict[str, object]
+    ) -> UserDocument:
+        async with self._lock:
+            bucket = self._docs.get(document.userId, {})
+            current = bucket.get(document.id)
+            if current is None:
+                raise DocumentNotFoundError(document.id)
+            for field_name, value in changes.items():
+                setattr(current, field_name, value)
+            current.touch()
+            current._etag = str(int(current._etag or "0") + 1)
+            return current.model_copy(deep=True)
 
     async def delete_document(self, user_id: str, document_id: str) -> None:
         async with self._lock:

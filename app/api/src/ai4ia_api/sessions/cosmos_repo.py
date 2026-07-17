@@ -17,8 +17,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from pydantic import BaseModel
+
 from .models import Document, Message, Session
-from .repository import SessionNotFoundError
+from .repository import SessionConflictError, SessionNotFoundError
 
 
 class CosmosSessionRepository:
@@ -70,6 +72,96 @@ class CosmosSessionRepository:
         await self._owned_session(session.userId, session.id)
         await self._sessions.upsert_item(self._to_doc(session))
         return session
+
+    async def patch_session(
+        self, user_id: str, session_id: str, changes: dict[str, object]
+    ) -> Session:
+        await self._owned_session(user_id, session_id)
+        operations = [
+            {
+                "op": "set",
+                "path": f"/{field_name}",
+                "value": (
+                    value.model_dump(mode="json")
+                    if isinstance(value, BaseModel)
+                    else value
+                ),
+            }
+            for field_name, value in changes.items()
+        ]
+        operations.append(
+            {
+                "op": "set",
+                "path": "/updatedAt",
+                "value": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+        )
+        await self._sessions.patch_item(
+            item=session_id,
+            partition_key=user_id,
+            patch_operations=operations,
+        )
+        return await self._owned_session(user_id, session_id)
+
+    async def mutate_library_document_ids(
+        self,
+        user_id: str,
+        session_id: str,
+        document_id: str,
+        *,
+        add: bool,
+        legacy_ids: list[str] | None = None,
+    ) -> Session:
+        from azure.core import MatchConditions
+        from azure.cosmos.exceptions import CosmosAccessConditionFailedError
+
+        for _attempt in range(3):
+            try:
+                raw = await self._sessions.read_item(
+                    item=session_id, partition_key=user_id
+                )
+            except Exception as exc:
+                from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+                if isinstance(exc, CosmosResourceNotFoundError):
+                    raise SessionNotFoundError(session_id) from exc
+                raise
+            current = raw.get("libraryDocumentIds")
+            if current is None:
+                if add:
+                    return Session.model_validate(raw)
+                values = list(legacy_ids or [])
+            else:
+                values = list(current)
+            if add and document_id not in values:
+                values.append(document_id)
+            elif not add:
+                values = [value for value in values if value != document_id]
+            try:
+                await self._sessions.patch_item(
+                    item=session_id,
+                    partition_key=user_id,
+                    patch_operations=[
+                        {
+                            "op": "set",
+                            "path": "/libraryDocumentIds",
+                            "value": values,
+                        },
+                        {
+                            "op": "set",
+                            "path": "/updatedAt",
+                            "value": datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                        },
+                    ],
+                    etag=raw.get("_etag"),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+                return await self._owned_session(user_id, session_id)
+            except CosmosAccessConditionFailedError:
+                continue
+        raise SessionConflictError(session_id)
 
     async def touch_session(self, user_id: str, session_id: str) -> None:
         await self._owned_session(user_id, session_id)

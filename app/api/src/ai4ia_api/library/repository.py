@@ -52,6 +52,10 @@ class DocumentLibraryRepository(Protocol):
 
     async def update_document(self, document: UserDocument) -> UserDocument: ...
 
+    async def patch_ingest_fields(
+        self, document: UserDocument, changes: dict[str, object]
+    ) -> UserDocument: ...
+
     async def delete_document(self, user_id: str, document_id: str) -> None: ...
 
     async def find_by_dedupe_key(

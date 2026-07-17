@@ -82,7 +82,8 @@ never fabricates risk, approval, scope, ownership, or channel defaults.
 Help triggers are focusable buttons associated through `aria-describedby`. Help
 content explains meaning, effect or tradeoff, default, and availability. It opens
 on focus or pointer intent, closes on Escape, and renders outside clipping
-containers. A `title` attribute is never the only explanation.
+containers. Its first measured position and scrollable max-height stay inside the
+effective viewport. A `title` attribute is never the only explanation.
 
 ### Navigation
 

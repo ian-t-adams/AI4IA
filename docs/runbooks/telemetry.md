@@ -13,7 +13,7 @@ transcripts.
 | Tokens and known cost | Per-user Cosmos usage ledger | Missing provider usage or price is counted as unknown |
 | Voice Live | `voice_live_completion` metadata event and usage ledger | Provider/model/outcome/close/frame metadata only |
 | MCP tools | Redacted structured MCP events | Process/log export availability controls freshness |
-| Document ingest | `document_ingest` receipt plus `document_ingest_terminal` enrichment events | Terminal ready/failed/cancelled, modality, bounded stage, and duration only |
+| Document ingest | `document_ingest` receipt plus `document_ingest_terminal` enrichment events | Terminal ready/failed/cancelled, modality, bounded stage, persistence outcome, and duration only |
 | Memory | `memory_operation` events for list/delete/recall/save | Operation/status/backend/count/latency only; no memory text or id |
 | Security blocks | `security_block` custom events in `AppEvents` | Bounded category/reason/source for HTTP/admin auth, tool authorization, SSRF, and realtime denial |
 | Platform resources | Azure Monitor Metrics | One-hour window; `—` means no datapoint |
@@ -34,6 +34,10 @@ and security panels become `partial` when expected producer categories are absen
 they do not infer successful zero-failure operation from missing events. Security
 queries use the deployed custom-event `AppEvents` table, not general trace-message
 search.
+`ready` is emitted only after an atomic ingest-owned manifest patch commits and the
+stored status is confirmed. ACLs, visibility, annotations, versions, and other
+owner-controlled fields are never part of that patch; CAS retries merge only the
+ingest-owned status/output fields.
 
 ## Privacy and cardinality
 

@@ -166,7 +166,7 @@ function OperationalPanels({
                       <tr key={`${panel.key}-${index}`} style={{ borderTop: "1px solid var(--border)" }}>
                         {columns.map((column) => (
                           <td key={column} style={{ padding: "4px 6px" }}>
-                            {row[column] == null ? "—" : String(row[column])}
+                            {formatOperationalValue(panel.key, row, column)}
                           </td>
                         ))}
                       </tr>
@@ -187,6 +187,36 @@ function OperationalPanels({
       ) : null}
     </div>
   );
+}
+
+function formatOperationalValue(
+  panelKey: string,
+  row: Record<string, unknown>,
+  column: string,
+): string {
+  if (panelKey !== "usage") {
+    return row[column] == null ? "—" : String(row[column]);
+  }
+  const requests = Number(row.requests ?? 0);
+  if (column === "tokens") {
+    const tokens = Number(row.tokens ?? 0);
+    const unknown = Number(row.unknownUsage ?? 0);
+    if (requests > 0 && unknown >= requests && tokens === 0) return "Unknown";
+    if (unknown > 0) {
+      return `Known subtotal ${formatTokens(tokens)} (${Math.max(0, requests - unknown)}/${requests} requests reported)`;
+    }
+    return formatTokens(tokens);
+  }
+  if (column === "knownCostUsd") {
+    const cost = Number(row.knownCostUsd ?? 0);
+    const unknown = Number(row.unknownCost ?? 0);
+    if (requests > 0 && unknown >= requests && cost === 0) return "Unknown";
+    const formatted = `$${cost.toFixed(4)}`;
+    return unknown > 0
+      ? `Known subtotal ${formatted} (${Math.max(0, requests - unknown)}/${requests} requests reported)`
+      : formatted;
+  }
+  return row[column] == null ? "—" : String(row[column]);
 }
 
 function ModelBars({ items }: { items: ModelUsageBucket[] }) {
@@ -626,6 +656,7 @@ export function AdminDashboard() {
     const controller = new AbortController();
     loadAbortRef.current = controller;
     setLoading(true);
+    setData(EMPTY);
     setError(null);
     const [
       summary,
@@ -799,16 +830,38 @@ export function AdminDashboard() {
         <StatCard label="Active users" value={s ? formatCompact(s.activeUsers) : "—"} />
         <StatCard
           label="Tokens"
-          value={s ? formatTokens(s.totalTokens) : "—"}
+          value={
+            s
+              ? s.totalRequests > 0 &&
+                s.unknownUsageRequests >= s.totalRequests &&
+                s.totalTokens === 0
+                ? "Unknown"
+                : s.unknownUsageRequests > 0
+                  ? `Known subtotal ${formatTokens(s.totalTokens)}`
+                  : formatTokens(s.totalTokens)
+              : "—"
+          }
           sub={
             s
-              ? `${formatTokens(s.totalPromptTokens)} in · ${formatTokens(s.totalCompletionTokens)} out`
+              ? s.unknownUsageRequests > 0
+                ? `${Math.max(0, s.totalRequests - s.unknownUsageRequests)}/${s.totalRequests} requests reported`
+                : `${formatTokens(s.totalPromptTokens)} in · ${formatTokens(s.totalCompletionTokens)} out`
               : "Usage unavailable"
           }
         />
         <StatCard
-          label={s?.costUnknownRequests ? "Known cost" : "Est. cost"}
-          value={s ? formatUsd(s.totalCostMicroUsd) : "—"}
+          label="Cost"
+          value={
+            s
+              ? s.totalRequests > 0 &&
+                s.costUnknownRequests >= s.totalRequests &&
+                s.totalCostMicroUsd === 0
+                ? "Unknown"
+                : s.costUnknownRequests > 0
+                  ? `Known subtotal ${formatUsd(s.totalCostMicroUsd)}`
+                  : formatUsd(s.totalCostMicroUsd)
+              : "—"
+          }
           sub={
             s?.costUnknownRequests
               ? `${s.costUnknownRequests} request${s.costUnknownRequests === 1 ? "" : "s"} unknown`

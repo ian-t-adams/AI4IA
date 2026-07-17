@@ -322,6 +322,7 @@ describe("AdminDashboard new analytics panels", () => {
     const oldRequest = new Promise<typeof summary>((resolve) => {
       resolveOld = resolve;
     });
+
     vi.mocked(fetchSummary).mockImplementation((days) =>
       days === 30
         ? oldRequest
@@ -341,6 +342,100 @@ describe("AdminDashboard new analytics panels", () => {
     expect(
       within(activeUsers.parentElement as HTMLElement).queryByText("30"),
     ).toBeNull();
+  });
+
+  it("renders wholly unknown and mixed usage without fake zero totals", async () => {
+    vi.mocked(fetchSummary).mockResolvedValue({
+      ...summary,
+      totalRequests: 4,
+      totalTokens: 0,
+      totalPromptTokens: 0,
+      totalCompletionTokens: 0,
+      unknownUsageRequests: 4,
+      totalCostMicroUsd: 0,
+      costUnknownRequests: 4,
+    });
+    vi.mocked(fetchOperations).mockResolvedValue({
+      generatedAt: "2026-07-17T00:00:00Z",
+      windowMinutes: 60,
+      diagnosticsUrl: null,
+      panels: [
+        {
+          key: "usage",
+          displayName: "Model usage coverage",
+          status: "partial",
+          source: "AI4IA usage events",
+          generatedAt: "2026-07-17T00:00:00Z",
+          sourceTimestamp: null,
+          lagSeconds: null,
+          reason: "usage unknown",
+          rows: [
+            {
+              provider: "azure_openai",
+              model: "gpt-5.2",
+              requests: 2,
+              tokens: 0,
+              knownCostUsd: 0,
+              unknownUsage: 2,
+              unknownCost: 2,
+            },
+          ],
+        },
+      ],
+    });
+    render(<AdminDashboard />);
+    const tokens = await screen.findByText("Tokens");
+    await waitFor(() =>
+      expect(
+        within(tokens.parentElement as HTMLElement).getByText("Unknown"),
+      ).toBeInTheDocument(),
+    );
+    const cost = await screen.findByText("Cost");
+    expect(within(cost.parentElement as HTMLElement).getByText("Unknown")).toBeInTheDocument();
+    const operations = await screen.findByText("Model usage coverage");
+    expect(
+      within(operations.closest("article") as HTMLElement).getAllByText("Unknown"),
+    ).toHaveLength(2);
+
+    cleanup();
+    vi.mocked(fetchSummary).mockResolvedValue({
+      ...summary,
+      totalRequests: 4,
+      totalTokens: 120,
+      unknownUsageRequests: 1,
+      totalCostMicroUsd: 250,
+      costUnknownRequests: 1,
+    });
+    render(<AdminDashboard />);
+    expect(await screen.findByText("Known subtotal 120")).toBeInTheDocument();
+    const mixedCost = screen.getByText("Known subtotal $0.0003");
+    expect(within(mixedCost.parentElement as HTMLElement).getByText("Cost")).toBeInTheDocument();
+    expect(screen.getByText("3/4 requests reported")).toBeInTheDocument();
+  });
+
+  it("clears prior-window values while the latest window is loading", async () => {
+    render(<AdminDashboard />);
+    const activeUsers = await screen.findByText("Active users");
+    await waitFor(() =>
+      expect(
+        within(activeUsers.parentElement as HTMLElement).getByText("2"),
+      ).toBeInTheDocument(),
+    );
+    let resolveLatest!: (value: typeof summary) => void;
+    vi.mocked(fetchSummary).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveLatest = resolve;
+        }),
+    );
+    fireEvent.change(screen.getByLabelText("Window"), { target: { value: "7" } });
+    expect(await screen.findByText("Loading…")).toBeInTheDocument();
+    expect(
+      within(activeUsers.parentElement as HTMLElement).queryByText("2"),
+    ).toBeNull();
+    resolveLatest({ ...summary, sinceDays: 7, activeUsers: 7 });
+    await waitFor(() => expect(screen.queryByText("Loading…")).toBeNull());
+    expect(screen.getByText("7")).toBeInTheDocument();
   });
 
   it("shows the directory display name + email in Top users when identified, keeping the hash", async () => {

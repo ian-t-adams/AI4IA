@@ -15,6 +15,10 @@ class SessionNotFoundError(Exception):
     """Raised when a session does not exist or is not owned by the user."""
 
 
+class SessionConflictError(Exception):
+    """Raised when a bounded session CAS mutation cannot be committed."""
+
+
 @runtime_checkable
 class SessionRepository(Protocol):
     async def create_session(self, session: Session) -> Session: ...
@@ -24,6 +28,20 @@ class SessionRepository(Protocol):
     async def list_sessions(self, user_id: str) -> list[Session]: ...
 
     async def update_session(self, session: Session) -> Session: ...
+
+    async def patch_session(
+        self, user_id: str, session_id: str, changes: dict[str, object]
+    ) -> Session: ...
+
+    async def mutate_library_document_ids(
+        self,
+        user_id: str,
+        session_id: str,
+        document_id: str,
+        *,
+        add: bool,
+        legacy_ids: list[str] | None = None,
+    ) -> Session: ...
 
     async def touch_session(self, user_id: str, session_id: str) -> None: ...
 
