@@ -9,7 +9,7 @@
 //     (Promise.allSettled) so one failing panel never blanks the page.
 // All display logic lives in pure helpers in lib/admin.ts (unit-tested); this file
 // is presentation only. Charts are inline SVG (no charting dependency).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 import {
@@ -587,6 +587,8 @@ export function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<DashboardData>(EMPTY);
+  const loadGenerationRef = useRef(0);
+  const loadAbortRef = useRef<AbortController | null>(null);
   const [identifyUsers, setIdentifyUsers] = useState(() => {
     try {
       return window.localStorage.getItem(IDENTITY_STORAGE_KEY) === "true";
@@ -619,6 +621,10 @@ export function AdminDashboard() {
   }, [identifyUsers]);
 
   const load = useCallback(async (window: number, identify: boolean) => {
+    const generation = ++loadGenerationRef.current;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
     setLoading(true);
     setError(null);
     const [
@@ -635,18 +641,19 @@ export function AdminDashboard() {
       security,
     ] =
       await Promise.allSettled([
-        fetchSummary(window),
-        fetchByModel(window),
-        fetchByDay(window),
-        fetchByUser(window, 20, 0, identify),
-        fetchAgents(window),
-        fetchUserAgents(window, identify),
-        fetchDistributions(window),
-        fetchResources(),
-        fetchWebSearchHealth(),
-        fetchOperations(60),
-        fetchSecurityMetrics(60),
+        fetchSummary(window, controller.signal),
+        fetchByModel(window, controller.signal),
+        fetchByDay(window, controller.signal),
+        fetchByUser(window, 20, 0, identify, controller.signal),
+        fetchAgents(window, controller.signal),
+        fetchUserAgents(window, identify, controller.signal),
+        fetchDistributions(window, controller.signal),
+        fetchResources(controller.signal),
+        fetchWebSearchHealth(controller.signal),
+        fetchOperations(60, controller.signal),
+        fetchSecurityMetrics(60, controller.signal),
       ]);
+    if (controller.signal.aborted || generation !== loadGenerationRef.current) return;
     const next: DashboardData = { ...EMPTY };
     if (summary.status === "fulfilled") next.summary = summary.value;
     if (byModel.status === "fulfilled") next.byModel = byModel.value.byModel;
@@ -699,6 +706,7 @@ export function AdminDashboard() {
   useEffect(() => {
     if (phase !== "ready") return;
     void load(days, identifyUsers);
+    return () => loadAbortRef.current?.abort();
   }, [phase, days, identifyUsers, load]);
 
   if (phase === "checking") {

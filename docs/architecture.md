@@ -106,6 +106,10 @@ accessible ready documents, an explicit empty list disables library context, and
 non-empty list is an exact allowlist. Processing/failed documents may stay selected for
 status visibility, but only ready selected documents enter model context or document
 tools. Instruction precedence is:
+Selection validation and inspection resolve both owned documents and email-shared
+documents through the same access predicate. Converting a legacy all-accessible
+session to an explicit scope preserves every currently accessible owned/shared id;
+revoked or stale shared ids never regain retrieval/tool access. Instruction precedence is:
 
 1. the selected governed agent persona;
 2. otherwise the session `systemPrompt`;
@@ -126,6 +130,9 @@ handler exists.
 `GET /api/sessions/{id}/inspector` provides a display-safe, ownership-scoped snapshot
 for the right Conversation Inspector. Focused APIs continue to own mutations and
 memory, library, tool-catalog, and usage detail.
+Inspector sources load independently and all mutation results are session-generation
+guarded. The admin dashboard similarly aborts and discards superseded window/identity
+loads.
 
 The admin operations plane runs fixed server-owned KQL through managed identity
 against the existing Log Analytics workspace. It accepts only a bounded time window,

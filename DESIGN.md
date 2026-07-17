@@ -74,6 +74,8 @@ Server-returned effective values and governance metadata take precedence over lo
 preferences.
 Each section owns independent loading, error, empty, partial, saving, and saved
 feedback. Session changes discard stale responses before enabling mutation.
+Unknown tool governance metadata is labelled unknown and unavailable; the client
+never fabricates risk, approval, scope, ownership, or channel defaults.
 
 ### Help
 
@@ -93,6 +95,9 @@ conversation identity and meaningful activity state.
 The composer provides one Attach action for server-advertised media, one live-voice
 microphone, the text field, and Send/Stop. Upload and processing state appears
 inline. Image generation is a chat/tool capability rather than primary navigation.
+Upload routing follows the server-advertised ingest path. A document appears as
+selected context only after association succeeds, and in-flight uploads remain
+bound to the conversation that started them.
 
 ### Data and Governance
 

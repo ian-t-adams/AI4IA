@@ -23,6 +23,7 @@ import { SLASH_COMMANDS, type SlashCommand } from "@/lib/commands";
 export interface UploadItem {
   id: string;
   filename: string;
+  sessionId?: string | null;
   status: "queued" | "uploading" | "associating" | "failed";
   error?: string;
 }
@@ -88,9 +89,11 @@ export function Composer({
   libraryDocuments = [],
   uploading,
   capabilities,
+  capabilitiesError,
   uploads = [],
   onRetryUpload,
   onDismissUpload,
+  onRetryCapabilities,
   onSend,
   onStop,
   onUpload,
@@ -108,10 +111,12 @@ export function Composer({
   onSend: (text: string) => void;
   onStop: () => void;
   capabilities: AttachmentCapabilities | null;
+  capabilitiesError?: string | null;
   uploads?: UploadItem[];
   onUpload: (file: File) => Promise<void>;
   onRetryUpload?: (id: string) => void;
   onDismissUpload?: (id: string) => void;
+  onRetryCapabilities?: () => void;
   onRemoveDocument: (id: string) => void;
   onRemoveLibraryDocument?: (id: string) => void;
   onError?: (message: string) => void;
@@ -145,7 +150,7 @@ export function Composer({
   // session-scoped docs (flag off) or the library chips (flag on). They are
   // mutually exclusive in practice, so a combined count gives the right cap.
   const totalDocs = documents.length + libraryDocuments.length;
-  const maxDocuments = capabilities?.maxDocuments ?? 0;
+  const maxDocuments = capabilities?.maxPerSessionDocuments ?? 0;
   const atDocLimit = maxDocuments > 0 && totalDocs >= maxDocuments;
   const accept = capabilities
     ? [...capabilities.extensions, ...capabilities.mimeTypes].join(",")
@@ -622,19 +627,25 @@ export function Composer({
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          disabled={uploading || atDocLimit}
+          disabled={!capabilities || uploading || atDocLimit}
           aria-busy={uploading}
           aria-label={
             atDocLimit
               ? `Attachment limit reached (${maxDocuments})`
-              : uploading
+              : !capabilities
+                ? capabilitiesError
+                  ? "Attachments unavailable"
+                  : "Loading attachment capabilities"
+                : uploading
                 ? "Uploading document"
                 : "Attach files"
           }
           title={
             atDocLimit
               ? `You can attach at most ${maxDocuments} files here`
-              : uploading
+              : !capabilities
+                ? capabilitiesError ?? "Loading attachment capabilities"
+                : uploading
                 ? "Uploading…"
                 : capabilities
                   ? `Attach ${capabilities.modalities.join(", ")} files up to ${formatBytes(capabilities.maxBytes)}`
@@ -650,12 +661,25 @@ export function Composer({
             color: "var(--fg)",
             fontSize: "1.15em",
             lineHeight: 1,
-            cursor: uploading || atDocLimit ? "not-allowed" : "pointer",
-            opacity: uploading || atDocLimit ? 0.45 : 1,
+            cursor: !capabilities || uploading || atDocLimit ? "not-allowed" : "pointer",
+            opacity: !capabilities || uploading || atDocLimit ? 0.45 : 1,
           }}
         >
           {uploading ? "…" : "📎"}
         </button>
+        {!capabilities ? (
+          <div
+            className={capabilitiesError ? "inspector-error" : "inspector-empty"}
+            role={capabilitiesError ? "alert" : "status"}
+          >
+            {capabilitiesError
+              ? `Attachments unavailable: ${capabilitiesError}`
+              : "Loading attachment capabilities…"}
+            {capabilitiesError ? (
+              <button type="button" onClick={onRetryCapabilities}>Retry</button>
+            ) : null}
+          </div>
+        ) : null}
         <div className="upload-status-list" aria-live="polite">
             {uploads.map((upload) => (
               <div key={upload.id} className="upload-status-row">

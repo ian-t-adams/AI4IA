@@ -174,7 +174,12 @@ async def test_delete_during_persist_does_not_resurrect():
     assert _blob_keys(blob, "u1", doc_id) == []
 
 
-async def test_cancel_enrich_on_delete_does_not_resurrect():
+async def test_cancel_enrich_on_delete_does_not_resurrect(monkeypatch):
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.library.ingest.emit_custom_event",
+        lambda name, attributes: events.append((name, attributes)),
+    )
     """Fix 3: a tracked enrich blocked in analyze is cancelled on delete; the
     finally path writes-then-detects the deletion and purges, never resurrecting."""
     library = InMemoryDocumentLibraryRepository()
@@ -205,6 +210,10 @@ async def test_cancel_enrich_on_delete_does_not_resurrect():
         await library.get_document("u1", doc_id)
     assert await chunks.search("u1", _QUERY, top_k=50) == []
     assert _blob_keys(blob, "u1", doc_id) == []
+    assert any(
+        name == "document_ingest_terminal" and attributes["status"] == "cancelled"
+        for name, attributes in events
+    )
 
 
 async def test_schedule_enrich_noop_when_cu_disabled():

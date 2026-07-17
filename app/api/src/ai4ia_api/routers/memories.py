@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
-from ..logging_setup import emit_custom_event
+from ..memory.telemetry import emit_memory_operation
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
 
@@ -37,22 +37,21 @@ async def list_memories(
     started = time.monotonic()
     memory = request.app.state.memory
     if not getattr(memory, "enabled", False):
+        emit_memory_operation("list", "disabled", "api", started)
         return MemoryListResponse(status="disabled", detail="Memory is disabled.")
     listing = getattr(memory, "list_memories", None)
     if listing is None:
+        emit_memory_operation("list", "unsupported", "api", started)
         return MemoryListResponse(
             status="unavailable",
             detail="This memory backend does not support safe enumeration.",
         )
-    records = await listing(user.internal_user_id, limit=limit)
-    emit_custom_event(
-        "memory_list",
-        {
-            "status": "ok",
-            "count": len(records),
-            "latencyMs": int((time.monotonic() - started) * 1000),
-        },
-    )
+    try:
+        records = await listing(user.internal_user_id, limit=limit)
+    except Exception:
+        emit_memory_operation("list", "failed", "api", started)
+        raise
+    emit_memory_operation("list", "ok", "api", started, count=len(records))
     return MemoryListResponse(
         status="ok",
         supportsDelete=hasattr(memory, "delete_memory"),
@@ -80,17 +79,18 @@ async def delete_memory(
     memory = request.app.state.memory
     deleter = getattr(memory, "delete_memory", None)
     if not getattr(memory, "enabled", False) or deleter is None:
+        emit_memory_operation("delete", "unsupported", "api", started)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found"
         )
-    if not await deleter(user.internal_user_id, memory_id):
+    try:
+        deleted = await deleter(user.internal_user_id, memory_id)
+    except Exception:
+        emit_memory_operation("delete", "failed", "api", started)
+        raise
+    if not deleted:
+        emit_memory_operation("delete", "not_found", "api", started)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found"
         )
-    emit_custom_event(
-        "memory_delete",
-        {
-            "status": "ok",
-            "latencyMs": int((time.monotonic() - started) * 1000),
-        },
-    )
+    emit_memory_operation("delete", "ok", "api", started, count=1)

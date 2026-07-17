@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { AdminDashboard } from "./AdminDashboard";
 
@@ -276,8 +276,20 @@ describe("AdminDashboard new analytics panels", () => {
     expect(within(panel).queryByText("Ada Lovelace")).toBeNull();
     expect(within(panel).queryByText("ada@example.com")).toBeNull();
     expect(screen.getByRole("checkbox", { name: "Show real identities" })).not.toBeChecked();
-    await waitFor(() => expect(fetchByUser).toHaveBeenLastCalledWith(30, 20, 0, false));
-    expect(fetchUserAgents).toHaveBeenLastCalledWith(30, false);
+    await waitFor(() =>
+      expect(fetchByUser).toHaveBeenLastCalledWith(
+        30,
+        20,
+        0,
+        false,
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(fetchUserAgents).toHaveBeenLastCalledWith(
+      30,
+      false,
+      expect.any(AbortSignal),
+    );
   });
 
   it("refetches and persists when real identities are enabled", async () => {
@@ -286,11 +298,49 @@ describe("AdminDashboard new analytics panels", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Show real identities" }));
 
-    await waitFor(() => expect(fetchByUser).toHaveBeenLastCalledWith(30, 20, 0, true));
-    expect(fetchUserAgents).toHaveBeenLastCalledWith(30, true);
+    await waitFor(() =>
+      expect(fetchByUser).toHaveBeenLastCalledWith(
+        30,
+        20,
+        0,
+        true,
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(fetchUserAgents).toHaveBeenLastCalledWith(
+      30,
+      true,
+      expect.any(AbortSignal),
+    );
     await waitFor(() =>
       expect(window.localStorage.getItem("ai4ia.admin.showRealIdentities")).toBe("true"),
     );
+  });
+
+  it("does not let a slow older window overwrite the latest request", async () => {
+    let resolveOld!: (value: typeof summary) => void;
+    const oldRequest = new Promise<typeof summary>((resolve) => {
+      resolveOld = resolve;
+    });
+    vi.mocked(fetchSummary).mockImplementation((days) =>
+      days === 30
+        ? oldRequest
+        : Promise.resolve({ ...summary, sinceDays: days, activeUsers: 7 }),
+    );
+    render(<AdminDashboard />);
+    await waitFor(() => expect(fetchSummary).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText("Window"), { target: { value: "7" } });
+    const activeUsers = await screen.findByText("Active users");
+    await waitFor(() =>
+      expect(within(activeUsers.parentElement as HTMLElement).getByText("7")).toBeInTheDocument(),
+    );
+    await act(async () => {
+      resolveOld({ ...summary, activeUsers: 30 });
+      await oldRequest;
+    });
+    expect(
+      within(activeUsers.parentElement as HTMLElement).queryByText("30"),
+    ).toBeNull();
   });
 
   it("shows the directory display name + email in Top users when identified, keeping the hash", async () => {

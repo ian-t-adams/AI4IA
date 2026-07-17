@@ -13,8 +13,9 @@ transcripts.
 | Tokens and known cost | Per-user Cosmos usage ledger | Missing provider usage or price is counted as unknown |
 | Voice Live | `voice_live_completion` metadata event and usage ledger | Provider/model/outcome/close/frame metadata only |
 | MCP tools | Redacted structured MCP events | Process/log export availability controls freshness |
-| Document ingest | `document_ingest` metadata event and library manifests | Status/modality/type/size only |
-| Memory | `memory_list` and `memory_delete` metadata events | No memory text is emitted |
+| Document ingest | `document_ingest` receipt plus `document_ingest_terminal` enrichment events | Terminal ready/failed/cancelled, modality, bounded stage, and duration only |
+| Memory | `memory_operation` events for list/delete/recall/save | Operation/status/backend/count/latency only; no memory text or id |
+| Security blocks | `security_block` custom events in `AppEvents` | Bounded category/reason/source for HTTP/admin auth, tool authorization, SSRF, and realtime denial |
 | Platform resources | Azure Monitor Metrics | One-hour window; `—` means no datapoint |
 
 The admin API exposes:
@@ -28,12 +29,18 @@ query; callers can only choose the bounded time window.
 Each panel returns `source`, `generatedAt`, `sourceTimestamp`, `lagSeconds`,
 `status` (`ok`, `partial`, `stale`, or `unavailable`), `reason`, and bounded rows.
 No rows is rendered as no matching telemetry, never as a numeric zero.
+Document panels query terminal enrichment events rather than upload receipts. Memory
+and security panels become `partial` when expected producer categories are absent;
+they do not infer successful zero-failure operation from missing events. Security
+queries use the deployed custom-event `AppEvents` table, not general trace-message
+search.
 
 ## Privacy and cardinality
 
 - Keep event names and dimensions stable and low-cardinality.
 - Do not add user message, prompt, transcript, document text, tool payload, URL
-  secrets, credentials, or raw exception bodies.
+  or host, memory text/id, document filename/id, user identity, secrets, credentials,
+  or raw exception bodies.
 - User identifiers remain internal ids and are shown as hashes unless an admin
   explicitly enables directory enrichment.
 - Correlation ids may cross API, SimpleL7Proxy, APIM, and Foundry; they are not

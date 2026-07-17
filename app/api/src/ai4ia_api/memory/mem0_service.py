@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -43,6 +44,7 @@ from typing import Any
 
 from .formatting import format_memory_context
 from .models import MemoryRecord
+from .telemetry import emit_memory_operation
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +263,9 @@ class Mem0MemoryService:
         that hangs degrades to "no memory" for this turn (the build continues in
         the background and serves the next turn) rather than stalling chat.
         """
+        started = time.monotonic()
         if not query or not query.strip():
+            emit_memory_operation("recall", "skipped", "mem0", started, count=0)
             return []
         try:
             mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
@@ -276,6 +280,7 @@ class Mem0MemoryService:
             )
         except Exception:  # noqa: BLE001 - memory must never break chat
             logger.warning("mem0 recall failed", exc_info=True)
+            emit_memory_operation("recall", "failed", "mem0", started)
             return []
         out: list[MemoryRecord] = []
         for item in _results(payload):
@@ -292,6 +297,7 @@ class Mem0MemoryService:
             if mem_id is not None:
                 kwargs["id"] = str(mem_id)
             out.append(MemoryRecord(**kwargs))
+        emit_memory_operation("recall", "ok", "mem0", started, count=len(out))
         return out
 
     async def remember(self, user_id: str, session_id: str | None, text: str) -> None:
@@ -300,8 +306,10 @@ class Mem0MemoryService:
         Unlike the custom store this triggers an LLM extraction call; it is
         timeout-bounded and fully swallowed so it can never break a chat turn.
         """
+        started = time.monotonic()
         cleaned = (text or "").strip()
         if len(cleaned) < self._min_chars_to_store:
+            emit_memory_operation("save", "skipped", "mem0", started, count=0)
             return
         add_kwargs: dict[str, Any] = {"user_id": user_id}
         if session_id:
@@ -314,6 +322,9 @@ class Mem0MemoryService:
             )
         except Exception:  # noqa: BLE001 - memory must never break chat
             logger.warning("mem0 remember failed", exc_info=True)
+            emit_memory_operation("save", "failed", "mem0", started)
+            return
+        emit_memory_operation("save", "ok", "mem0", started, count=1)
 
     async def remember_document(
         self,

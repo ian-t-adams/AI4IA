@@ -27,7 +27,7 @@ from typing import Any
 
 from ..gateway.client import ModelGatewayClient
 from ..usage.models import TokenUsage
-from ..logging_setup import emit_custom_event
+from ..logging_setup import emit_custom_event, emit_security_block
 from .tool_exec import ToolContext, ToolExecutor, ToolValidationError
 from .tools import ToolRegistry, redact, redact_obj
 
@@ -285,6 +285,7 @@ async def run_agent_turn(
                         "reason": reason,
                     },
                 )
+                emit_security_block("tool_authorization", reason, "agent_runtime")
                 convo.append(
                     _tool_message(
                         call_id,

@@ -133,7 +133,12 @@ async def test_caller_tools_params_are_stripped():
     assert params["temperature"] == 0.2
 
 
-async def test_denied_tool_is_not_executed_and_surfaced():
+async def test_denied_tool_is_not_executed_and_surfaced(monkeypatch):
+    events: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.agents.runtime.emit_security_block",
+        lambda category, reason, source: events.append((category, reason, source)),
+    )
     # Register a tool in the executor whose spec requires a scope the ctx lacks,
     # but force the model to call it anyway (schema filtering is separate from
     # execution-time authorization, which must still deny).
@@ -173,6 +178,9 @@ async def test_denied_tool_is_not_executed_and_surfaced():
     tool_msg = [m for m in gateway.calls[1]["messages"] if m.get("role") == "tool"][0]
     payload = json.loads(tool_msg["content"])
     assert payload["error"]["type"] == "authorization_denied"
+    assert events == [
+        ("tool_authorization", "missing_scopes", "agent_runtime")
+    ]
 
 
 async def test_malformed_arguments_yield_one_tool_result_per_call():

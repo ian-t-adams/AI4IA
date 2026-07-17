@@ -193,21 +193,22 @@ export interface ToolCatalogItem {
   label: string;
   description: string;
   source: string;
-  risk: "safe" | "external" | "destructive";
-  requiresApproval: boolean;
-  scopes: string[];
+  risk: "safe" | "external" | "destructive" | null;
+  requiresApproval: boolean | null;
+  scopes: string[] | null;
   available: boolean;
   selectable: boolean;
   detail?: string | null;
   ownership: string;
-  typed: boolean;
-  voice: boolean;
+  typed: boolean | null;
+  voice: boolean | null;
 }
 
 export interface AttachmentCapabilities {
   ingestPath: "library" | "session";
   maxBytes: number;
-  maxDocuments: number;
+  maxPerUserDocuments: number | null;
+  maxPerSessionDocuments: number;
   extensions: string[];
   mimeTypes: string[];
   modalities: string[];

@@ -19,6 +19,8 @@ class QuerySpec:
     display_name: str
     source: str
     kql: str
+    required_values: tuple[str, ...] = ()
+    dimension_key: str | None = None
 
 
 REQUESTS_KQL = """
@@ -66,22 +68,23 @@ AppEvents
 
 DOCUMENTS_KQL = """
 AppEvents
-| where Name == "document_ingest"
+| where Name == "document_ingest_terminal"
 | extend status=tostring(Properties["status"]), modality=tostring(Properties["modality"]),
-    latencyMs=tolong(Properties["latencyMs"])
+    stage=tostring(Properties["stage"]), latencyMs=tolong(Properties["latencyMs"])
 | summarize operations=count(), failures=countif(status == "failed"),
     p95LatencyMs=percentile(latencyMs, 95), sourceTimestamp=max(TimeGenerated)
-  by status, modality
+  by status, modality, stage
 """
 
 MEMORY_KQL = """
 AppEvents
-| where Name in ("memory_list", "memory_delete")
-| extend operation=Name, status=tostring(Properties["status"]),
+| where Name == "memory_operation"
+| extend operation=tostring(Properties["operation"]), status=tostring(Properties["status"]),
+    source=tostring(Properties["source"]),
     latencyMs=tolong(Properties["latencyMs"])
-| summarize operations=count(), failures=countif(status != "ok"),
+| summarize operations=count(), failures=countif(status == "failed"),
     p95LatencyMs=percentile(latencyMs, 95), sourceTimestamp=max(TimeGenerated)
-  by operation, status
+  by operation, status, source
 """
 
 USAGE_KQL = """
@@ -98,20 +101,12 @@ AppEvents
 """
 
 SECURITY_KQL = """
-union
-(
-  AppRequests
-  | where ResultCode in ("401", "403")
-  | project TimeGenerated, category=iff(ResultCode == "401", "auth", "authorization"),
-      route=Name, resultCode=ResultCode
-),
-(
-  AppTraces
-  | where Message has_any ("ssrf", "approval_required", "tool denied", "admin denied")
-  | project TimeGenerated, category="security-log", route="", resultCode=""
-)
+AppEvents
+| where Name == "security_block"
+| extend category=tostring(Properties["category"]),
+    reason=tostring(Properties["reason"]), source=tostring(Properties["source"])
 | summarize events=count(), sourceTimestamp=max(TimeGenerated)
-  by category, route, resultCode
+  by category, reason, source
 | top 100 by events desc
 """
 
@@ -120,12 +115,26 @@ OPERATION_SPECS = (
     QuerySpec("dependencies", "Dependencies and stage latency", "Application Insights dependencies", DEPENDENCIES_KQL),
     QuerySpec("voice", "Realtime voice", "AI4IA metadata events", VOICE_KQL),
     QuerySpec("tools", "Tools and MCP", "AI4IA metadata events", TOOLS_KQL),
-    QuerySpec("documents", "Document ingestion", "AI4IA metadata events", DOCUMENTS_KQL),
-    QuerySpec("memory", "Memory operations", "AI4IA metadata events", MEMORY_KQL),
+    QuerySpec("documents", "Document ingestion", "AI4IA terminal metadata events", DOCUMENTS_KQL),
+    QuerySpec(
+        "memory",
+        "Memory operations",
+        "AI4IA metadata events",
+        MEMORY_KQL,
+        ("list", "delete", "recall", "save"),
+        "operation",
+    ),
     QuerySpec("usage", "Model usage coverage", "AI4IA usage events", USAGE_KQL),
 )
 SECURITY_SPECS = (
-    QuerySpec("security", "Security and governance blocks", "Application Insights requests/traces", SECURITY_KQL),
+    QuerySpec(
+        "security",
+        "Security and governance blocks",
+        "AI4IA security metadata events",
+        SECURITY_KQL,
+        ("http_auth", "admin_auth", "tool_authorization", "ssrf", "realtime_auth"),
+        "category",
+    ),
 )
 
 
@@ -221,6 +230,16 @@ class OperationsMetricsService:
         reason = result.reason
         if not result.rows and reason is None:
             reason = "No matching telemetry in this window."
+        if result.rows and spec.dimension_key and spec.required_values:
+            observed = {
+                str(row.get(spec.dimension_key))
+                for row in result.rows
+                if row.get(spec.dimension_key) is not None
+            }
+            missing = [value for value in spec.required_values if value not in observed]
+            if missing:
+                status = "partial"
+                reason = f"Missing telemetry categories: {', '.join(missing)}."
         # Staleness is ingestion freshness, independent of the selected history
         # window. A matching event older than 15 minutes is stale even in a 24h view.
         if lag is not None and lag > 900:

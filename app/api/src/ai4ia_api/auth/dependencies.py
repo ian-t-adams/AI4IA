@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from ..logging_setup import emit_security_block
 from .base import AuthCredentials, AuthError, AuthenticatedUser
 
 # auto_error=False so dev auth (header-based) works without an Authorization header.
@@ -22,6 +23,7 @@ async def get_current_user(
     try:
         user = await provider.authenticate(credentials)
     except AuthError as exc:
+        emit_security_block("http_auth", "authentication_failed", "auth_dependency")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc),
@@ -38,4 +40,3 @@ async def get_current_user(
         except Exception:  # noqa: BLE001 - capture is strictly best-effort
             pass
     return user
-

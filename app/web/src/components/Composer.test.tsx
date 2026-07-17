@@ -65,7 +65,8 @@ function setup(overrides: Partial<ComposerProps> = {}) {
     capabilities: {
       ingestPath: "library",
       maxBytes: 1_000_000,
-      maxDocuments: 8,
+      maxPerUserDocuments: 100,
+      maxPerSessionDocuments: 8,
       extensions: [".pdf", ".mp3"],
       mimeTypes: ["application/pdf", "audio/*"],
       modalities: ["document", "audio"],
@@ -224,12 +225,14 @@ describe("Composer", () => {
         capabilities: {
           ingestPath: "session",
           maxBytes: 3,
-          maxDocuments: 8,
+          maxPerUserDocuments: null,
+          maxPerSessionDocuments: 8,
           extensions: [".txt"],
           mimeTypes: ["text/*"],
           modalities: ["text"],
         },
       });
+
       const input = document.querySelector('input[type="file"]') as HTMLInputElement;
       await user.upload(
         input,
@@ -237,6 +240,19 @@ describe("Composer", () => {
       );
       expect(onUpload).not.toHaveBeenCalled();
       expect(onError).toHaveBeenCalledWith(expect.stringContaining("exceeds"));
+  });
+
+  it("disables Attach until capabilities load and offers an explicit retry", async () => {
+    const onRetryCapabilities = vi.fn();
+    setup({
+      capabilities: null,
+      capabilitiesError: "configuration unavailable",
+      onRetryCapabilities,
+    });
+    expect(screen.getByRole("button", { name: "Attachments unavailable" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("configuration unavailable");
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetryCapabilities).toHaveBeenCalled();
   });
 
   it("labels retry and dismiss actions with the failed filename", async () => {

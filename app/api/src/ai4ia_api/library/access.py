@@ -11,6 +11,7 @@ owner's ``userId``; only the *grant* dimension is email-based.
 from __future__ import annotations
 
 from .models import UserDocument, Visibility
+from .repository import DocumentLibraryRepository, DocumentNotFoundError
 
 
 def normalize_principal(email: str | None) -> str:
@@ -45,3 +46,34 @@ def require_owner(user_id: str, doc: UserDocument) -> bool:
     owner-private features (annotations, save-to-memory) stay owner-only even with
     read-sharing enabled, so they use this rather than ``can_access``."""
     return doc.userId == user_id
+
+
+async def get_accessible_document(
+    repository: DocumentLibraryRepository,
+    user_id: str,
+    document_id: str,
+    *,
+    email: str | None = None,
+) -> UserDocument:
+    """Resolve one owned/shared document without leaking inaccessible records."""
+    try:
+        return await repository.get_document(user_id, document_id)
+    except DocumentNotFoundError:
+        document = await repository.get_by_id(document_id)
+        if document is None or not can_access(user_id, document, email=email):
+            raise DocumentNotFoundError(document_id) from None
+        return document
+
+
+async def list_accessible_documents(
+    repository: DocumentLibraryRepository,
+    user_id: str,
+    *,
+    email: str | None = None,
+) -> list[UserDocument]:
+    """Return the caller's owned and explicitly shared documents, de-duplicated."""
+    owned = await repository.list_documents(user_id)
+    principal = normalize_principal(email)
+    shared = await repository.list_shared_with(principal) if principal else []
+    seen = {document.id for document in owned}
+    return [*owned, *(document for document in shared if document.id not in seen)]

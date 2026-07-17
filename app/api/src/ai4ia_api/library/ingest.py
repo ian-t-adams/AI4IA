@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 
 from ..catalog import DeploymentOption
@@ -34,6 +35,7 @@ from ..config import Settings
 from ..content_understanding.models import CUResult
 from ..documents.extract import DocumentError, extract_text
 from ..memory.embedder import GatewayEmbedder
+from ..logging_setup import emit_custom_event
 from ..usage.models import TokenUsage
 from ..usage.service import UsageService
 from .blob_store import CHUNKS_NAME, MEDIA_NAME, PARSED_NAME, RAW_NAME, BlobStore, blob_path
@@ -311,6 +313,7 @@ class DocumentIngestor:
             return
 
         modality = doc.modality.value if isinstance(doc.modality, Modality) else str(doc.modality)
+        started = time.monotonic()
         analyzer = await self._resolve_analyzer(user_id, doc.analyzerId)
         cu_analyzer_id = resolve_cu_analyzer_id(analyzer, modality, self._settings)
 
@@ -319,10 +322,20 @@ class DocumentIngestor:
         if not await self._safe_update(doc):
             # Deleted in the (small) window before analysis began; nothing was
             # persisted beyond the raw upload, which delete_document already purged.
+            emit_custom_event(
+                "document_ingest_terminal",
+                {
+                    "status": "cancelled",
+                    "modality": modality,
+                    "stage": "content_understanding",
+                    "latencyMs": int((time.monotonic() - started) * 1000),
+                },
+            )
             return
 
         meter_status = "complete"
         deleted_mid_flight = False
+        terminal_status: str | None = None
         try:
             result = await self._cu.analyze(
                 cu_analyzer_id, data, content_type or "application/octet-stream"
@@ -340,8 +353,13 @@ class DocumentIngestor:
                 await self._persist_enrichment(user_id, doc, result)
                 doc.status = DocumentStatus.ready
                 doc.error = None
+        except asyncio.CancelledError:
+            meter_status = "cancelled"
+            terminal_status = "cancelled"
+            raise
         except Exception as exc:  # noqa: BLE001 - degrade, never propagate
             meter_status = "error"
+            terminal_status = "failed"
             doc.status = DocumentStatus.failed
             doc.error = str(exc)[:500]
             # _persist_enrichment may have indexed some chunk batches before the
@@ -354,19 +372,36 @@ class DocumentIngestor:
             )
         finally:
             # Always meter the CU attempt (one synthetic op per enrich).
-            await self._meter_cu(user_id, cu_analyzer_id, meter_status)
-            if deleted_mid_flight:
+            try:
+                await self._meter_cu(user_id, cu_analyzer_id, meter_status)
+            except Exception:  # noqa: BLE001 - telemetry still records terminal status
+                logger.warning("content-understanding metering failed", exc_info=True)
+            if terminal_status == "cancelled":
+                pass
+            elif deleted_mid_flight:
                 # Honor the delete: drop any artifacts and never re-create the
                 # manifest. purge is idempotent with delete_document's own purge.
                 await self.purge(user_id, document_id)
-                return
-            doc.touch()
-            # The terminal manifest write is the commit point. If the document was
-            # deleted between the re-check and here, update_document raises
-            # DocumentNotFoundError; we then roll back the just-written artifacts so
-            # the delete wins deterministically (no orphaned blob/vector chunks).
-            if not await self._safe_update(doc):
-                await self.purge(user_id, document_id)
+                terminal_status = "cancelled"
+            else:
+                doc.touch()
+                # The terminal manifest write is the commit point. If the document was
+                # deleted between the re-check and here, update_document raises
+                # DocumentNotFoundError; roll back the just-written artifacts.
+                if not await self._safe_update(doc):
+                    await self.purge(user_id, document_id)
+                    terminal_status = "cancelled"
+                else:
+                    terminal_status = doc.status.value
+            emit_custom_event(
+                "document_ingest_terminal",
+                {
+                    "status": terminal_status,
+                    "modality": modality,
+                    "stage": "content_understanding",
+                    "latencyMs": int((time.monotonic() - started) * 1000),
+                },
+            )
 
     async def _persist_enrichment(
         self, user_id: str, doc: UserDocument, result: CUResult
@@ -527,6 +562,15 @@ class DocumentIngestor:
             # so a failed document contributes nothing to retrieval (no orphan
             # chunks under a failed manifest). Best-effort + idempotent.
             await self.purge(doc.userId, doc.id)
+            emit_custom_event(
+                "document_ingest_terminal",
+                {
+                    "status": "failed",
+                    "modality": doc.modality.value,
+                    "stage": "recovery",
+                    "latencyMs": 0,
+                },
+            )
             swept += 1
         if swept:
             logger.info("recover_interrupted: swept %d stuck document(s)", swept)

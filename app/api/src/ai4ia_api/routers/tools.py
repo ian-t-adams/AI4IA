@@ -1,14 +1,16 @@
 """Display-safe, caller-aware tool governance catalog."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel
 
 from ..agents.tool_exec import SELECTABLE_SYNTHETIC_TOOL_NAMES
 from ..agents.mcp_servers import namespaced_tool_name
 from ..agents.tools import ToolRisk
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
+from ..conversations.policy import resolve_conversation_policy
+from ..sessions.repository import SessionNotFoundError
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
@@ -25,15 +27,15 @@ class ToolCatalogItem(BaseModel):
     label: str
     description: str
     source: str
-    risk: ToolRisk
-    requiresApproval: bool = False
-    scopes: list[str] = Field(default_factory=list)
+    risk: ToolRisk | None = None
+    requiresApproval: bool | None = None
+    scopes: list[str] | None = None
     available: bool = True
     selectable: bool = False
     detail: str | None = None
     ownership: str = "application"
-    typed: bool = True
-    voice: bool = False
+    typed: bool | None = None
+    voice: bool | None = None
 
 
 class ToolCatalogResponse(BaseModel):
@@ -43,6 +45,7 @@ class ToolCatalogResponse(BaseModel):
 @router.get("", response_model=ToolCatalogResponse)
 async def list_tools(
     request: Request,
+    session_id: str | None = Query(default=None, alias="sessionId"),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ToolCatalogResponse:
     registry = request.app.state.tool_registry
@@ -58,6 +61,7 @@ async def list_tools(
             scopes=sorted(spec.scopes),
             available=spec.enabled and registry.is_allowlisted(spec.name),
             selectable=spec.name in selectable,
+            typed=True,
             voice=request.app.state.tool_executor.get(spec.name) is not None,
         )
         for spec in registry.list()
@@ -85,6 +89,7 @@ async def list_tools(
                 available=available,
                 selectable=name in selectable,
                 detail=detail,
+                typed=True,
                 voice=False,
             )
         )
@@ -92,14 +97,19 @@ async def list_tools(
     if mcp_service is not None:
         try:
             for server in await mcp_service.list_for(user.internal_user_id):
+                specs = {spec.name: spec for spec in server.tool_specs()}
                 for tool in server.discoveredTools:
+                    name = namespaced_tool_name(server.name, tool.name)
+                    spec = specs[name]
                     items.append(
                         ToolCatalogItem(
-                            name=namespaced_tool_name(server.name, tool.name),
+                            name=name,
                             label=tool.name.replace("_", " ").title(),
                             description=tool.description or "User MCP tool",
                             source=f"MCP: {server.name}",
-                            risk=ToolRisk.external,
+                            risk=spec.risk,
+                            requiresApproval=spec.needs_approval,
+                            scopes=sorted(spec.scopes),
                             available=not bool(server.lastError),
                             selectable=True,
                             detail=server.lastError,
@@ -114,14 +124,19 @@ async def list_tools(
     if official is not None:
         try:
             for server in await official.list_all():
+                specs = {spec.name: spec for spec in server.tool_specs()}
                 for tool in server.discoveredTools:
+                    name = namespaced_tool_name(server.name, tool.name)
+                    spec = specs[name]
                     items.append(
                         ToolCatalogItem(
-                            name=namespaced_tool_name(server.name, tool.name),
+                            name=name,
                             label=tool.name.replace("_", " ").title(),
                             description=tool.description or "Official MCP tool",
                             source=f"Official MCP: {server.name}",
-                            risk=ToolRisk.external,
+                            risk=spec.risk,
+                            requiresApproval=spec.needs_approval,
+                            scopes=sorted(spec.scopes),
                             available=not bool(server.lastError),
                             selectable=True,
                             detail=server.lastError,
@@ -132,4 +147,30 @@ async def list_tools(
                     )
         except Exception:
             pass
+    if session_id:
+        try:
+            session = await request.app.state.session_repo.get_session(
+                user.internal_user_id, session_id
+            )
+        except SessionNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+            )
+        policy = await resolve_conversation_policy(
+            request.app.state, user.internal_user_id, session
+        )
+        known = {item.name for item in items}
+        for name in sorted(set(policy.effective_tools) - known):
+            items.append(
+                ToolCatalogItem(
+                    name=name,
+                    label=name,
+                    description="Governance metadata is unavailable for this effective tool.",
+                    source="unknown",
+                    available=False,
+                    selectable=False,
+                    detail="The server could not resolve authoritative tool metadata.",
+                    ownership="unknown",
+                )
+            )
     return ToolCatalogResponse(tools=sorted(items, key=lambda item: (item.source, item.label)))

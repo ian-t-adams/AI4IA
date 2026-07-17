@@ -11,7 +11,16 @@ from pydantic import BaseModel, Field
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..agents.mcp_servers import namespaced_tool_name
-from ..sessions.models import Message, MessageRole, MessageSource, Session, ToolOverrides
+from ..library.access import get_accessible_document, list_accessible_documents
+from ..library.repository import DocumentNotFoundError
+from ..sessions.models import (
+    MAX_LIBRARY_DOCUMENTS_PER_SESSION,
+    Message,
+    MessageRole,
+    MessageSource,
+    Session,
+    ToolOverrides,
+)
 from ..sessions.repository import SessionNotFoundError, SessionRepository
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -29,7 +38,9 @@ class CreateSessionRequest(BaseModel):
     systemPrompt: str | None = None
     agentName: str | None = None
     toolOverrides: ToolOverrides = Field(default_factory=ToolOverrides)
-    libraryDocumentIds: list[str] | None = Field(default=None, max_length=20)
+    libraryDocumentIds: list[str] | None = Field(
+        default=None, max_length=MAX_LIBRARY_DOCUMENTS_PER_SESSION
+    )
 
 
 class UpdateSessionRequest(BaseModel):
@@ -38,7 +49,9 @@ class UpdateSessionRequest(BaseModel):
     systemPrompt: str | None = None
     agentName: str | None = None
     toolOverrides: ToolOverrides | None = None
-    libraryDocumentIds: list[str] | None = Field(default=None, max_length=20)
+    libraryDocumentIds: list[str] | None = Field(
+        default=None, max_length=MAX_LIBRARY_DOCUMENTS_PER_SESSION
+    )
 
 
 def _repo(request: Request) -> SessionRepository:
@@ -136,8 +149,13 @@ async def _validate_policy_fields(
             )
         for document_id in document_ids:
             try:
-                await library.get_document(user.internal_user_id, document_id)
-            except Exception as exc:
+                await get_accessible_document(
+                    library,
+                    user.internal_user_id,
+                    document_id,
+                    email=user.email,
+                )
+            except DocumentNotFoundError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Library document is unavailable: {document_id}",
@@ -244,8 +262,13 @@ async def associate_library_document(
             detail="The document library is not enabled.",
         )
     try:
-        await library.get_document(user.internal_user_id, document_id)
-    except Exception as exc:
+        await get_accessible_document(
+            library,
+            user.internal_user_id,
+            document_id,
+            email=user.email,
+        )
+    except DocumentNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
         ) from exc
@@ -276,7 +299,9 @@ async def disassociate_library_document(
     if session.libraryDocumentIds is None:
         library = getattr(request.app.state, "document_library", None)
         docs = (
-            await library.list_documents(user.internal_user_id)
+            await list_accessible_documents(
+                library, user.internal_user_id, email=user.email
+            )
             if library is not None
             else []
         )

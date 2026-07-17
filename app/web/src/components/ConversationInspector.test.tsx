@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { InspectorSnapshot } from "@/lib/inspector";
@@ -101,6 +102,7 @@ function props(sessionId = "s1") {
     onParamsChange: vi.fn(),
     systemPrompt: "",
     onSessionUpdated: vi.fn(),
+    attachmentCapabilities: null,
     voiceLocked: false,
     collapsed: false,
     onToggle: vi.fn(),
@@ -117,6 +119,7 @@ beforeEach(() => {
     detail: null,
   });
   mocks.getLibrarySummary.mockResolvedValue({
+    generatedAt: new Date().toISOString(),
     status: "ok",
     total: 0,
     byStatus: {},
@@ -210,6 +213,53 @@ describe("ConversationInspector", () => {
     expect(onToggle).toHaveBeenCalled();
   });
 
+  it("returns focus to the explicit inspector opener after Escape", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        matches: true,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+    function Harness() {
+      const [collapsed, setCollapsed] = useState(true);
+      return (
+        <>
+          <ConversationInspector
+            {...props()}
+            collapsed={collapsed}
+            onToggle={() => setCollapsed((value) => !value)}
+          />
+          {!collapsed ? (
+            <button
+              type="button"
+              aria-label="Inspector backdrop"
+              onClick={() => setCollapsed(true)}
+            />
+          ) : null}
+        </>
+      );
+    }
+    const user = userEvent.setup();
+    render(<Harness />);
+    const opener = screen.getByRole("button", {
+      name: "Open conversation inspector",
+    });
+    await user.click(opener);
+    const dialog = screen.getByRole("dialog", { name: "Conversation inspector" });
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    const restored = await screen.findByRole("button", {
+      name: "Open conversation inspector",
+    });
+    expect(restored).toHaveFocus();
+    await user.click(restored);
+    await user.click(screen.getByRole("button", { name: "Inspector backdrop" }));
+    expect(
+      await screen.findByRole("button", { name: "Open conversation inspector" }),
+    ).toHaveFocus();
+  });
+
   it("shows independent unavailable and empty states", async () => {
     mocks.listMemories.mockRejectedValue(new Error("memory source offline"));
     render(<ConversationInspector {...props()} />);
@@ -217,6 +267,196 @@ describe("ConversationInspector", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "memory source offline",
     );
+  });
+
+  it("renders snapshot sections while an unrelated tool catalog is still loading", async () => {
+    mocks.listTools.mockImplementation(() => new Promise(() => {}));
+    render(<ConversationInspector {...props()} />);
+    await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    expect(
+      await screen.findByRole("textbox", { name: "System prompt" }),
+    ).toHaveValue("Prompt s1");
+    await userEvent.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    expect(screen.getByText("Loading tools…")).toBeInTheDocument();
+  });
+
+  it("keeps model and instructions disabled when the snapshot fails", async () => {
+    mocks.getInspector.mockRejectedValue(new Error("snapshot offline"));
+    render(<ConversationInspector {...props()} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("snapshot offline");
+    expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
+    await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("snapshot offline");
+    expect(screen.queryByRole("textbox", { name: "System prompt" })).toBeNull();
+  });
+
+  it("discards a late prompt save after switching conversations", async () => {
+    let resolveUpdate!: (value: ReturnType<typeof snapshot>) => void;
+    mocks.updateSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveUpdate = resolve;
+        }),
+    );
+    const onSessionUpdated = vi.fn();
+    const { rerender } = render(
+      <ConversationInspector {...props("A")} onSessionUpdated={onSessionUpdated} />,
+    );
+    await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Save" }));
+    rerender(
+      <ConversationInspector {...props("B")} onSessionUpdated={onSessionUpdated} />,
+    );
+    resolveUpdate(snapshot("A") as never);
+    await act(async () => Promise.resolve());
+    expect(onSessionUpdated).not.toHaveBeenCalled();
+  });
+
+  it("does not strand saving when a same-session refresh lands mid-mutation", async () => {
+    let resolveUpdate!: (value: ReturnType<typeof snapshot>) => void;
+    mocks.updateSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveUpdate = resolve;
+        }),
+    );
+    const onSessionUpdated = vi.fn();
+    const { rerender } = render(
+      <ConversationInspector {...props()} onSessionUpdated={onSessionUpdated} />,
+    );
+    await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Save" }));
+    expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    rerender(
+      <ConversationInspector
+        {...props()}
+        refreshKey={1}
+        onSessionUpdated={onSessionUpdated}
+      />,
+    );
+    resolveUpdate(snapshot("s1") as never);
+    await waitFor(() => expect(onSessionUpdated).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled();
+  });
+
+  it("discards a late tool override after switching conversations", async () => {
+    const value = snapshot("A");
+    value.tools.effective = [];
+    mocks.getInspector.mockImplementation((id: string) =>
+      Promise.resolve(id === "A" ? value : snapshot("B")),
+    );
+    mocks.listTools.mockResolvedValue([
+      {
+        name: "calculator",
+        label: "Calculator",
+        description: "Calculate",
+        source: "built-in",
+        risk: "safe",
+        requiresApproval: false,
+        scopes: [],
+        available: true,
+        selectable: true,
+        detail: null,
+        ownership: "application",
+        typed: true,
+        voice: true,
+      },
+    ]);
+    let resolveUpdate!: (value: ReturnType<typeof snapshot>) => void;
+    mocks.updateSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveUpdate = resolve;
+        }),
+    );
+    const onSessionUpdated = vi.fn();
+    const { rerender } = render(
+      <ConversationInspector {...props("A")} onSessionUpdated={onSessionUpdated} />,
+    );
+    await userEvent.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await userEvent.click(await screen.findByRole("checkbox"));
+    rerender(
+      <ConversationInspector {...props("B")} onSessionUpdated={onSessionUpdated} />,
+    );
+    resolveUpdate(snapshot("A") as never);
+    await act(async () => Promise.resolve());
+    expect(onSessionUpdated).not.toHaveBeenCalled();
+  });
+
+  it("renders missing tool governance metadata as unknown, never safe defaults", async () => {
+    const value = snapshot("s1");
+    value.tools.effective = ["mystery"];
+    mocks.getInspector.mockResolvedValue(value);
+    mocks.listTools.mockResolvedValue([
+      {
+        name: "mystery",
+        label: "mystery",
+        description: "Metadata unavailable",
+        source: "unknown",
+        risk: null,
+        requiresApproval: null,
+        scopes: null,
+        available: false,
+        selectable: false,
+        detail: "The server could not resolve authoritative tool metadata.",
+        ownership: "unknown",
+        typed: null,
+        voice: null,
+      },
+    ]);
+    render(<ConversationInspector {...props()} />);
+    await userEvent.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    expect(await screen.findByText(/risk unknown/)).toHaveTextContent(
+      "approval unknown",
+    );
+    expect(screen.getByText(/scopes unknown/)).toHaveTextContent("typed unknown");
+  });
+
+  it("discards a late document association after switching conversations", async () => {
+    const document = {
+      id: "doc-1",
+      userId: "u1",
+      filename: "shared.pdf",
+      contentType: "application/pdf",
+      size: 10,
+      status: "ready",
+      modality: "document",
+      chunkCount: 1,
+      citationReady: true,
+      error: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    mocks.getLibrarySummary.mockResolvedValue({
+      generatedAt: new Date().toISOString(),
+      status: "ok",
+      total: 1,
+      byStatus: { ready: 1 },
+      byModality: { document: 1 },
+      recent: [document],
+      maxUploadBytes: 100,
+      maxDocuments: 20,
+      modalities: ["document"],
+    });
+    let resolveAssociate!: (value: ReturnType<typeof snapshot>) => void;
+    mocks.associateLibraryDocument.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveAssociate = resolve;
+        }),
+    );
+    const onSessionUpdated = vi.fn();
+    const { rerender } = render(
+      <ConversationInspector {...props("A")} onSessionUpdated={onSessionUpdated} />,
+    );
+    await userEvent.click(screen.getByRole("tab", { name: "Context" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Add shared.pdf" }));
+    rerender(
+      <ConversationInspector {...props("B")} onSessionUpdated={onSessionUpdated} />,
+    );
+    resolveAssociate(snapshot("A") as never);
+    await act(async () => Promise.resolve());
+    expect(onSessionUpdated).not.toHaveBeenCalled();
   });
 
   it("confirms item-specific memory deletion and exposes a pending-safe label", async () => {
@@ -303,5 +543,23 @@ describe("ConversationInspector", () => {
     expect(await screen.findByText("50.0%")).toBeInTheDocument();
     expect(screen.getByText(/Partial coverage: newest 1000 requests/)).toBeInTheDocument();
     expect(screen.getByText(/partial usage/)).toBeInTheDocument();
+  });
+
+  it("renders unknown-only and mixed token coverage without fake zeros", async () => {
+    const value = snapshot("s1");
+    value.sessionUsage.totalRequests = 2;
+    value.sessionUsage.totalTokens = 0;
+    value.sessionUsage.unknownUsageRequests = 2;
+    value.monthlyUsage.totalRequests = 4;
+    value.monthlyUsage.totalTokens = 120;
+    value.monthlyUsage.unknownUsageRequests = 1;
+    mocks.getInspector.mockResolvedValue(value);
+    render(<ConversationInspector {...props()} />);
+    await userEvent.click(screen.getByRole("tab", { name: "Usage" }));
+    expect(await screen.findByText("Unknown")).toBeInTheDocument();
+    expect(
+      screen.getByText("Known subtotal 120 (3/4 requests reported)"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Last 30 days tokens")).toBeInTheDocument();
   });
 });

@@ -242,7 +242,12 @@ def test_live_missing_auth_subprotocol_refused(client):
             pass
 
 
-def test_live_origin_rejected_when_allowlist_set():
+def test_live_origin_rejected_when_allowlist_set(monkeypatch):
+    events: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.routers.realtime.emit_security_block",
+        lambda category, reason, source: events.append((category, reason, source)),
+    )
     c = _client(realtime_enabled=True, realtime_allowed_origins="https://good.example")
     try:
         with pytest.raises(WebSocketDisconnect):
@@ -254,6 +259,7 @@ def test_live_origin_rejected_when_allowlist_set():
                 pass
     finally:
         c.__exit__(None, None, None)
+    assert events == [("realtime_auth", "origin_rejected", "voice_live")]
 
 
 def test_live_disabled_user_refused(client):

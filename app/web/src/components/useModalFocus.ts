@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, type RefObject } from "react";
 
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -8,22 +8,27 @@ const FOCUSABLE =
 export function useModalFocus<T extends HTMLElement = HTMLDivElement>(
   onClose: () => void,
   enabled = true,
+  openerRef?: RefObject<HTMLElement | null>,
 ) {
   const ref = useRef<T>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
+  const restoreFocus = useCallback(() => {
+    (openerRef?.current ?? returnFocusRef.current)?.focus();
+  }, [openerRef]);
 
   useEffect(() => {
     if (!enabled) return;
     returnFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      openerRef?.current ??
+      (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const frame = requestAnimationFrame(() => {
       ref.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
     });
     return () => {
       cancelAnimationFrame(frame);
-      returnFocusRef.current?.focus();
+      restoreFocus();
     };
-  }, [enabled]);
+  }, [enabled, openerRef, restoreFocus]);
 
   const onKeyDown: React.KeyboardEventHandler<HTMLDivElement> = (event) => {
     if (!enabled) return;

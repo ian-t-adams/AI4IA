@@ -74,6 +74,29 @@ async def test_recall_best_effort_swallows_embed_errors():
     assert await svc.recall("u1", "query") == []
 
 
+async def test_memory_recall_and_save_emit_content_free_outcomes(monkeypatch):
+    events: list[tuple[str, str, str, int | None]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.memory.service.emit_memory_operation",
+        lambda operation, status, source, _started, count=None: events.append(
+            (operation, status, source, count)
+        ),
+    )
+    embedder = FakeEmbedder(
+        {
+            "durable memory text": [1.0, 0.0, 0.0],
+            "query": [1.0, 0.0, 0.0],
+        }
+    )
+    svc = _service(embedder)
+    await svc.remember("u1", "s1", "durable memory text")
+    await svc.recall("u1", "query")
+    assert events == [
+        ("save", "ok", "custom", 1),
+        ("recall", "ok", "custom", 1),
+    ]
+
+
 async def test_forget_user_and_session_return_counts():
     embedder = FakeEmbedder({})
     svc = _service(embedder)

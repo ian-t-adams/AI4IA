@@ -165,7 +165,8 @@ function Harness({
         capabilities={{
           ingestPath: "library",
           maxBytes: 1_000_000,
-          maxDocuments: 8,
+          maxPerUserDocuments: 100,
+          maxPerSessionDocuments: 8,
           extensions: [".pdf", ".mp3"],
           mimeTypes: ["application/pdf", "audio/*"],
           modalities: ["document", "audio"],

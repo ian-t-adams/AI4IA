@@ -409,9 +409,10 @@ export async function updateSession(
   );
 }
 
-export async function listTools(): Promise<ToolCatalogItem[]> {
+export async function listTools(sessionId?: string | null): Promise<ToolCatalogItem[]> {
+  const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
   const result = await jsonOrThrow<{ tools: ToolCatalogItem[] }>(
-    await apiFetch("/api/tools", { cache: "no-store" }),
+    await apiFetch(`/api/tools${query}`, { cache: "no-store" }),
   );
   return result.tools;
 }

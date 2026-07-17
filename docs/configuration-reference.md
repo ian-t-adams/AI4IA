@@ -16,6 +16,9 @@ explicit disabled/unavailable state.
 `infra/modules/api.bicep` supplies both values to the API Container App. No workspace
 or RBAC resource is added. The existing subscription-scope Monitoring Reader posture
 is reused; if it cannot query the workspace, panels return `unavailable`.
+The operations queries consume metadata-only custom events in the existing
+workspace `AppEvents` table. No additional workspace, diagnostic setting, or role
+assignment is created.
 
 AI4IA has too many knobs to leave them scattered across Bicep, azd, Container
 App env, and README prose. This page is the operator map: set the azd value,

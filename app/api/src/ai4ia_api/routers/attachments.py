@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
+from ..sessions.models import MAX_LIBRARY_DOCUMENTS_PER_SESSION
 from .documents import MAX_DOCS_PER_SESSION, MAX_UPLOAD_BYTES
 
 router = APIRouter(prefix="/api/attachments", tags=["attachments"])
@@ -23,7 +24,8 @@ _LIBRARY_MEDIA_EXTENSIONS = [
 class AttachmentCapabilities(BaseModel):
     ingestPath: str
     maxBytes: int
-    maxDocuments: int
+    maxPerUserDocuments: int | None = None
+    maxPerSessionDocuments: int
     extensions: list[str] = Field(default_factory=list)
     mimeTypes: list[str] = Field(default_factory=list)
     modalities: list[str] = Field(default_factory=list)
@@ -40,7 +42,8 @@ async def attachment_capabilities(
         return AttachmentCapabilities(
             ingestPath="library",
             maxBytes=settings.document_max_upload_bytes,
-            maxDocuments=settings.document_max_per_user,
+            maxPerUserDocuments=settings.document_max_per_user,
+            maxPerSessionDocuments=MAX_LIBRARY_DOCUMENTS_PER_SESSION,
             extensions=[*_TEXT_EXTENSIONS, *_LIBRARY_MEDIA_EXTENSIONS],
             mimeTypes=["text/*", "application/pdf", "image/*", "audio/*", "video/*"],
             modalities=["document", "text", "image", "audio", "video"],
@@ -48,7 +51,7 @@ async def attachment_capabilities(
     return AttachmentCapabilities(
         ingestPath="session",
         maxBytes=MAX_UPLOAD_BYTES,
-        maxDocuments=MAX_DOCS_PER_SESSION,
+        maxPerSessionDocuments=MAX_DOCS_PER_SESSION,
         extensions=_TEXT_EXTENSIONS,
         mimeTypes=["text/*", "application/pdf"],
         modalities=["document", "text"],

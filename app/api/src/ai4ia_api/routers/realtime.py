@@ -53,7 +53,7 @@ from ..auth.base import AuthCredentials, AuthError, AuthenticatedUser
 from ..catalog import DeploymentOption, ModelCatalog
 from ..config import Environment, GatewayAuthMode, Settings
 from ..conversations.policy import resolve_conversation_policy
-from ..logging_setup import emit_custom_event, new_correlation_id, set_correlation_id
+from ..logging_setup import emit_custom_event, emit_security_block, new_correlation_id, set_correlation_id
 from ..sessions.repository import SessionNotFoundError
 from ..voice_provider_catalog import (
     AZURE_OPENAI_PROVIDER_ID,
@@ -1601,7 +1601,14 @@ async def relay(
 # --------------------------------------------------------------------------- #
 
 
-async def _deny(client_ws: WebSocket, code: int) -> None:
+async def _deny(
+    client_ws: WebSocket,
+    code: int,
+    *,
+    security_reason: str | None = None,
+) -> None:
+    if security_reason:
+        emit_security_block("realtime_auth", security_reason, "voice_live")
     try:
         await client_ws.close(code=code)
     except RuntimeError:
@@ -1796,7 +1803,9 @@ async def voice_live(websocket: WebSocket) -> None:
 
     # 1. Feature flag: inert by default. Refuse before doing anything else.
     if not settings.realtime_enabled:
-        await _deny(websocket, WS_POLICY_VIOLATION)
+        await _deny(
+            websocket, WS_POLICY_VIOLATION, security_reason="feature_disabled"
+        )
         return
 
     # 2. Origin allowlist (WS handshakes are not CORS-preflighted).
@@ -1805,18 +1814,18 @@ async def voice_live(websocket: WebSocket) -> None:
         settings.realtime_allowed_origin_list,
         reflect_when_unset=settings.env == Environment.local,
     ):
-        await _deny(websocket, WS_POLICY_VIOLATION)
+        await _deny(websocket, WS_POLICY_VIOLATION, security_reason="origin_rejected")
         return
 
     # 3. Auth: extract + validate the token from the subprotocol.
     auth = parse_auth_subprotocols(websocket.scope.get("subprotocols") or [])
     if auth is None:
-        await _deny(websocket, WS_POLICY_VIOLATION)
+        await _deny(websocket, WS_POLICY_VIOLATION, security_reason="auth_missing")
         return
     try:
         user = await authenticate_subprotocol(state.auth_provider, settings, auth)
     except AuthError:
-        await _deny(websocket, WS_POLICY_VIOLATION)
+        await _deny(websocket, WS_POLICY_VIOLATION, security_reason="auth_invalid")
         return
 
     session = None
@@ -1827,7 +1836,9 @@ async def voice_live(websocket: WebSocket) -> None:
                 user.internal_user_id, session_id
             )
         except SessionNotFoundError:
-            await _deny(websocket, WS_POLICY_VIOLATION)
+            await _deny(
+                websocket, WS_POLICY_VIOLATION, security_reason="session_unavailable"
+            )
             return
 
     # 4. Resolve the provider + upstream target (browser never sees it).
@@ -1840,13 +1851,15 @@ async def voice_live(websocket: WebSocket) -> None:
             region=websocket.query_params.get("region"),
         )
     except (LiveVoiceProviderError, RealtimeResolutionError):
-        await _deny(websocket, WS_POLICY_VIOLATION)
+        await _deny(
+            websocket, WS_POLICY_VIOLATION, security_reason="provider_unavailable"
+        )
         return
 
     # 5. Entitlement gate BEFORE opening the upstream socket.
     decision = await state.entitlements.check(user.internal_user_id)
     if not decision.allowed:
-        await _deny(websocket, WS_POLICY_VIOLATION)
+        await _deny(websocket, WS_POLICY_VIOLATION, security_reason="entitlement_denied")
         return
 
     # Handshake complete: echo the auth marker as the selected subprotocol.

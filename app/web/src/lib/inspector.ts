@@ -110,6 +110,7 @@ export interface MemoryList {
 }
 
 export interface LibrarySummary {
+  generatedAt: string;
   status: string;
   total: number;
   byStatus: Record<string, number>;

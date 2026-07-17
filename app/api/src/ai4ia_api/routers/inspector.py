@@ -1,6 +1,7 @@
 """Consolidated, ownership-scoped Conversation Inspector snapshot."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -9,12 +10,15 @@ from pydantic import BaseModel, Field
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..conversations.policy import resolve_conversation_policy
+from ..library.access import get_accessible_document, list_accessible_documents
+from ..library.repository import DocumentNotFoundError
 from ..sessions.repository import SessionNotFoundError
 from ..usage.models import SessionUsageSummary, UsageSummary
 from .documents import DocumentSummary
 from .library import UserDocumentSummary
 
 router = APIRouter(prefix="/api/sessions", tags=["inspector"])
+logger = logging.getLogger(__name__)
 
 
 class InspectorModel(BaseModel):
@@ -95,15 +99,28 @@ async def get_inspector(
     if library is not None:
         selected_ids = session.libraryDocumentIds
         if selected_ids is None:
-            selected_documents = await library.list_documents(user.internal_user_id)
+            selected_documents = await list_accessible_documents(
+                library, user.internal_user_id, email=user.email
+            )
         else:
             selected_documents = []
             for document_id in selected_ids:
                 try:
                     selected_documents.append(
-                        await library.get_document(user.internal_user_id, document_id)
+                        await get_accessible_document(
+                            library,
+                            user.internal_user_id,
+                            document_id,
+                            email=user.email,
+                        )
                     )
+                except DocumentNotFoundError:
+                    continue
                 except Exception:
+                    logger.warning(
+                        "inspector document lookup failed; omitting one selection",
+                        exc_info=True,
+                    )
                     continue
         for document in selected_documents:
             try:

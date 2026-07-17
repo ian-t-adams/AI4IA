@@ -14,6 +14,7 @@ import {
 } from "@/lib/inspector";
 import type {
   AgentSummary,
+  AttachmentCapabilities,
   ChatParams,
   ModelEntry,
   Session,
@@ -54,6 +55,21 @@ function costLabel(
   return money(knownMicroUsd);
 }
 
+function tokenLabel(
+  knownTokens: number,
+  unknownRequests: number,
+  totalRequests: number,
+): string {
+  if (totalRequests > 0 && unknownRequests >= totalRequests && knownTokens === 0) {
+    return "Unknown";
+  }
+  if (unknownRequests > 0) {
+    const knownRequests = Math.max(0, totalRequests - unknownRequests);
+    return `Known subtotal ${knownTokens.toLocaleString()} (${knownRequests}/${totalRequests} requests reported)`;
+  }
+  return knownTokens.toLocaleString();
+}
+
 function SectionTitle({
   title,
   help,
@@ -81,6 +97,7 @@ export function ConversationInspector({
   systemPrompt,
   onSessionUpdated,
   onOpenLibrary,
+  attachmentCapabilities,
   voiceSettings,
   voiceLocked,
   collapsed,
@@ -97,6 +114,7 @@ export function ConversationInspector({
   systemPrompt: string;
   onSessionUpdated: (session: Session) => void;
   onOpenLibrary?: () => void;
+  attachmentCapabilities: AttachmentCapabilities | null;
   voiceSettings?: Omit<VoiceSettingsPanelProps, "locked">;
   voiceLocked: boolean;
   collapsed: boolean;
@@ -107,7 +125,6 @@ export function ConversationInspector({
   const [tools, setTools] = useState<ToolCatalogItem[]>([]);
   const [memory, setMemory] = useState<MemoryList | null>(null);
   const [library, setLibrary] = useState<LibrarySummary | null>(null);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [phases, setPhases] = useState<Record<string, LoadPhase>>({
     snapshot: "idle",
@@ -124,15 +141,37 @@ export function ConversationInspector({
   const [memoryConfirmId, setMemoryConfirmId] = useState<string | null>(null);
   const [toolQuery, setToolQuery] = useState("");
   const [promptDraft, setPromptDraft] = useState(systemPrompt);
-  const generationRef = useRef(0);
+  const sectionGenerationRef = useRef({
+    snapshot: 0,
+    tools: 0,
+    memory: 0,
+    library: 0,
+  });
+  const mutationGenerationRef = useRef(0);
+  const mountedRef = useRef(true);
+  const activeSessionRef = useRef(sessionId);
+  activeSessionRef.current = sessionId;
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const memoryConfirmRef = useRef<HTMLButtonElement>(null);
   const memoryTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
   const previousMemoryConfirmRef = useRef<string | null>(null);
+  const drawerOpenerRef = useRef<HTMLButtonElement>(null);
+  const drawerReturnFocusRef = useRef<HTMLElement | null>(null);
   const drawer = useMediaQuery("(max-width: 1050px)") && !collapsed;
-  const drawerFocus = useModalFocus<HTMLElement>(onToggle, drawer);
+  const drawerFocus = useModalFocus<HTMLElement>(
+    onToggle,
+    drawer,
+    drawerReturnFocusRef,
+  );
 
   useEffect(() => setPromptDraft(systemPrompt), [systemPrompt]);
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+      mutationGenerationRef.current += 1;
+    },
+    [],
+  );
   useEffect(
     () => () => {
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
@@ -159,71 +198,119 @@ export function ConversationInspector({
     savedTimerRef.current = setTimeout(() => setSaved(null), 2000);
   }, []);
 
-  const load = useCallback(async () => {
-    const generation = ++generationRef.current;
+  const loadSnapshot = useCallback(async () => {
+    const capturedSession = sessionId;
+    const generation = ++sectionGenerationRef.current.snapshot;
     setSnapshot(null);
-    setTools([]);
-    setMemory(null);
-    setLibrary(null);
-    setSectionErrors({});
-    if (!sessionId) {
-      setPhases({
-        snapshot: "idle",
-        tools: "idle",
-        memory: "idle",
-        library: "idle",
-      });
+    setSectionErrors((current) => {
+      const next = { ...current };
+      delete next.snapshot;
+      return next;
+    });
+    if (!capturedSession) {
+      setPhases((current) => ({ ...current, snapshot: "idle" }));
       return;
     }
-    setLoading(true);
-    setError(null);
-    setPhases({
-      snapshot: "loading",
-      tools: "loading",
-      memory: "loading",
-      library: "loading",
-    });
-    const results = await Promise.allSettled([
-      getInspector(sessionId),
-      api.listTools(),
-      listMemories(),
-      getLibrarySummary(),
-    ]);
-    if (generation !== generationRef.current) return;
-    const fail = (key: string, reason: unknown) => {
-      const message =
-        reason instanceof Error ? reason.message : `${key} unavailable`;
-      setSectionErrors((current) => ({ ...current, [key]: message }));
-      setPhases((current) => ({ ...current, [key]: "error" }));
-    };
-    if (results[0].status === "fulfilled") {
-      setSnapshot(results[0].value);
-      if (results[0].value.instructions.editable) {
-        setPromptDraft(results[0].value.instructions.value ?? "");
-      }
+    setPhases((current) => ({ ...current, snapshot: "loading" }));
+    try {
+      const value = await getInspector(capturedSession);
+      if (
+        generation !== sectionGenerationRef.current.snapshot ||
+        activeSessionRef.current !== capturedSession
+      ) return;
+      setSnapshot(value);
+      if (value.instructions.editable) setPromptDraft(value.instructions.value ?? "");
       setPhases((current) => ({ ...current, snapshot: "ready" }));
-    } else fail("snapshot", results[0].reason);
-    if (results[1].status === "fulfilled") {
-      setTools(results[1].value);
+    } catch (reason) {
+      if (
+        generation !== sectionGenerationRef.current.snapshot ||
+        activeSessionRef.current !== capturedSession
+      ) return;
+      setSectionErrors((current) => ({
+        ...current,
+        snapshot: (reason as Error).message || "Conversation settings unavailable",
+      }));
+      setPhases((current) => ({ ...current, snapshot: "error" }));
+    }
+  }, [sessionId]);
+
+  const loadTools = useCallback(async () => {
+    const capturedSession = sessionId;
+    const generation = ++sectionGenerationRef.current.tools;
+    setTools([]);
+    setPhases((current) => ({ ...current, tools: "loading" }));
+    try {
+      const value = await api.listTools(capturedSession);
+      if (
+        generation !== sectionGenerationRef.current.tools ||
+        activeSessionRef.current !== capturedSession
+      ) return;
+      setTools(value);
       setPhases((current) => ({ ...current, tools: "ready" }));
-    } else fail("tools", results[1].reason);
-    if (results[2].status === "fulfilled") {
-      setMemory(results[2].value);
+    } catch (reason) {
+      if (
+        generation !== sectionGenerationRef.current.tools ||
+        activeSessionRef.current !== capturedSession
+      ) return;
+      setSectionErrors((current) => ({ ...current, tools: (reason as Error).message }));
+      setPhases((current) => ({ ...current, tools: "error" }));
+    }
+  }, [sessionId]);
+
+  const loadMemory = useCallback(async () => {
+    const generation = ++sectionGenerationRef.current.memory;
+    setMemory(null);
+    setPhases((current) => ({ ...current, memory: "loading" }));
+    try {
+      const value = await listMemories();
+      if (generation !== sectionGenerationRef.current.memory) return;
+      setMemory(value);
       setPhases((current) => ({ ...current, memory: "ready" }));
-    } else fail("memory", results[2].reason);
-    if (results[3].status === "fulfilled") {
-      setLibrary(results[3].value);
+    } catch (reason) {
+      if (generation !== sectionGenerationRef.current.memory) return;
+      setSectionErrors((current) => ({ ...current, memory: (reason as Error).message }));
+      setPhases((current) => ({ ...current, memory: "error" }));
+    }
+  }, []);
+
+  const loadLibrary = useCallback(async () => {
+    const generation = ++sectionGenerationRef.current.library;
+    setLibrary(null);
+    setPhases((current) => ({ ...current, library: "loading" }));
+    try {
+      const value = await getLibrarySummary();
+      if (generation !== sectionGenerationRef.current.library) return;
+      setLibrary(value);
       setPhases((current) => ({ ...current, library: "ready" }));
-    } else fail("library", results[3].reason);
-    setLoading(false);
-  }, [refreshKey, sessionId]);
+    } catch (reason) {
+      if (generation !== sectionGenerationRef.current.library) return;
+      setSectionErrors((current) => ({ ...current, library: (reason as Error).message }));
+      setPhases((current) => ({ ...current, library: "error" }));
+    }
+  }, []);
+
+  const load = useCallback(async () => {
+    await Promise.allSettled([
+      loadSnapshot(),
+      loadTools(),
+      loadMemory(),
+      loadLibrary(),
+    ]);
+  }, [loadLibrary, loadMemory, loadSnapshot, loadTools]);
 
   useEffect(() => {
+    void refreshKey;
+    setError(null);
     void load();
-  }, [load]);
+  }, [load, refreshKey]);
 
-  const patch = useCallback(
-    async (value: Parameters<typeof api.updateSession>[1]) => {
+  useEffect(() => {
+    mutationGenerationRef.current += 1;
+    setSaving(false);
+  }, [sessionId]);
+
+  const runSessionMutation = useCallback(
+    async (operation: () => Promise<Session>, successMessage: string) => {
       if (
         !sessionId ||
         snapshot?.sessionId !== sessionId ||
@@ -233,21 +320,36 @@ export function ConversationInspector({
         setError("Wait for the current conversation settings to finish loading.");
         return;
       }
+      const capturedSession = sessionId;
+      const generation = ++mutationGenerationRef.current;
       setSaving(true);
       setSaved(null);
       try {
-        const updated = await api.updateSession(sessionId, value);
+        const updated = await operation();
+        if (
+          generation !== mutationGenerationRef.current ||
+          activeSessionRef.current !== capturedSession
+        ) return;
         onSessionUpdated(updated);
-        await load();
-        showSaved("Saved");
+        await loadSnapshot();
+        if (
+          generation !== mutationGenerationRef.current ||
+          activeSessionRef.current !== capturedSession
+        ) return;
+        showSaved(successMessage);
       } catch (reason) {
-        setError((reason as Error).message);
+        if (
+          generation === mutationGenerationRef.current &&
+          activeSessionRef.current === capturedSession
+        ) setError((reason as Error).message);
       } finally {
-        setSaving(false);
+        if (mountedRef.current && activeSessionRef.current === capturedSession) {
+          setSaving(false);
+        }
       }
     },
     [
-      load,
+      loadSnapshot,
       onSessionUpdated,
       phases.snapshot,
       saving,
@@ -256,11 +358,23 @@ export function ConversationInspector({
       snapshot?.sessionId,
     ],
   );
+
+  const patch = useCallback(
+    async (value: Parameters<typeof api.updateSession>[1]) => {
+      if (!sessionId) return;
+      await runSessionMutation(
+        () => api.updateSession(sessionId, value),
+        "Saved",
+      );
+    },
+    [runSessionMutation, sessionId],
+  );
   const canMutate =
     Boolean(sessionId) &&
     snapshot?.sessionId === sessionId &&
     phases.snapshot === "ready" &&
     !saving;
+  const loading = Object.values(phases).some((phase) => phase === "loading");
   const deleteMemoryItem = useCallback(async (id: string) => {
     setMemoryPending(id);
     setMemoryConfirmId(null);
@@ -282,32 +396,8 @@ export function ConversationInspector({
     [snapshot],
   );
   const toolEntries = useMemo(() => {
-    const byName = new Map(tools.map((tool) => [tool.name, tool]));
-    for (const name of [
-      ...(snapshot?.tools.inherited ?? []),
-      ...(snapshot?.tools.added ?? []),
-      ...(snapshot?.tools.removed ?? []),
-      ...(snapshot?.tools.effective ?? []),
-    ]) {
-      if (!byName.has(name)) {
-        byName.set(name, {
-          name,
-          label: name.replace(/[_:/-]+/g, " "),
-          description: "Inherited agent tool",
-          source: "agent",
-          risk: "external",
-          requiresApproval: false,
-          scopes: [],
-          available: true,
-          selectable: false,
-          ownership: "agent",
-          typed: true,
-          voice: snapshot?.tools.voiceEffective.includes(name) ?? false,
-        });
-      }
-    }
     const query = toolQuery.trim().toLowerCase();
-    return [...byName.values()]
+    return tools
       .filter(
         (tool) =>
           !query ||
@@ -316,12 +406,23 @@ export function ConversationInspector({
           tool.description.toLowerCase().includes(query),
       )
       .sort((left, right) => left.label.localeCompare(right.label));
-  }, [snapshot, toolQuery, tools]);
+  }, [toolQuery, tools]);
 
   if (collapsed) {
     return (
       <aside className="conversation-inspector collapsed" aria-label="Conversation inspector">
-        <button type="button" onClick={onToggle} aria-label="Open conversation inspector">
+        <button
+          ref={(element) => {
+            drawerOpenerRef.current = element;
+            if (element) drawerReturnFocusRef.current = element;
+          }}
+          type="button"
+          onClick={() => {
+            drawerReturnFocusRef.current = drawerOpenerRef.current;
+            onToggle();
+          }}
+          aria-label="Open conversation inspector"
+        >
           ‹
         </button>
       </aside>
@@ -409,17 +510,24 @@ export function ConversationInspector({
             />
             {sessionId && phases.snapshot === "loading" ? (
               <div className="inspector-empty">Loading model settings…</div>
+            ) : sessionId && phases.snapshot === "error" ? (
+              <div className="inspector-error" role="alert">
+                {sectionErrors.snapshot}
+                <button type="button" onClick={() => void loadSnapshot()}>Retry</button>
+              </div>
             ) : (
               <>
                 <ModelPicker
                   models={models}
                   value={selectedModel}
                   onChange={onModelChange}
+                  disabled={Boolean(sessionId) && !canMutate}
                 />
                 <ParamControls
                   params={params}
                   onChange={onParamsChange}
                   model={models.find((model) => model.id === selectedModel) ?? null}
+                  disabled={Boolean(sessionId) && !canMutate}
                 />
               </>
             )}
@@ -437,6 +545,11 @@ export function ConversationInspector({
             />
             {phases.snapshot === "loading" ? (
               <div className="inspector-empty">Loading effective instructions…</div>
+            ) : phases.snapshot === "error" ? (
+              <div className="inspector-error" role="alert">
+                {sectionErrors.snapshot}
+                <button type="button" onClick={() => void loadSnapshot()}>Retry</button>
+              </div>
             ) : snapshot?.instructions.editable === false ? (
               <div className="inspector-empty">
                 <strong>{snapshot.agent.displayName}</strong>
@@ -514,6 +627,7 @@ export function ConversationInspector({
             {phases.tools === "error" ? (
               <div className="inspector-error" role="alert">
                 {sectionErrors.tools}
+                <button type="button" onClick={() => void loadTools()}>Retry</button>
               </div>
             ) : null}
             <div className="tool-list">
@@ -556,10 +670,19 @@ export function ConversationInspector({
                         {added ? "added · " : ""}
                         {removed ? "removed · " : ""}
                         {effective ? "effective · " : "inactive · "}
-                        {tool.source} · {tool.ownership} · {tool.risk}
-                        {tool.requiresApproval ? " · approval required" : ""}
-                        {tool.scopes.length ? ` · scopes: ${tool.scopes.join(", ")}` : ""}
-                        {` · typed ${tool.typed ? "yes" : "no"} · voice ${tool.voice ? "yes" : "no"}`}
+                        {tool.source || "source unknown"} · {tool.ownership || "ownership unknown"} ·{" "}
+                        {tool.risk ?? "risk unknown"}
+                        {tool.requiresApproval === true
+                          ? " · approval required"
+                          : tool.requiresApproval === false
+                            ? " · approval not required"
+                            : " · approval unknown"}
+                        {tool.scopes === null
+                          ? " · scopes unknown"
+                          : tool.scopes.length
+                            ? ` · scopes: ${tool.scopes.join(", ")}`
+                            : " · scopes: none"}
+                        {` · typed ${tool.typed === null ? "unknown" : tool.typed ? "yes" : "no"} · voice ${tool.voice === null ? "unknown" : tool.voice ? "yes" : "no"}`}
                         {!tool.available && tool.detail ? ` · ${tool.detail}` : ""}
                       </small>
                     </span>
@@ -585,6 +708,12 @@ export function ConversationInspector({
             {phases.snapshot === "error" || phases.library === "error" ? (
               <div className="inspector-error" role="alert">
                 {sectionErrors.snapshot ?? sectionErrors.library}
+                {phases.snapshot === "error" ? (
+                  <button type="button" onClick={() => void loadSnapshot()}>Retry conversation context</button>
+                ) : null}
+                {phases.library === "error" ? (
+                  <button type="button" onClick={() => void loadLibrary()}>Retry library insight</button>
+                ) : null}
               </div>
             ) : null}
             {snapshot ? (
@@ -594,8 +723,21 @@ export function ConversationInspector({
                   : `${snapshot.libraryDocuments.length} explicitly selected`}
                 {" · "}
                 {snapshot.attachments.length} session attachments
+                {" · "}snapshot generated {new Date(snapshot.generatedAt).toLocaleTimeString()}
               </p>
             ) : null}
+            <p className="inspector-note">
+              {attachmentCapabilities
+                ? `Attach via ${attachmentCapabilities.ingestPath}; ${attachmentCapabilities.modalities.join(", ")}; ${attachmentCapabilities.maxBytes.toLocaleString()} bytes each; ${attachmentCapabilities.maxPerSessionDocuments} per conversation${
+                    attachmentCapabilities.maxPerUserDocuments
+                      ? `; ${attachmentCapabilities.maxPerUserDocuments} per library`
+                      : ""
+                  }.`
+                : "Attachment capabilities unavailable."}
+              {library
+                ? ` Library insight generated ${new Date(library.generatedAt).toLocaleTimeString()}.`
+                : ""}
+            </p>
             <ul className="inspector-list">
               {snapshot?.attachments.map((document) => (
                 <li key={document.id}>
@@ -626,22 +768,12 @@ export function ConversationInspector({
                     type="button"
                     aria-label={`Remove ${document.filename} from context`}
                     disabled={!canMutate}
-                    onClick={async () => {
-                      if (!sessionId || !canMutate) return;
-                      setSaving(true);
-                      try {
-                        const updated = await api.disassociateLibraryDocument(
-                          sessionId,
-                          document.id,
-                        );
-                        onSessionUpdated(updated);
-                        await load();
-                        showSaved("Document removed");
-                      } catch (reason) {
-                        setError((reason as Error).message);
-                      } finally {
-                        setSaving(false);
-                      }
+                    onClick={() => {
+                      if (!sessionId) return;
+                      void runSessionMutation(
+                        () => api.disassociateLibraryDocument(sessionId, document.id),
+                        "Document removed",
+                      );
                     }}
                   >
                     Remove
@@ -676,26 +808,14 @@ export function ConversationInspector({
                     type="button"
                     aria-label={`${selectedIds.has(document.id) ? "Added" : "Add"} ${document.filename}`}
                     disabled={!canMutate || selectedIds.has(document.id)}
-                    onClick={async () => {
-                      if (!sessionId || !canMutate) return;
-                      setSaving(true);
-                      try {
-                        const updated = await api.associateLibraryDocument(
-                          sessionId,
-                          document.id,
-                        );
-                        onSessionUpdated(updated);
-                        await load();
-                        showSaved(
-                          document.status === "ready"
-                            ? "Document added"
-                            : "Document selected; context will activate when ready",
-                        );
-                      } catch (reason) {
-                        setError((reason as Error).message);
-                      } finally {
-                        setSaving(false);
-                      }
+                    onClick={() => {
+                      if (!sessionId) return;
+                      void runSessionMutation(
+                        () => api.associateLibraryDocument(sessionId, document.id),
+                        document.status === "ready"
+                          ? "Document added"
+                          : "Document selected; context will activate when ready",
+                      );
                     }}
                   >
                     {selectedIds.has(document.id) ? "Added" : "Add"}
@@ -722,6 +842,7 @@ export function ConversationInspector({
             {phases.memory === "error" ? (
               <div className="inspector-error" role="alert">
                 {sectionErrors.memory}
+                <button type="button" onClick={() => void loadMemory()}>Retry</button>
               </div>
             ) : null}
             {memoryError ? (
@@ -815,7 +936,18 @@ export function ConversationInspector({
             ) : null}
             <dl className="usage-grid">
               <div><dt>Conversation requests</dt><dd>{snapshot?.sessionUsage.totalRequests.toLocaleString() ?? "Unavailable"}</dd></div>
-              <div><dt>Conversation tokens</dt><dd>{snapshot?.sessionUsage.totalTokens.toLocaleString() ?? "Unavailable"}</dd></div>
+              <div>
+                <dt>Conversation tokens</dt>
+                <dd>
+                  {snapshot
+                    ? tokenLabel(
+                        snapshot.sessionUsage.totalTokens,
+                        snapshot.sessionUsage.unknownUsageRequests,
+                        snapshot.sessionUsage.totalRequests,
+                      )
+                    : "Unavailable"}
+                </dd>
+              </div>
               <div>
                 <dt>Conversation cost</dt>
                 <dd>
@@ -828,7 +960,18 @@ export function ConversationInspector({
                     : "Unavailable"}
                 </dd>
               </div>
-              <div><dt>Last 30 days tokens</dt><dd>{snapshot?.monthlyUsage.totalTokens.toLocaleString() ?? "Unavailable"}</dd></div>
+              <div>
+                <dt>Last 30 days tokens</dt>
+                <dd>
+                  {snapshot
+                    ? tokenLabel(
+                        snapshot.monthlyUsage.totalTokens,
+                        snapshot.monthlyUsage.unknownUsageRequests,
+                        snapshot.monthlyUsage.totalRequests,
+                      )
+                    : "Unavailable"}
+                </dd>
+              </div>
               <div>
                 <dt>Last 30 days cost</dt>
                 <dd>
@@ -842,18 +985,22 @@ export function ConversationInspector({
                 </dd>
               </div>
               <div>
-                <dt>Context pressure</dt>
+                <dt>Latest-turn prompt pressure</dt>
                 <dd>
                   {snapshot?.sessionUsage.latest?.usageKnown &&
                   snapshot.sessionUsage.latest.promptTokens != null &&
-                  snapshot.model.contextWindow
+                  snapshot.model.contextWindow &&
+                  snapshot.sessionUsage.latest.model === snapshot.model.id
                     ? `${Math.min(
                         100,
                         (snapshot.sessionUsage.latest.promptTokens /
                           snapshot.model.contextWindow) *
                           100,
                       ).toFixed(1)}%`
-                    : "Unavailable"}
+                    : snapshot?.sessionUsage.latest &&
+                        snapshot.sessionUsage.latest.model !== snapshot.model.id
+                      ? `Unavailable (latest turn used ${snapshot.sessionUsage.latest.model})`
+                      : "Unavailable"}
                 </dd>
               </div>
             </dl>
@@ -873,7 +1020,11 @@ export function ConversationInspector({
               <p className="inspector-note">
                 Latest turn: {snapshot.sessionUsage.latest.model} ·{" "}
                 {new Date(snapshot.sessionUsage.latest.createdAt).toLocaleString()} ·{" "}
-                {snapshot.sessionUsage.latest.usageComplete ? "complete usage" : "partial usage"}
+                {!snapshot.sessionUsage.latest.usageKnown
+                  ? "usage unknown"
+                  : snapshot.sessionUsage.latest.usageComplete
+                    ? "complete usage"
+                    : "partial usage"}
               </p>
             ) : phases.snapshot === "ready" ? (
               <div className="inspector-empty">No metered turns in this conversation.</div>

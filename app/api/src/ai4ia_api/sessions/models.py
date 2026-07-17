@@ -131,6 +131,9 @@ class ToolOverrides(BaseModel):
     removed: list[str] = Field(default_factory=list)
 
 
+MAX_LIBRARY_DOCUMENTS_PER_SESSION = 20
+
+
 class Session(BaseModel):
     id: str = Field(default_factory=_new_id)
     userId: str

@@ -73,6 +73,11 @@ import {
   toggleMobileDrawer as nextMobileDrawer,
   type MobileDrawer,
 } from "@/lib/workspaceLayout";
+import {
+  commitLatestSessionMutation,
+  isCurrentSessionGeneration,
+} from "@/lib/sessionMutation";
+import { performBoundUpload } from "@/lib/uploadSession";
 
 const MOBILE_SIDEBAR_QUERY = "(max-width: 720px)";
 const MOBILE_INSPECTOR_QUERY = "(max-width: 1050px)";
@@ -229,9 +234,21 @@ export function ChatApp() {
   const [uploading, setUploading] = useState(false);
   const [attachmentCapabilities, setAttachmentCapabilities] =
     useState<AttachmentCapabilities | null>(null);
+  const [attachmentCapabilitiesError, setAttachmentCapabilitiesError] =
+    useState<string | null>(null);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
-  const uploadFilesRef = useRef(new Map<string, File>());
+  const uploadTargetsRef = useRef(
+    new Map<
+      string,
+      {
+        file: File;
+        sessionId: string | null;
+        selectionGeneration: number;
+      }
+    >(),
+  );
   const uploadChainRef = useRef<Promise<void>>(Promise.resolve());
+  const activeUploadCountRef = useRef(0);
   const [inspectorVersion, setInspectorVersion] = useState(0);
 
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
@@ -283,12 +300,30 @@ export function ChatApp() {
   // when an upload is quickly followed by a send.
   const sessionIdRef = useRef<string | null>(null);
   const selectionGenerationRef = useRef(0);
+  const modelMutationGenerationRef = useRef(0);
+  const capabilityGenerationRef = useRef(0);
   const voiceNavigationLockedRef = useRef(false);
   const voiceActiveRef = useRef(false);
   const voiceStopRef = useRef<() => void>(() => {});
+  const sidebarOpenerRef = useRef<HTMLButtonElement>(null);
+  const sidebarReturnFocusRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     sessionIdRef.current = activeId;
   }, [activeId]);
+
+  const loadAttachmentCapabilities = useCallback(async () => {
+    const generation = ++capabilityGenerationRef.current;
+    setAttachmentCapabilities(null);
+    setAttachmentCapabilitiesError(null);
+    try {
+      const capabilities = await api.getAttachmentCapabilities();
+      if (generation !== capabilityGenerationRef.current) return;
+      setAttachmentCapabilities(capabilities);
+    } catch (reason) {
+      if (generation !== capabilityGenerationRef.current) return;
+      setAttachmentCapabilitiesError((reason as Error).message);
+    }
+  }, []);
 
   // --- initial load ---
   useEffect(() => {
@@ -306,15 +341,6 @@ export function ChatApp() {
           },
           (e) => setError((e as Error).message),
         ),
-        api.getAttachmentCapabilities().then(
-          setAttachmentCapabilities,
-          (e) =>
-            setError(
-              (prev) =>
-                prev ??
-                `Couldn't load attachment capabilities: ${(e as Error).message}`,
-            ),
-        ),
         api.listSessions().then(
           (sess) => setSessions(sess),
           (e) =>
@@ -325,6 +351,7 @@ export function ChatApp() {
             ),
         ),
       ]);
+      void loadAttachmentCapabilities();
       // Agents are an optional enhancement (the @-menu); never block chat on them.
       try {
         setAgents(await api.listAgents());
@@ -332,7 +359,7 @@ export function ChatApp() {
         /* non-fatal: no @-mention menu */
       }
     })();
-  }, []);
+  }, [loadAttachmentCapabilities]);
 
   useEffect(() => {
     if (!voiceLiveConfig.enabled) return;
@@ -361,6 +388,10 @@ export function ChatApp() {
   const selectSession = useCallback(
     async (id: string) => {
       if (streamingRef.current || voiceNavigationLockedRef.current) return;
+      if (activeUploadCountRef.current > 0) {
+        setError("Wait for active attachments to finish before changing conversations.");
+        return;
+      }
       if (id !== sessionIdRef.current && voiceActiveRef.current) {
         voiceStopRef.current();
       }
@@ -386,7 +417,18 @@ export function ChatApp() {
           if (s.model) setSelectedModel(s.model);
           setSystemPrompt(s.systemPrompt ?? "");
           if (libraryEnabled) {
-            const library = await api.listLibraryDocuments();
+           const [owned, shared] = await Promise.all([
+             api.listLibraryDocuments(),
+             api.listSharedWithMe(),
+           ]);
+           if (
+             generation !== selectionGenerationRef.current ||
+             sessionIdRef.current !== id
+           ) return;
+           const byId = new Map(
+             [...owned, ...shared].map((document) => [document.id, document]),
+           );
+           const library = [...byId.values()];
             if (s.libraryDocumentIds === null) {
               setLibraryDocs(library);
             } else {
@@ -406,6 +448,10 @@ export function ChatApp() {
 
   const newChat = useCallback(() => {
     if (streamingRef.current || voiceNavigationLockedRef.current) return;
+    if (activeUploadCountRef.current > 0) {
+      setError("Wait for active attachments to finish before starting a new conversation.");
+      return;
+    }
     if (voiceActiveRef.current) voiceStopRef.current();
     selectionGenerationRef.current += 1;
     sessionIdRef.current = null;
@@ -451,17 +497,25 @@ export function ChatApp() {
 
   const changeModel = useCallback(
     async (modelId: string) => {
+      const capturedSession = sessionIdRef.current;
+      const generation = ++modelMutationGenerationRef.current;
       setSelectedModel(modelId);
-      if (activeId) {
+      if (capturedSession) {
         try {
-          await api.updateSession(activeId, { model: modelId });
-          setInspectorVersion((value) => value + 1);
+          await commitLatestSessionMutation({
+            capturedSession,
+            capturedGeneration: generation,
+            currentSession: () => sessionIdRef.current,
+            currentGeneration: () => modelMutationGenerationRef.current,
+            operation: () => api.updateSession(capturedSession, { model: modelId }),
+            commit: () => setInspectorVersion((value) => value + 1),
+          });
         } catch {
           /* non-fatal */
         }
       }
     },
-    [activeId],
+    [],
   );
 
   // Lazily create (or reuse) the active session. Shared by send + document
@@ -490,7 +544,9 @@ export function ChatApp() {
   }, [selectedModel, systemPrompt]);
 
   const runUpload = useCallback(
-    async (uploadId: string, file: File) => {
+    async (uploadId: string) => {
+      const target = uploadTargetsRef.current.get(uploadId);
+      if (!target) return;
       setError(null);
       setUploading(true);
       setUploads((current) =>
@@ -499,53 +555,93 @@ export function ChatApp() {
         ),
       );
       try {
-        if (libraryEnabled) {
-          // CU-ingest path: send the file to the user's library so it is
-          // parsed by Content Understanding and surfaced to the agent (and
-          // run_code) via the existing retrieval tiers. No session is needed
-          // for ingest — it is created lazily on the first send.
-          const sid = await ensureSession();
-          const doc = await api.uploadLibraryDocument(file);
-          setLibraryDocs((prev) => [...prev.filter((d) => d.id !== doc.id), doc]);
-          setUploads((current) =>
+        const capabilities = attachmentCapabilities;
+        if (!capabilities) {
+          throw new Error("Attachment capabilities are unavailable.");
+        }
+        const sid = target.sessionId ?? await ensureSession();
+        target.sessionId = sid;
+        setUploads((current) =>
+          current.map((item) =>
+            item.id === uploadId ? { ...item, sessionId: sid } : item,
+          ),
+        );
+        const isCurrent = () =>
+          isCurrentSessionGeneration(
+            sid,
+            target.selectionGeneration,
+            sessionIdRef.current,
+            selectionGenerationRef.current,
+          );
+        if (!isCurrent()) {
+          uploadTargetsRef.current.delete(uploadId);
+          setUploads((current) => current.filter((item) => item.id !== uploadId));
+          return;
+        }
+        const result = await performBoundUpload({
+          capabilities,
+          sessionId: sid,
+          file: target.file,
+          isCurrent,
+          uploadLibrary: api.uploadLibraryDocument,
+          associateLibrary: api.associateLibraryDocument,
+          uploadSession: api.uploadDocument,
+          onAssociating: () =>
+            setUploads((current) =>
+              current.map((item) =>
+                item.id === uploadId ? { ...item, status: "associating" } : item,
+              ),
+            ),
+        });
+        if (!result) {
+          uploadTargetsRef.current.delete(uploadId);
+          setUploads((current) => current.filter((item) => item.id !== uploadId));
+          return;
+        }
+        if (result.path === "library") {
+          setLibraryDocs((prev) => [
+            ...prev.filter((item) => item.id !== result.document.id),
+            result.document,
+          ]);
+          setSessions((current) =>
             current.map((item) =>
-              item.id === uploadId ? { ...item, status: "associating" } : item,
+              item.id === result.session.id ? result.session : item,
             ),
           );
-          const updated = await api.associateLibraryDocument(sid, doc.id);
-          setSessions((current) =>
-            current.map((item) => (item.id === updated.id ? updated : item)),
-          );
         } else {
-          // Session-scoped local-extract fallback (flag off / local dev).
-          const sid = await ensureSession();
-          const doc = await api.uploadDocument(sid, file);
-          // Replace any same-id entry (defensive) and append.
-          setDocuments((prev) => [...prev.filter((d) => d.id !== doc.id), doc]);
+          setDocuments((prev) => [
+            ...prev.filter((item) => item.id !== result.document.id),
+            result.document,
+          ]);
         }
-        uploadFilesRef.current.delete(uploadId);
+        uploadTargetsRef.current.delete(uploadId);
         setUploads((current) => current.filter((item) => item.id !== uploadId));
         setInspectorVersion((value) => value + 1);
       } catch (e) {
         const message = (e as Error).message;
-        setError(message);
-        setUploads((current) =>
-          current.map((item) =>
-            item.id === uploadId
-              ? { ...item, status: "failed", error: message }
-              : item,
-          ),
-        );
+        const targetSession = uploadTargetsRef.current.get(uploadId)?.sessionId;
+        if (targetSession === sessionIdRef.current) {
+          setError(message);
+          setUploads((current) =>
+            current.map((item) =>
+              item.id === uploadId
+                ? { ...item, status: "failed", error: message }
+                : item,
+            ),
+          );
+        }
       } finally {
+        activeUploadCountRef.current = Math.max(0, activeUploadCountRef.current - 1);
         setUploading(false);
       }
     },
-    [ensureSession, libraryEnabled],
+    [attachmentCapabilities, ensureSession],
   );
 
   const queueUpload = useCallback(
-    (uploadId: string, file: File): Promise<void> => {
-      const next = uploadChainRef.current.then(() => runUpload(uploadId, file));
+    (uploadId: string): Promise<void> => {
+      activeUploadCountRef.current += 1;
+      const next = uploadChainRef.current.then(() => runUpload(uploadId));
       uploadChainRef.current = next.catch(() => {});
       return next;
     },
@@ -558,26 +654,37 @@ export function ChatApp() {
         typeof crypto.randomUUID === "function"
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      uploadFilesRef.current.set(id, file);
+      uploadTargetsRef.current.set(id, {
+        file,
+        sessionId: sessionIdRef.current,
+        selectionGeneration: selectionGenerationRef.current,
+      });
       setUploads((current) => [
         ...current,
-        { id, filename: file.name, status: "queued" },
+        {
+          id,
+          filename: file.name,
+          status: "queued",
+          sessionId: sessionIdRef.current,
+        },
       ]);
-      await queueUpload(id, file);
+      await queueUpload(id);
     },
     [queueUpload],
   );
 
   const retryUpload = useCallback(
     (uploadId: string) => {
-      const file = uploadFilesRef.current.get(uploadId);
-      if (file) void queueUpload(uploadId, file);
+      const target = uploadTargetsRef.current.get(uploadId);
+      if (!target || target.sessionId !== sessionIdRef.current) return;
+      target.selectionGeneration = selectionGenerationRef.current;
+      void queueUpload(uploadId);
     },
     [queueUpload],
   );
 
   const dismissUpload = useCallback((uploadId: string) => {
-    uploadFilesRef.current.delete(uploadId);
+    uploadTargetsRef.current.delete(uploadId);
     setUploads((current) => current.filter((item) => item.id !== uploadId));
   }, []);
 
@@ -870,12 +977,18 @@ export function ChatApp() {
   const removeDocument = useCallback(
     async (documentId: string) => {
       if (!activeId) return;
+      const capturedSession = activeId;
+      const generation = selectionGenerationRef.current;
       const prev = documents;
       // Optimistic removal; restore on failure.
       setDocuments((cur) => cur.filter((d) => d.id !== documentId));
       try {
-        await api.deleteDocument(activeId, documentId);
+        await api.deleteDocument(capturedSession, documentId);
       } catch (e) {
+        if (
+          sessionIdRef.current !== capturedSession ||
+          selectionGenerationRef.current !== generation
+        ) return;
         setDocuments(prev);
         setError((e as Error).message);
       }
@@ -887,15 +1000,28 @@ export function ChatApp() {
   // durable library artifact remains intact.
   const removeLibraryDocument = useCallback(
     async (documentId: string) => {
+      if (!activeId) return;
+      const capturedSession = activeId;
+      const generation = selectionGenerationRef.current;
       const prev = libraryDocs;
       setLibraryDocs((cur) => cur.filter((d) => d.id !== documentId));
       try {
-        if (!activeId) return;
-        const updated = await api.disassociateLibraryDocument(activeId, documentId);
+        const updated = await api.disassociateLibraryDocument(
+          capturedSession,
+          documentId,
+        );
+        if (
+          sessionIdRef.current !== capturedSession ||
+          selectionGenerationRef.current !== generation
+        ) return;
         setSessions((current) =>
           current.map((item) => (item.id === updated.id ? updated : item)),
         );
       } catch (e) {
+        if (
+          sessionIdRef.current !== capturedSession ||
+          selectionGenerationRef.current !== generation
+        ) return;
         setLibraryDocs(prev);
         setError((e as Error).message);
       }
@@ -1235,7 +1361,14 @@ export function ChatApp() {
             style={{ borderRadius: 6, display: "block" }}
           />
           <button
-            onClick={toggleLeftPanel}
+            ref={(element) => {
+              sidebarOpenerRef.current = element;
+              if (element) sidebarReturnFocusRef.current = element;
+            }}
+            onClick={() => {
+              sidebarReturnFocusRef.current = sidebarOpenerRef.current;
+              toggleLeftPanel();
+            }}
             aria-label={mobileSidebar ? "Open conversation sidebar" : "Expand sidebar"}
             title={mobileSidebar ? "Open conversations" : "Expand sidebar"}
             style={{
@@ -1262,6 +1395,7 @@ export function ChatApp() {
           onOpenStudio={() => setStudioOpen(true)}
           onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
           onCollapse={toggleLeftPanel}
+          openerRef={sidebarReturnFocusRef}
           disabled={streaming || voiceExitLocked}
           />
         )}
@@ -1333,12 +1467,16 @@ export function ChatApp() {
           libraryDocuments={libraryDocs}
           uploading={uploading}
           capabilities={attachmentCapabilities}
-          uploads={uploads}
+          capabilitiesError={attachmentCapabilitiesError}
+          uploads={uploads.filter(
+            (upload) => upload.sessionId === activeId,
+          )}
           onSend={send}
           onStop={stop}
           onUpload={uploadDocument}
           onRetryUpload={retryUpload}
           onDismissUpload={dismissUpload}
+          onRetryCapabilities={() => void loadAttachmentCapabilities()}
           onRemoveDocument={removeDocument}
           onRemoveLibraryDocument={removeLibraryDocument}
           onError={setError}
@@ -1385,15 +1523,15 @@ export function ChatApp() {
           onParamsChange={setParams}
           systemPrompt={systemPrompt}
           onSessionUpdated={(updated) => {
+            if (updated.id !== sessionIdRef.current) return;
             setSessions((current) =>
               current.map((session) => (session.id === updated.id ? updated : session)),
             );
-            if (updated.id === activeId) {
-              setSystemPrompt(updated.systemPrompt ?? "");
-              if (updated.model) setSelectedModel(updated.model);
-            }
+            setSystemPrompt(updated.systemPrompt ?? "");
+            if (updated.model) setSelectedModel(updated.model);
           }}
           onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
+          attachmentCapabilities={attachmentCapabilities}
           voiceSettings={voiceSettingsProps}
           voiceLocked={voiceExitLocked}
           collapsed={rightIsCollapsed}

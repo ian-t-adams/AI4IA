@@ -25,6 +25,7 @@ import hmac
 from fastapi import Depends, HTTPException, Request, status
 
 from ..config import AuthProviderKind, Environment, Settings
+from ..logging_setup import emit_security_block
 from .base import AuthenticatedUser
 from .dependencies import get_current_user
 
@@ -82,6 +83,7 @@ async def require_admin(
     settings: Settings = request.app.state.settings
     provided_secret = request.headers.get("X-Admin-Secret")
     if not evaluate_admin(user, settings, provided_secret):
+        emit_security_block("admin_auth", "privileges_required", "admin_dependency")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required."
         )

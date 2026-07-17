@@ -20,9 +20,17 @@ export function HelpTooltip({
   const updatePosition = useCallback(() => {
     const box = triggerRef.current?.getBoundingClientRect();
     if (box) {
+      const content = contentRef.current?.getBoundingClientRect();
+      const width = Math.min(content?.width || 320, Math.max(0, window.innerWidth - 32));
+      const height = Math.min(content?.height || 160, Math.max(0, window.innerHeight - 32));
+      const maxLeft = Math.max(16, window.innerWidth - width - 16);
+      const maxTop = Math.max(16, window.innerHeight - height - 16);
+      const below = box.bottom + 8;
+      const preferredTop =
+        below + height <= window.innerHeight - 16 ? below : box.top - height - 8;
       setPosition({
-        top: Math.min(window.innerHeight - 180, box.bottom + 8),
-        left: Math.max(16, Math.min(window.innerWidth - 336, box.left - 280)),
+        top: Math.max(16, Math.min(maxTop, preferredTop)),
+        left: Math.max(16, Math.min(maxLeft, box.right - width)),
       });
     }
   }, []);

@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from ai4ia_api.metrics.log_analytics import LogQueryData
-from ai4ia_api.metrics.operations import OperationsMetricsService
+from ai4ia_api.metrics.operations import (
+    DOCUMENTS_KQL,
+    MEMORY_KQL,
+    SECURITY_KQL,
+    OperationsMetricsService,
+)
 from tests.conftest import make_settings
 
 
@@ -43,7 +48,8 @@ async def test_operations_use_only_fixed_bounded_queries():
     assert len(fake.queries) == len(report.panels)
     assert all(minutes == 60 for _, minutes in fake.queries)
     assert all("| summarize" in query for query, _ in fake.queries)
-    assert all(panel.status == "ok" for panel in report.panels)
+    assert all(panel.status in {"ok", "partial"} for panel in report.panels)
+    assert next(panel for panel in report.panels if panel.key == "memory").status == "partial"
 
 
 @pytest.mark.asyncio
@@ -74,6 +80,19 @@ async def test_partial_and_stale_states_are_not_zero_shaped():
     assert panel.lagSeconds is not None and panel.lagSeconds > 0
 
 
+@pytest.mark.asyncio
+async def test_missing_terminal_telemetry_is_partial_not_zero():
+    service = OperationsMetricsService(
+        make_settings(), querier=FakeQuerier(LogQueryData(rows=[]))
+    )
+    report = await service.operations(window_minutes=60)
+    documents = next(panel for panel in report.panels if panel.key == "documents")
+    memory = next(panel for panel in report.panels if panel.key == "memory")
+    assert documents.status == "partial" and documents.rows == []
+    assert memory.status == "partial" and memory.rows == []
+    assert "No matching telemetry" in (documents.reason or "")
+
+
 def test_existing_workspace_is_wired_without_new_resource_or_rbac():
     root = Path(__file__).resolve().parents[3]
     monitoring = (root / "infra/modules/monitoring.bicep").read_text()
@@ -84,3 +103,11 @@ def test_existing_workspace_is_wired_without_new_resource_or_rbac():
     assert "AI4IA_LOG_ANALYTICS_WORKSPACE_RESOURCE_ID" in api
     assert "monitoring.outputs.logAnalyticsCustomerId" in main
     assert "Microsoft.OperationalInsights/workspaces" not in api
+
+
+def test_terminal_and_security_queries_match_real_custom_events():
+    assert 'Name == "document_ingest_terminal"' in DOCUMENTS_KQL
+    assert 'Name == "memory_operation"' in MEMORY_KQL
+    assert 'Name == "security_block"' in SECURITY_KQL
+    assert "AppEvents" in SECURITY_KQL
+    assert "AppTraces" not in SECURITY_KQL

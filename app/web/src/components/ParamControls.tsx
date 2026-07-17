@@ -14,6 +14,7 @@ function Slider({
   max,
   step,
   onChange,
+  disabled,
 }: {
   label: string;
   value: number;
@@ -21,6 +22,7 @@ function Slider({
   max: number;
   step: number;
   onChange: (v: number) => void;
+  disabled: boolean;
 }) {
   const id = `param-${label.replace(/\s+/g, "-").toLowerCase()}`;
   return (
@@ -35,6 +37,7 @@ function Slider({
         max={max}
         step={step}
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange(Number(e.target.value))}
       />
     </label>
@@ -45,10 +48,12 @@ export function ParamControls({
   params,
   onChange,
   model,
+  disabled = false,
 }: {
   params: ChatParams;
   onChange: (p: ChatParams) => void;
   model?: ModelEntry | null;
+  disabled?: boolean;
 }) {
   // The active model's published max-output ceiling drives the input bound and
   // is the single source of truth for clamping. The backend caps too (lower
@@ -63,6 +68,7 @@ export function ParamControls({
         min={0}
         max={2}
         step={0.1}
+        disabled={disabled}
         onChange={(v) => onChange({ ...params, temperature: v })}
       />
       <Slider
@@ -71,6 +77,7 @@ export function ParamControls({
         min={0}
         max={1}
         step={0.05}
+        disabled={disabled}
         onChange={(v) => onChange({ ...params, top_p: v })}
       />
       <label style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -87,6 +94,7 @@ export function ParamControls({
           min={1}
           max={cap}
           value={shown}
+          disabled={disabled}
           onChange={(e) => {
             const raw = Number(e.target.value);
             const clamped = Math.max(1, Math.min(raw || 1, cap));

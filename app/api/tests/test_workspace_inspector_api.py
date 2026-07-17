@@ -131,7 +131,34 @@ def test_tool_catalog_is_display_safe():
         assert "egress_allowlist" not in calculator
 
 
-def test_memory_list_and_delete_are_user_scoped():
+def test_effective_tool_without_catalog_metadata_is_explicitly_unknown():
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        session = client.post("/api/sessions", json={"model": "gpt-5.2"}).json()
+        stored = client.app.state.session_repo._sessions[session["id"]]
+        stored.toolOverrides.added = ["removed_tool"]
+        response = client.get(f"/api/tools?sessionId={session['id']}")
+        assert response.status_code == 200
+        unknown = next(
+            item for item in response.json()["tools"] if item["name"] == "removed_tool"
+        )
+        assert unknown["source"] == "unknown"
+        assert unknown["risk"] is None
+        assert unknown["requiresApproval"] is None
+        assert unknown["scopes"] is None
+        assert unknown["typed"] is None
+        assert unknown["voice"] is None
+        assert unknown["available"] is False
+
+
+def test_memory_list_and_delete_are_user_scoped(monkeypatch):
+    events: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.routers.memories.emit_memory_operation",
+        lambda operation, status, source, _started, count=None: events.append(
+            (operation, status, source)
+        ),
+    )
     app = create_app(make_settings())
     with TestClient(app) as client:
         client.app.state.memory = EnumerableMemory()
@@ -141,6 +168,9 @@ def test_memory_list_and_delete_are_user_scoped():
         assert client.get("/api/memories", headers=bob).json()["items"] == []
         assert client.delete("/api/memories/owned", headers=bob).status_code == 404
         assert client.delete("/api/memories/owned", headers=alice).status_code == 204
+    assert ("list", "ok", "api") in events
+    assert ("delete", "not_found", "api") in events
+    assert ("delete", "ok", "api") in events
 
 
 def test_authoritative_voice_frame_removes_client_instructions():
@@ -221,6 +251,30 @@ def test_processing_documents_associate_and_activate_when_ready():
         assert removed.json()["libraryDocumentIds"] == []
 
 
+def test_inspector_omits_one_transient_document_failure(monkeypatch):
+    app = create_app(make_settings(document_understanding_enabled=True))
+    with TestClient(app) as client:
+        user_id = client.post("/api/sessions", json={"model": "gpt-5.2"}).json()[
+            "userId"
+        ]
+        document = UserDocument(userId=user_id, filename="transient.pdf")
+        asyncio.run(client.app.state.document_library.create_document(document))
+        session = client.post(
+            "/api/sessions",
+            json={"model": "gpt-5.2", "libraryDocumentIds": [document.id]},
+        ).json()
+
+        async def fail_lookup(_user_id: str, _document_id: str):
+            raise RuntimeError("temporary store failure")
+
+        monkeypatch.setattr(
+            client.app.state.document_library, "get_document", fail_lookup
+        )
+        response = client.get(f"/api/sessions/{session['id']}/inspector")
+        assert response.status_code == 200
+        assert response.json()["libraryDocuments"] == []
+
+
 def test_multiple_associations_do_not_drop_prior_ids():
     app = create_app(make_settings(document_understanding_enabled=True))
     with TestClient(app) as client:
@@ -264,6 +318,7 @@ def test_attachment_capabilities_are_server_advertised():
         assert body["ingestPath"] == "library"
         assert "audio" in body["modalities"]
         assert body["maxBytes"] > 0
+        assert body["maxPerUserDocuments"] > body["maxPerSessionDocuments"]
 
 
 def test_session_usage_reports_explicit_coverage_when_truncated():

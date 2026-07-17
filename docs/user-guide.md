@@ -46,6 +46,10 @@ The composer has one **Attach** action for documents, images, audio, and video.
 The API advertises and enforces the actual type, size, count, modality, and ingest
 path limits. Uploads are queued sequentially, show progress/failure, and can be
 retried or dismissed.
+The Attach control remains disabled until those capabilities load. An uploaded
+library document appears as selected context only after the session association
+succeeds. Active uploads temporarily block conversation navigation so a late
+completion cannot attach to or appear in another conversation.
 AI4IA has two storage/context paths:
 
 - **Session attachments** add bounded text to the current chat only.
@@ -62,6 +66,12 @@ Sharing is tenant-scoped:
 - `shared` grants read access by email.
 - `public` means tenant-authenticated users can read it. It is not an anonymous
   internet link.
+
+Owned and shared documents can be explicitly selected for a conversation. A missing
+selection retains legacy all-accessible behavior, an explicit empty selection disables
+library context, and a non-empty selection is an exact allowlist. Revoking a share
+removes that document from effective retrieval and tools immediately, even if its
+stale id remains in an older session record.
 
 ## Voice
 
@@ -118,6 +128,11 @@ document summaries to memory. The inspector lists memories owned by the current
 user and supports confirmed, item-labelled deletion with pending/error/retry state
 when the configured backend can verify and delete an owned record. There is no
 global consent/toggle yet.
+
+The Usage section reports known token/cost subtotals and request coverage when some
+providers omit usage. `Unknown` is shown instead of zero when every request is
+unknown. Prompt pressure refers only to the latest metered turn and is unavailable
+when that turn used a different model or lacks prompt-token metadata.
 
 ## Custom tools and web search
 

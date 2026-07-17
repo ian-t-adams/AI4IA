@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { HelpTooltip } from "./HelpTooltip";
@@ -40,5 +40,23 @@ describe("HelpTooltip", () => {
     expect(screen.getByRole("tooltip")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Outside" }));
     expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("clamps the portal within a short narrow viewport", async () => {
+    Object.defineProperty(window, "innerWidth", { value: 240, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: 120, configurable: true });
+    const user = userEvent.setup();
+    render(<HelpTooltip label="Bounds">Long bounded help content.</HelpTooltip>);
+    const trigger = screen.getByRole("button", { name: "Help: Bounds" });
+    trigger.getBoundingClientRect = () =>
+      ({ top: 90, bottom: 110, left: 210, right: 230, width: 20, height: 20 }) as DOMRect;
+    await user.click(trigger);
+    const tooltip = screen.getByRole("tooltip");
+    tooltip.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 160, left: 0, right: 320, width: 320, height: 160 }) as DOMRect;
+    fireEvent(window, new Event("resize"));
+    await waitFor(() => {
+      expect(tooltip).toHaveStyle({ top: "16px", left: "16px" });
+    });
   });
 });

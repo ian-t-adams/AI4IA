@@ -81,6 +81,60 @@ def test_share_grant_grantee_reads_then_revoke(client):
     assert client.get("/api/library/shared", headers=bob).json() == []
 
 
+def test_shared_document_selection_conversion_and_revocation(client):
+    owner = _uid(client)
+    bob_headers = {"X-Dev-User": "bob"}
+    bob_id = _uid(client, "bob")
+    shared = _seed(client, userId=owner, filename="shared.pdf", size=10)
+    owned = _seed(client, userId=bob_id, filename="owned.pdf", size=10)
+    client.put(
+        f"/api/library/documents/{shared.id}/shares",
+        json={"visibility": "shared", "grantees": ["bob@example.com"]},
+    )
+
+    explicit = client.post(
+        "/api/sessions",
+        headers=bob_headers,
+        json={"model": "gpt-5.2", "libraryDocumentIds": [shared.id]},
+    )
+    assert explicit.status_code == 201, explicit.text
+    session_id = explicit.json()["id"]
+    inspector = client.get(
+        f"/api/sessions/{session_id}/inspector", headers=bob_headers
+    ).json()
+    assert [document["id"] for document in inspector["libraryDocuments"]] == [
+        shared.id
+    ]
+
+    legacy = client.post(
+        "/api/sessions", headers=bob_headers, json={"model": "gpt-5.2"}
+    ).json()
+    converted = client.delete(
+        f"/api/sessions/{legacy['id']}/library-documents/{owned.id}",
+        headers=bob_headers,
+    )
+    assert converted.status_code == 200, converted.text
+    assert converted.json()["libraryDocumentIds"] == [shared.id]
+
+    client.delete(f"/api/library/documents/{shared.id}/shares/bob@example.com")
+    stale = client.get(
+        f"/api/sessions/{session_id}/inspector", headers=bob_headers
+    ).json()
+    assert stale["libraryDocuments"] == []
+    rejected = client.patch(
+        f"/api/sessions/{session_id}",
+        headers=bob_headers,
+        json={"libraryDocumentIds": [shared.id]},
+    )
+    assert rejected.status_code == 422
+    assert (
+        client.post(
+            f"/api/sessions/{session_id}/library-documents/{shared.id}",
+            headers=bob_headers,
+        ).status_code
+        == 404
+    )
+
 # --- owner-only control surface ---
 def test_shares_endpoints_are_owner_only(client):
     owner = _uid(client)

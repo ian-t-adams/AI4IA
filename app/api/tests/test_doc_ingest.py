@@ -129,7 +129,12 @@ async def test_ingest_is_idempotent_on_dedupe_key():
 
 
 # --- enrich (background) ---
-async def test_enrich_success_indexes_chunks_and_meters():
+async def test_enrich_success_indexes_chunks_and_meters(monkeypatch):
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.library.ingest.emit_custom_event",
+        lambda name, attributes: events.append((name, attributes)),
+    )
     library = InMemoryDocumentLibraryRepository()
     usage = FakeUsage()
     embedder = FakeEmbedder()
@@ -160,9 +165,17 @@ async def test_enrich_success_indexes_chunks_and_meters():
     assert call["session_id"] == "document-ingest"
     assert call["model_id"] == "content-understanding"
     assert call["usage"].known is False and call["usage"].calls == 1
+    assert events[-1][0] == "document_ingest_terminal"
+    assert events[-1][1]["status"] == "ready"
+    assert set(events[-1][1]) == {"status", "modality", "stage", "latencyMs"}
 
 
-async def test_enrich_cu_failure_degrades_to_failed_and_meters_error():
+async def test_enrich_cu_failure_degrades_to_failed_and_meters_error(monkeypatch):
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.library.ingest.emit_custom_event",
+        lambda name, attributes: events.append((name, attributes)),
+    )
     library = InMemoryDocumentLibraryRepository()
     usage = FakeUsage()
     cu = FakeCU(error=RuntimeError("upstream boom"))
@@ -179,6 +192,8 @@ async def test_enrich_cu_failure_degrades_to_failed_and_meters_error():
     assert doc.status == DocumentStatus.failed
     assert doc.error
     assert usage.calls[0]["status"] == "error"
+    assert events[-1][0] == "document_ingest_terminal"
+    assert events[-1][1]["status"] == "failed"
 
 
 async def test_enrich_failed_status_result_degrades():

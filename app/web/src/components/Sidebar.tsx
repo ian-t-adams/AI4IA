@@ -1,5 +1,6 @@
 "use client";
 
+import type { RefObject } from "react";
 import type { Session } from "@/lib/types";
 import { DOCS_INDEX_URL, STATUS_URL } from "@/lib/docs";
 import { AdminLink } from "./AdminLink";
@@ -17,6 +18,7 @@ export function Sidebar({
   onOpenStudio,
   onOpenLibrary,
   onCollapse,
+  openerRef,
   disabled = false,
 }: {
   sessions: Session[];
@@ -28,12 +30,14 @@ export function Sidebar({
   onOpenStudio: () => void;
   onOpenLibrary?: () => void;
   onCollapse?: () => void;
+  openerRef?: RefObject<HTMLElement | null>;
   disabled?: boolean;
 }) {
   const mobileDrawer = useMediaQuery("(max-width: 720px)") && Boolean(onCollapse);
   const drawerFocus = useModalFocus<HTMLElement>(
     onCollapse ?? (() => {}),
     mobileDrawer,
+    openerRef,
   );
   return (
     <nav
