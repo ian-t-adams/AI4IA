@@ -23,7 +23,8 @@ import {
   type VoiceSessionSettings,
 } from "./voiceLive";
 
-export const VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v3";
+export const VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v4";
+const V3_VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v3";
 export const V2_VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v2";
 const V1_VOICE_PREFERENCES_STORAGE_NAME = "ai4ia.voiceLive.prefs.v1";
 
@@ -92,11 +93,6 @@ export function normalizeVoiceSessionSettings(raw: unknown): VoiceSessionSetting
   if (!raw || typeof raw !== "object") return { ...DEFAULT_VOICE_SETTINGS };
   const r = raw as Record<string, unknown>;
 
-  const instructions =
-    typeof r.instructions === "string" && r.instructions.trim().length > 0
-      ? r.instructions
-      : DEFAULT_VOICE_SETTINGS.instructions;
-
   const temperature = isFiniteNumber(r.temperature)
     ? clamp(r.temperature, TEMPERATURE_MIN, TEMPERATURE_MAX)
     : null;
@@ -125,7 +121,6 @@ export function normalizeVoiceSessionSettings(raw: unknown): VoiceSessionSetting
       : "";
 
   return {
-    instructions,
     temperature,
     vadType,
     vadThreshold,
@@ -206,10 +201,6 @@ export function normalizeSpeechVoiceLiveSettings(
 ): SpeechVoiceLiveSettings {
   if (!raw || typeof raw !== "object") return { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS };
   const r = raw as Record<string, unknown>;
-  const instructions =
-    typeof r.instructions === "string" && r.instructions.trim().length > 0
-      ? r.instructions
-      : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.instructions;
   const temperature =
     typeof r.temperature === "number" && Number.isFinite(r.temperature)
       ? Math.min(2, Math.max(0, r.temperature))
@@ -243,7 +234,6 @@ export function normalizeSpeechVoiceLiveSettings(
       ? r.autoTruncate
       : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.autoTruncate;
   return {
-    instructions,
     temperature,
     voice,
     locale,
@@ -281,6 +271,7 @@ export function loadVoicePreferences(
     const raw = storage.getItem(VOICE_PREFERENCES_STORAGE_NAME);
     if (raw) return normalizeVoicePreferences(JSON.parse(raw));
     for (const legacyName of [
+      V3_VOICE_PREFERENCES_STORAGE_NAME,
       V2_VOICE_PREFERENCES_STORAGE_NAME,
       V1_VOICE_PREFERENCES_STORAGE_NAME,
     ]) {
@@ -309,6 +300,7 @@ export function hasStoredVoicePreferences(
       return provider === "azure_openai" || provider === "speech_voice_live";
     }
     for (const legacyName of [
+      V3_VOICE_PREFERENCES_STORAGE_NAME,
       V2_VOICE_PREFERENCES_STORAGE_NAME,
       V1_VOICE_PREFERENCES_STORAGE_NAME,
     ]) {

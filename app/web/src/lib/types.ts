@@ -41,6 +41,9 @@ export interface Session {
   title: string;
   model: string | null;
   systemPrompt: string | null;
+  agentName: string | null;
+  toolOverrides: { added: string[]; removed: string[] };
+  libraryDocumentIds: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -183,6 +186,19 @@ export interface ChatParams {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+}
+
+export interface ToolCatalogItem {
+  name: string;
+  label: string;
+  description: string;
+  source: string;
+  risk: "safe" | "external" | "destructive";
+  requiresApproval: boolean;
+  scopes: string[];
+  available: boolean;
+  selectable: boolean;
+  detail?: string | null;
 }
 
 // --- Image generation ---

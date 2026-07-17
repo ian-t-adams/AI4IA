@@ -11,8 +11,9 @@ and tool safety; the web app is the user interface.
 2. Sign in with Entra when prompted. Local/dev environments may use a configured
    dev identity instead.
 3. Start a chat session or reopen an existing session from the sidebar.
-4. Pick a model only when the default is not right for the task. The app clamps
-   model parameters to catalog limits.
+4. Open the Conversation Inspector to change the model, instructions, agent,
+   tools, context, memory, usage, or Voice Live settings. The app clamps model
+   parameters to catalog limits.
 
 ## Chat well
 
@@ -33,10 +34,15 @@ and tool safety; the web app is the user interface.
   governed tool path as chat.
 - Attach only the tools an agent needs. Tool output is metered, logged, bounded,
   and redacted where applicable.
+- A selected agent is the standing conversation persona. An explicit `@agent`
+  mention remains a one-turn override. The inspector shows inherited and
+  conversation-level tool changes; the API authorizes every call again at execution.
 
 ## Documents and media
 
-AI4IA has two document paths:
+The composer has one **Attach** action for documents, images, audio, and video.
+The API advertises and enforces the actual type, size, count, and feature limits.
+AI4IA has two storage/context paths:
 
 - **Session attachments** add bounded text to the current chat only.
 - **Document library** uploads a reusable, user-owned document, enriches it,
@@ -63,13 +69,12 @@ Sharing is tenant-scoped:
 - The orange live microphone starts and stops Voice Live inside the current chat.
   The normal transcript and composer stay available, and finalized spoken turns
   are saved into that same session.
-- Open **Voice settings** beside the composer to choose the current/default or an
-  enabled agent, a **provider**, that provider's model, a voice, and optional
-  governed tools.
-  **Advanced** includes instructions, temperature, turn detection, transcription,
-  and a language hint. Settings are stored in this browser, stale values fall back
-  safely, and controls lock while connected because changes apply to the next
-  session.
+- Open **Voice** in the Conversation Inspector to choose the provider, provider
+  model, voice, locale, temperature, turn detection, transcription, noise/echo,
+  and interruption behavior. Settings apply to the next connection.
+- Voice has no separate instructions field. The selected agent persona is
+  authoritative; otherwise the saved conversation system prompt is injected by
+  the API for both providers.
 - Two providers are available when an operator enables both: **Azure OpenAI**
   (the default, with a catalog realtime model and its usual voice/turn-detection
   options) and **Azure Speech** (a second, opt-in provider with six curated
@@ -105,9 +110,9 @@ authenticated API routes rather than public blob URLs.
 ## Memory
 
 When memory is enabled, AI4IA can recall prior user context and can save ready
-document summaries to memory. You can forget saved document memories through the
-document controls. Current gap: there is no global memory toggle or recalled-memory
-indicator in the chat UI.
+document summaries to memory. The inspector lists memories owned by the current
+user and supports individual deletion when the configured backend can verify and
+delete an owned record. There is no global consent/toggle yet.
 
 ## Custom tools and web search
 
@@ -142,8 +147,8 @@ flags when a window was truncated, so large tenants stay responsive. User identi
 are shown as stable internal identifiers; see the troubleshooting note below.
 
 Platform resources shows live Azure Monitor metrics for the deployment's Container
-App (replicas, restarts), Cosmos DB, Azure AI Search, and PostgreSQL (CPU, storage,
-connections). Each tile degrades to unavailable when its Azure resource id, the
+App (requests, response time, replicas, restarts), Cosmos DB, Azure AI Search, and
+PostgreSQL (CPU, storage, connections). Each tile degrades to unavailable when its Azure resource id, the
 `azure-monitor-query` SDK, or the API identity's Monitoring Reader permission is
 missing; a `—` cell means no data for that metric, not an error.
 
@@ -159,12 +164,12 @@ missing; a `—` cell means no data for that metric, not an error.
 
 ## Known gaps
 
-- The library UI is document-centric; backend support for image, audio, and video
-  exists, but uploads are not first-class in the picker.
 - Custom analyzer authoring, folder-level sharing, and anonymous public links are
   not implemented.
-- Memory has save/forget and automatic recall, but no global user-facing toggle or
-  recalled-memory indicator.
+- Memory has no global user-facing enable/disable preference.
+- Some proxy/APIM/provider stage percentiles and quota forecasts remain unavailable
+  until the current telemetry sources expose stable dimensions; the admin UI labels
+  those states rather than fabricating zeroes.
 
 ## Troubleshooting
 

@@ -97,6 +97,27 @@ flowchart LR
 5. Durable state is written to Cosmos and Blob Storage; derived memory/search/chunk
    stores are updated best-effort and can be rebuilt.
 
+## Conversation policy and inspector
+
+The API owns the active conversation policy. Sessions add optional, backward-compatible
+`agentName`, `toolOverrides`, and `libraryDocumentIds` fields; existing Cosmos records
+need no migration. Instruction precedence is:
+
+1. the selected governed agent persona;
+2. otherwise the session `systemPrompt`;
+3. otherwise the provider default.
+
+Typed chat and both Voice Live providers resolve this same policy. The browser never
+supplies authoritative voice instructions; the WebSocket binds to an owned session and
+the relay replaces or removes client instructions before forwarding `session.update`.
+Tool overrides can only add server-approved tools or remove inherited tools, and
+execution still re-checks registry, scope, approval, target-host, MCP ownership, and
+SSRF rules.
+
+`GET /api/sessions/{id}/inspector` provides a display-safe, ownership-scoped snapshot
+for the right Conversation Inspector. Focused APIs continue to own mutations and
+memory, library, tool-catalog, and usage detail.
+
 ```mermaid
 sequenceDiagram
   autonumber

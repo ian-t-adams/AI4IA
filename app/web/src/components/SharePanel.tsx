@@ -13,6 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { getDocumentShares, setDocumentShares } from "@/lib/api";
 import type { ShareVisibility } from "@/lib/library";
+import { useModalFocus } from "./useModalFocus";
 
 interface SharePanelProps {
   documentId: string;
@@ -58,6 +59,7 @@ export default function SharePanel({
   onClose,
   onChanged,
 }: SharePanelProps) {
+  const modal = useModalFocus(onClose);
   const [visibility, setVisibility] = useState<ShareVisibility>("private");
   const [grantees, setGrantees] = useState<string[]>([]);
   const [draftEmail, setDraftEmail] = useState("");
@@ -84,14 +86,6 @@ export default function SharePanel({
       active = false;
     };
   }, [documentId]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const addGrantee = useCallback(() => {
     const email = draftEmail.trim().toLowerCase();
@@ -134,6 +128,8 @@ export default function SharePanel({
 
   return (
     <div
+      ref={modal.ref}
+      onKeyDown={modal.onKeyDown}
       role="dialog"
       aria-label={`Share ${filename}`}
       aria-modal="true"

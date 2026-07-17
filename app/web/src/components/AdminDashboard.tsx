@@ -154,7 +154,14 @@ function DayTrend({ items }: { items: DayUsageBucket[] }) {
   const peak = Math.max(...values, 0);
   return (
     <div>
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" role="img" aria-label="Tokens per day">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        width="100%"
+        height={H}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`Tokens per day from ${items[0]?.day} to ${items[items.length - 1]?.day}; peak ${formatTokens(peak)} tokens per day`}
+      >
         <polyline points={points} fill="none" stroke="var(--accent)" strokeWidth={2} />
       </svg>
       <div style={{ display: "flex", justifyContent: "space-between", ...muted }}>
@@ -282,11 +289,11 @@ function UserAgents({ rows, identified }: { rows: UserAgentBucket[]; identified:
             const errors = errorLabel(r.erroredRequests);
             return (
               <tr key={`${g.userId}:${r.agent}`} style={{ borderTop: "1px solid var(--border)" }}>
-                <td style={{ padding: "4px 8px" }}>
-                  {i === 0 ? (
+                {i === 0 ? (
+                  <td rowSpan={g.rows.length} style={{ padding: "4px 8px", verticalAlign: "top" }}>
                     <UserCell displayName={g.displayName} email={g.email} identified={identified} userId={g.userId} />
-                  ) : null}
-                </td>
+                  </td>
+                ) : null}
                 <td style={{ padding: "4px 8px" }}>{r.agent}</td>
                 <td style={{ padding: "4px 8px", textAlign: "right" }}>{formatTokens(r.totalTokens)}</td>
                 <td style={{ padding: "4px 8px", textAlign: "right" }}>{r.requests}</td>
@@ -665,21 +672,33 @@ export function AdminDashboard() {
           marginBottom: 20,
         }}
       >
-        <StatCard label="Active users" value={formatCompact(s?.activeUsers ?? 0)} />
+        <StatCard label="Active users" value={s ? formatCompact(s.activeUsers) : "—"} />
         <StatCard
           label="Tokens"
-          value={formatTokens(s?.totalTokens ?? 0)}
-          sub={`${formatTokens(s?.totalPromptTokens ?? 0)} in · ${formatTokens(s?.totalCompletionTokens ?? 0)} out`}
+          value={s ? formatTokens(s.totalTokens) : "—"}
+          sub={
+            s
+              ? `${formatTokens(s.totalPromptTokens)} in · ${formatTokens(s.totalCompletionTokens)} out`
+              : "Usage unavailable"
+          }
         />
-        <StatCard label="Est. cost" value={formatUsd(s?.totalCostMicroUsd ?? 0)} sub={s?.currency ?? "USD"} />
+        <StatCard
+          label={s?.costUnknownRequests ? "Known cost" : "Est. cost"}
+          value={s ? formatUsd(s.totalCostMicroUsd) : "—"}
+          sub={
+            s?.costUnknownRequests
+              ? `${s.costUnknownRequests} request${s.costUnknownRequests === 1 ? "" : "s"} unknown`
+              : s?.currency ?? "USD"
+          }
+        />
         <StatCard
           label="Requests"
-          value={formatCompact(s?.totalRequests ?? 0)}
-          sub={`${formatPercent(s?.errorRate ?? 0)} errors`}
+          value={s ? formatCompact(s.totalRequests) : "—"}
+          sub={s ? `${formatPercent(s.errorRate)} errors` : "Status unavailable"}
         />
         <StatCard
           label="Models / agents"
-          value={`${s?.distinctModels ?? 0} / ${s?.distinctAgents ?? 0}`}
+          value={s ? `${s.distinctModels} / ${s.distinctAgents}` : "—"}
         />
       </div>
 
@@ -733,6 +752,10 @@ export function AdminDashboard() {
 
         <section style={card}>
           <h2 style={sectionTitle}>Platform resources</h2>
+          <p style={{ ...muted, margin: "-4px 0 12px" }}>
+            Live Azure Monitor values for the last hour. Unavailable or — means the
+            source is not configured, fresh, or reporting; it never means zero.
+          </p>
           <ResourcePanels panels={data.resources} />
         </section>
 

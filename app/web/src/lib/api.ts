@@ -13,6 +13,7 @@ import type {
   UserAgent,
   UserAgentCreate,
   UserAgentUpdate,
+  ToolCatalogItem,
   VoiceTurnInput,
   Workflow,
   WorkflowCreate,
@@ -374,6 +375,9 @@ export async function createSession(input: {
   title?: string;
   model?: string | null;
   systemPrompt?: string | null;
+  agentName?: string | null;
+  toolOverrides?: { added: string[]; removed: string[] };
+  libraryDocumentIds?: string[];
 }): Promise<Session> {
   return jsonOrThrow(
     await apiFetch("/api/sessions", {
@@ -386,7 +390,14 @@ export async function createSession(input: {
 
 export async function updateSession(
   id: string,
-  patch: { title?: string; model?: string | null; systemPrompt?: string | null },
+  patch: {
+    title?: string;
+    model?: string | null;
+    systemPrompt?: string | null;
+    agentName?: string | null;
+    toolOverrides?: { added: string[]; removed: string[] };
+    libraryDocumentIds?: string[];
+  },
 ): Promise<Session> {
   return jsonOrThrow(
     await apiFetch(`/api/sessions/${id}`, {
@@ -395,6 +406,13 @@ export async function updateSession(
       body: JSON.stringify(patch),
     }),
   );
+}
+
+export async function listTools(): Promise<ToolCatalogItem[]> {
+  const result = await jsonOrThrow<{ tools: ToolCatalogItem[] }>(
+    await apiFetch("/api/tools", { cache: "no-store" }),
+  );
+  return result.tools;
 }
 
 export async function deleteSession(id: string): Promise<void> {

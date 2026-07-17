@@ -9,7 +9,6 @@
 // settings/tools at connect time via refs).
 import { useId } from "react";
 
-import type { AgentSummary } from "@/lib/types";
 import {
   isSpeechVoiceProvider,
   VAD_TYPES,
@@ -45,16 +44,10 @@ export interface VoiceSettingsProvider {
 }
 
 export interface VoiceSettingsPanelProps {
-  agents: AgentSummary[];
   providers: VoiceSettingsProvider[];
   provider: VoiceProviderId;
   onProviderChange: (provider: VoiceProviderId) => void;
   activeProvider: VoiceProvider;
-  // Label for the "use the default" agent option, e.g. naming the agent the
-  // active chat is currently using (or "the generic assistant" when none).
-  defaultAgentLabel: string;
-  explicitAgent: string | null;
-  onAgentChange: (agent: string | null) => void;
   models: VoiceSettingsModel[];
   defaultModelLabel: string;
   explicitModel: string | null;
@@ -63,9 +56,6 @@ export interface VoiceSettingsPanelProps {
   onSpeechModelChange: (model: string) => void;
   voice: string;
   onVoiceChange: (voice: string) => void;
-  toolsAvailable: boolean;
-  tools: boolean;
-  onToolsChange: (enabled: boolean) => void;
   settings: VoiceSessionSettings;
   onSettingsChange: (settings: VoiceSessionSettings) => void;
   speechSettings: SpeechVoiceLiveSettings;
@@ -95,14 +85,10 @@ const CONTROL_STYLE: React.CSSProperties = {
 };
 
 export function VoiceSettingsPanel({
-  agents,
   providers,
   provider,
   onProviderChange,
   activeProvider,
-  defaultAgentLabel,
-  explicitAgent,
-  onAgentChange,
   models,
   defaultModelLabel,
   explicitModel,
@@ -111,9 +97,6 @@ export function VoiceSettingsPanel({
   onSpeechModelChange,
   voice,
   onVoiceChange,
-  toolsAvailable,
-  tools,
-  onToolsChange,
   settings,
   onSettingsChange,
   speechSettings,
@@ -122,7 +105,6 @@ export function VoiceSettingsPanel({
   locked,
 }: VoiceSettingsPanelProps) {
   const idPrefix = useId();
-  const enabledAgents = agents.filter((agent) => agent.enabled);
   const isSpeechProvider = provider === "speech_voice_live";
   const speechProvider = isSpeechVoiceProvider(activeProvider) ? activeProvider : undefined;
   const voiceOptions: readonly string[] = activeProvider.capabilities.voices.options;
@@ -273,59 +255,16 @@ export function VoiceSettingsPanel({
           </select>
         </label>
 
-        <label style={FIELD_STYLE} htmlFor={`${idPrefix}-agent`}>
-          Agent
-          <select
-            id={`${idPrefix}-agent`}
-            value={explicitAgent ?? DEFAULT_OPTION_VALUE}
-            disabled={locked}
-            onChange={(e) =>
-              onAgentChange(e.target.value === DEFAULT_OPTION_VALUE ? null : e.target.value)
-            }
-            style={CONTROL_STYLE}
-          >
-            <option value={DEFAULT_OPTION_VALUE}>{defaultAgentLabel}</option>
-            {enabledAgents.map((agent) => (
-              <option key={agent.name} value={agent.name}>
-                {agent.displayName}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        {toolsAvailable && (
-          <label
+        <div style={{ flexBasis: "100%" }}>
+          <div
             style={{
-              ...FIELD_STYLE,
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 6,
-              alignSelf: "flex-end",
-            }}
-            htmlFor={`${idPrefix}-tools`}
-          >
-            <input
-              id={`${idPrefix}-tools`}
-              type="checkbox"
-              checked={tools}
-              disabled={locked}
-              onChange={(e) => onToolsChange(e.target.checked)}
-            />
-            Allow governed tools in voice
-          </label>
-        )}
-
-        <details style={{ flexBasis: "100%" }}>
-          <summary
-            style={{
-              cursor: "pointer",
               fontSize: "0.8em",
               color: "var(--fg-muted)",
-              userSelect: "none",
+              fontWeight: 600,
             }}
           >
-            Advanced
-          </summary>
+            Audio controls
+          </div>
           <div
             style={{
               display: "flex",
@@ -334,27 +273,6 @@ export function VoiceSettingsPanel({
               padding: "8px 0 2px",
             }}
           >
-            <label
-              style={{ ...FIELD_STYLE, flexBasis: "100%" }}
-              htmlFor={`${idPrefix}-instructions`}
-            >
-              Instructions
-              <textarea
-                id={`${idPrefix}-instructions`}
-                value={
-                  isSpeechProvider ? speechSettings.instructions : settings.instructions
-                }
-                disabled={locked}
-                onChange={(e) =>
-                  isSpeechProvider
-                    ? patchSpeechSettings({ instructions: e.target.value })
-                    : patchSettings({ instructions: e.target.value })
-                }
-                rows={2}
-                style={{ ...CONTROL_STYLE, resize: "vertical", fontFamily: "inherit" }}
-              />
-            </label>
-
             <label style={FIELD_STYLE} htmlFor={`${idPrefix}-temperature`}>
               Temperature
               <input
@@ -621,7 +539,7 @@ export function VoiceSettingsPanel({
               Reset defaults
             </button>
           </div>
-        </details>
+        </div>
       </div>
     </details>
   );

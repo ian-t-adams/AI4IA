@@ -1,0 +1,50 @@
+"use client";
+
+import { useEffect, useRef } from "react";
+
+const FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+export function useModalFocus(onClose: () => void, enabled = true) {
+  const ref = useRef<HTMLDivElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!enabled) return;
+    returnFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = requestAnimationFrame(() => {
+      ref.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      returnFocusRef.current?.focus();
+    };
+  }, [enabled]);
+
+  const onKeyDown: React.KeyboardEventHandler<HTMLDivElement> = (event) => {
+    if (!enabled) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab" || !ref.current) return;
+    const focusable = [...ref.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
+    if (focusable.length === 0) {
+      event.preventDefault();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  return { ref, onKeyDown };
+}

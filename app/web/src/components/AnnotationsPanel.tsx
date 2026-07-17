@@ -14,6 +14,7 @@ import {
   updateLibraryAnnotation,
 } from "@/lib/api";
 import type { DocumentAnnotation } from "@/lib/library";
+import { useModalFocus } from "./useModalFocus";
 
 interface AnnotationsPanelProps {
   documentId: string;
@@ -32,6 +33,7 @@ export default function AnnotationsPanel({
   filename,
   onClose,
 }: AnnotationsPanelProps) {
+  const modal = useModalFocus(onClose);
   const [annotations, setAnnotations] = useState<DocumentAnnotation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -58,14 +60,6 @@ export default function AnnotationsPanel({
   useEffect(() => {
     void refresh();
   }, [refresh]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const handleAdd = useCallback(async () => {
     const body = draftBody.trim();
@@ -131,6 +125,8 @@ export default function AnnotationsPanel({
 
   return (
     <div
+      ref={modal.ref}
+      onKeyDown={modal.onKeyDown}
       role="dialog"
       aria-label={`Notes for ${filename}`}
       aria-modal="true"

@@ -17,12 +17,9 @@ import * as api from "@/lib/api";
 import type { ActivityStep, AgentSummary, ChatParams, DocumentSummary, Message, ModelEntry, Session, VoiceTurnInput } from "@/lib/types";
 import type { LibraryDocument } from "@/lib/library";
 import { Sidebar } from "./Sidebar";
-import { ModelPicker } from "./ModelPicker";
-import { ParamControls } from "./ParamControls";
-import { SystemPromptEditor } from "./SystemPromptEditor";
+import { ConversationInspector } from "./ConversationInspector";
 import { SettingsPanel } from "./SettingsPanel";
 import { StudioPanel } from "./StudioPanel";
-import { ImageStudioPanel } from "./ImageStudioPanel";
 import {
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   DEFAULT_SPEECH_MODEL_ID,
@@ -57,12 +54,10 @@ import {
   useInlineVoiceLive,
   voiceMessagesForSession,
 } from "./InlineVoiceLive";
-import { UserMenu } from "./UserMenu";
-import { AdminLink } from "./AdminLink";
-import { DOCS_PORTAL_URL } from "@/lib/docs";
 import { useVoiceLiveConfig } from "./VoiceLiveProvider";
 import { useLibraryConfig } from "./LibraryProvider";
 import { useCustomToolsConfig } from "./CustomToolsProvider";
+import { useMediaQuery } from "./useMediaQuery";
 
 
 function pickDefaultModel(models: ModelEntry[]): string | null {
@@ -236,7 +231,6 @@ export function ChatApp() {
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
-  const [imageryOpen, setImageryOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   // Left sidebar + right parameters panel collapse state, persisted across
   // reloads. Initialized false (matching SSR) and hydrated from localStorage on
@@ -354,12 +348,19 @@ export function ChatApp() {
         if (s) {
           if (s.model) setSelectedModel(s.model);
           setSystemPrompt(s.systemPrompt ?? "");
+          if (libraryEnabled && s.libraryDocumentIds.length > 0) {
+            const library = await api.listLibraryDocuments();
+            const selected = new Set(s.libraryDocumentIds);
+            setLibraryDocs(library.filter((document) => selected.has(document.id)));
+          } else {
+            setLibraryDocs([]);
+          }
         }
       } catch (e) {
         setError((e as Error).message);
       }
     },
-    [],
+    [libraryEnabled],
   );
 
   const newChat = useCallback(() => {
@@ -425,12 +426,24 @@ export function ChatApp() {
       if (activeId) {
         try {
           await api.updateSession(activeId, { systemPrompt: prompt });
-        } catch {
-          /* non-fatal */
+        } catch (reason) {
+          setError((reason as Error).message);
+        }
+      } else if (prompt.trim()) {
+        try {
+          const created = await api.createSession({
+            model: selectedModel,
+            systemPrompt: prompt,
+          });
+          sessionIdRef.current = created.id;
+          setActiveId(created.id);
+          setSessions((current) => [created, ...current]);
+        } catch (reason) {
+          setError((reason as Error).message);
         }
       }
     },
-    [activeId],
+    [activeId, selectedModel],
   );
 
   // Lazily create (or reuse) the active session. Shared by send + document
@@ -467,8 +480,18 @@ export function ChatApp() {
           // parsed by Content Understanding and surfaced to the agent (and
           // run_code) via the existing retrieval tiers. No session is needed
           // for ingest — it is created lazily on the first send.
+          const sid = await ensureSession();
           const doc = await api.uploadLibraryDocument(file);
           setLibraryDocs((prev) => [...prev.filter((d) => d.id !== doc.id), doc]);
+          const session = sessions.find((item) => item.id === sid);
+          const selected = new Set(session?.libraryDocumentIds ?? []);
+          selected.add(doc.id);
+          const updated = await api.updateSession(sid, {
+            libraryDocumentIds: [...selected],
+          });
+          setSessions((current) =>
+            current.map((item) => (item.id === updated.id ? updated : item)),
+          );
         } else {
           // Session-scoped local-extract fallback (flag off / local dev).
           const sid = await ensureSession();
@@ -482,7 +505,7 @@ export function ChatApp() {
         setUploading(false);
       }
     },
-    [ensureSession, libraryEnabled],
+    [ensureSession, libraryEnabled, sessions],
   );
 
   // Recent text-chat turns handed to Voice Live so a live session opens with the
@@ -786,20 +809,29 @@ export function ChatApp() {
     [activeId, documents],
   );
 
-  // Removing a library chip deletes the just-uploaded library document (the
-  // paperclip both adds and removes it), mirroring the session-doc remove.
+  // Removing a library chip only detaches it from this conversation. The user's
+  // durable library artifact remains intact.
   const removeLibraryDocument = useCallback(
     async (documentId: string) => {
       const prev = libraryDocs;
       setLibraryDocs((cur) => cur.filter((d) => d.id !== documentId));
       try {
-        await api.deleteLibraryDocument(documentId);
+        if (!activeId) return;
+        const session = sessions.find((item) => item.id === activeId);
+        const updated = await api.updateSession(activeId, {
+          libraryDocumentIds: (session?.libraryDocumentIds ?? []).filter(
+            (id) => id !== documentId,
+          ),
+        });
+        setSessions((current) =>
+          current.map((item) => (item.id === updated.id ? updated : item)),
+        );
       } catch (e) {
         setLibraryDocs(prev);
         setError((e as Error).message);
       }
     },
-    [libraryDocs],
+    [activeId, libraryDocs, sessions],
   );
 
   // Resolve a clicked chat citation to a ready audio/video library
@@ -1047,9 +1079,19 @@ export function ChatApp() {
       return next;
     });
   }, []);
+  const mobileSidebar = useMediaQuery("(max-width: 720px)");
+  const drawerInspector = useMediaQuery("(max-width: 1050px)");
 
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
+      {!leftCollapsed && mobileSidebar ? (
+        <button
+          type="button"
+          className="drawer-backdrop"
+          aria-label="Close conversation sidebar"
+          onClick={toggleLeftCollapsed}
+        />
+      ) : null}
       {leftCollapsed ? (
         <div
           aria-label="Chat sessions (collapsed)"
@@ -1099,7 +1141,6 @@ export function ChatApp() {
           onDelete={deleteSession}
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenStudio={() => setStudioOpen(true)}
-          onOpenImagery={() => setImageryOpen(true)}
           onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
           onCollapse={toggleLeftCollapsed}
           disabled={streaming || voiceExitLocked}
@@ -1108,6 +1149,7 @@ export function ChatApp() {
 
       <main style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         <header
+          className="chat-header"
           style={{
             display: "flex",
             alignItems: "center",
@@ -1117,30 +1159,17 @@ export function ChatApp() {
             background: "var(--bg-elevated)",
           }}
         >
-          <ModelPicker models={models} value={selectedModel} onChange={changeModel} />
-          <div style={{ marginLeft: "auto", fontSize: "0.8em", color: "var(--fg-muted)" }}>
+          <strong>
+            {sessions.find((session) => session.id === activeId)?.title ?? "New conversation"}
+          </strong>
+          <div
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            style={{ marginLeft: "auto", fontSize: "0.8em", color: "var(--fg-muted)" }}
+          >
             {streaming ? "Generating…" : "Ready"}
           </div>
-          <a
-            href={DOCS_PORTAL_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Open the AI4IA documentation and live status portal"
-            style={{
-              fontSize: "0.8em",
-              padding: "4px 10px",
-              borderRadius: 6,
-              border: "1px solid var(--border)",
-              background: "var(--bg-elevated)",
-              color: "var(--fg)",
-              textDecoration: "none",
-              whiteSpace: "nowrap",
-            }}
-          >
-            Docs &amp; status
-          </a>
-          <AdminLink disabled={voiceExitLocked} />
-          <UserMenu disabled={voiceExitLocked} />
         </header>
 
         {error && (
@@ -1186,7 +1215,7 @@ export function ChatApp() {
           onRemoveLibraryDocument={removeLibraryDocument}
           onError={setError}
           voiceLive={
-            voiceLiveEnabled && voiceSettingsProps
+            voiceLiveEnabled
               ? {
                   active: inlineVoice.active,
                   supported: inlineVoice.supported,
@@ -1197,102 +1226,45 @@ export function ChatApp() {
                   retrying: Boolean(inlineVoice.error),
                   start: inlineVoice.start,
                   stop: inlineVoice.stop,
-                  settings: voiceSettingsProps,
                 }
               : undefined
           }
         />
       </main>
 
-      {rightCollapsed ? (
-        <aside
-          aria-label="Model parameters (collapsed)"
-          style={{
-            width: 44,
-            flexShrink: 0,
-            borderLeft: "1px solid var(--border)",
-            background: "var(--bg-elevated)",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            paddingTop: 20,
-          }}
-        >
-          <button
-            onClick={toggleRightCollapsed}
-            aria-label="Expand parameters panel"
-            title="Parameters"
-            style={{
-              border: "none",
-              background: "transparent",
-              color: "var(--fg-muted)",
-              cursor: "pointer",
-              fontSize: "1.1em",
-              lineHeight: 1,
-              padding: 4,
-            }}
-          >
-            «
-          </button>
-        </aside>
-      ) : (
-        <aside
-          aria-label="Model parameters"
-          style={{
-            width: 320,
-            flexShrink: 0,
-            borderLeft: "1px solid var(--border)",
-            background: "var(--bg-elevated)",
-            padding: 20,
-            display: "flex",
-            flexDirection: "column",
-            gap: 24,
-            overflowY: "auto",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-            }}
-          >
-            <span
-              style={{
-                fontWeight: 600,
-                fontSize: "0.8em",
-                letterSpacing: 0.5,
-                textTransform: "uppercase",
-                color: "var(--fg-muted)",
-              }}
-            >
-              Parameters
-            </span>
-            <button
-              onClick={toggleRightCollapsed}
-              aria-label="Collapse parameters panel"
-              title="Collapse panel"
-              style={{
-                border: "none",
-                background: "transparent",
-                color: "var(--fg-muted)",
-                cursor: "pointer",
-                fontSize: "1.1em",
-                lineHeight: 1,
-                padding: 4,
-              }}
-            >
-              »
-            </button>
-          </div>
-          <ParamControls
-            params={params}
-            onChange={setParams}
-            model={models.find((m) => m.id === selectedModel) ?? null}
-          />
-          <SystemPromptEditor value={systemPrompt} onSave={saveSystemPrompt} />
-        </aside>
-      )}
+      {!rightCollapsed && drawerInspector ? (
+        <button
+          type="button"
+          className="drawer-backdrop inspector-backdrop"
+          aria-label="Close conversation inspector"
+          onClick={toggleRightCollapsed}
+        />
+      ) : null}
+      <ConversationInspector
+        sessionId={activeId}
+        models={models}
+        agents={agents}
+        selectedModel={selectedModel}
+        onModelChange={changeModel}
+        params={params}
+        onParamsChange={setParams}
+        systemPrompt={systemPrompt}
+        onSystemPromptChange={saveSystemPrompt}
+        onSessionUpdated={(updated) => {
+          setSessions((current) =>
+            current.map((session) => (session.id === updated.id ? updated : session)),
+          );
+          if (updated.id === activeId) {
+            setSystemPrompt(updated.systemPrompt ?? "");
+            if (updated.model) setSelectedModel(updated.model);
+          }
+        }}
+        onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
+        voiceSettings={voiceSettingsProps}
+        voiceLocked={voiceExitLocked}
+        collapsed={rightCollapsed}
+        onToggle={toggleRightCollapsed}
+      />
 
       {settingsOpen && (
         <SettingsPanel models={models} onClose={() => setSettingsOpen(false)} />
@@ -1317,9 +1289,6 @@ export function ChatApp() {
           seekToMs={citationTarget.seekToMs}
           onClose={() => setCitationTarget(null)}
         />
-      )}
-      {imageryOpen && (
-        <ImageStudioPanel models={models} onClose={() => setImageryOpen(false)} />
       )}
     </div>
   );

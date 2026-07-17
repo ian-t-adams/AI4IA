@@ -2,6 +2,10 @@
 
 import type { Session } from "@/lib/types";
 import { DOCS_INDEX_URL, STATUS_URL } from "@/lib/docs";
+import { AdminLink } from "./AdminLink";
+import { UserMenu } from "./UserMenu";
+import { useMediaQuery } from "./useMediaQuery";
+import { useModalFocus } from "./useModalFocus";
 
 export function Sidebar({
   sessions,
@@ -11,7 +15,6 @@ export function Sidebar({
   onDelete,
   onOpenSettings,
   onOpenStudio,
-  onOpenImagery,
   onOpenLibrary,
   onCollapse,
   disabled = false,
@@ -23,13 +26,17 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onOpenSettings: () => void;
   onOpenStudio: () => void;
-  onOpenImagery: () => void;
   onOpenLibrary?: () => void;
   onCollapse?: () => void;
   disabled?: boolean;
 }) {
+  const mobileDrawer = useMediaQuery("(max-width: 720px)") && Boolean(onCollapse);
+  const drawerFocus = useModalFocus(onCollapse ?? (() => {}), mobileDrawer);
   return (
     <nav
+      ref={drawerFocus.ref}
+      onKeyDown={drawerFocus.onKeyDown}
+      className="session-sidebar"
       aria-label="Chat sessions"
       style={{
         width: 280,
@@ -167,21 +174,6 @@ export function Sidebar({
         >
           🛠 Agents &amp; workflows
         </button>
-        <button
-          onClick={onOpenImagery}
-          disabled={disabled}
-          style={{
-            width: "100%",
-            padding: "8px 12px",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            background: "transparent",
-            color: "var(--sidebar-fg)",
-            cursor: disabled ? "not-allowed" : "pointer",
-          }}
-        >
-          🖼 Imagery studio
-        </button>
         {onOpenLibrary && (
           <button
             onClick={onOpenLibrary}
@@ -225,6 +217,7 @@ export function Sidebar({
             href={DOCS_INDEX_URL}
             target="_blank"
             rel="noopener noreferrer"
+            aria-label="Documentation (opens in new tab)"
             title="Browse the AI4IA documentation hub"
             style={{
               textAlign: "center",
@@ -242,6 +235,7 @@ export function Sidebar({
             href={STATUS_URL}
             target="_blank"
             rel="noopener noreferrer"
+            aria-label="Status (opens in new tab)"
             title="Live deployment health and service status"
             style={{
               textAlign: "center",
@@ -255,6 +249,21 @@ export function Sidebar({
           >
             📡 Status
           </a>
+        </div>
+        <div
+          aria-label="Account and administration"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            color: "var(--sidebar-fg)",
+            ["--fg" as string]: "var(--sidebar-fg)",
+            ["--fg-muted" as string]: "var(--sidebar-muted)",
+            ["--bg-elevated" as string]: "transparent",
+          }}
+        >
+          <AdminLink disabled={disabled} />
+          <UserMenu disabled={disabled} />
         </div>
       </div>
     </nav>

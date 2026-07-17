@@ -29,6 +29,7 @@ window.AI4IA_DOCS = {
       docs: [
         { path: "docs/runbooks/deployment.md", title: "Deployment runbook", desc: "One-time OIDC setup, custom domains, and the continuous deploy workflow." },
         { path: "docs/runbooks/feature-enablement.md", title: "Feature enablement", desc: "The authoritative flag list and how to safely turn features on/off." },
+        { path: "docs/runbooks/telemetry.md", title: "Telemetry and admin diagnostics", desc: "Metric sources, privacy boundaries, freshness, unknown states, and diagnosis of unavailable panels." },
         { path: "docs/runbooks/teardown.md", title: "Teardown & rebuild", desc: "Inventory, teardown and soft-delete purge procedures." },
       ],
     },

@@ -1,5 +1,10 @@
 # Configuration Reference
 
+The Conversation Inspector and its session/tool/memory/usage endpoints require no
+new feature flag. They expose only capabilities already enabled by the authoritative
+API settings below; disabled library, memory, voice, or telemetry sources return an
+explicit disabled/unavailable state.
+
 AI4IA has too many knobs to leave them scattered across Bicep, azd, Container
 App env, and README prose. This page is the operator map: set the azd value,
 watch the Bicep parameter, and know which runtime setting appears in the app.

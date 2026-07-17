@@ -495,6 +495,7 @@ describe("inline Voice Live chat", () => {
       DEFAULT_VOICE_SETTINGS,
       expect.any(Object),
       false,
+      null,
     );
   });
 
