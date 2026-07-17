@@ -26,7 +26,8 @@ from pydantic import BaseModel
 from ..auth.admin import evaluate_admin, require_admin
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
-from ..metrics.models import ResourceMetricsReport
+from ..metrics.models import OperationalMetricsReport, ResourceMetricsReport
+from ..metrics.operations import OperationsMetricsService
 from ..metrics.service import ResourceMetricsService
 from ..websearch.health import WebSearchHealth, WebSearchHealthReport
 from ..usage.aggregate import (
@@ -287,6 +288,26 @@ async def metrics_resources(
 ) -> ResourceMetricsReport:
     service: ResourceMetricsService = request.app.state.resource_metrics
     return await service.resources()
+
+
+@router.get("/metrics/operations", response_model=OperationalMetricsReport)
+async def metrics_operations(
+    request: Request,
+    minutes: int = Query(default=60, ge=15, le=1440),
+    _admin: AuthenticatedUser = Depends(require_admin),
+) -> OperationalMetricsReport:
+    service: OperationsMetricsService = request.app.state.operations_metrics
+    return await service.operations(window_minutes=minutes)
+
+
+@router.get("/metrics/security", response_model=OperationalMetricsReport)
+async def metrics_security(
+    request: Request,
+    minutes: int = Query(default=60, ge=15, le=1440),
+    _admin: AuthenticatedUser = Depends(require_admin),
+) -> OperationalMetricsReport:
+    service: OperationsMetricsService = request.app.state.operations_metrics
+    return await service.security(window_minutes=minutes)
 
 
 @router.get("/metrics/web-search", response_model=WebSearchHealthReport)

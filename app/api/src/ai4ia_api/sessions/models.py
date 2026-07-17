@@ -121,7 +121,20 @@ class Message(BaseModel):
     # and their outcome, rendered as an expandable panel under the answer. None for
     # plain (no-tool) turns. Display-only, derived from the runtime's step trace.
     steps: list[ActivityStep] | None = None
+    # Present only on the assistant reply produced by /summarize. Repositories
+    # use it to fence and purge replies superseded by clear/newer summaries.
+    summaryVersion: int | None = None
     createdAt: datetime = Field(default_factory=_now)
+
+
+class ToolOverrides(BaseModel):
+    """Chat-level tool changes relative to the selected agent/default baseline."""
+
+    added: list[str] = Field(default_factory=list)
+    removed: list[str] = Field(default_factory=list)
+
+
+MAX_LIBRARY_DOCUMENTS_PER_SESSION = 20
 
 
 class Session(BaseModel):
@@ -130,6 +143,14 @@ class Session(BaseModel):
     title: str = "New chat"
     model: str | None = None
     systemPrompt: str | None = None
+    # Standing conversation policy. All fields are additive so existing Cosmos
+    # records remain valid without a migration.
+    agentName: str | None = None
+    toolOverrides: ToolOverrides = Field(default_factory=ToolOverrides)
+    # None preserves the legacy behavior: all accessible ready library documents
+    # may contribute. An explicit [] opts the conversation out of library context.
+    # A non-empty list is the exact selected-document allowlist.
+    libraryDocumentIds: list[str] | None = None
     # When rolling summarization has
     # folded older turns, ``summary`` holds the compact running digest of every
     # turn UP TO AND INCLUDING ``summarizedThroughMessageId``; turns after that
@@ -139,6 +160,9 @@ class Session(BaseModel):
     # only change what is sent to the model as context, never what is stored.
     summary: str | None = None
     summarizedThroughMessageId: str | None = None
+    # Monotonic generation for summary source state. Clear/reset and successful
+    # summary commits both advance it so stale in-flight summarizers fail closed.
+    summaryVersion: int = 0
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
 

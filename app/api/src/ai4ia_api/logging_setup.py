@@ -130,6 +130,14 @@ def emit_custom_event(name: str, attributes: dict[str, object]) -> None:
         pass
 
 
+def emit_security_block(category: str, reason: str, source: str) -> None:
+    """Emit one bounded, content-free governance denial event."""
+    emit_custom_event(
+        "security_block",
+        {"category": category, "reason": reason, "source": source},
+    )
+
+
 def annotate_current_span(correlation_id: str) -> None:
     """Tag the active request span with the correlation id so App Insights
     traces line up with stdout/Log Analytics. No-op unless telemetry is

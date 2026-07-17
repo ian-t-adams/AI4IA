@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 def _now() -> datetime:
@@ -258,6 +258,7 @@ class UserDocument(BaseModel):
     annotations: list[DocumentAnnotation] = Field(default_factory=list)
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
+    _etag: str | None = PrivateAttr(default=None)
 
     def touch(self) -> None:
         self.updatedAt = _now()

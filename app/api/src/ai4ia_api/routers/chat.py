@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..catalog import DeploymentOption, ModelCatalog, ModelEntry
+from ..conversations.policy import resolve_conversation_policy
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..logging_setup import get_correlation_id
 from ..sessions.models import (
@@ -407,8 +408,7 @@ async def _persist_local_reply(
         agent=agent,
     )
     await repo.add_message(uid, assistant)
-    session.updatedAt = _now()
-    await repo.update_session(session)
+    await repo.touch_session(uid, session.id)
     return assistant
 
 
@@ -662,7 +662,8 @@ async def chat(
     # a synthesized tool agent, which already carries its persona + single tool.
     agent: AgentSpec | None = tool_agent
     if tool_agent is None:
-        if parsed.agent is not None or (
+        selected_agent_name = parsed.agent or session.agentName
+        if selected_agent_name is not None or (
             parsed.command is not None and parsed.command.kind is CommandKind.agents
         ):
             agents = await request.app.state.agent_service.catalog_for(
@@ -672,20 +673,22 @@ async def chat(
         # Resolve an @mention to an agent BEFORE handling commands or the model, so
         # an invalid mention can never fall through to either. Disabled agents are
         # treated as unavailable.
-        if parsed.agent is not None:
-            agent = agents.get(parsed.agent)
+        if selected_agent_name is not None:
+            agent = agents.get(selected_agent_name)
             if agent is None or not agent.enabled:
-                assistant = await _persist_local_reply(
-                    repo=repo,
-                    session=session,
-                    user=user,
-                    user_content=parsed.raw,
-                    reply=(
-                        f"Unknown agent: @{parsed.agent}. "
-                        "Type /agents to see the agents you can mention."
-                    ),
-                )
-                return _local_reply_response(body.sessionId, assistant, body.stream)
+                if parsed.agent is not None:
+                    assistant = await _persist_local_reply(
+                        repo=repo,
+                        session=session,
+                        user=user,
+                        user_content=parsed.raw,
+                        reply=(
+                            f"Unknown agent: @{parsed.agent}. "
+                            "Type /agents to see the agents you can mention."
+                        ),
+                    )
+                    return _local_reply_response(body.sessionId, assistant, body.stream)
+                agent = None
 
         # Slash commands (/help, /clear, /system, /model, /agents, ...) are handled
         # locally and never reach a model. A command takes precedence over an agent
@@ -705,6 +708,23 @@ async def chat(
             )
             return _local_reply_response(body.sessionId, assistant, body.stream)
 
+    policy = await resolve_conversation_policy(
+        request.app.state,
+        user.internal_user_id,
+        session,
+        explicit_agent=parsed.agent,
+    )
+    if tool_agent is None and policy.agent is not None:
+        agent = policy.agent.model_copy(update={"tools": list(policy.effective_tools)})
+    elif tool_agent is None and policy.effective_tools:
+        agent = AgentSpec(
+            name="conversation",
+            displayName="Conversation",
+            description="Conversation-scoped tools",
+            systemPrompt=policy.instructions or "You are a helpful assistant.",
+            tools=list(policy.effective_tools),
+        )
+
     # Determine the system prompt, model, and the content the model actually
     # sees. For an agent turn the persona prompt replaces the session prompt
     # (this turn only) and the mention is stripped from the text.
@@ -723,7 +743,7 @@ async def chat(
                 agent=agent.name,
             )
             return _local_reply_response(body.sessionId, assistant, body.stream)
-        system_prompt = agent.systemPrompt
+        system_prompt = policy.instructions if tool_agent is None else agent.systemPrompt
         # Precedence: explicit body model > session's standing model > agent's
         # preferred model. The agent default is a per-turn fallback only and is
         # never written back to the session.
@@ -889,11 +909,15 @@ async def chat(
     # retrieval is off (default) or the library is empty, this is "".
     library_nonce = secrets.token_hex(4)
     library_block = ""
-    if retrieval is not None:
+    library_tools_enabled = (
+        session.libraryDocumentIds is None or bool(session.libraryDocumentIds)
+    )
+    if retrieval is not None and library_tools_enabled:
         try:
             library_block = await retrieval.context_block(
                 user.internal_user_id, content_for_model, nonce=library_nonce,
                 email=user.email,
+                document_ids=session.libraryDocumentIds,
             )
         except Exception:  # noqa: BLE001 - retrieval must never break a turn
             logger.warning("library context build failed", exc_info=True)
@@ -927,14 +951,21 @@ async def chat(
 
     # Keep the session fresh + auto-title from the first real (non-command) turn.
     has_prior_chat = any(not m.fromCommand for m in prior)
-    session.updatedAt = datetime.now(timezone.utc)
+    session_changes: dict[str, object] = {}
     if session.title == "New chat" and not has_prior_chat:
         session.title = content_for_model[:60]
+        session_changes["title"] = session.title
     # Persist the model choice to the session unless it came purely from the
     # agent's per-turn default (which must not silently rebind the session).
     if not model_from_agent_default:
         session.model = model_id
-    await repo.update_session(session)
+        session_changes["model"] = model_id
+    if session_changes:
+        await repo.patch_session(
+            user.internal_user_id, session.id, session_changes
+        )
+    else:
+        await repo.touch_session(user.internal_user_id, session.id)
 
     # Tool-enabled / orchestrator agent turn: run the gateway-native tool-calling
     # loop governed by the tool-safety registry. The model picks/sequences tools;
@@ -964,12 +995,17 @@ async def chat(
         # user's ready library, bound to this user + the turn's library nonce.
         # Merged alongside delegate_to_agent (disjoint names) so an orchestrator
         # can both delegate and read documents.
-        if retrieval is not None:
+        if retrieval is not None and library_tools_enabled:
             doc_tools, doc_handlers = build_document_capability(
                 service=retrieval,
                 user_id=user.internal_user_id,
                 nonce=library_nonce,
                 email=user.email,
+                allowed_document_ids=(
+                    None
+                    if session.libraryDocumentIds is None
+                    else set(session.libraryDocumentIds)
+                ),
             )
             extra_tools = [*extra_tools, *doc_tools]
             extra_handlers = {**extra_handlers, **doc_handlers}
@@ -983,11 +1019,17 @@ async def chat(
             compute is not None
             and compute_decision is not None
             and compute_decision.offers_compute
+            and library_tools_enabled
         ):
             try:
                 c_tools, c_handlers = compute.build_capability(
                     user_id=user.internal_user_id, nonce=library_nonce,
                     email=user.email,
+                    allowed_document_ids=(
+                        None
+                        if session.libraryDocumentIds is None
+                        else set(session.libraryDocumentIds)
+                    ),
                 )
                 extra_tools = [*extra_tools, *c_tools]
                 extra_handlers = {**extra_handlers, **c_handlers}
@@ -1086,6 +1128,7 @@ async def chat(
             PROCESS_DOCUMENT_TOOL_NAME in agent.tools
             and document_artifacts is not None
             and retrieval is not None
+            and library_tools_enabled
         ):
             try:
                 settings = request.app.state.settings
@@ -1103,6 +1146,11 @@ async def chat(
                     session_id=body.sessionId,
                     settings=settings,
                     sink=doc_sink,
+                    allowed_document_ids=(
+                        None
+                        if session.libraryDocumentIds is None
+                        else set(session.libraryDocumentIds)
+                    ),
                 )
                 extra_tools = [*extra_tools, *p_tools]
                 extra_handlers = {**extra_handlers, **p_handlers}
@@ -1322,6 +1370,7 @@ async def chat(
         compute is not None
         and compute_decision is not None
         and compute_decision.offers_compute
+        and library_tools_enabled
     )
     if (plain_compute_active or web_search is not None) and api == "chat":
         try:
@@ -1332,15 +1381,25 @@ async def chat(
                 c_tools, c_handlers = compute.build_capability(  # pyright: ignore[reportOptionalMemberAccess]
                     user_id=user.internal_user_id, nonce=library_nonce,
                     email=user.email,
+                    allowed_document_ids=(
+                        None
+                        if session.libraryDocumentIds is None
+                        else set(session.libraryDocumentIds)
+                    ),
                 )
                 plain_tools = [*plain_tools, *c_tools]
                 plain_handlers = {**plain_handlers, **c_handlers}
-            if retrieval is not None:
+            if retrieval is not None and library_tools_enabled:
                 doc_tools, doc_handlers = build_document_capability(
                     service=retrieval,
                     user_id=user.internal_user_id,
                     nonce=library_nonce,
                     email=user.email,
+                    allowed_document_ids=(
+                        None
+                        if session.libraryDocumentIds is None
+                        else set(session.libraryDocumentIds)
+                    ),
                 )
                 plain_tools = [*plain_tools, *doc_tools]
                 plain_handlers = {**plain_handlers, **doc_handlers}

@@ -90,3 +90,25 @@ class CosmosUsageRepository:
             ]
         except CosmosResourceNotFoundError:
             return []
+
+    async def list_for_session(
+        self, user_id: str, session_id: str, *, limit: int
+    ) -> list[UsageRecord]:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        query = (
+            f"SELECT TOP {max(1, int(limit))} * FROM c "
+            "WHERE c.userId = @uid AND c.sessionId = @sid "
+            "ORDER BY c.createdAt DESC"
+        )
+        params = [
+            {"name": "@uid", "value": user_id},
+            {"name": "@sid", "value": session_id},
+        ]
+        try:
+            return [
+                UsageRecord.model_validate(doc)
+                async for doc in self._usage.query_items(query=query, parameters=params)
+            ]
+        except CosmosResourceNotFoundError:
+            return []

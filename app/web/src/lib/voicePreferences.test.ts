@@ -60,7 +60,7 @@ describe("normalizeVoicePreferences", () => {
     expect(normalizeVoicePreferences(valid)).toEqual(valid);
   });
 
-  it("migrates legacy v1 data into the v3 shape deterministically", () => {
+  it("migrates legacy v1 data into the v4 shape and drops instructions", () => {
     const storage = fakeStorage({
       "ai4ia.voiceLive.prefs.v1": JSON.stringify({
         explicitAgent: "analyst",
@@ -68,7 +68,6 @@ describe("normalizeVoicePreferences", () => {
         voice: "cedar",
         tools: true,
         settings: {
-          instructions: "Keep it brief.",
           temperature: 0.5,
           vadType: "semantic_vad",
           transcriptionModel: "whisper-1",
@@ -84,7 +83,6 @@ describe("normalizeVoicePreferences", () => {
       voice: "cedar",
       tools: true,
       settings: {
-        instructions: "Keep it brief.",
         temperature: 0.5,
         vadType: "semantic_vad",
         vadThreshold: null,
@@ -181,12 +179,12 @@ describe("normalizeVoiceSessionSettings", () => {
     expect(normalizeVoiceSessionSettings({ language: 7 }).language).toBe("");
   });
 
-  it("falls back to default instructions/transcription model when blank", () => {
+  it("drops legacy instructions and falls back to the transcription model", () => {
     const result = normalizeVoiceSessionSettings({
       instructions: "   ",
       transcriptionModel: "",
     });
-    expect(result.instructions).toBe(DEFAULT_VOICE_SETTINGS.instructions);
+    expect(result).not.toHaveProperty("instructions");
     expect(result.transcriptionModel).toBe(DEFAULT_VOICE_SETTINGS.transcriptionModel);
   });
 });

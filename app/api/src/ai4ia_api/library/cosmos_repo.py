@@ -17,6 +17,8 @@ Ownership is enforced by the ``/userId`` partition *and* re-checked on read.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 
 from .hashing import dedupe_key
@@ -54,9 +56,16 @@ class CosmosDocumentLibraryRepository:
     def _to_doc(model: UserDocument | Analyzer) -> dict[str, Any]:
         return model.model_dump(mode="json")
 
+    @staticmethod
+    def _from_document(item: dict[str, Any]) -> UserDocument:
+        document = UserDocument.model_validate(item)
+        document._etag = item.get("_etag")
+        return document
+
     # --- documents ---
     async def create_document(self, document: UserDocument) -> UserDocument:
-        await self._docs.create_item(self._to_doc(document))
+        created = await self._docs.create_item(self._to_doc(document))
+        document._etag = created.get("_etag")
         return document
 
     async def get_document(self, user_id: str, document_id: str) -> UserDocument:
@@ -66,7 +75,7 @@ class CosmosDocumentLibraryRepository:
             item = await self._docs.read_item(item=document_id, partition_key=user_id)
         except CosmosResourceNotFoundError as exc:
             raise DocumentNotFoundError(document_id) from exc
-        doc = UserDocument.model_validate(item)
+        doc = self._from_document(item)
         if doc.userId != user_id:
             raise DocumentNotFoundError(document_id)
         return doc
@@ -75,7 +84,7 @@ class CosmosDocumentLibraryRepository:
         query = "SELECT * FROM c WHERE c.userId = @uid ORDER BY c.createdAt DESC"
         params = [{"name": "@uid", "value": user_id}]
         return [
-            UserDocument.model_validate(item)
+            self._from_document(item)
             async for item in self._docs.query_items(query=query, parameters=params)
         ]
 
@@ -97,7 +106,7 @@ class CosmosDocumentLibraryRepository:
             {"name": "@email", "value": principal},
         ]
         return [
-            UserDocument.model_validate(item)
+            self._from_document(item)
             async for item in self._docs.query_items(query=query, parameters=params)
         ]
 
@@ -114,7 +123,7 @@ class CosmosDocumentLibraryRepository:
         query = "SELECT * FROM c WHERE c.id = @id"
         params = [{"name": "@id", "value": document_id}]
         async for item in self._docs.query_items(query=query, parameters=params):
-            return UserDocument.model_validate(item)
+            return self._from_document(item)
         return None
 
     async def list_by_status(
@@ -133,7 +142,7 @@ class CosmosDocumentLibraryRepository:
         query = "SELECT * FROM c WHERE ARRAY_CONTAINS(@statuses, c.status)"
         params = [{"name": "@statuses", "value": values}]
         return [
-            UserDocument.model_validate(item)
+            self._from_document(item)
             async for item in self._docs.query_items(query=query, parameters=params)
         ]
 
@@ -176,6 +185,65 @@ class CosmosDocumentLibraryRepository:
             # purposes so the caller does not overwrite a newer state.
             raise DocumentNotFoundError(document.id) from exc
         return document
+
+    async def patch_ingest_fields(
+        self,
+        document: UserDocument,
+        changes: dict[str, object],
+        *,
+        require_status: DocumentStatus | None = None,
+    ) -> UserDocument:
+        from azure.core import MatchConditions
+        from azure.cosmos.exceptions import (
+            CosmosAccessConditionFailedError,
+            CosmosResourceNotFoundError,
+        )
+
+        etag = document._etag
+        for _attempt in range(3):
+            operations = [
+                {
+                    "op": "set",
+                    "path": f"/{field_name}",
+                    "value": value.value if isinstance(value, Enum) else value,
+                }
+                for field_name, value in changes.items()
+            ]
+            operations.append(
+                {
+                    "op": "set",
+                    "path": "/updatedAt",
+                    "value": datetime.now(timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                }
+            )
+            try:
+                updated = await self._docs.patch_item(
+                    item=document.id,
+                    partition_key=document.userId,
+                    patch_operations=operations,
+                    etag=etag,
+                    match_condition=MatchConditions.IfNotModified,
+                )
+                return self._from_document(updated)
+            except CosmosResourceNotFoundError as exc:
+                raise DocumentNotFoundError(document.id) from exc
+            except CosmosAccessConditionFailedError:
+                try:
+                    latest = await self._docs.read_item(
+                        item=document.id, partition_key=document.userId
+                    )
+                except CosmosResourceNotFoundError as exc:
+                    raise DocumentNotFoundError(document.id) from exc
+                latest_document = self._from_document(latest)
+                if (
+                    require_status is not None
+                    and latest_document.status != require_status
+                ):
+                    return latest_document
+                etag = latest.get("_etag")
+        raise RuntimeError("document ingest manifest update conflicted repeatedly")
 
     async def delete_document(self, user_id: str, document_id: str) -> None:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError

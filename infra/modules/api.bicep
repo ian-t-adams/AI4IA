@@ -195,6 +195,9 @@ param searchEndpoint string = ''
 @description('ARM resource id of the Azure AI Search service for the admin Search resource panel (empty when search is not deployed).')
 param metricsSearchResourceId string = ''
 
+@description('Existing Log Analytics workspace customer id (GUID) for fixed admin operations queries.')
+param logAnalyticsWorkspaceCustomerId string = ''
+
 @description('ARM resource id of the Postgres flexible server for the admin Postgres resource panel (empty when Postgres is not deployed).')
 param metricsPostgresResourceId string = ''
 
@@ -604,6 +607,17 @@ var resourceMetricsEnv = concat(
   ]
 )
 
+var logAnalyticsEnv = empty(logAnalyticsWorkspaceCustomerId) ? [] : [
+  {
+    name: 'AI4IA_LOG_ANALYTICS_WORKSPACE_ID'
+    value: logAnalyticsWorkspaceCustomerId
+  }
+  {
+    name: 'AI4IA_LOG_ANALYTICS_WORKSPACE_RESOURCE_ID'
+    value: logAnalyticsWorkspaceId
+  }
+]
+
 // Custom tools / BYO MCP. Default OFF: nothing is emitted, so the api
 // keeps the feature dormant (404). When enabled, emit the flag and — for durable
 // connection secrets (12B) — the Key Vault URI; the api MI holds Secrets Officer
@@ -694,7 +708,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv)
+], gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName

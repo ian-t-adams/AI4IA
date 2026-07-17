@@ -25,7 +25,12 @@ from ai4ia_api.library.blob_store import InMemoryBlobStore, document_prefix
 from ai4ia_api.library.doc_chunks import InMemoryDocChunkStore
 from ai4ia_api.library.ingest import DocumentIngestor
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
-from ai4ia_api.library.models import DocumentStatus, UserDocument
+from ai4ia_api.library.models import (
+    DocumentAnnotation,
+    DocumentStatus,
+    UserDocument,
+    Visibility,
+)
 from ai4ia_api.library.repository import DocumentNotFoundError
 from tests.conftest import make_settings
 
@@ -174,7 +179,12 @@ async def test_delete_during_persist_does_not_resurrect():
     assert _blob_keys(blob, "u1", doc_id) == []
 
 
-async def test_cancel_enrich_on_delete_does_not_resurrect():
+async def test_cancel_enrich_on_delete_does_not_resurrect(monkeypatch):
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.library.ingest.emit_custom_event",
+        lambda name, attributes: events.append((name, attributes)),
+    )
     """Fix 3: a tracked enrich blocked in analyze is cancelled on delete; the
     finally path writes-then-detects the deletion and purges, never resurrecting."""
     library = InMemoryDocumentLibraryRepository()
@@ -205,6 +215,63 @@ async def test_cancel_enrich_on_delete_does_not_resurrect():
         await library.get_document("u1", doc_id)
     assert await chunks.search("u1", _QUERY, top_k=50) == []
     assert _blob_keys(blob, "u1", doc_id) == []
+    assert any(
+        name == "document_ingest_terminal" and attributes["status"] == "cancelled"
+        for name, attributes in events
+    )
+
+
+async def test_enrich_preserves_revoked_acl_and_owner_metadata(monkeypatch):
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.library.ingest.emit_custom_event",
+        lambda name, attributes: events.append((name, attributes)),
+    )
+    library = InMemoryDocumentLibraryRepository()
+    cu = _BlockingCU()
+    ingestor = _build(
+        cu=cu,
+        embedder=_Embedder(),
+        chunks=InMemoryDocChunkStore(expected_dim=3),
+        library=library,
+    )
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"BYTES"
+    )
+    shared = await library.get_document("u1", stored.document.id)
+    shared.visibility = Visibility.shared
+    shared.acl = ["bob@example.com"]
+    await library.update_document(shared)
+
+    task = asyncio.create_task(
+        ingestor.enrich(
+            user_id="u1",
+            document_id=stored.document.id,
+            data=b"BYTES",
+            content_type="application/pdf",
+        )
+    )
+    await asyncio.wait_for(cu.started.wait(), timeout=5)
+    revoked = await library.get_document("u1", stored.document.id)
+    revoked.visibility = Visibility.private
+    revoked.acl = []
+    revoked.annotations.append(DocumentAnnotation(body="owner note"))
+    await library.update_document(revoked)
+    cu.release.set()
+    await task
+
+    final = await library.get_document("u1", stored.document.id)
+    assert final.status == DocumentStatus.ready
+    assert final.visibility == Visibility.private
+    assert final.acl == []
+    assert [annotation.body for annotation in final.annotations] == ["owner note"]
+    terminal = [
+        attributes
+        for name, attributes in events
+        if name == "document_ingest_terminal"
+    ][-1]
+    assert terminal["status"] == "ready"
+    assert terminal["persistenceOutcome"] == "committed"
 
 
 async def test_schedule_enrich_noop_when_cu_disabled():
@@ -336,6 +403,62 @@ async def test_recover_interrupted_purges_partial_artifacts():
     # The partial artifacts are gone — no orphan chunks/blobs under the failed doc.
     assert _blob_keys(blob, "u1", doc.id) == []
     assert await chunks.search("u1", _QUERY, top_k=50) == []
+
+
+async def test_recovery_preserves_concurrent_access_and_owner_metadata():
+    class RecoveryRaceRepository(InMemoryDocumentLibraryRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.interleaved = False
+
+        async def patch_ingest_fields(self, document, changes, **kwargs):
+            if not self.interleaved:
+                self.interleaved = True
+                latest = await self.get_document(document.userId, document.id)
+                latest.visibility = Visibility.private
+                latest.acl = []
+                latest.annotations.append(DocumentAnnotation(body="keep"))
+                latest.sessionLinks.append("session-new")
+                await self.update_document(latest)
+            return await super().patch_ingest_fields(document, changes, **kwargs)
+
+    library = RecoveryRaceRepository()
+    stuck = await library.create_document(
+        UserDocument(
+            userId="u1",
+            filename="x.pdf",
+            status=DocumentStatus.analyzing,
+            visibility=Visibility.shared,
+            acl=["bob@example.com"],
+        )
+    )
+    ingestor = _build(cu=_CU(""), library=library)
+    assert await ingestor.recover_interrupted() == 1
+    final = await library.get_document("u1", stuck.id)
+    assert final.status == DocumentStatus.failed
+    assert final.visibility == Visibility.private
+    assert final.acl == []
+    assert [annotation.body for annotation in final.annotations] == ["keep"]
+    assert final.sessionLinks == ["session-new"]
+
+
+async def test_recovery_skips_document_no_longer_analyzing():
+    class StatusRaceRepository(InMemoryDocumentLibraryRepository):
+        async def patch_ingest_fields(self, document, changes, **kwargs):
+            latest = await self.get_document(document.userId, document.id)
+            latest.status = DocumentStatus.ready
+            await self.update_document(latest)
+            return await super().patch_ingest_fields(document, changes, **kwargs)
+
+    library = StatusRaceRepository()
+    stuck = await library.create_document(
+        UserDocument(userId="u1", filename="x.pdf", status=DocumentStatus.analyzing)
+    )
+    ingestor = _build(cu=_CU(""), library=library)
+    assert await ingestor.recover_interrupted() == 0
+    assert (
+        await library.get_document("u1", stuck.id)
+    ).status == DocumentStatus.ready
 
 
 async def test_chunk_cap_truncates_and_batches():

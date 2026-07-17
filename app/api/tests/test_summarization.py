@@ -9,6 +9,7 @@ turns, injects the summary, and ALWAYS keeps the full transcript in storage.
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from ai4ia_api.agents.summarization import SummarizationService, build_summarization_service
 from ai4ia_api.sessions.models import Message, MessageRole, MessageStatus, Session
@@ -32,8 +33,21 @@ class _FakeRepo:
     def __init__(self) -> None:
         self.updates = 0
 
-    async def update_session(self, session) -> None:
+    async def commit_summary_if_version(
+        self,
+        user_id,
+        session_id,
+        *,
+        expected_version,
+        summary,
+        summarized_through_message_id,
+    ):
         self.updates += 1
+        return SimpleNamespace(
+            summary=summary,
+            summarizedThroughMessageId=summarized_through_message_id,
+            summaryVersion=expected_version + 1,
+        )
 
 
 def _msg(content: str, role: MessageRole = MessageRole.user, **over) -> Message:

@@ -16,10 +16,12 @@ export function ModelPicker({
   models,
   value,
   onChange,
+  disabled = false,
 }: {
   models: ModelEntry[];
   value: string | null;
   onChange: (modelId: string) => void;
+  disabled?: boolean;
 }) {
   // Only conversational models belong in the chat picker. Capability models
   // (image, tts, transcription, embedding, …) are reached through their own
@@ -36,6 +38,7 @@ export function ModelPicker({
       <span style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}>Model</span>
       <select
         value={value ?? ""}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
         style={{ padding: "8px 10px", minWidth: 220 }}
       >

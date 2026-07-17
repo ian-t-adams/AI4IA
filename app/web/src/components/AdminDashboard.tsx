@@ -9,7 +9,7 @@
 //     (Promise.allSettled) so one failing panel never blanks the page.
 // All display logic lives in pure helpers in lib/admin.ts (unit-tested); this file
 // is presentation only. Charts are inline SVG (no charting dependency).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 import {
@@ -19,6 +19,8 @@ import {
   type DayUsageBucket,
   type DimensionBucket,
   type ModelUsageBucket,
+  type OperationalMetricsReport,
+  type OperationalPanel,
   type ResourcePanel,
   type UserAgentBucket,
   type WebSearchHealthReport,
@@ -33,6 +35,8 @@ import {
   fetchByUser,
   fetchDistributions,
   fetchResources,
+  fetchOperations,
+  fetchSecurityMetrics,
   fetchSummary,
   fetchUserAgents,
   fetchWebSearchHealth,
@@ -83,6 +87,9 @@ interface DashboardData {
   byStatus: DimensionBucket[];
   resources: ResourcePanel[];
   webSearch: WebSearchHealthReport | null;
+  operations: OperationalMetricsReport | null;
+  security: OperationalMetricsReport | null;
+  loadErrors: string[];
   truncated: boolean;
 }
 
@@ -99,6 +106,9 @@ const EMPTY: DashboardData = {
   byStatus: [],
   resources: [],
   webSearch: null,
+  operations: null,
+  security: null,
+  loadErrors: [],
   truncated: false,
 };
 
@@ -110,6 +120,103 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub?: s
       {sub ? <div style={{ ...muted, marginTop: 2 }}>{sub}</div> : null}
     </div>
   );
+}
+
+function OperationalPanels({
+  report,
+  emptyLabel,
+}: {
+  report: OperationalMetricsReport | null;
+  emptyLabel: string;
+}) {
+  if (!report) return <div style={muted}>{emptyLabel}</div>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {report.panels.map((panel: OperationalPanel) => {
+        const columns = Array.from(
+          new Set(panel.rows.flatMap((row) => Object.keys(row))),
+        ).slice(0, 12);
+        return (
+          <article key={panel.key} style={{ borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+              <strong>{panel.displayName}</strong>
+              <span style={muted}>{panel.status} · {panel.source}</span>
+            </div>
+            <p style={{ ...muted, margin: "4px 0 8px" }}>
+              {panel.sourceTimestamp
+                ? `Source ${new Date(panel.sourceTimestamp).toLocaleString()}`
+                : "No source timestamp"}
+              {panel.lagSeconds != null ? ` · lag ${panel.lagSeconds}s` : ""}
+              {panel.reason ? ` · ${panel.reason}` : ""}
+            </p>
+            {panel.rows.length ? (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.78em" }}>
+                  <thead>
+                    <tr>
+                      {columns.map((column) => (
+                        <th key={column} style={{ textAlign: "left", padding: "4px 6px" }}>
+                          {column}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {panel.rows.slice(0, 100).map((row, index) => (
+                      <tr key={`${panel.key}-${index}`} style={{ borderTop: "1px solid var(--border)" }}>
+                        {columns.map((column) => (
+                          <td key={column} style={{ padding: "4px 6px" }}>
+                            {formatOperationalValue(panel.key, row, column)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={muted}>No matching events; this is not a zero value.</div>
+            )}
+          </article>
+        );
+      })}
+      {report.diagnosticsUrl ? (
+        <a href={report.diagnosticsUrl} target="_blank" rel="noopener noreferrer">
+          Open Azure diagnostics (new tab)
+        </a>
+      ) : null}
+    </div>
+  );
+}
+
+function formatOperationalValue(
+  panelKey: string,
+  row: Record<string, unknown>,
+  column: string,
+): string {
+  if (panelKey !== "usage") {
+    return row[column] == null ? "—" : String(row[column]);
+  }
+  const requests = Number(row.requests ?? 0);
+  if (column === "tokens") {
+    const tokens = Number(row.tokens ?? 0);
+    const unknown = Number(row.unknownUsage ?? 0);
+    if (requests > 0 && unknown >= requests && tokens === 0) return "Unknown";
+    if (unknown > 0) {
+      return `Known subtotal ${formatTokens(tokens)} (${Math.max(0, requests - unknown)}/${requests} requests reported)`;
+    }
+    return formatTokens(tokens);
+  }
+  if (column === "knownCostUsd") {
+    const cost = Number(row.knownCostUsd ?? 0);
+    const unknown = Number(row.unknownCost ?? 0);
+    if (requests > 0 && unknown >= requests && cost === 0) return "Unknown";
+    const formatted = `$${cost.toFixed(4)}`;
+    return unknown > 0
+      ? `Known subtotal ${formatted} (${Math.max(0, requests - unknown)}/${requests} requests reported)`
+      : formatted;
+  }
+  return row[column] == null ? "—" : String(row[column]);
 }
 
 function ModelBars({ items }: { items: ModelUsageBucket[] }) {
@@ -154,7 +261,14 @@ function DayTrend({ items }: { items: DayUsageBucket[] }) {
   const peak = Math.max(...values, 0);
   return (
     <div>
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" role="img" aria-label="Tokens per day">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        width="100%"
+        height={H}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`Tokens per day from ${items[0]?.day} to ${items[items.length - 1]?.day}; peak ${formatTokens(peak)} tokens per day`}
+      >
         <polyline points={points} fill="none" stroke="var(--accent)" strokeWidth={2} />
       </svg>
       <div style={{ display: "flex", justifyContent: "space-between", ...muted }}>
@@ -282,11 +396,11 @@ function UserAgents({ rows, identified }: { rows: UserAgentBucket[]; identified:
             const errors = errorLabel(r.erroredRequests);
             return (
               <tr key={`${g.userId}:${r.agent}`} style={{ borderTop: "1px solid var(--border)" }}>
-                <td style={{ padding: "4px 8px" }}>
-                  {i === 0 ? (
+                {i === 0 ? (
+                  <td rowSpan={g.rows.length} style={{ padding: "4px 8px", verticalAlign: "top" }}>
                     <UserCell displayName={g.displayName} email={g.email} identified={identified} userId={g.userId} />
-                  ) : null}
-                </td>
+                  </td>
+                ) : null}
                 <td style={{ padding: "4px 8px" }}>{r.agent}</td>
                 <td style={{ padding: "4px 8px", textAlign: "right" }}>{formatTokens(r.totalTokens)}</td>
                 <td style={{ padding: "4px 8px", textAlign: "right" }}>{r.requests}</td>
@@ -503,6 +617,8 @@ export function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<DashboardData>(EMPTY);
+  const loadGenerationRef = useRef(0);
+  const loadAbortRef = useRef<AbortController | null>(null);
   const [identifyUsers, setIdentifyUsers] = useState(() => {
     try {
       return window.localStorage.getItem(IDENTITY_STORAGE_KEY) === "true";
@@ -535,20 +651,40 @@ export function AdminDashboard() {
   }, [identifyUsers]);
 
   const load = useCallback(async (window: number, identify: boolean) => {
+    const generation = ++loadGenerationRef.current;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
     setLoading(true);
+    setData(EMPTY);
     setError(null);
-    const [summary, byModel, byDay, byUser, agents, userAgents, distributions, resources, webSearch] =
+    const [
+      summary,
+      byModel,
+      byDay,
+      byUser,
+      agents,
+      userAgents,
+      distributions,
+      resources,
+      webSearch,
+      operations,
+      security,
+    ] =
       await Promise.allSettled([
-        fetchSummary(window),
-        fetchByModel(window),
-        fetchByDay(window),
-        fetchByUser(window, 20, 0, identify),
-        fetchAgents(window),
-        fetchUserAgents(window, identify),
-        fetchDistributions(window),
-        fetchResources(),
-        fetchWebSearchHealth(),
+        fetchSummary(window, controller.signal),
+        fetchByModel(window, controller.signal),
+        fetchByDay(window, controller.signal),
+        fetchByUser(window, 20, 0, identify, controller.signal),
+        fetchAgents(window, controller.signal),
+        fetchUserAgents(window, identify, controller.signal),
+        fetchDistributions(window, controller.signal),
+        fetchResources(controller.signal),
+        fetchWebSearchHealth(controller.signal),
+        fetchOperations(60, controller.signal),
+        fetchSecurityMetrics(60, controller.signal),
       ]);
+    if (controller.signal.aborted || generation !== loadGenerationRef.current) return;
     const next: DashboardData = { ...EMPTY };
     if (summary.status === "fulfilled") next.summary = summary.value;
     if (byModel.status === "fulfilled") next.byModel = byModel.value.byModel;
@@ -568,10 +704,32 @@ export function AdminDashboard() {
     }
     if (resources.status === "fulfilled") next.resources = resources.value.panels;
     if (webSearch.status === "fulfilled") next.webSearch = webSearch.value;
+    if (operations.status === "fulfilled") next.operations = operations.value;
+    if (security.status === "fulfilled") next.security = security.value;
     if (summary.status === "fulfilled") next.truncated = next.truncated || summary.value.truncated;
-    if (summary.status === "rejected") {
-      setError("Failed to load usage summary. Some panels may be empty.");
-    }
+    const namedResults = [
+      ["usage summary", summary],
+      ["model usage", byModel],
+      ["daily usage", byDay],
+      ["users", byUser],
+      ["agents", agents],
+      ["user agents", userAgents],
+      ["distributions", distributions],
+      ["resources", resources],
+      ["web search", webSearch],
+      ["operations", operations],
+      ["security", security],
+    ] as const;
+    next.loadErrors = namedResults
+      .filter(([, result]) => result.status === "rejected")
+      .map(([name, result]) =>
+        `${name}: ${
+          result.status === "rejected" && result.reason instanceof Error
+            ? result.reason.message
+            : "unavailable"
+        }`,
+      );
+    if (next.loadErrors.length) setError("Some admin data sources failed to load.");
     setData(next);
     setLoading(false);
   }, []);
@@ -579,6 +737,7 @@ export function AdminDashboard() {
   useEffect(() => {
     if (phase !== "ready") return;
     void load(days, identifyUsers);
+    return () => loadAbortRef.current?.abort();
   }, [phase, days, identifyUsers, load]);
 
   if (phase === "checking") {
@@ -647,6 +806,9 @@ export function AdminDashboard() {
       {error ? (
         <div role="alert" style={{ ...card, borderColor: "var(--danger)", marginBottom: 16, color: "var(--danger)" }}>
           {error}
+          {data.loadErrors.length ? (
+            <ul>{data.loadErrors.map((message) => <li key={message}>{message}</li>)}</ul>
+          ) : null}
         </div>
       ) : null}
       {data.truncated ? (
@@ -657,6 +819,17 @@ export function AdminDashboard() {
         </div>
       ) : null}
 
+      {loading ? (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-label={`Loading dashboard data for the last ${days} days`}
+          style={{ ...card, ...muted }}
+        >
+          Loading dashboard data for the last {days} days…
+        </div>
+      ) : (
+      <>
       <div
         style={{
           display: "grid",
@@ -665,25 +838,57 @@ export function AdminDashboard() {
           marginBottom: 20,
         }}
       >
-        <StatCard label="Active users" value={formatCompact(s?.activeUsers ?? 0)} />
+        <StatCard label="Active users" value={s ? formatCompact(s.activeUsers) : "—"} />
         <StatCard
           label="Tokens"
-          value={formatTokens(s?.totalTokens ?? 0)}
-          sub={`${formatTokens(s?.totalPromptTokens ?? 0)} in · ${formatTokens(s?.totalCompletionTokens ?? 0)} out`}
+          value={
+            s
+              ? s.totalRequests > 0 &&
+                s.unknownUsageRequests >= s.totalRequests &&
+                s.totalTokens === 0
+                ? "Unknown"
+                : s.unknownUsageRequests > 0
+                  ? `Known subtotal ${formatTokens(s.totalTokens)}`
+                  : formatTokens(s.totalTokens)
+              : "—"
+          }
+          sub={
+            s
+              ? s.unknownUsageRequests > 0
+                ? `${Math.max(0, s.totalRequests - s.unknownUsageRequests)}/${s.totalRequests} requests reported`
+                : `${formatTokens(s.totalPromptTokens)} in · ${formatTokens(s.totalCompletionTokens)} out`
+              : "Usage unavailable"
+          }
         />
-        <StatCard label="Est. cost" value={formatUsd(s?.totalCostMicroUsd ?? 0)} sub={s?.currency ?? "USD"} />
+        <StatCard
+          label="Cost"
+          value={
+            s
+              ? s.totalRequests > 0 &&
+                s.costUnknownRequests >= s.totalRequests &&
+                s.totalCostMicroUsd === 0
+                ? "Unknown"
+                : s.costUnknownRequests > 0
+                  ? `Known subtotal ${formatUsd(s.totalCostMicroUsd)}`
+                  : formatUsd(s.totalCostMicroUsd)
+              : "—"
+          }
+          sub={
+            s?.costUnknownRequests
+              ? `${s.costUnknownRequests} request${s.costUnknownRequests === 1 ? "" : "s"} unknown`
+              : s?.currency ?? "USD"
+          }
+        />
         <StatCard
           label="Requests"
-          value={formatCompact(s?.totalRequests ?? 0)}
-          sub={`${formatPercent(s?.errorRate ?? 0)} errors`}
+          value={s ? formatCompact(s.totalRequests) : "—"}
+          sub={s ? `${formatPercent(s.errorRate)} errors` : "Status unavailable"}
         />
         <StatCard
           label="Models / agents"
-          value={`${s?.distinctModels ?? 0} / ${s?.distinctAgents ?? 0}`}
+          value={s ? `${s.distinctModels} / ${s.distinctAgents}` : "—"}
         />
       </div>
-
-      {loading ? <div style={muted}>Loading…</div> : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 20 }}>
         <section style={card}>
@@ -733,7 +938,27 @@ export function AdminDashboard() {
 
         <section style={card}>
           <h2 style={sectionTitle}>Platform resources</h2>
+          <p style={{ ...muted, margin: "-4px 0 12px" }}>
+            Live Azure Monitor values for the last hour. Unavailable or — means the
+            source is not configured, fresh, or reporting; it never means zero.
+          </p>
           <ResourcePanels panels={data.resources} />
+        </section>
+
+        <section style={card}>
+          <h2 style={sectionTitle}>Operations and latency</h2>
+          <OperationalPanels
+            report={data.operations}
+            emptyLabel="Operations telemetry is unavailable."
+          />
+        </section>
+
+        <section style={card}>
+          <h2 style={sectionTitle}>Security and governance blocks</h2>
+          <OperationalPanels
+            report={data.security}
+            emptyLabel="Security telemetry is unavailable."
+          />
         </section>
 
         <section style={card}>
@@ -745,6 +970,8 @@ export function AdminDashboard() {
           <WebSearchHealthPanel report={data.webSearch} />
         </section>
       </div>
+      </>
+      )}
     </Shell>
   );
 }

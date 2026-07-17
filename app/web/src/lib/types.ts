@@ -41,6 +41,10 @@ export interface Session {
   title: string;
   model: string | null;
   systemPrompt: string | null;
+  agentName: string | null;
+  toolOverrides: { added: string[]; removed: string[] };
+  libraryDocumentIds: string[] | null;
+  summaryVersion?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -183,6 +187,32 @@ export interface ChatParams {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+}
+
+export interface ToolCatalogItem {
+  name: string;
+  label: string;
+  description: string;
+  source: string;
+  risk: "safe" | "external" | "destructive" | null;
+  requiresApproval: boolean | null;
+  scopes: string[] | null;
+  available: boolean;
+  selectable: boolean;
+  detail?: string | null;
+  ownership: string;
+  typed: boolean | null;
+  voice: boolean | null;
+}
+
+export interface AttachmentCapabilities {
+  ingestPath: "library" | "session";
+  maxBytes: number;
+  maxPerUserDocuments: number | null;
+  maxPerSessionDocuments: number;
+  extensions: string[];
+  mimeTypes: string[];
+  modalities: string[];
 }
 
 // --- Image generation ---

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { AdminDashboard } from "./AdminDashboard";
 
@@ -20,6 +20,8 @@ vi.mock("@/lib/admin", async (importOriginal) => {
     fetchDistributions: vi.fn(),
     fetchResources: vi.fn(),
     fetchWebSearchHealth: vi.fn(),
+    fetchOperations: vi.fn(),
+    fetchSecurityMetrics: vi.fn(),
   };
 });
 
@@ -33,6 +35,8 @@ import {
   fetchSummary,
   fetchUserAgents,
   fetchWebSearchHealth,
+  fetchOperations,
+  fetchSecurityMetrics,
   fetchWhoAmI,
 } from "@/lib/admin";
 
@@ -143,6 +147,38 @@ beforeEach(() => {
     byCategory: [{ category: "auth", count: 5 }],
     recent: [{ category: "auth", detail: "401 not entitled", at: "2024-06-30T00:00:00Z" }],
   });
+  vi.mocked(fetchOperations).mockResolvedValue({
+    generatedAt: "2024-06-30T00:00:00Z",
+    windowMinutes: 60,
+    diagnosticsUrl: "https://portal.azure.com/#resource/test/logs",
+    panels: [
+      {
+        key: "requests",
+        displayName: "Requests and route latency",
+        status: "ok",
+        source: "Application Insights requests",
+        generatedAt: "2024-06-30T00:00:00Z",
+        sourceTimestamp: "2024-06-30T00:00:00Z",
+        lagSeconds: 5,
+        rows: [{ route: "POST /api/chat", requests: 4, p95Ms: 120 }],
+      },
+    ],
+  });
+  vi.mocked(fetchSecurityMetrics).mockResolvedValue({
+    generatedAt: "2024-06-30T00:00:00Z",
+    windowMinutes: 60,
+    panels: [
+      {
+        key: "security",
+        displayName: "Security and governance blocks",
+        status: "partial",
+        source: "Application Insights requests/traces",
+        generatedAt: "2024-06-30T00:00:00Z",
+        reason: "No matching telemetry in this window.",
+        rows: [],
+      },
+    ],
+  });
 });
 
 afterEach(() => {
@@ -162,6 +198,31 @@ async function panelByHeading(name: string): Promise<HTMLElement> {
 }
 
 describe("AdminDashboard new analytics panels", () => {
+  it("renders real operations freshness and explicit no-data states", async () => {
+    render(<AdminDashboard />);
+    const operations = await panelByHeading("Operations and latency");
+    expect(
+      await within(operations).findByText("Requests and route latency"),
+    ).toBeInTheDocument();
+    expect(within(operations).getByText("120")).toBeInTheDocument();
+    const security = await panelByHeading("Security and governance blocks");
+    expect(
+      within(security).getByText(/No matching telemetry/),
+    ).toBeInTheDocument();
+    expect(
+      within(security).getByText(/not a zero value/),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces rejected data sources instead of rendering silent empties", async () => {
+    vi.mocked(fetchOperations).mockRejectedValueOnce(new Error("workspace denied"));
+    render(<AdminDashboard />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Some admin data sources failed to load.",
+    );
+    expect(screen.getByText(/operations: workspace denied/)).toBeInTheDocument();
+  });
+
   it("renders the agent error count in the danger colour", async () => {
     render(<AdminDashboard />);
     const agents = await panelByHeading("Agents in use");
@@ -215,8 +276,20 @@ describe("AdminDashboard new analytics panels", () => {
     expect(within(panel).queryByText("Ada Lovelace")).toBeNull();
     expect(within(panel).queryByText("ada@example.com")).toBeNull();
     expect(screen.getByRole("checkbox", { name: "Show real identities" })).not.toBeChecked();
-    await waitFor(() => expect(fetchByUser).toHaveBeenLastCalledWith(30, 20, 0, false));
-    expect(fetchUserAgents).toHaveBeenLastCalledWith(30, false);
+    await waitFor(() =>
+      expect(fetchByUser).toHaveBeenLastCalledWith(
+        30,
+        20,
+        0,
+        false,
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(fetchUserAgents).toHaveBeenLastCalledWith(
+      30,
+      false,
+      expect.any(AbortSignal),
+    );
   });
 
   it("refetches and persists when real identities are enabled", async () => {
@@ -225,11 +298,154 @@ describe("AdminDashboard new analytics panels", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Show real identities" }));
 
-    await waitFor(() => expect(fetchByUser).toHaveBeenLastCalledWith(30, 20, 0, true));
-    expect(fetchUserAgents).toHaveBeenLastCalledWith(30, true);
+    await waitFor(() =>
+      expect(fetchByUser).toHaveBeenLastCalledWith(
+        30,
+        20,
+        0,
+        true,
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(fetchUserAgents).toHaveBeenLastCalledWith(
+      30,
+      true,
+      expect.any(AbortSignal),
+    );
     await waitFor(() =>
       expect(window.localStorage.getItem("ai4ia.admin.showRealIdentities")).toBe("true"),
     );
+  });
+
+  it("does not let a slow older window overwrite the latest request", async () => {
+    let resolveOld!: (value: typeof summary) => void;
+    const oldRequest = new Promise<typeof summary>((resolve) => {
+      resolveOld = resolve;
+    });
+
+    vi.mocked(fetchSummary).mockImplementation((days) =>
+      days === 30
+        ? oldRequest
+        : Promise.resolve({ ...summary, sinceDays: days, activeUsers: 7 }),
+    );
+    render(<AdminDashboard />);
+    await waitFor(() => expect(fetchSummary).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText("Window"), { target: { value: "7" } });
+    const activeUsers = await screen.findByText("Active users");
+    await waitFor(() =>
+      expect(within(activeUsers.parentElement as HTMLElement).getByText("7")).toBeInTheDocument(),
+    );
+    await act(async () => {
+      resolveOld({ ...summary, activeUsers: 30 });
+      await oldRequest;
+    });
+    expect(
+      within(activeUsers.parentElement as HTMLElement).queryByText("30"),
+    ).toBeNull();
+  });
+
+  it("renders wholly unknown and mixed usage without fake zero totals", async () => {
+    vi.mocked(fetchSummary).mockResolvedValue({
+      ...summary,
+      totalRequests: 4,
+      totalTokens: 0,
+      totalPromptTokens: 0,
+      totalCompletionTokens: 0,
+      unknownUsageRequests: 4,
+      totalCostMicroUsd: 0,
+      costUnknownRequests: 4,
+    });
+    vi.mocked(fetchOperations).mockResolvedValue({
+      generatedAt: "2026-07-17T00:00:00Z",
+      windowMinutes: 60,
+      diagnosticsUrl: null,
+      panels: [
+        {
+          key: "usage",
+          displayName: "Model usage coverage",
+          status: "partial",
+          source: "AI4IA usage events",
+          generatedAt: "2026-07-17T00:00:00Z",
+          sourceTimestamp: null,
+          lagSeconds: null,
+          reason: "usage unknown",
+          rows: [
+            {
+              provider: "azure_openai",
+              model: "gpt-5.2",
+              requests: 2,
+              tokens: 0,
+              knownCostUsd: 0,
+              unknownUsage: 2,
+              unknownCost: 2,
+            },
+          ],
+        },
+      ],
+    });
+    render(<AdminDashboard />);
+    const tokens = (await screen.findAllByText("Tokens")).find(
+      (element) => element.tagName === "DIV",
+    ) as HTMLElement;
+    await waitFor(() =>
+      expect(
+        within(tokens.parentElement as HTMLElement).getByText("Unknown"),
+      ).toBeInTheDocument(),
+    );
+    const cost = await screen.findByText("Cost");
+    expect(within(cost.parentElement as HTMLElement).getByText("Unknown")).toBeInTheDocument();
+    const operations = await screen.findByText("Model usage coverage");
+    expect(
+      within(operations.closest("article") as HTMLElement).getAllByText("Unknown"),
+    ).toHaveLength(2);
+
+    cleanup();
+    vi.mocked(fetchSummary).mockResolvedValue({
+      ...summary,
+      totalRequests: 4,
+      totalTokens: 120,
+      unknownUsageRequests: 1,
+      totalCostMicroUsd: 250,
+      costUnknownRequests: 1,
+    });
+    render(<AdminDashboard />);
+    expect(await screen.findByText("Known subtotal 120")).toBeInTheDocument();
+    const mixedCost = screen.getByText("Known subtotal $0.0003");
+    expect(within(mixedCost.parentElement as HTMLElement).getByText("Cost")).toBeInTheDocument();
+    expect(screen.getByText("3/4 requests reported")).toBeInTheDocument();
+  });
+
+  it("clears prior-window values while the latest window is loading", async () => {
+    render(<AdminDashboard />);
+    const activeUsers = await screen.findByText("Active users");
+    await waitFor(() =>
+      expect(
+        within(activeUsers.parentElement as HTMLElement).getByText("2"),
+      ).toBeInTheDocument(),
+    );
+    let resolveLatest!: (value: typeof summary) => void;
+    vi.mocked(fetchSummary).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveLatest = resolve;
+        }),
+    );
+    fireEvent.change(screen.getByLabelText("Window"), { target: { value: "7" } });
+    expect(
+      await screen.findByRole("status", {
+        name: "Loading dashboard data for the last 7 days",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Active users")).toBeNull();
+    resolveLatest({ ...summary, sinceDays: 7, activeUsers: 7 });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("status", {
+          name: "Loading dashboard data for the last 7 days",
+        }),
+      ).toBeNull(),
+    );
+    expect(screen.getByText("7")).toBeInTheDocument();
   });
 
   it("shows the directory display name + email in Top users when identified, keeping the hash", async () => {

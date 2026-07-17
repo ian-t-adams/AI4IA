@@ -17,12 +17,14 @@ Safety posture (per design review):
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Sequence
 from typing import Protocol
 
 from .base import Embedder, MemoryStore
 from .formatting import format_memory_context
 from .models import MemoryRecord
+from .telemetry import emit_memory_operation
 
 logger = logging.getLogger(__name__)
 
@@ -127,31 +129,43 @@ class MemoryService:
 
     async def recall(self, user_id: str, query: str) -> list[MemoryRecord]:
         """Best-effort: return relevant memories, or [] on any failure."""
+        started = time.monotonic()
         if not query or not query.strip():
+            emit_memory_operation("recall", "skipped", "custom", started, count=0)
             return []
         try:
             vector = await self._embedder.embed_one(query)
             if not vector:
+                emit_memory_operation("recall", "skipped", "custom", started, count=0)
                 return []
             hits = await self._store.search(user_id, vector, self._top_k)
         except Exception:  # noqa: BLE001 - memory must never break chat
             logger.warning("memory recall failed", exc_info=True)
+            emit_memory_operation("recall", "failed", "custom", started)
             return []
-        return [h for h in hits if (h.score or 0.0) >= self._min_score]
+        records = [h for h in hits if (h.score or 0.0) >= self._min_score]
+        emit_memory_operation("recall", "ok", "custom", started, count=len(records))
+        return records
 
     async def remember(self, user_id: str, session_id: str | None, text: str) -> None:
         """Best-effort: store a durable user utterance. Skips trivia + failures."""
+        started = time.monotonic()
         cleaned = (text or "").strip()
         if len(cleaned) < self._min_chars_to_store:
+            emit_memory_operation("save", "skipped", "custom", started, count=0)
             return
         try:
             vector = await self._embedder.embed_one(cleaned)
             if not vector:
+                emit_memory_operation("save", "skipped", "custom", started, count=0)
                 return
             record = MemoryRecord(user_id=user_id, session_id=session_id, text=cleaned)
             await self._store.add(record, vector)
         except Exception:  # noqa: BLE001 - memory must never break chat
             logger.warning("memory remember failed", exc_info=True)
+            emit_memory_operation("save", "failed", "custom", started)
+            return
+        emit_memory_operation("save", "ok", "custom", started, count=1)
 
     async def remember_document(
         self,

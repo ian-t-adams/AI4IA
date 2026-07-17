@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { VoiceSettingsPanel, type VoiceSettingsPanelProps } from "./VoiceSettingsPanel";
@@ -9,17 +9,10 @@ import {
   DEFAULT_VOICE_SETTINGS,
 } from "@/lib/voiceLive";
 import { voiceProviderCatalog } from "@/lib/data/voice_provider_catalog";
-import type { AgentSummary } from "@/lib/types";
 
 afterEach(() => {
   cleanup();
 });
-
-const AGENTS: AgentSummary[] = [
-  { name: "analyst", displayName: "Analyst", description: "", enabled: true },
-  { name: "writer", displayName: "Writer", description: "", enabled: true },
-  { name: "retired", displayName: "Retired", description: "", enabled: false },
-];
 
 const MODELS = [
   { id: "gpt-realtime", displayName: "GPT Realtime" },
@@ -35,24 +28,18 @@ const PROVIDERS = voiceProviderCatalog.providers.map(
 );
 
 function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
-  const onAgentChange = vi.fn();
   const onProviderChange = vi.fn();
   const onModelChange = vi.fn();
   const onVoiceChange = vi.fn();
   const onSpeechModelChange = vi.fn();
-  const onToolsChange = vi.fn();
   const onSettingsChange = vi.fn();
   const onSpeechSettingsChange = vi.fn();
   const onReset = vi.fn();
   const props: VoiceSettingsPanelProps = {
-    agents: AGENTS,
     providers: PROVIDERS,
     provider: "azure_openai",
     onProviderChange,
     activeProvider: voiceProviderCatalog.providers[0],
-    defaultAgentLabel: "Current chat agent",
-    explicitAgent: null,
-    onAgentChange,
     models: MODELS,
     defaultModelLabel: "Default (GPT Realtime)",
     explicitModel: null,
@@ -61,9 +48,6 @@ function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
     onSpeechModelChange,
     voice: "alloy",
     onVoiceChange,
-    toolsAvailable: true,
-    tools: false,
-    onToolsChange,
     settings: DEFAULT_VOICE_SETTINGS,
     onSettingsChange,
     speechSettings: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
@@ -76,12 +60,10 @@ function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
   render(<VoiceSettingsPanel {...props} />);
   return {
     user,
-    onAgentChange,
     onProviderChange,
     onModelChange,
     onVoiceChange,
     onSpeechModelChange,
-    onToolsChange,
     onSettingsChange,
     onSpeechSettingsChange,
     onReset,
@@ -93,21 +75,7 @@ describe("VoiceSettingsPanel", () => {
     setup();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByText("Voice settings")).toBeInTheDocument();
-    // The agent select exists in the DOM (native <details> content is always
-    // present; only its visibility toggles) but the summary is what the user
-    // sees collapsed.
-    expect(screen.getByRole("combobox", { name: "Agent" })).toBeInTheDocument();
-  });
-
-  it("only lists enabled agents plus the default option", async () => {
-    setup();
-    const select = screen.getByRole("combobox", { name: "Agent" });
-    const options = within(select).getAllByRole("option");
-    expect(options.map((o) => o.textContent)).toEqual([
-      "Current chat agent",
-      "Analyst",
-      "Writer",
-    ]);
+    expect(screen.getByRole("combobox", { name: "Provider" })).toBeInTheDocument();
   });
 
   it("offers the server-advertised providers and defaults to Azure OpenAI", () => {
@@ -139,29 +107,9 @@ describe("VoiceSettingsPanel", () => {
     );
   });
 
-  it("calls onAgentChange with null for the default option and the name otherwise", async () => {
-    const { user, onAgentChange } = setup({ explicitAgent: "analyst" });
-    const select = screen.getByRole("combobox", { name: "Agent" });
-    await user.selectOptions(select, "Writer");
-    expect(onAgentChange).toHaveBeenCalledWith("writer");
-
-    await user.selectOptions(select, "Current chat agent");
-    expect(onAgentChange).toHaveBeenCalledWith(null);
-  });
-
-  it("only shows the governed-tools opt-in when the server advertises it", () => {
-    setup({ toolsAvailable: false });
-    expect(screen.queryByRole("checkbox")).toBeNull();
-    cleanup();
-    setup({ toolsAvailable: true });
-    expect(
-      screen.getByRole("checkbox", { name: "Allow governed tools in voice" }),
-    ).toBeInTheDocument();
-  });
-
-  it("exposes advanced instructions, temperature, VAD, transcription, and language controls", () => {
+  it("exposes advanced audio controls without an instructions field", () => {
     setup();
-    expect(screen.getByRole("textbox", { name: "Instructions" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Instructions" })).toBeNull();
     expect(screen.getByRole("spinbutton", { name: "Temperature" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Turn detection" })).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "VAD threshold" })).toBeInTheDocument();
@@ -208,34 +156,22 @@ describe("VoiceSettingsPanel", () => {
     expect(onModelChange).not.toHaveBeenCalled();
   });
 
-  it("edits Speech instructions and temperature without changing Azure OpenAI settings", async () => {
+  it("edits Speech temperature without changing Azure OpenAI settings", async () => {
     const { user, onSettingsChange, onSpeechSettingsChange } = setup({
       provider: "speech_voice_live",
       activeProvider: voiceProviderCatalog.providers[1],
       voice: voiceProviderCatalog.providers[1].capabilities.voices.default,
-      settings: { ...DEFAULT_VOICE_SETTINGS, instructions: "OpenAI instructions" },
-      speechSettings: {
-        ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
-        instructions: "Speech instructions",
-      },
+      settings: DEFAULT_VOICE_SETTINGS,
+      speechSettings: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
     });
 
-    const instructions = screen.getByRole("textbox", { name: "Instructions" });
-    expect(instructions).toHaveValue("Speech instructions");
-    fireEvent.change(instructions, { target: { value: "Updated speech" } });
     await user.type(screen.getByRole("spinbutton", { name: "Temperature" }), "0.7");
 
     expect(onSpeechSettingsChange).toHaveBeenCalled();
     expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
       ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
-      instructions: "Speech instructions",
       temperature: 0.7,
     });
-    expect(
-      onSpeechSettingsChange.mock.calls.some(
-        ([next]) => next.instructions === "Updated speech",
-      ),
-    ).toBe(true);
     expect(onSettingsChange).not.toHaveBeenCalled();
   });
 
@@ -247,13 +183,8 @@ describe("VoiceSettingsPanel", () => {
 
   it("disables every control while locked but keeps them visible", () => {
     setup({ locked: true });
-    expect(screen.getByRole("combobox", { name: "Agent" })).toBeDisabled();
     expect(screen.getByRole("combobox", { name: "Realtime model" })).toBeDisabled();
     expect(screen.getByRole("combobox", { name: "Voice" })).toBeDisabled();
-    expect(
-      screen.getByRole("checkbox", { name: "Allow governed tools in voice" }),
-    ).toBeDisabled();
-    expect(screen.getByRole("textbox", { name: "Instructions" })).toBeDisabled();
     expect(screen.getByRole("spinbutton", { name: "Temperature" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reset defaults" })).toBeDisabled();
   });

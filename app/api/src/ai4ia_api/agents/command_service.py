@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from ..auth.base import AuthenticatedUser
@@ -69,10 +68,6 @@ _DIRECT_TOOL_ARGS: dict[str, Callable[[str], dict[str, Any]]] = {
 DIRECT_SLASH_TOOLS: frozenset[str] = frozenset(_DIRECT_TOOL_ARGS)
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 async def execute_command(
     *,
     parsed: ParsedInput,
@@ -89,16 +84,23 @@ async def execute_command(
     command = parsed.command
     assert command is not None, "execute_command requires a parsed command"
     user_id = user.internal_user_id
+    before = {
+        "model": session.model,
+        "systemPrompt": session.systemPrompt,
+    }
+    expected_summary_version: int | None = None
 
     # /clear wipes history (including the command itself), so it skips echoing
     # the user's command message; everything else records it for context.
     if command.kind is CommandKind.clear:
         await repo.clear_messages(user_id, session.id)
         reply = "Conversation cleared."
-        # Clearing history makes any prior rolling summary stale; drop it so a
-        # fresh conversation never inherits a summary of erased turns.
-        session.summary = None
-        session.summarizedThroughMessageId = None
+        # Clear summary state as one versioned mutation. Any summarizer that
+        # started before this increment will discard its stale result.
+        cleared = await repo.invalidate_summary(user_id, session.id)
+        session.summary = cleared.summary
+        session.summarizedThroughMessageId = cleared.summarizedThroughMessageId
+        session.summaryVersion = cleared.summaryVersion
     else:
         await repo.add_message(
             user_id,
@@ -114,7 +116,7 @@ async def execute_command(
         if command.kind is CommandKind.forget:
             reply = await _forget_reply(memory, user_id, session.id, command.args)
         elif command.kind is CommandKind.summarize:
-            reply = await _summarize_reply(
+            reply, expected_summary_version = await _summarize_reply(
                 summarizer, gateway, repo, catalog, user_id, session
             )
         else:
@@ -124,8 +126,15 @@ async def execute_command(
 
     # Persist any session mutation (systemPrompt/model) BEFORE recording the
     # success reply, so a failed update can't leave a misleading transcript.
-    session.updatedAt = _now()
-    await repo.update_session(session)
+    changes = {
+        field_name: getattr(session, field_name)
+        for field_name, previous in before.items()
+        if getattr(session, field_name) != previous
+    }
+    if changes:
+        await repo.patch_session(user_id, session.id, changes)
+    else:
+        await repo.touch_session(user_id, session.id)
 
     assistant = Message(
         sessionId=session.id,
@@ -134,8 +143,20 @@ async def execute_command(
         content=reply,
         status=MessageStatus.complete,
         fromCommand=True,
+        summaryVersion=expected_summary_version,
     )
-    await repo.add_message(user_id, assistant)
+    if expected_summary_version is not None:
+        persisted = await repo.add_message_if_summary_version(
+            user_id,
+            assistant,
+            expected_version=expected_summary_version,
+        )
+        if not persisted:
+            assistant.content = "Summary was superseded by a newer conversation state."
+            assistant.summaryVersion = None
+            return assistant
+    else:
+        await repo.add_message(user_id, assistant)
     return assistant
 
 
@@ -173,8 +194,7 @@ async def execute_tool_command(
         command.name, command.args, registry, executor, correlation_id
     )
 
-    session.updatedAt = _now()
-    await repo.update_session(session)
+    await repo.touch_session(user_id, session.id)
 
     assistant = Message(
         sessionId=session.id,
@@ -244,11 +264,27 @@ async def _reply_for(
         return _agents_text(agents)
 
     if kind is CommandKind.system:
+        selected_agent = agents.get(session.agentName) if session.agentName else None
+        if selected_agent is not None and selected_agent.enabled:
+            if args:
+                return (
+                    f"Instructions are owned by the selected agent "
+                    f"'{selected_agent.displayName}'. Edit that agent in "
+                    "Agents & workflows or select the generic assistant first."
+                )
+            return (
+                f"Effective instructions source: agent ({selected_agent.displayName}).\n"
+                f"{selected_agent.systemPrompt}"
+            )
         if not args:
             current = session.systemPrompt
-            return f"Current system prompt:\n{current}" if current else "No system prompt set."
+            return (
+                f"Effective instructions source: session.\n{current}"
+                if current
+                else "Effective instructions source: provider default."
+            )
         session.systemPrompt = args
-        return "System prompt updated."
+        return "Conversation instructions updated."
 
     if kind is CommandKind.model:
         if not args:
@@ -269,21 +305,21 @@ async def _summarize_reply(
     catalog: ModelCatalog,
     user_id: str,
     session: Session,
-) -> str:
+) -> tuple[str, int | None]:
     """Manual ``/summarize``: condense the conversation into a running summary,
     persist it on the session (mutated in place; the caller's update_session
     commits it), and show the digest. Fail-soft: any model/store error degrades
     to a friendly message and never raises out of the command path."""
     if summarizer is None or gateway is None:
-        return "Summarizing long chats isn't available in this environment yet."
+        return "Summarizing long chats isn't available in this environment yet.", None
     if not session.model:
         return (
             "Choose a model for this conversation first (use /model <model-id> "
             "or the model menu), then run /summarize."
-        )
+        ), None
     deployment = catalog.resolve_deployment(session.model)
     if deployment is None:
-        return f"Can't summarize: '{session.model}' is not an available model."
+        return f"Can't summarize: '{session.model}' is not an available model.", None
     entry = catalog.get(session.model)
     api = entry.api if entry is not None else "chat"
     prior = await repo.list_messages(user_id, session.id)
@@ -302,10 +338,13 @@ async def _summarize_reply(
         return (
             "Sorry — I couldn't summarize the conversation just now. "
             "Please try again in a moment."
-        )
+        ), None
     if not summary:
-        return "There's not enough conversation here to summarize yet."
-    return f"Here's a running summary of the conversation so far:\n\n{summary}"
+        return "There's not enough conversation here to summarize yet.", None
+    return (
+        f"Here's a running summary of the conversation so far:\n\n{summary}",
+        session.summaryVersion,
+    )
 
 
 async def _forget_reply(

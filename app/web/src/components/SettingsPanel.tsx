@@ -3,6 +3,7 @@
 import type { ModelEntry } from "@/lib/types";
 import { ImageryPanel } from "./ImageryPanel";
 import { ThemeName, useTheme } from "./ThemeProvider";
+import { useModalFocus } from "./useModalFocus";
 
 const THEMES: { id: ThemeName; label: string }[] = [
   { id: "light", label: "Light" },
@@ -21,9 +22,12 @@ export function SettingsPanel({
 }) {
   const { theme, setTheme, fontScale, setFontScale, accent, setAccent } =
     useTheme();
+  const modal = useModalFocus(onClose);
 
   return (
     <div
+      ref={modal.ref}
+      onKeyDown={modal.onKeyDown}
       role="dialog"
       aria-label="Appearance and accessibility settings"
       aria-modal="true"

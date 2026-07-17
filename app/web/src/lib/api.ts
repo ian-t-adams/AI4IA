@@ -13,6 +13,8 @@ import type {
   UserAgent,
   UserAgentCreate,
   UserAgentUpdate,
+  ToolCatalogItem,
+  AttachmentCapabilities,
   VoiceTurnInput,
   Workflow,
   WorkflowCreate,
@@ -374,6 +376,9 @@ export async function createSession(input: {
   title?: string;
   model?: string | null;
   systemPrompt?: string | null;
+  agentName?: string | null;
+  toolOverrides?: { added: string[]; removed: string[] };
+  libraryDocumentIds?: string[] | null;
 }): Promise<Session> {
   return jsonOrThrow(
     await apiFetch("/api/sessions", {
@@ -386,7 +391,14 @@ export async function createSession(input: {
 
 export async function updateSession(
   id: string,
-  patch: { title?: string; model?: string | null; systemPrompt?: string | null },
+  patch: {
+    title?: string;
+    model?: string | null;
+    systemPrompt?: string | null;
+    agentName?: string | null;
+    toolOverrides?: { added: string[]; removed: string[] };
+    libraryDocumentIds?: string[] | null;
+  },
 ): Promise<Session> {
   return jsonOrThrow(
     await apiFetch(`/api/sessions/${id}`, {
@@ -394,6 +406,44 @@ export async function updateSession(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     }),
+  );
+}
+
+export async function listTools(sessionId?: string | null): Promise<ToolCatalogItem[]> {
+  const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+  const result = await jsonOrThrow<{ tools: ToolCatalogItem[] }>(
+    await apiFetch(`/api/tools${query}`, { cache: "no-store" }),
+  );
+  return result.tools;
+}
+
+export async function getAttachmentCapabilities(): Promise<AttachmentCapabilities> {
+  return jsonOrThrow(
+    await apiFetch("/api/attachments/capabilities", { cache: "no-store" }),
+  );
+}
+
+export async function associateLibraryDocument(
+  sessionId: string,
+  documentId: string,
+): Promise<Session> {
+  return jsonOrThrow(
+    await apiFetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/library-documents/${encodeURIComponent(documentId)}`,
+      { method: "POST" },
+    ),
+  );
+}
+
+export async function disassociateLibraryDocument(
+  sessionId: string,
+  documentId: string,
+): Promise<Session> {
+  return jsonOrThrow(
+    await apiFetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/library-documents/${encodeURIComponent(documentId)}`,
+      { method: "DELETE" },
+    ),
   );
 }
 

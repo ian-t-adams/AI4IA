@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
-from ..usage.models import UsageSummary
+from ..sessions.repository import SessionNotFoundError
+from ..usage.models import SessionUsageSummary, UsageSummary
 from ..usage.service import MAX_SUMMARY_DAYS, UsageService
 
 router = APIRouter(prefix="/api/usage", tags=["usage"])
@@ -30,3 +31,23 @@ async def get_usage(
 ) -> UsageSummary:
     metering: UsageService = request.app.state.usage
     return await metering.summarize(user.internal_user_id, since_days=since_days)
+
+
+@router.get("/sessions/{session_id}", response_model=SessionUsageSummary)
+async def get_session_usage(
+    session_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> SessionUsageSummary:
+    try:
+        await request.app.state.session_repo.get_session(
+            user.internal_user_id, session_id
+        )
+    except SessionNotFoundError:
+        from fastapi import HTTPException, status
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+        )
+    metering: UsageService = request.app.state.usage
+    return await metering.summarize_session(user.internal_user_id, session_id)

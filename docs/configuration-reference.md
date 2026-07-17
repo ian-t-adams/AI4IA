@@ -1,5 +1,25 @@
 # Configuration Reference
 
+The Conversation Inspector and its session/tool/memory/usage endpoints require no
+new feature flag. They expose only capabilities already enabled by the authoritative
+API settings below; disabled library, memory, voice, or telemetry sources return an
+explicit disabled/unavailable state.
+
+## Admin operations queries
+
+| API setting / environment | Source | Purpose |
+|---|---|---|
+| `log_analytics_workspace_id` / `AI4IA_LOG_ANALYTICS_WORKSPACE_ID` | Existing workspace `customerId` output | Managed-identity `LogsQueryClient` target for fixed admin KQL |
+| `log_analytics_workspace_resource_id` / `AI4IA_LOG_ANALYTICS_WORKSPACE_RESOURCE_ID` | Existing workspace ARM id | Azure Portal diagnostics link only |
+
+`infra/modules/monitoring.bicep` exports the existing workspace customer id and
+`infra/modules/api.bicep` supplies both values to the API Container App. No workspace
+or RBAC resource is added. The existing subscription-scope Monitoring Reader posture
+is reused; if it cannot query the workspace, panels return `unavailable`.
+The operations queries consume metadata-only custom events in the existing
+workspace `AppEvents` table. No additional workspace, diagnostic setting, or role
+assignment is created.
+
 AI4IA has too many knobs to leave them scattered across Bicep, azd, Container
 App env, and README prose. This page is the operator map: set the azd value,
 watch the Bicep parameter, and know which runtime setting appears in the app.

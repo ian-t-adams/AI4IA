@@ -17,8 +17,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from pydantic import BaseModel
+
 from .models import Document, Message, Session
-from .repository import SessionNotFoundError
+from .repository import SessionConflictError, SessionNotFoundError
 
 
 class CosmosSessionRepository:
@@ -67,9 +69,214 @@ class CosmosSessionRepository:
         return items
 
     async def update_session(self, session: Session) -> Session:
-        await self._owned_session(session.userId, session.id)
-        await self._sessions.upsert_item(self._to_doc(session))
-        return session
+        raise SessionConflictError(
+            "Unversioned full session replacement is disabled; use patch_session."
+        )
+
+    async def patch_session(
+        self, user_id: str, session_id: str, changes: dict[str, object]
+    ) -> Session:
+        await self._owned_session(user_id, session_id)
+        operations = [
+            {
+                "op": "set",
+                "path": f"/{field_name}",
+                "value": (
+                    value.model_dump(mode="json")
+                    if isinstance(value, BaseModel)
+                    else value
+                ),
+            }
+            for field_name, value in changes.items()
+        ]
+        operations.append(
+            {
+                "op": "set",
+                "path": "/updatedAt",
+                "value": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+        )
+        await self._sessions.patch_item(
+            item=session_id,
+            partition_key=user_id,
+            patch_operations=operations,
+        )
+        return await self._owned_session(user_id, session_id)
+
+    async def mutate_library_document_ids(
+        self,
+        user_id: str,
+        session_id: str,
+        document_id: str,
+        *,
+        add: bool,
+        legacy_ids: list[str] | None = None,
+    ) -> Session:
+        from azure.core import MatchConditions
+        from azure.cosmos.exceptions import CosmosAccessConditionFailedError
+
+        for _attempt in range(3):
+            try:
+                raw = await self._sessions.read_item(
+                    item=session_id, partition_key=user_id
+                )
+            except Exception as exc:
+                from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+                if isinstance(exc, CosmosResourceNotFoundError):
+                    raise SessionNotFoundError(session_id) from exc
+                raise
+            current = raw.get("libraryDocumentIds")
+            if current is None:
+                if add:
+                    return Session.model_validate(raw)
+                values = list(legacy_ids or [])
+            else:
+                values = list(current)
+            if add and document_id not in values:
+                values.append(document_id)
+            elif not add:
+                values = [value for value in values if value != document_id]
+            try:
+                await self._sessions.patch_item(
+                    item=session_id,
+                    partition_key=user_id,
+                    patch_operations=[
+                        {
+                            "op": "set",
+                            "path": "/libraryDocumentIds",
+                            "value": values,
+                        },
+                        {
+                            "op": "set",
+                            "path": "/updatedAt",
+                            "value": datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                        },
+                    ],
+                    etag=raw.get("_etag"),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+                return await self._owned_session(user_id, session_id)
+            except CosmosAccessConditionFailedError:
+                continue
+        raise SessionConflictError(session_id)
+
+    async def _delete_summary_replies_before(
+        self, session_id: str, version: int
+    ) -> None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        query = (
+            "SELECT c.id FROM c WHERE c.sessionId = @sid "
+            "AND IS_DEFINED(c.summaryVersion) AND c.summaryVersion < @version"
+        )
+        params = [
+            {"name": "@sid", "value": session_id},
+            {"name": "@version", "value": version},
+        ]
+        async for item in self._messages.query_items(
+            query=query, parameters=params, partition_key=session_id
+        ):
+            try:
+                await self._messages.delete_item(
+                    item=item["id"], partition_key=session_id
+                )
+            except CosmosResourceNotFoundError:
+                pass
+
+    async def invalidate_summary(
+        self, user_id: str, session_id: str
+    ) -> Session:
+        result = await self._mutate_summary(
+            user_id,
+            session_id,
+            expected_version=None,
+            summary=None,
+            summarized_through_message_id=None,
+        )
+        assert result is not None
+        return result
+
+    async def commit_summary_if_version(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        expected_version: int,
+        summary: str,
+        summarized_through_message_id: str,
+    ) -> Session | None:
+        return await self._mutate_summary(
+            user_id,
+            session_id,
+            expected_version=expected_version,
+            summary=summary,
+            summarized_through_message_id=summarized_through_message_id,
+        )
+
+    async def _mutate_summary(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        expected_version: int | None,
+        summary: str | None,
+        summarized_through_message_id: str | None,
+    ) -> Session | None:
+        from azure.core import MatchConditions
+        from azure.cosmos.exceptions import (
+            CosmosAccessConditionFailedError,
+            CosmosResourceNotFoundError,
+        )
+
+        for _attempt in range(3):
+            try:
+                raw = await self._sessions.read_item(
+                    item=session_id, partition_key=user_id
+                )
+            except CosmosResourceNotFoundError as exc:
+                raise SessionNotFoundError(session_id) from exc
+            version = int(raw.get("summaryVersion") or 0)
+            if expected_version is not None and version != expected_version:
+                return None
+            next_version = version + 1
+            try:
+                await self._sessions.patch_item(
+                    item=session_id,
+                    partition_key=user_id,
+                    patch_operations=[
+                        {"op": "set", "path": "/summary", "value": summary},
+                        {
+                            "op": "set",
+                            "path": "/summarizedThroughMessageId",
+                            "value": summarized_through_message_id,
+                        },
+                        {
+                            "op": "set",
+                            "path": "/summaryVersion",
+                            "value": next_version,
+                        },
+                        {
+                            "op": "set",
+                            "path": "/updatedAt",
+                            "value": datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                        },
+                    ],
+                    etag=raw.get("_etag"),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+                committed = await self._owned_session(user_id, session_id)
+                await self._delete_summary_replies_before(
+                    session_id, committed.summaryVersion
+                )
+                return committed
+            except CosmosAccessConditionFailedError:
+                continue
+        raise SessionConflictError(session_id)
 
     async def touch_session(self, user_id: str, session_id: str) -> None:
         await self._owned_session(user_id, session_id)
@@ -103,6 +310,28 @@ class CosmosSessionRepository:
         message.userId = user_id
         await self._messages.create_item(self._to_doc(message))
         return message
+
+    async def add_message_if_summary_version(
+        self, user_id: str, message: Message, *, expected_version: int
+    ) -> bool:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        session = await self._owned_session(user_id, message.sessionId)
+        if session.summaryVersion != expected_version:
+            return False
+        message.userId = user_id
+        message.summaryVersion = expected_version
+        await self._messages.create_item(self._to_doc(message))
+        latest = await self._owned_session(user_id, message.sessionId)
+        if latest.summaryVersion == expected_version:
+            return True
+        try:
+            await self._messages.delete_item(
+                item=message.id, partition_key=message.sessionId
+            )
+        except CosmosResourceNotFoundError:
+            pass
+        return False
 
     async def upsert_message(self, user_id: str, message: Message) -> Message:
         await self._owned_session(user_id, message.sessionId)

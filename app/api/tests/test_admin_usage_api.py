@@ -31,7 +31,18 @@ GATED_ROUTES = [
     "/api/admin/usage/by-user",
     "/api/admin/metrics/resources",
     "/api/admin/metrics/web-search",
+    "/api/admin/metrics/operations",
+    "/api/admin/metrics/security",
 ]
+
+
+def test_operations_window_is_bounded(client):
+    assert client.get(
+        "/api/admin/metrics/operations?minutes=14", headers=ADMIN
+    ).status_code == 422
+    assert client.get(
+        "/api/admin/metrics/security?minutes=1441", headers=ADMIN
+    ).status_code == 422
 
 
 def _client(**settings_overrides) -> TestClient:
@@ -98,6 +109,27 @@ def test_admin_route_allows_admin(client, route):
 @pytest.mark.parametrize("route", GATED_ROUTES)
 def test_admin_route_forbids_non_admin(client, route):
     assert client.get(route, headers=NON_ADMIN).status_code == 403
+
+
+def test_admin_denial_emits_content_free_security_event(client, monkeypatch):
+    events: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.auth.admin.emit_security_block",
+        lambda category, reason, source: events.append((category, reason, source)),
+    )
+    assert client.get("/api/admin/metrics/security", headers=NON_ADMIN).status_code == 403
+    assert events == [("admin_auth", "privileges_required", "admin_dependency")]
+
+
+def test_auth_failure_emits_content_free_security_event(client, monkeypatch):
+    events: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.auth.dependencies.emit_security_block",
+        lambda category, reason, source: events.append((category, reason, source)),
+    )
+    client.app.state.auth_provider = _RaisingAuth()
+    assert client.get("/api/admin/metrics/security").status_code == 401
+    assert events == [("http_auth", "authentication_failed", "auth_dependency")]
 
 
 @pytest.mark.parametrize("route", GATED_ROUTES)

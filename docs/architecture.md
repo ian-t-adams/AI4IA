@@ -97,6 +97,60 @@ flowchart LR
 5. Durable state is written to Cosmos and Blob Storage; derived memory/search/chunk
    stores are updated best-effort and can be rebuilt.
 
+## Conversation policy and inspector
+
+The API owns the active conversation policy. Sessions add optional, backward-compatible
+`agentName`, `toolOverrides`, and `libraryDocumentIds` fields; existing Cosmos records
+need no migration. A missing/null `libraryDocumentIds` preserves legacy access to all
+accessible ready documents, an explicit empty list disables library context, and a
+non-empty list is an exact allowlist. Processing/failed documents may stay selected for
+status visibility, but only ready selected documents enter model context or document
+tools. Instruction precedence is:
+Selection validation and inspection resolve both owned documents and email-shared
+documents through the same access predicate. Converting a legacy all-accessible
+session to an explicit scope preserves every currently accessible owned/shared id;
+revoked or stale shared ids never regain retrieval/tool access. Instruction precedence is:
+
+1. the selected governed agent persona;
+2. otherwise the session `systemPrompt`;
+3. otherwise the provider default.
+
+Typed chat and both Voice Live providers resolve this same policy. The browser never
+supplies authoritative voice instructions; the WebSocket binds to an owned session and
+the relay replaces or removes client instructions before forwarding `session.update`.
+Tool overrides can only add server-approved tools or remove inherited tools, and
+execution still re-checks registry, scope, approval, target-host, MCP ownership, and
+SSRF rules.
+
+Tool metadata declares typed-chat and Voice Live availability. The realtime relay
+advertises only validated registry-backed voice-capable tools; synthetic document,
+image/video, and MCP tools remain typed-only until a safe authenticated realtime
+handler exists.
+
+`GET /api/sessions/{id}/inspector` provides a display-safe, ownership-scoped snapshot
+for the right Conversation Inspector. Focused APIs continue to own mutations and
+memory, library, tool-catalog, and usage detail.
+Inspector sources load independently and all mutation results are session-generation
+guarded. The admin dashboard similarly aborts and discards superseded window/identity
+loads.
+Session policy fields use atomic repository patches, while library-document list
+changes use bounded ETag/CAS retry-and-merge. Concurrent model, prompt, tool, and
+document-selection writes therefore preserve disjoint changes in both Cosmos and
+the in-memory parity repository.
+All chat, workflow, command, and summarization writers use those field-scoped
+patch/touch APIs. Unversioned full-session replacement is a guarded failure in both
+repositories, preventing stale conversational workers from overwriting workspace
+policy or document selections.
+Rolling summary state carries a backward-compatible monotonic `summaryVersion`.
+Clear/reset increments that version while atomically clearing the summary and cursor;
+manual and automatic summarizers commit only when their observed version still
+matches, then increment it. A clear or newer summarizer therefore makes stale output
+a benign discard rather than allowing pre-clear context to reappear.
+
+The admin operations plane runs fixed server-owned KQL through managed identity
+against the existing Log Analytics workspace. It accepts only a bounded time window,
+never user KQL, and returns per-panel source/freshness/partial/stale/unavailable state.
+
 ```mermaid
 sequenceDiagram
   autonumber

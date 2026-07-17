@@ -13,7 +13,8 @@ ships only the storage spine so the data model and governance are settled first.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 
 from fastapi import (
     APIRouter,
@@ -31,7 +32,14 @@ from pydantic import BaseModel, Field
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..entitlements.service import EntitlementService
-from ..library.access import can_access, normalize_principal, require_owner
+from ..logging_setup import emit_custom_event
+from ..memory.telemetry import emit_memory_operation
+from ..library.access import (
+    can_access,
+    list_accessible_documents,
+    normalize_principal,
+    require_owner,
+)
 from ..library.chunking import chunk_markdown
 from ..library.compute_factory import DocumentComputeService
 from ..library.ingest import DocumentIngestor
@@ -81,6 +89,8 @@ class UserDocumentSummary(BaseModel):
     analyzerId: str | None
     summary: str
     chunkCount: int
+    error: str | None = None
+    citationReady: bool = False
     visibility: Visibility
     createdAt: datetime
     updatedAt: datetime
@@ -99,6 +109,8 @@ class UserDocumentSummary(BaseModel):
             analyzerId=doc.analyzerId,
             summary=doc.summary,
             chunkCount=doc.chunkCount,
+            error=doc.error,
+            citationReady=doc.status == DocumentStatus.ready,
             visibility=doc.visibility,
             createdAt=doc.createdAt,
             updatedAt=doc.updatedAt,
@@ -115,6 +127,20 @@ class UserDocumentSummary(BaseModel):
                 for v in sorted(doc.versions, key=lambda v: v.n)
             ],
         )
+
+
+class LibrarySummary(BaseModel):
+    generatedAt: datetime
+    status: str = "ok"
+    total: int = 0
+    byStatus: dict[str, int] = Field(default_factory=dict)
+    byModality: dict[str, int] = Field(default_factory=dict)
+    recent: list[UserDocumentSummary] = Field(default_factory=list)
+    maxUploadBytes: int
+    maxDocuments: int
+    modalities: list[str] = Field(
+        default_factory=lambda: ["document", "text", "image", "audio", "video"]
+    )
 
 
 class AnalyzerCreate(BaseModel):
@@ -211,6 +237,37 @@ async def _accessible_document(
 
 
 # --- documents ---
+@router.get("/summary", response_model=LibrarySummary)
+async def library_summary(
+    request: Request,
+    recent: int = 5,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> LibrarySummary:
+    repo = _library(request)
+    docs = await list_accessible_documents(
+        repo, user.internal_user_id, email=user.email
+    )
+    docs.sort(key=lambda document: document.updatedAt, reverse=True)
+    by_status: dict[str, int] = {}
+    by_modality: dict[str, int] = {}
+    for document in docs:
+        by_status[document.status.value] = by_status.get(document.status.value, 0) + 1
+        by_modality[document.modality.value] = by_modality.get(document.modality.value, 0) + 1
+    settings = request.app.state.settings
+    return LibrarySummary(
+        generatedAt=datetime.now(timezone.utc),
+        total=len(docs),
+        byStatus=by_status,
+        byModality=by_modality,
+        recent=[
+            UserDocumentSummary.of(document)
+            for document in docs[: max(0, min(recent, 20))]
+        ],
+        maxUploadBytes=settings.document_max_upload_bytes,
+        maxDocuments=settings.document_max_per_user,
+    )
+
+
 @router.get("/documents", response_model=list[UserDocumentSummary])
 async def list_documents(
     request: Request,
@@ -240,6 +297,7 @@ async def upload_document(
     (same bytes + analyzer) return the existing manifest without re-cracking.
     Flag-gated: 404 when document understanding is disabled.
     """
+    started = time.monotonic()
     repo = _library(request)
     ingestor = _ingestor(request)
     uid = user.internal_user_id
@@ -316,6 +374,17 @@ async def upload_document(
     logger.info(
         "library upload user=%s id=%s status=%s deduped=%s",
         uid, doc.id, doc.status, result.deduped,
+    )
+    emit_custom_event(
+        "document_ingest",
+        {
+            "status": doc.status.value,
+            "modality": doc.modality.value,
+            "contentType": doc.contentType,
+            "size": doc.size,
+            "deduped": result.deduped,
+            "latencyMs": int((time.monotonic() - started) * 1000),
+        },
     )
     return UserDocumentSummary.of(doc)
 
@@ -594,12 +663,14 @@ async def save_document_to_memory(
     understanding is off) and by memory (409 when memory is disabled); owner-only
     and ``ready``-status-gated, mirroring the read/delete gates. Memory failures
     surface (502) because the user explicitly asked to save."""
+    started = time.monotonic()
     repo = _library(request)
     uid = user.internal_user_id
     await _block_disabled(request, uid)
 
     memory = request.app.state.memory
     if not getattr(memory, "enabled", False):
+        emit_memory_operation("save", "disabled", "document_library", started)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Memory is not enabled."
         )
@@ -607,10 +678,12 @@ async def save_document_to_memory(
     try:
         doc = await repo.get_document(uid, document_id)
     except DocumentNotFoundError:
+        emit_memory_operation("save", "not_found", "document_library", started)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     if not require_owner(uid, doc):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     if doc.status != DocumentStatus.ready:
+        emit_memory_operation("save", "not_ready", "document_library", started)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Document is not ready; it has no content to remember yet.",
@@ -618,6 +691,7 @@ async def save_document_to_memory(
 
     items = await _document_memory_items(request, uid, doc)
     if not items:
+        emit_memory_operation("save", "empty", "document_library", started)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Document has no content to remember.",
@@ -630,11 +704,13 @@ async def save_document_to_memory(
         logger.warning(
             "save-to-memory failed user=%s id=%s", uid, document_id, exc_info=True
         )
+        emit_memory_operation("save", "failed", "document_library", started)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Could not save to memory right now.",
         )
     logger.info("save-to-memory user=%s id=%s saved=%s", uid, document_id, saved)
+    emit_memory_operation("save", "ok", "document_library", started, count=saved)
     return SaveToMemoryResult(saved=saved)
 
 
@@ -657,12 +733,14 @@ async def forget_document_from_memory(
     earlier can be forgotten regardless of its current status. Idempotent: a
     document with nothing saved forgets ``0``. Memory failures surface (502)
     because the user explicitly asked to forget."""
+    started = time.monotonic()
     repo = _library(request)
     uid = user.internal_user_id
     await _block_disabled(request, uid)
 
     memory = request.app.state.memory
     if not getattr(memory, "enabled", False):
+        emit_memory_operation("delete", "disabled", "document_library", started)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Memory is not enabled."
         )
@@ -670,6 +748,7 @@ async def forget_document_from_memory(
     try:
         doc = await repo.get_document(uid, document_id)
     except DocumentNotFoundError:
+        emit_memory_operation("delete", "not_found", "document_library", started)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     if not require_owner(uid, doc):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
@@ -680,12 +759,16 @@ async def forget_document_from_memory(
         logger.warning(
             "forget-from-memory failed user=%s id=%s", uid, document_id, exc_info=True
         )
+        emit_memory_operation("delete", "failed", "document_library", started)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Could not update memory right now.",
         )
     logger.info(
         "forget-from-memory user=%s id=%s forgotten=%s", uid, document_id, forgotten
+    )
+    emit_memory_operation(
+        "delete", "ok", "document_library", started, count=forgotten
     )
     return ForgetFromMemoryResult(forgotten=forgotten)
 

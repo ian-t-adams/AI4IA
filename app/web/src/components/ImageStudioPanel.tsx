@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import * as api from "@/lib/api";
 import type { ModelEntry } from "@/lib/types";
 import { useTheme } from "./ThemeProvider";
+import { useModalFocus } from "./useModalFocus";
 
 const SIZES = ["1024x1024", "1024x1536", "1536x1024", "auto"];
 const QUALITIES = ["auto", "low", "medium", "high"];
@@ -30,6 +31,7 @@ export function ImageStudioPanel({
   models: ModelEntry[];
   onClose: () => void;
 }) {
+  const modal = useModalFocus(onClose);
   const { setBackground } = useTheme();
 
   const imageModels = useMemo(
@@ -89,6 +91,8 @@ export function ImageStudioPanel({
 
   return (
     <div
+      ref={modal.ref}
+      onKeyDown={modal.onKeyDown}
       role="dialog"
       aria-label="Imagery studio"
       aria-modal="true"

@@ -276,6 +276,5 @@ async def run_workflow_endpoint(
             correlation_id=correlation_id,
         )
 
-    session.updatedAt = assistant.createdAt
-    await repo.update_session(session)
+    await repo.touch_session(uid, session.id)
     return WorkflowRunResponse(sessionId=body.sessionId, ok=result.ok, message=assistant)

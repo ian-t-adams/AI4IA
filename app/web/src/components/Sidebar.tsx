@@ -1,7 +1,12 @@
 "use client";
 
+import type { RefObject } from "react";
 import type { Session } from "@/lib/types";
 import { DOCS_INDEX_URL, STATUS_URL } from "@/lib/docs";
+import { AdminLink } from "./AdminLink";
+import { UserMenu } from "./UserMenu";
+import { useMediaQuery } from "./useMediaQuery";
+import { useModalFocus } from "./useModalFocus";
 
 export function Sidebar({
   sessions,
@@ -11,9 +16,9 @@ export function Sidebar({
   onDelete,
   onOpenSettings,
   onOpenStudio,
-  onOpenImagery,
   onOpenLibrary,
   onCollapse,
+  openerRef,
   disabled = false,
 }: {
   sessions: Session[];
@@ -23,22 +28,37 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onOpenSettings: () => void;
   onOpenStudio: () => void;
-  onOpenImagery: () => void;
   onOpenLibrary?: () => void;
   onCollapse?: () => void;
+  openerRef?: RefObject<HTMLElement | null>;
   disabled?: boolean;
 }) {
+  const mobileDrawer = useMediaQuery("(max-width: 720px)") && Boolean(onCollapse);
+  const drawerFocus = useModalFocus<HTMLElement>(
+    onCollapse ?? (() => {}),
+    mobileDrawer,
+    openerRef,
+  );
   return (
     <nav
+      ref={drawerFocus.ref}
+      onKeyDown={drawerFocus.onKeyDown}
+      className="session-sidebar"
+      role={mobileDrawer ? "dialog" : "navigation"}
+      aria-modal={mobileDrawer ? true : undefined}
       aria-label="Chat sessions"
       style={{
         width: 280,
+        maxWidth: "100vw",
         flexShrink: 0,
         background: "var(--bg-sidebar)",
         color: "var(--sidebar-fg)",
         display: "flex",
         flexDirection: "column",
         height: "100%",
+        maxHeight: "100dvh",
+        minHeight: 0,
+        overflow: "hidden",
       }}
     >
       <div style={{ padding: 16, display: "flex", alignItems: "center", gap: 10 }}>
@@ -74,6 +94,18 @@ export function Sidebar({
           </button>
         )}
       </div>
+      <div
+        className="sidebar-scroll"
+        data-testid="sidebar-scroll"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          overflowX: "hidden",
+        }}
+      >
       <div style={{ padding: "0 12px 12px" }}>
         <button
           onClick={onNewChat}
@@ -98,8 +130,9 @@ export function Sidebar({
           listStyle: "none",
           margin: 0,
           padding: "0 8px",
-          overflowY: "auto",
-          flex: 1,
+          overflowY: "visible",
+          flex: "0 0 auto",
+          minHeight: 0,
         }}
       >
         {sessions.length === 0 && (
@@ -167,21 +200,6 @@ export function Sidebar({
         >
           🛠 Agents &amp; workflows
         </button>
-        <button
-          onClick={onOpenImagery}
-          disabled={disabled}
-          style={{
-            width: "100%",
-            padding: "8px 12px",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            background: "transparent",
-            color: "var(--sidebar-fg)",
-            cursor: disabled ? "not-allowed" : "pointer",
-          }}
-        >
-          🖼 Imagery studio
-        </button>
         {onOpenLibrary && (
           <button
             onClick={onOpenLibrary}
@@ -225,6 +243,7 @@ export function Sidebar({
             href={DOCS_INDEX_URL}
             target="_blank"
             rel="noopener noreferrer"
+            aria-label="Documentation (opens in new tab)"
             title="Browse the AI4IA documentation hub"
             style={{
               textAlign: "center",
@@ -242,6 +261,7 @@ export function Sidebar({
             href={STATUS_URL}
             target="_blank"
             rel="noopener noreferrer"
+            aria-label="Status (opens in new tab)"
             title="Live deployment health and service status"
             style={{
               textAlign: "center",
@@ -256,6 +276,22 @@ export function Sidebar({
             📡 Status
           </a>
         </div>
+        <div
+          aria-label="Account and administration"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            color: "var(--sidebar-fg)",
+            ["--fg" as string]: "var(--sidebar-fg)",
+            ["--fg-muted" as string]: "var(--sidebar-muted)",
+            ["--bg-elevated" as string]: "transparent",
+          }}
+        >
+          <AdminLink disabled={disabled} />
+          <UserMenu disabled={disabled} />
+        </div>
+      </div>
       </div>
     </nav>
   );

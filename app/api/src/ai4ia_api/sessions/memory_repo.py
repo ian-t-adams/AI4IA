@@ -9,7 +9,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from .models import Document, Message, Session
-from .repository import SessionNotFoundError
+from .repository import SessionConflictError, SessionNotFoundError
 
 
 class InMemorySessionRepository:
@@ -32,17 +32,98 @@ class InMemorySessionRepository:
             return session
 
     async def get_session(self, user_id: str, session_id: str) -> Session:
-        return await self._owned_session(user_id, session_id)
+        return (await self._owned_session(user_id, session_id)).model_copy(deep=True)
 
     async def list_sessions(self, user_id: str) -> list[Session]:
-        items = [s for s in self._sessions.values() if s.userId == user_id]
+        items = [
+            s.model_copy(deep=True)
+            for s in self._sessions.values()
+            if s.userId == user_id
+        ]
         return sorted(items, key=lambda s: s.updatedAt, reverse=True)
 
     async def update_session(self, session: Session) -> Session:
+        raise SessionConflictError(
+            "Unversioned full session replacement is disabled; use patch_session."
+        )
+
+    async def patch_session(
+        self, user_id: str, session_id: str, changes: dict[str, object]
+    ) -> Session:
         async with self._lock:
-            await self._owned_session(session.userId, session.id)
-            self._sessions[session.id] = session
-            return session
+            session = await self._owned_session(user_id, session_id)
+            for field_name, value in changes.items():
+                setattr(session, field_name, value)
+            session.updatedAt = datetime.now(timezone.utc)
+            return session.model_copy(deep=True)
+
+    async def mutate_library_document_ids(
+        self,
+        user_id: str,
+        session_id: str,
+        document_id: str,
+        *,
+        add: bool,
+        legacy_ids: list[str] | None = None,
+    ) -> Session:
+        async with self._lock:
+            session = await self._owned_session(user_id, session_id)
+            current = session.libraryDocumentIds
+            if current is None:
+                if add:
+                    return session.model_copy(deep=True)
+                current = list(legacy_ids or [])
+            else:
+                current = list(current)
+            if add and document_id not in current:
+                current.append(document_id)
+            elif not add:
+                current = [value for value in current if value != document_id]
+            session.libraryDocumentIds = current
+            session.updatedAt = datetime.now(timezone.utc)
+            return session.model_copy(deep=True)
+
+    async def invalidate_summary(
+        self, user_id: str, session_id: str
+    ) -> Session:
+        async with self._lock:
+            session = await self._owned_session(user_id, session_id)
+            session.summary = None
+            session.summarizedThroughMessageId = None
+            session.summaryVersion += 1
+            session.updatedAt = datetime.now(timezone.utc)
+            self._messages[session_id] = [
+                message
+                for message in self._messages.get(session_id, [])
+                if message.summaryVersion is None
+                or message.summaryVersion >= session.summaryVersion
+            ]
+            return session.model_copy(deep=True)
+
+    async def commit_summary_if_version(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        expected_version: int,
+        summary: str,
+        summarized_through_message_id: str,
+    ) -> Session | None:
+        async with self._lock:
+            session = await self._owned_session(user_id, session_id)
+            if session.summaryVersion != expected_version:
+                return None
+            session.summary = summary
+            session.summarizedThroughMessageId = summarized_through_message_id
+            session.summaryVersion = expected_version + 1
+            session.updatedAt = datetime.now(timezone.utc)
+            self._messages[session_id] = [
+                message
+                for message in self._messages.get(session_id, [])
+                if message.summaryVersion is None
+                or message.summaryVersion >= session.summaryVersion
+            ]
+            return session.model_copy(deep=True)
 
     async def touch_session(self, user_id: str, session_id: str) -> None:
         async with self._lock:
@@ -63,6 +144,18 @@ class InMemorySessionRepository:
             self._messages.setdefault(message.sessionId, []).append(message)
             return message
 
+    async def add_message_if_summary_version(
+        self, user_id: str, message: Message, *, expected_version: int
+    ) -> bool:
+        async with self._lock:
+            session = await self._owned_session(user_id, message.sessionId)
+            if session.summaryVersion != expected_version:
+                return False
+            message.userId = user_id
+            message.summaryVersion = expected_version
+            self._messages.setdefault(message.sessionId, []).append(message)
+            return True
+
     async def upsert_message(self, user_id: str, message: Message) -> Message:
         async with self._lock:
             await self._owned_session(user_id, message.sessionId)
@@ -79,7 +172,7 @@ class InMemorySessionRepository:
         await self._owned_session(user_id, session_id)
         return sorted(
             self._messages.get(session_id, []),
-            key=lambda message: (message.createdAt, message.id),
+            key=lambda message: message.createdAt,
         )
 
     async def clear_messages(self, user_id: str, session_id: str) -> None:

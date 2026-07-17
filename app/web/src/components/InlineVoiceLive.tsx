@@ -182,6 +182,7 @@ export function useInlineVoiceLive({
     settings,
     speechSettings,
     tools,
+    activeSessionId,
   );
   const startLive = live.start;
   const stopLive = live.stop;

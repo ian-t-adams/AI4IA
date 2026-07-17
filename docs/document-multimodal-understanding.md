@@ -12,6 +12,19 @@ The library is feature-gated by `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` /
 `documentUnderstandingEnabled`. When disabled, the API refuses library routes and
 the web app hides the library.
 
+The chat composer exposes one Attach action. When the library is enabled, image,
+audio, and video files use the same authenticated Content Understanding ingest path
+as reusable documents and show stored/analyzing/ready/failed state. A selected ready
+library document is stored on the conversation and scopes retrieval; removing it
+from the conversation does not delete the durable library artifact.
+
+Selection is distinct from readiness: a fresh upload is associated while it is
+stored/analyzing, remains visible if processing fails, and automatically becomes
+effective context when it reaches `ready`. Missing/null selection on a legacy
+session means all accessible ready documents; explicit `[]` means none; a non-empty
+list is the exact allowlist used by summary/RAG, `fetch_document`, `run_code`,
+`export_document`, and `process_document`.
+
 ## Pipeline
 
 ```mermaid
@@ -97,8 +110,6 @@ require the Responses API endpoint and model.
 ## Current gaps
 
 - Custom analyzer authoring is not exposed in the web UI.
-- The library upload UI is document-centric even though the backend handles image,
-  audio, and video modalities.
 - Folder/collection-level sharing is not implemented.
 - Anonymous public links are not implemented; `public` remains tenant-walled.
 - Optional direct-download SAS for very large files is not implemented.

@@ -44,6 +44,7 @@ def build_document_capability(
     user_id: str,
     nonce: str,
     email: str | None = None,
+    allowed_document_ids: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Handler]]:
     """Build the ``fetch_document`` tool for ``user_id``.
 
@@ -95,6 +96,8 @@ def build_document_capability(
         document_id = str(args.get("document_id") or "").strip()
         if not document_id:
             return {"error": "document_id must be a non-empty string."}
+        if allowed_document_ids is not None and document_id not in allowed_document_ids:
+            return {"error": "document is not selected for this conversation."}
         budget["used"] += 1
         result = await service.fetch_document(
             user_id,

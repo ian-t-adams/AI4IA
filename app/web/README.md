@@ -5,19 +5,22 @@ generated media, MCP server management, and the admin dashboard.
 
 ## Responsibilities
 
-- Chat shell: sessions, streaming messages, model picker, per-model parameter
-  clamps, system prompt editor, document attachments, and command affordances.
+- Chat shell: sessions, streaming messages, responsive Conversation Inspector,
+  catalog model controls, one authoritative prompt, governed agent/tool selection,
+  document context, memory, usage, voice, and command affordances.
 - Auth: runtime-selected dev or Entra/MSAL mode. The API remains the enforcement
   boundary; the web app only acquires and forwards tokens.
-- Voice: turn-based STT/TTS plus feature-gated Voice Live over the API WebSocket
-  relay with model/voice/settings/tool controls.
+- Voice: feature-gated Voice Live over the API WebSocket relay. Provider/audio
+  settings apply to the next connection; the API injects the selected agent or
+  conversation prompt and governed tools.
 - Library/media: cross-session document library, ingest status, sharing,
   annotations, save/forget memory actions, audio/video player, and citation
   deep-links.
 - Tools: agent builder, workflow builder, imagery/video output rendering, custom
   MCP server management, and Web IQ tools when enabled server-side.
 - Admin: usage rollups and Azure Monitor resource panels, hidden from non-admins
-  in the UI and enforced by the API.
+  in the UI and enforced by the API, plus fixed-KQL operations/security panels
+  with explicit source, freshness, partial, stale, and unavailable states.
 
 ## Local dev
 
@@ -57,6 +60,6 @@ rebuild. Avoid `NEXT_PUBLIC_*` for these gates.
 
 ## Current gaps
 
-- The library upload UI is document-centric; non-document modalities are supported
-  backend-side but not first-class in the picker.
-- There is no global memory control or recalled-memory indicator in the chat UI.
+- There is no global per-user memory enable/disable preference.
+- Exact proxy/APIM/provider stage percentiles depend on telemetry dimensions that
+  are not available in every environment; unknown/freshness states are explicit.

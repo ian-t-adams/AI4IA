@@ -17,7 +17,7 @@ import { voiceProviderCatalog } from "./data/voice_provider_catalog";
 // The exact session.update the relay has always received. Locked byte-for-byte so a
 // regression in the default payload (key order, extra fields) fails loudly.
 const DEFAULT_SESSION_UPDATE =
-  '{"type":"session.update","session":{"instructions":"You are a helpful, concise voice assistant. Keep spoken replies brief and natural.","voice":"alloy","input_audio_format":"pcm16","output_audio_format":"pcm16","turn_detection":{"type":"server_vad"},"input_audio_transcription":{"model":"whisper-1"}}}';
+  '{"type":"session.update","session":{"voice":"alloy","input_audio_format":"pcm16","output_audio_format":"pcm16","turn_detection":{"type":"server_vad"},"input_audio_transcription":{"model":"whisper-1"}}}';
 
 describe("realtimeModels", () => {
   it("keeps only realtime-category models", () => {
@@ -131,11 +131,9 @@ describe("sessionUpdate settings round-trip", () => {
     expect(t).toEqual({ model: "gpt-4o-transcribe", language: "en" });
   });
 
-  it("threads an instructions override", () => {
-    const parsed = JSON.parse(
-      sessionUpdate("alloy", { ...DEFAULT_VOICE_SETTINGS, instructions: "Be terse." }),
-    );
-    expect(parsed.session.instructions).toBe("Be terse.");
+  it("never sends browser-owned instructions", () => {
+    const parsed = JSON.parse(sessionUpdate("alloy", DEFAULT_VOICE_SETTINGS));
+    expect(parsed.session).not.toHaveProperty("instructions");
   });
 });
 
@@ -147,7 +145,6 @@ describe("speechSessionUpdate", () => {
     expect(parsed).toEqual({
       type: "session.update",
       session: {
-        instructions: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.instructions,
         voice: {
           type: "azure-standard",
           name: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.voice,

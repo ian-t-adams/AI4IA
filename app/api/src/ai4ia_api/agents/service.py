@@ -55,6 +55,11 @@ class AgentService:
         self._catalog = catalog
         self._attachable = attachable_tools
 
+    @property
+    def attachable_tools(self) -> frozenset[str]:
+        """Server-approved tools that may be added at conversation scope."""
+        return self._attachable
+
     async def close(self) -> None:
         await self._store.close()
 

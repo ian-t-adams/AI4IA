@@ -97,6 +97,7 @@ def build_compute_capability(
     user_id: str,
     nonce: str,
     email: str | None = None,
+    allowed_document_ids: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Handler]]:
     """Build the ``run_code`` + ``export_document`` tools for ``user_id``.
 
@@ -190,6 +191,8 @@ def build_compute_capability(
         task = str(args.get("task") or "").strip()
         if not document_id:
             return {"error": "document_id must be a non-empty string."}
+        if allowed_document_ids is not None and document_id not in allowed_document_ids:
+            return {"error": "document is not selected for this conversation."}
         if not task:
             return {"error": "task must be a non-empty string."}
         run_budget["used"] += 1
@@ -317,6 +320,8 @@ def build_compute_capability(
         content = args.get("content")
         if not document_id:
             return {"error": "document_id must be a non-empty string."}
+        if allowed_document_ids is not None and document_id not in allowed_document_ids:
+            return {"error": "document is not selected for this conversation."}
         if not isinstance(content, str) or not content.strip():
             return {"error": "content must be a non-empty string."}
         export_budget["used"] += 1

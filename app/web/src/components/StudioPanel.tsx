@@ -5,6 +5,7 @@ import type { AgentSummary, ModelEntry } from "@/lib/types";
 import { AgentBuilder } from "./AgentBuilder";
 import { WorkflowBuilder } from "./WorkflowBuilder";
 import { McpServerBuilder } from "./McpServerBuilder";
+import { useModalFocus } from "./useModalFocus";
 
 type Tab = "agents" | "workflows" | "tools";
 
@@ -26,6 +27,7 @@ export function StudioPanel({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("agents");
+  const modal = useModalFocus(onClose);
 
   const tabBtn = (id: Tab): React.CSSProperties => ({
     padding: "8px 16px",
@@ -39,6 +41,8 @@ export function StudioPanel({
 
   return (
     <div
+      ref={modal.ref}
+      onKeyDown={modal.onKeyDown}
       role="dialog"
       aria-label="Agents and workflows builder"
       aria-modal="true"

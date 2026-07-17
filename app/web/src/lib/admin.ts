@@ -190,6 +190,31 @@ export interface ResourceMetricsReport {
   panels: ResourcePanel[];
 }
 
+export type OperationalPanelStatus =
+  | "ok"
+  | "partial"
+  | "stale"
+  | "unavailable";
+
+export interface OperationalPanel {
+  key: string;
+  displayName: string;
+  status: OperationalPanelStatus;
+  source: string;
+  generatedAt: string;
+  sourceTimestamp?: string | null;
+  lagSeconds?: number | null;
+  reason?: string | null;
+  rows: Record<string, unknown>[];
+}
+
+export interface OperationalMetricsReport {
+  generatedAt: string;
+  windowMinutes: number;
+  diagnosticsUrl?: string | null;
+  panels: OperationalPanel[];
+}
+
 // ---- web search health (diagnostics for the fail-soft web-search path) ----
 
 export interface WebSearchFailure {
@@ -222,8 +247,8 @@ export interface WebSearchHealthReport {
 
 // ---- API client ----
 
-async function getJson<T>(path: string): Promise<T> {
-  const resp = await apiFetch(path, { cache: "no-store" });
+async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const resp = await apiFetch(path, { cache: "no-store", signal });
   if (!resp.ok) {
     let detail = resp.statusText;
     try {
@@ -243,30 +268,35 @@ export function fetchWhoAmI(): Promise<WhoAmI> {
   return getJson<WhoAmI>("/api/admin/whoami");
 }
 
-export function fetchSummary(days: number): Promise<AdminUsageSummary> {
-  return getJson<AdminUsageSummary>(`/api/admin/usage/summary?days=${days}`);
+export function fetchSummary(days: number, signal?: AbortSignal): Promise<AdminUsageSummary> {
+  return getJson<AdminUsageSummary>(`/api/admin/usage/summary?days=${days}`, signal);
 }
 
-export function fetchByModel(days: number): Promise<AdminByModelReport> {
-  return getJson<AdminByModelReport>(`/api/admin/usage/by-model?days=${days}`);
+export function fetchByModel(days: number, signal?: AbortSignal): Promise<AdminByModelReport> {
+  return getJson<AdminByModelReport>(`/api/admin/usage/by-model?days=${days}`, signal);
 }
 
-export function fetchByDay(days: number): Promise<AdminByDayReport> {
-  return getJson<AdminByDayReport>(`/api/admin/usage/by-day?days=${days}`);
+export function fetchByDay(days: number, signal?: AbortSignal): Promise<AdminByDayReport> {
+  return getJson<AdminByDayReport>(`/api/admin/usage/by-day?days=${days}`, signal);
 }
 
-export function fetchAgents(days: number): Promise<AdminAgentsReport> {
-  return getJson<AdminAgentsReport>(`/api/admin/usage/agents?days=${days}`);
+export function fetchAgents(days: number, signal?: AbortSignal): Promise<AdminAgentsReport> {
+  return getJson<AdminAgentsReport>(`/api/admin/usage/agents?days=${days}`, signal);
 }
 
-export function fetchUserAgents(days: number, identify = false): Promise<AdminUserAgentsReport> {
+export function fetchUserAgents(
+  days: number,
+  identify = false,
+  signal?: AbortSignal,
+): Promise<AdminUserAgentsReport> {
   return getJson<AdminUserAgentsReport>(
     `/api/admin/usage/user-agents?days=${days}&identify=${identify ? "true" : "false"}`,
+    signal,
   );
 }
 
-export function fetchDistributions(days: number): Promise<AdminDistributionsReport> {
-  return getJson<AdminDistributionsReport>(`/api/admin/usage/distributions?days=${days}`);
+export function fetchDistributions(days: number, signal?: AbortSignal): Promise<AdminDistributionsReport> {
+  return getJson<AdminDistributionsReport>(`/api/admin/usage/distributions?days=${days}`, signal);
 }
 
 export function fetchByUser(
@@ -274,18 +304,37 @@ export function fetchByUser(
   limit = 20,
   offset = 0,
   identify = false,
+  signal?: AbortSignal,
 ): Promise<AdminByUserResponse> {
   return getJson<AdminByUserResponse>(
     `/api/admin/usage/by-user?days=${days}&limit=${limit}&offset=${offset}&identify=${identify ? "true" : "false"}`,
+    signal,
   );
 }
 
-export function fetchResources(): Promise<ResourceMetricsReport> {
-  return getJson<ResourceMetricsReport>("/api/admin/metrics/resources");
+export function fetchResources(signal?: AbortSignal): Promise<ResourceMetricsReport> {
+  return getJson<ResourceMetricsReport>("/api/admin/metrics/resources", signal);
 }
 
-export function fetchWebSearchHealth(): Promise<WebSearchHealthReport> {
-  return getJson<WebSearchHealthReport>("/api/admin/metrics/web-search");
+export function fetchWebSearchHealth(signal?: AbortSignal): Promise<WebSearchHealthReport> {
+  return getJson<WebSearchHealthReport>("/api/admin/metrics/web-search", signal);
+}
+
+export function fetchOperations(minutes = 60, signal?: AbortSignal): Promise<OperationalMetricsReport> {
+  return getJson<OperationalMetricsReport>(
+    `/api/admin/metrics/operations?minutes=${minutes}`,
+    signal,
+  );
+}
+
+export function fetchSecurityMetrics(
+  minutes = 60,
+  signal?: AbortSignal,
+): Promise<OperationalMetricsReport> {
+  return getJson<OperationalMetricsReport>(
+    `/api/admin/metrics/security?minutes=${minutes}`,
+    signal,
+  );
 }
 
 // ---- pure transforms / formatters (unit-tested) ----

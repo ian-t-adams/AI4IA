@@ -141,7 +141,6 @@ export const DEFAULT_SPEECH_NOISE_SUPPRESSION = "azure_deep_noise_suppression";
 export const DEFAULT_SPEECH_ECHO_CANCELLATION = "server_echo_cancellation";
 
 export interface SpeechVoiceLiveSettings {
-  instructions: string;
   temperature: number | null;
   voice: string;
   locale: string;
@@ -153,8 +152,6 @@ export interface SpeechVoiceLiveSettings {
 }
 
 export const DEFAULT_SPEECH_VOICE_LIVE_SETTINGS: SpeechVoiceLiveSettings = {
-  instructions:
-    "You are a helpful, concise voice assistant. Keep spoken replies brief and natural.",
   temperature: null,
   voice: DEFAULT_SPEECH_VOICE,
   locale: DEFAULT_SPEECH_LOCALE,
@@ -300,11 +297,6 @@ function makeAudioContext(): AudioContext {
   return new Ctor({ sampleRate: PCM_SAMPLE_RATE });
 }
 
-// The default server-side instructions; the relay leaves the conversation shape
-// to the client, so the browser owns the session.update it sends on connect.
-const DEFAULT_INSTRUCTIONS =
-  "You are a helpful, concise voice assistant. Keep spoken replies brief and natural.";
-
 // The default input-audio transcription model (Azure realtime supports whisper-1).
 const DEFAULT_TRANSCRIPTION_MODEL = "whisper-1";
 
@@ -320,9 +312,6 @@ export type VadType = (typeof VAD_TYPES)[number];
 // ``null``/empty fields are omitted from the payload entirely (the model applies
 // its own default), which is how today's payload omits e.g. temperature.
 export interface VoiceSessionSettings {
-  // System instructions. Ignored by the relay when an agent persona is bound (the
-  // agent's prompt is server-authoritative), as today.
-  instructions: string;
   // Sampling temperature, or null to omit (model default — today's behavior).
   temperature: number | null;
   vadType: VadType;
@@ -337,7 +326,6 @@ export interface VoiceSessionSettings {
 }
 
 export const DEFAULT_VOICE_SETTINGS: VoiceSessionSettings = {
-  instructions: DEFAULT_INSTRUCTIONS,
   temperature: null,
   vadType: "server_vad",
   vadThreshold: null,
@@ -400,7 +388,6 @@ export function sessionUpdate(
   };
   if (settings.language) transcription.language = settings.language;
   const session: Record<string, unknown> = {
-    instructions: settings.instructions,
     voice: selected,
     input_audio_format: "pcm16",
     output_audio_format: "pcm16",
@@ -458,7 +445,6 @@ export function speechSessionUpdate(
       ? settings.echoCancellation
       : allowedEchoCancellation[0] ?? DEFAULT_SPEECH_ECHO_CANCELLATION;
   const session: Record<string, unknown> = {
-    instructions: settings.instructions,
     voice: {
       type: provider?.capabilities.voices.kind ?? "azure-standard",
       name: voice,
@@ -492,12 +478,14 @@ export function buildVoiceLiveWebSocketUrl(
     providerId: VoiceProviderId;
     model?: string | null;
     region?: string | null;
+    sessionId?: string | null;
     agent?: string | null;
     tools?: boolean;
   },
 ): string {
   const params = new URLSearchParams();
   params.set("provider", input.providerId);
+  if (input.sessionId) params.set("session", input.sessionId);
   if (input.providerId === "azure_openai") {
     if (input.model) params.set("model", input.model);
     if (input.region) params.set("region", input.region);
@@ -709,6 +697,7 @@ export function useVoiceLive(
   settings: VoiceSessionSettings = DEFAULT_VOICE_SETTINGS,
   speechSettings: SpeechVoiceLiveSettings = DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   tools: boolean = false,
+  sessionId: string | null = null,
 ): VoiceLiveController {
   const [status, setStatus] = useState<VoiceLiveStatus>("idle");
   const supported = useSyncExternalStore(
@@ -753,6 +742,10 @@ export function useVoiceLive(
   useEffect(() => {
     modelRef.current = model;
   }, [model]);
+  const sessionIdRef = useRef(sessionId);
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
 
   // Recent text-chat history to seed into the next live session, kept in a ref so
   // updates don't re-create ``start`` or restart a live session mid-conversation.
@@ -909,12 +902,13 @@ export function useVoiceLive(
       // The relay resolves the realtime deployment and (when ?agent= is set) the
       // agent's server-authoritative persona + tool allowlist; the browser only
       // names them. An unknown/disabled agent falls back to the generic assistant.
+      const boundSessionId = sessionIdRef.current;
       const wsUrl = buildVoiceLiveWebSocketUrl(config.wsUrl, {
         providerId: providerIdRef.current,
         model: modelRef.current,
         region: regionRef.current,
-        agent,
-        tools: toolsRef.current,
+        sessionId: boundSessionId,
+        ...(boundSessionId ? {} : { agent, tools: toolsRef.current }),
       });
       const ws = new WebSocket(wsUrl, subprotocols);
       ws.binaryType = "arraybuffer";

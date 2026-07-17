@@ -2,7 +2,7 @@
 
 // Message composer and attachment control. Handles text input with IME
 // composition, @-mention agent selection and /-command menus (see lib/commands.ts),
-// per-session and library document uploads, and voice dictation. Slash-command and
+// per-session and library document uploads, and Voice Live. Slash-command and
 // agent hints are advisory; the backend re-validates every tool call at execution.
 
 import {
@@ -12,23 +12,21 @@ import {
   useRef,
   useState,
 } from "react";
-import type { AgentSummary, DocumentSummary } from "@/lib/types";
+import type {
+  AgentSummary,
+  AttachmentCapabilities,
+  DocumentSummary,
+} from "@/lib/types";
 import type { LibraryDocument } from "@/lib/library";
 import { SLASH_COMMANDS, type SlashCommand } from "@/lib/commands";
-import { useVoiceRecorder } from "@/lib/voice";
-import { VoiceSettingsPanel, type VoiceSettingsPanelProps } from "./VoiceSettingsPanel";
 
-// Mirrors the backend cap (routers/documents.py MAX_DOCS_PER_SESSION).
-const MAX_DOCS = 8;
-// Hint shown next to the file control. The plain-text preview of an attachment is
-// injected into chat context up to ~12K chars/turn; heavier or binary files
-// (PDFs, spreadsheets, images) can instead be cracked/analyzed in a sandbox when
-// the agent needs their real layout/cells/pixels.
-const DOC_BUDGET_HINT =
-  "text up to ~12K chars/turn; PDFs, sheets & images analyzed in a sandbox";
-// Hint for the file picker; the backend accepts the text family + pdf/docx/pptx.
-const FILE_ACCEPT =
-  ".txt,.md,.markdown,.csv,.tsv,.json,.log,.xml,.yaml,.yml,.html,.htm,.pdf,.docx,.pptx,text/plain,application/pdf";
+export interface UploadItem {
+  id: string;
+  filename: string;
+  sessionId?: string | null;
+  status: "queued" | "uploading" | "associating" | "failed";
+  error?: string;
+}
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -47,10 +45,10 @@ const LIB_STATUS_LABEL: Record<LibraryDocument["status"], string> = {
 
 const LIB_STATUS_COLOR: Record<LibraryDocument["status"], string> = {
   pending: "var(--fg-muted)",
-  stored: "#0e7490",
-  analyzing: "#0e7490",
-  ready: "#15803d",
-  failed: "#b91c1c",
+  stored: "var(--info)",
+  analyzing: "var(--info)",
+  ready: "var(--success)",
+  failed: "var(--danger)",
 };
 
 // An active mention/command being typed at the START of the message (ignoring
@@ -90,6 +88,12 @@ export function Composer({
   documents,
   libraryDocuments = [],
   uploading,
+  capabilities,
+  capabilitiesError,
+  uploads = [],
+  onRetryUpload,
+  onDismissUpload,
+  onRetryCapabilities,
   onSend,
   onStop,
   onUpload,
@@ -106,7 +110,13 @@ export function Composer({
   uploading: boolean;
   onSend: (text: string) => void;
   onStop: () => void;
-  onUpload: (file: File) => void;
+  capabilities: AttachmentCapabilities | null;
+  capabilitiesError?: string | null;
+  uploads?: UploadItem[];
+  onUpload: (file: File) => Promise<void>;
+  onRetryUpload?: (id: string) => void;
+  onDismissUpload?: (id: string) => void;
+  onRetryCapabilities?: () => void;
   onRemoveDocument: (id: string) => void;
   onRemoveLibraryDocument?: (id: string) => void;
   onError?: (message: string) => void;
@@ -122,10 +132,6 @@ export function Composer({
     retrying: boolean;
     start: () => void;
     stop: () => void;
-    // Present only when the settings disclosure should render (i.e. Voice
-    // Live is enabled). Omitted keeps the composer identical to before the
-    // settings panel existed.
-    settings?: Omit<VoiceSettingsPanelProps, "locked">;
   };
 }) {
   const [text, setText] = useState("");
@@ -144,47 +150,48 @@ export function Composer({
   // session-scoped docs (flag off) or the library chips (flag on). They are
   // mutually exclusive in practice, so a combined count gives the right cap.
   const totalDocs = documents.length + libraryDocuments.length;
-  const atDocLimit = totalDocs >= MAX_DOCS;
+  const maxDocuments = capabilities?.maxPerSessionDocuments ?? 0;
+  const atDocLimit = maxDocuments > 0 && totalDocs >= maxDocuments;
+  const accept = capabilities
+    ? [...capabilities.extensions, ...capabilities.mimeTypes].join(",")
+    : "";
 
-  const onPickFiles = (files: FileList | null) => {
+  const onPickFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    // Upload sequentially (the parent dedupes the lazy session creation); the
-    // backend enforces the real per-session cap and rejects extras.
-    const remaining = MAX_DOCS - totalDocs;
-    if (remaining <= 0) {
-      onError?.(`You can upload at most ${MAX_DOCS} documents per chat.`);
+    if (!capabilities) {
+      onError?.("Attachment capabilities are still loading.");
       return;
     }
-    Array.from(files)
-      .slice(0, remaining)
-      .forEach((f) => onUpload(f));
+    const remaining =
+      maxDocuments > 0 ? Math.max(0, maxDocuments - totalDocs) : files.length;
+    if (remaining <= 0) {
+      onError?.(`You can attach at most ${maxDocuments} files here.`);
+      return;
+    }
+    const allowedExtensions = new Set(
+      capabilities.extensions.map((value) => value.toLowerCase()),
+    );
+    for (const file of Array.from(files).slice(0, remaining)) {
+      const extension = file.name.includes(".")
+        ? `.${file.name.split(".").pop()?.toLowerCase()}`
+        : "";
+      const mimeAllowed = capabilities.mimeTypes.some((value) =>
+        value.endsWith("/*")
+          ? file.type.startsWith(value.slice(0, -1))
+          : file.type === value,
+      );
+      if (file.size > capabilities.maxBytes) {
+        onError?.(`${file.name} exceeds the ${formatBytes(capabilities.maxBytes)} limit.`);
+        continue;
+      }
+      if (!allowedExtensions.has(extension) && !mimeAllowed) {
+        onError?.(`${file.name} is not supported by this environment.`);
+        continue;
+      }
+      await onUpload(file);
+    }
   };
 
-  // Latest text, so the async voice callback appends to the current value
-  // without capturing a stale closure.
-  const textRef = useRef(text);
-  useEffect(() => {
-    textRef.current = text;
-  }, [text]);
-
-  // Append a dictated transcript at the end of the message (a space-separated
-  // continuation), then place the caret at the end.
-  const appendTranscript = (transcript: string) => {
-    const prev = textRef.current;
-    const sep = prev && !/\s$/.test(prev) ? " " : "";
-    const next = prev + sep + transcript;
-    pendingCaret.current = next.length;
-    setText(next);
-    setSuppressed(false);
-  };
-
-  const voice = useVoiceRecorder(appendTranscript, (msg) => onError?.(msg));
-
-  // True whenever Voice Live occupies the microphone in a way that makes
-  // dictation unsafe to start: connecting, live, closing ("ending"), or
-  // saving the just-finished transcript. Broader than voiceLive.active (which
-  // only covers connecting/live) so the mic buttons never race during
-  // teardown/save.
   const voiceLiveBusy = Boolean(
     voiceLive && (voiceLive.active || voiceLive.ending || voiceLive.saving),
   );
@@ -492,10 +499,11 @@ export function Composer({
               color: "var(--fg-muted)",
             }}
           >
-            {totalDocs}/{MAX_DOCS} ·{" "}
-            {libraryDocuments.length > 0
-              ? "ingested to your library"
-              : DOC_BUDGET_HINT}
+            {totalDocs} attached ·{" "}
+            {maxDocuments > 0 ? `${maxDocuments} max` : "server-managed limit"} ·{" "}
+            {capabilities?.ingestPath === "library"
+              ? "Content Understanding library"
+              : "session context"}
           </li>
         </ul>
       )}
@@ -503,6 +511,7 @@ export function Composer({
       <div
         style={{
           display: "flex",
+          flexWrap: "wrap",
           gap: 8,
           alignItems: "flex-end",
           position: "relative",
@@ -605,12 +614,12 @@ export function Composer({
           ref={fileInputRef}
           type="file"
           multiple
-          accept={FILE_ACCEPT}
+          accept={accept}
           className="visually-hidden"
           aria-hidden="true"
           tabIndex={-1}
           onChange={(e) => {
-            onPickFiles(e.target.files);
+            void onPickFiles(e.target.files);
             // Reset so re-selecting the same file fires onChange again.
             e.target.value = "";
           }}
@@ -618,21 +627,29 @@ export function Composer({
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          disabled={uploading || atDocLimit}
+          disabled={!capabilities || uploading || atDocLimit}
           aria-busy={uploading}
           aria-label={
             atDocLimit
-              ? `Document limit reached (${MAX_DOCS})`
-              : uploading
+              ? `Attachment limit reached (${maxDocuments})`
+              : !capabilities
+                ? capabilitiesError
+                  ? "Attachments unavailable"
+                  : "Loading attachment capabilities"
+                : uploading
                 ? "Uploading document"
-                : "Attach a document"
+                : "Attach files"
           }
           title={
             atDocLimit
-              ? `You can upload at most ${MAX_DOCS} documents per chat`
-              : uploading
+              ? `You can attach at most ${maxDocuments} files here`
+              : !capabilities
+                ? capabilitiesError ?? "Loading attachment capabilities"
+                : uploading
                 ? "Uploading…"
-                : `Attach a document (${DOC_BUDGET_HINT})`
+                : capabilities
+                  ? `Attach ${capabilities.modalities.join(", ")} files up to ${formatBytes(capabilities.maxBytes)}`
+                  : "Loading attachment capabilities"
           }
           style={{
             alignSelf: "stretch",
@@ -644,58 +661,53 @@ export function Composer({
             color: "var(--fg)",
             fontSize: "1.15em",
             lineHeight: 1,
-            cursor: uploading || atDocLimit ? "not-allowed" : "pointer",
-            opacity: uploading || atDocLimit ? 0.45 : 1,
+            cursor: !capabilities || uploading || atDocLimit ? "not-allowed" : "pointer",
+            opacity: !capabilities || uploading || atDocLimit ? 0.45 : 1,
           }}
         >
           {uploading ? "…" : "📎"}
         </button>
-
-        <button
-          type="button"
-          onClick={voice.toggle}
-          disabled={!voice.supported || voice.transcribing || voiceLiveBusy}
-          aria-pressed={voice.recording}
-          aria-busy={voice.transcribing}
-          aria-label={
-            voiceLiveBusy
-              ? "Voice dictation unavailable while Voice Live is active"
-              : voice.transcribing
-              ? "Transcribing audio"
-              : voice.recording
-                ? "Stop recording"
-                : "Record a voice message"
-          }
-          title={
-            voiceLiveBusy
-              ? "Stop Voice Live before recording a dictated message"
-              : !voice.supported
-              ? "Voice input isn't supported in this browser"
-              : voice.transcribing
-                ? "Transcribing…"
-                : voice.recording
-                  ? "Stop recording"
-                  : "Record a voice message"
-          }
-          style={{
-            alignSelf: "stretch",
-            minHeight: 46,
-            padding: "0 14px",
-            borderRadius: 10,
-            border: "1px solid var(--border)",
-            background: voice.recording ? "var(--danger)" : "var(--bg)",
-            color: voice.recording ? "#fff" : "var(--fg)",
-            fontSize: "1.15em",
-            lineHeight: 1,
-            cursor:
-              !voice.supported || voice.transcribing || voiceLiveBusy
-                ? "not-allowed"
-                : "pointer",
-            opacity: voice.supported && !voiceLiveBusy ? 1 : 0.45,
-          }}
-        >
-          {voice.transcribing ? "…" : voice.recording ? "■" : "🎙"}
-        </button>
+        {!capabilities ? (
+          <div
+            className={capabilitiesError ? "inspector-error" : "inspector-empty"}
+            role={capabilitiesError ? "alert" : "status"}
+          >
+            {capabilitiesError
+              ? `Attachments unavailable: ${capabilitiesError}`
+              : "Loading attachment capabilities…"}
+            {capabilitiesError ? (
+              <button type="button" onClick={onRetryCapabilities}>Retry</button>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="upload-status-list" aria-live="polite">
+            {uploads.map((upload) => (
+              <div key={upload.id} className="upload-status-row">
+                <span>
+                  {upload.filename} · {upload.status}
+                  {upload.error ? ` · ${upload.error}` : ""}
+                </span>
+                {upload.status === "failed" ? (
+                  <>
+                    <button
+                      type="button"
+                      aria-label={`Retry upload ${upload.filename}`}
+                      onClick={() => onRetryUpload?.(upload.id)}
+                    >
+                      Retry
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Dismiss failed upload ${upload.filename}`}
+                      onClick={() => onDismissUpload?.(upload.id)}
+                    >
+                      Dismiss
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            ))}
+        </div>
 
         {voiceLive && (
           <button
@@ -703,20 +715,18 @@ export function Composer({
             onClick={voiceLive.active ? voiceLive.stop : voiceLive.start}
             disabled={
               !voiceLive.supported || voiceLive.ending || voiceLive.saving
-                || voiceLive.saveBlocked || voice.recording || voice.transcribing
+                || voiceLive.saveBlocked
             }
             aria-pressed={voiceLive.active}
             aria-busy={
               voiceLive.connecting || voiceLive.ending || voiceLive.saving
             }
             aria-label={
-              voice.recording || voice.transcribing
-                ? "Stop voice dictation before starting live voice"
-                : voiceLive.saveBlocked
+              voiceLive.saveBlocked
                 ? "Retry saving the voice transcript below"
                 : voiceLive.saving
                 ? "Saving live voice transcript"
-                : voiceLive.active
+              : voiceLive.active
                 ? "Stop live voice conversation"
                 : voiceLive.retrying
                   ? "Retry live voice conversation"
@@ -725,8 +735,6 @@ export function Composer({
             title={
               !voiceLive.supported
                 ? "Live voice isn't supported in this browser"
-                : voice.recording || voice.transcribing
-                  ? "Stop voice dictation before starting Voice Live"
                 : voiceLive.saveBlocked
                   ? "Save the previous Voice Live transcript before starting again"
                 : voiceLive.active
@@ -740,16 +748,14 @@ export function Composer({
               borderRadius: 10,
               border: `1px solid ${voiceLive.active ? "var(--danger)" : "var(--accent)"}`,
               background: voiceLive.active ? "var(--danger)" : "var(--accent)",
-              color: voiceLive.active ? "#fff" : "var(--accent-fg)",
+              color: voiceLive.active ? "var(--danger-fg)" : "var(--accent-fg)",
               fontSize: "1.15em",
               lineHeight: 1,
               cursor:
                 !voiceLive.supported ||
                 voiceLive.ending ||
                 voiceLive.saving ||
-                voiceLive.saveBlocked ||
-                voice.recording ||
-                voice.transcribing
+                voiceLive.saveBlocked
                   ? "not-allowed"
                   : "pointer",
               opacity: voiceLive.supported ? 1 : 0.45,
@@ -797,13 +803,14 @@ export function Composer({
         />
         {streaming ? (
           <button
+            type="button"
             onClick={onStop}
             style={{
               padding: "12px 18px",
               borderRadius: 10,
               border: "1px solid var(--border)",
               background: "var(--danger)",
-              color: "#fff",
+              color: "var(--danger-fg)",
               fontWeight: 600,
             }}
           >
@@ -811,6 +818,7 @@ export function Composer({
           </button>
         ) : (
           <button
+            type="button"
             onClick={submit}
             disabled={disabled || !text.trim()}
             style={{
@@ -828,27 +836,6 @@ export function Composer({
         )}
       </div>
 
-      {voiceLive?.settings && (
-        <div style={{ marginTop: 8 }}>
-          <VoiceSettingsPanel {...voiceLive.settings} locked={voiceLiveBusy} />
-        </div>
-      )}
-
-      <div
-        aria-live="polite"
-        style={{
-          minHeight: 16,
-          marginTop: 6,
-          fontSize: "0.75em",
-          color: voice.recording ? "var(--danger)" : "var(--fg-muted)",
-        }}
-      >
-        {voice.recording
-          ? "● Recording… click the mic again to stop."
-          : voice.transcribing
-            ? "Transcribing your audio…"
-            : ""}
-      </div>
     </div>
   );
 }

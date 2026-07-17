@@ -48,19 +48,26 @@ def _uid(client: TestClient) -> str:
     return client.get("/api/entitlement").json()["userId"]
 
 
-def _new_session(client: TestClient) -> str:
-    resp = client.post("/api/sessions", json={"title": "Chat", "model": "gpt-5.2"})
+def _new_session(
+    client: TestClient, library_document_ids: list[str] | None | object = ...
+) -> str:
+    body: dict = {"title": "Chat", "model": "gpt-5.2"}
+    if library_document_ids is not ...:
+        body["libraryDocumentIds"] = library_document_ids
+    resp = client.post("/api/sessions", json=body)
     assert resp.status_code == 201, resp.text
     return resp.json()["id"]
 
 
-async def _seed_ready_doc(client: TestClient, user_id: str) -> UserDocument:
+async def _seed_ready_doc(
+    client: TestClient, user_id: str, filename: str = "brief.md"
+) -> UserDocument:
     # The retrieval service shares the ingestor's in-memory stores, so seeding
     # through the ingestor's library/blob makes the document visible to chat.
     ingestor = client.app.state.document_ingestor
     doc = UserDocument(
         userId=user_id,
-        filename="brief.md",
+        filename=filename,
         status=DocumentStatus.ready,
         summary="Project Falcon status brief",
     )
@@ -112,5 +119,37 @@ def test_no_library_block_when_disabled():
         messages = client.app.state.gateway.last_messages
         assert all("BEGIN LIBRARY" not in m["content"] for m in messages)
         assert client.app.state.document_retrieval is None
+    finally:
+        client.__exit__(None, None, None)
+
+
+async def test_explicit_empty_library_selection_injects_nothing():
+    client = _make_client(document_understanding_enabled=True)
+    try:
+        uid = _uid(client)
+        await _seed_ready_doc(client, uid)
+        sid = _new_session(client, [])
+        _chat(client, sid)
+        messages = client.app.state.gateway.last_messages
+        assert all("BEGIN LIBRARY" not in message["content"] for message in messages)
+    finally:
+        client.__exit__(None, None, None)
+
+
+async def test_nonempty_library_selection_is_an_exact_allowlist():
+    client = _make_client(document_understanding_enabled=True)
+    try:
+        uid = _uid(client)
+        selected = await _seed_ready_doc(client, uid, "selected.md")
+        await _seed_ready_doc(client, uid, "excluded.md")
+        sid = _new_session(client, [selected.id])
+        _chat(client, sid)
+        library = next(
+            message["content"]
+            for message in client.app.state.gateway.last_messages
+            if "BEGIN LIBRARY" in message["content"]
+        )
+        assert "selected.md" in library
+        assert "excluded.md" not in library
     finally:
         client.__exit__(None, None, None)

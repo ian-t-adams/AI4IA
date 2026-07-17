@@ -11,8 +11,9 @@ and tool safety; the web app is the user interface.
 2. Sign in with Entra when prompted. Local/dev environments may use a configured
    dev identity instead.
 3. Start a chat session or reopen an existing session from the sidebar.
-4. Pick a model only when the default is not right for the task. The app clamps
-   model parameters to catalog limits.
+4. Open the Conversation Inspector to change the model, instructions, agent,
+   tools, context, memory, usage, or Voice Live settings. The app clamps model
+   parameters to catalog limits.
 
 ## Chat well
 
@@ -33,10 +34,23 @@ and tool safety; the web app is the user interface.
   governed tool path as chat.
 - Attach only the tools an agent needs. Tool output is metered, logged, bounded,
   and redacted where applicable.
+- A selected agent is the standing conversation persona. An explicit `@agent`
+  mention remains a one-turn override. The inspector shows inherited and
+  conversation-level tool changes; the API authorizes every call again at execution.
+- Tool rows state whether a capability is available in typed chat, Voice Live, or
+  both. Typed-only tools are never silently advertised to Voice Live.
 
 ## Documents and media
 
-AI4IA has two document paths:
+The composer has one **Attach** action for documents, images, audio, and video.
+The API advertises and enforces the actual type, size, count, modality, and ingest
+path limits. Uploads are queued sequentially, show progress/failure, and can be
+retried or dismissed.
+The Attach control remains disabled until those capabilities load. An uploaded
+library document appears as selected context only after the session association
+succeeds. Active uploads temporarily block conversation navigation so a late
+completion cannot attach to or appear in another conversation.
+AI4IA has two storage/context paths:
 
 - **Session attachments** add bounded text to the current chat only.
 - **Document library** uploads a reusable, user-owned document, enriches it,
@@ -53,6 +67,12 @@ Sharing is tenant-scoped:
 - `public` means tenant-authenticated users can read it. It is not an anonymous
   internet link.
 
+Owned and shared documents can be explicitly selected for a conversation. A missing
+selection retains legacy all-accessible behavior, an explicit empty selection disables
+library context, and a non-empty selection is an exact allowlist. Revoking a share
+removes that document from effective retrieval and tools immediately, even if its
+stale id remains in an older session record.
+
 ## Voice
 
 - Turn-based speech uses the normal API path.
@@ -63,13 +83,12 @@ Sharing is tenant-scoped:
 - The orange live microphone starts and stops Voice Live inside the current chat.
   The normal transcript and composer stay available, and finalized spoken turns
   are saved into that same session.
-- Open **Voice settings** beside the composer to choose the current/default or an
-  enabled agent, a **provider**, that provider's model, a voice, and optional
-  governed tools.
-  **Advanced** includes instructions, temperature, turn detection, transcription,
-  and a language hint. Settings are stored in this browser, stale values fall back
-  safely, and controls lock while connected because changes apply to the next
-  session.
+- Open **Voice** in the Conversation Inspector to choose the provider, provider
+  model, voice, locale, temperature, turn detection, transcription, noise/echo,
+  and interruption behavior. Settings apply to the next connection.
+- Voice has no separate instructions field. The selected agent persona is
+  authoritative; otherwise the saved conversation system prompt is injected by
+  the API for both providers.
 - Two providers are available when an operator enables both: **Azure OpenAI**
   (the default, with a catalog realtime model and its usual voice/turn-detection
   options) and **Azure Speech** (a second, opt-in provider with six curated
@@ -105,9 +124,15 @@ authenticated API routes rather than public blob URLs.
 ## Memory
 
 When memory is enabled, AI4IA can recall prior user context and can save ready
-document summaries to memory. You can forget saved document memories through the
-document controls. Current gap: there is no global memory toggle or recalled-memory
-indicator in the chat UI.
+document summaries to memory. The inspector lists memories owned by the current
+user and supports confirmed, item-labelled deletion with pending/error/retry state
+when the configured backend can verify and delete an owned record. There is no
+global consent/toggle yet.
+
+The Usage section reports known token/cost subtotals and request coverage when some
+providers omit usage. `Unknown` is shown instead of zero when every request is
+unknown. Prompt pressure refers only to the latest metered turn and is unavailable
+when that turn used a different model or lacks prompt-token metadata.
 
 ## Custom tools and web search
 
@@ -142,10 +167,18 @@ flags when a window was truncated, so large tenants stay responsive. User identi
 are shown as stable internal identifiers; see the troubleshooting note below.
 
 Platform resources shows live Azure Monitor metrics for the deployment's Container
-App (replicas, restarts), Cosmos DB, Azure AI Search, and PostgreSQL (CPU, storage,
-connections). Each tile degrades to unavailable when its Azure resource id, the
+App (requests, response time, replicas, restarts), Cosmos DB, Azure AI Search, and
+PostgreSQL (CPU, storage, connections). Each tile degrades to unavailable when its Azure resource id, the
 `azure-monitor-query` SDK, or the API identity's Monitoring Reader permission is
 missing; a `—` cell means no data for that metric, not an error.
+
+Operations and Security panels query the existing Log Analytics workspace with
+fixed bounded KQL. Every panel names its source, source timestamp, lag, and
+`ok`/`partial`/`stale`/`unavailable` state. Request and dependency panels include
+p50/p95/p99 latency where Application Insights data exists. Voice, tools/MCP,
+documents, memory, usage coverage, and governance blocks are metadata-only.
+Exact SimpleL7Proxy queue/fairness/circuit-breaker metrics remain unsupported unless
+the current proxy exports stable queryable events.
 
 ## Data boundaries
 
@@ -159,12 +192,12 @@ missing; a `—` cell means no data for that metric, not an error.
 
 ## Known gaps
 
-- The library UI is document-centric; backend support for image, audio, and video
-  exists, but uploads are not first-class in the picker.
 - Custom analyzer authoring, folder-level sharing, and anonymous public links are
   not implemented.
-- Memory has save/forget and automatic recall, but no global user-facing toggle or
-  recalled-memory indicator.
+- Memory has no global user-facing enable/disable preference.
+- Some proxy/APIM/provider stage percentiles and quota forecasts remain unavailable
+  until the current telemetry sources expose stable dimensions; the admin UI labels
+  those states rather than fabricating zeroes.
 
 ## Troubleshooting
 

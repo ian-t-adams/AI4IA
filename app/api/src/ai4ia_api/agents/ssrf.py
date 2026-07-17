@@ -27,6 +27,7 @@ import socket
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
+from ..logging_setup import emit_security_block
 # A resolver maps a hostname to a list of IP-address strings. The default uses
 # the system resolver; tests inject a deterministic stub.
 Resolver = Callable[[str], list[str]]
@@ -65,6 +66,14 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
 
 def validate_public_https_url(url: str, *, resolver: Resolver | None = None) -> str:
+    try:
+        return _validate_public_https_url(url, resolver=resolver)
+    except SsrfError:
+        emit_security_block("ssrf", "endpoint_rejected", "ssrf_guard")
+        raise
+
+
+def _validate_public_https_url(url: str, *, resolver: Resolver | None = None) -> str:
     """Validate ``url`` as a safe, public HTTPS endpoint and return its host.
 
     Raises :class:`SsrfError` if the scheme is not HTTPS, the URL carries
@@ -121,6 +130,14 @@ def validate_public_https_url(url: str, *, resolver: Resolver | None = None) -> 
 
 
 def resolve_pinned_ip(host: str, *, resolver: Resolver | None = None) -> str:
+    try:
+        return _resolve_pinned_ip(host, resolver=resolver)
+    except SsrfError:
+        emit_security_block("ssrf", "connection_rejected", "ssrf_guard")
+        raise
+
+
+def _resolve_pinned_ip(host: str, *, resolver: Resolver | None = None) -> str:
     """Resolve ``host`` to a public IP that an outbound socket can be pinned to.
 
     This is the *transport-owned* half of the SSRF defense. :func:`validate_public_https_url`

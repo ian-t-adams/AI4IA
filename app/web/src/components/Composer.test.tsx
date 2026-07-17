@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { Composer } from "./Composer";
@@ -62,6 +62,15 @@ function setup(overrides: Partial<ComposerProps> = {}) {
     documents: [],
     libraryDocuments: [],
     uploading: false,
+    capabilities: {
+      ingestPath: "library",
+      maxBytes: 1_000_000,
+      maxPerUserDocuments: 100,
+      maxPerSessionDocuments: 8,
+      extensions: [".pdf", ".mp3"],
+      mimeTypes: ["application/pdf", "audio/*"],
+      modalities: ["document", "audio"],
+    },
     onSend,
     onStop,
     onUpload: vi.fn(),
@@ -162,38 +171,7 @@ describe("Composer", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
-  it("disables the voice record button when capture is unsupported", () => {
-    setup();
-    expect(
-      screen.getByRole("button", { name: "Record a voice message" }),
-    ).toBeDisabled();
-  });
-
-  it("prevents dictation and Voice Live from capturing simultaneously", () => {
-    recorderState.supported = true;
-    setup({
-      voiceLive: {
-        active: true,
-        supported: true,
-        connecting: false,
-        ending: false,
-        saving: false,
-        saveBlocked: false,
-        retrying: false,
-        start: vi.fn(),
-        stop: vi.fn(),
-      },
-    });
-    expect(
-      screen.getByRole("button", {
-        name: "Voice dictation unavailable while Voice Live is active",
-      }),
-    ).toBeDisabled();
-  });
-
-  it("requires dictation to stop before Voice Live can start", () => {
-    recorderState.supported = true;
-    recorderState.recording = true;
+  it("uses one microphone action for Voice Live and no dictation/settings controls", () => {
     setup({
       voiceLive: {
         active: false,
@@ -207,131 +185,100 @@ describe("Composer", () => {
         stop: vi.fn(),
       },
     });
-    expect(
-      screen.getByRole("button", {
-        name: "Stop voice dictation before starting live voice",
-      }),
-    ).toBeDisabled();
-  });
-
-  it("disables dictation while Voice Live is closing (ending), not just while active", () => {
-    recorderState.supported = true;
-    setup({
-      voiceLive: {
-        active: false,
-        supported: true,
-        connecting: false,
-        ending: true,
-        saving: false,
-        saveBlocked: false,
-        retrying: false,
-        start: vi.fn(),
-        stop: vi.fn(),
-      },
-    });
-    expect(
-      screen.getByRole("button", {
-        name: "Voice dictation unavailable while Voice Live is active",
-      }),
-    ).toBeDisabled();
-  });
-
-  it("disables dictation while a Voice Live transcript is saving", () => {
-    recorderState.supported = true;
-    setup({
-      voiceLive: {
-        active: false,
-        supported: true,
-        connecting: false,
-        ending: false,
-        saving: true,
-        saveBlocked: false,
-        retrying: false,
-        start: vi.fn(),
-        stop: vi.fn(),
-      },
-    });
-    expect(
-      screen.getByRole("button", {
-        name: "Voice dictation unavailable while Voice Live is active",
-      }),
-    ).toBeDisabled();
-  });
-
-  it("does not render the voice settings disclosure when no settings prop is supplied", () => {
-    setup({
-      voiceLive: {
-        active: false,
-        supported: true,
-        connecting: false,
-        ending: false,
-        saving: false,
-        saveBlocked: false,
-        retrying: false,
-        start: vi.fn(),
-        stop: vi.fn(),
-      },
-    });
+    expect(screen.getByRole("button", { name: "Start live voice conversation" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Record a voice message" })).toBeNull();
     expect(screen.queryByText("Voice settings")).toBeNull();
   });
 
-  it("renders the inline voice settings disclosure (no dialog) and locks it while Voice Live is busy", () => {
-    setup({
-      voiceLive: {
-        active: true,
-        supported: true,
-        connecting: false,
-        ending: false,
-        saving: false,
-        saveBlocked: false,
-        retrying: false,
-        start: vi.fn(),
-        stop: vi.fn(),
-        settings: {
-          agents: [],
-          providers: voiceProviderCatalog.providers.map(
-            (provider: (typeof voiceProviderCatalog.providers)[number]) => ({
-            id: provider.id,
-            displayLabel: provider.displayLabel,
-            description: provider.description,
-            }),
-          ),
-          provider: "azure_openai",
-          onProviderChange: vi.fn(),
-          activeProvider: voiceProviderCatalog.providers[0],
-          defaultAgentLabel: "Current chat agent",
-          explicitAgent: null,
-          onAgentChange: vi.fn(),
-          models: [{ id: "gpt-realtime", displayName: "GPT Realtime" }],
-          defaultModelLabel: "Default (GPT Realtime)",
-          explicitModel: null,
-          onModelChange: vi.fn(),
-          speechModel: "gpt-realtime",
-          onSpeechModelChange: vi.fn(),
-          voice: "alloy",
-          onVoiceChange: vi.fn(),
-          toolsAvailable: false,
-          tools: false,
-          onToolsChange: vi.fn(),
-          settings: {
-            instructions: "Be brief.",
-            temperature: null,
-            vadType: "server_vad",
-            vadThreshold: null,
-            vadSilenceMs: null,
-            transcriptionModel: "whisper-1",
-            language: "",
-          },
-          speechSettings: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
-          onSettingsChange: vi.fn(),
-          onSpeechSettingsChange: vi.fn(),
-          onReset: vi.fn(),
-        },
-      },
-    });
+  it("uploads multiple selected files sequentially", async () => {
+      let releaseFirst!: () => void;
+      const first = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const onUpload = vi
+        .fn<(file: File) => Promise<void>>()
+        .mockImplementationOnce(() => first)
+        .mockResolvedValue(undefined);
+      const { user } = setup({ onUpload });
+      const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+      const files = [
+        new File(["one"], "one.pdf", { type: "application/pdf" }),
+        new File(["two"], "two.mp3", { type: "audio/mpeg" }),
+      ];
+      const uploadPromise = user.upload(input, files);
+      await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(1));
+      releaseFirst();
+      await uploadPromise;
+      expect(onUpload).toHaveBeenCalledTimes(2);
+      expect(onUpload.mock.calls.map(([file]) => file.name)).toEqual([
+        "one.pdf",
+        "two.mp3",
+      ]);
+  });
 
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByText("Voice settings")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Voice" })).toBeDisabled();
+  it("uses server capabilities for client feedback without replacing API authority", async () => {
+      const onUpload = vi.fn(async () => {});
+      const onError = vi.fn();
+      const { user } = setup({
+        onUpload,
+        onError,
+        capabilities: {
+          ingestPath: "session",
+          maxBytes: 3,
+          maxPerUserDocuments: null,
+          maxPerSessionDocuments: 8,
+          extensions: [".txt"],
+          mimeTypes: ["text/*"],
+          modalities: ["text"],
+        },
+      });
+
+      const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(
+        input,
+        new File(["oversize"], "large.txt", { type: "text/plain" }),
+      );
+      expect(onUpload).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenCalledWith(expect.stringContaining("exceeds"));
+  });
+
+  it("disables Attach until capabilities load and offers an explicit retry", async () => {
+    const onRetryCapabilities = vi.fn();
+    setup({
+      capabilities: null,
+      capabilitiesError: "configuration unavailable",
+      onRetryCapabilities,
+    });
+    expect(screen.getByRole("button", { name: "Attachments unavailable" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("configuration unavailable");
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetryCapabilities).toHaveBeenCalled();
+  });
+
+  it("labels retry and dismiss actions with the failed filename", async () => {
+      const onRetryUpload = vi.fn();
+      const onDismissUpload = vi.fn();
+      const { user } = setup({
+        uploads: [
+          {
+            id: "u1",
+            filename: "meeting.mp3",
+            status: "failed",
+            error: "network error",
+          },
+        ],
+        onRetryUpload,
+        onDismissUpload,
+      });
+      await user.click(
+        screen.getByRole("button", { name: "Retry upload meeting.mp3" }),
+      );
+      expect(onRetryUpload).toHaveBeenCalledWith("u1");
+      await user.click(
+        screen.getByRole("button", {
+          name: "Dismiss failed upload meeting.mp3",
+        }),
+      );
+      expect(onDismissUpload).toHaveBeenCalledWith("u1");
   });
 });

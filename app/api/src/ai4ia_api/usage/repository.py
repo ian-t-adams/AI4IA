@@ -26,6 +26,10 @@ class UsageRepository(Protocol):
         self, user_id: str, *, since: datetime, since_days: int, now: datetime
     ) -> UsageSummary: ...
 
+    async def list_for_session(
+        self, user_id: str, session_id: str, *, limit: int
+    ) -> list[UsageRecord]: ...
+
     async def query_records(
         self, *, since: datetime, now: datetime, limit: int
     ) -> list[UsageRecord]: ...

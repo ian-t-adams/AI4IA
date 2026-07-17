@@ -15,18 +15,20 @@ SimpleL7Proxy.
 - Auth: dev mode for local work, Entra validation for deployed environments,
   canonical internal user ids, and admin gates.
 - Chat: sessions/history, streaming persistence, model selection, per-model token
-  caps, optional rolling summarization, `@agent` routing, and slash commands.
+  caps, optional rolling summarization, standing and one-turn agent routing,
+  conversation tool/document selections, inspector snapshots, and slash commands.
 - Agents/tools: curated agents, user-defined agents, workflows, governed built-in
   tools, generated image/video/document artifacts, Web IQ search tools when
   enabled, and user-registered remote MCP servers.
 - Memory: disabled/in-memory/pgvector/mem0 backends, automatic recall, explicit
-  forget, and document save/forget.
+  forget, document save/forget, and bounded caller-owned mem0 insight/deletion.
 - Documents: per-session attachments plus the feature-gated cross-session library,
   Content Understanding ingest, retrieval, code interpreter, annotations, sharing,
   media playback metadata, and processing/export tools.
 - Operations: usage ledger, entitlements, admin usage rollups, Azure Monitor
-  resource panels, structured logs, correlation ids, and Application Insights
-  export when configured.
+  resource panels, fixed bounded Log Analytics operations/security queries,
+  structured metadata events, correlation ids, and Application Insights export
+  when configured.
 
 ## Local dev
 
@@ -59,5 +61,5 @@ they enable. The authoritative flag list is
 
 ## Current gaps
 
-- Memory has no global user-facing consent/toggle or recalled-memory indicator.
-- Custom analyzer authoring and non-document library upload UI are not surfaced.
+- Memory has no global user-facing consent/toggle.
+- Custom analyzer authoring is not surfaced.

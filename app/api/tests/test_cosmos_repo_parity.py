@@ -11,6 +11,8 @@ logic is exercised without any live network or managed identity.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from azure.cosmos.exceptions import (
     CosmosAccessConditionFailedError,
@@ -19,7 +21,7 @@ from azure.cosmos.exceptions import (
 
 from ai4ia_api.library.cosmos_repo import CosmosDocumentLibraryRepository
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
-from ai4ia_api.library.models import UserDocument
+from ai4ia_api.library.models import DocumentStatus, UserDocument
 from ai4ia_api.library.repository import DocumentNotFoundError
 
 
@@ -32,6 +34,8 @@ class _FakeDocs:
         # When set, replace_item raises this (simulating a delete or ETag race
         # between the read and the conditional write).
         self.replace_error: Exception | None = None
+        self.patch_conflicts = 0
+        self.patch_etags: list[str | None] = []
 
     async def read_item(self, *, item: str, partition_key: str):
         if self._existing is None:
@@ -43,6 +47,32 @@ class _FakeDocs:
             raise self.replace_error
         self.replaces.append(body)
         return body
+
+    async def patch_item(
+        self,
+        *,
+        item,
+        partition_key,
+        patch_operations,
+        etag=None,
+        match_condition=None,
+    ):
+        self.patch_etags.append(etag)
+        if self.patch_conflicts:
+            self.patch_conflicts -= 1
+            assert self._existing is not None
+            self._existing = {
+                **self._existing,
+                "visibility": "private",
+                "acl": [],
+                "_etag": "e2",
+            }
+            raise CosmosAccessConditionFailedError(message="etag")
+        assert self._existing is not None
+        for operation in patch_operations:
+            self._existing[operation["path"].lstrip("/")] = operation["value"]
+        self._existing["_etag"] = "e3"
+        return self._existing
 
 
 def _repo(existing: dict | None = None) -> tuple[CosmosDocumentLibraryRepository, _FakeDocs]:
@@ -110,6 +140,29 @@ async def test_in_memory_update_missing_id_raises():
     repo = InMemoryDocumentLibraryRepository()
     with pytest.raises(DocumentNotFoundError):
         await repo.update_document(_doc(user="alice"))
+
+
+async def test_ingest_patch_retries_cas_without_restoring_revoked_acl():
+    old = datetime.now(timezone.utc) - timedelta(hours=5)
+    doc = _doc(user="alice", updatedAt=old)
+    existing = {
+        **doc.model_dump(mode="json"),
+        "visibility": "shared",
+        "acl": ["bob@example.com"],
+        "_etag": "e1",
+    }
+    repo, fake = _repo(existing=existing)
+    doc._etag = "e1"
+    fake.patch_conflicts = 1
+    saved = await repo.patch_ingest_fields(
+        doc,
+        {"status": DocumentStatus.ready, "chunkCount": 2},
+    )
+    assert fake.patch_etags == ["e1", "e2"]
+    assert saved.status == DocumentStatus.ready
+    assert saved.visibility.value == "private"
+    assert saved.acl == []
+    assert saved.updatedAt > old
 
 
 # --- sharing-lookup parity: the Cosmos repo issues the right

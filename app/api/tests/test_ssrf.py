@@ -66,6 +66,19 @@ def test_blocks_hostname_resolving_to_private():
         )
 
 
+def test_rejection_emits_bounded_security_event(monkeypatch):
+    events: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.agents.ssrf.emit_security_block",
+        lambda category, reason, source: events.append((category, reason, source)),
+    )
+    with pytest.raises(SsrfError):
+        validate_public_https_url(
+            "https://internal.example/rpc", resolver=_only(["10.1.2.3"])
+        )
+    assert events == [("ssrf", "endpoint_rejected", "ssrf_guard")]
+
+
 def test_blocks_dns_rebinding_one_bad_record():
     # One public + one internal record must fail the whole host.
     with pytest.raises(SsrfError):

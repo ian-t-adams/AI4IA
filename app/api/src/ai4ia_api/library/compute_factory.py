@@ -58,7 +58,12 @@ class DocumentComputeService:
         return self._router.classify(text)
 
     def build_capability(
-        self, *, user_id: str, nonce: str, email: str | None = None
+        self,
+        *,
+        user_id: str,
+        nonce: str,
+        email: str | None = None,
+        allowed_document_ids: set[str] | None = None,
     ) -> tuple[list[dict], dict[str, Handler]]:
         """Build the ``run_code`` + ``export_document`` tools for this turn."""
         return build_compute_capability(
@@ -69,6 +74,7 @@ class DocumentComputeService:
             user_id=user_id,
             nonce=nonce,
             email=email,
+            allowed_document_ids=allowed_document_ids,
         )
 
     async def close(self) -> None:

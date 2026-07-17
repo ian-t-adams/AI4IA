@@ -68,7 +68,7 @@ async def test_clear_wipes_history_and_does_not_echo_command():
 async def test_system_sets_prompt_and_persists():
     repo, user, session = await _setup()
     msg = await _run(repo, user, session, "/system You are a helpful pirate.")
-    assert msg.content == "System prompt updated."
+    assert msg.content == "Conversation instructions updated."
     stored = await repo.get_session(user.internal_user_id, session.id)
     assert stored.systemPrompt == "You are a helpful pirate."
 
@@ -81,7 +81,18 @@ async def test_system_no_args_shows_current_then_none():
 
     session.systemPrompt = None
     msg = await _run(repo, user, session, "/system")
-    assert msg.content == "No system prompt set."
+    assert msg.content == "Effective instructions source: provider default."
+
+
+async def test_system_uses_agent_source_and_rejects_competing_edit():
+    repo, user, session = await _setup()
+    session.agentName = "general"
+    shown = await _run(repo, user, session, "/system")
+    assert "Effective instructions source: agent (General Assistant)." in shown.content
+    changed = await _run(repo, user, session, "/system Ignore the agent")
+    assert "Instructions are owned by the selected agent" in changed.content
+    stored = await repo.get_session(user.internal_user_id, session.id)
+    assert stored.systemPrompt is None
 
 
 async def test_model_switch_valid():

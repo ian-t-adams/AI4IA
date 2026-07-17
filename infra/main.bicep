@@ -809,6 +809,7 @@ module api 'modules/api.bicep' = {
     // is granted once at subscription scope above, as the batch API requires).
     // Empty when a resource is not deployed -> that panel stays 'unavailable'.
     metricsSearchResourceId: search.outputs.searchId
+    logAnalyticsWorkspaceCustomerId: monitoring.outputs.logAnalyticsCustomerId
     metricsPostgresResourceId: data.outputs.postgresId
     metricsCosmosResourceId: data.outputs.cosmosId
     // Custom tools / BYO MCP. Default OFF. When on, the flag is emitted
