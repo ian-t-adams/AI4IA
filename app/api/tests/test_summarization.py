@@ -11,7 +11,11 @@ from __future__ import annotations
 import pytest
 from types import SimpleNamespace
 
-from ai4ia_api.agents.summarization import SummarizationService, build_summarization_service
+from ai4ia_api.agents.summarization import (
+    ManualSummaryStatus,
+    SummarizationService,
+    build_summarization_service,
+)
 from ai4ia_api.sessions.models import Message, MessageRole, MessageStatus, Session
 
 from .conftest import make_settings
@@ -105,21 +109,22 @@ async def test_summarize_now_folds_all_and_persists():
         gateway=gw, repo=repo, session=session, user_id="u",
         deployment="dep", prior=prior,
     )
-    assert out == "DIGEST"
+    assert out.status is ManualSummaryStatus.committed
+    assert out.summary == "DIGEST"
     assert session.summary == "DIGEST"
     assert session.summarizedThroughMessageId == prior[-1].id
     assert len(gw.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_summarize_now_returns_none_when_nothing_to_fold():
+async def test_summarize_now_returns_insufficient_when_nothing_to_fold():
     svc = SummarizationService()
     gw, repo, session = _FakeGateway(), _FakeRepo(), _session()
     out = await svc.summarize_now(
         gateway=gw, repo=repo, session=session, user_id="u",
         deployment="dep", prior=[],
     )
-    assert out is None
+    assert out.status is ManualSummaryStatus.insufficient
     assert session.summary is None
     assert not gw.calls
 

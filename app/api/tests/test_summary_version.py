@@ -273,3 +273,100 @@ async def test_newer_summary_commit_fences_older_reply():
     assert [message.summaryVersion for message in summary_replies] == [2]
     assert "newer" in summary_replies[0].content
     assert all("older" not in message.content for message in messages)
+
+
+async def test_clear_before_summary_commit_suppresses_insufficient_fallback():
+    repo = InMemorySessionRepository()
+    created = await repo.create_session(Session(userId="u1", model="gpt-5.2"))
+    for message in _prior(created.id):
+        await repo.add_message("u1", message)
+    gateway = BlockingSummaryGateway("stale")
+    pending = asyncio.create_task(
+        execute_command(
+            parsed=parse_input("/summarize"),
+            session=await repo.get_session("u1", created.id),
+            user=AuthenticatedUser(
+                internal_user_id="u1", subject="sub", issuer="iss", provider="dev"
+            ),
+            repo=repo,
+            catalog=load_catalog(),
+            agents=load_agent_catalog(),
+            summarizer=_service(),
+            gateway=gateway,
+        )
+    )
+    await gateway.started.wait()
+    await execute_command(
+        parsed=parse_input("/clear"),
+        session=await repo.get_session("u1", created.id),
+        user=AuthenticatedUser(
+            internal_user_id="u1", subject="sub", issuer="iss", provider="dev"
+        ),
+        repo=repo,
+        catalog=load_catalog(),
+        agents=load_agent_catalog(),
+    )
+    gateway.release.set()
+    result = await pending
+    assert result.content == "Summary was superseded by a newer conversation state."
+    final = await repo.get_session("u1", created.id)
+    assert final.summary is None
+    assert final.summarizedThroughMessageId is None
+    assert [message.content for message in await repo.list_messages("u1", created.id)] == [
+        "Conversation cleared."
+    ]
+
+
+async def test_newer_precommit_summary_suppresses_older_reply():
+    repo = InMemorySessionRepository()
+    created = await repo.create_session(Session(userId="u1", model="gpt-5.2"))
+    for message in _prior(created.id):
+        await repo.add_message("u1", message)
+    older_gateway = BlockingSummaryGateway("older")
+    newer_gateway = BlockingSummaryGateway("newer")
+
+    async def run(gateway):
+        return await execute_command(
+            parsed=parse_input("/summarize"),
+            session=await repo.get_session("u1", created.id),
+            user=AuthenticatedUser(
+                internal_user_id="u1", subject="sub", issuer="iss", provider="dev"
+            ),
+            repo=repo,
+            catalog=load_catalog(),
+            agents=load_agent_catalog(),
+            summarizer=_service(),
+            gateway=gateway,
+        )
+
+    older = asyncio.create_task(run(older_gateway))
+    await older_gateway.started.wait()
+    newer = asyncio.create_task(run(newer_gateway))
+    await newer_gateway.started.wait()
+    newer_gateway.release.set()
+    newer_result = await newer
+    assert newer_result.summaryVersion == 1
+    older_gateway.release.set()
+    older_result = await older
+    assert older_result.summaryVersion is None
+    messages = await repo.list_messages("u1", created.id)
+    summary_replies = [
+        message for message in messages if message.summaryVersion is not None
+    ]
+    assert len(summary_replies) == 1
+    assert "newer" in summary_replies[0].content
+    assert all("older" not in message.content for message in messages)
+
+
+async def test_genuine_insufficient_summary_persists_normal_fallback():
+    repo = InMemorySessionRepository()
+    created = await repo.create_session(Session(userId="u1", model="gpt-5.2"))
+    result = await _run_summarize_command(
+        repo,
+        await repo.get_session("u1", created.id),
+        BlockingSummaryGateway("unused"),
+    )
+    assert result.content == "There's not enough conversation here to summarize yet."
+    messages = await repo.list_messages("u1", created.id)
+    assert messages[-1].content == result.content
+    assert messages[-1].summaryVersion is None
