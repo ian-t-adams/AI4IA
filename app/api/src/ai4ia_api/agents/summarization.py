@@ -212,6 +212,7 @@ class SummarizationService:
         we update it in place here so that persistence captures the new summary."""
         non_command = self._non_command(prior)
         live = self._live_messages(non_command, session.summarizedThroughMessageId)
+        observed_version = session.summaryVersion
         if not live:
             return None
         summary = await self._generate(
@@ -224,8 +225,18 @@ class SummarizationService:
         )
         if not summary:
             return None
-        session.summary = summary
-        session.summarizedThroughMessageId = live[-1].id
+        committed = await repo.commit_summary_if_version(
+            user_id,
+            session.id,
+            expected_version=observed_version,
+            summary=summary,
+            summarized_through_message_id=live[-1].id,
+        )
+        if committed is None:
+            return None
+        session.summary = committed.summary
+        session.summarizedThroughMessageId = committed.summarizedThroughMessageId
+        session.summaryVersion = committed.summaryVersion
         return summary
 
     async def apply(
@@ -251,6 +262,7 @@ class SummarizationService:
         ``recent_turns`` verbatim. Persists incrementally through the repo."""
         non_command = self._non_command(prior)
         through_id = session.summarizedThroughMessageId
+        observed_version = session.summaryVersion
         live = self._live_messages(non_command, through_id)
         summary = session.summary
 
@@ -271,16 +283,18 @@ class SummarizationService:
                 api=api,
                 correlation_id=correlation_id,
             )
-            session.summary = summary
-            session.summarizedThroughMessageId = to_fold[-1].id
-            await repo.patch_session(
+            committed = await repo.commit_summary_if_version(
                 user_id,
                 session.id,
-                {
-                    "summary": summary,
-                    "summarizedThroughMessageId": to_fold[-1].id,
-                },
+                expected_version=observed_version,
+                summary=summary,
+                summarized_through_message_id=to_fold[-1].id,
             )
+            if committed is None:
+                return list(non_command), None
+            session.summary = committed.summary
+            session.summarizedThroughMessageId = committed.summarizedThroughMessageId
+            session.summaryVersion = committed.summaryVersion
             live = keep
 
         # When a fold already happened earlier, ``live`` is the post-summary

@@ -44,6 +44,7 @@ export interface Session {
   agentName: string | null;
   toolOverrides: { added: string[]; removed: string[] };
   libraryDocumentIds: string[] | null;
+  summaryVersion?: number;
   createdAt: string;
   updatedAt: string;
 }

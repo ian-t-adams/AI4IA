@@ -87,8 +87,6 @@ async def execute_command(
     before = {
         "model": session.model,
         "systemPrompt": session.systemPrompt,
-        "summary": session.summary,
-        "summarizedThroughMessageId": session.summarizedThroughMessageId,
     }
 
     # /clear wipes history (including the command itself), so it skips echoing
@@ -96,10 +94,12 @@ async def execute_command(
     if command.kind is CommandKind.clear:
         await repo.clear_messages(user_id, session.id)
         reply = "Conversation cleared."
-        # Clearing history makes any prior rolling summary stale; drop it so a
-        # fresh conversation never inherits a summary of erased turns.
-        session.summary = None
-        session.summarizedThroughMessageId = None
+        # Clear summary state as one versioned mutation. Any summarizer that
+        # started before this increment will discard its stale result.
+        cleared = await repo.invalidate_summary(user_id, session.id)
+        session.summary = cleared.summary
+        session.summarizedThroughMessageId = cleared.summarizedThroughMessageId
+        session.summaryVersion = cleared.summaryVersion
     else:
         await repo.add_message(
             user_id,

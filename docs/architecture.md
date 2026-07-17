@@ -141,6 +141,11 @@ All chat, workflow, command, and summarization writers use those field-scoped
 patch/touch APIs. Unversioned full-session replacement is a guarded failure in both
 repositories, preventing stale conversational workers from overwriting workspace
 policy or document selections.
+Rolling summary state carries a backward-compatible monotonic `summaryVersion`.
+Clear/reset increments that version while atomically clearing the summary and cursor;
+manual and automatic summarizers commit only when their observed version still
+matches, then increment it. A clear or newer summarizer therefore makes stale output
+a benign discard rather than allowing pre-clear context to reappear.
 
 The admin operations plane runs fixed server-owned KQL through managed identity
 against the existing Log Analytics workspace. It accepts only a bounded time window,

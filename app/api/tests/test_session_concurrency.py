@@ -113,6 +113,69 @@ async def test_cosmos_document_list_cas_retries_and_merges():
     assert saved.libraryDocumentIds == ["doc-a", "doc-b"]
 
 
+class _SummarySessions:
+    def __init__(self, session: Session) -> None:
+        self.item = {**session.model_dump(mode="json"), "_etag": "s1"}
+        self.conflict_once = False
+        self.etags: list[str | None] = []
+
+    async def read_item(self, *, item, partition_key):
+        return dict(self.item)
+
+    async def patch_item(
+        self,
+        *,
+        item,
+        partition_key,
+        patch_operations,
+        etag=None,
+        match_condition=None,
+    ):
+        self.etags.append(etag)
+        if self.conflict_once:
+            self.conflict_once = False
+            self.item["model"] = "concurrent-model"
+            self.item["_etag"] = "s2"
+            raise CosmosAccessConditionFailedError(message="etag")
+        for operation in patch_operations:
+            self.item[operation["path"].lstrip("/")] = operation["value"]
+        self.item["_etag"] = "s3"
+        return dict(self.item)
+
+
+async def test_cosmos_summary_version_is_backward_compatible_and_conditional():
+    session = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    fake = _SummarySessions(session)
+    fake.item.pop("summaryVersion")
+    repo._sessions = fake
+
+    cleared = await repo.invalidate_summary("u1", session.id)
+    assert cleared.summaryVersion == 1
+    fake.conflict_once = True
+    committed = await repo.commit_summary_if_version(
+        "u1",
+        session.id,
+        expected_version=1,
+        summary="summary",
+        summarized_through_message_id="m1",
+    )
+    assert committed is not None
+    assert committed.summary == "summary"
+    assert committed.summaryVersion == 2
+    assert committed.model == "concurrent-model"
+    assert fake.etags == ["s1", "s3", "s2"]
+    stale = await repo.commit_summary_if_version(
+        "u1",
+        session.id,
+        expected_version=1,
+        summary="stale",
+        summarized_through_message_id="m0",
+    )
+    assert stale is None
+    assert (await repo.get_session("u1", session.id)).summary == "summary"
+
+
 async def test_stale_command_writer_preserves_model_tools_and_documents():
     repo = InMemorySessionRepository()
     created = await repo.create_session(

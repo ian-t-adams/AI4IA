@@ -43,6 +43,20 @@ class SessionRepository(Protocol):
         legacy_ids: list[str] | None = None,
     ) -> Session: ...
 
+    async def invalidate_summary(
+        self, user_id: str, session_id: str
+    ) -> Session: ...
+
+    async def commit_summary_if_version(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        expected_version: int,
+        summary: str,
+        summarized_through_message_id: str,
+    ) -> Session | None: ...
+
     async def touch_session(self, user_id: str, session_id: str) -> None: ...
 
     async def delete_session(self, user_id: str, session_id: str) -> None: ...

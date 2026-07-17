@@ -157,6 +157,9 @@ class Session(BaseModel):
     # only change what is sent to the model as context, never what is stored.
     summary: str | None = None
     summarizedThroughMessageId: str | None = None
+    # Monotonic generation for summary source state. Clear/reset and successful
+    # summary commits both advance it so stale in-flight summarizers fail closed.
+    summaryVersion: int = 0
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
 

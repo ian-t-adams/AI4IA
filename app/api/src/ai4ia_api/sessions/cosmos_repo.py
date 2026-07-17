@@ -163,6 +163,94 @@ class CosmosSessionRepository:
                 continue
         raise SessionConflictError(session_id)
 
+    async def invalidate_summary(
+        self, user_id: str, session_id: str
+    ) -> Session:
+        result = await self._mutate_summary(
+            user_id,
+            session_id,
+            expected_version=None,
+            summary=None,
+            summarized_through_message_id=None,
+        )
+        assert result is not None
+        return result
+
+    async def commit_summary_if_version(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        expected_version: int,
+        summary: str,
+        summarized_through_message_id: str,
+    ) -> Session | None:
+        return await self._mutate_summary(
+            user_id,
+            session_id,
+            expected_version=expected_version,
+            summary=summary,
+            summarized_through_message_id=summarized_through_message_id,
+        )
+
+    async def _mutate_summary(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        expected_version: int | None,
+        summary: str | None,
+        summarized_through_message_id: str | None,
+    ) -> Session | None:
+        from azure.core import MatchConditions
+        from azure.cosmos.exceptions import (
+            CosmosAccessConditionFailedError,
+            CosmosResourceNotFoundError,
+        )
+
+        for _attempt in range(3):
+            try:
+                raw = await self._sessions.read_item(
+                    item=session_id, partition_key=user_id
+                )
+            except CosmosResourceNotFoundError as exc:
+                raise SessionNotFoundError(session_id) from exc
+            version = int(raw.get("summaryVersion") or 0)
+            if expected_version is not None and version != expected_version:
+                return None
+            next_version = version + 1
+            try:
+                await self._sessions.patch_item(
+                    item=session_id,
+                    partition_key=user_id,
+                    patch_operations=[
+                        {"op": "set", "path": "/summary", "value": summary},
+                        {
+                            "op": "set",
+                            "path": "/summarizedThroughMessageId",
+                            "value": summarized_through_message_id,
+                        },
+                        {
+                            "op": "set",
+                            "path": "/summaryVersion",
+                            "value": next_version,
+                        },
+                        {
+                            "op": "set",
+                            "path": "/updatedAt",
+                            "value": datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                        },
+                    ],
+                    etag=raw.get("_etag"),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+                return await self._owned_session(user_id, session_id)
+            except CosmosAccessConditionFailedError:
+                continue
+        raise SessionConflictError(session_id)
+
     async def touch_session(self, user_id: str, session_id: str) -> None:
         await self._owned_session(user_id, session_id)
         updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

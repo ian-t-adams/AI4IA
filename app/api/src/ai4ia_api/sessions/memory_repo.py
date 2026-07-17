@@ -83,6 +83,36 @@ class InMemorySessionRepository:
             session.updatedAt = datetime.now(timezone.utc)
             return session.model_copy(deep=True)
 
+    async def invalidate_summary(
+        self, user_id: str, session_id: str
+    ) -> Session:
+        async with self._lock:
+            session = await self._owned_session(user_id, session_id)
+            session.summary = None
+            session.summarizedThroughMessageId = None
+            session.summaryVersion += 1
+            session.updatedAt = datetime.now(timezone.utc)
+            return session.model_copy(deep=True)
+
+    async def commit_summary_if_version(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        expected_version: int,
+        summary: str,
+        summarized_through_message_id: str,
+    ) -> Session | None:
+        async with self._lock:
+            session = await self._owned_session(user_id, session_id)
+            if session.summaryVersion != expected_version:
+                return None
+            session.summary = summary
+            session.summarizedThroughMessageId = summarized_through_message_id
+            session.summaryVersion = expected_version + 1
+            session.updatedAt = datetime.now(timezone.utc)
+            return session.model_copy(deep=True)
+
     async def touch_session(self, user_id: str, session_id: str) -> None:
         async with self._lock:
             session = await self._owned_session(user_id, session_id)
