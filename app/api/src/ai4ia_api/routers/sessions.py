@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+from collections.abc import Mapping
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
@@ -20,6 +21,8 @@ from ..sessions.models import (
     MessageSource,
     Session,
     ToolOverrides,
+    normalize_session_title,
+    normalize_tool_overrides,
 )
 from ..sessions.repository import (
     SessionConflictError,
@@ -46,6 +49,11 @@ class CreateSessionRequest(BaseModel):
         default=None, max_length=MAX_LIBRARY_DOCUMENTS_PER_SESSION
     )
 
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str | None) -> str | None:
+        return None if value is None else normalize_session_title(value)
+
 
 class UpdateSessionRequest(BaseModel):
     title: str | None = None
@@ -56,6 +64,13 @@ class UpdateSessionRequest(BaseModel):
     libraryDocumentIds: list[str] | None = Field(
         default=None, max_length=MAX_LIBRARY_DOCUMENTS_PER_SESSION
     )
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("Conversation title cannot be empty.")
+        return normalize_session_title(value)
 
 
 def _repo(request: Request) -> SessionRepository:
@@ -92,7 +107,7 @@ async def _validate_policy_fields(
     user: AuthenticatedUser,
     *,
     agent_name: str | None,
-    overrides: ToolOverrides,
+    overrides: ToolOverrides | Mapping[str, object],
     library_document_ids: list[str] | None,
     validate_agent: bool = True,
     validate_tools: bool = True,
@@ -111,16 +126,15 @@ async def _validate_policy_fields(
             )
         selected = agent.name
 
-    def clean_tools(values: list[str]) -> list[str]:
-        return list(dict.fromkeys((value or "").strip() for value in values if value.strip()))
-
-    added = clean_tools(overrides.added)
-    removed = clean_tools(overrides.removed)
-    if len(added) > 8 or len(removed) > 16:
+    try:
+        normalized_overrides = normalize_tool_overrides(overrides)
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Too many conversation tool overrides.",
-        )
+            detail=str(exc),
+        ) from exc
+    added = normalized_overrides.added
+    removed = normalized_overrides.removed
     unavailable = (
         set(added)
         - await _conversation_addable_tools(request, user.internal_user_id)
@@ -183,6 +197,7 @@ async def create_session(
     session = Session(
         userId=user.internal_user_id,
         title=body.title or "New chat",
+        titleSource="manual" if body.title is not None else "auto",
         model=body.model,
         systemPrompt=body.systemPrompt,
         agentName=agent_name,
@@ -245,7 +260,23 @@ async def update_session(
         changes["toolOverrides"] = next_overrides
     if "libraryDocumentIds" in data:
         changes["libraryDocumentIds"] = next_document_ids
-    return await repo.patch_session(user.internal_user_id, session_id, changes)
+    if "title" in data:
+        changes["titleSource"] = "manual"
+    try:
+        return await repo.patch_session(user.internal_user_id, session_id, changes)
+    except SessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+        ) from exc
+    except SessionConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conversation changed concurrently; reload and try again.",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
 
 
 @router.post("/{session_id}/library-documents/{document_id}", response_model=Session)

@@ -19,7 +19,13 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from .models import Document, Message, Session
+from .models import (
+    Document,
+    Message,
+    Session,
+    normalize_session_patch_changes,
+    normalize_session_title,
+)
 from .repository import SessionConflictError, SessionNotFoundError
 
 
@@ -77,6 +83,7 @@ class CosmosSessionRepository:
         self, user_id: str, session_id: str, changes: dict[str, object]
     ) -> Session:
         await self._owned_session(user_id, session_id)
+        normalized = normalize_session_patch_changes(changes)
         operations = [
             {
                 "op": "set",
@@ -87,7 +94,7 @@ class CosmosSessionRepository:
                     else value
                 ),
             }
-            for field_name, value in changes.items()
+            for field_name, value in normalized.items()
         ]
         operations.append(
             {
@@ -102,6 +109,50 @@ class CosmosSessionRepository:
             patch_operations=operations,
         )
         return await self._owned_session(user_id, session_id)
+
+    async def set_generated_title_if_eligible(
+        self, user_id: str, session_id: str, title: str
+    ) -> bool:
+        from azure.core import MatchConditions
+        from azure.cosmos.exceptions import (
+            CosmosAccessConditionFailedError,
+            CosmosResourceNotFoundError,
+        )
+
+        normalized = normalize_session_title(title)
+        for _attempt in range(3):
+            try:
+                raw = await self._sessions.read_item(
+                    item=session_id, partition_key=user_id
+                )
+            except CosmosResourceNotFoundError as exc:
+                raise SessionNotFoundError(session_id) from exc
+            if raw.get("title", "New chat") != "New chat":
+                return False
+            if raw.get("titleSource", "auto") == "manual":
+                return False
+            try:
+                await self._sessions.patch_item(
+                    item=session_id,
+                    partition_key=user_id,
+                    patch_operations=[
+                        {"op": "set", "path": "/title", "value": normalized},
+                        {"op": "set", "path": "/titleSource", "value": "auto"},
+                        {
+                            "op": "set",
+                            "path": "/updatedAt",
+                            "value": datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                        },
+                    ],
+                    etag=raw.get("_etag"),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+                return True
+            except CosmosAccessConditionFailedError:
+                continue
+        raise SessionConflictError(session_id)
 
     async def mutate_library_document_ids(
         self,

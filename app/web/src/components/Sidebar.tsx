@@ -7,6 +7,7 @@ import { AdminLink } from "./AdminLink";
 import { UserMenu } from "./UserMenu";
 import { useMediaQuery } from "./useMediaQuery";
 import { useModalFocus } from "./useModalFocus";
+import { EditableSessionTitle } from "./EditableSessionTitle";
 
 export function Sidebar({
   sessions,
@@ -14,6 +15,7 @@ export function Sidebar({
   onSelect,
   onNewChat,
   onDelete,
+  onRename,
   onOpenSettings,
   onOpenStudio,
   onOpenLibrary,
@@ -26,6 +28,7 @@ export function Sidebar({
   onSelect: (id: string) => void;
   onNewChat: () => void;
   onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => Promise<void>;
   onOpenSettings: () => void;
   onOpenStudio: () => void;
   onOpenLibrary?: () => void;
@@ -144,27 +147,25 @@ export function Sidebar({
           const active = s.id === activeId;
           return (
             <li key={s.id} style={{ display: "flex", alignItems: "center" }}>
-              <button
-                onClick={() => onSelect(s.id)}
-                disabled={disabled}
-                aria-current={active ? "true" : undefined}
+              <div
+                className="session-row-main"
                 style={{
                   flex: 1,
-                  textAlign: "left",
-                  padding: "10px 12px",
+                  minWidth: 0,
                   margin: "2px 0",
                   borderRadius: 8,
-                  border: "none",
                   background: active ? "rgba(255,255,255,0.12)" : "transparent",
-                  color: "var(--sidebar-fg)",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  cursor: disabled ? "not-allowed" : "pointer",
                 }}
               >
-                {s.title || "Untitled"}
-              </button>
+                <EditableSessionTitle
+                  title={s.title || "Untitled"}
+                  onSave={(title) => onRename(s.id, title)}
+                  onOpen={() => onSelect(s.id)}
+                  current={active}
+                  disabled={disabled}
+                  compact
+                />
+              </div>
               <button
                 onClick={() => onDelete(s.id)}
                 disabled={disabled}
@@ -184,8 +185,9 @@ export function Sidebar({
           );
         })}
       </ul>
-      <div style={{ padding: 12, borderTop: "1px solid rgba(255,255,255,0.08)", display: "flex", flexDirection: "column", gap: 8 }}>
+      <div className="sidebar-utility-region">
         <button
+          className="sidebar-utility-action"
           onClick={onOpenStudio}
           disabled={disabled}
           style={{
@@ -202,6 +204,7 @@ export function Sidebar({
         </button>
         {onOpenLibrary && (
           <button
+            className="sidebar-utility-action"
             onClick={onOpenLibrary}
             disabled={disabled}
             style={{
@@ -218,6 +221,7 @@ export function Sidebar({
           </button>
         )}
         <button
+          className="sidebar-utility-action"
           onClick={onOpenSettings}
           title="Theme, text size, accessibility, and media generation options"
           style={{
@@ -232,14 +236,16 @@ export function Sidebar({
           ⚙ Appearance &amp; accessibility
         </button>
         <div
+          className="sidebar-utility-links"
           style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
+            display: "flex",
+            flexDirection: "column",
             gap: 8,
             marginTop: 8,
           }}
         >
           <a
+            className="sidebar-utility-action"
             href={DOCS_INDEX_URL}
             target="_blank"
             rel="noopener noreferrer"
@@ -258,6 +264,7 @@ export function Sidebar({
             📖 Docs
           </a>
           <a
+            className="sidebar-utility-action"
             href={STATUS_URL}
             target="_blank"
             rel="noopener noreferrer"

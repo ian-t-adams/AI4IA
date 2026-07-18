@@ -10,6 +10,7 @@ import type {
   Message,
   ModelCatalog,
   Session,
+  ToolOverrides,
   UserAgent,
   UserAgentCreate,
   UserAgentUpdate,
@@ -40,6 +41,24 @@ import type {
 } from "./customTools";
 import { apiFetch } from "./auth";
 
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly detail: string,
+  ) {
+    super(`${status}: ${detail}`);
+    this.name = "ApiError";
+  }
+}
+
+export function apiErrorDetail(reason: unknown): string {
+  return reason instanceof ApiError
+    ? reason.detail
+    : reason instanceof Error
+      ? reason.message
+      : "Something went wrong.";
+}
+
 async function jsonOrThrow<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
     let detail = resp.statusText;
@@ -49,7 +68,7 @@ async function jsonOrThrow<T>(resp: Response): Promise<T> {
     } catch {
       /* non-JSON error body */
     }
-    throw new Error(`${resp.status}: ${detail}`);
+    throw new ApiError(resp.status, String(detail));
   }
   return (await resp.json()) as T;
 }
@@ -377,7 +396,7 @@ export async function createSession(input: {
   model?: string | null;
   systemPrompt?: string | null;
   agentName?: string | null;
-  toolOverrides?: { added: string[]; removed: string[] };
+  toolOverrides?: ToolOverrides;
   libraryDocumentIds?: string[] | null;
 }): Promise<Session> {
   return jsonOrThrow(
@@ -396,7 +415,7 @@ export async function updateSession(
     model?: string | null;
     systemPrompt?: string | null;
     agentName?: string | null;
-    toolOverrides?: { added: string[]; removed: string[] };
+    toolOverrides?: ToolOverrides;
     libraryDocumentIds?: string[] | null;
   },
 ): Promise<Session> {
@@ -415,6 +434,19 @@ export async function listTools(sessionId?: string | null): Promise<ToolCatalogI
     await apiFetch(`/api/tools${query}`, { cache: "no-store" }),
   );
   return result.tools;
+}
+
+export async function getToolCatalog(
+  sessionId?: string | null,
+  agentName?: string | null,
+): Promise<{ tools: ToolCatalogItem[]; inheritedTools: string[] }> {
+  const query = new URLSearchParams();
+  if (sessionId) query.set("sessionId", sessionId);
+  if (agentName) query.set("agentName", agentName);
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return jsonOrThrow(
+    await apiFetch(`/api/tools${suffix}`, { cache: "no-store" }),
+  );
 }
 
 export async function getAttachmentCapabilities(): Promise<AttachmentCapabilities> {

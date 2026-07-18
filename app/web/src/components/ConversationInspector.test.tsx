@@ -5,11 +5,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 
 import type { InspectorSnapshot } from "@/lib/inspector";
+import type { ConversationDraftDefaults } from "@/lib/types";
 import { ConversationInspector } from "./ConversationInspector";
 
 const mocks = vi.hoisted(() => ({
   getInspector: vi.fn(),
   listTools: vi.fn(),
+  getToolCatalog: vi.fn(),
   listMemories: vi.fn(),
   getLibrarySummary: vi.fn(),
   updateSession: vi.fn(),
@@ -20,6 +22,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/api", () => ({
   listTools: mocks.listTools,
+  getToolCatalog: mocks.getToolCatalog,
   updateSession: mocks.updateSession,
   associateLibraryDocument: mocks.associateLibraryDocument,
   disassociateLibraryDocument: mocks.disassociateLibraryDocument,
@@ -90,7 +93,12 @@ function snapshot(id: string, prompt = `Prompt ${id}`): InspectorSnapshot {
   };
 }
 
-function props(sessionId = "s1") {
+function props(sessionId: string | null = "s1") {
+  const draftDefaults: ConversationDraftDefaults = {
+    agentName: null,
+    toolOverrides: { added: [], removed: [] },
+    libraryDocumentIds: [],
+  };
   return {
     sessionId,
     refreshKey: 0,
@@ -101,6 +109,9 @@ function props(sessionId = "s1") {
     params: {},
     onParamsChange: vi.fn(),
     systemPrompt: "",
+    onSystemPromptChange: vi.fn(),
+    draftDefaults,
+    onDraftDefaultsChange: vi.fn(),
     onSessionUpdated: vi.fn(),
     attachmentCapabilities: null,
     voiceLocked: false,
@@ -112,6 +123,12 @@ function props(sessionId = "s1") {
 beforeEach(() => {
   mocks.getInspector.mockImplementation(async (id: string) => snapshot(id));
   mocks.listTools.mockResolvedValue([]);
+  mocks.getToolCatalog.mockImplementation(
+    async (_sessionId: string | null, agentName: string | null) => ({
+      tools: await mocks.listTools(),
+      inheritedTools: agentName === "analyst" ? ["calculator"] : [],
+    }),
+  );
   mocks.listMemories.mockResolvedValue({
     status: "ok",
     supportsDelete: false,
@@ -133,6 +150,7 @@ beforeEach(() => {
     id: "s1",
     userId: "u1",
     title: "s1",
+    titleSource: "auto" as const,
     model: "gpt-5.2",
     systemPrompt: "Prompt s1",
     agentName: null,
@@ -150,6 +168,114 @@ afterEach(() => {
 });
 
 describe("ConversationInspector", () => {
+  it("edits agent, tool, and library defaults without patching a missing session", async () => {
+    const onDraftDefaultsChange = vi.fn();
+    const draftDefaults: ConversationDraftDefaults = {
+      agentName: null,
+      toolOverrides: { added: [], removed: [] },
+      libraryDocumentIds: [],
+    };
+    mocks.listTools.mockResolvedValue([
+      {
+        name: "calculator",
+        label: "Calculator",
+        description: "Calculate",
+        source: "built-in",
+        risk: "safe",
+        requiresApproval: false,
+        scopes: [],
+        available: true,
+        selectable: true,
+        detail: null,
+        ownership: "application",
+        typed: true,
+        voice: true,
+      },
+    ]);
+    mocks.getLibrarySummary.mockResolvedValue({
+      generatedAt: new Date().toISOString(),
+      status: "ok",
+      total: 1,
+      byStatus: { ready: 1 },
+      byModality: { document: 1 },
+      recent: [
+        {
+          id: "doc-1",
+          userId: "u1",
+          filename: "brief.pdf",
+          contentType: "application/pdf",
+          size: 10,
+          status: "ready",
+          modality: "document",
+          chunkCount: 1,
+          citationReady: true,
+          error: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      maxUploadBytes: 100,
+      maxDocuments: 8,
+      modalities: ["document"],
+    });
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ConversationInspector
+        {...props(null)}
+        agents={[
+          {
+            name: "analyst",
+            displayName: "Data Analyst",
+            description: "Analyzes",
+            enabled: true,
+          },
+        ]}
+        draftDefaults={draftDefaults}
+        onDraftDefaultsChange={onDraftDefaultsChange}
+      />,
+    );
+
+    expect(screen.getByText("New conversation defaults")).toBeInTheDocument();
+    expect(screen.getByText(/Draft — applied when the conversation starts/)).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "analyst");
+    expect(onDraftDefaultsChange).toHaveBeenLastCalledWith({
+      ...draftDefaults,
+      agentName: "analyst",
+    });
+
+    const withAgent = { ...draftDefaults, agentName: "analyst" };
+    rerender(
+      <ConversationInspector
+        {...props(null)}
+        agents={[
+          {
+            name: "analyst",
+            displayName: "Data Analyst",
+            description: "Analyzes",
+            enabled: true,
+          },
+        ]}
+        draftDefaults={withAgent}
+        onDraftDefaultsChange={onDraftDefaultsChange}
+      />,
+    );
+    await user.click(await screen.findByRole("checkbox", { name: /Calculator/ }));
+    expect(onDraftDefaultsChange).toHaveBeenLastCalledWith({
+      ...withAgent,
+      toolOverrides: { added: [], removed: ["calculator"] },
+    });
+
+    await user.click(screen.getByRole("tab", { name: "Context" }));
+    await user.click(await screen.findByRole("button", { name: "Add brief.pdf" }));
+    expect(onDraftDefaultsChange).toHaveBeenLastCalledWith({
+      ...withAgent,
+      libraryDocumentIds: ["doc-1"],
+    });
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+    expect(mocks.associateLibraryDocument).not.toHaveBeenCalled();
+  });
+
   it("supports roving keyboard tabs and one editable instruction source", async () => {
     const user = userEvent.setup();
     render(<ConversationInspector {...props()} />);

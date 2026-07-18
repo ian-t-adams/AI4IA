@@ -33,6 +33,10 @@ class SessionRepository(Protocol):
         self, user_id: str, session_id: str, changes: dict[str, object]
     ) -> Session: ...
 
+    async def set_generated_title_if_eligible(
+        self, user_id: str, session_id: str, title: str
+    ) -> bool: ...
+
     async def mutate_library_document_ids(
         self,
         user_id: str,

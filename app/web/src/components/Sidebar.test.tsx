@@ -55,6 +55,7 @@ describe("responsive sidebar", () => {
                     id: "s1",
                     userId: "u1",
                     title: "A very long conversation title that must not overlap controls",
+                    titleSource: "manual",
                     model: null,
                     systemPrompt: null,
                     agentName: null,
@@ -68,6 +69,7 @@ describe("responsive sidebar", () => {
                 onSelect={vi.fn()}
                 onNewChat={vi.fn()}
                 onDelete={vi.fn()}
+                onRename={vi.fn()}
                 onOpenSettings={vi.fn()}
                 onOpenStudio={vi.fn()}
                 onCollapse={() => setOpen(false)}
@@ -106,6 +108,11 @@ describe("responsive sidebar", () => {
     ).toHaveFocus();
 
     dialog = await open();
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+    const titleInput = screen.getByRole("textbox", { name: "Conversation title" });
+    await user.keyboard("{Escape}");
+    expect(titleInput).not.toBeInTheDocument();
+    expect(dialog).toBeInTheDocument();
     expect(screen.getByTestId("sidebar-scroll")).toHaveStyle({
       minHeight: "0",
       overflowY: "auto",
@@ -120,7 +127,12 @@ describe("responsive sidebar", () => {
       screen.getByRole("button", {
         name: "A very long conversation title that must not overlap controls",
       }),
-    ).toHaveStyle({ overflow: "hidden", textOverflow: "ellipsis" });
+    ).toHaveClass("editable-session-title-text");
+    expect(
+      screen.getByRole("button", {
+        name: "A very long conversation title that must not overlap controls",
+      }),
+    ).toHaveAttribute("aria-current", "true");
     const status = screen.getByRole("link", {
       name: "Status (opens in new tab)",
     });

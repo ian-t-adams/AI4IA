@@ -16,9 +16,11 @@ import type {
   AgentSummary,
   AttachmentCapabilities,
   ChatParams,
+  ConversationDraftDefaults,
   ModelEntry,
   Session,
   ToolCatalogItem,
+  ToolOverrides,
 } from "@/lib/types";
 import { HelpTooltip } from "./HelpTooltip";
 import { ModelPicker } from "./ModelPicker";
@@ -95,6 +97,9 @@ export function ConversationInspector({
   params,
   onParamsChange,
   systemPrompt,
+  onSystemPromptChange,
+  draftDefaults,
+  onDraftDefaultsChange,
   onSessionUpdated,
   onOpenLibrary,
   attachmentCapabilities,
@@ -112,6 +117,9 @@ export function ConversationInspector({
   params: ChatParams;
   onParamsChange: (params: ChatParams) => void;
   systemPrompt: string;
+  onSystemPromptChange: (value: string) => void;
+  draftDefaults: ConversationDraftDefaults;
+  onDraftDefaultsChange: (value: ConversationDraftDefaults) => void;
   onSessionUpdated: (session: Session) => void;
   onOpenLibrary?: () => void;
   attachmentCapabilities: AttachmentCapabilities | null;
@@ -123,6 +131,7 @@ export function ConversationInspector({
   const [section, setSection] = useState<Section>("model");
   const [snapshot, setSnapshot] = useState<InspectorSnapshot | null>(null);
   const [tools, setTools] = useState<ToolCatalogItem[]>([]);
+  const [draftInheritedTools, setDraftInheritedTools] = useState<string[]>([]);
   const [memory, setMemory] = useState<MemoryList | null>(null);
   const [library, setLibrary] = useState<LibrarySummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -240,12 +249,16 @@ export function ConversationInspector({
     setTools([]);
     setPhases((current) => ({ ...current, tools: "loading" }));
     try {
-      const value = await api.listTools(capturedSession);
+      const value = await api.getToolCatalog(
+        capturedSession,
+        capturedSession ? null : draftDefaults.agentName,
+      );
       if (
         generation !== sectionGenerationRef.current.tools ||
         activeSessionRef.current !== capturedSession
       ) return;
-      setTools(value);
+      setTools(value.tools);
+      setDraftInheritedTools(value.inheritedTools);
       setPhases((current) => ({ ...current, tools: "ready" }));
     } catch (reason) {
       if (
@@ -255,7 +268,7 @@ export function ConversationInspector({
       setSectionErrors((current) => ({ ...current, tools: (reason as Error).message }));
       setPhases((current) => ({ ...current, tools: "error" }));
     }
-  }, [sessionId]);
+  }, [draftDefaults.agentName, sessionId]);
 
   const loadMemory = useCallback(async () => {
     const generation = ++sectionGenerationRef.current.memory;
@@ -341,7 +354,7 @@ export function ConversationInspector({
         if (
           generation === mutationGenerationRef.current &&
           activeSessionRef.current === capturedSession
-        ) setError((reason as Error).message);
+        ) setError(api.apiErrorDetail(reason));
       } finally {
         if (mountedRef.current && activeSessionRef.current === capturedSession) {
           setSaving(false);
@@ -361,7 +374,10 @@ export function ConversationInspector({
 
   const patch = useCallback(
     async (value: Parameters<typeof api.updateSession>[1]) => {
-      if (!sessionId) return;
+      if (!sessionId) {
+        setError("This conversation has not been created yet.");
+        return;
+      }
       await runSessionMutation(
         () => api.updateSession(sessionId, value),
         "Saved",
@@ -374,6 +390,13 @@ export function ConversationInspector({
     snapshot?.sessionId === sessionId &&
     phases.snapshot === "ready" &&
     !saving;
+  const updateDraft = useCallback(
+    (value: Partial<ConversationDraftDefaults>) => {
+      onDraftDefaultsChange({ ...draftDefaults, ...value });
+      setSaved(null);
+    },
+    [draftDefaults, onDraftDefaultsChange],
+  );
   const loading = Object.values(phases).some((phase) => phase === "loading");
   const deleteMemoryItem = useCallback(async (id: string) => {
     setMemoryPending(id);
@@ -441,9 +464,9 @@ export function ConversationInspector({
     >
       <header className="inspector-header">
         <div>
-          <strong>Conversation</strong>
+          <strong>{sessionId ? "Conversation" : "New conversation defaults"}</strong>
           <span aria-live="polite">
-            {loading ? "Updating…" : snapshot ? "Inspector" : "Defaults"}
+            {loading ? "Updating…" : sessionId ? "Inspector" : "Draft"}
           </span>
         </div>
         <button type="button" onClick={onToggle} aria-label="Collapse conversation inspector">
@@ -493,7 +516,11 @@ export function ConversationInspector({
         aria-live="polite"
         aria-atomic="true"
       >
-        {saving ? "Saving…" : saved ?? ""}
+        {saving
+          ? "Saving…"
+          : sessionId
+            ? saved ?? ""
+            : "Draft — applied when the conversation starts"}
       </div>
 
       <div
@@ -543,7 +570,34 @@ export function ConversationInspector({
               title="Instructions"
               help="The selected agent persona is authoritative. Without an agent, this saved system prompt is used for typed chat and injected into the next Voice Live connection."
             />
-            {phases.snapshot === "loading" ? (
+            {!sessionId ? (
+              <>
+                <label htmlFor="conversation-system-prompt">System prompt</label>
+                <textarea
+                  id="conversation-system-prompt"
+                  rows={8}
+                  value={promptDraft}
+                  placeholder="Optional conversation instructions"
+                  onChange={(event) => {
+                    setPromptDraft(event.target.value);
+                    onSystemPromptChange(event.target.value);
+                  }}
+                />
+                <p className="inspector-note">
+                  This draft is included when the first message, attachment, or Voice
+                  Live connection creates the conversation.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPromptDraft("");
+                    onSystemPromptChange("");
+                  }}
+                >
+                  Reset
+                </button>
+              </>
+            ) : phases.snapshot === "loading" ? (
               <div className="inspector-empty">Loading effective instructions…</div>
             ) : phases.snapshot === "error" ? (
               <div className="inspector-error" role="alert">
@@ -585,11 +639,7 @@ export function ConversationInspector({
                   </button>
                 </div>
               </>
-            ) : (
-              <div className="inspector-empty">
-                Start or select a conversation before editing instructions.
-              </div>
-            )}
+            ) : null}
           </section>
         ) : null}
 
@@ -602,9 +652,16 @@ export function ConversationInspector({
             <label>
               Agent
               <select
-                value={snapshot?.agent.name ?? ""}
-                disabled={!canMutate}
-                onChange={(event) => void patch({ agentName: event.target.value || null })}
+                value={sessionId ? snapshot?.agent.name ?? "" : draftDefaults.agentName ?? ""}
+                disabled={sessionId ? !canMutate : false}
+                onChange={(event) => {
+                  const agentName = event.target.value || null;
+                  if (sessionId) {
+                    void patch({ agentName });
+                  } else {
+                    updateDraft({ agentName });
+                  }
+                }}
               >
                 <option value="">Generic assistant</option>
                 {agents.filter((agent) => agent.enabled).map((agent) => (
@@ -632,24 +689,44 @@ export function ConversationInspector({
             ) : null}
             <div className="tool-list">
               {toolEntries.map((tool) => {
-                const inherited = snapshot?.tools.inherited.includes(tool.name) ?? false;
-                const effective = snapshot?.tools.effective.includes(tool.name) ?? false;
-                const added = snapshot?.tools.added.includes(tool.name) ?? false;
-                const removed = snapshot?.tools.removed.includes(tool.name) ?? false;
+                const inherited = sessionId
+                  ? snapshot?.tools.inherited.includes(tool.name) ?? false
+                  : draftInheritedTools.includes(tool.name);
+                const effective = sessionId
+                  ? snapshot?.tools.effective.includes(tool.name) ?? false
+                  : (
+                      inherited ||
+                      draftDefaults.toolOverrides.added.includes(tool.name)
+                    ) &&
+                    !draftDefaults.toolOverrides.removed.includes(tool.name);
+                const added = sessionId
+                  ? snapshot?.tools.added.includes(tool.name) ?? false
+                  : draftDefaults.toolOverrides.added.includes(tool.name);
+                const removed = sessionId
+                  ? snapshot?.tools.removed.includes(tool.name) ?? false
+                  : draftDefaults.toolOverrides.removed.includes(tool.name);
                 return (
                   <label key={tool.name} className="tool-row">
                     <input
                       type="checkbox"
                       checked={effective}
                       disabled={
-                        !canMutate ||
+                        (sessionId ? !canMutate : false) ||
                         !tool.available ||
                         (!tool.selectable && !inherited)
                       }
                       onChange={(event) => {
-                        const inheritedTools = snapshot?.tools.inherited ?? [];
-                        const added = new Set(snapshot?.tools.added ?? []);
-                        const removed = new Set(snapshot?.tools.removed ?? []);
+                        const inheritedTools = sessionId
+                          ? snapshot?.tools.inherited ?? []
+                          : draftInheritedTools;
+                        const currentOverrides: ToolOverrides = sessionId
+                          ? {
+                              added: snapshot?.tools.added ?? [],
+                              removed: snapshot?.tools.removed ?? [],
+                            }
+                          : draftDefaults.toolOverrides;
+                        const added = new Set(currentOverrides.added);
+                        const removed = new Set(currentOverrides.removed);
                         if (event.target.checked) {
                           removed.delete(tool.name);
                           if (!inheritedTools.includes(tool.name)) added.add(tool.name);
@@ -658,9 +735,15 @@ export function ConversationInspector({
                         } else {
                           added.delete(tool.name);
                         }
-                        void patch({
-                          toolOverrides: { added: [...added], removed: [...removed] },
-                        });
+                        const toolOverrides = {
+                          added: [...added],
+                          removed: [...removed],
+                        };
+                        if (sessionId) {
+                          void patch({ toolOverrides });
+                        } else {
+                          updateDraft({ toolOverrides });
+                        }
                       }}
                     />
                     <span>
@@ -724,6 +807,11 @@ export function ConversationInspector({
                 {" · "}
                 {snapshot.attachments.length} session attachments
                 {" · "}snapshot generated {new Date(snapshot.generatedAt).toLocaleTimeString()}
+              </p>
+            ) : !sessionId ? (
+              <p className="inspector-note">
+                Selection: {draftDefaults.libraryDocumentIds.length} documents for the
+                new conversation.
               </p>
             ) : null}
             <p className="inspector-note">
@@ -795,7 +883,11 @@ export function ConversationInspector({
               </p>
             ) : null}
             <ul className="inspector-list">
-              {library?.recent.map((document) => (
+              {library?.recent.map((document) => {
+                const selected = sessionId
+                  ? selectedIds.has(document.id)
+                  : draftDefaults.libraryDocumentIds.includes(document.id);
+                return (
                 <li key={document.id}>
                   <span>
                     {document.filename}
@@ -806,22 +898,31 @@ export function ConversationInspector({
                   </span>
                   <button
                     type="button"
-                    aria-label={`${selectedIds.has(document.id) ? "Added" : "Add"} ${document.filename}`}
-                    disabled={!canMutate || selectedIds.has(document.id)}
+                    aria-label={`${selected ? (sessionId ? "Added" : "Remove") : "Add"} ${document.filename}`}
+                    disabled={sessionId ? !canMutate || selected : false}
                     onClick={() => {
-                      if (!sessionId) return;
-                      void runSessionMutation(
-                        () => api.associateLibraryDocument(sessionId, document.id),
-                        document.status === "ready"
-                          ? "Document added"
-                          : "Document selected; context will activate when ready",
-                      );
+                      if (sessionId) {
+                        void runSessionMutation(
+                          () => api.associateLibraryDocument(sessionId, document.id),
+                          document.status === "ready"
+                            ? "Document added"
+                            : "Document selected; context will activate when ready",
+                        );
+                      } else {
+                        updateDraft({
+                          libraryDocumentIds: selected
+                            ? draftDefaults.libraryDocumentIds.filter(
+                                (id) => id !== document.id,
+                              )
+                            : [...draftDefaults.libraryDocumentIds, document.id],
+                        });
+                      }
                     }}
                   >
-                    {selectedIds.has(document.id) ? "Added" : "Add"}
+                    {selected ? (sessionId ? "Added" : "Remove") : "Add"}
                   </button>
                 </li>
-              ))}
+              )})}
               {phases.library === "ready" && library?.recent.length === 0 ? (
                 <li className="inspector-empty">No library documents yet.</li>
               ) : null}

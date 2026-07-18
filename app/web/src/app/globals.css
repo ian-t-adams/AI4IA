@@ -140,6 +140,124 @@ button:disabled {
   min-height: 52px;
 }
 
+.editable-session-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.editable-session-title-text {
+  min-width: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 4px 0;
+  font-weight: 650;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editable-session-title.compact {
+  width: 100%;
+  padding: 6px 8px 6px 12px;
+}
+
+.editable-session-title.compact .editable-session-title-text {
+  flex: 1;
+  color: var(--sidebar-fg);
+  font-weight: 500;
+}
+
+.editable-session-title-trigger,
+.editable-session-title.editing button {
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  padding: 5px 8px;
+  font-size: 0.78rem;
+}
+
+.editable-session-title.compact .editable-session-title-trigger {
+  color: var(--sidebar-muted);
+}
+
+.editable-session-title.editing {
+  flex-wrap: wrap;
+}
+
+.editable-session-title.editing input {
+  min-width: 12ch;
+  flex: 1 1 180px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 7px 9px;
+}
+
+.session-row-main {
+  overflow: hidden;
+}
+
+.sidebar-utility-region {
+  margin-top: auto;
+  padding: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-utility-links {
+  margin-top: 0 !important;
+}
+
+.sidebar-utility-action {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sidebar-fg);
+  padding: 8px 12px;
+  text-align: left !important;
+  text-decoration: none;
+  font-size: 0.9rem !important;
+  line-height: 1.25;
+}
+
+.sidebar-utility-action:hover:not(:disabled),
+.sidebar-utility-action:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.sidebar-utility-action[aria-disabled="true"],
+.sidebar-utility-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.sidebar-account {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-account-label {
+  overflow: hidden;
+  color: var(--sidebar-muted);
+  padding: 2px 4px 0;
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .conversation-inspector {
   width: 360px;
   min-width: 0;
@@ -295,6 +413,71 @@ button:disabled {
 .inspector-save-state:empty {
   padding: 0;
   border: 0;
+}
+
+.voice-settings-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+
+.composer-shell {
+  min-width: 0;
+}
+
+.composer-row {
+  display: grid !important;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: end !important;
+  min-width: 0;
+}
+
+.composer-textarea {
+  grid-column: 3;
+  width: 100%;
+  min-width: 0;
+  min-height: 64px;
+  max-height: calc(12em + 24px);
+  overflow-y: hidden;
+  resize: none;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 12px 14px;
+  line-height: 1.5;
+}
+
+.composer-icon-button,
+.composer-submit-button {
+  min-width: 44px;
+  min-height: 44px !important;
+  align-self: end !important;
+}
+
+.composer-attach-button {
+  grid-column: 1;
+}
+
+.composer-voice-button {
+  grid-column: 2;
+}
+
+.composer-submit-button {
+  grid-column: 4;
+}
+
+.composer-attach-button,
+.composer-voice-button,
+.composer-textarea,
+.composer-submit-button {
+  grid-row: 1;
+}
+
+.composer-row > .inspector-error,
+.composer-row > .inspector-empty,
+.composer-row > .upload-status-list {
+  grid-column: 1 / -1;
 }
 
 .inspector-list,
@@ -485,6 +668,29 @@ button:disabled {
 
   .chat-header {
     padding-inline: 12px !important;
+  }
+
+  .composer-shell {
+    padding-inline: 12px !important;
+  }
+
+  .composer-row {
+    grid-template-columns: auto auto minmax(0, 1fr);
+  }
+
+  .composer-textarea {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .composer-attach-button,
+  .composer-voice-button,
+  .composer-submit-button {
+    grid-row: 2;
+  }
+
+  .composer-submit-button {
+    grid-column: 3;
   }
 
   .inspector-nav {

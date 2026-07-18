@@ -39,6 +39,7 @@ export interface Session {
   id: string;
   userId: string;
   title: string;
+  titleSource: "auto" | "manual";
   model: string | null;
   systemPrompt: string | null;
   agentName: string | null;
@@ -47,6 +48,17 @@ export interface Session {
   summaryVersion?: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ToolOverrides {
+  added: string[];
+  removed: string[];
+}
+
+export interface ConversationDraftDefaults {
+  agentName: string | null;
+  toolOverrides: ToolOverrides;
+  libraryDocumentIds: string[];
 }
 
 export interface MessageAttachment {

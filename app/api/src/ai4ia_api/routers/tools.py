@@ -40,14 +40,21 @@ class ToolCatalogItem(BaseModel):
 
 class ToolCatalogResponse(BaseModel):
     tools: list[ToolCatalogItem]
+    inheritedTools: list[str] = []
 
 
 @router.get("", response_model=ToolCatalogResponse)
 async def list_tools(
     request: Request,
     session_id: str | None = Query(default=None, alias="sessionId"),
+    agent_name: str | None = Query(default=None, alias="agentName"),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ToolCatalogResponse:
+    if session_id and agent_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Choose either a session or an agent preview, not both.",
+        )
     registry = request.app.state.tool_registry
     selectable = request.app.state.agent_service.attachable_tools
     items = [
@@ -147,6 +154,7 @@ async def list_tools(
                     )
         except Exception:
             pass
+    inherited_tools: tuple[str, ...] = ()
     if session_id:
         try:
             session = await request.app.state.session_repo.get_session(
@@ -159,6 +167,7 @@ async def list_tools(
         policy = await resolve_conversation_policy(
             request.app.state, user.internal_user_id, session
         )
+        inherited_tools = policy.inherited_tools
         known = {item.name for item in items}
         for name in sorted(set(policy.effective_tools) - known):
             items.append(
@@ -173,4 +182,32 @@ async def list_tools(
                     ownership="unknown",
                 )
             )
-    return ToolCatalogResponse(tools=sorted(items, key=lambda item: (item.source, item.label)))
+    elif agent_name:
+        catalog = await request.app.state.agent_service.catalog_for(
+            user.internal_user_id, request.app.state.agents
+        )
+        agent = catalog.get(agent_name)
+        if agent is None or not agent.enabled:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="The selected agent is unavailable.",
+            )
+        inherited_tools = tuple(dict.fromkeys(agent.tools))
+        known = {item.name for item in items}
+        for name in sorted(set(inherited_tools) - known):
+            items.append(
+                ToolCatalogItem(
+                    name=name,
+                    label=name,
+                    description="Governance metadata is unavailable for this inherited tool.",
+                    source="unknown",
+                    available=False,
+                    selectable=False,
+                    detail="The server could not resolve authoritative tool metadata.",
+                    ownership="unknown",
+                )
+            )
+    return ToolCatalogResponse(
+        tools=sorted(items, key=lambda item: (item.source, item.label)),
+        inheritedTools=list(inherited_tools),
+    )

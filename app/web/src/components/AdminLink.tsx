@@ -31,24 +31,14 @@ export function AdminLink({ disabled = false }: { disabled?: boolean }) {
   return (
     <a
       href={disabled ? undefined : "/admin"}
+      className="sidebar-utility-action"
       aria-disabled={disabled}
       tabIndex={disabled ? -1 : undefined}
       title={disabled ? "Finish saving the Voice Live transcript first" : undefined}
       onClick={disabled ? (event) => event.preventDefault() : undefined}
-      style={{
-        fontSize: "0.8em",
-        padding: "4px 10px",
-        borderRadius: 6,
-        border: "1px solid var(--border)",
-        background: "var(--bg-elevated)",
-        color: "var(--fg)",
-        textDecoration: "none",
-        whiteSpace: "nowrap",
-        opacity: disabled ? 0.5 : 1,
-        cursor: disabled ? "not-allowed" : "pointer",
-      }}
     >
-      Admin
+      <span aria-hidden="true">◆</span>
+      <span>Admin</span>
     </a>
   );
 }

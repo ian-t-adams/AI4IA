@@ -35,7 +35,11 @@ from ..sessions.models import (
     MessageStatus,
     Session,
 )
-from ..sessions.repository import SessionNotFoundError, SessionRepository
+from ..sessions.repository import (
+    SessionConflictError,
+    SessionNotFoundError,
+    SessionRepository,
+)
 from ..agents.agent_catalog import AgentCatalog, AgentSpec
 from ..agents.command_service import (
     DIRECT_SLASH_TOOLS,
@@ -952,9 +956,17 @@ async def chat(
     # Keep the session fresh + auto-title from the first real (non-command) turn.
     has_prior_chat = any(not m.fromCommand for m in prior)
     session_changes: dict[str, object] = {}
+    title_updated = False
     if session.title == "New chat" and not has_prior_chat:
-        session.title = content_for_model[:60]
-        session_changes["title"] = session.title
+        try:
+            title_updated = await repo.set_generated_title_if_eligible(
+                user.internal_user_id, session.id, content_for_model[:60]
+            )
+        except SessionConflictError:
+            logger.info(
+                "Skipped automatic title after repeated concurrent session changes",
+                extra={"session_id": session.id},
+            )
     # Persist the model choice to the session unless it came purely from the
     # agent's per-turn default (which must not silently rebind the session).
     if not model_from_agent_default:
@@ -964,7 +976,7 @@ async def chat(
         await repo.patch_session(
             user.internal_user_id, session.id, session_changes
         )
-    else:
+    elif not title_updated:
         await repo.touch_session(user.internal_user_id, session.id)
 
     # Tool-enabled / orchestrator agent turn: run the gateway-native tool-calling

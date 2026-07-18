@@ -1,9 +1,7 @@
 "use client";
 
-// Compact inline Voice Live settings disclosure. Lives next to the mic
-// controls in the composer — a native <details>/<summary> disclosure, not a
-// dialog/modal, so it never covers or replaces the chat transcript. Controls
-// are disabled (not hidden) while a live session is connecting/live/closing or
+// Compact inline Voice Live settings. Controls are disabled (not hidden) while
+// a live session is connecting/live/closing or
 // a transcript save is in flight: edits are safe to make any time, but only
 // take effect on the *next* connection (see useVoiceLive, which reads voice/
 // settings/tools at connect time via refs).
@@ -128,30 +126,13 @@ export function VoiceSettingsPanel({
   }
 
   return (
-    <details
-      style={{
-        border: "1px solid var(--border)",
-        borderRadius: 8,
-        background: "var(--bg-elevated)",
-      }}
-    >
-      <summary
-        style={{
-          cursor: "pointer",
-          padding: "6px 10px",
-          fontSize: "0.8em",
-          color: "var(--fg-muted)",
-          userSelect: "none",
-        }}
-      >
-        Voice settings
-      </summary>
+    <div className="voice-settings-panel">
       <div
         style={{
           display: "flex",
           flexWrap: "wrap",
           gap: 10,
-          padding: "4px 10px 10px",
+          padding: 10,
         }}
       >
         <label style={FIELD_STYLE} htmlFor={`${idPrefix}-provider`}>
@@ -541,6 +522,6 @@ export function VoiceSettingsPanel({
           </div>
         </div>
       </div>
-    </details>
+    </div>
   );
 }

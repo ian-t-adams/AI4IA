@@ -14,11 +14,14 @@ const mocks = vi.hoisted(() => ({
   listDocuments: vi.fn(),
   listLibraryDocuments: vi.fn(),
   listSharedWithMe: vi.fn(),
+  createSession: vi.fn(),
+  streamChat: vi.fn(),
   uploadLibraryDocument: vi.fn(),
   uploadDocument: vi.fn(),
   associateLibraryDocument: vi.fn(),
   deleteSession: vi.fn(),
   listTools: vi.fn(),
+  getToolCatalog: vi.fn(),
   updateSession: vi.fn(),
   getInspector: vi.fn(),
   listMemories: vi.fn(),
@@ -46,12 +49,14 @@ vi.mock("./AdminLink", () => ({ AdminLink: () => null }));
 vi.mock("./UserMenu", () => ({ UserMenu: () => null }));
 vi.mock("./Composer", () => ({
   Composer: ({
+    onSend,
     onUpload,
     uploads,
     uploading,
     onRetryUpload,
     onDismissUpload,
   }: {
+    onSend: (text: string) => void;
     onUpload: (file: File) => Promise<void>;
     uploads: { id: string; filename: string; status: string }[];
     uploading: boolean;
@@ -59,6 +64,12 @@ vi.mock("./Composer", () => ({
     onDismissUpload: (id: string) => void;
   }) => (
     <>
+      <button
+        type="button"
+        onClick={() => onSend("hello from draft")}
+      >
+        Send draft message
+      </button>
       <button
         type="button"
         onClick={() => {
@@ -112,6 +123,7 @@ const session = (id: string) => ({
   id,
   userId: "u1",
   title: `Session ${id}`,
+  titleSource: "auto" as const,
   model: "gpt-5.2",
   systemPrompt: null,
   agentName: null,
@@ -167,6 +179,11 @@ beforeEach(() => {
   mocks.listDocuments.mockResolvedValue([]);
   mocks.listLibraryDocuments.mockResolvedValue([]);
   mocks.listSharedWithMe.mockResolvedValue([]);
+  mocks.createSession.mockImplementation(async (value: object) => ({
+    ...session("C"),
+    ...value,
+  }));
+  mocks.streamChat.mockResolvedValue(undefined);
   mocks.associateLibraryDocument.mockImplementation(
     async (sessionId: string, documentId: string) => ({
       ...session(sessionId),
@@ -175,6 +192,10 @@ beforeEach(() => {
   );
   mocks.deleteSession.mockResolvedValue(undefined);
   mocks.listTools.mockResolvedValue([]);
+  mocks.getToolCatalog.mockImplementation(async () => ({
+    tools: await mocks.listTools(),
+    inheritedTools: [],
+  }));
   mocks.updateSession.mockImplementation(async (id: string, value: object) => ({
     ...session(id),
     ...value,
@@ -256,6 +277,74 @@ afterEach(() => {
 });
 
 describe("ChatApp uploads", () => {
+  it("creates the first session with complete draft defaults and never PATCHes null", async () => {
+    mocks.listAgents.mockResolvedValue([
+      {
+        name: "researcher",
+        displayName: "Researcher",
+        description: "Researches",
+        enabled: true,
+      },
+    ]);
+    mocks.listTools.mockResolvedValue([
+      {
+        name: "calculator",
+        label: "Calculator",
+        description: "Calculate",
+        source: "built-in",
+        risk: "safe",
+        requiresApproval: false,
+        scopes: [],
+        available: true,
+        selectable: true,
+        detail: null,
+        ownership: "application",
+        typed: true,
+        voice: true,
+      },
+    ]);
+    mocks.getLibrarySummary.mockResolvedValue({
+      generatedAt: new Date().toISOString(),
+      status: "ok",
+      total: 1,
+      byStatus: { ready: 1 },
+      byModality: { document: 1 },
+      recent: [libraryDocument("doc-1", "brief.pdf")],
+      maxUploadBytes: 100,
+      maxDocuments: 100,
+      modalities: ["document"],
+    });
+    const user = userEvent.setup();
+    render(<ChatApp />);
+
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "System prompt" }),
+      "Draft prompt",
+    );
+    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Agent" }),
+      "researcher",
+    );
+    await user.click(await screen.findByRole("checkbox", { name: /Calculator/ }));
+    await user.click(screen.getByRole("tab", { name: "Context" }));
+    await user.click(await screen.findByRole("button", { name: "Add brief.pdf" }));
+
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() =>
+      expect(mocks.createSession).toHaveBeenCalledWith({
+        model: "gpt-5.2",
+        systemPrompt: "Draft prompt",
+        agentName: "researcher",
+        toolOverrides: { added: ["calculator"], removed: [] },
+        libraryDocumentIds: ["doc-1"],
+      }),
+    );
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+  });
+
   it("blocks navigation and runs multi-file uploads sequentially for the captured session", async () => {
     let resolveFirst!: (value: ReturnType<typeof libraryDocument>) => void;
     let resolveSecond!: (value: ReturnType<typeof libraryDocument>) => void;
@@ -275,7 +364,11 @@ describe("ChatApp uploads", () => {
     const user = userEvent.setup();
     render(<ChatApp />);
     await user.click(await screen.findByRole("button", { name: "Session A" }));
-    expect(await screen.findByText("Session A", { selector: "strong" })).toBeInTheDocument();
+    expect(
+      await screen.findByText("Session A", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Queue two uploads" }));
     await waitFor(() => expect(mocks.uploadLibraryDocument).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole("button", { name: "Delete Session A" }));
@@ -287,7 +380,11 @@ describe("ChatApp uploads", () => {
     expect(
       await screen.findByText(/Wait for active attachments to finish/),
     ).toBeInTheDocument();
-    expect(screen.getByText("Session A", { selector: "strong" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Session A", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
 
     resolveFirst(libraryDocument("d1", "a.pdf"));
     await waitFor(() =>
