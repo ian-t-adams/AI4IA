@@ -430,6 +430,13 @@ export function ConversationInspector({
       )
       .sort((left, right) => left.label.localeCompare(right.label));
   }, [toolQuery, tools]);
+  // What the currently-selected agent does, regardless of whether it came from
+  // a live session snapshot or a not-yet-started conversation's draft default.
+  const agentDescription = useMemo(() => {
+    if (sessionId) return snapshot?.agent.description || null;
+    if (!draftDefaults.agentName) return null;
+    return agents.find((agent) => agent.name === draftDefaults.agentName)?.description || null;
+  }, [agents, draftDefaults.agentName, sessionId, snapshot]);
 
   if (collapsed) {
     return (
@@ -607,6 +614,7 @@ export function ConversationInspector({
             ) : snapshot?.instructions.editable === false ? (
               <div className="inspector-empty">
                 <strong>{snapshot.agent.displayName}</strong>
+                {snapshot.agent.description ? <p>{snapshot.agent.description}</p> : null}
                 <p>The agent persona owns instructions. Edit the agent in Agents & workflows.</p>
               </div>
             ) : snapshot ? (
@@ -665,10 +673,13 @@ export function ConversationInspector({
               >
                 <option value="">Generic assistant</option>
                 {agents.filter((agent) => agent.enabled).map((agent) => (
-                  <option key={agent.name} value={agent.name}>{agent.displayName}</option>
+                  <option key={agent.name} value={agent.name} title={agent.description || undefined}>
+                    {agent.displayName}
+                  </option>
                 ))}
               </select>
             </label>
+            {agentDescription ? <p className="inspector-note">{agentDescription}</p> : null}
             <label>
               Search tools
               <input
@@ -685,6 +696,23 @@ export function ConversationInspector({
               <div className="inspector-error" role="alert">
                 {sectionErrors.tools}
                 <button type="button" onClick={() => void loadTools()}>Retry</button>
+              </div>
+            ) : null}
+            {phases.tools === "ready" && toolEntries.length > 0 ? (
+              <div className="tool-list-header">
+                <span>Tools</span>
+                <HelpTooltip label="How to read the tool list" size="sm">
+                  Each row shows, in order: whether it&apos;s <strong>inherited</strong>{" "}
+                  from the agent, <strong>added</strong>/<strong>removed</strong> by
+                  this conversation&apos;s overrides, and whether it&apos;s{" "}
+                  <strong>effective</strong> right now. Then its{" "}
+                  <strong>source</strong> and <strong>ownership</strong>; its{" "}
+                  <strong>risk</strong> tier (safe, external, or destructive); whether
+                  it needs <strong>approval</strong> for each use; its{" "}
+                  <strong>scopes</strong> (specific permissions it can exercise); and
+                  whether it&apos;s <strong>typed</strong> (schema-validated inputs) or{" "}
+                  <strong>voice</strong>-capable (works during a Voice Live call).
+                </HelpTooltip>
               </div>
             ) : null}
             <div className="tool-list">
@@ -705,6 +733,7 @@ export function ConversationInspector({
                 const removed = sessionId
                   ? snapshot?.tools.removed.includes(tool.name) ?? false
                   : draftDefaults.toolOverrides.removed.includes(tool.name);
+                const lockedOut = tool.available && !tool.selectable && !inherited;
                 return (
                   <label key={tool.name} className="tool-row">
                     <input
@@ -749,6 +778,11 @@ export function ConversationInspector({
                     />
                     <span>
                       <strong>{tool.label}</strong>
+                      {tool.description ? (
+                        <HelpTooltip label={`${tool.label} description`} size="sm">
+                          {tool.description}
+                        </HelpTooltip>
+                      ) : null}
                       <small>
                         {inherited ? "inherited · " : ""}
                         {added ? "added · " : ""}
@@ -769,6 +803,13 @@ export function ConversationInspector({
                         {` · typed ${tool.typed === null ? "unknown" : tool.typed ? "yes" : "no"} · voice ${tool.voice === null ? "unknown" : tool.voice ? "yes" : "no"}`}
                         {!tool.available && tool.detail ? ` · ${tool.detail}` : ""}
                       </small>
+                      {lockedOut ? (
+                        <small>
+                          Can&apos;t enable from here — it needs approval, scopes, or
+                          restricted access that only a pre-built agent can grant, not
+                          an ad-hoc conversation toggle.
+                        </small>
+                      ) : null}
                     </span>
                   </label>
                 );

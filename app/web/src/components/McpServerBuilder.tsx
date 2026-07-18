@@ -14,27 +14,21 @@ import {
   mcpServerNameError,
   quarantineReason,
   toolApprovalPosture,
-  type HealthBadge,
   type McpAuthMode,
   type McpToolApproval,
   type UserMcpServer,
 } from "@/lib/customTools";
-
-const labelStyle: React.CSSProperties = {
-  fontSize: "0.8em",
-  color: "var(--fg-muted)",
-  marginBottom: 4,
-  display: "block",
-};
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  borderRadius: 8,
-  border: "1px solid var(--border)",
-  background: "var(--bg)",
-  color: "var(--fg)",
-  font: "inherit",
-};
+import { HelpTooltip } from "./HelpTooltip";
+import { Pill, pillToneColor } from "./Pill";
+import {
+  checkRow,
+  fieldset,
+  iconBtn,
+  inputStyle,
+  labelStyle,
+  primaryBtn,
+  secondaryBtn,
+} from "./builderStyles";
 
 interface ServerForm {
   name: string;
@@ -285,7 +279,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
                   {(() => {
                     const b = healthBadge(s);
                     return b.tone === "ok" ? null : (
-                      <span style={{ color: healthToneColor(b.tone) }}> · {b.label.toLowerCase()}</span>
+                      <span style={{ color: pillToneColor(b.tone) }}> · {b.label.toLowerCase()}</span>
                     );
                   })()}
                 </span>
@@ -403,7 +397,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
           </div>
         )}
 
-        <label style={{ ...checkRow, fontSize: "0.9em" }}>
+        <label style={checkRow}>
           <input
             type="checkbox"
             checked={form.trusted}
@@ -416,7 +410,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
           server you fully control.
         </p>
 
-        <label style={{ ...checkRow, fontSize: "0.9em" }}>
+        <label style={checkRow}>
           <input
             type="checkbox"
             checked={form.enabled}
@@ -483,21 +477,15 @@ function DiscoverySection({
           Discovered tools ({server.discoveredTools.length})
         </strong>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <HealthPill badge={health} />
-          <span
-            style={{
-              fontSize: "0.72em",
-              padding: "2px 8px",
-              borderRadius: 999,
-              border: "1px solid var(--border)",
-              background: "var(--bg)",
-              color: posture.requiresApproval ? "var(--fg)" : "#15803d",
-              whiteSpace: "nowrap",
-            }}
-            title={posture.detail}
-          >
-            {posture.label}
-          </span>
+          <Pill
+            label={health.label}
+            tone={health.tone}
+            detail={health.detail}
+            helpLabel={`Health: ${health.label}`}
+          />
+          {/* No `detail` here: the persistent paragraph just below already shows
+              the same text, so a redundant tooltip would add noise, not clarity. */}
+          <Pill label={posture.label} tone={posture.requiresApproval ? "muted" : "ok"} />
         </div>
       </div>
       <p style={{ ...labelStyle, margin: 0 }}>{posture.detail}</p>
@@ -522,6 +510,7 @@ function DiscoverySection({
         <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
           {server.discoveredTools.map((t) => {
             const tp = toolApprovalPosture(server, t.name);
+            const approvalOption = MCP_TOOL_APPROVALS.find((a) => a.value === tp.posture);
             return (
               <li key={t.name} style={{ fontSize: "0.82em", display: "flex", flexDirection: "column", gap: 4 }}>
                 <div>
@@ -544,15 +533,21 @@ function DiscoverySection({
                     style={{ ...inputStyle, width: "auto", padding: "4px 8px", fontSize: "0.82em" }}
                   >
                     {MCP_TOOL_APPROVALS.map((a) => (
-                      <option key={a.value} value={a.value}>{a.label}</option>
+                      <option key={a.value} value={a.value} title={a.hint}>{a.label}</option>
                     ))}
                   </select>
-                  <span
-                    style={{ color: tp.requiresApproval ? "var(--fg-muted)" : "#15803d", fontSize: "0.78em" }}
-                    title={tp.detail}
+                  <HelpTooltip
+                    label={`Approval option: ${approvalOption?.label ?? tp.posture}`}
+                    size="sm"
                   >
-                    {tp.label}
-                  </span>
+                    {approvalOption?.hint}
+                  </HelpTooltip>
+                  <Pill
+                    label={tp.label}
+                    tone={tp.requiresApproval ? "muted" : "ok"}
+                    detail={tp.detail}
+                    helpLabel={`Resolved approval for ${t.name}`}
+                  />
                 </div>
               </li>
             );
@@ -565,78 +560,3 @@ function DiscoverySection({
     </div>
   );
 }
-
-// Maps a health badge tone onto the palette the rest of the surface already uses.
-function healthToneColor(tone: HealthBadge["tone"]): string {
-  switch (tone) {
-    case "ok":
-      return "#15803d";
-    case "warn":
-      return "#b45309";
-    case "error":
-      return "var(--danger)";
-    default:
-      return "var(--fg-muted)";
-  }
-}
-
-// Small status pill mirroring the approval-posture pill, colored by health tone.
-function HealthPill({ badge }: { badge: HealthBadge }) {
-  return (
-    <span
-      style={{
-        fontSize: "0.72em",
-        padding: "2px 8px",
-        borderRadius: 999,
-        border: "1px solid var(--border)",
-        background: "var(--bg)",
-        color: healthToneColor(badge.tone),
-        whiteSpace: "nowrap",
-      }}
-      title={badge.detail ?? undefined}
-    >
-      {badge.label}
-    </span>
-  );
-}
-
-const primaryBtn: React.CSSProperties = {
-  padding: "9px 16px",
-  borderRadius: 8,
-  border: "none",
-  background: "var(--accent)",
-  color: "var(--accent-fg)",
-  fontWeight: 600,
-  cursor: "pointer",
-};
-const secondaryBtn: React.CSSProperties = {
-  padding: "9px 16px",
-  borderRadius: 8,
-  border: "1px solid var(--border)",
-  background: "var(--bg)",
-  color: "var(--fg)",
-  fontWeight: 600,
-  cursor: "pointer",
-};
-const iconBtn: React.CSSProperties = {
-  border: "none",
-  background: "transparent",
-  color: "var(--fg-muted)",
-  padding: "4px 6px",
-  cursor: "pointer",
-};
-const fieldset: React.CSSProperties = {
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  margin: 0,
-  padding: "10px 12px",
-  display: "flex",
-  flexDirection: "column",
-  gap: 8,
-};
-const checkRow: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  fontSize: "0.9em",
-};

@@ -119,6 +119,14 @@ export function SettingsPanel({
           <legend style={{ fontSize: "0.85em", color: "var(--fg-muted)", marginBottom: 8 }}>
             Accent color
           </legend>
+          {theme === "contrast" && (
+            <p style={{ margin: "0 0 8px", fontSize: "0.78em", color: "var(--fg-muted)" }}>
+              Disabled while High contrast is active — that theme uses its own
+              fixed, tested colors to guarantee readability, so a custom accent
+              can&apos;t be applied on top of it. Switch to Light or Dark to
+              pick a color.
+            </p>
+          )}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             {ACCENTS.map((c) => (
               <button

@@ -13,9 +13,14 @@ import { createPortal } from "react-dom";
 export function HelpTooltip({
   label,
   children,
+  size = "default",
 }: {
   label: string;
   children: React.ReactNode;
+  // "sm" shrinks the trigger for use inline within dense rows (status pills,
+  // per-item badges) where the default 44px touch target would overwhelm the
+  // surrounding text. Defaults to the original size everywhere else.
+  size?: "default" | "sm";
 }) {
   const id = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -72,14 +77,19 @@ export function HelpTooltip({
     if (open) updatePosition();
   }, [children, open, updatePosition]);
   return (
-    <span className="help-tooltip">
+    <span className={size === "sm" ? "help-tooltip help-tooltip-sm" : "help-tooltip"}>
       <button
         ref={triggerRef}
         type="button"
-        className="help-trigger"
+        className={size === "sm" ? "help-trigger help-trigger-sm" : "help-trigger"}
         aria-label={`Help: ${label}`}
         aria-describedby={open ? id : undefined}
-        onClick={() => {
+        onClick={(event) => {
+          // The trigger is sometimes nested inside a larger clickable row
+          // (e.g. a checkbox <label>, a list item). Stop the click from
+          // bubbling so opening help never also toggles/activates whatever
+          // it's embedded in.
+          event.stopPropagation();
           if (pinned) {
             pinnedRef.current = false;
             setPinned(false);

@@ -240,6 +240,21 @@ export default function SharePanel({
               ))}
             </div>
 
+            {visibility !== "shared" && grantees.length > 0 && (
+              <p
+                role="status"
+                style={{
+                  margin: 0,
+                  fontSize: "0.8em",
+                  color: "var(--danger, #dc2626)",
+                }}
+              >
+                Saving now will remove access for the {grantees.length}{" "}
+                {grantees.length === 1 ? "person" : "people"} currently shared
+                with — switch back to &ldquo;Specific people&rdquo; to keep them.
+              </p>
+            )}
+
             {visibility === "shared" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 <div style={{ display: "flex", gap: 8 }}>

@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
+import { HelpTooltip } from "./HelpTooltip";
 import {
   type AdminUsageSummary,
   type AdminUserRow,
@@ -293,10 +294,18 @@ function UserCell({
 }) {
   const visibleName = identified ? displayName?.trim() : "";
   const visibleEmail = identified ? email : null;
-  // Full hash (and email in identified mode) stay available on hover; the hash is the stable key.
+  // Full hash (and email in identified mode) stay available on hover via title, and
+  // via aria-label + tabIndex so keyboard/screen-reader users (who can't hover) can
+  // reach the same full id without a mouse — a plain div's title is invisible to both.
   const tooltip = visibleEmail ? `${userId}\n${visibleEmail}` : userId;
+  const fullIdLabel = visibleEmail ? `Full id ${userId}, email ${visibleEmail}` : `Full id ${userId}`;
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 1 }} title={tooltip}>
+    <div
+      style={{ display: "flex", flexDirection: "column", gap: 1 }}
+      title={tooltip}
+      aria-label={fullIdLabel}
+      tabIndex={0}
+    >
       <span style={{ fontFamily: visibleName ? "inherit" : "monospace" }}>
         {userLabel(visibleName, userId)}
       </span>
@@ -766,8 +775,7 @@ export function AdminDashboard() {
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
         <h1 style={{ fontSize: "1.3em", margin: 0, flex: 1 }}>Usage dashboard</h1>
         <label
-          style={{ ...muted, display: "flex", alignItems: "center", gap: 6 }}
-          title="Off keeps user rows hash-only for demos and screen-shares."
+          style={{ ...muted, display: "flex", alignItems: "center", gap: 4 }}
         >
           <input
             type="checkbox"
@@ -776,10 +784,25 @@ export function AdminDashboard() {
             aria-label="Show real identities"
           />
           Show real identities
+          <HelpTooltip label="Show real identities" size="sm">
+            On resolves each user&apos;s hashed id to their real display name and
+            email (an extra directory lookup per row) and sends that to your
+            browser. Off never fetches or sends that PII — rows stay hash-only,
+            which is safer for demos, screen-shares, or recordings. This
+            preference is remembered on this device only.
+          </HelpTooltip>
         </label>
-        <label style={muted} htmlFor="admin-window">
-          Window
-        </label>
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <label style={muted} htmlFor="admin-window">
+            Window
+          </label>
+          <HelpTooltip label="Window" size="sm">
+            How far back to aggregate usage. Wider windows take longer to load
+            and are more likely to hit the per-window record cap, which
+            silently turns totals into a lower bound (watch for the ⚠ banner
+            below).
+          </HelpTooltip>
+        </span>
         <select
           id="admin-window"
           value={days}
@@ -814,7 +837,9 @@ export function AdminDashboard() {
       {data.truncated ? (
         <div style={{ ...card, marginBottom: 16 }}>
           <span style={muted}>
-            ⚠ Results were capped for this window — totals are a lower bound.
+            ⚠ This window has more usage records than the dashboard aggregates
+            at once, so results were capped — totals below are a lower bound,
+            not the true total. Pick a shorter window for exact numbers.
           </span>
         </div>
       ) : null}

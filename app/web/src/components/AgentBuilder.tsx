@@ -20,16 +20,19 @@ import {
   parseMcpToolName,
   quarantineReason,
   type AttachableMcpTool,
-  type HealthBadge,
   type UserMcpServer,
 } from "@/lib/customTools";
-
-const labelStyle: React.CSSProperties = {
-  fontSize: "0.8em",
-  color: "var(--fg-muted)",
-  marginBottom: 4,
-  display: "block",
-};
+import { BUILT_IN_TOOL_HELP, toolRiskSummary } from "@/lib/toolHelp";
+import { HelpTooltip } from "./HelpTooltip";
+import { Pill } from "./Pill";
+import {
+  checkRow,
+  fieldset,
+  iconBtn,
+  inputStyle,
+  labelStyle,
+  primaryBtn,
+} from "./builderStyles";
 
 // Friendly names for the attachable tools (the registry uses snake_case ids).
 const TOOL_LABELS: Record<string, string> = {
@@ -39,15 +42,6 @@ const TOOL_LABELS: Record<string, string> = {
   generate_video: "Generate video",
   process_document: "Process document",
   recall_memory: "Recall memory",
-};
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  borderRadius: 8,
-  border: "1px solid var(--border)",
-  background: "var(--bg)",
-  color: "var(--fg)",
-  font: "inherit",
 };
 
 interface AgentForm {
@@ -116,6 +110,11 @@ export function AgentBuilder({
     () => agents.filter((a) => a.name !== form.name),
     [agents, form.name],
   );
+  // Names of the signed-in user's own agents, so the "Delegate to" list can
+  // distinguish an agent you authored from a pre-created one shared by an
+  // administrator (both are valid delegation targets, but only "yours" can be
+  // edited/deleted from this picker).
+  const myAgentNames = useMemo(() => new Set(mine.map((m) => m.name)), [mine]);
   // Attachable MCP tools grouped by server (only when the feature is on). Each
   // carries its namespaced name + governance posture so the user understands the
   // stance before attaching.
@@ -384,16 +383,26 @@ export function AgentBuilder({
 
         <fieldset style={fieldset}>
           <legend style={labelStyle}>Tools (max {MAX_TOOLS})</legend>
-          {ATTACHABLE_TOOLS.map((t) => (
-            <label key={t} style={checkRow}>
-              <input
-                type="checkbox"
-                checked={form.tools.includes(t)}
-                onChange={() => toggleIn("tools", t)}
-              />
-              {TOOL_LABELS[t] ?? t}
-            </label>
-          ))}
+          {ATTACHABLE_TOOLS.map((t) => {
+            const help = BUILT_IN_TOOL_HELP[t];
+            const label = TOOL_LABELS[t] ?? t;
+            return (
+              <label key={t} style={checkRow}>
+                <input
+                  type="checkbox"
+                  checked={form.tools.includes(t)}
+                  onChange={() => toggleIn("tools", t)}
+                />
+                {label}
+                {help && (
+                  <HelpTooltip label={label} size="sm">
+                    {help.what} {help.when} {help.tradeoffs}{" "}
+                    {toolRiskSummary(help.risk)}
+                  </HelpTooltip>
+                )}
+              </label>
+            );
+          })}
         </fieldset>
 
         {(customToolsEnabled || mcpByServer.length > 0) && (
@@ -418,45 +427,27 @@ export function AgentBuilder({
                       {!g.enabled && <span style={{ color: "var(--fg-muted)" }}> (server off)</span>}
                     </strong>
                     {health && health.tone !== "ok" && (
-                      <span
-                        style={{
-                          fontSize: "0.7em",
-                          padding: "1px 7px",
-                          borderRadius: 999,
-                          border: "1px solid var(--border)",
-                          color: mcpHealthToneColor(health.tone),
-                        }}
-                        title={health.detail ?? undefined}
-                      >
-                        {health.label}
-                      </span>
+                      <Pill
+                        label={health.label}
+                        tone={health.tone}
+                        detail={health.detail}
+                        helpLabel={`Health: ${health.label}`}
+                      />
                     )}
                     {g.official ? (
-                      <span
-                        style={{
-                          fontSize: "0.7em",
-                          padding: "1px 7px",
-                          borderRadius: 999,
-                          border: "1px solid var(--border)",
-                          color: "#15803d",
-                        }}
-                        title="Curated official server, reached through the MCP APIM front door and managed by your administrator. Its tools are pre-approved."
-                      >
-                        official · curated
-                      </span>
+                      <Pill
+                        label="official · curated"
+                        tone="ok"
+                        detail="Curated official server, reached through the MCP APIM front door and managed by your administrator. Its tools are pre-approved."
+                        helpLabel="Official server"
+                      />
                     ) : (
-                      <span
-                        style={{
-                          fontSize: "0.7em",
-                          padding: "1px 7px",
-                          borderRadius: 999,
-                          border: "1px solid var(--border)",
-                          color: posture.requiresApproval ? "var(--fg-muted)" : "#15803d",
-                        }}
-                        title={posture.detail}
-                      >
-                        {posture.label}
-                      </span>
+                      <Pill
+                        label={posture.label}
+                        tone={posture.requiresApproval ? "muted" : "ok"}
+                        detail={posture.detail}
+                        helpLabel="Approval posture"
+                      />
                     )}
                   </div>
                   {quarantineMsg && (
@@ -465,13 +456,18 @@ export function AgentBuilder({
                     </p>
                   )}
                   {g.tools.map((t) => (
-                    <label key={t.namespacedName} style={checkRow} title={t.description || undefined}>
+                    <label key={t.namespacedName} style={checkRow}>
                       <input
                         type="checkbox"
                         checked={form.tools.includes(t.namespacedName)}
                         onChange={() => toggleIn("tools", t.namespacedName)}
                       />
                       {t.toolName}
+                      {t.description && (
+                        <HelpTooltip label={t.toolName} size="sm">
+                          {t.description}
+                        </HelpTooltip>
+                      )}
                       <span
                         style={{
                           fontSize: "0.72em",
@@ -515,7 +511,15 @@ export function AgentBuilder({
         )}
 
         <fieldset style={fieldset}>
-          <legend style={labelStyle}>Delegate to (links, max {MAX_LINKS})</legend>
+          <legend style={labelStyle}>
+            Delegate to (links, max {MAX_LINKS}){" "}
+            <HelpTooltip label="Delegate to (links)" size="sm">
+              Lets this agent hand off part of a conversation to another agent by name (e.g.
+              &ldquo;ask the Research agent to&hellip;&rdquo;). Linking an agent only makes it
+              available to delegate to &mdash; it does not run automatically and does not give
+              this agent the linked agent&apos;s tools directly.
+            </HelpTooltip>
+          </legend>
           {linkOptions.length === 0 && (
             <p style={{ ...labelStyle, margin: 0 }}>No other agents to link.</p>
           )}
@@ -527,6 +531,14 @@ export function AgentBuilder({
                 onChange={() => toggleIn("links", a.name)}
               />
               {a.displayName || a.name}
+              <span style={{ fontSize: "0.72em", color: "var(--fg-muted)" }}>
+                {myAgentNames.has(a.name) ? "· yours" : "· pre-created"}
+              </span>
+              {a.description && (
+                <HelpTooltip label={a.displayName || a.name} size="sm">
+                  {a.description}
+                </HelpTooltip>
+              )}
             </label>
           ))}
         </fieldset>
@@ -591,48 +603,3 @@ function groupByServer(tools: AttachableMcpTool[]): McpServerGroup[] {
   return order.map((n) => byName.get(n)!);
 }
 
-// Maps a health badge tone onto the shared palette (mirrors the McpServerBuilder).
-function mcpHealthToneColor(tone: HealthBadge["tone"]): string {
-  switch (tone) {
-    case "ok":
-      return "#15803d";
-    case "warn":
-      return "#b45309";
-    case "error":
-      return "var(--danger)";
-    default:
-      return "var(--fg-muted)";
-  }
-}
-
-const primaryBtn: React.CSSProperties = {
-  padding: "9px 16px",
-  borderRadius: 8,
-  border: "none",
-  background: "var(--accent)",
-  color: "var(--accent-fg)",
-  fontWeight: 600,
-  cursor: "pointer",
-};
-const iconBtn: React.CSSProperties = {
-  border: "none",
-  background: "transparent",
-  color: "var(--fg-muted)",
-  padding: "4px 6px",
-  cursor: "pointer",
-};
-const fieldset: React.CSSProperties = {
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  margin: 0,
-  padding: "8px 12px",
-  display: "flex",
-  flexDirection: "column",
-  gap: 4,
-};
-const checkRow: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  fontSize: "0.9em",
-};

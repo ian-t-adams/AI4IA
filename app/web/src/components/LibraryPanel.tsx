@@ -507,6 +507,7 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                 <button
                   onClick={() => onDelete(doc)}
                   aria-label={`Delete ${doc.filename}`}
+                  title="Permanently delete this document and its extracted content"
                   style={{
                     border: "none",
                     background: "transparent",

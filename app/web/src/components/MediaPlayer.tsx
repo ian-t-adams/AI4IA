@@ -252,6 +252,9 @@ export function MediaPlayer({
                 <button
                   key={`${m.kind}-${m.ms}`}
                   onClick={() => seek(m.ms)}
+                  aria-label={`Jump to ${formatTimecode(m.ms)} (${
+                    m.kind === "shot" ? "camera shot" : "keyframe"
+                  })`}
                   title={`Jump to ${formatTimecode(m.ms)} (${
                     m.kind === "shot" ? "camera shot" : "keyframe"
                   })`}

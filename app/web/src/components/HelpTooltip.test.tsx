@@ -42,6 +42,42 @@ describe("HelpTooltip", () => {
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
+  it("applies the compact trigger class when size is sm, and the default class otherwise", () => {
+    const { rerender } = render(
+      <HelpTooltip label="Risk" size="sm">
+        External tools can reach third-party services.
+      </HelpTooltip>,
+    );
+    expect(screen.getByRole("button", { name: "Help: Risk" })).toHaveClass(
+      "help-trigger",
+      "help-trigger-sm",
+    );
+    rerender(
+      <HelpTooltip label="Risk">
+        External tools can reach third-party services.
+      </HelpTooltip>,
+    );
+    const defaultTrigger = screen.getByRole("button", { name: "Help: Risk" });
+    expect(defaultTrigger).toHaveClass("help-trigger");
+    expect(defaultTrigger).not.toHaveClass("help-trigger-sm");
+  });
+
+  it("does not toggle an ancestor checkbox when nested inside its <label>", async () => {
+    const user = userEvent.setup();
+    render(
+      <label>
+        <input type="checkbox" />
+        Enable calculator
+        <HelpTooltip label="Calculator">Evaluates basic arithmetic.</HelpTooltip>
+      </label>,
+    );
+    const checkbox = screen.getByRole("checkbox");
+    expect(checkbox).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Help: Calculator" }));
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    expect(checkbox).not.toBeChecked();
+  });
+
   it("clamps the portal within a short narrow viewport", async () => {
     Object.defineProperty(window, "innerWidth", { value: 240, configurable: true });
     Object.defineProperty(window, "innerHeight", { value: 120, configurable: true });
