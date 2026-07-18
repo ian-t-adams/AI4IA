@@ -4,7 +4,13 @@
 // lifecycle (start/stop, track cleanup), a start-race guard, and staleness
 // handling so a transcription that resolves after unmount is dropped. The hook
 // owns no UI: it exposes state + a single toggle and calls back with the text.
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { transcribeAudio, synthesizeSpeech } from "./api";
 
@@ -47,6 +53,29 @@ export interface VoiceRecorder {
   toggle: () => void;
 }
 
+// Whether this browser can capture voice input at all (getUserMedia +
+// MediaRecorder). Capability can't change while the page is open, so this is
+// read via useSyncExternalStore instead of an effect+setState: ordinary
+// client renders call getClientVoiceInputSupport() directly (no extra
+// commit-then-cascading-render pass), and only actual SSR/hydration falls
+// back to getServerVoiceInputSupport()'s fixed `false` — matching the old
+// "starts false, resolves after mount" behavior without needing a mount
+// effect to flip it.
+function subscribeToNothing(): () => void {
+  return () => {};
+}
+function getClientVoiceInputSupport(): boolean {
+  return (
+    typeof navigator !== "undefined" &&
+    !!navigator.mediaDevices?.getUserMedia &&
+    typeof window !== "undefined" &&
+    typeof window.MediaRecorder !== "undefined"
+  );
+}
+function getServerVoiceInputSupport(): boolean {
+  return false;
+}
+
 export function useVoiceRecorder(
   onTranscript: (text: string) => void,
   onError: (message: string) => void,
@@ -55,7 +84,11 @@ export function useVoiceRecorder(
   const [transcribing, setTranscribing] = useState(false);
   // Resolved after mount to avoid an SSR/client hydration mismatch on the
   // button's disabled state.
-  const [supported, setSupported] = useState(false);
+  const supported = useSyncExternalStore(
+    subscribeToNothing,
+    getClientVoiceInputSupport,
+    getServerVoiceInputSupport,
+  );
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -75,12 +108,6 @@ export function useVoiceRecorder(
 
   useEffect(() => {
     mountedRef.current = true;
-    setSupported(
-      typeof navigator !== "undefined" &&
-        !!navigator.mediaDevices?.getUserMedia &&
-        typeof window !== "undefined" &&
-        typeof window.MediaRecorder !== "undefined",
-    );
     return () => {
       mountedRef.current = false;
       const recorder = recorderRef.current;

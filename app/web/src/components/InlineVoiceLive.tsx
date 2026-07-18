@@ -214,7 +214,11 @@ export function useInlineVoiceLive({
   const persistedRef = useRef(false);
   const wasActiveRef = useRef(false);
   const conversationIdRef = useRef("");
-  const bindingCommittedRef = useRef(false);
+  // Whether the current cycle's chat binding has locked in (see the
+  // boundSessionId adjustment below). State rather than a ref: it is read
+  // during render there, and refs cannot be read or written outside of
+  // effects/callbacks.
+  const [bindingCommitted, setBindingCommitted] = useState(false);
   // Set by discardPersistence() to tell an in-flight (or about-to-time-out)
   // save attempt that its eventual outcome should be ignored: the user has
   // already explicitly abandoned it and the UI has moved on.
@@ -227,7 +231,13 @@ export function useInlineVoiceLive({
     if (turns.length === 0) return Promise.resolve();
 
     abandonedRef.current = false;
-    const sessionPromise = sessionPromiseRef.current ?? ensureSession();
+    // boundSessionId is read directly, not just the ref, so a session bound
+    // moments ago by the render-time adjustment above is never missed: the
+    // ref only caches an in-flight ensureSession() call made while no session
+    // was bound yet, to dedupe concurrent persist() attempts.
+    const sessionPromise = boundSessionId
+      ? Promise.resolve(boundSessionId)
+      : (sessionPromiseRef.current ?? ensureSession());
     sessionPromiseRef.current = sessionPromise;
     setPersistenceError(null);
     setSaving(true);
@@ -273,7 +283,7 @@ export function useInlineVoiceLive({
 
       sessionPromise
         .then((sessionId) => {
-          bindingCommittedRef.current = true;
+          setBindingCommitted(true);
           setBoundSessionId(sessionId);
           return persistConversation(sessionId, conversationIdRef.current, turns);
         })
@@ -284,7 +294,7 @@ export function useInlineVoiceLive({
     });
     persistenceRef.current = request;
     return request;
-  }, [ensureSession, persistConversation]);
+  }, [boundSessionId, ensureSession, persistConversation]);
 
   const discardPersistence = useCallback(() => {
     abandonedRef.current = true;
@@ -315,7 +325,7 @@ export function useInlineVoiceLive({
     sessionPromiseRef.current = activeSessionId
       ? Promise.resolve(activeSessionId)
       : null;
-    bindingCommittedRef.current = activeSessionId !== null;
+    setBindingCommitted(activeSessionId !== null);
     setBoundSessionId(activeSessionId);
 
     // The controller begins getUserMedia/AudioContext work synchronously here,
@@ -347,35 +357,37 @@ export function useInlineVoiceLive({
   // still truly silent. As soon as the upstream emits its first pending or
   // finalized turn, commit the current chat binding; that turn is then hidden
   // from every other chat and persistence cannot drift later.
-  useEffect(() => {
-    if (bindingCommittedRef.current) {
-      // Text remains available during Voice Live. If a text send creates the
-      // session for the same formerly-empty chat, adopt that new id so the live
-      // transcript stays visible. Once a non-null id is bound, navigation locks
-      // prevent it from drifting to another chat while turns are unsaved.
-      if (
-        live.active &&
-        boundSessionId === null &&
-        activeSessionId !== null
-      ) {
-        setBoundSessionId(activeSessionId);
-        sessionPromiseRef.current = Promise.resolve(activeSessionId);
-      }
-      return;
-    }
-    if (live.turns.length === 0) {
+  //
+  // Adjusted here during render rather than in an effect: boundSessionId is
+  // sticky history (once committed it must not drift just because
+  // activeSessionId changes elsewhere), so it can't be derived fresh each
+  // render, but it also must never lag a render behind bindingCommitted. An
+  // effect-deferred update leaves a one-frame window, after a relevant
+  // prop/turn change, where boundSessionId still names the previous chat —
+  // exactly the kind of stale state a late-arriving upstream event could
+  // otherwise re-lock onto. Doing it here means React finishes reconciling
+  // with the corrected value in the same pass, before anything commits or
+  // paints (see "Adjusting some state when a prop changes",
+  // https://react.dev/learn/you-might-not-need-an-effect). Only state is
+  // touched here, never sessionPromiseRef: refs cannot be read or written
+  // during render, so persist() reads boundSessionId itself instead of a
+  // ref mirror of it (see persist() above).
+  if (bindingCommitted) {
+    // Text remains available during Voice Live. If a text send creates the
+    // session for the same formerly-empty chat, adopt that new id so the live
+    // transcript stays visible. Once a non-null id is bound, navigation locks
+    // prevent it from drifting to another chat while turns are unsaved.
+    if (live.active && boundSessionId === null && activeSessionId !== null) {
       setBoundSessionId(activeSessionId);
-      sessionPromiseRef.current = activeSessionId
-        ? Promise.resolve(activeSessionId)
-        : null;
-      return;
     }
-    bindingCommittedRef.current = true;
+  } else if (live.turns.length === 0) {
+    if (boundSessionId !== activeSessionId) {
+      setBoundSessionId(activeSessionId);
+    }
+  } else {
+    setBindingCommitted(true);
     setBoundSessionId(activeSessionId);
-    sessionPromiseRef.current = activeSessionId
-      ? Promise.resolve(activeSessionId)
-      : null;
-  }, [activeSessionId, boundSessionId, live.active, live.turns.length]);
+  }
 
   const phase = phaseFor(
     live.status,

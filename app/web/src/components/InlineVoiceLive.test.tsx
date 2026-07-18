@@ -761,7 +761,7 @@ describe("inline Voice Live chat", () => {
     expect(getByTestId("locked").textContent).toBe("true");
   });
 
-  it("adopts a session created by a text send in the same empty chat", async () => {
+  it("adopts a session created by a text send in the same empty chat", () => {
     function BindingHarness({
       activeSessionId,
     }: {
@@ -800,8 +800,63 @@ describe("inline Voice Live chat", () => {
     expect(getByTestId("binding").textContent).toBe("empty");
 
     rerender(<BindingHarness activeSessionId="created-session" />);
-    await waitFor(() =>
-      expect(getByTestId("binding").textContent).toBe("created-session"),
+    // Regression: this bound one effect-cycle after the rerender when the
+    // commit lived in a useEffect, leaving a frame where the transcript could
+    // look unbound even though the session already existed. It's now a
+    // render-time adjustment, so the DOM already reflects it synchronously —
+    // no waitFor needed to observe it.
+    expect(getByTestId("binding").textContent).toBe("created-session");
+  });
+
+  it("keeps the transcript bound to its original chat once committed, even if navigation changes the active chat", () => {
+    function BindingHarness({
+      activeSessionId,
+    }: {
+      activeSessionId: string | null;
+    }) {
+      const voice = useInlineVoiceLive({
+        config: CONFIG,
+        model: "catalog-realtime-model",
+        agent: "analyst",
+        agents: AGENTS,
+        history: [],
+        activeSessionId,
+        ensureSession: async () => "created-session",
+        persistConversation: async () => {},
+      });
+      return <span data-testid="binding">{voice.boundSessionId ?? "empty"}</span>;
+    }
+
+    controller = makeController({ status: "live", active: true, turns: [] });
+    const { rerender, getByTestId } = render(
+      <BindingHarness activeSessionId="chat-a" />,
     );
+    expect(getByTestId("binding").textContent).toBe("chat-a");
+
+    // The first real turn commits the binding to whichever chat is active
+    // right now (chat-a) -- synchronously, in the same render as the turn.
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "hello",
+          pending: false,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    rerender(<BindingHarness activeSessionId="chat-a" />);
+    expect(getByTestId("binding").textContent).toBe("chat-a");
+
+    // Regression: navigating to a different chat afterward must not drag the
+    // still-unsaved live transcript along with it. A late/duplicate upstream
+    // event or prop change cannot re-lock onto the new chat because
+    // boundSessionId is sticky once a real turn has committed it.
+    rerender(<BindingHarness activeSessionId="chat-b" />);
+    expect(getByTestId("binding").textContent).toBe("chat-a");
   });
 });
