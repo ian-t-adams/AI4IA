@@ -1161,6 +1161,22 @@ export function ChatApp() {
         }
       }
 
+      // Captured once so `finalize` can tell -- after its awaited network
+      // calls settle -- whether the user has since switched to a different
+      // conversation (session-switching is normally blocked while streaming,
+      // but `finalize` itself clears that lock before its own awaits finish,
+      // opening a brief window). Mirrors the capturedSession/generation guard
+      // idiom used by removeDocument/removeLibraryDocument above.
+      const turnSessionId = sessionId;
+      const turnGeneration = selectionGenerationRef.current;
+      // Mirrors streamingText/liveSteps outside React state: `send` is a
+      // memoized callback that does not depend on (and so does not see fresh
+      // values of) that state. If the post-stream reconciliation fetch below
+      // fails, this is what lets `finalize` reconstruct exactly what the user
+      // watched stream in, instead of silently losing it.
+      let bufferedContent = "";
+      let bufferedSteps: ActivityStep[] = [];
+
       const userCreatedAt = new Date();
       const optimisticUser: Message = {
         id: `tmp-${Date.now()}`,
@@ -1179,22 +1195,56 @@ export function ChatApp() {
       setMessages((prev) => [...prev, optimisticUser]);
 
       const isCommand = content.trimStart().startsWith("/");
-      const finalize = async () => {
+      // True while this turn's conversation is still the one being viewed;
+      // false once the user has switched away, so a late-resolving fetch from
+      // this turn can't clobber whatever the user is looking at now.
+      const isSameConversation = () =>
+        turnSessionId === sessionIdRef.current &&
+        turnGeneration === selectionGenerationRef.current;
+      const finalize = async (status: "complete" | "cancelled" | "error") => {
         streamingRef.current = false;
         setStreaming(false);
         abortRef.current = null;
         try {
-          const fresh = await api.listMessages(sessionId!);
-          setMessages((previous) =>
-            reconcileMessages(
-              previous,
-              fresh,
-              new Set([optimisticUser.id]),
-            ),
-          );
-          setInspectorVersion((value) => value + 1);
+          const fresh = await api.listMessages(turnSessionId);
+          if (isSameConversation()) {
+            setMessages((previous) =>
+              reconcileMessages(
+                previous,
+                fresh,
+                new Set([optimisticUser.id]),
+              ),
+            );
+            setInspectorVersion((value) => value + 1);
+          }
         } catch {
-          /* keep optimistic view */
+          // The reconciling refetch failed (transient network/auth blip)
+          // even though the turn itself finished streaming. Reconstruct it
+          // from the local buffer instead of silently dropping the reply the
+          // user just watched arrive -- the next successful session load (or
+          // a manual refresh) replaces this with the authoritative persisted
+          // copy, since the backend already persisted the turn independently
+          // of this refetch.
+          if (
+            isSameConversation() &&
+            (bufferedContent.trim().length > 0 || bufferedSteps.length > 0)
+          ) {
+            setMessages((previous) => [
+              ...previous,
+              {
+                id: `local-${Date.now()}`,
+                sessionId: turnSessionId,
+                userId: "me",
+                role: "assistant",
+                content: bufferedContent,
+                status,
+                model: selectedModel,
+                agent: null,
+                createdAt: new Date().toISOString(),
+                steps: bufferedSteps.length ? bufferedSteps : undefined,
+              },
+            ]);
+          }
         }
         setStreamingText("");
         setStreamingStartedAt(null);
@@ -1205,8 +1255,8 @@ export function ChatApp() {
           try {
             const all = await api.listSessions();
             setSessions(all);
-            const s = all.find((x) => x.id === sessionId);
-            if (s) {
+            const s = all.find((x) => x.id === turnSessionId);
+            if (s && isSameConversation()) {
               if (s.model) setSelectedModel(s.model);
               setSystemPrompt(s.systemPrompt ?? "");
             }
@@ -1221,15 +1271,21 @@ export function ChatApp() {
       abortRef.current = api.streamChat(
         { sessionId, content, model: selectedModel, params },
         {
-          onDelta: (t) => setStreamingText((prev) => prev + t),
-          onStep: (step) => setLiveSteps((prev) => [...prev, step]),
-          onDone: () => void finalize(),
+          onDelta: (t) => {
+            bufferedContent += t;
+            setStreamingText((prev) => prev + t);
+          },
+          onStep: (step) => {
+            bufferedSteps = [...bufferedSteps, step];
+            setLiveSteps((prev) => [...prev, step]);
+          },
+          onDone: () => void finalize("complete"),
           onError: (msg) => {
             setError(msg);
-            void finalize();
+            void finalize("error");
           },
           // Stop button: reconcile with the server's cancelled message.
-          onAbort: () => void finalize(),
+          onAbort: () => void finalize("cancelled"),
         },
       );
     },

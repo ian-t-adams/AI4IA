@@ -228,7 +228,10 @@ export function ConversationInspector({
         activeSessionRef.current !== capturedSession
       ) return;
       setSnapshot(value);
-      if (value.instructions.editable) setPromptDraft(value.instructions.value ?? "");
+      // Defensive: the API contract guarantees a snapshot object, but don't let
+      // a malformed/empty response (e.g. a transient backend hiccup) throw a
+      // raw TypeError into this section's error banner.
+      if (value?.instructions?.editable) setPromptDraft(value.instructions.value ?? "");
       setPhases((current) => ({ ...current, snapshot: "ready" }));
     } catch (reason) {
       if (
