@@ -922,6 +922,59 @@ describe("inline Voice Live chat", () => {
     );
   });
 
+  // Regression (independent re-review, HIGH): discardPersistence() only
+  // invalidated this hook's OWN reaction to ensureSession()'s promise -- it
+  // never told the CALLER (ChatApp's ensureSession) that the attempt asking
+  // for a session had been abandoned. A discarded attempt's already-pending
+  // ensureSession() (e.g. still awaiting createSession() over the network)
+  // could then still unconditionally force-navigate ChatApp to the newly
+  // created session once it resolved, or get treated as "current" even
+  // after the user discarded and moved on. ensureSession() now accepts an
+  // optional isStillWanted predicate; persist() must pass one that reflects
+  // discard/supersession the instant it's queried, however long the
+  // underlying network call takes to settle.
+  it("passes ensureSession a predicate that turns false the instant this attempt is discarded", async () => {
+    let capturedIsStillWanted: (() => boolean) | undefined;
+    const ensureSession = vi.fn((isStillWanted?: () => boolean) => {
+      capturedIsStillWanted = isStillWanted;
+      // Never resolves in this test: the point is to observe the predicate's
+      // answer change while the "network call" it would gate is still
+      // pending, exactly the window the production race exploited.
+      return new Promise<string>(() => {});
+    });
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "Abandon me too",
+          pending: false,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    render(<Harness ensureSession={ensureSession} />);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+
+    await waitFor(() => expect(ensureSession).toHaveBeenCalledTimes(1));
+    expect(capturedIsStillWanted).toBeInstanceOf(Function);
+    // Still the current (only) attempt: the predicate must say so.
+    expect(capturedIsStillWanted?.()).toBe(true);
+
+    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+
+    // Same predicate instance, re-queried after discard: it must now report
+    // false so ChatApp's ensureSession knows not to commit navigation once
+    // its still-pending createSession() call eventually resolves.
+    expect(capturedIsStillWanted?.()).toBe(false);
+  });
+
   // Regression: ensureSession() is contractually async (Promise<string>), but
   // persist() cannot rely on that alone -- it is always invoked as
   // `void persist()` immediately followed by more code in the same scope,

@@ -1013,12 +1013,29 @@ export function useVoiceLive(
           track.addEventListener("mute", handleTrackMuted);
         }
       }
-      // A track can likewise start already muted -- e.g. another app already
-      // held exclusive access, or the OS mic toggle was off at the moment
-      // permission was granted -- in which case no "mute" *transition* event
-      // ever fires (there's nothing to transition from). Catch that
-      // immediately instead of reaching "live" with a track that will never
-      // deliver audio for the whole call.
+      // The stream was captured well before this point -- ctx.resume(),
+      // buildSubprotocols() (an auth round-trip), and addModule() were all
+      // awaited above with no listeners attached yet. A track that already
+      // ended somewhere in that gap (permission revoked, device unplugged)
+      // won't refire "ended" for the listener just attached above -- that
+      // only catches a *future* transition. Query the current readyState
+      // directly so a track that died during the gap is still caught before
+      // ever reaching "live".
+      const endedTrack = stream.getTracks().find(
+        (track) => track.readyState === "ended",
+      );
+      if (endedTrack) {
+        finishSession(MIC_TRACK_ENDED_MESSAGE);
+        return;
+      }
+      // Same gap, different failure mode: a track can likewise already be
+      // muted -- from the OS toggle, another app grabbing exclusive access,
+      // or simply having muted itself during the startup await above -- in
+      // which case no "mute" *transition* event ever fires for the listener
+      // just attached (there's nothing to transition from, or the
+      // transition already happened). Catch that immediately instead of
+      // reaching "live" with a track that will never deliver audio for the
+      // whole call.
       const alreadyMutedTrack = stream.getTracks().find((track) => track.muted);
       if (alreadyMutedTrack) {
         finishSession(MIC_TRACK_MUTED_MESSAGE);
@@ -1036,7 +1053,7 @@ export function useVoiceLive(
           session.suspendRecoveryTimer = null;
         }
       };
-      ctx.onstatechange = () => {
+      const handleContextStateChange = () => {
         if (sessionRef.current !== session) return;
         if (ctx.state === "running") {
           clearSuspendRecoveryTimer();
@@ -1056,6 +1073,15 @@ export function useVoiceLive(
           }
         }, AUDIO_CONTEXT_RESUME_GRACE_MS);
       };
+      ctx.onstatechange = handleContextStateChange;
+      // ctx.resume() was already awaited above, but some browsers defer or
+      // silently ignore resume() while the tab is hidden, or require a fresh
+      // user gesture -- onstatechange only fires on a *future* transition,
+      // so a context that is already stuck "suspended" right now (rather
+      // than transitioning to it later) would otherwise never start the
+      // recovery grace period. Evaluate the current state immediately
+      // through the same handler a real transition would use.
+      handleContextStateChange();
 
       let activeResponseId: string | null = null;
       let activeAssistantItemId: string | null = null;

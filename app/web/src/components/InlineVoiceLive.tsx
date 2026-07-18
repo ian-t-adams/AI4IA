@@ -52,7 +52,12 @@ interface InlineVoiceLiveOptions {
   // calling ensureSession avoids empty-chat creation while ensuring a later
   // finalized turn cannot drift into a different chat after navigation.
   activeSessionId?: string | null;
-  ensureSession: () => Promise<string>;
+  // isStillWanted is re-checked by the caller (ChatApp) right before a newly
+  // created session is made active, alongside its own selection-generation
+  // check -- letting persist() signal that a discarded/superseded attempt no
+  // longer wants the session it triggered creation of to hijack navigation
+  // once creation resolves, even when no actual navigation ever happened.
+  ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
   persistConversation: (
     sessionId: string,
     conversationId: string,
@@ -261,9 +266,17 @@ export function useInlineVoiceLive({
     // other save failure keeps that teardown guarantee unconditional.
     let sessionPromise: Promise<string>;
     try {
+      // The predicate lets ensureSession's caller-side commit (ChatApp) know
+      // this exact attempt is what's asking: if discardPersistence() (or a
+      // newer persist() cycle) bumps attemptIdRef before the underlying
+      // createSession() network call resolves, the created session still
+      // joins the sidebar but must not force-navigate the UI to it or get
+      // treated as "current" by ChatApp -- even though nothing here ever
+      // called selectSession/newChat.
       sessionPromise = boundSessionId
         ? Promise.resolve(boundSessionId)
-        : (sessionPromiseRef.current ?? ensureSession());
+        : (sessionPromiseRef.current ??
+          ensureSession(() => attemptIdRef.current === attemptId));
     } catch (error) {
       setPersistenceError(
         error instanceof Error

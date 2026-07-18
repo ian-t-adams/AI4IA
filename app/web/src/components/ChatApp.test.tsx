@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -650,6 +650,114 @@ describe("ChatApp uploads", () => {
     await user.click(runWorkflow);
     expect(
       await screen.findByText(/in the voice status bar to continue\./),
+    ).toBeInTheDocument();
+  });
+
+  // Regression (independent re-review, HIGH): ensureSession() mutates
+  // sessionIdRef/activeId unconditionally as soon as its internal
+  // api.createSession() call resolves. A caller-side check on the returned
+  // promise (like InlineVoiceLive's old shared abandonedRef) is powerless to
+  // stop that -- the mutation already happened. These two tests drive the
+  // *real* ensureSession callback ChatApp passes into the (mocked)
+  // useInlineVoiceLive hook -- not a test double -- to prove the fix's two
+  // independent gates (selection generation, and the caller's own
+  // isStillWanted predicate) each independently stop a stale creation from
+  // clobbering navigation, while the session itself still always joins the
+  // sidebar since it's real and already persisted either way.
+  it("does not let a voice session creation that is still in flight when the user navigates away drag navigation back once it resolves", async () => {
+    let resolveCreate!: (value: ReturnType<typeof session>) => void;
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    const { ensureSession } = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+
+    // Voice Live starts its very first turn and begins creating a session.
+    // The predicate reports "still wanted" for as long as this call stays
+    // outstanding -- this particular attempt is never itself discarded.
+    let creationResult: Promise<string> | undefined;
+    act(() => {
+      creationResult = ensureSession(() => true);
+    });
+
+    // Before that creation resolves, the user navigates to an existing
+    // session -- a real navigation, so it bumps selectionGenerationRef.
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    expect(
+      await screen.findByText("Session A", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+
+    // The stale creation now finally resolves. It must still join the
+    // sidebar (it's a real, already-persisted session on the backend either
+    // way) but must not drag navigation back to it out from under the user
+    // who already moved on.
+    await act(async () => {
+      resolveCreate(session("C"));
+      await creationResult;
+    });
+
+    expect(
+      screen.getByText("Session A", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Session C" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not let a discarded voice session creation switch navigation away from the still-blank view once it resolves", async () => {
+    let resolveCreate!: (value: ReturnType<typeof session>) => void;
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    const { ensureSession } = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+
+    // This time the user discards the voice transcript before creation
+    // resolves, without navigating anywhere else -- selectionGenerationRef
+    // never changes, so only the caller's isStillWanted predicate can catch
+    // this.
+    let creationResult: Promise<string> | undefined;
+    act(() => {
+      creationResult = ensureSession(() => false);
+    });
+
+    await act(async () => {
+      resolveCreate(session("C"));
+      await creationResult;
+    });
+
+    // Still on the blank view: the discarded attempt must not have
+    // force-navigated the user to the session it created behind the scenes.
+    expect(
+      screen.getByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+    // The session is still real and persisted, so it must still show up in
+    // the sidebar for the user to open manually if they want it.
+    expect(
+      await screen.findByRole("button", { name: "Session C" }),
     ).toBeInTheDocument();
   });
 });

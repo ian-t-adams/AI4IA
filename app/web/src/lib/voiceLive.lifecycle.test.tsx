@@ -92,6 +92,7 @@ class FakeAudioWorkletNode {
 class FakeMediaStreamTrack {
   stop = vi.fn();
   muted = false;
+  readyState: "live" | "ended" = "live";
   private listeners = new Map<string, Set<() => void>>();
 
   addEventListener(type: string, listener: () => void) {
@@ -108,6 +109,7 @@ class FakeMediaStreamTrack {
   }
 
   dispatchEnded() {
+    this.readyState = "ended";
     for (const listener of [...(this.listeners.get("ended") ?? [])]) listener();
   }
 
@@ -933,6 +935,56 @@ describe("useVoiceLive lifecycle", () => {
     expect(result.current.status).not.toBe("live");
   });
 
+  // Regression (independent re-review, MEDIUM): the "ended"/"mute" listeners
+  // are only attached once getUserMedia(), ctx.resume(), and
+  // buildSubprotocols() (an auth round-trip) have ALL settled, followed by
+  // addModule(). A track that already ended somewhere in that gap won't
+  // refire "ended" for a listener attached afterward -- that only catches a
+  // *future* transition. The post-wiring readyState check must catch it
+  // anyway by querying the track's current state directly, so a track that
+  // died during the startup gap is still caught before ever reaching "live".
+  it("catches a microphone track that already ended during the auth/addModule startup gap", async () => {
+    const token = deferred<string | null>();
+    auth.getToken.mockReturnValue(token.promise);
+    const track = new FakeMediaStreamTrack();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+    );
+
+    act(() => {
+      result.current.start();
+    });
+    // getUserMedia already resolved (it has no auth dependency), but the
+    // auth round-trip is still pending, so no "ended" listener has been
+    // attached to the track yet -- exactly the startup gap the finding
+    // describes.
+    await waitFor(() => expect(track.listenerCount("ended")).toBe(0));
+
+    // The track ends while nothing is listening for it. Nothing re-fires
+    // "ended" once a listener is attached later -- only the track's current
+    // readyState reflects that this already happened.
+    track.readyState = "ended";
+
+    act(() => token.resolve("token"));
+
+    await waitFor(() =>
+      expect(onError).toHaveBeenCalledWith(
+        "Microphone stopped providing audio (permission revoked or device disconnected). Reconnect to continue.",
+      ),
+    );
+    await waitFor(() => expect(FakeWebSocket.instances[0]?.close).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(FakeAudioContext.instances[0]?.close).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.status).toBe("idle"));
+    // The session must never have been allowed to reach "live" with a mic
+    // that was already known to be dead.
+    expect(result.current.status).not.toBe("live");
+  });
+
   // Regression: Chrome/Safari can suspend an active AudioContext purely from
   // backgrounding the tab -- even with a live, unmuted mic track and a
   // healthy socket -- silently halting the capture worklet with no other
@@ -1097,6 +1149,75 @@ describe("useVoiceLive lifecycle", () => {
         vi.advanceTimersByTime(4000);
       });
       expect(onError).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Regression (independent re-review, MEDIUM): onstatechange is assigned
+  // only after the same auth/addModule startup gap as the track listeners
+  // above, and only reacts to a *future* transition. A context that browsers
+  // defer/ignore resume() for while the tab stays hidden can already be
+  // stuck "suspended" the moment onstatechange is finally assigned, with no
+  // further transition ever occurring to trigger it -- previously that meant
+  // the recovery grace period (and eventual fatal teardown) never started at
+  // all, so the client could report a live/open socket with an AudioContext
+  // that had been silently dead since before the session even connected.
+  it("starts the suspend-recovery grace period immediately if the AudioContext is already suspended the moment monitoring is wired up", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const token = deferred<string | null>();
+      auth.getToken.mockReturnValue(token.promise);
+      const track = new FakeMediaStreamTrack();
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+      });
+      const onError = vi.fn();
+      const { result } = renderHook(() =>
+        useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+      );
+
+      act(() => {
+        result.current.start();
+      });
+      // ctx.resume() already ran synchronously (per the fake's default
+      // behavior) and flipped state to "running". Simulate a browser that
+      // defers/ignores resume() while the tab is hidden: the context is
+      // (still, or again) "suspended" throughout the auth/addModule startup
+      // gap, and a neutered resume() means nothing will ever bring it back
+      // on its own.
+      const ctx = FakeAudioContext.instances[0];
+      ctx.resume = vi.fn(async () => {});
+      ctx.state = "suspended";
+
+      // onstatechange has not been assigned yet -- the auth round-trip is
+      // still pending -- so there is nothing to observe this pre-existing
+      // suspension until wiring completes a little later. No transition
+      // into "suspended" ever happens in this test; it starts that way.
+      expect(ctx.onstatechange).toBeNull();
+
+      act(() => token.resolve("token"));
+      await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+      act(() => FakeWebSocket.instances[0].onopen?.());
+      await waitFor(() => expect(result.current.status).toBe("live"));
+
+      // The grace period must already be running from the immediate
+      // post-wiring evaluation, not waiting on a transition that will never
+      // come -- advancing past it alone (with no manual onstatechange call)
+      // must reach the same fatal, fully-torn-down outcome as an observed
+      // mid-session suspension.
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+
+      expect(onError).toHaveBeenCalledWith(
+        "Live voice paused because the browser suspended audio processing (often from backgrounding the tab). Reconnect to continue.",
+      );
+      expect(track.stop).toHaveBeenCalledTimes(1);
+      expect(FakeWebSocket.instances[0].close).toHaveBeenCalledTimes(1);
+      expect(ctx.close).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(result.current.status).toBe("idle"));
     } finally {
       vi.useRealTimers();
     }

@@ -567,29 +567,52 @@ export function ChatApp() {
   // Lazily create (or reuse) the active session. Shared by send + document
   // upload so they never race to create two sessions; concurrent callers await
   // the same in-flight creation promise.
-  const ensureSession = useCallback(async (): Promise<string> => {
-    if (sessionIdRef.current) return sessionIdRef.current;
-    if (creatingRef.current) return creatingRef.current;
-    const p = (async () => {
-      const created = await api.createSession({
-        model: selectedModel,
-        systemPrompt: systemPrompt || null,
-        agentName: draftDefaults.agentName,
-        toolOverrides: draftDefaults.toolOverrides,
-        libraryDocumentIds: draftDefaults.libraryDocumentIds,
-      });
-      sessionIdRef.current = created.id;
-      setActiveId(created.id);
-      setSessions((prev) => [created, ...prev]);
-      return created.id;
-    })();
-    creatingRef.current = p;
-    try {
-      return await p;
-    } finally {
-      creatingRef.current = null;
-    }
-  }, [draftDefaults, selectedModel, systemPrompt]);
+  //
+  // isStillWanted is an optional caller-supplied predicate re-checked right
+  // before the created session is made active, alongside the selection
+  // generation captured at call time. Both a real navigation (selectSession/
+  // newChat, which bump selectionGenerationRef) *and* a caller-side
+  // abandonment that isn't a navigation at all (e.g. Voice Live discarding a
+  // transcript while staying on the same blank "new chat" view, which never
+  // touches selectionGenerationRef) must be able to stop this call from
+  // force-navigating the UI to a session nobody wants anymore once the
+  // createSession() network call finally resolves. The session itself is
+  // still real and already persisted on the backend either way, so it always
+  // joins the sidebar list -- only becoming the *active/navigated-to* session
+  // is gated.
+  const ensureSession = useCallback(
+    async (isStillWanted?: () => boolean): Promise<string> => {
+      if (sessionIdRef.current) return sessionIdRef.current;
+      if (creatingRef.current) return creatingRef.current;
+      const capturedGeneration = selectionGenerationRef.current;
+      const p = (async () => {
+        const created = await api.createSession({
+          model: selectedModel,
+          systemPrompt: systemPrompt || null,
+          agentName: draftDefaults.agentName,
+          toolOverrides: draftDefaults.toolOverrides,
+          libraryDocumentIds: draftDefaults.libraryDocumentIds,
+        });
+        setSessions((prev) => [created, ...prev]);
+        const stillCurrentSelection =
+          selectionGenerationRef.current === capturedGeneration &&
+          !sessionIdRef.current;
+        const stillWanted = isStillWanted ? isStillWanted() : true;
+        if (stillCurrentSelection && stillWanted) {
+          sessionIdRef.current = created.id;
+          setActiveId(created.id);
+        }
+        return created.id;
+      })();
+      creatingRef.current = p;
+      try {
+        return await p;
+      } finally {
+        creatingRef.current = null;
+      }
+    },
+    [draftDefaults, selectedModel, systemPrompt],
+  );
 
   const runUpload = useCallback(
     async (uploadId: string) => {
