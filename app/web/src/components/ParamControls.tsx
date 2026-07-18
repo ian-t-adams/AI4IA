@@ -83,7 +83,9 @@ export function ParamControls({
             Controls how much randomness the model uses when choosing words. Lower it
             (toward 0) for consistent, predictable answers like code or facts; raise it
             (toward 2) for more varied, creative output. Higher values also increase the
-            chance of less accurate or coherent answers. Default is 0.7.
+            chance of less accurate or coherent answers. Default is 0.7. GPT-5 and
+            o-series models ignore this control on the server and always use their own
+            fixed default instead, no matter what&apos;s set here.
           </>
         }
       />
@@ -101,7 +103,9 @@ export function ParamControls({
             set of next-word options whose combined likelihood reaches this value. 1
             means &ldquo;consider everything&rdquo;; lowering it narrows the model to
             its most likely words. Most people adjust Temperature or Top P, not both, to
-            keep behavior predictable. Default is 1.
+            keep behavior predictable. Default is 1. Like Temperature, GPT-5 and
+            o-series models ignore this on the server and always use their own fixed
+            default instead.
           </>
         }
       />
@@ -123,7 +127,13 @@ export function ParamControls({
             maximum output{" "}
             {model?.maxOutputTokens != null
               ? `(currently ${model.maxOutputTokens.toLocaleString()}).`
-              : "."}
+              : "."}{" "}
+            Leaving it at the default, 1024, is treated as &ldquo;no preference&rdquo;
+            and expands to the model&apos;s full ceiling instead of actually capping the
+            reply at 1024 &mdash; pick a different value if you want a genuinely short
+            reply. A few flagship models also enforce a much higher minimum (at least
+            16,384) regardless of a lower value here, since part of that budget goes to
+            hidden reasoning before the visible reply is written.
           </HelpTooltip>
         </div>
         <input

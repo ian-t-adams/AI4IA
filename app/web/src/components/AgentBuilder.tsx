@@ -418,22 +418,23 @@ export function AgentBuilder({
           {ATTACHABLE_TOOLS.map((t) => {
             const help = BUILT_IN_TOOL_HELP[t];
             const label = TOOL_LABELS[t] ?? t;
+            const inputId = `ag-tool-${t}`;
             return (
-              <label key={t} style={checkRow}>
-                <input
-                  type="checkbox"
-                  checked={form.tools.includes(t)}
-                  onChange={() => toggleIn("tools", t)}
-                  aria-label={label}
-                />
-                {label}
+              // A HelpTooltip renders its own button; nesting it inside a
+              // <label> would fold its "Help: …" text into the checkbox's
+              // accessible name (or, without an override, into a single
+              // ambiguous name shared by two interactive controls). Keep the
+              // tooltip as a sibling of a narrow <label htmlFor> instead.
+              <span key={t} style={checkRow}>
+                <input type="checkbox" id={inputId} checked={form.tools.includes(t)} onChange={() => toggleIn("tools", t)} />
+                <label htmlFor={inputId}>{label}</label>
                 {help && (
                   <HelpTooltip label={label} size="sm">
                     {help.what} {help.when} {help.tradeoffs}{" "}
                     {toolRiskSummary(help.risk)}
                   </HelpTooltip>
                 )}
-              </label>
+              </span>
             );
           })}
         </fieldset>
@@ -488,36 +489,39 @@ export function AgentBuilder({
                       {quarantineMsg}
                     </p>
                   )}
-                  {g.tools.map((t) => (
-                    <label key={t.namespacedName} style={checkRow}>
-                      <input
-                        type="checkbox"
-                        checked={form.tools.includes(t.namespacedName)}
-                        onChange={() => toggleIn("tools", t.namespacedName)}
-                        aria-label={t.toolName}
-                      />
-                      {t.toolName}
-                      {t.description && (
-                        <HelpTooltip label={t.toolName} size="sm">
-                          {t.description}
-                        </HelpTooltip>
-                      )}
-                      <span
-                        style={{
-                          fontSize: "0.72em",
-                          color: t.requiresApproval ? "var(--fg-muted)" : "#15803d",
-                        }}
-                      >
-                        {t.requiresApproval
-                          ? t.approval === "always"
-                            ? "· approval (forced)"
-                            : "· approval"
-                          : t.approval === "never"
-                            ? "· pre-approved"
-                            : "· auto"}
+                  {g.tools.map((t) => {
+                    const mcpInputId = `ag-mcp-${t.namespacedName}`;
+                    return (
+                      <span key={t.namespacedName} style={checkRow}>
+                        <input
+                          type="checkbox"
+                          id={mcpInputId}
+                          checked={form.tools.includes(t.namespacedName)}
+                          onChange={() => toggleIn("tools", t.namespacedName)}
+                        />
+                        <label htmlFor={mcpInputId}>{t.toolName}</label>
+                        {t.description && (
+                          <HelpTooltip label={t.toolName} size="sm">
+                            {t.description}
+                          </HelpTooltip>
+                        )}
+                        <span
+                          style={{
+                            fontSize: "0.72em",
+                            color: t.requiresApproval ? "var(--fg-muted)" : "#15803d",
+                          }}
+                        >
+                          {t.requiresApproval
+                            ? t.approval === "always"
+                              ? "· approval (forced)"
+                              : "· approval"
+                            : t.approval === "never"
+                              ? "· pre-approved"
+                              : "· auto"}
+                        </span>
                       </span>
-                    </label>
-                  ))}
+                    );
+                  })}
                 </div>
               );
             })}
@@ -557,25 +561,28 @@ export function AgentBuilder({
           {linkOptions.length === 0 && (
             <p style={{ ...labelStyle, margin: 0 }}>No other agents to link.</p>
           )}
-          {linkOptions.map((a) => (
-            <label key={a.name} style={checkRow}>
-              <input
-                type="checkbox"
-                checked={form.links.includes(a.name)}
-                onChange={() => toggleIn("links", a.name)}
-                aria-label={a.displayName || a.name}
-              />
-              {a.displayName || a.name}
-              <span style={{ fontSize: "0.72em", color: "var(--fg-muted)" }}>
-                {myAgentNames.has(a.name) ? "· yours" : "· pre-created"}
+          {linkOptions.map((a) => {
+            const linkInputId = `ag-link-${a.name}`;
+            return (
+              <span key={a.name} style={checkRow}>
+                <input
+                  type="checkbox"
+                  id={linkInputId}
+                  checked={form.links.includes(a.name)}
+                  onChange={() => toggleIn("links", a.name)}
+                />
+                <label htmlFor={linkInputId}>{a.displayName || a.name}</label>
+                <span style={{ fontSize: "0.72em", color: "var(--fg-muted)" }}>
+                  {myAgentNames.has(a.name) ? "· yours" : "· pre-created"}
+                </span>
+                {a.description && (
+                  <HelpTooltip label={a.displayName || a.name} size="sm">
+                    {a.description}
+                  </HelpTooltip>
+                )}
               </span>
-              {a.description && (
-                <HelpTooltip label={a.displayName || a.name} size="sm">
-                  {a.description}
-                </HelpTooltip>
-              )}
-            </label>
-          ))}
+            );
+          })}
         </fieldset>
 
         <label style={{ ...checkRow, fontSize: "0.9em" }}>

@@ -294,20 +294,22 @@ function UserCell({
 }) {
   const visibleName = identified ? displayName?.trim() : "";
   const visibleEmail = identified ? email : null;
-  // Full hash (and email in identified mode) stay available on hover via title, and
-  // via aria-label + tabIndex so keyboard/screen-reader users (who can't hover) can
-  // reach the same full id without a mouse — a plain div's title is invisible to both.
-  const tooltip = visibleEmail ? `${userId}\n${visibleEmail}` : userId;
-  const fullIdLabel = visibleEmail ? `Full id ${userId}, email ${visibleEmail}` : `Full id ${userId}`;
+  // The table always shows a shortened id (and, in identified mode, a name);
+  // the untruncated id is otherwise unreachable without page source. A
+  // hover-only title (even paired with tabIndex) never surfaces on keyboard
+  // focus in any browser, so disclose it via the same focus/click/hover
+  // affordance used elsewhere instead.
+  const idHint = shortUserId(userId);
   return (
-    <div
-      style={{ display: "flex", flexDirection: "column", gap: 1 }}
-      title={tooltip}
-      aria-label={fullIdLabel}
-      tabIndex={0}
-    >
-      <span style={{ fontFamily: visibleName ? "inherit" : "monospace" }}>
-        {userLabel(visibleName, userId)}
+    <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+        <span style={{ fontFamily: visibleName ? "inherit" : "monospace" }}>
+          {userLabel(visibleName, userId)}
+        </span>
+        <HelpTooltip label={`full id for ${idHint}`} size="sm">
+          Full id: {userId}
+          {visibleEmail ? `, email: ${visibleEmail}` : null}
+        </HelpTooltip>
       </span>
       {visibleName ? (
         <span style={{ fontFamily: "monospace", fontSize: "0.82em", color: "var(--fg-muted)" }}>
@@ -775,16 +777,14 @@ export function AdminDashboard() {
     <Shell>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
         <h1 style={{ fontSize: "1.3em", margin: 0, flex: 1 }}>Usage dashboard</h1>
-        <label
-          style={{ ...muted, display: "flex", alignItems: "center", gap: 4 }}
-        >
+        <span style={{ ...muted, display: "flex", alignItems: "center", gap: 4 }}>
           <input
             type="checkbox"
+            id="admin-identify-users"
             checked={identifyUsers}
             onChange={(e) => setIdentifyUsers(e.target.checked)}
-            aria-label="Show real identities"
           />
-          Show real identities
+          <label htmlFor="admin-identify-users">Show real identities</label>
           <HelpTooltip label="Show real identities" size="sm">
             On resolves each user&apos;s hashed id to their real display name and
             email (an extra directory lookup per row) and sends that to your
@@ -792,7 +792,7 @@ export function AdminDashboard() {
             which is safer for demos, screen-shares, or recordings. This
             preference is remembered on this device only.
           </HelpTooltip>
-        </label>
+        </span>
         <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <label style={muted} htmlFor="admin-window">
             Window

@@ -4,6 +4,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 
 import type { AgentSummary, ModelEntry, UserAgent } from "@/lib/types";
+import type { UserMcpServer } from "@/lib/customTools";
 import { AgentBuilder } from "./AgentBuilder";
 
 const mocks = vi.hoisted(() => ({
@@ -45,6 +46,33 @@ const MINE: UserAgent[] = [
   },
 ];
 
+const MCP_SERVER: UserMcpServer = {
+  id: "s1",
+  userId: "u1",
+  name: "weather",
+  displayName: "Weather",
+  description: "Forecasts",
+  endpoint: "https://weather.example.com/mcp",
+  host: "weather.example.com",
+  transport: "streamable_http",
+  authMode: "none",
+  trusted: true,
+  enabled: true,
+  secretRef: null,
+  discoveredTools: [
+    { name: "forecast", description: "Get a weather forecast", inputSchema: {} },
+  ],
+  toolApprovals: {},
+  createdAt: "2024-01-01T00:00:00Z",
+  updatedAt: "2024-01-01T00:00:00Z",
+  lastConnectedAt: "2024-01-01T00:00:00Z",
+  lastError: null,
+  consecutiveFailures: 0,
+  quarantinedUntil: null,
+  lastHealthCheck: "2024-01-01T00:00:00Z",
+  lastHealthError: null,
+};
+
 beforeEach(() => {
   mocks.listMyAgents.mockResolvedValue(MINE);
   mocks.listMcpServers.mockResolvedValue([]);
@@ -62,16 +90,18 @@ describe("AgentBuilder", () => {
     render(<AgentBuilder agents={[]} models={[]} onChanged={async () => {}} />);
 
     const toolsGroup = await screen.findByRole("group", { name: /Tools \(max/i });
-    const calculatorRow = within(toolsGroup).getByText("Calculator").closest("label");
-    expect(calculatorRow).not.toBeNull();
-    const checkbox = within(calculatorRow!).getByRole("checkbox");
+    const checkbox = within(toolsGroup).getByRole("checkbox", { name: "Calculator" });
     expect(checkbox).not.toBeChecked();
-    // The help button lives inside the same <label>; its own aria-label must
-    // not leak into the checkbox's accessible name (regression test for a
-    // label/HelpTooltip nesting bug).
-    expect(screen.getByRole("checkbox", { name: "Calculator" })).toBe(checkbox);
+    // The row must not be a <label> wrapping the checkbox, help button, and
+    // text together — nesting a HelpTooltip inside a <label> lets its own
+    // "Help: …" text (or other row content) leak into the checkbox's
+    // accessible name. htmlFor/id must scope the label to just the visible
+    // text, with the tooltip kept as a sibling.
+    expect(checkbox.closest("label")).toBeNull();
+    expect(checkbox).toHaveAccessibleName("Calculator");
+    const calculatorRow = checkbox.parentElement as HTMLElement;
 
-    await user.click(within(calculatorRow!).getByRole("button", { name: "Help: Calculator" }));
+    await user.click(within(calculatorRow).getByRole("button", { name: "Help: Calculator" }));
     const tooltip = screen.getByRole("tooltip");
     expect(tooltip).toHaveTextContent(/arithmetic/i);
     expect(tooltip).toHaveTextContent(/Safe:/);
@@ -85,23 +115,44 @@ describe("AgentBuilder", () => {
     await waitFor(() => expect(mocks.listMyAgents).toHaveBeenCalled());
 
     const delegateGroup = await screen.findByRole("group", { name: /Delegate to/i });
-    const helperRow = within(delegateGroup).getByText("Helper").closest("label");
-    expect(helperRow).not.toBeNull();
-    expect(within(helperRow!).getByText("· yours")).toBeInTheDocument();
+    const helperCheckbox = within(delegateGroup).getByRole("checkbox", { name: "Helper" });
     // Regression test: the nested help button's aria-label must not leak
     // into this checkbox's accessible name either.
-    expect(screen.getByRole("checkbox", { name: "Helper" })).toBe(
-      within(helperRow!).getByRole("checkbox"),
-    );
+    expect(helperCheckbox.closest("label")).toBeNull();
+    const helperRow = helperCheckbox.parentElement as HTMLElement;
+    expect(within(helperRow).getByText("· yours")).toBeInTheDocument();
 
-    const researchRow = within(delegateGroup).getByText("Research Assistant").closest("label");
-    expect(researchRow).not.toBeNull();
-    expect(within(researchRow!).getByText("· pre-created")).toBeInTheDocument();
+    const researchCheckbox = within(delegateGroup).getByRole("checkbox", {
+      name: "Research Assistant",
+    });
+    const researchRow = researchCheckbox.parentElement as HTMLElement;
+    expect(within(researchRow).getByText("· pre-created")).toBeInTheDocument();
 
     await user.click(
-      within(researchRow!).getByRole("button", { name: "Help: Research Assistant" }),
+      within(researchRow).getByRole("button", { name: "Help: Research Assistant" }),
     );
     expect(screen.getByRole("tooltip")).toHaveTextContent("Searches and cites sources.");
+  });
+
+  it("gives an MCP tool row a clean accessible name and surfaces its approval posture as a sibling, not a nested label", async () => {
+    const user = userEvent.setup();
+    mocks.listMcpServers.mockResolvedValue([MCP_SERVER]);
+    render(
+      <AgentBuilder agents={[]} models={[]} customToolsEnabled onChanged={async () => {}} />,
+    );
+
+    const mcpGroup = await screen.findByRole("group", { name: /MCP tools/i });
+    const checkbox = within(mcpGroup).getByRole("checkbox", { name: "forecast" });
+    expect(checkbox.closest("label")).toBeNull();
+    expect(checkbox).toHaveAccessibleName("forecast");
+    const row = checkbox.parentElement as HTMLElement;
+    // Trusted server + no override -> auto-approved; shown alongside the
+    // checkbox rather than folded into its name.
+    expect(within(row).getByText("· auto")).toBeInTheDocument();
+
+    await user.click(within(row).getByRole("button", { name: "Help: forecast" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Get a weather forecast");
+    expect(checkbox).not.toBeChecked();
   });
 
   it("groups the preferred-model picker by category and explains the selected one", async () => {

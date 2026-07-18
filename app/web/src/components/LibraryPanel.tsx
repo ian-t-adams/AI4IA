@@ -142,7 +142,12 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
   }
 
   async function onDelete(doc: LibraryDocument) {
-    if (!confirm(`Delete "${doc.filename}" from your library?`)) return;
+    if (
+      !confirm(
+        `Permanently delete "${doc.filename}"? This can't be undone — it removes the file and its extracted content from your library.`,
+      )
+    )
+      return;
     setError(null);
     try {
       await deleteLibraryDocument(doc.id);
@@ -507,7 +512,7 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                 </button>
                 <button
                   onClick={() => onDelete(doc)}
-                  aria-label={`Delete ${doc.filename}`}
+                  aria-label={`Permanently delete ${doc.filename}`}
                   title="Permanently delete this document and its extracted content"
                   style={{
                     border: "none",

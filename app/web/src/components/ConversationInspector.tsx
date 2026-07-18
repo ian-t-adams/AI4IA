@@ -731,10 +731,22 @@ export function ConversationInspector({
                   ? snapshot?.tools.removed.includes(tool.name) ?? false
                   : draftDefaults.toolOverrides.removed.includes(tool.name);
                 const lockedOut = tool.available && !tool.selectable && !inherited;
+                const toolInputId = `tool-input-${tool.name}`;
+                const toolStatusId = `tool-status-${tool.name}`;
+                const toolLockedId = `tool-locked-${tool.name}`;
                 return (
-                  <label key={tool.name} className="tool-row">
+                  // A <label> can only own one interactive control; nesting the
+                  // HelpTooltip's own button inside it (as before) folded "Help:
+                  // …" into the checkbox's computed name alongside the rest of
+                  // the row's text. Use an explicit id/htmlFor pair scoped to
+                  // just the visible label text, keep the tooltip as a sibling,
+                  // and carry the rich status/lockout detail via
+                  // aria-describedby instead of the accessible name.
+                  <div key={tool.name} className="tool-row">
                     <input
                       type="checkbox"
+                      id={toolInputId}
+                      aria-describedby={lockedOut ? `${toolStatusId} ${toolLockedId}` : toolStatusId}
                       checked={effective}
                       disabled={
                         (sessionId ? !canMutate : false) ||
@@ -774,13 +786,15 @@ export function ConversationInspector({
                       }}
                     />
                     <span>
-                      <strong>{tool.label}</strong>
+                      <label htmlFor={toolInputId}>
+                        <strong>{tool.label}</strong>
+                      </label>
                       {tool.description ? (
                         <HelpTooltip label={`${tool.label} description`} size="sm">
                           {tool.description}
                         </HelpTooltip>
                       ) : null}
-                      <small>
+                      <small id={toolStatusId}>
                         {inherited ? "inherited · " : ""}
                         {added ? "added · " : ""}
                         {removed ? "removed · " : ""}
@@ -801,14 +815,14 @@ export function ConversationInspector({
                         {!tool.available && tool.detail ? ` · ${tool.detail}` : ""}
                       </small>
                       {lockedOut ? (
-                        <small>
+                        <small id={toolLockedId}>
                           Can&apos;t enable from here — it needs approval, scopes, or
                           restricted access that only a pre-built agent can grant, not
                           an ad-hoc conversation toggle.
                         </small>
                       ) : null}
                     </span>
-                  </label>
+                  </div>
                 );
               })}
               {phases.tools === "ready" && toolEntries.length === 0 ? (

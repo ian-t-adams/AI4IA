@@ -32,7 +32,7 @@ afterEach(() => {
 });
 
 describe("SharePanel", () => {
-  it("warns that switching away from shared and saving will drop current grantees", async () => {
+  it("warns that switching to private and saving will remove current grantees' access", async () => {
     mocks.getDocumentShares.mockResolvedValue(SHARED_STATE);
     const user = userEvent.setup();
     render(<SharePanel documentId="doc1" filename="notes.pdf" onClose={vi.fn()} />);
@@ -48,6 +48,29 @@ describe("SharePanel", () => {
 
     const warning = screen.getByRole("status");
     expect(warning.textContent).toMatch(/2\s+people currently shared with/i);
+    expect(warning.textContent).toMatch(/remove access/i);
+  });
+
+  it("warns that switching to public will clear the named list but NOT remove access — it widens to the whole org", async () => {
+    mocks.getDocumentShares.mockResolvedValue(SHARED_STATE);
+    const user = userEvent.setup();
+    render(<SharePanel documentId="doc1" filename="notes.pdf" onClose={vi.fn()} />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: /^anyone in your organization/i })).toBeInTheDocument(),
+    );
+
+    await user.click(
+      screen.getByRole("radio", { name: /^anyone in your organization/i }),
+    );
+
+    const warning = screen.getByRole("status");
+    expect(warning.textContent).toMatch(/2\s+named\s+people/i);
+    // Named grantees keep access — the public warning must not claim they
+    // lose it (unlike the private-path warning above).
+    expect(warning.textContent).not.toMatch(/remove access/i);
+    expect(warning.textContent).toMatch(/won't lose access/i);
+    expect(warning.textContent).toMatch(/everyone in your (tenant|organization)/i);
   });
 
   it("does not warn when there are no grantees to lose", async () => {

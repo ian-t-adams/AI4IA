@@ -567,7 +567,11 @@ describe("ConversationInspector", () => {
     const user = userEvent.setup();
     render(<ConversationInspector {...props()} />);
     await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
-    const row = (await screen.findByText("Shell")).closest("label") as HTMLElement;
+    const checkbox = await screen.findByRole("checkbox", { name: "Shell" });
+    // The row is a <div>, not a <label> — a HelpTooltip's own button lives
+    // alongside it instead of nested inside a control's label.
+    expect(checkbox.closest("label")).toBeNull();
+    const row = checkbox.closest(".tool-row") as HTMLElement;
     expect(row).not.toHaveAttribute("title");
 
     await user.click(within(row).getByRole("button", { name: "Help: Shell description" }));
@@ -575,9 +579,14 @@ describe("ConversationInspector", () => {
       "Runs a shell command on the host.",
     );
 
-    expect(
-      within(row).getByText(/Can't enable from here/),
-    ).toHaveTextContent(/only a pre-built agent can grant/);
+    const lockedReason = within(row).getByText(/Can't enable from here/);
+    expect(lockedReason).toHaveTextContent(/only a pre-built agent can grant/);
+    // The rich status/lockout detail is wired to the checkbox for screen
+    // readers via aria-describedby rather than folded into its name.
+    expect(checkbox).toHaveAccessibleName("Shell");
+    expect(checkbox.getAttribute("aria-describedby")).toContain(
+      lockedReason.id,
+    );
   });
 
   it("explains the tool list's dot-joined columns via a glossary tooltip", async () => {
