@@ -71,10 +71,11 @@ function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
 }
 
 describe("VoiceSettingsPanel", () => {
-  it("renders as a disclosure, not a dialog, and is closed by default", () => {
+  it("renders controls directly without a nested disclosure or dialog", () => {
     setup();
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByText("Voice settings")).toBeInTheDocument();
+    expect(document.querySelector("details")).toBeNull();
+    expect(screen.queryByText("Voice settings")).toBeNull();
     expect(screen.getByRole("combobox", { name: "Provider" })).toBeInTheDocument();
   });
 

@@ -21,10 +21,46 @@ def test_session_lifecycle(client):
     patched = client.patch(f"/api/sessions/{sid}", json={"title": "Renamed"})
     assert patched.status_code == 200
     assert patched.json()["title"] == "Renamed"
+    assert patched.json()["titleSource"] == "manual"
 
     deleted = client.delete(f"/api/sessions/{sid}")
     assert deleted.status_code == 204
     assert client.get(f"/api/sessions/{sid}").status_code == 404
+
+
+def test_session_title_is_trimmed_and_bounded(client):
+    session = client.post("/api/sessions", json={"model": "gpt-5.2"}).json()
+    sid = session["id"]
+    assert session["titleSource"] == "auto"
+
+    renamed = client.patch(
+        f"/api/sessions/{sid}", json={"title": "  Release notes  "}
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "Release notes"
+    assert renamed.json()["titleSource"] == "manual"
+
+    for invalid in ("", "   ", "x" * 121, None):
+        rejected = client.patch(
+            f"/api/sessions/{sid}", json={"title": invalid}
+        )
+        assert rejected.status_code == 422
+    assert client.get(f"/api/sessions/{sid}").json()["title"] == "Release notes"
+
+
+def test_explicit_create_title_is_manual_and_owned(client):
+    created = client.post(
+        "/api/sessions", json={"title": "  Named chat  ", "model": "gpt-5.2"}
+    )
+    assert created.status_code == 201
+    assert created.json()["title"] == "Named chat"
+    assert created.json()["titleSource"] == "manual"
+    foreign = client.patch(
+        f"/api/sessions/{created.json()['id']}",
+        json={"title": "Stolen"},
+        headers={"X-Dev-User": "mallory"},
+    )
+    assert foreign.status_code == 404
 
 
 def test_chat_non_streaming_persists_messages(client):

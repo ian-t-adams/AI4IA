@@ -21,37 +21,22 @@ function EntraUserMenu({ disabled }: { disabled: boolean }) {
   };
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <div className="sidebar-account">
       <span
         title={account.username}
-        style={{
-          fontSize: "0.8em",
-          color: "var(--fg-muted)",
-          maxWidth: 180,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
+        className="sidebar-account-label"
       >
         {label}
       </span>
       <button
         type="button"
+        className="sidebar-utility-action"
         onClick={signOut}
         disabled={disabled}
         title={disabled ? "Finish saving the Voice Live transcript first" : undefined}
-        style={{
-          fontSize: "0.8em",
-          padding: "4px 10px",
-          borderRadius: 6,
-          border: "1px solid var(--border)",
-          background: "var(--bg-elevated)",
-          color: "var(--fg)",
-          cursor: disabled ? "not-allowed" : "pointer",
-          opacity: disabled ? 0.5 : 1,
-        }}
       >
-        Sign out
+        <span aria-hidden="true">↪</span>
+        <span>Sign out</span>
       </button>
     </div>
   );

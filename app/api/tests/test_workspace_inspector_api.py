@@ -70,6 +70,22 @@ def test_session_policy_and_inspector_are_server_owned():
         assert body["tools"]["inherited"] == ["get_current_time"]
         assert body["tools"]["effective"] == ["get_current_time", "calculator"]
 
+        patched_tools = client.patch(
+            f"/api/sessions/{session['id']}",
+            json={
+                "agentName": "general",
+                "toolOverrides": {
+                    "added": [" calculator ", "calculator"],
+                    "removed": ["get_current_time"],
+                },
+            },
+        )
+        assert patched_tools.status_code == 200, patched_tools.text
+        assert patched_tools.json()["toolOverrides"] == {
+            "added": ["calculator"],
+            "removed": ["get_current_time"],
+        }
+
         cleared = client.patch(
             f"/api/sessions/{session['id']}",
             json={"agentName": None},
@@ -91,6 +107,40 @@ def test_session_tool_additions_fail_closed():
             },
         )
         assert response.status_code == 422
+
+
+def test_session_tool_patch_rejects_malformed_overlap_and_stale_values():
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        session = client.post(
+            "/api/sessions", json={"model": "gpt-5.2"}
+        ).json()
+        session_url = f"/api/sessions/{session['id']}"
+
+        malformed = client.patch(
+            session_url,
+            json={"toolOverrides": {"added": "calculator", "removed": []}},
+        )
+        assert malformed.status_code == 422
+
+        overlap = client.patch(
+            session_url,
+            json={
+                "toolOverrides": {
+                    "added": ["calculator"],
+                    "removed": ["calculator"],
+                }
+            },
+        )
+        assert overlap.status_code == 422
+        assert "both added and removed" in overlap.text
+
+        stale = client.patch(
+            session_url,
+            json={"toolOverrides": {"added": ["removed_tool"], "removed": []}},
+        )
+        assert stale.status_code == 422
+        assert "not available" in stale.text
 
 
 def test_unrelated_session_patch_survives_stale_optional_selections():
@@ -129,6 +179,27 @@ def test_tool_catalog_is_display_safe():
         assert generated["voice"] is False
         assert "secret_refs" not in calculator
         assert "egress_allowlist" not in calculator
+
+
+def test_tool_catalog_previews_selected_agent_inherited_tools():
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        response = client.get("/api/tools?agentName=analyst")
+        assert response.status_code == 200
+        body = response.json()
+        agent = app.state.agents.get("analyst")
+        assert agent is not None
+        expected = agent.tools
+        assert body["inheritedTools"] == expected
+        assert {item["name"] for item in body["tools"]}.issuperset(expected)
+
+
+def test_tool_catalog_rejects_stale_agent_preview():
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        response = client.get("/api/tools?agentName=missing")
+        assert response.status_code == 422
+        assert response.json()["detail"] == "The selected agent is unavailable."
 
 
 def test_effective_tool_without_catalog_metadata_is_explicitly_unknown():

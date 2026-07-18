@@ -8,7 +8,13 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
-from .models import Document, Message, Session
+from .models import (
+    Document,
+    Message,
+    Session,
+    normalize_session_patch_changes,
+    normalize_session_title,
+)
 from .repository import SessionConflictError, SessionNotFoundError
 
 
@@ -50,12 +56,26 @@ class InMemorySessionRepository:
     async def patch_session(
         self, user_id: str, session_id: str, changes: dict[str, object]
     ) -> Session:
+        normalized = normalize_session_patch_changes(changes)
         async with self._lock:
             session = await self._owned_session(user_id, session_id)
-            for field_name, value in changes.items():
+            for field_name, value in normalized.items():
                 setattr(session, field_name, value)
             session.updatedAt = datetime.now(timezone.utc)
             return session.model_copy(deep=True)
+
+    async def set_generated_title_if_eligible(
+        self, user_id: str, session_id: str, title: str
+    ) -> bool:
+        normalized = normalize_session_title(title)
+        async with self._lock:
+            session = await self._owned_session(user_id, session_id)
+            if session.title != "New chat" or session.titleSource == "manual":
+                return False
+            session.title = normalized
+            session.titleSource = "auto"
+            session.updatedAt = datetime.now(timezone.utc)
+            return True
 
     async def mutate_library_document_ids(
         self,

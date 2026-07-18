@@ -8,10 +8,12 @@ key is the session.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 
 def _now() -> datetime:
@@ -135,12 +137,81 @@ class ToolOverrides(BaseModel):
 
 
 MAX_LIBRARY_DOCUMENTS_PER_SESSION = 20
+MAX_SESSION_TITLE_CHARS = 120
+
+
+def normalize_tool_overrides(
+    value: ToolOverrides | Mapping[str, object],
+) -> ToolOverrides:
+    """Return one canonical override shape at HTTP and repository boundaries."""
+    try:
+        overrides = (
+            value
+            if isinstance(value, ToolOverrides)
+            else ToolOverrides.model_validate(value)
+        )
+    except ValidationError as exc:
+        raise ValueError(
+            "toolOverrides must contain string lists named added and removed."
+        ) from exc
+
+    def clean(values: list[str]) -> list[str]:
+        return list(
+            dict.fromkeys(
+                normalized
+                for item in values
+                if (normalized := item.strip())
+            )
+        )
+
+    added = clean(overrides.added)
+    removed = clean(overrides.removed)
+    overlap = set(added) & set(removed)
+    if overlap:
+        raise ValueError(
+            "Tools cannot be both added and removed: "
+            + ", ".join(sorted(overlap))
+        )
+    if len(added) > 8 or len(removed) > 16:
+        raise ValueError("Too many conversation tool overrides.")
+    return ToolOverrides(added=added, removed=removed)
+
+
+def normalize_session_title(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Conversation title must be text.")
+    title = value.strip()
+    if not title:
+        raise ValueError("Conversation title cannot be empty.")
+    if len(title) > MAX_SESSION_TITLE_CHARS:
+        raise ValueError(
+            f"Conversation title must be {MAX_SESSION_TITLE_CHARS} characters or fewer."
+        )
+    return title
+
+
+def normalize_session_patch_changes(
+    changes: Mapping[str, object],
+) -> dict[str, object]:
+    normalized = dict(changes)
+    if "toolOverrides" in normalized:
+        value = normalized["toolOverrides"]
+        if not isinstance(value, (ToolOverrides, Mapping)):
+            raise ValueError(
+                "toolOverrides must contain string lists named added and removed."
+            )
+        normalized["toolOverrides"] = normalize_tool_overrides(value)
+    if "title" in normalized:
+        normalized["title"] = normalize_session_title(normalized["title"])
+        normalized.setdefault("titleSource", "manual")
+    return normalized
 
 
 class Session(BaseModel):
     id: str = Field(default_factory=_new_id)
     userId: str
     title: str = "New chat"
+    titleSource: Literal["auto", "manual"] = "auto"
     model: str | None = None
     systemPrompt: str | None = None
     # Standing conversation policy. All fields are additive so existing Cosmos

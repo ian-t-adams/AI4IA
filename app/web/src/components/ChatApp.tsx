@@ -19,6 +19,7 @@ import type {
   AgentSummary,
   AttachmentCapabilities,
   ChatParams,
+  ConversationDraftDefaults,
   DocumentSummary,
   Message,
   ModelEntry,
@@ -78,6 +79,7 @@ import {
   isCurrentSessionGeneration,
 } from "@/lib/sessionMutation";
 import { performBoundUpload } from "@/lib/uploadSession";
+import { EditableSessionTitle } from "./EditableSessionTitle";
 
 const MOBILE_SIDEBAR_QUERY = "(max-width: 720px)";
 const MOBILE_INSPECTOR_QUERY = "(max-width: 1050px)";
@@ -258,6 +260,11 @@ export function ChatApp() {
     max_tokens: 1024,
   });
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [draftDefaults, setDraftDefaults] = useState<ConversationDraftDefaults>({
+    agentName: null,
+    toolOverrides: { added: [], removed: [] },
+    libraryDocumentIds: [],
+  });
   const [voiceProviderConfig, setVoiceProviderConfig] =
     useState<VoiceLiveProviderCatalogResponse | null>(null);
 
@@ -459,10 +466,17 @@ export function ChatApp() {
     setMessages([]);
     setDocuments([]);
     setLibraryDocs([]);
+    setSelectedModel(pickDefaultModel(models));
+    setSystemPrompt("");
+    setDraftDefaults({
+      agentName: null,
+      toolOverrides: { added: [], removed: [] },
+      libraryDocumentIds: [],
+    });
     setStreamingText("");
     setStreamingStartedAt(null);
     setError(null);
-  }, []);
+  }, [models]);
 
   const refreshAgents = useCallback(async () => {
     try {
@@ -501,6 +515,13 @@ export function ChatApp() {
     [activeId, newChat, refreshSessions],
   );
 
+  const renameSession = useCallback(async (id: string, title: string) => {
+    const updated = await api.updateSession(id, { title });
+    setSessions((current) =>
+      current.map((session) => (session.id === updated.id ? updated : session)),
+    );
+  }, []);
+
   const changeModel = useCallback(
     async (modelId: string) => {
       const capturedSession = sessionIdRef.current;
@@ -534,7 +555,9 @@ export function ChatApp() {
       const created = await api.createSession({
         model: selectedModel,
         systemPrompt: systemPrompt || null,
-        libraryDocumentIds: [],
+        agentName: draftDefaults.agentName,
+        toolOverrides: draftDefaults.toolOverrides,
+        libraryDocumentIds: draftDefaults.libraryDocumentIds,
       });
       sessionIdRef.current = created.id;
       setActiveId(created.id);
@@ -547,7 +570,7 @@ export function ChatApp() {
     } finally {
       creatingRef.current = null;
     }
-  }, [selectedModel, systemPrompt]);
+  }, [draftDefaults, selectedModel, systemPrompt]);
 
   const runUpload = useCallback(
     async (uploadId: string) => {
@@ -1405,6 +1428,7 @@ export function ChatApp() {
           onSelect={selectSession}
           onNewChat={newChat}
           onDelete={deleteSession}
+          onRename={renameSession}
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenStudio={() => setStudioOpen(true)}
           onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
@@ -1431,9 +1455,18 @@ export function ChatApp() {
             background: "var(--bg-elevated)",
           }}
         >
-          <strong>
-            {sessions.find((session) => session.id === activeId)?.title ?? "New conversation"}
-          </strong>
+          {activeId ? (
+            <EditableSessionTitle
+              title={
+                sessions.find((session) => session.id === activeId)?.title ??
+                "Untitled"
+              }
+              onSave={(title) => renameSession(activeId, title)}
+              disabled={streaming || voiceExitLocked}
+            />
+          ) : (
+            <strong>New conversation</strong>
+          )}
           <div
             role="status"
             aria-live="polite"
@@ -1536,6 +1569,9 @@ export function ChatApp() {
           params={params}
           onParamsChange={setParams}
           systemPrompt={systemPrompt}
+          onSystemPromptChange={setSystemPrompt}
+          draftDefaults={draftDefaults}
+          onDraftDefaultsChange={setDraftDefaults}
           onSessionUpdated={(updated) => {
             if (updated.id !== sessionIdRef.current) return;
             setSessions((current) =>

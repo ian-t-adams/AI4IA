@@ -6,6 +6,7 @@
 // agent hints are advisory; the backend re-validates every tool call at execution.
 
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -146,6 +147,22 @@ export function Composer({
   // Caret position to restore after a programmatic value change (insertion).
   const pendingCaret = useRef<number | null>(null);
 
+  const resizeTextarea = useCallback(() => {
+    const element = textareaRef.current;
+    if (!element) return;
+    const computed = window.getComputedStyle(element);
+    const lineHeight = Number.parseFloat(computed.lineHeight) || 24;
+    const padding =
+      (Number.parseFloat(computed.paddingTop) || 0) +
+      (Number.parseFloat(computed.paddingBottom) || 0);
+    const minHeight = 64;
+    const maxHeight = lineHeight * 8 + padding;
+    element.style.height = "0px";
+    const height = Math.min(maxHeight, Math.max(minHeight, element.scrollHeight));
+    element.style.height = `${height}px`;
+    element.style.overflowY = element.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, []);
+
   // The attach control tracks whichever doc set is in use this view: the
   // session-scoped docs (flag off) or the library chips (flag on). They are
   // mutually exclusive in practice, so a combined count gives the right cap.
@@ -191,10 +208,6 @@ export function Composer({
       await onUpload(file);
     }
   };
-
-  const voiceLiveBusy = Boolean(
-    voiceLive && (voiceLive.active || voiceLive.ending || voiceLive.saving),
-  );
 
   const enabledAgents = useMemo(
     () => agents.filter((a) => a.enabled),
@@ -261,6 +274,22 @@ export function Composer({
     }
     setCaret(pos);
   }, [text]);
+
+  useLayoutEffect(() => {
+    resizeTextarea();
+  }, [resizeTextarea, text]);
+
+  useEffect(() => {
+    const element = textareaRef.current;
+    if (!element) return;
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", resizeTextarea);
+      return () => window.removeEventListener("resize", resizeTextarea);
+    }
+    const observer = new ResizeObserver(resizeTextarea);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [resizeTextarea]);
 
   const syncCaret = (el: HTMLTextAreaElement) => {
     setCaret(el.selectionStart ?? el.value.length);
@@ -352,6 +381,7 @@ export function Composer({
 
   return (
     <div
+      className="composer-shell"
       style={{
         borderTop: "1px solid var(--border)",
         padding: "12px max(16px, 6%)",
@@ -509,6 +539,7 @@ export function Composer({
       )}
 
       <div
+        className="composer-row"
         style={{
           display: "flex",
           flexWrap: "wrap",
@@ -626,6 +657,7 @@ export function Composer({
         />
         <button
           type="button"
+          className="composer-icon-button composer-attach-button"
           onClick={() => fileInputRef.current?.click()}
           disabled={!capabilities || uploading || atDocLimit}
           aria-busy={uploading}
@@ -712,6 +744,7 @@ export function Composer({
         {voiceLive && (
           <button
             type="button"
+            className="composer-icon-button composer-voice-button"
             onClick={voiceLive.active ? voiceLive.stop : voiceLive.start}
             disabled={
               !voiceLive.supported || voiceLive.ending || voiceLive.saving
@@ -776,9 +809,10 @@ export function Composer({
         </label>
         <textarea
           id="composer"
+          className="composer-textarea"
           ref={textareaRef}
           value={text}
-          rows={1}
+          rows={2}
           placeholder="Send a message…  (Enter to send, Shift+Enter for newline, @ to mention an agent, / for commands)"
           role="combobox"
           aria-autocomplete="list"
@@ -793,17 +827,11 @@ export function Composer({
           }}
           onSelect={(e) => syncCaret(e.currentTarget)}
           onKeyDown={onKeyDown}
-          style={{
-            flex: 1,
-            padding: "12px 14px",
-            resize: "vertical",
-            maxHeight: 200,
-            minHeight: 46,
-          }}
         />
         {streaming ? (
           <button
             type="button"
+            className="composer-submit-button"
             onClick={onStop}
             style={{
               padding: "12px 18px",
@@ -819,6 +847,7 @@ export function Composer({
         ) : (
           <button
             type="button"
+            className="composer-submit-button"
             onClick={submit}
             disabled={disabled || !text.trim()}
             style={{

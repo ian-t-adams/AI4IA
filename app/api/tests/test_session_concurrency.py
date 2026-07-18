@@ -52,6 +52,49 @@ async def test_tools_and_document_removal_survive_concurrency():
     assert final.libraryDocumentIds == ["doc-b"]
 
 
+async def test_mapping_tool_patch_normalizes_at_repository_boundary():
+    repo = InMemorySessionRepository()
+    session = await repo.create_session(Session(userId="u1"))
+    saved = await repo.patch_session(
+        "u1",
+        session.id,
+        {
+            "toolOverrides": {
+                "added": [" calculator ", "calculator"],
+                "removed": [],
+            }
+        },
+    )
+    assert isinstance(saved.toolOverrides, ToolOverrides)
+    assert saved.toolOverrides.added == ["calculator"]
+
+    with pytest.raises(ValueError, match="both added and removed"):
+        await repo.patch_session(
+            "u1",
+            session.id,
+            {
+                "toolOverrides": {
+                    "added": ["calculator"],
+                    "removed": ["calculator"],
+                }
+            },
+        )
+
+
+async def test_manual_title_wins_concurrent_generated_title():
+    repo = InMemorySessionRepository()
+    session = await repo.create_session(Session(userId="u1"))
+    generated, renamed = await asyncio.gather(
+        repo.set_generated_title_if_eligible("u1", session.id, "Generated"),
+        repo.patch_session("u1", session.id, {"title": "Manual"}),
+    )
+    final = await repo.get_session("u1", session.id)
+    assert generated in (True, False)
+    assert renamed.title == "Manual"
+    assert final.title == "Manual"
+    assert final.titleSource == "manual"
+
+
 async def test_two_document_associations_and_removals_are_atomic():
     repo = InMemorySessionRepository()
     session = await repo.create_session(
@@ -141,6 +184,44 @@ class _SummarySessions:
             self.item[operation["path"].lstrip("/")] = operation["value"]
         self.item["_etag"] = "s3"
         return dict(self.item)
+
+
+class _TitleRaceSessions(_SummarySessions):
+    async def patch_item(
+        self,
+        *,
+        item,
+        partition_key,
+        patch_operations,
+        etag=None,
+        match_condition=None,
+    ):
+        self.etags.append(etag)
+        if self.conflict_once:
+            self.conflict_once = False
+            self.item["title"] = "Manual"
+            self.item["titleSource"] = "manual"
+            self.item["_etag"] = "manual-etag"
+            raise CosmosAccessConditionFailedError(message="etag")
+        for operation in patch_operations:
+            self.item[operation["path"].lstrip("/")] = operation["value"]
+        return dict(self.item)
+
+
+async def test_cosmos_generated_title_stops_after_manual_race():
+    session = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    fake = _TitleRaceSessions(session)
+    fake.conflict_once = True
+    repo._sessions = fake
+
+    updated = await repo.set_generated_title_if_eligible(
+        "u1", session.id, "Generated"
+    )
+    assert updated is False
+    assert fake.item["title"] == "Manual"
+    assert fake.item["titleSource"] == "manual"
+    assert fake.etags == ["s1"]
 
 
 class _SummaryMessages:

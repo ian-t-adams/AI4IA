@@ -1,12 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { Composer } from "./Composer";
 import type { AgentSummary } from "@/lib/types";
-import { DEFAULT_SPEECH_VOICE_LIVE_SETTINGS } from "@/lib/voiceLive";
-import { voiceProviderCatalog } from "@/lib/data/voice_provider_catalog";
 
 // The voice recorder hook owns MediaRecorder/getUserMedia plumbing that jsdom
 // doesn't implement, and it pulls in the API client transitively. Stub it with a
@@ -116,6 +114,39 @@ describe("Composer", () => {
     await user.keyboard("{Shift>}{Enter}{/Shift}");
     expect(onSend).not.toHaveBeenCalled();
     expect(textarea.value).toContain("\n");
+  });
+
+  it("does not submit Enter while an IME composition is active", async () => {
+    const { onSend, textarea } = setup();
+    fireEvent.change(textarea, { target: { value: "変換中" } });
+    fireEvent.keyDown(textarea, { key: "Enter", isComposing: true });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("変換中");
+  });
+
+  it("autosizes from the 64px minimum to an eight-line cap before scrolling", () => {
+    const { textarea } = setup();
+    let scrollHeight = 40;
+    Object.defineProperty(textarea, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+
+    fireEvent.change(textarea, { target: { value: "short" } });
+    expect(textarea.style.height).toBe("64px");
+    expect(textarea.style.overflowY).toBe("hidden");
+
+    scrollHeight = 400;
+    fireEvent.change(textarea, {
+      target: { value: Array.from({ length: 12 }, (_, index) => `line ${index}`).join("\n") },
+    });
+    expect(Number.parseFloat(textarea.style.height)).toBeLessThan(400);
+    expect(textarea.style.overflowY).toBe("auto");
+
+    scrollHeight = 0;
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(textarea.style.height).toBe("64px");
+    expect(textarea.style.overflowY).toBe("hidden");
   });
 
   it("keeps Send disabled and never submits whitespace-only input", async () => {
