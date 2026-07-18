@@ -550,8 +550,11 @@ describe("ChatApp uploads", () => {
       ".chat-header .editable-session-title-trigger",
     );
     for (const control of [sessionBButton, newChatButton, deleteButton, headerRename]) {
-      expect(control).toBeDisabled();
-      expect(control).toHaveAttribute("title", recoveryTooltip);
+      expect(control).not.toBeDisabled();
+      expect(control).toHaveAttribute("aria-disabled", "true");
+      const describedById = control?.getAttribute("aria-describedby");
+      expect(describedById).toBeTruthy();
+      expect(document.getElementById(describedById!)).toHaveTextContent(recoveryTooltip);
     }
 
     // Clicking disabled controls is inert: no navigation, no deletion.
@@ -589,6 +592,12 @@ describe("ChatApp uploads", () => {
     rerender(<ChatApp />);
     expect(screen.getByRole("button", { name: "Session B" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Session B" })).not.toHaveAttribute("title");
+    expect(screen.getByRole("button", { name: "Session B" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
+    expect(screen.getByRole("button", { name: "Session B" })).not.toHaveAttribute(
+      "aria-describedby",
+    );
     await user.click(screen.getByRole("button", { name: "Session B" }));
     expect(
       await screen.findByText("Session B", {
@@ -634,12 +643,13 @@ describe("ChatApp uploads", () => {
     });
 
     // Studio isn't gated by the sidebar's disabled prop, so this reaches
-    // selectSession() directly and exercises its guard clause.
+    // selectSession() directly and exercises its guard clause. Its banner
+    // ends in "...to continue.", distinct from the Sidebar's/header's
+    // "...below." hint text, so this also confirms selectSession's own
+    // error banner (not one of the lock hints) is what actually rendered.
     await user.click(runWorkflow);
     expect(
-      await screen.findByText(
-        /Finish saving the voice transcript before switching conversations/,
-      ),
+      await screen.findByText(/in the voice status bar to continue\./),
     ).toBeInTheDocument();
   });
 });

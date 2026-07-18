@@ -8,7 +8,7 @@ export function EditableSessionTitle({
   title,
   onSave,
   disabled = false,
-  disabledReason,
+  disabledReasonId,
   compact = false,
   onOpen,
   current = false,
@@ -16,8 +16,8 @@ export function EditableSessionTitle({
   title: string;
   onSave: (title: string) => Promise<void>;
   disabled?: boolean;
-  /** Tooltip shown while disabled, explaining why and how to recover. */
-  disabledReason?: string;
+  /** Id of a visible element (elsewhere on the page) describing why disabled, wired via aria-describedby. */
+  disabledReasonId?: string;
   compact?: boolean;
   onOpen?: () => void;
   current?: boolean;
@@ -143,13 +143,17 @@ export function EditableSessionTitle({
         <button
           type="button"
           className="editable-session-title-text"
-          disabled={disabled}
-          title={disabled ? disabledReason : undefined}
+          aria-disabled={disabled || undefined}
+          aria-describedby={disabled && disabledReasonId ? disabledReasonId : undefined}
           aria-current={current ? "true" : undefined}
-          onClick={onOpen}
+          onClick={() => {
+            if (disabled) return;
+            onOpen();
+          }}
           onKeyDown={(event) => {
             if (event.key === "F2") {
               event.preventDefault();
+              if (disabled) return;
               begin();
             }
           }}
@@ -163,12 +167,16 @@ export function EditableSessionTitle({
         ref={triggerRef}
         type="button"
         className="editable-session-title-trigger"
-        disabled={disabled}
-        title={disabled ? disabledReason : undefined}
-        onClick={begin}
+        aria-disabled={disabled || undefined}
+        aria-describedby={disabled && disabledReasonId ? disabledReasonId : undefined}
+        onClick={() => {
+          if (disabled) return;
+          begin();
+        }}
         onKeyDown={(event) => {
           if (event.key === "F2") {
             event.preventDefault();
+            if (disabled) return;
             begin();
           }
         }}

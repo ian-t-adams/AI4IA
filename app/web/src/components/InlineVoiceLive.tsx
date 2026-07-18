@@ -219,10 +219,17 @@ export function useInlineVoiceLive({
   // during render there, and refs cannot be read or written outside of
   // effects/callbacks.
   const [bindingCommitted, setBindingCommitted] = useState(false);
-  // Set by discardPersistence() to tell an in-flight (or about-to-time-out)
-  // save attempt that its eventual outcome should be ignored: the user has
-  // already explicitly abandoned it and the UI has moved on.
-  const abandonedRef = useRef(false);
+  // Monotonic per-attempt token. Each persist() call captures the value it
+  // bumps to; discardPersistence() also bumps it. A settling attempt only
+  // touches saving/persisted/persistenceError (or session/conversation
+  // binding) if its own captured id still matches the current value —
+  // otherwise a NEWER cycle has since started or the attempt was explicitly
+  // discarded, and its outcome (however it eventually resolves) must be a
+  // no-op rather than mutate state that now belongs to a different cycle.
+  // A plain boolean ("abandoned") can't express this: resetting it for a new
+  // attempt also un-silences any older, still in-flight attempt that hasn't
+  // settled yet.
+  const attemptIdRef = useRef(0);
 
   const persist = useCallback((): Promise<void> => {
     if (persistedRef.current) return Promise.resolve();
@@ -230,7 +237,12 @@ export function useInlineVoiceLive({
     const turns = finalizedTurns(turnsRef.current);
     if (turns.length === 0) return Promise.resolve();
 
-    abandonedRef.current = false;
+    const attemptId = ++attemptIdRef.current;
+    // Captured now, not read fresh when the save eventually settles: by then
+    // a newer cycle's start() may have already reassigned
+    // conversationIdRef.current, which would otherwise persist this
+    // attempt's turns under the WRONG (newer) conversation id.
+    const conversationIdForAttempt = conversationIdRef.current;
     // boundSessionId is read directly, not just the ref, so a session bound
     // moments ago by the render-time adjustment above is never missed: the
     // ref only caches an in-flight ensureSession() call made while no session
@@ -277,13 +289,14 @@ export function useInlineVoiceLive({
         settled = true;
         clearTimeout(timeoutId);
         if (persistenceRef.current === request) persistenceRef.current = null;
-        setSaving(false);
-        if (abandonedRef.current) {
-          // discardPersistence() already forced terminal state; don't
-          // resurrect an error or flip persisted based on a stale outcome.
+        if (attemptIdRef.current !== attemptId) {
+          // Superseded by discardPersistence() or a later persist() call:
+          // don't resurrect an error or flip saving/persisted for a cycle
+          // this attempt no longer belongs to.
           resolve();
           return;
         }
+        setSaving(false);
         if (error) {
           if (sessionPromiseRef.current === sessionPromise) {
             sessionPromiseRef.current = null;
@@ -305,9 +318,16 @@ export function useInlineVoiceLive({
 
       sessionPromise
         .then((sessionId) => {
+          if (attemptIdRef.current !== attemptId) {
+            // Superseded while the session was still resolving: skip
+            // binding to it and skip the network call to persist stale,
+            // already-discarded turns under a session/conversation that no
+            // longer matches the current cycle.
+            return undefined;
+          }
           setBindingCommitted(true);
           setBoundSessionId(sessionId);
-          return persistConversation(sessionId, conversationIdRef.current, turns);
+          return persistConversation(sessionId, conversationIdForAttempt, turns);
         })
         .then(() => finish(null))
         .catch((error: unknown) =>
@@ -319,7 +339,10 @@ export function useInlineVoiceLive({
   }, [boundSessionId, ensureSession, persistConversation]);
 
   const discardPersistence = useCallback(() => {
-    abandonedRef.current = true;
+    // Invalidates any attempt captured so far -- in-flight or not -- so its
+    // eventual settlement (however long it takes, since the underlying
+    // request is not aborted) can never mutate state again.
+    attemptIdRef.current += 1;
     persistenceRef.current = null;
     sessionPromiseRef.current = null;
     persistedRef.current = true;
@@ -441,10 +464,24 @@ export function useInlineVoiceLive({
   }, [agent, cycleId, live.turns, persisted]);
 
   // Whether leaving now would lose data. A live (or connecting) session with
-  // no exchanges yet is NOT unsaved — only finalized turns awaiting/failing
-  // persistence (or an in-flight save) make navigating away destructive.
+  // no exchanges yet is NOT unsaved — nothing has been said. Once the call
+  // is still connected and has produced any turn (even one still pending),
+  // navigating away would stop the call and truncate whatever is mid-flight,
+  // so that keeps blocking regardless of finalization. But once the call has
+  // ended, a turn that was still pending the instant stop() cut the
+  // connection can never be completed or saved — persist() already found
+  // nothing finalized to save and returned without setting saving or
+  // persistenceError. Counting that stale, un-finalizable turn here would
+  // lock navigation forever with neither a "Saving…" state nor a
+  // Retry/Discard control able to appear (both are gated on saving/
+  // persistenceError). So once inactive, only genuinely finalized turns
+  // count.
   const hasUnsavedTurns =
-    saving || Boolean(persistenceError) || (!persisted && live.turns.length > 0);
+    saving ||
+    Boolean(persistenceError) ||
+    (!persisted &&
+      live.turns.length > 0 &&
+      (live.active || finalizedTurns(live.turns).length > 0));
 
   return {
     messages,

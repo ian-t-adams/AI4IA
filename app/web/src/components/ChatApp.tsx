@@ -8,6 +8,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -926,13 +927,17 @@ export function ChatApp() {
   // lock) while streaming or while voice data is unsaved, so a plain
   // `disabled` attribute leaves users with no idea why the button won't
   // respond or how to get out. Surface the reason — and, for the voice case,
-  // the recovery path (Retry saving/Discard in the voice status bar) — as a
-  // title/tooltip on those controls.
+  // the recovery path (Retry saving/Discard in the voice status bar) — via a
+  // visible, aria-describedby-linked hint on those controls (Sidebar renders
+  // its own shared hint; the header's standalone EditableSessionTitle gets
+  // its own copy below via headerLockReasonId, since it lives outside the
+  // Sidebar's DOM subtree and can't reference an id from there).
   const sidebarDisabledReason = streaming
     ? "Wait for the current reply to finish generating."
     : voiceExitLocked
       ? "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cDiscard\u201d in the voice status bar below."
       : undefined;
+  const headerLockReasonId = useId();
   useLayoutEffect(() => {
     voiceNavigationLockedRef.current = voiceExitLocked;
     voiceActiveRef.current = inlineVoice.active;
@@ -1486,15 +1491,26 @@ export function ChatApp() {
           }}
         >
           {activeId ? (
-            <EditableSessionTitle
-              title={
-                sessions.find((session) => session.id === activeId)?.title ??
-                "Untitled"
-              }
-              onSave={(title) => renameSession(activeId, title)}
-              disabled={streaming || voiceExitLocked}
-              disabledReason={sidebarDisabledReason}
-            />
+            <>
+              <EditableSessionTitle
+                title={
+                  sessions.find((session) => session.id === activeId)?.title ??
+                  "Untitled"
+                }
+                onSave={(title) => renameSession(activeId, title)}
+                disabled={streaming || voiceExitLocked}
+                disabledReasonId={headerLockReasonId}
+              />
+              {(streaming || voiceExitLocked) && sidebarDisabledReason && (
+                <span
+                  id={headerLockReasonId}
+                  role="status"
+                  className="visually-hidden"
+                >
+                  {sidebarDisabledReason}
+                </span>
+              )}
+            </>
           ) : (
             <strong>New conversation</strong>
           )}

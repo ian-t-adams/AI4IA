@@ -9,7 +9,14 @@ import { useEffect, useState } from "react";
 
 import { canShowAdmin, fetchWhoAmI } from "@/lib/admin";
 
-export function AdminLink({ disabled = false }: { disabled?: boolean }) {
+export function AdminLink({
+  disabled = false,
+  disabledReasonId,
+}: {
+  disabled?: boolean;
+  /** Id of a visible element (elsewhere on the page) describing why disabled, wired via aria-describedby. */
+  disabledReasonId?: string;
+}) {
   const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
@@ -33,8 +40,8 @@ export function AdminLink({ disabled = false }: { disabled?: boolean }) {
       href={disabled ? undefined : "/admin"}
       className="sidebar-utility-action"
       aria-disabled={disabled}
-      tabIndex={disabled ? -1 : undefined}
-      title={disabled ? "Finish saving the Voice Live transcript first" : undefined}
+      tabIndex={disabled ? 0 : undefined}
+      aria-describedby={disabled && disabledReasonId ? disabledReasonId : undefined}
       onClick={disabled ? (event) => event.preventDefault() : undefined}
     >
       <span aria-hidden="true">◆</span>

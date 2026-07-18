@@ -781,6 +781,147 @@ describe("inline Voice Live chat", () => {
     ).toBeEnabled();
   });
 
+  // Regression (independent review, HIGH): persist()/discardPersistence()
+  // used to share a single `abandonedRef` boolean. Resetting it for a new
+  // cycle also un-silenced any still in-flight save from a PREVIOUS,
+  // already-discarded cycle: when that old request finally resolved, its
+  // continuation used the then-current saving/persisted/persistenceError
+  // setters and conversationIdRef.current, letting a stale attempt
+  // overwrite state that by then belonged to a newer cycle, or persist its
+  // turns under the newer cycle's conversation id. The fix replaces the
+  // boolean with a monotonic attemptIdRef token captured at invocation, so
+  // a superseded attempt's eventual settlement is always a no-op.
+  it("prevents a hung save from a discarded cycle from contaminating a newer cycle's saving/persisted state or conversation id", async () => {
+    const ensureSession = vi.fn(async () => "session-1");
+    const resolvers: Array<() => void> = [];
+    const persistCalls: Array<{
+      sessionId: string;
+      conversationId: string;
+      turns: VoiceTurnInput[];
+    }> = [];
+    const persist = vi.fn(
+      (sessionId: string, conversationId: string, turns: VoiceTurnInput[]) => {
+        persistCalls.push({ sessionId, conversationId, turns });
+        return new Promise<void>((resolve) => {
+          resolvers.push(resolve);
+        });
+      },
+    );
+
+    // Cycle 1 (never explicitly start()-ed, so conversationIdRef stays at
+    // its initial "") produces one finalized turn; stop() begins saving it,
+    // and that save is left hanging indefinitely.
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "First cycle turn",
+          pending: false,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    const { rerender } = render(
+      <Harness ensureSession={ensureSession} persist={persist} />,
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+    controller = makeController();
+    rerender(<Harness ensureSession={ensureSession} persist={persist} />);
+    await waitFor(() => expect(persistCalls).toHaveLength(1));
+    expect(
+      screen.getByRole("button", { name: "Saving live voice transcript" }),
+    ).toBeDisabled();
+
+    // Discard abandons the still in-flight save (bumps attemptIdRef) and
+    // returns the UI to ready without waiting on it.
+    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+    expect(
+      screen.getByRole("button", { name: "Start live voice conversation" }),
+    ).toBeEnabled();
+
+    // Cycle 2 actually calls start(), generating a real, distinct
+    // conversation id, produces its own finalized turn, then stop() begins
+    // its own, independent save attempt.
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start live voice conversation" }),
+    );
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u2",
+          role: "user",
+          text: "Second cycle turn",
+          pending: false,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    rerender(<Harness ensureSession={ensureSession} persist={persist} />);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+    controller = makeController();
+    rerender(<Harness ensureSession={ensureSession} persist={persist} />);
+    await waitFor(() => expect(persistCalls).toHaveLength(2));
+    expect(
+      screen.getByRole("button", { name: "Saving live voice transcript" }),
+    ).toBeDisabled();
+
+    // The abandoned cycle 1 request finally resolves late. Its captured
+    // attemptId no longer matches (discard, then cycle 2's own persist(),
+    // both bumped the token past it), so this must be a no-op: cycle 2's
+    // own in-flight save is untouched and still shows "Saving...".
+    await act(async () => {
+      resolvers[0]?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByRole("button", { name: "Saving live voice transcript" }),
+    ).toBeDisabled();
+    // Discard is legitimately available any time saving is true (it's the
+    // escape hatch for cycle 2's own in-flight save, not evidence of a
+    // regression) -- what matters is that cycle 2 hasn't been prematurely
+    // marked persisted/ready by the stale attempt's resolution.
+    expect(screen.queryByText("Voice Live ready")).toBeNull();
+
+    // Cycle 2's own save now completes normally, unaffected by cycle 1's
+    // stale resolution.
+    await act(async () => {
+      resolvers[1]?.();
+    });
+    await waitFor(() =>
+      expect(screen.getByText("Voice Live ready")).toBeInTheDocument(),
+    );
+
+    expect(persistCalls[0]).toMatchObject({
+      sessionId: "session-1",
+      turns: [{ role: "user", text: "First cycle turn" }],
+    });
+    expect(persistCalls[1]).toMatchObject({
+      sessionId: "session-1",
+      turns: [{ role: "user", text: "Second cycle turn" }],
+    });
+    // Each attempt's turns were saved under its OWN cycle's conversation id
+    // (captured at invocation time), never the other cycle's -- proving the
+    // stale first attempt could not have persisted under, nor been confused
+    // with, cycle 2's conversation id.
+    expect(persistCalls[0].conversationId).not.toBe(
+      persistCalls[1].conversationId,
+    );
+  });
+
   // Regression: ensureSession() is contractually async (Promise<string>), but
   // persist() cannot rely on that alone -- it is always invoked as
   // `void persist()` immediately followed by more code in the same scope,
@@ -860,6 +1001,61 @@ describe("inline Voice Live chat", () => {
     rerender(<LockHarness />);
     // Speech has started, so even its pending turn is real unsaved data.
     expect(getByTestId("locked").textContent).toBe("true");
+  });
+
+  // Regression: stopping mid-utterance -- before the first word is ever
+  // finalized -- previously left exitLocked stuck true forever once the
+  // call ended. persist() only ever saves finalizedTurns(), so a
+  // still-pending turn can never be completed or saved after teardown; but
+  // nothing set saving/persistenceError either (persist() found nothing to
+  // save and returned immediately), so no Retry/Discard control could ever
+  // appear to explain or clear the lock -- a dead end with no recovery
+  // path. Once the call is inactive, an unfinalizable turn must stop
+  // counting as unsaved.
+  it("clears exitLocked after stop when the only turn was still pending and never got finalized", () => {
+    function LockHarness() {
+      const voice = useInlineVoiceLive({
+        config: CONFIG,
+        model: "catalog-realtime-model",
+        agent: "analyst",
+        agents: AGENTS,
+        history: [],
+        ensureSession: async () => "session-1",
+        persistConversation: async () => {},
+      });
+      return <span data-testid="locked">{String(voice.exitLocked)}</span>;
+    }
+
+    const pendingTurn = {
+      id: "u1",
+      role: "user" as const,
+      text: "",
+      pending: true,
+      streaming: false,
+      tool: "",
+    };
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [pendingTurn],
+    });
+    const { rerender, getByTestId } = render(<LockHarness />);
+    // While still connected, even a pending-only turn blocks navigation:
+    // stopping now would cut it off mid-word.
+    expect(getByTestId("locked").textContent).toBe("true");
+
+    // stop() tears the connection down synchronously, but voiceLive.ts
+    // never clears `turns` -- the same never-finalized turn remains in the
+    // array afterward, exactly as it would after a real stop() call.
+    controller = makeController({
+      status: "idle",
+      active: false,
+      turns: [pendingTurn],
+    });
+    rerender(<LockHarness />);
+    // Inactive + nothing finalized: this turn can never be completed or
+    // saved, so it must not block navigation forever with no recovery UI.
+    expect(getByTestId("locked").textContent).toBe("false");
   });
 
   it("adopts a session created by a text send in the same empty chat", () => {
