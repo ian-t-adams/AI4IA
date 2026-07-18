@@ -10,6 +10,9 @@
     },
     {
       "name": "ai4ia-mcp-upstream"
+    },
+    {
+      "name": "ai4ia-browser-automation"
     }
   ],
   "tools": [
@@ -21,9 +24,15 @@
     {
       "type": "azure_ai_search",
       "name": "ai4ia-rag",
-      "description": "RAG over the AI4IA AI Search index. Requires the 'ai4ia-search' project connection.",
-      "indexName": "ai4ia-docs",
-      "projectConnectionId": "ai4ia-search"
+      "description": "RAG over the AI4IA AI Search index. Requires the 'ai4ia-search' project connection. Shape is azureAiSearch.indexes[] (SDK 2.3.0's AzureAISearchToolResource), not root-level indexName/projectConnectionId.",
+      "azureAiSearch": {
+        "indexes": [
+          {
+            "indexName": "ai4ia-docs",
+            "projectConnectionId": "ai4ia-search"
+          }
+        ]
+      }
     },
     {
       "type": "code_interpreter",
@@ -39,7 +48,12 @@
     {
       "type": "browser_automation_preview",
       "name": "browser",
-      "description": "Drive a hosted browser (preview; heavier isolation review recommended)."
+      "description": "Drive a hosted browser via a connected Playwright Workspace (preview; heavier isolation review recommended). Requires the 'ai4ia-browser-automation' project connection (a Playwright Workspace connection, not a plain API connection). Shape is browserAutomationPreview.connection.projectConnectionId (SDK 2.3.0's BrowserAutomationToolParameters), which is nested one level deeper than the toolbox-search example above.",
+      "browserAutomationPreview": {
+        "connection": {
+          "projectConnectionId": "ai4ia-browser-automation"
+        }
+      }
     },
     {
       "type": "file_search",

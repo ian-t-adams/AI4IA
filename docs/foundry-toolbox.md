@@ -131,14 +131,14 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 | `type` | Purpose | Key manifest fields | Notes |
 | --- | --- | --- | --- |
 | `web_search` | Grounded web search | `name`, `description` | Connectionless. |
-| `azure_ai_search` | RAG over an AI Search index | `indexName`, connection | Needs a project connection to the Search service. |
+| `azure_ai_search` | RAG over an AI Search index | `azureAiSearch.indexes[].indexName`, `.projectConnectionId` | Nested shape (SDK 2.3.0's `AzureAISearchToolResource`); do **not** put `indexName`/`projectConnectionId` at the tool root -- the SDK constructor silently ignores them there (no error, fields just deserialize to `None`). At most one index per tool today. |
 | `code_interpreter` | Sandboxed Python | `container` | Foundry-managed sandbox (distinct from AI4IA's existing direct Responses-API code interpreter). |
 | `code_interpreter` (custom) | BYO container image | `container` (custom image ref) | "Custom code interpreter"; runs your image in the Foundry sandbox. Give it a distinct `name`. |
 | `file_search` | Search uploaded files | `vectorStoreIds` | Connectionless once files are attached. |
-| `browser_automation_preview` | Drive a hosted browser | connection / config | Preview; heavier isolation review recommended. |
+| `browser_automation_preview` | Drive a hosted browser | `browserAutomationPreview.connection.projectConnectionId` | Nested shape (SDK 2.3.0's `BrowserAutomationToolParameters`). The connection must be a **Playwright Workspace** connection, not a plain API connection. Preview; heavier isolation review recommended. |
 | `openapi` | Call an OpenAPI-described API | `openapi` (nested `name`, `spec`, `auth`) | Wraps a REST API as a tool; `auth` can be anonymous or a project connection. |
 | `toolbox_search_preview` | **Tool search** — let the model pick tools from a large set | none | Add this so the toolbox self-describes its tools to the model. |
-| `mcp` | Nest another MCP server as a tool | `serverLabel`, `serverUrl`, `requireApproval`, `projectConnectionId` | Lets the toolbox aggregate upstream MCP servers. Identified by `serverLabel`. |
+| `mcp` | Nest another MCP server as a tool | `serverLabel`, `serverUrl`, `requireApproval`, `projectConnectionId` | Lets the toolbox aggregate upstream MCP servers. Identified by `serverLabel`. Unlike `azure_ai_search`/`browser_automation_preview`, `mcp`'s `projectConnectionId` genuinely is a tool-root field in the SDK. |
 
 > **Available vs. deployed:** this table is every tool type the schema/provisioning script
 > support. The live canonical `ai4ia-toolbox` (`foundry/toolbox.manifest.json`) currently uses
@@ -154,16 +154,25 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 > other tool needs a unique `name` (or `serverLabel` for `mcp`). The provisioning script and schema
 > both enforce this.
 
+> **Nested shapes are enforced, not just documented:** `foundry/toolbox.manifest.schema.json`
+> requires `azureAiSearch.indexes[]` on every `azure_ai_search` tool and rejects root-level
+> `indexName`/`projectConnectionId`; it requires `browserAutomationPreview.connection` on every
+> `browser_automation_preview` tool. `scripts/provision-foundry-toolbox.py` recursively snake_cases
+> nested manifest keys before constructing SDK models, so nested camelCase config (not just
+> top-level) is translated correctly.
+
 Add a `description` to every tool — the model uses it for tool selection, which matters most
 when `toolbox_search_preview` is present.
 
 **Copy-paste starting point:** `foundry/toolbox.manifest.example.json` is a populated reference
-manifest with one of each toolbox tool (plus two connections and a bound skill), all uniquely
-identified (by `name`, or `serverLabel` for the `mcp` tool).
+manifest with one of each toolbox tool (plus three connections -- Search, MCP-upstream, and
+Playwright Workspace for browser automation -- and a bound skill), all uniquely identified (by
+`name`, or `serverLabel` for the `mcp` tool).
 The shipped `foundry/toolbox.manifest.json` is the canonical `ai4ia-toolbox` definition; edit it (or
 the example, passing `--manifest foundry/toolbox.manifest.example.json`), prune what you don't need,
 create any referenced connections, then run `provision-foundry-toolbox.py`. The script creates the toolbox via
-`project.toolboxes.create_version(name, tools=[...], description=..., skills=[...], policies=...)`.
+`project.toolboxes.create_version(name, tools=[...], description=..., skills=[...], policies=...)`,
+then activates that new version (see the idempotency note below).
 
 ## Skills
 
@@ -210,10 +219,16 @@ Skill `name` must match `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (max 64). The create p
    > duplicate the toolbox -- it calls `create_version(name, ...)` again, which adds a new version
    > under the same named toolbox (same behavior for `provision-foundry-skills.py`'s
    > `skills.create(...)`, which auto-creates the parent skill once and versions it thereafter).
-   > That makes repeat runs *safe* but not a true no-op: each `--create` accumulates a version even
-   > when the manifest is unchanged. There is no script-side dedup/diff against the latest version,
-   > so avoid scripting unconditional `--create` on every deploy; run it deliberately when the
-   > manifest changes.
+   > `create_version` alone does **not** change what the toolbox's MCP endpoint serves: a toolbox's
+   > `default_version` pointer is fixed at creation and does not auto-advance to newer versions. So
+   > after every successful `create_version`, the script also calls
+   > `project.toolboxes.update(name, default_version=<new version>)` to explicitly activate it --
+   > without that, repeat `--create` runs would keep creating versions that are never actually
+   > served, silently. That makes repeat runs *safe* (each one activates cleanly) but not a true
+   > no-op: each `--create` still accumulates an immutable version even when the manifest is
+   > unchanged. There is no script-side dedup/diff against the latest version's content, so avoid
+   > scripting unconditional `--create` on every deploy; run it deliberately when the manifest
+   > changes.
 
 5. **Register the entry.** Paste the printed object into `infra/mcp-servers.json` (`servers[]`)
    and regenerate the packaged runtime catalog:

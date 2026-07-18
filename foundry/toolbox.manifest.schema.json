@@ -65,8 +65,71 @@
           "description": {
             "type": "string",
             "description": "Optional tool description used by the model for tool selection."
+          },
+          "azureAiSearch": {
+            "type": "object",
+            "description": "Required nested config for azure_ai_search tools, mirroring azure-ai-projects 2.3.0's AzureAISearchToolResource. Do NOT put indexName/projectConnectionId at the tool root; the SDK constructor silently drops them there.",
+            "additionalProperties": false,
+            "required": ["indexes"],
+            "properties": {
+              "indexes": {
+                "type": "array",
+                "description": "The SDK currently supports at most one index per azure_ai_search tool.",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "indexName": { "type": "string", "minLength": 1 },
+                    "projectConnectionId": { "type": "string", "minLength": 1 },
+                    "queryType": { "type": "string" },
+                    "topK": { "type": "integer" },
+                    "filter": { "type": "string" },
+                    "indexAssetId": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "browserAutomationPreview": {
+            "type": "object",
+            "description": "Required nested config for browser_automation_preview tools, mirroring azure-ai-projects 2.3.0's BrowserAutomationToolParameters.",
+            "additionalProperties": false,
+            "required": ["connection"],
+            "properties": {
+              "connection": {
+                "type": "object",
+                "description": "Playwright Workspace project connection (not a plain API connection).",
+                "additionalProperties": false,
+                "required": ["projectConnectionId"],
+                "properties": {
+                  "projectConnectionId": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "type": { "const": "azure_ai_search" } },
+              "required": ["type"]
+            },
+            "then": {
+              "required": ["azureAiSearch"],
+              "not": {
+                "anyOf": [{ "required": ["indexName"] }, { "required": ["projectConnectionId"] }]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "browser_automation_preview" } },
+              "required": ["type"]
+            },
+            "then": { "required": ["browserAutomationPreview"] }
+          }
+        ]
       }
     },
     "skills": {

@@ -70,9 +70,13 @@ _CAMEL_TO_SNAKE = {
     "projectConnectionId": "project_connection_id",
     "azureAiSearch": "azure_ai_search",
     "indexName": "index_name",
+    "queryType": "query_type",
+    "topK": "top_k",
+    "indexAssetId": "index_asset_id",
     "customSearchConfiguration": "custom_search_configuration",
     "instanceName": "instance_name",
     "vectorStoreIds": "vector_store_ids",
+    "browserAutomationPreview": "browser_automation_preview",
 }
 
 
@@ -216,12 +220,21 @@ def resolve_project_endpoint(arg: str | None) -> str:
 # Live path (isolated Azure SDK import; requires the optional `foundry` dependency group)
 # --------------------------------------------------------------------------------------
 def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
-    """Create a toolbox version via azure-ai-projects. Imported lazily so dry runs need no SDK.
+    """Create a toolbox version via azure-ai-projects and activate it as the default version.
 
-    Uses the real SDK surface: ``client.toolboxes.create_version(name, *, tools=[<typed
-    ToolboxTool subclasses>], description, skills=[ToolboxSkillReference], policies=ToolboxPolicies)``.
-    Each manifest tool maps to its discriminated model class (``_TYPE_TO_MODEL``); type-specific
-    fields are passed through (snake_cased) best-effort.
+    Imported lazily so dry runs need no SDK. Uses the real SDK surface: ``client.toolboxes.
+    create_version(name, *, tools=[<typed ToolboxTool subclasses>], description,
+    skills=[ToolboxSkillReference], policies=ToolboxPolicies)``. Each manifest tool maps to its
+    discriminated model class (``_TYPE_TO_MODEL``); type-specific fields (including nested
+    objects such as ``azure_ai_search.indexes[]`` or ``browser_automation_preview.connection``)
+    are recursively snake_cased and passed through as constructor kwargs.
+
+    ``create_version`` only adds an immutable version -- it does NOT change which version the
+    toolbox's MCP endpoint actually serves (``ToolboxObject.default_version`` is a separate
+    pointer that is fixed at creation and does not auto-advance). So every successful call here
+    also explicitly activates the new version via ``toolboxes.update(name,
+    default_version=<new version>)``, otherwise consumers would keep being served the old
+    ``default_version`` forever after the first `--create`.
     """
     try:
         from azure.ai.projects import AIProjectClient
@@ -244,7 +257,11 @@ def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
                 f"(creatable types: {sorted(_ALLOWED_TOOL_TYPES)})."
             )
         model_cls = getattr(m, cls_name)
-        fields = {_to_snake(k): v for k, v in tool.items() if k != "type"}
+        # Recursive conversion matters here: nested config (azure_ai_search.indexes[].index_name,
+        # browser_automation_preview.connection.project_connection_id, ...) must also be
+        # snake_cased, or the SDK's typed nested models silently deserialize those fields as None
+        # instead of raising (see docs/foundry-toolbox.md's SDK-shape note).
+        fields = {k: v for k, v in _convert_keys(tool).items() if k != "type"}
         tools.append(model_cls(**fields))
 
     kwargs: dict[str, Any] = {"tools": tools, "description": manifest.get("description", "")}
@@ -259,7 +276,18 @@ def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
         kwargs["policies"] = m.ToolboxPolicies(
             rai_config=m.RaiConfig(rai_policy_name=manifest["raiPolicyName"])
         )
-    return project.toolboxes.create_version(manifest["name"], **kwargs)
+    result = project.toolboxes.create_version(manifest["name"], **kwargs)
+
+    version = getattr(result, "version", None)
+    if not version:
+        raise SystemExit(
+            f"toolboxes.create_version('{manifest['name']}') returned no usable `version` "
+            f"(got: {version!r} on {result!r}); refusing to skip activation silently. Inspect the "
+            "SDK response and activate the correct version manually via "
+            "`project.toolboxes.update(name, default_version=...)`."
+        )
+    project.toolboxes.update(manifest["name"], default_version=version)
+    return result
 
 
 # --------------------------------------------------------------------------------------
@@ -308,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
 
     result = create_toolbox(manifest, endpoint)
     version = getattr(result, "version", "?")
-    print(f"\nCreated toolbox '{manifest['name']}' version {version} (first version becomes default).")
+    print(f"\nCreated toolbox '{manifest['name']}' version {version} and activated it as the default version.")
     return 0
 
 

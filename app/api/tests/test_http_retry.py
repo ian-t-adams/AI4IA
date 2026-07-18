@@ -205,6 +205,47 @@ def test_parse_retry_after_parses_http_date():
     assert 0.0 <= seconds <= 5.0
 
 
+def test_parse_retry_after_parses_iso8601_with_z_suffix():
+    # The real Web IQ SDK reports BrowseResponse.retryAfter as an ISO-8601
+    # timestamp with a trailing "Z" (e.g. "2026-04-15T05:52:10Z"), not a bare
+    # delta-seconds count -- this is the exact shape that must not fall through
+    # to None (which the capability layer would otherwise treat as "no pending
+    # crawl" and silently report a fake empty success).
+    when = (datetime.now(timezone.utc) + timedelta(seconds=3)).isoformat().replace("+00:00", "Z")
+    seconds = parse_retry_after(when)
+    assert seconds is not None
+    assert 0.0 <= seconds <= 5.0
+
+
+def test_parse_retry_after_parses_iso8601_with_fractional_seconds_and_z():
+    when = (datetime.now(timezone.utc) + timedelta(seconds=3)).isoformat(
+        timespec="milliseconds"
+    ).replace("+00:00", "Z")
+    seconds = parse_retry_after(when)
+    assert seconds is not None
+    assert 0.0 <= seconds <= 5.0
+
+
+def test_parse_retry_after_parses_iso8601_with_explicit_offset():
+    tz = timezone(timedelta(hours=2))
+    when = (datetime.now(timezone.utc) + timedelta(seconds=3)).astimezone(tz).isoformat()
+    seconds = parse_retry_after(when)
+    assert seconds is not None
+    assert 0.0 <= seconds <= 5.0
+
+
+def test_parse_retry_after_treats_naive_iso8601_as_utc():
+    when = (datetime.now(timezone.utc) + timedelta(seconds=3)).replace(tzinfo=None).isoformat()
+    seconds = parse_retry_after(when)
+    assert seconds is not None
+    assert 0.0 <= seconds <= 5.0
+
+
+def test_parse_retry_after_clamps_past_iso8601_timestamp_to_zero():
+    when = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat().replace("+00:00", "Z")
+    assert parse_retry_after(when) == 0.0
+
+
 def test_parse_retry_after_rejects_empty_or_blank():
     assert parse_retry_after("") is None
     assert parse_retry_after("   ") is None

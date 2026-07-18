@@ -84,12 +84,21 @@ def _backoff_delay(attempt: int, policy: RetryPolicy) -> float:
 
 
 def parse_retry_after(value: str) -> float | None:
-    """Parse a ``Retry-After``-shaped value (delta-seconds or an HTTP-date) to seconds.
+    """Parse a ``Retry-After``-shaped value to a nonnegative delay in seconds.
+
+    Accepts three shapes, tried in order (they do not overlap, so there is no
+    ambiguity): delta-seconds (``"30"``), an RFC 7231 HTTP-date (``"Wed, 21 Oct
+    2015 07:28:00 GMT"``), or an ISO-8601 timestamp (``"2026-04-15T05:52:10Z"``).
+    The latter two are absolute points in time and are converted to a delay
+    relative to *now*, clamped to ``>= 0`` so a timestamp already in the past
+    never produces a negative sleep.
 
     Public (not just used by :func:`request_with_retry`'s header handling below):
     :mod:`ai4ia_api.websearch.client` reuses this to parse the Web IQ SDK's
-    ``BrowseResponse.retryAfter`` field, which carries the same delta-seconds /
-    HTTP-date shape for an in-progress on-demand crawl.
+    ``BrowseResponse.retryAfter`` field for an in-progress on-demand crawl. The
+    real SDK reports that field as an ISO-8601 timestamp (e.g.
+    ``"2026-04-15T05:52:10Z"``), not a bare delta-seconds count — the ISO-8601
+    branch below exists specifically for that call site.
     """
     value = value.strip()
     if not value:
@@ -101,12 +110,29 @@ def parse_retry_after(value: str) -> float | None:
     try:
         when = parsedate_to_datetime(value)
     except (TypeError, ValueError):
-        return None
+        when = None
+    if when is None:
+        when = _parse_iso8601(value)
     if when is None:
         return None
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+def _parse_iso8601(value: str) -> datetime | None:
+    """Best-effort ISO-8601 parse, or ``None`` if ``value`` isn't ISO-8601.
+
+    Normalizes a trailing ``Z``/``z`` (Zulu/UTC) to ``+00:00`` before calling
+    :meth:`datetime.fromisoformat` — that suffix is valid ISO-8601 but was only
+    accepted natively by ``fromisoformat`` starting in Python 3.11, so this
+    normalization keeps parsing correct regardless of the running interpreter.
+    """
+    normalized = value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
 
 
 def _retry_after_delay(response: httpx.Response, policy: RetryPolicy) -> float | None:

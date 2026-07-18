@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -175,11 +176,19 @@ def test_example_manifest_is_populated_valid_and_schema_valid():
     mcp = next(t for t in manifest["tools"] if t["type"] == "mcp")
     assert mcp.get("serverLabel") and not mcp.get("name")
     # Every projectConnectionId reference must resolve to a declared connection so the example
-    # is actually self-consistent (not just individually schema-valid fields).
+    # is actually self-consistent (not just individually schema-valid fields). azure_ai_search
+    # and browser_automation_preview nest their connection reference (see SDK-shape note above);
+    # checking only the tool root here would silently stop covering them.
     conn_names = {c["name"] for c in manifest["connections"]}
     for t in manifest["tools"]:
         if t.get("projectConnectionId"):
             assert t["projectConnectionId"] in conn_names
+        if t.get("azureAiSearch"):
+            for idx in t["azureAiSearch"]["indexes"]:
+                if idx.get("projectConnectionId"):
+                    assert idx["projectConnectionId"] in conn_names
+        if t.get("browserAutomationPreview"):
+            assert t["browserAutomationPreview"]["connection"]["projectConnectionId"] in conn_names
     jsonschema = pytest.importorskip("jsonschema")
     schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
     jsonschema.validate(manifest, schema)
@@ -193,6 +202,171 @@ def test_plan_tools_maps_file_search_vector_store_ids():
     planned = _tb.plan_tools(manifest)
     assert planned[0]["vector_store_ids"] == ["vs-1", "vs-2"]
     assert "vectorStoreIds" not in planned[0]
+
+
+def test_plan_tools_recursively_converts_nested_azure_ai_search_and_browser_automation_keys():
+    # azure_ai_search and browser_automation_preview nest their config one (or two) levels
+    # deep. plan_tools/create_toolbox must snake_case those NESTED keys too, not just the
+    # tool's top-level keys -- a flat, non-recursive conversion silently produces camelCase
+    # keys the SDK's typed nested models do not recognize (they deserialize to None instead
+    # of raising; see docs/foundry-toolbox.md's SDK-shape note).
+    manifest = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "azure_ai_search",
+                "name": "rag",
+                "azureAiSearch": {
+                    "indexes": [{"indexName": "docs", "projectConnectionId": "search-conn"}]
+                },
+            },
+            {
+                "type": "browser_automation_preview",
+                "name": "browser",
+                "browserAutomationPreview": {"connection": {"projectConnectionId": "browser-conn"}},
+            },
+        ],
+    }
+    planned = _tb.plan_tools(manifest)
+
+    search = next(t for t in planned if t["type"] == "azure_ai_search")
+    assert "azureAiSearch" not in search
+    assert search["azure_ai_search"]["indexes"][0]["index_name"] == "docs"
+    assert search["azure_ai_search"]["indexes"][0]["project_connection_id"] == "search-conn"
+
+    browser = next(t for t in planned if t["type"] == "browser_automation_preview")
+    assert "browserAutomationPreview" not in browser
+    assert browser["browser_automation_preview"]["connection"]["project_connection_id"] == "browser-conn"
+
+
+def test_schema_rejects_root_level_azure_ai_search_fields_and_bare_browser_automation():
+    # Direct regression guard for the exact shape that silently mis-provisioned before: root-
+    # level indexName/projectConnectionId on azure_ai_search, and browser_automation_preview
+    # with no connection at all. The schema must reject both and accept the correct nested shape.
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    bad_search = {
+        **_valid_manifest(),
+        "tools": [{"type": "azure_ai_search", "name": "x", "indexName": "i", "projectConnectionId": "c"}],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad_search, schema)
+
+    bad_browser = {**_valid_manifest(), "tools": [{"type": "browser_automation_preview", "name": "b"}]}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad_browser, schema)
+
+    good = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "azure_ai_search",
+                "name": "x",
+                "azureAiSearch": {"indexes": [{"indexName": "i", "projectConnectionId": "c"}]},
+            },
+            {
+                "type": "browser_automation_preview",
+                "name": "b",
+                "browserAutomationPreview": {"connection": {"projectConnectionId": "c"}},
+            },
+        ],
+    }
+    jsonschema.validate(good, schema)  # must not raise
+
+
+# ----------------- live-SDK guard: real model construction (gated, optional dep) ------
+def _install_fake_ai_project_client(monkeypatch, *, returned_version, captured):
+    """Patch azure.ai.projects.AIProjectClient / azure.identity.DefaultAzureCredential with
+    fakes that record calls, so create_toolbox() can be exercised without network access
+    while still constructing REAL azure.ai.projects.models instances (only the client/
+    credential/transport are faked, not the SDK's own model classes).
+    """
+
+    class _FakeToolboxesOps:
+        def create_version(self, name, **kwargs):
+            captured["create_version"] = (name, kwargs)
+            return SimpleNamespace(version=returned_version)
+
+        def update(self, name, **kwargs):
+            captured.setdefault("update_calls", []).append((name, kwargs))
+            return SimpleNamespace(name=name, default_version=kwargs.get("default_version"))
+
+    class _FakeAIProjectClient:
+        def __init__(self, *, endpoint, credential):
+            captured["endpoint"] = endpoint
+            captured["credential"] = credential
+            self.toolboxes = _FakeToolboxesOps()
+
+    class _FakeCredential:
+        pass
+
+    monkeypatch.setattr("azure.ai.projects.AIProjectClient", _FakeAIProjectClient)
+    monkeypatch.setattr("azure.identity.DefaultAzureCredential", _FakeCredential)
+
+
+def test_create_toolbox_constructs_real_sdk_models_with_nested_fields_populated(monkeypatch):
+    # The load-bearing SDK-construction guard: run create_toolbox() against the example
+    # manifest's fixed shapes and inspect the REAL azure.ai.projects model instances it
+    # builds. This is what actually failed silently before (SDK constructor kwargs it
+    # didn't recognize were just dropped, producing None fields with no exception).
+    pytest.importorskip("azure.ai.projects")
+    pytest.importorskip("azure.identity")
+    from azure.ai.projects import models as m
+
+    captured: dict = {}
+    _install_fake_ai_project_client(monkeypatch, returned_version="1", captured=captured)
+
+    manifest = _tb.load_manifest(_EXAMPLE_MANIFEST)
+    _tb.create_toolbox(manifest, _ENDPOINT)
+
+    _, kwargs = captured["create_version"]
+    tools = kwargs["tools"]
+
+    search_tool = next(t for t in tools if isinstance(t, m.AzureAISearchToolboxTool))
+    assert search_tool.azure_ai_search is not None
+    idx = search_tool.azure_ai_search.indexes[0]
+    assert idx.index_name == "ai4ia-docs"
+    assert idx.project_connection_id == "ai4ia-search"
+
+    browser_tool = next(t for t in tools if isinstance(t, m.BrowserAutomationPreviewToolboxTool))
+    assert browser_tool.browser_automation_preview is not None
+    conn = browser_tool.browser_automation_preview.connection
+    assert conn is not None
+    assert conn.project_connection_id == "ai4ia-browser-automation"
+
+
+@pytest.mark.parametrize("returned_version", ["1", "3"])
+def test_create_toolbox_activates_returned_version_as_default(monkeypatch, returned_version):
+    # create_version() only creates an immutable version; it does NOT change what the
+    # toolbox's MCP endpoint serves. create_toolbox() must always explicitly activate the
+    # version it just created via toolboxes.update(name, default_version=<that version>),
+    # both on first create and on later versions (no special-casing "first time only").
+    pytest.importorskip("azure.ai.projects")
+    pytest.importorskip("azure.identity")
+
+    captured: dict = {}
+    _install_fake_ai_project_client(monkeypatch, returned_version=returned_version, captured=captured)
+
+    manifest = _valid_manifest()
+    _tb.create_toolbox(manifest, _ENDPOINT)
+
+    assert captured["update_calls"] == [(manifest["name"], {"default_version": returned_version})]
+
+
+def test_create_toolbox_fails_loud_when_create_version_has_no_version(monkeypatch):
+    # If the SDK ever returns a result with no usable `version`, silently skipping
+    # activation would leave a new version created but never served with no signal to the
+    # operator. Must raise instead of continuing.
+    pytest.importorskip("azure.ai.projects")
+    pytest.importorskip("azure.identity")
+
+    captured: dict = {}
+    _install_fake_ai_project_client(monkeypatch, returned_version=None, captured=captured)
+
+    with pytest.raises(SystemExit):
+        _tb.create_toolbox(_valid_manifest(), _ENDPOINT)
+    assert "update_calls" not in captured
 
 
 # ----------------------------------- skills -------------------------------------------
