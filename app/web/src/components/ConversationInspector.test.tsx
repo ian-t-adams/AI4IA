@@ -244,7 +244,11 @@ describe("ConversationInspector", () => {
       agentName: "analyst",
     });
 
-    const withAgent = { ...draftDefaults, agentName: "analyst" };
+    const withAgent = {
+      ...draftDefaults,
+      agentName: "analyst",
+      toolOverrides: { added: ["calculator"], removed: [] },
+    };
     rerender(
       <ConversationInspector
         {...props(null)}
