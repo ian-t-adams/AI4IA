@@ -139,12 +139,30 @@ and the `proxy-dotnet` build/test job.
 
 **Resolved since this audit:** the `eslint-config-next` `^16` / `eslint` 9→10 knot (formerly listed here) is fixed — #124 reworked `eslint.config.mjs` onto config-next 16's native flat-config export (dropping the `@eslint/eslintrc` `FlatCompat` bridge), and #132 completed the eslint 9→10 bump. `eslint-config-next` is now `16.2.10` and `eslint` is `^10.6.0`. Note: `npm ci` still prints benign `ERESOLVE overriding peer dependency` warnings for `eslint-config-next`'s bundled `eslint-plugin-import`/`eslint-plugin-jsx-a11y`/`eslint-plugin-react` — their published peer ranges still cap at `eslint@^9`/`^9.7` as of this writing (verified via `npm view <pkg> peerDependencies`, no newer release exists). Install still exits 0, everything dedupes to the single `eslint@10.6.0`, and lint/build/test are unaffected (0 errors, matching the pre-bump warning baseline). Not a regression and nothing to override locally — there is no published version of those plugins yet that declares an `eslint@10` peer.
 
+**Fixed since this audit:** the CI-vs-image runtime skew this doc's own table
+(rows for #91/#90 above) left in place is resolved. `app/api/Dockerfile`
+(`python:3.14-slim`) and `app/web/Dockerfile` (`node:26-alpine`) both drifted
+past what `app-ci.yml` actually tests (Python 3.12, Node 22), and — for the same
+no-PR-docker-build reason described in the first item above — nothing in PR CI
+caught it. The Python bump surfaced real `azure-cosmos`/`aiohttp` `DeprecationWarning` noise in
+production logs; the Node bump had no equivalent functional symptom, but
+`npm view next typescript eslint vitest engines` confirms none of them require
+Node 26, and #106's `engines.node` widening to `<27` was manifest hygiene ("stop
+contradicting the image") rather than a documented technical need. Both
+Dockerfiles are reverted to the CI-tested majors (#187): `python:3.12-slim` and
+`node:22-alpine`, with `package.json`'s `engines.node` narrowed back to
+`">=22.0.0 <23"`. Each Dockerfile now carries a comment tying its pinned version
+to `app-ci.yml`/AGENTS.md so a future Dependabot major bump has to be a
+deliberate, documented decision instead of a silent merge.
+
 ## Bottom line
 
 The original audit backlog is cleared, and the Dependabot backlog is fully worked
 off — the last genuinely-blocked item (#92) shipped via #124 (native flat-config
 rework) and #132 (eslint 10). The two quick web-manifest fixes — `engines.node`
 honesty and the stale proxy doc-comments — shipped in #106. The PR-CI Docker-build
-gap is now closed too (#187, see "Known open items"). What remains is the one
+gap is now closed too (#187, see "Known open items"), and so is the CI-vs-image
+runtime skew it had been masking — both Dockerfiles are back on the CI-tested
+majors (#187, see "Known open items"). What remains is the one
 accepted cost tradeoff. That is a healthy steady state: explicit debt with owners
 and reasons, not silent rot.

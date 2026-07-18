@@ -29,9 +29,12 @@ npm ci
 npm run dev
 ```
 
-Use any Node version in the declared `>=22.0.0 <27` range (CI pins Node 22; the
-production Docker image is `node:26-alpine`). `package.json` enforces `engines.node`,
-so out-of-range local drift fails early instead of surprising you in GitHub Actions.
+Use Node in the declared `>=22.0.0 <23` range — this matches both CI (which pins
+Node 22) and the production Docker image (`node:22-alpine`). `package.json`'s
+`engines.node` is advisory only (no `.npmrc`/`engine-strict` is set in this repo),
+so npm just prints a `npm warn EBADENGINE` warning on a mismatched local Node
+version instead of failing the install; CI and `docker-build` are the actual
+enforcement points for the pinned version, not this field.
 
 Run checks from this folder:
 

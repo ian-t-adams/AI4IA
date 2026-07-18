@@ -140,6 +140,15 @@ changes:
 This is exactly the "prose instead of fact" pattern `brutal-audit.md` warns about,
 re-emerging in a doc the runtime bumps forgot to update.
 
+> **Fixed (#187, follow-up round):** `app/web/Dockerfile` reverted to
+> `node:22-alpine` and `engines.node` narrowed back to `">=22.0.0 <23"` — no
+> runtime dependency (`next`, `typescript`, `eslint`, `vitest`) required Node 26;
+> the original widening was manifest hygiene only, not a technical need. The
+> README claim about `engines.node` "failing early" was also independently
+> wrong (no `.npmrc`/`engine-strict` exists in this repo, so it only prints
+> `npm warn EBADENGINE` and installs anyway) and has been corrected alongside
+> the version fix. See the parallel `python:3.14-slim` incident in §9.
+
 ### 3.5 `[NEW]` `LOW` — API reference is Swagger-only
 
 The API ships FastAPI's `/api/docs`, but there is no narrative API reference or
@@ -338,7 +347,11 @@ CI/CD is in good shape post-hardening: every `uses:` is SHA-pinned, jobs have
 > The CI-vs-image runtime skew (CI Node 22 / Python 3.12 vs `node:26` / `python:3.14`)
 > was a direct consequence of that same no-PR-docker-build gap (the Python 3.14 bump
 > was instead validated via `uv pip compile`); #187 now build-validates both images
-> on every PR. See §9.
+> on every PR. **Update:** the skew itself is also now fixed, not just detectable —
+> both `app/web/Dockerfile` (`node:26-alpine` → `node:22-alpine`) and
+> `app/api/Dockerfile` (`python:3.14-slim` → `python:3.12-slim`) were reverted to
+> the CI-tested majors after confirming neither had a genuine dependency
+> requirement for the newer major. See §9.
 
 ---
 
@@ -371,6 +384,7 @@ These are real, but `docs/brutal-audit.md` already records them as **fixed**,
 | --- | --- |
 | No PR-time `docker build` of either Dockerfile | **Fixed** (#187) |
 | `eslint-config-next` `^16` / eslint 9→10 block | **Resolved** (#124/#132); benign `npm ci` peer-warning noise from bundled plugins remains, tracked as harmless upstream noise |
+| CI-vs-image runtime skew (`node:26-alpine` / `python:3.14-slim` vs CI's Node 22 / Python 3.12) | **Fixed** (#187) — both Dockerfiles reverted to the CI-tested majors; neither had a genuine dependency requirement for the newer one |
 | `style-src 'unsafe-inline'` in CSP | **Deliberate** documented relaxation (#101) |
 | Gateway proxy `minReplicas:0` cold-start | **Accepted** cost tradeoff |
 | Cosmos PITR / KV purge protection / Postgres HA | **Deferred** cost/reliability decision |

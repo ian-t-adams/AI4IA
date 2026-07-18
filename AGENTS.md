@@ -42,6 +42,25 @@ npm run build --if-present
 
 Package scripts currently resolve to `eslint .`, `vitest run`, and `next build`. Local dev uses `npm run dev`. Prefer `npm ci` over `npm install` when validating reproducibility.
 
+`app/web/Dockerfile`'s `FROM node:22-alpine` must track this same version
+deliberately (see the comment above that line). A Dependabot major-version bump
+to `node:26-alpine` was merged the same day `package.json`'s `engines.node` was
+widened to `>=22.0.0 <27` — but that widening only stopped the manifest
+contradicting the image; it was not evidence of an actual Node 26 requirement.
+No CI job exercised the built image at that Node version, and every runtime
+dependency (`next`, `typescript`, `eslint`, `vitest`) publishes an `engines.node`
+range already satisfied by Node 22. Reverted to `node:22-alpine` /
+`>=22.0.0 <23` on audit; see the parallel Python incident below.
+
+`npm ci` also prints benign `npm warn ERESOLVE overriding peer dependency`
+warnings for `eslint-config-next`'s bundled `eslint-plugin-import` /
+`eslint-plugin-jsx-a11y` / `eslint-plugin-react` — their published peer ranges
+still cap at `eslint@^9`/`^9.7` as of this writing, and no compatible release
+exists yet. Install still exits 0, npm dedupes everything to the single
+`eslint@10.6.0` actually installed, and lint/test/build are unaffected. This is
+tracked upstream noise, not a local misconfiguration — do not downgrade eslint
+or add overrides to silence it.
+
 ### API (`app/api` plus repo-root catalog checks)
 
 CI uses Python 3.12. `app/api/Dockerfile`'s `FROM python:3.12-slim` must track this
@@ -49,9 +68,9 @@ same version deliberately (see the comment above that line) — a June 2026
 Dependabot major-version bump to `python:3.14-slim` went unreviewed for weeks
 (no CI job exercised the built image, and nothing else in the repo asserted the
 two stay in sync) before it was traced to azure-cosmos/aiohttp `DeprecationWarning`
-noise in production logs. Contrast `app/web`'s Node bump: that one was reviewed and
-accepted the same day, with `package.json`'s `engines.node` range widened to
-document it. In `app/api` it installs:
+noise in production logs. `app/web`'s Node base drifted the same way (see the Web
+section above) — both are now pinned back to the CI-tested majors. In `app/api`
+it installs:
 
 ```powershell
 python -m pip install --upgrade pip
