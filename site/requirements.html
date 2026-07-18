@@ -59,8 +59,10 @@
       <div class="container">
         <h2 class="section-title">Permissions (RBAC)</h2>
         <p class="section-sub">Azure service data planes use managed identities and scoped role assignments. The
-          gateway currently uses two independently scoped APIM subscription keys stored only as Container App
-          secrets; no Foundry account keys, connection strings, or SQL passwords are used at runtime.</p>
+          gateway currently uses three independently scoped APIM subscription keys: proxy-ingress (FastAPI to
+          proxy), proxy-to-model (proxy to APIM), and realtime (FastAPI to APIM), plus an optional fourth for
+          Speech Voice Live. All are stored only as Container App secrets; no Foundry account keys, connection
+          strings, or SQL passwords are used at runtime.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Identity</th><th>Role</th><th>Scope</th><th>Why</th><th>Module</th></tr></thead>

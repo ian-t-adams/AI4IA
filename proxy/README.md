@@ -47,9 +47,10 @@ Four files carry AI4IA security/correctness patches over the audited pin:
   not case-insensitive identifiers, and a non-constant-time comparison of a secret is a timing
   side-channel.
 
-All other files in the three source directories remain byte-for-byte upstream. Re-evaluate and
-drop the `IncomingAuthValidator.cs` patch when refreshing to an upstream commit that fixes both
-behaviors it addresses.
+All other files in the three source directories are upstream-identical in content once line-ending
+style is normalized (most are exact byte-for-byte matches; see "Provenance validation" below for
+the precise blob-level breakdown). Re-evaluate and drop the `IncomingAuthValidator.cs` patch when
+refreshing to an upstream commit that fixes both behaviors it addresses.
 
 **Provenance validation (2026-07-18, corrected):** an earlier version of this note claimed 170
 byte-for-byte-identical files, based on SHA-256-hashing a `git checkout` of the pinned upstream
@@ -62,7 +63,7 @@ files in `Shared/`, `Shared-parser/`, and `SimpleL7Proxy/`:
 
 - **142 files** have an identical blob SHA1 (true byte-for-byte identity with upstream).
 - **28 files** have a different blob SHA1, but identical content once CRLF/LF line endings are
-  normalized on both sides: these are stored with CRLF locally and LF upstream. They are not
+  normalized on both sides: these are stored with LF locally and CRLF upstream. They are not
   functional deviations and are not part of the intentional-deviation list.
 - **4 files** are the intentional deviations listed above; their diffs were re-confirmed against
   the pinned commit and match the descriptions given for each.
