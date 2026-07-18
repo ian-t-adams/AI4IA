@@ -62,7 +62,7 @@ class AzureMonitorQuerier:
         if not endpoint:
             raise ValueError("Azure Monitor metrics endpoint is required")
         from azure.identity.aio import DefaultAzureCredential
-        from azure.monitor.querymetrics.aio import MetricsClient  # pyright: ignore[reportMissingImports]
+        from azure.monitor.querymetrics.aio import MetricsClient
 
         self._credential = DefaultAzureCredential()
         self._client = MetricsClient(endpoint, self._credential)
@@ -75,7 +75,7 @@ class AzureMonitorQuerier:
         window_minutes: int,
         granularity_minutes: int,
     ) -> list[MetricPoint]:
-        from azure.monitor.querymetrics import MetricAggregationType  # pyright: ignore[reportMissingImports]
+        from azure.monitor.querymetrics import MetricAggregationType
 
         # Request every aggregation the panel needs once; read the configured one
         # off each metric's latest non-null datapoint below.
