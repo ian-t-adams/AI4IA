@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   listMemories: vi.fn(),
   getLibrarySummary: vi.fn(),
   deleteMemory: vi.fn(),
+  useInlineVoiceLive: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => mocks);
@@ -104,19 +105,16 @@ vi.mock("./InlineVoiceLive", () => ({
   InlineVoiceLiveStatus: () => null,
   mergeDisplayMessages: (messages: unknown[]) => messages,
   voiceMessagesForSession: () => [],
-  useInlineVoiceLive: () => ({
-    active: false,
-    supported: false,
-    phase: "idle",
-    saving: false,
-    persistenceError: null,
-    error: null,
-    start: vi.fn(),
-    stop: vi.fn(),
-    exitLocked: false,
-    messages: [],
-    boundSessionId: null,
-  }),
+  useInlineVoiceLive: mocks.useInlineVoiceLive,
+}));
+vi.mock("./StudioPanel", () => ({
+  // Minimal stand-in exposing only the "run a workflow" callback, which is
+  // the one call site of selectSession() outside the sidebar.
+  StudioPanel: ({ onRun }: { onRun: (sessionId: string) => void }) => (
+    <button type="button" onClick={() => onRun("A")}>
+      Run workflow for Session A
+    </button>
+  ),
 }));
 
 const session = (id: string) => ({
@@ -266,6 +264,25 @@ beforeEach(() => {
     maxUploadBytes: 100,
     maxDocuments: 100,
     modalities: ["document"],
+  });
+  mocks.useInlineVoiceLive.mockReturnValue({
+    messages: [],
+    enabled: false,
+    supported: false,
+    active: false,
+    saving: false,
+    phase: "idle",
+    statusLabel: "",
+    agentLabel: "",
+    error: null,
+    persistenceError: null,
+    hasUnsavedTurns: false,
+    exitLocked: false,
+    boundSessionId: null,
+    start: vi.fn(),
+    stop: vi.fn(),
+    retryPersistence: vi.fn(),
+    discardPersistence: vi.fn(),
   });
 });
 
@@ -490,5 +507,139 @@ describe("ChatApp uploads", () => {
     expect(
       await screen.findByRole("button", { name: "Open conversation inspector" }),
     ).toHaveFocus();
+  });
+
+  it("hard-disables sidebar navigation with an explanatory, recoverable tooltip while a voice transcript is stuck saving, then re-enables once it resolves", async () => {
+    const recoveryTooltip =
+      "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cDiscard\u201d in the voice status bar below.";
+    const user = userEvent.setup();
+    const { rerender } = render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    expect(
+      await screen.findByText("Session A", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+
+    // Voice now has an unsaved transcript stuck saving for the active session.
+    mocks.useInlineVoiceLive.mockReturnValue({
+      messages: [],
+      enabled: true,
+      supported: true,
+      active: false,
+      saving: true,
+      phase: "idle",
+      statusLabel: "Saving voice transcript…",
+      agentLabel: "",
+      error: null,
+      persistenceError: null,
+      hasUnsavedTurns: true,
+      exitLocked: true,
+      boundSessionId: "A",
+      start: vi.fn(),
+      stop: vi.fn(),
+      retryPersistence: vi.fn(),
+      discardPersistence: vi.fn(),
+    });
+    rerender(<ChatApp />);
+
+    const sessionBButton = screen.getByRole("button", { name: "Session B" });
+    const newChatButton = screen.getByRole("button", { name: "+ New chat" });
+    const deleteButton = screen.getByRole("button", { name: "Delete Session A" });
+    const headerRename = document.querySelector(
+      ".chat-header .editable-session-title-trigger",
+    );
+    for (const control of [sessionBButton, newChatButton, deleteButton, headerRename]) {
+      expect(control).toBeDisabled();
+      expect(control).toHaveAttribute("title", recoveryTooltip);
+    }
+
+    // Clicking disabled controls is inert: no navigation, no deletion.
+    await user.click(sessionBButton);
+    await user.click(newChatButton);
+    await user.click(deleteButton);
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+    expect(
+      screen.getByText("Session A", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("New conversation", { selector: "strong" })).toBeNull();
+
+    // Once the transcript is saved (or discarded), navigation recovers.
+    mocks.useInlineVoiceLive.mockReturnValue({
+      messages: [],
+      enabled: true,
+      supported: true,
+      active: false,
+      saving: false,
+      phase: "idle",
+      statusLabel: "",
+      agentLabel: "",
+      error: null,
+      persistenceError: null,
+      hasUnsavedTurns: false,
+      exitLocked: false,
+      boundSessionId: "A",
+      start: vi.fn(),
+      stop: vi.fn(),
+      retryPersistence: vi.fn(),
+      discardPersistence: vi.fn(),
+    });
+    rerender(<ChatApp />);
+    expect(screen.getByRole("button", { name: "Session B" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Session B" })).not.toHaveAttribute("title");
+    await user.click(screen.getByRole("button", { name: "Session B" }));
+    expect(
+      await screen.findByText("Session B", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("still surfaces the navigation-lock recovery message for callers outside the sidebar, such as Studio's run-workflow action", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    // Open Studio while everything is still unlocked, so its "run workflow"
+    // action (a non-sidebar caller of selectSession) is available.
+    await user.click(screen.getByRole("button", { name: /Agents & workflows/ }));
+    await screen.findByRole("button", { name: "Run workflow for Session A" });
+
+    mocks.useInlineVoiceLive.mockReturnValue({
+      messages: [],
+      enabled: true,
+      supported: true,
+      active: false,
+      saving: true,
+      phase: "idle",
+      statusLabel: "Saving voice transcript…",
+      agentLabel: "",
+      error: null,
+      persistenceError: null,
+      hasUnsavedTurns: true,
+      exitLocked: true,
+      boundSessionId: "A",
+      start: vi.fn(),
+      stop: vi.fn(),
+      retryPersistence: vi.fn(),
+      discardPersistence: vi.fn(),
+    });
+    // Commit the locked state (and its layout-effect-synced ref) before the
+    // next interaction, mirroring how a real state transition would already
+    // be committed by the time a user's next click occurs.
+    rerender(<ChatApp />);
+    const runWorkflow = screen.getByRole("button", {
+      name: "Run workflow for Session A",
+    });
+
+    // Studio isn't gated by the sidebar's disabled prop, so this reaches
+    // selectSession() directly and exercises its guard clause.
+    await user.click(runWorkflow);
+    expect(
+      await screen.findByText(
+        /Finish saving the voice transcript before switching conversations/,
+      ),
+    ).toBeInTheDocument();
   });
 });

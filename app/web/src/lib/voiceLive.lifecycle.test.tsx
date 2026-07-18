@@ -72,6 +72,34 @@ class FakeAudioWorkletNode {
   disconnect = vi.fn();
 }
 
+// A minimal MediaStreamTrack double with real (not stubbed) addEventListener/
+// removeEventListener semantics, so tests can prove the "ended" listener
+// voiceLive.ts attaches in start() is both invoked and later detached —
+// jsdom does not implement MediaStreamTrack at all, and the plain `{ stop }`
+// objects used elsewhere in this file intentionally have no event target
+// behavior (some browsers' tracks don't extend EventTarget either).
+class FakeMediaStreamTrack {
+  stop = vi.fn();
+  private listeners = new Map<string, Set<() => void>>();
+
+  addEventListener(type: string, listener: () => void) {
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+    this.listeners.get(type)!.add(listener);
+  }
+
+  removeEventListener(type: string, listener: () => void) {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  listenerCount(type: string): number {
+    return this.listeners.get(type)?.size ?? 0;
+  }
+
+  dispatchEnded() {
+    for (const listener of [...(this.listeners.get("ended") ?? [])]) listener();
+  }
+}
+
 class FakeWebSocket {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
@@ -701,5 +729,108 @@ describe("useVoiceLive lifecycle", () => {
     expect(FakeWebSocket.instances[1].url).toContain("provider=speech_voice_live");
     expect(FakeWebSocket.instances[1].url).toContain("model=gpt-4.1");
     expect(FakeWebSocket.instances[1].url).not.toContain("region=");
+  });
+
+  // Regression: the mic track can die out from under an otherwise-healthy
+  // socket (permission revoked mid-call, device unplugged, another app
+  // taking exclusive access, lid close). Previously nothing observed this —
+  // the socket stayed open and status stayed "live" — so the session
+  // silently stopped hearing the user with no error and no way to know
+  // reconnecting was needed.
+  it("reports an actionable error and fully tears down when the microphone track ends unexpectedly", async () => {
+    auth.getToken.mockResolvedValue("token");
+    const track = new FakeMediaStreamTrack();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+    );
+
+    act(() => {
+      result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.onopen?.());
+    await waitFor(() => expect(result.current.status).toBe("live"));
+
+    act(() => track.dispatchEnded());
+
+    expect(onError).toHaveBeenCalledWith(
+      "Microphone stopped providing audio (permission revoked or device disconnected). Reconnect to continue.",
+    );
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(socket.close).toHaveBeenCalledTimes(1);
+    expect(FakeAudioContext.instances[0].close).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(result.current.status).toBe("idle"));
+
+    // A late, expected onclose for the socket we just asked to close must
+    // not report a second, spurious error.
+    act(() => socket.onclose?.());
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not leave a stale track listener that could fire after a clean stop", async () => {
+    auth.getToken.mockResolvedValue("token");
+    const track = new FakeMediaStreamTrack();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+    );
+
+    act(() => {
+      result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    act(() => FakeWebSocket.instances[0].onopen?.());
+    await waitFor(() => expect(result.current.status).toBe("live"));
+
+    act(() => {
+      result.current.stop();
+    });
+    expect(result.current.status).toBe("idle");
+
+    // stop() already called track.stop(); the browser can still fire "ended"
+    // afterwards for a track that's already stopped. Because cleanupSession
+    // removes the listener before stopping the track, this must be a no-op.
+    act(() => track.dispatchEnded());
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("deterministically tears down the microphone, audio context, and socket on unmount while live", async () => {
+    auth.getToken.mockResolvedValue("token");
+    const track = new FakeMediaStreamTrack();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+    const { result, unmount } = renderHook(() =>
+      useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", vi.fn()),
+    );
+
+    act(() => {
+      result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.onopen?.());
+    await waitFor(() => expect(result.current.status).toBe("live"));
+
+    unmount();
+
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(FakeAudioContext.instances[0].close).toHaveBeenCalledTimes(1);
+    expect(socket.close).toHaveBeenCalledTimes(1);
+    // The track listener must also be detached so a post-unmount "ended"
+    // event (the component is gone, but the OS/browser event can still
+    // fire) can never touch React state on an unmounted hook.
+    expect(track.listenerCount("ended")).toBe(0);
   });
 });

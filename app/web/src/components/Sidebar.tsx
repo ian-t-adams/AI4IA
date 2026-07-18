@@ -22,6 +22,7 @@ export function Sidebar({
   onCollapse,
   openerRef,
   disabled = false,
+  disabledReason,
 }: {
   sessions: Session[];
   activeId: string | null;
@@ -35,6 +36,8 @@ export function Sidebar({
   onCollapse?: () => void;
   openerRef?: RefObject<HTMLElement | null>;
   disabled?: boolean;
+  /** Tooltip shown on disabled controls, explaining why and how to recover. */
+  disabledReason?: string;
 }) {
   const mobileDrawer = useMediaQuery("(max-width: 720px)") && Boolean(onCollapse);
   const drawerFocus = useModalFocus<HTMLElement>(
@@ -113,6 +116,7 @@ export function Sidebar({
         <button
           onClick={onNewChat}
           disabled={disabled}
+          title={disabled ? disabledReason : undefined}
           style={{
             width: "100%",
             padding: "10px 14px",
@@ -163,6 +167,7 @@ export function Sidebar({
                   onOpen={() => onSelect(s.id)}
                   current={active}
                   disabled={disabled}
+                  disabledReason={disabledReason}
                   compact
                 />
               </div>
@@ -170,7 +175,7 @@ export function Sidebar({
                 onClick={() => onDelete(s.id)}
                 disabled={disabled}
                 aria-label={`Delete ${s.title || "conversation"}`}
-                title="Delete"
+                title={disabled ? disabledReason : "Delete"}
                 style={{
                   border: "none",
                   background: "transparent",

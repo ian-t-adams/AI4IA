@@ -8,6 +8,7 @@ export function EditableSessionTitle({
   title,
   onSave,
   disabled = false,
+  disabledReason,
   compact = false,
   onOpen,
   current = false,
@@ -15,6 +16,8 @@ export function EditableSessionTitle({
   title: string;
   onSave: (title: string) => Promise<void>;
   disabled?: boolean;
+  /** Tooltip shown while disabled, explaining why and how to recover. */
+  disabledReason?: string;
   compact?: boolean;
   onOpen?: () => void;
   current?: boolean;
@@ -141,6 +144,7 @@ export function EditableSessionTitle({
           type="button"
           className="editable-session-title-text"
           disabled={disabled}
+          title={disabled ? disabledReason : undefined}
           aria-current={current ? "true" : undefined}
           onClick={onOpen}
           onKeyDown={(event) => {
@@ -160,6 +164,7 @@ export function EditableSessionTitle({
         type="button"
         className="editable-session-title-trigger"
         disabled={disabled}
+        title={disabled ? disabledReason : undefined}
         onClick={begin}
         onKeyDown={(event) => {
           if (event.key === "F2") {

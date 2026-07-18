@@ -593,6 +593,9 @@ interface LiveSession {
   cleaned: boolean;
   errorReported: boolean;
   protocolError: SafeProtocolError | null;
+  // Bound to every captured track's "ended" event so cleanup can remove the
+  // listener deterministically (see onTrackEnded wiring in start()).
+  onTrackEnded: (() => void) | null;
 }
 
 // The message shown when the WebSocket fails or closes before ever reaching
@@ -603,6 +606,15 @@ interface LiveSession {
 const GATEWAY_UNAVAILABLE_MESSAGE =
   "Voice gateway or realtime service is unavailable. Try again.";
 const LIVE_CONNECTION_ERROR_MESSAGE = "Live voice connection error.";
+// The browser/OS can kill the mic track out from under an otherwise-healthy
+// WebSocket (permission revoked from the address bar mid-call, input device
+// unplugged/disconnected, another app taking exclusive access, a laptop lid
+// close). Nothing else observes this — the socket stays open and "live" — so
+// without an explicit `ended` listener the session silently stops hearing the
+// user with no error at all. This is surfaced through the same finishSession
+// path as a protocol error so it gets one consistent teardown + message.
+const MIC_TRACK_ENDED_MESSAGE =
+  "Microphone stopped providing audio (permission revoked or device disconnected). Reconnect to continue.";
 
 interface PendingLiveSession {
   ctx: AudioContext | null;
@@ -804,7 +816,12 @@ export function useVoiceLive(
     } catch {
       /* ignore */
     }
-    for (const t of s.stream.getTracks()) t.stop();
+    for (const t of s.stream.getTracks()) {
+      if (s.onTrackEnded && typeof t.removeEventListener === "function") {
+        t.removeEventListener("ended", s.onTrackEnded);
+      }
+      t.stop();
+    }
     try {
       if (s.ws.readyState === WebSocket.OPEN || s.ws.readyState === WebSocket.CONNECTING) {
         s.ws.close(1000, "client closed");
@@ -925,9 +942,25 @@ export function useVoiceLive(
         cleaned: false,
         errorReported: false,
         protocolError: null,
+        onTrackEnded: null,
       };
       sessionRef.current = session;
       pendingRef.current = null;
+
+      // The mic track can die out from under an otherwise-healthy socket
+      // (permission revoked mid-call, device unplugged, another app taking
+      // exclusive access, lid close). Without this, the session silently
+      // stops hearing the user forever with no error. finishSession() is a
+      // hoisted function declaration defined below in this same scope, so
+      // it's safe to reference here. Guarded with a typeof check because
+      // some test doubles for MediaStreamTrack only implement stop().
+      const handleTrackEnded = () => finishSession(MIC_TRACK_ENDED_MESSAGE);
+      session.onTrackEnded = handleTrackEnded;
+      for (const track of stream.getTracks()) {
+        if (typeof track.addEventListener === "function") {
+          track.addEventListener("ended", handleTrackEnded);
+        }
+      }
 
       let activeResponseId: string | null = null;
       let activeAssistantItemId: string | null = null;

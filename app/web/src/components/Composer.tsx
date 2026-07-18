@@ -747,32 +747,36 @@ export function Composer({
             className="composer-icon-button composer-voice-button"
             onClick={voiceLive.active ? voiceLive.stop : voiceLive.start}
             disabled={
-              !voiceLive.supported || voiceLive.ending || voiceLive.saving
-                || voiceLive.saveBlocked
+              !voiceLive.supported ||
+              (!voiceLive.active && (voiceLive.saving || voiceLive.saveBlocked))
             }
             aria-pressed={voiceLive.active}
             aria-busy={
               voiceLive.connecting || voiceLive.ending || voiceLive.saving
             }
             aria-label={
-              voiceLive.saveBlocked
-                ? "Retry saving the voice transcript below"
-                : voiceLive.saving
-                ? "Saving live voice transcript"
-              : voiceLive.active
+              // `active` (covers connecting and live) must always resolve to
+              // the Stop label/action first: whatever saving/saveBlocked say
+              // about a *previous* cycle can never leave the current, live
+              // session without a way to stop it.
+              voiceLive.active
                 ? "Stop live voice conversation"
-                : voiceLive.retrying
-                  ? "Retry live voice conversation"
-                  : "Start live voice conversation"
+                : voiceLive.saveBlocked
+                  ? "Retry saving the voice transcript below"
+                  : voiceLive.saving
+                    ? "Saving live voice transcript"
+                    : voiceLive.retrying
+                      ? "Retry live voice conversation"
+                      : "Start live voice conversation"
             }
             title={
               !voiceLive.supported
                 ? "Live voice isn't supported in this browser"
-                : voiceLive.saveBlocked
-                  ? "Save the previous Voice Live transcript before starting again"
                 : voiceLive.active
                   ? "Stop Voice Live"
-                  : "Start Voice Live in this chat"
+                  : voiceLive.saveBlocked
+                    ? "Save the previous Voice Live transcript before starting again"
+                    : "Start Voice Live in this chat"
             }
             style={{
               alignSelf: "stretch",
@@ -786,21 +790,21 @@ export function Composer({
               lineHeight: 1,
               cursor:
                 !voiceLive.supported ||
-                voiceLive.ending ||
-                voiceLive.saving ||
-                voiceLive.saveBlocked
+                (!voiceLive.active && (voiceLive.saving || voiceLive.saveBlocked))
                   ? "not-allowed"
                   : "pointer",
               opacity: voiceLive.supported ? 1 : 0.45,
             }}
           >
-            {voiceLive.saveBlocked
-              ? "!"
-              : voiceLive.connecting || voiceLive.saving
-              ? "…"
-              : voiceLive.active
-                ? "■"
-                : "🎤"}
+            {voiceLive.active
+              ? voiceLive.connecting
+                ? "…"
+                : "■"
+              : voiceLive.saveBlocked
+                ? "!"
+                : voiceLive.saving
+                  ? "…"
+                  : "🎤"}
           </button>
         )}
 

@@ -256,6 +256,32 @@ function splitOversized(unit: string, limit: number): string[] {
   return out;
 }
 
+// Numeric HTMLMediaElement/MediaError codes per the HTML spec (fixed values,
+// unchanged across browsers), used directly instead of the `MediaError`
+// global so this works the same in jsdom/test environments that may not
+// define it. Appended to the generic "Couldn't play the synthesized audio."
+// message so a real decode/format failure in production is distinguishable
+// from a transient network blip instead of being one opaque, unhelpful string.
+const MEDIA_ERR_ABORTED = 1;
+const MEDIA_ERR_NETWORK = 2;
+const MEDIA_ERR_DECODE = 3;
+const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
+
+function mediaErrorDetail(audio: HTMLAudioElement): string {
+  switch (audio.error?.code) {
+    case MEDIA_ERR_ABORTED:
+      return " Playback was aborted.";
+    case MEDIA_ERR_NETWORK:
+      return " A network error interrupted the download. Check your connection and try again.";
+    case MEDIA_ERR_DECODE:
+      return " The audio could not be decoded.";
+    case MEDIA_ERR_SRC_NOT_SUPPORTED:
+      return " This browser can't play the returned audio format.";
+    default:
+      return "";
+  }
+}
+
 // Single-active text-to-speech playback keyed by message id. Fetching a new clip
 // stops/revokes the previous one; a request token drops results that resolve
 // after the user moved on or the component unmounted.
@@ -327,7 +353,7 @@ export function useSpeechPlayback(
       };
       audio.onerror = () => {
         cancelPlaybackRef.current = null;
-        reject(new Error("Couldn't play the synthesized audio."));
+        reject(new Error(`Couldn't play the synthesized audio.${mediaErrorDetail(audio)}`));
       };
       audio.play().catch((e) => {
         cancelPlaybackRef.current = null;

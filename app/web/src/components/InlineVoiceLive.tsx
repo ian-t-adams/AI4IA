@@ -84,7 +84,25 @@ export interface InlineVoiceLiveState {
   start: () => void;
   stop: () => void;
   retryPersistence: () => void;
+  // Abandons a stuck (still saving) or failed voice transcript so navigation
+  // unlocks immediately without waiting on the network. The underlying save
+  // request, if still in flight, is left to resolve in the background (its
+  // outcome is ignored) rather than aborted, since fetch cancellation isn't
+  // plumbed through ensureSession/persistConversation.
+  discardPersistence: () => void;
 }
+
+// Bounds how long a voice transcript save can leave the UI in "saving"
+// state. ensureSession()/persistConversation() are plain fetches with no
+// AbortController plumbed through them, so a hung request (dropped
+// connection, backend stall) previously left `saving` true forever — which
+// permanently disabled the Composer's voice button (by design, to prevent a
+// second concurrent cycle) and permanently blocked chat/session navigation
+// with no feedback. This timeout guarantees `saving` always resolves to
+// either success or a diagnosable persistenceError within a bounded time.
+const PERSIST_TIMEOUT_MS = 20_000;
+const PERSIST_TIMEOUT_MESSAGE =
+  "Saving the voice transcript is taking too long. Retry, or discard it to continue.";
 
 function finalizedTurns(turns: LiveTurn[]): VoiceTurnInput[] {
   return turns
@@ -197,6 +215,10 @@ export function useInlineVoiceLive({
   const wasActiveRef = useRef(false);
   const conversationIdRef = useRef("");
   const bindingCommittedRef = useRef(false);
+  // Set by discardPersistence() to tell an in-flight (or about-to-time-out)
+  // save attempt that its eventual outcome should be ignored: the user has
+  // already explicitly abandoned it and the UI has moved on.
+  const abandonedRef = useRef(false);
 
   const persist = useCallback((): Promise<void> => {
     if (persistedRef.current) return Promise.resolve();
@@ -204,36 +226,75 @@ export function useInlineVoiceLive({
     const turns = finalizedTurns(turnsRef.current);
     if (turns.length === 0) return Promise.resolve();
 
+    abandonedRef.current = false;
     const sessionPromise = sessionPromiseRef.current ?? ensureSession();
     sessionPromiseRef.current = sessionPromise;
     setPersistenceError(null);
     setSaving(true);
-    const request = sessionPromise
-      .then((sessionId) => {
-        bindingCommittedRef.current = true;
-        setBoundSessionId(sessionId);
-        return persistConversation(sessionId, conversationIdRef.current, turns);
-      })
-      .then(() => {
-        persistedRef.current = true;
-        setPersisted(true);
-        setPersistenceError(null);
-      })
-      .catch((error: unknown) => {
-        if (sessionPromiseRef.current === sessionPromise) {
-          sessionPromiseRef.current = null;
-        }
-        setPersistenceError(
-          (error as Error).message || "Couldn't save the Voice Live transcript.",
-        );
-      })
-      .finally(() => {
-        persistenceRef.current = null;
+
+    // settled + finish() guard so whichever happens first — the real
+    // request completing, or the timeout firing — is the only one that acts.
+    // The underlying fetch chain is not aborted (no AbortSignal is plumbed
+    // through ensureSession/persistConversation); this only bounds how long
+    // the UI can be stuck waiting on it, and a late real completion after a
+    // timeout is safely ignored via `settled`.
+    const request = new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = (error: Error | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        if (persistenceRef.current === request) persistenceRef.current = null;
         setSaving(false);
-      });
+        if (abandonedRef.current) {
+          // discardPersistence() already forced terminal state; don't
+          // resurrect an error or flip persisted based on a stale outcome.
+          resolve();
+          return;
+        }
+        if (error) {
+          if (sessionPromiseRef.current === sessionPromise) {
+            sessionPromiseRef.current = null;
+          }
+          setPersistenceError(
+            error.message || "Couldn't save the Voice Live transcript.",
+          );
+        } else {
+          persistedRef.current = true;
+          setPersisted(true);
+          setPersistenceError(null);
+        }
+        resolve();
+      };
+
+      const timeoutId = setTimeout(() => {
+        finish(new Error(PERSIST_TIMEOUT_MESSAGE));
+      }, PERSIST_TIMEOUT_MS);
+
+      sessionPromise
+        .then((sessionId) => {
+          bindingCommittedRef.current = true;
+          setBoundSessionId(sessionId);
+          return persistConversation(sessionId, conversationIdRef.current, turns);
+        })
+        .then(() => finish(null))
+        .catch((error: unknown) =>
+          finish(error instanceof Error ? error : new Error(String(error))),
+        );
+    });
     persistenceRef.current = request;
     return request;
   }, [ensureSession, persistConversation]);
+
+  const discardPersistence = useCallback(() => {
+    abandonedRef.current = true;
+    persistenceRef.current = null;
+    sessionPromiseRef.current = null;
+    persistedRef.current = true;
+    setSaving(false);
+    setPersistenceError(null);
+    setPersisted(true);
+  }, []);
 
   const start = useCallback(() => {
     if (persistenceRef.current) return;
@@ -368,6 +429,7 @@ export function useInlineVoiceLive({
     start,
     stop,
     retryPersistence: () => void persist(),
+    discardPersistence,
   };
 }
 
@@ -454,6 +516,23 @@ export function InlineVoiceLiveStatus({
           }}
         >
           Retry saving
+        </button>
+      )}
+      {(voice.saving || voice.persistenceError) && (
+        <button
+          type="button"
+          onClick={voice.discardPersistence}
+          title="Abandon this voice transcript without saving it. Chat navigation unlocks immediately."
+          style={{
+            border: "1px solid var(--border)",
+            borderRadius: 999,
+            padding: "3px 9px",
+            background: "var(--bg)",
+            color: "var(--fg)",
+            cursor: "pointer",
+          }}
+        >
+          Discard
         </button>
       )}
     </div>

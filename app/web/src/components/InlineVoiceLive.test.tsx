@@ -625,6 +625,104 @@ describe("inline Voice Live chat", () => {
     expect(ensureSession).toHaveBeenCalledTimes(2);
   });
 
+  // Regression: ensureSession()/persistConversation() are plain fetches with
+  // no AbortController plumbed through them, so a hung request (dropped
+  // connection, backend stall) previously left `saving` true forever, which
+  // permanently disabled the Composer's voice button and permanently blocked
+  // chat/session navigation with no feedback at all.
+  it("resolves a stuck save to a diagnosable error after the bounded timeout instead of hanging forever", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const persist = vi.fn(() => new Promise<void>(() => {}));
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "Stuck turn",
+          pending: false,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    const { rerender } = render(<Harness persist={persist} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+    controller = makeController();
+    rerender(<Harness persist={persist} />);
+
+    expect(
+      screen.getByRole("button", { name: "Saving live voice transcript" }),
+    ).toBeDisabled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+
+    expect(
+      screen.getByText(
+        "Saving the voice transcript is taking too long. Retry, or discard it to continue.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry saving" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Retry saving the voice transcript below" }),
+    ).toBeInTheDocument();
+    expect(mocks.start).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+
+  // Regression: discardPersistence() is the user's explicit escape hatch for
+  // a stuck/failed save. It must unlock the UI synchronously — it cannot
+  // wait on the network request it is abandoning.
+  it("discardPersistence unlocks saving/persistenceError/exitLocked immediately even with a still in-flight save", async () => {
+    const persist = vi.fn(() => new Promise<void>(() => {}));
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "Abandon me",
+          pending: false,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    const { rerender } = render(<Harness persist={persist} />);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+    controller = makeController();
+    rerender(<Harness persist={persist} />);
+    expect(
+      screen.getByRole("button", { name: "Saving live voice transcript" }),
+    ).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+
+    expect(screen.getByText("Voice Live ready")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Start live voice conversation" }),
+    ).toBeEnabled();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start live voice conversation" }),
+    );
+    expect(mocks.start).toHaveBeenCalledTimes(1);
+  });
+
   it("exposes hasUnsavedTurns/exitLocked only once real data would be lost, not merely while live", () => {
     function LockHarness() {
       const voice = useInlineVoiceLive({

@@ -394,7 +394,13 @@ export function ChatApp() {
 
   const selectSession = useCallback(
     async (id: string) => {
-      if (streamingRef.current || voiceNavigationLockedRef.current) return;
+      if (streamingRef.current) return;
+      if (voiceNavigationLockedRef.current) {
+        setError(
+          "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cDiscard\u201d in the voice status bar to continue.",
+        );
+        return;
+      }
       if (activeUploadCountRef.current > 0) {
         setError("Wait for active attachments to finish before changing conversations.");
         return;
@@ -454,7 +460,13 @@ export function ChatApp() {
   );
 
   const newChat = useCallback(() => {
-    if (streamingRef.current || voiceNavigationLockedRef.current) return;
+    if (streamingRef.current) return;
+    if (voiceNavigationLockedRef.current) {
+      setError(
+        "Finish saving the voice transcript before starting a new conversation. Use \u201cRetry saving\u201d or \u201cDiscard\u201d in the voice status bar to continue.",
+      );
+      return;
+    }
     if (activeUploadCountRef.current > 0) {
       setError("Wait for active attachments to finish before starting a new conversation.");
       return;
@@ -496,7 +508,13 @@ export function ChatApp() {
 
   const deleteSession = useCallback(
     async (id: string) => {
-      if (streamingRef.current || voiceNavigationLockedRef.current) return;
+      if (streamingRef.current) return;
+      if (voiceNavigationLockedRef.current) {
+        setError(
+          "Finish saving the voice transcript before deleting this conversation. Use \u201cRetry saving\u201d or \u201cDiscard\u201d in the voice status bar to continue.",
+        );
+        return;
+      }
       if (activeUploadCountRef.current > 0) {
         setError(
           "Wait for active attachments to finish before deleting this conversation.",
@@ -904,6 +922,17 @@ export function ChatApp() {
   // would actually be lost — an open mic with no exchanges yet never blocks a
   // switch (see useInlineVoiceLive.hasUnsavedTurns).
   const voiceExitLocked = inlineVoice.exitLocked;
+  // Sidebar navigation is hard-disabled (not just soft-gated like the upload
+  // lock) while streaming or while voice data is unsaved, so a plain
+  // `disabled` attribute leaves users with no idea why the button won't
+  // respond or how to get out. Surface the reason — and, for the voice case,
+  // the recovery path (Retry saving/Discard in the voice status bar) — as a
+  // title/tooltip on those controls.
+  const sidebarDisabledReason = streaming
+    ? "Wait for the current reply to finish generating."
+    : voiceExitLocked
+      ? "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cDiscard\u201d in the voice status bar below."
+      : undefined;
   useLayoutEffect(() => {
     voiceNavigationLockedRef.current = voiceExitLocked;
     voiceActiveRef.current = inlineVoice.active;
@@ -1435,6 +1464,7 @@ export function ChatApp() {
           onCollapse={toggleLeftPanel}
           openerRef={sidebarReturnFocusRef}
           disabled={streaming || voiceExitLocked}
+          disabledReason={sidebarDisabledReason}
           />
         )}
       </div>
@@ -1463,6 +1493,7 @@ export function ChatApp() {
               }
               onSave={(title) => renameSession(activeId, title)}
               disabled={streaming || voiceExitLocked}
+              disabledReason={sidebarDisabledReason}
             />
           ) : (
             <strong>New conversation</strong>

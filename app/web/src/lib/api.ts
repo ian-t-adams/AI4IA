@@ -299,6 +299,15 @@ export async function transcribeAudio(
 
 // Synthesizes speech (text-to-speech via gpt-4o-mini-tts). Returns the raw audio
 // blob; callers wrap it in an object URL for playback.
+//
+// A 200 response is not necessarily playable audio: a misconfigured gateway/
+// proxy hop, an auth interstitial, or a truncated stream can all return
+// `resp.ok === true` with an HTML/JSON body or an empty payload. Left
+// unchecked, that blob gets handed straight to an <audio> element, which fails
+// with an opaque browser decode error surfaced to users as "Couldn't play the
+// synthesized audio." with no way to tell a bad response from a real playback
+// problem. Validating content-type + size here, before any object URL or
+// <audio> element exists, gives an actionable, specific error instead.
 export async function synthesizeSpeech(
   text: string,
   opts?: { model?: string; voice?: string; format?: string },
@@ -318,7 +327,22 @@ export async function synthesizeSpeech(
     }
     throw new Error(`${resp.status}: ${detail}`);
   }
-  return await resp.blob();
+  const contentType = (resp.headers.get("content-type") ?? "")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  if (!contentType.startsWith("audio/")) {
+    throw new Error(
+      contentType
+        ? `Speech synthesis returned ${contentType} instead of audio. Try again.`
+        : "Speech synthesis returned an unrecognized response. Try again.",
+    );
+  }
+  const blob = await resp.blob();
+  if (blob.size === 0) {
+    throw new Error("Speech synthesis returned an empty audio clip. Try again.");
+  }
+  return blob;
 }
 
 // Fetches a tool-generated image's bytes from the authenticated serve endpoint.
