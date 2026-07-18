@@ -55,8 +55,10 @@ behaviors it addresses.
 pinned commit and SHA-256-hashing every file in `Shared/`, `Shared-parser/`, and `SimpleL7Proxy/`
 (174 shared files) against the local vendored copies. Exactly the four files above differ from
 upstream, and their diffs match the descriptions given for each; the other 170 files are
-byte-for-byte identical. Re-run this check whenever the pin or the deviation list changes, and
-update this note.
+byte-for-byte identical. Also confirmed via `git ls-remote https://github.com/microsoft/SimpleL7Proxy.git
+main` that upstream `main` is still exactly `d9eb1d1fa42820792a9699bfc253562fba07d977` — the pin is
+the current upstream tip, not a stale snapshot, so there is no newer commit to refresh to. Re-run
+both checks whenever the pin or the deviation list changes, and update this note.
 
 To refresh the vendored copy, check out the audited upstream commit and mirror the three project
 directories from upstream `src/` (excluding `bin/`/`obj/`). Keep this README and the root

@@ -14,6 +14,8 @@ Vendored directories:
 
 Upstream license: MIT License, copyright Microsoft Corporation. A copy of the upstream MIT license is kept at `proxy/LICENSE`. Keep the pinned commit, this notice, `proxy/README.md`, and its documented AI4IA deviations in sync whenever the vendored copy is refreshed.
 
+Last verified 2026-07-18: upstream `main` is still exactly the pinned commit (`git ls-remote` reports no newer tip), and every non-deviation file under the three vendored directories is confirmed byte-for-byte identical to that commit via SHA-256 hash comparison. See `proxy/README.md`'s "Intentional source deviation" section for the current four-file deviation list and full validation method.
+
 ## Application dependencies
 
 - `app/web` uses Next.js, React, TypeScript, ESLint, Vitest, Testing Library, MSAL browser packages, and their transitive npm dependencies. See `app/web/package.json` and `app/web/package-lock.json`.
