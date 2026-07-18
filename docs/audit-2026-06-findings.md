@@ -148,6 +148,25 @@ re-emerging in a doc the runtime bumps forgot to update.
 > wrong (no `.npmrc`/`engine-strict` exists in this repo, so it only prints
 > `npm warn EBADENGINE` and installs anyway) and has been corrected alongside
 > the version fix. See the parallel `python:3.14-slim` incident in §9.
+>
+> **Further corrected (#187, fifth follow-up round):** `>=22.0.0 <23` was
+> itself still technically false — `eslint@10.6.0` and `jsdom@29.1.1` (direct
+> devDependencies) both require `^22.13.0` within the 22.x line (confirmed via
+> `npm view eslint@10.6.0 jsdom@29.1.1 engines --json`), so Node 22.0.0–22.12.x
+> satisfied the manifest's floor but not those packages' actual requirement.
+> `engines.node` is now `">=22.13.0 <23"`; `package-lock.json`'s mirrored root
+> `engines` entry was updated to match. No CI/runtime impact — `setup-node`
+> with `node-version: "22"` always resolves to the latest 22.x. A related but
+> separate gap was fixed the same round: both `app/web/.dockerignore` and
+> `app/api/.dockerignore` used unanchored `.env*` patterns, which (unlike
+> Git's recursive-by-default `.gitignore` matching) only exclude dotenv files
+> at the build-context root — a nested `.env` could be invisible to
+> `git status` yet still land in an image via `COPY . .` / `mode=max` cache.
+> Both files now use `**/.env*` / `!**/.env.example`, with a new
+> `scripts/tests/test_dockerignore_context.py` (wired into a
+> `dockerignore-context` job in `docker-build.yml`) that builds real probe
+> images to prove root- and nested-depth secrets are excluded while examples
+> survive.
 
 ### 3.5 `[NEW]` `LOW` — API reference is Swagger-only
 

@@ -48,9 +48,17 @@ to `node:26-alpine` was merged the same day `package.json`'s `engines.node` was
 widened to `>=22.0.0 <27` — but that widening only stopped the manifest
 contradicting the image; it was not evidence of an actual Node 26 requirement.
 No CI job exercised the built image at that Node version, and every runtime
-dependency (`next`, `typescript`, `eslint`, `vitest`) publishes an `engines.node`
-range already satisfied by Node 22. Reverted to `node:22-alpine` /
-`>=22.0.0 <23` on audit; see the parallel Python incident below.
+dependency (`next`, `typescript`, `vitest`) is satisfied by any Node 22.x.
+Reverted to `node:22-alpine` on audit; see the parallel Python incident below.
+
+`engines.node` is `>=22.13.0 <23`, not the wider `>=22.0.0`: the direct
+devDependencies `eslint@10.6.0` and `jsdom@29.1.1` both publish
+`engines.node: "^20.19.0 || ^22.13.0 || >=24"`, so Node 22.0.0–22.12.x
+satisfies a naive `>=22.0.0` floor but not their actual 22.x requirement.
+CI's `actions/setup-node@...` with `node-version: "22"` always resolves to
+the latest 22.x release (well above 22.13.0), so this has no CI/runtime
+impact today — it only makes the manifest's stated floor match what the
+declared dependencies actually require.
 
 `npm ci` also prints benign `npm warn ERESOLVE overriding peer dependency`
 warnings for `eslint-config-next`'s bundled `eslint-plugin-import` /
@@ -106,6 +114,14 @@ docker run --rm <api-image> python -c "import ai4ia_api.main"
 ```
 
 `proxy/Dockerfile` (vendored SimpleL7Proxy) is intentionally out of scope for `docker-build` to avoid touching the gateway build path; it is still linted by `quality`'s `hadolint` job and its binary is compiled/tested by `quality`'s `proxy-dotnet` job. azd owns the real build-and-push path at deploy time (see `azure.yaml`, `deploy.yml`).
+
+`docker-build`'s `dockerignore-context` job builds separate, throwaway probe images from `app/web/.dockerignore` and `app/api/.dockerignore` plus synthetic root- and nested-depth dotenv files to prove secrets are excluded from the Docker build context recursively (Docker's `.dockerignore` matching is not recursive by default the way Git's `.gitignore` is — a pattern needs an explicit `**/` prefix to match at every depth) while committed `.env.example` files still survive:
+
+```powershell
+python -m unittest scripts.tests.test_dockerignore_context
+```
+
+Both `.dockerignore` files use `**/.env*` / `!**/.env.example` for exactly this reason; do not narrow either back to an unanchored `.env*` without re-running this test.
 
 ### Infra, manifests, and operational quality
 

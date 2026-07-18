@@ -29,12 +29,15 @@ npm ci
 npm run dev
 ```
 
-Use Node in the declared `>=22.0.0 <23` range — this matches both CI (which pins
-Node 22) and the production Docker image (`node:22-alpine`). `package.json`'s
-`engines.node` is advisory only (no `.npmrc`/`engine-strict` is set in this repo),
-so npm just prints a `npm warn EBADENGINE` warning on a mismatched local Node
-version instead of failing the install; CI and `docker-build` are the actual
-enforcement points for the pinned version, not this field.
+Use Node in the declared `>=22.13.0 <23` range — this matches both CI (which
+pins Node 22, always resolving to the latest 22.x release) and the production
+Docker image (`node:22-alpine`). The floor is `22.13.0`, not the wider
+`22.0.0`, because the direct devDependencies `eslint@10.6.0` and
+`jsdom@29.1.1` both require `^22.13.0` within the 22.x line. `package.json`'s
+`engines.node` is advisory only (no `.npmrc`/`engine-strict` is set in this
+repo), so npm just prints a `npm warn EBADENGINE` warning on a mismatched
+local Node version instead of failing the install; CI and `docker-build` are
+the actual enforcement points for the pinned version, not this field.
 
 Run checks from this folder:
 

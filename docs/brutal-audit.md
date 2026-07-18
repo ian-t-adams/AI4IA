@@ -155,6 +155,36 @@ Dockerfiles are reverted to the CI-tested majors (#187): `python:3.12-slim` and
 to `app-ci.yml`/AGENTS.md so a future Dependabot major bump has to be a
 deliberate, documented decision instead of a silent merge.
 
+**Fixed since this audit:** `">=22.0.0 <23"` (the previous fix, immediately
+above) was itself still technically false. `npm view eslint@10.6.0
+jsdom@29.1.1 engines --json` shows both direct devDependencies actually
+require `^22.13.0` within the 22.x line, not the wider `>=22.0.0` the
+manifest claimed — Node 22.0.0–22.12.x would satisfy `package.json` but not
+those packages' real floor. `engines.node` is now `">=22.13.0 <23"` (#187),
+with `package-lock.json`'s mirrored root `engines` entry updated to match by
+hand (a plain `npm install` was tried first and reverted — it additionally
+stripped unrelated `libc` metadata from several optional-dependency lockfile
+entries, evidently a bundled-npm-version artifact unrelated to this fix, so
+the lockfile's `engines` line was edited directly instead to keep the diff
+scoped). No CI/runtime impact: `setup-node` with `node-version: "22"` always
+resolves to the latest 22.x release, well above 22.13.0.
+
+**Fixed since this audit:** `app/web/.dockerignore` and `app/api/.dockerignore`
+both used unanchored `.env*` patterns (#187). Unlike Git's `.gitignore`,
+where a pattern like `.env*` without a leading `/` matches at any depth,
+Docker's `.dockerignore` only matches at the build-context root unless the
+pattern is explicitly prefixed with `**/`. A dotenv file nested in a
+subdirectory would therefore be invisible to `git status` (already
+gitignored recursively) yet still get copied into an image via `COPY . .` /
+`COPY src ./src` plus `cache-to: mode=max`. Both files now use `**/.env*` /
+`!**/.env.example`. Verified with a new regression test,
+`scripts/tests/test_dockerignore_context.py`, wired into a
+`dockerignore-context` job in `docker-build.yml`: it builds real, throwaway
+Docker images from each app's committed `.dockerignore` plus synthetic root-
+and nested-depth secret/example files, confirming secrets are excluded and
+`.env.example` survives at both depths (and confirming, before the fix, that
+nested secrets did leak — this is a real regression test, not a tautology).
+
 ## Bottom line
 
 The original audit backlog is cleared, and the Dependabot backlog is fully worked
@@ -163,6 +193,9 @@ rework) and #132 (eslint 10). The two quick web-manifest fixes — `engines.node
 honesty and the stale proxy doc-comments — shipped in #106. The PR-CI Docker-build
 gap is now closed too (#187, see "Known open items"), and so is the CI-vs-image
 runtime skew it had been masking — both Dockerfiles are back on the CI-tested
-majors (#187, see "Known open items"). What remains is the one
-accepted cost tradeoff. That is a healthy steady state: explicit debt with owners
-and reasons, not silent rot.
+majors (#187, see "Known open items"). The `engines.node` floor is now
+precisely correct (`>=22.13.0`, not just `>=22.0.0`) and both `.dockerignore`
+files recursively exclude dotenv secrets at every depth, each backed by a
+regression test (#187). What remains is the one accepted cost tradeoff. That
+is a healthy steady state: explicit debt with owners and reasons, not silent
+rot.

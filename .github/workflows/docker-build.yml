@@ -14,18 +14,25 @@ name: docker-build
 # here to avoid touching the gateway build path; it is still linted by
 # quality.yml's hadolint job and its binary is compiled and tested by
 # quality.yml's proxy-dotnet job.
+#
+# The dockerignore-context job below builds separate, throwaway probe
+# images (not the real app images) to prove app/web/.dockerignore and
+# app/api/.dockerignore recursively exclude dotenv secrets from the build
+# context at any depth, not just at the root.
 
 on:
   pull_request:
     paths:
       - "app/web/**"
       - "app/api/**"
+      - "scripts/tests/test_dockerignore_context.py"
       - ".github/workflows/docker-build.yml"
   push:
     branches: [main]
     paths:
       - "app/web/**"
       - "app/api/**"
+      - "scripts/tests/test_dockerignore_context.py"
       - ".github/workflows/docker-build.yml"
 
 # Least privilege: these jobs only read the checked-out tree and read/write
@@ -84,3 +91,24 @@ jobs:
           cache-to: type=gha,mode=max,scope=docker-build-api
       - name: Smoke test - app package imports in the built image
         run: docker run --rm ai4ia-api:ci python -c "import ai4ia_api.main"
+
+  dockerignore-context:
+    name: dockerignore context boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Verify nested dotenv secrets are excluded from build context
+        run: |
+          set -euo pipefail
+          # Docker's .dockerignore matching is not recursive by default the
+          # way Git's .gitignore is: an unanchored gitignore pattern matches
+          # at any depth, but the equivalent dockerignore pattern only
+          # matches at the build context root. This builds real, throwaway
+          # images from app/web/.dockerignore and app/api/.dockerignore to
+          # prove nested dotenv secrets are excluded at any depth while
+          # committed .env.example files still survive. See
+          # scripts/tests/test_dockerignore_context.py for the full
+          # rationale and assertions.
+          python3 -m unittest scripts.tests.test_dockerignore_context
