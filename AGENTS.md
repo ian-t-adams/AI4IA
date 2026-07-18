@@ -105,7 +105,7 @@ bicep build infra/main.bicep --stdout > /dev/null
 
 `infra-validate` installs a pinned standalone Bicep CLI release (`BICEP_VERSION` env var in the workflow, matching the `ACTIONLINT_VERSION`/`HADOLINT_VERSION` pattern used elsewhere — never `releases/latest`, for reproducibility). Locally, if you don't have the standalone `bicep` CLI but already have Azure CLI, `az bicep build --file infra/main.bicep --stdout` produces equivalent output.
 
-`quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on `scripts`, hadolint on `app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile`, the proxy .NET build/auth tests, `python3 -m yamllint -c .yamllint .`, and a docs-catalog drift gate (`python scripts/gen-docs-catalog.py --check`) that keeps `site/data/docs.js` in sync with `site/data/docs.manifest.json`. `security-scan` runs Trivy filesystem/config scans and gitleaks.
+`quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on `scripts`, hadolint on `app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile`, the proxy .NET build/auth tests, `python3 -m yamllint -c .yamllint .`, a docs-catalog drift gate (`python scripts/gen-docs-catalog.py --check`) that keeps `site/data/docs.js` in sync with `site/data/docs.manifest.json`, and stdlib-only unit tests for operator scripts not already covered by `app-ci`/`infra-validate` (currently `python3 -m unittest scripts.tests.test_voice_live_canary`, covering `scripts/voice-live-canary.py`'s URL/redaction safety rules). `security-scan` runs Trivy filesystem/config scans and gitleaks.
 
 The vendored proxy plus AI4IA auth guard tests use .NET 10:
 
