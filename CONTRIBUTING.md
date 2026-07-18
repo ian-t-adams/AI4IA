@@ -54,6 +54,8 @@ python scripts\gen-model-catalog.py --check
 python scripts\gen-mcp-catalog.py --check
 python scripts\gen-gateway-policy.py --check
 python -m unittest scripts.tests.test_gateway_policy
+python scripts\gen-voice-provider-catalog.py --check
+python -m unittest scripts.tests.test_voice_provider_catalog
 python scripts\validate-catalog.py
 python scripts\validate-feature-prereqs.py
 ```

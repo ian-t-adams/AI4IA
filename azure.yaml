@@ -49,6 +49,7 @@ hooks:
       run: |
         python scripts/gen-model-catalog.py --check
         python scripts/gen-mcp-catalog.py --check
+        python scripts/gen-voice-provider-catalog.py --check
         python scripts/gen-gateway-policy.py --check
         python scripts/validate-feature-prereqs.py
       continueOnError: false
@@ -58,6 +59,7 @@ hooks:
       run: |
         python3 scripts/gen-model-catalog.py --check
         python3 scripts/gen-mcp-catalog.py --check
+        python3 scripts/gen-voice-provider-catalog.py --check
         python3 scripts/gen-gateway-policy.py --check
         python3 scripts/validate-feature-prereqs.py
       continueOnError: false

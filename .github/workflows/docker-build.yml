@@ -1,0 +1,86 @@
+name: docker-build
+
+# Actually builds the AI4IA-owned container images (never pushes anywhere) so
+# base-image resolution, OS/package availability, and the dependency-install
+# step are exercised on the PR that changes them. Before this workflow,
+# quality.yml's hadolint job only linted Dockerfile *syntax* - it never ran
+# `docker build`, so a broken/renamed base image tag, or an install failure
+# specific to the pinned Python/Node version, could pass CI green and only
+# surface at `azd deploy` (or worse, in production). azd owns the real
+# build-and-push path at deploy time (see azure.yaml, deploy.yml); this
+# workflow is build-and-load validation only - no registry, no credentials.
+#
+# proxy/Dockerfile (vendored SimpleL7Proxy) is intentionally out of scope
+# here to avoid touching the gateway build path; it is still linted by
+# quality.yml's hadolint job and its binary is compiled and tested by
+# quality.yml's proxy-dotnet job.
+
+on:
+  pull_request:
+    paths:
+      - "app/web/**"
+      - "app/api/**"
+      - ".github/workflows/docker-build.yml"
+  push:
+    branches: [main]
+    paths:
+      - "app/web/**"
+      - "app/api/**"
+      - ".github/workflows/docker-build.yml"
+
+# Least privilege: these jobs only read the checked-out tree and read/write
+# the GitHub Actions cache backend (implicit runner token); nothing is
+# pushed to a registry.
+permissions:
+  contents: read
+
+# One in-flight run per workflow+ref; new pushes cancel the previous run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: web image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Actions pinned to commit SHAs (supply-chain hardening); comment tracks the tag.
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Build web image (app/web/Dockerfile)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: app/web
+          file: app/web/Dockerfile
+          push: false
+          load: true
+          tags: ai4ia-web:ci
+          cache-from: type=gha,scope=docker-build-web
+          cache-to: type=gha,mode=max,scope=docker-build-web
+      - name: Verify image was produced
+        run: docker image inspect ai4ia-web:ci --format 'Built {{.RepoTags}} - {{.Size}} bytes'
+
+  api:
+    name: api image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Build api image (app/api/Dockerfile)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: app/api
+          file: app/api/Dockerfile
+          push: false
+          load: true
+          tags: ai4ia-api:ci
+          cache-from: type=gha,scope=docker-build-api
+          cache-to: type=gha,mode=max,scope=docker-build-api
+      - name: Smoke test - app package imports in the built image
+        run: docker run --rm ai4ia-api:ci python -c "import ai4ia_api.main"

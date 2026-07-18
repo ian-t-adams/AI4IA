@@ -69,6 +69,18 @@ pytest -q
 
 This repo has `app/api/uv.lock`; if using `uv` locally, sync the dev extra and run the same tools through `uv run`, but treat the workflow commands above as authoritative.
 
+### Docker image builds
+
+`docker-build` actually builds (never pushes) the `app/web` and `app/api` container images on any PR/push touching `app/web/**` or `app/api/**`, so a broken/renamed base image tag or an install failure specific to the pinned Node/Python version fails CI instead of only surfacing at `azd deploy`. It is separate from `quality`'s `hadolint` job, which only lints Dockerfile syntax and never resolves an image or installs anything:
+
+```powershell
+docker buildx build --file app/web/Dockerfile --load app/web
+docker buildx build --file app/api/Dockerfile --load app/api
+docker run --rm <api-image> python -c "import ai4ia_api.main"
+```
+
+`proxy/Dockerfile` (vendored SimpleL7Proxy) is intentionally out of scope for `docker-build` to avoid touching the gateway build path; it is still linted by `quality`'s `hadolint` job and its binary is compiled/tested by `quality`'s `proxy-dotnet` job. azd owns the real build-and-push path at deploy time (see `azure.yaml`, `deploy.yml`).
+
 ### Infra, manifests, and operational quality
 
 `infra-validate` runs:
