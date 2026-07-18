@@ -328,12 +328,17 @@ CI/CD is in good shape post-hardening: every `uses:` is SHA-pinned, jobs have
   a config list would read better. Not a leak.
 
 > **Already tracked (not re-flagged):** "no PR-time `docker build` of either
-> Dockerfile" is in `brutal-audit.md`'s **Known open items**. The
-> `eslint-config-next` / eslint-10 block once listed alongside it is now **resolved**
-> (#124 native flat-config rework + #132 eslint 10), so it is no longer an open item.
+> Dockerfile" was in `brutal-audit.md`'s **Known open items** and is now **fixed**
+> (`.github/workflows/docker-build.yml`, #187). The `eslint-config-next` /
+> eslint-10 block once listed alongside it is also **resolved** (#124 native
+> flat-config rework + #132 eslint 10), though `npm ci` still prints benign
+> `ERESOLVE overriding peer dependency` warnings for `eslint-config-next`'s
+> bundled plugins (their published peer ranges cap at `eslint@^9`/`^9.7` as of
+> this writing — install still exits 0 and lint/build/test are unaffected).
 > The CI-vs-image runtime skew (CI Node 22 / Python 3.12 vs `node:26` / `python:3.14`)
-> is a direct consequence of that same no-PR-docker-build gap (the Python 3.14 bump
-> was instead validated via `uv pip compile`). See §9.
+> was a direct consequence of that same no-PR-docker-build gap (the Python 3.14 bump
+> was instead validated via `uv pip compile`); #187 now build-validates both images
+> on every PR. See §9.
 
 ---
 
@@ -364,8 +369,8 @@ These are real, but `docs/brutal-audit.md` already records them as **fixed**,
 
 | Item | Status in brutal-audit |
 | --- | --- |
-| No PR-time `docker build` of either Dockerfile | **Known open item** |
-| `eslint-config-next` `^16` / eslint 9→10 block | **Resolved** (#124/#132) |
+| No PR-time `docker build` of either Dockerfile | **Fixed** (#187) |
+| `eslint-config-next` `^16` / eslint 9→10 block | **Resolved** (#124/#132); benign `npm ci` peer-warning noise from bundled plugins remains, tracked as harmless upstream noise |
 | `style-src 'unsafe-inline'` in CSP | **Deliberate** documented relaxation (#101) |
 | Gateway proxy `minReplicas:0` cold-start | **Accepted** cost tradeoff |
 | Cosmos PITR / KV purge protection / Postgres HA | **Deferred** cost/reliability decision |

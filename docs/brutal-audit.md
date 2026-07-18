@@ -124,21 +124,27 @@ Several optional improvements shipped alongside the triage:
 
 ## Known open items
 
-These are genuine debt, **not** accepted tradeoffs. Small, real, and worth a
-follow-up spike — documented here so they read as tracked, not forgotten.
+Both items originally tracked here are now resolved. Kept for the paper trail
+instead of being silently deleted.
 
-| Item | Why it matters | Where to look |
-| --- | --- | --- |
-| No PR CI job actually `docker build`s either Dockerfile. | The base-image bumps (#90/#91) and the original `engines.node` mismatch all slipped past PR CI because the Dockerfiles are only built in `deploy.yml` on push-to-main. A PR-time build-only image build would have caught the `EBADENGINE` drift before it reached `main`. | `.github/workflows/*.yml`, `deploy.yml` |
+**Fixed since this audit:** no PR CI job used to actually `docker build` either
+Dockerfile — the base-image bumps (#90/#91) and the original `engines.node`
+mismatch all slipped past PR CI because the Dockerfiles were only built in
+`deploy.yml` on push-to-main. `.github/workflows/docker-build.yml` (#187) now
+builds `app/web/Dockerfile` and `app/api/Dockerfile` (build-only, `push: false`)
+on every PR that touches `app/web/**` / `app/api/**`, with GHA layer caching and
+an API import smoke test. `proxy/Dockerfile` stays excluded by design — it's
+vendored SimpleL7Proxy (the gateway path) and is already covered by `hadolint`
+and the `proxy-dotnet` build/test job.
 
-**Resolved since this audit:** the `eslint-config-next` `^16` / `eslint` 9→10 knot (formerly listed here) is fixed — #124 reworked `eslint.config.mjs` onto config-next 16's native flat-config export (dropping the `@eslint/eslintrc` `FlatCompat` bridge), and #132 completed the eslint 9→10 bump. `eslint-config-next` is now `16.2.10` and `eslint` is `^10.6.0`.
+**Resolved since this audit:** the `eslint-config-next` `^16` / `eslint` 9→10 knot (formerly listed here) is fixed — #124 reworked `eslint.config.mjs` onto config-next 16's native flat-config export (dropping the `@eslint/eslintrc` `FlatCompat` bridge), and #132 completed the eslint 9→10 bump. `eslint-config-next` is now `16.2.10` and `eslint` is `^10.6.0`. Note: `npm ci` still prints benign `ERESOLVE overriding peer dependency` warnings for `eslint-config-next`'s bundled `eslint-plugin-import`/`eslint-plugin-jsx-a11y`/`eslint-plugin-react` — their published peer ranges still cap at `eslint@^9`/`^9.7` as of this writing (verified via `npm view <pkg> peerDependencies`, no newer release exists). Install still exits 0, everything dedupes to the single `eslint@10.6.0`, and lint/build/test are unaffected (0 errors, matching the pre-bump warning baseline). Not a regression and nothing to override locally — there is no published version of those plugins yet that declares an `eslint@10` peer.
 
 ## Bottom line
 
 The original audit backlog is cleared, and the Dependabot backlog is fully worked
 off — the last genuinely-blocked item (#92) shipped via #124 (native flat-config
 rework) and #132 (eslint 10). The two quick web-manifest fixes — `engines.node`
-honesty and the stale proxy doc-comments — shipped in #106. What remains is the
-PR-CI Docker-build gap, tracked above and not urgent — plus the one accepted cost
-tradeoff. That is a healthy steady state: explicit debt with owners and reasons,
-not silent rot.
+honesty and the stale proxy doc-comments — shipped in #106. The PR-CI Docker-build
+gap is now closed too (#187, see "Known open items"). What remains is the one
+accepted cost tradeoff. That is a healthy steady state: explicit debt with owners
+and reasons, not silent rot.
