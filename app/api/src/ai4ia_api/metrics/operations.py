@@ -210,7 +210,7 @@ class OperationsMetricsService:
     ) -> OperationalPanel:
         try:
             result = await querier.query(spec.kql, window_minutes=window_minutes)
-        except Exception:
+        except Exception:  # noqa: BLE001 - degrade this panel, not the whole report
             logger.warning("Log Analytics query failed panel=%s", spec.key, exc_info=True)
             return OperationalPanel(
                 key=spec.key,
@@ -271,7 +271,7 @@ class OperationsMetricsService:
             return None
         try:
             self._querier = AzureLogAnalyticsQuerier(workspace_id)
-        except Exception:
+        except Exception:  # noqa: BLE001 - treat as "unavailable", not fatal
             logger.warning("Log Analytics client unavailable", exc_info=True)
             self._querier_unavailable = True
             return None
@@ -287,4 +287,7 @@ class OperationsMetricsService:
 
     async def close(self) -> None:
         if self._querier is not None:
-            await self._querier.close()
+            try:
+                await self._querier.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("Log Analytics querier close failed", exc_info=True)

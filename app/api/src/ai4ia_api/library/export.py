@@ -141,6 +141,15 @@ class DocumentExportService:
             size=len(data),
             note=safe_note,
         )
+        async def _cleanup_orphan_blob() -> None:
+            # Best-effort purge of the version blob just written above so a
+            # manifest write failure (of any kind) never leaves an
+            # un-referenced artifact behind.
+            try:
+                await self._blob.delete_prefix(path)
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                logger.warning("orphan version cleanup failed path=%s", path, exc_info=True)
+
         # Re-read + append under the manifest's own update path so we never blindly
         # overwrite a racing change; update_document raises on a vanished doc
         # (no create-on-missing).
@@ -148,19 +157,15 @@ class DocumentExportService:
         try:
             await self._library.update_document(doc)
         except DocumentNotFoundError:
-            # The document was deleted between the gate and the manifest write;
-            # best-effort purge the orphaned version blob so no un-referenced
-            # artifact lingers, then report a generic not-found.
-            try:
-                await self._blob.delete_prefix(path)
-            except Exception:  # noqa: BLE001 - best-effort cleanup
-                logger.warning("orphan version cleanup failed path=%s", path, exc_info=True)
+            # The document was deleted between the gate and the manifest write.
+            await _cleanup_orphan_blob()
             return {"error": f"No document found with id '{document_id}'."}
         except Exception:  # noqa: BLE001 - degrade, never propagate
             logger.warning(
                 "export manifest update failed user=%s id=%s n=%s",
                 user_id, document_id, n, exc_info=True,
             )
+            await _cleanup_orphan_blob()
             return {"error": "Could not record the adjusted document right now."}
 
         return {

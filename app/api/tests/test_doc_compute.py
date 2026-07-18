@@ -495,6 +495,25 @@ async def test_export_orphan_blob_cleaned_when_doc_vanishes():
     assert await blob.delete_prefix(version_prefix("u1", doc.id, 1)) == 0
 
 
+async def test_export_orphan_blob_cleaned_on_generic_manifest_failure():
+    """A manifest write failure of *any* kind (not just a vanished document —
+    e.g. a transient Cosmos error) must also purge the version blob it just
+    wrote, so a flaky update never leaves an un-referenced artifact behind."""
+    blob = InMemoryBlobStore()
+
+    class FlakyRepo(InMemoryDocumentLibraryRepository):
+        async def update_document(self, doc):
+            raise RuntimeError("transient failure")
+
+    library = FlakyRepo()
+    export = _export(library, blob, _settings())
+    doc = await _seed_doc(library, blob)
+
+    res = await export.export_version("u1", doc.id, content="adjusted", filename="new.md")
+    assert "error" in res
+    assert await blob.delete_prefix(version_prefix("u1", doc.id, 1)) == 0
+
+
 async def test_export_list_and_read_version_gated():
     library, blob = InMemoryDocumentLibraryRepository(), InMemoryBlobStore()
     export = _export(library, blob, _settings())

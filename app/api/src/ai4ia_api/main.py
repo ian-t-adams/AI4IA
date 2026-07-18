@@ -348,8 +348,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
-            await http.aclose()
             # Close each resource independently so one failure can't skip others.
+            try:
+                await http.aclose()
+            except Exception:  # noqa: BLE001
+                logger.warning("shared httpx client close failed", exc_info=True)
             try:
                 await app.state.memory.close()
             except Exception:  # noqa: BLE001
@@ -394,8 +397,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await official_mcp_service.close()
                 except Exception:  # noqa: BLE001
                     logger.warning("official mcp service close failed", exc_info=True)
-            repo = app.state.session_repo
-            close = getattr(repo, "close", None)
+            repo = getattr(app.state, "session_repo", None)
+            close = getattr(repo, "close", None) if repo is not None else None
             if close is not None:
                 try:
                     await close()

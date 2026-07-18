@@ -155,12 +155,16 @@ class CosmosDocumentLibraryRepository:
 
         # Parity with the in-memory repo: updating an id that does not exist (or
         # is owned by another user) must raise rather than silently create the
-        # item, which ``upsert_item`` would otherwise do. We read first to enforce
-        # existence + ownership, then write with an ETag precondition so a
-        # concurrent delete between the read and the write (e.g. the enrich worker
-        # racing a user delete) deterministically loses instead of resurrecting
-        # the manifest. The extra point-read is negligible — status transitions
-        # are infrequent.
+        # item, which ``upsert_item`` would otherwise do. We read first to
+        # enforce existence + ownership (the extra point-read is negligible —
+        # status transitions are infrequent). The write precondition is the
+        # *caller's own* etag, captured when they loaded the document via
+        # ``get_document``/``create_document`` — matching the pattern in
+        # ``patch_ingest_fields`` below. Using a freshly re-read etag here
+        # instead (as this used to) would always happen to match, silently
+        # discarding any edit that landed between the caller's load and this
+        # call — e.g. two concurrent annotation adds on the same document,
+        # or the enrich worker patching status while a user edits shares.
         try:
             existing = await self._docs.read_item(
                 item=document.id, partition_key=document.userId
@@ -170,20 +174,24 @@ class CosmosDocumentLibraryRepository:
         if existing.get("userId") != document.userId:
             raise DocumentNotFoundError(document.id)
         document.touch()
+        # Fall back to the just-read etag only for a document that was never
+        # actually loaded (so has no etag of its own to defend).
+        write_etag = document._etag or existing.get("_etag")
         try:
-            await self._docs.replace_item(
+            updated = await self._docs.replace_item(
                 item=document.id,
                 body=self._to_doc(document),
-                etag=existing.get("_etag"),
+                etag=write_etag,
                 match_condition=MatchConditions.IfNotModified,
             )
         except CosmosResourceNotFoundError as exc:
             # Deleted between the read and the write.
             raise DocumentNotFoundError(document.id) from exc
         except CosmosAccessConditionFailedError as exc:
-            # ETag moved (concurrent modify/delete) — treat as gone for enrich's
-            # purposes so the caller does not overwrite a newer state.
+            # Etag moved (concurrent modify/delete since the caller's load) —
+            # treat as gone so the caller does not overwrite a newer state.
             raise DocumentNotFoundError(document.id) from exc
+        document._etag = updated.get("_etag")
         return document
 
     async def patch_ingest_fields(

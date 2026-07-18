@@ -136,3 +136,35 @@ def test_builtin_analyzer_not_deletable_over_http(client):
     builtin_id = next(iter(BUILTIN_ANALYZER_IDS))
     assert client.delete(f"/api/library/analyzers/{builtin_id}").status_code == 404
     assert client.get(f"/api/library/analyzers/{builtin_id}").status_code == 200
+
+
+def test_create_analyzer_accepts_valid_base_analyzer_id(client):
+    resp = client.post(
+        "/api/library/analyzers",
+        json={"name": "Invoices", "baseAnalyzerId": "prebuilt-documentSearch"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["baseAnalyzerId"] == "prebuilt-documentSearch"
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "../secrets",
+        "foo/bar",
+        "foo?x=1",
+        "foo#frag",
+        "foo bar",
+        "a" * 129,
+        "",
+    ],
+)
+def test_create_analyzer_rejects_unsafe_base_analyzer_id(client, bad_id):
+    # baseAnalyzerId is interpolated directly into the Content Understanding
+    # request URL, so path/query-breaking characters must be rejected at the
+    # API boundary (422) rather than reaching the CU client.
+    resp = client.post(
+        "/api/library/analyzers",
+        json={"name": "Invoices", "baseAnalyzerId": bad_id},
+    )
+    assert resp.status_code == 422

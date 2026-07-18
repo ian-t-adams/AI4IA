@@ -34,6 +34,14 @@ class _FakeDocs:
         # When set, replace_item raises this (simulating a delete or ETag race
         # between the read and the conditional write).
         self.replace_error: Exception | None = None
+        # Every etag actually sent as the replace_item precondition, in call
+        # order — lets tests assert *which* etag (caller's own vs. a fresh
+        # re-read) was used without re-implementing Cosmos's own CAS matching.
+        self.replace_etags: list[str | None] = []
+        # The etag Cosmos would assign the item after a successful replace
+        # (real Cosmos always returns fresh system properties in the response
+        # body). Defaults to echoing the write etag unchanged.
+        self.replace_response_etag: str | None = None
         self.patch_conflicts = 0
         self.patch_etags: list[str | None] = []
 
@@ -43,10 +51,12 @@ class _FakeDocs:
         return self._existing
 
     async def replace_item(self, *, item, body, etag=None, match_condition=None):
+        self.replace_etags.append(etag)
         if self.replace_error is not None:
             raise self.replace_error
         self.replaces.append(body)
-        return body
+        response_etag = self.replace_response_etag if self.replace_response_etag is not None else etag
+        return {**body, "_etag": response_etag}
 
     async def patch_item(
         self,
@@ -133,6 +143,68 @@ async def test_update_existing_owned_succeeds_via_replace():
     assert saved.summary == "after"
     assert len(fake.replaces) == 1
     assert fake.replaces[0]["userId"] == "alice"
+
+
+async def test_update_document_write_precondition_uses_callers_own_etag():
+    """The write precondition must be the *caller's own* etag — captured when
+    they loaded the document — not a freshly re-read one. Re-reading right
+    before the write would always happen to match, silently discarding any
+    edit that landed between the caller's load and this call (e.g. two
+    concurrent annotation adds on the same document). Give the caller's doc a
+    stale etag and the point-read a *different*, newer one: the stale one
+    must be what actually gets sent as the precondition."""
+    doc = _doc(user="alice", summary="before")
+    doc._etag = "caller-stale-etag"
+    repo, fake = _repo(
+        existing={"id": doc.id, "userId": "alice", "_etag": "fresh-current-etag"}
+    )
+    doc.summary = "after"
+    await repo.update_document(doc)
+    assert fake.replace_etags == ["caller-stale-etag"]
+
+
+async def test_update_document_rejects_write_when_callers_etag_is_stale():
+    # The other half of the same fix, from the caller's point of view: if the
+    # underlying store's current etag has moved on since the caller loaded
+    # the document (simulated here via replace_error, since the fake does not
+    # itself implement CAS matching), the update must lose rather than
+    # clobber whatever changed it.
+    doc = _doc(user="alice", summary="before")
+    doc._etag = "caller-stale-etag"
+    repo, fake = _repo(
+        existing={"id": doc.id, "userId": "alice", "_etag": "fresh-current-etag"}
+    )
+    fake.replace_error = CosmosAccessConditionFailedError(message="etag")
+    doc.summary = "after"
+    with pytest.raises(DocumentNotFoundError):
+        await repo.update_document(doc)
+    assert fake.replace_etags == ["caller-stale-etag"]
+
+
+async def test_update_document_falls_back_to_fresh_etag_when_caller_has_none():
+    # A document built without ever being loaded has no etag of its own to
+    # defend; it still gets the pre-fix protection of a conditional write
+    # using the just-read current etag.
+    doc = _doc(user="alice", summary="before")
+    assert doc._etag is None
+    repo, fake = _repo(existing={"id": doc.id, "userId": "alice", "_etag": "e1"})
+    doc.summary = "after"
+    await repo.update_document(doc)
+    assert fake.replace_etags == ["e1"]
+
+
+async def test_update_document_refreshes_etag_from_replace_response():
+    # After a successful write, the returned document's etag must reflect the
+    # *new* value Cosmos assigned, not the (now stale) precondition value —
+    # otherwise a caller chaining a second update on the same object would
+    # spuriously conflict against its own prior write.
+    doc = _doc(user="alice", summary="before")
+    doc._etag = "e1"
+    repo, fake = _repo(existing={"id": doc.id, "userId": "alice", "_etag": "e1"})
+    fake.replace_response_etag = "e2"
+    doc.summary = "after"
+    saved = await repo.update_document(doc)
+    assert saved._etag == "e2"
 
 
 async def test_in_memory_update_missing_id_raises():

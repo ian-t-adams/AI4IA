@@ -13,6 +13,7 @@ ships only the storage spine so the data model and governance are settled first.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
@@ -27,7 +28,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
@@ -143,12 +144,30 @@ class LibrarySummary(BaseModel):
     )
 
 
+# A custom analyzer's baseAnalyzerId is interpolated directly into the Content
+# Understanding request URL path (see ContentUnderstandingClient.submit_url), so
+# it is restricted to a conservative resource-id charset. This blocks "/", "?",
+# "#", whitespace, and control characters from reaching URL construction; it is
+# not required to exactly mirror every id the CU service itself would accept.
+_ANALYZER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
 class AnalyzerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=1000)
     modalities: list[Modality] = Field(default_factory=lambda: [Modality.document])
     baseAnalyzerId: str | None = None
     config: dict = Field(default_factory=dict)
+
+    @field_validator("baseAnalyzerId")
+    @classmethod
+    def validate_base_analyzer_id(cls, value: str | None) -> str | None:
+        if value is not None and not _ANALYZER_ID_RE.match(value):
+            raise ValueError(
+                "baseAnalyzerId may only contain letters, digits, '-' and '_' "
+                "(max 128 characters)."
+            )
+        return value
 
 
 def _library(request: Request) -> DocumentLibraryRepository:
@@ -911,7 +930,10 @@ async def set_document_shares(
         doc.acl = []
     doc.visibility = payload.visibility
     doc.touch()
-    saved = await repo.update_document(doc)
+    try:
+        saved = await repo.update_document(doc)
+    except DocumentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     logger.info(
         "share-set user=%s id=%s visibility=%s grantees=%d",
         uid, document_id, doc.visibility.value, len(doc.acl),
@@ -945,7 +967,10 @@ async def revoke_document_share(
     if principal and principal in doc.acl:
         doc.acl = [e for e in doc.acl if e != principal]
         doc.touch()
-        doc = await repo.update_document(doc)
+        try:
+            doc = await repo.update_document(doc)
+        except DocumentNotFoundError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
         logger.info("share-revoke user=%s id=%s", uid, document_id)
     return ShareState.of(doc)
 
@@ -1056,7 +1081,10 @@ async def create_annotation(
     annotation = DocumentAnnotation(body=text, anchor=_clean_anchor(body.anchor))
     doc.annotations.append(annotation)
     doc.touch()
-    await repo.update_document(doc)
+    try:
+        await repo.update_document(doc)
+    except DocumentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     logger.info("annotation created user=%s doc=%s id=%s", uid, document_id, annotation.id)
     return AnnotationView.of(annotation)
 
@@ -1093,7 +1121,10 @@ async def update_annotation(
         annotation.anchor = _clean_anchor(body.anchor)
     annotation.touch()
     doc.touch()
-    await repo.update_document(doc)
+    try:
+        await repo.update_document(doc)
+    except DocumentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     return AnnotationView.of(annotation)
 
 
@@ -1115,7 +1146,10 @@ async def delete_annotation(
     doc.annotations = [a for a in doc.annotations if a.id != annotation_id]
     if len(doc.annotations) != before:
         doc.touch()
-        await repo.update_document(doc)
+        try:
+            await repo.update_document(doc)
+        except DocumentNotFoundError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
 
 # --- analyzers ---

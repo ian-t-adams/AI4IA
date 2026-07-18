@@ -2,7 +2,10 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from azure.cosmos.exceptions import CosmosAccessConditionFailedError
+from azure.cosmos.exceptions import (
+    CosmosAccessConditionFailedError,
+    CosmosResourceNotFoundError,
+)
 
 from ai4ia_api.agents.agent_catalog import load_agent_catalog
 from ai4ia_api.agents.command_service import execute_command
@@ -13,7 +16,7 @@ from ai4ia_api.catalog import load_catalog
 from ai4ia_api.sessions.cosmos_repo import CosmosSessionRepository
 from ai4ia_api.sessions.memory_repo import InMemorySessionRepository
 from ai4ia_api.sessions.models import Message, MessageRole, Session, ToolOverrides
-from ai4ia_api.sessions.repository import SessionConflictError
+from ai4ia_api.sessions.repository import SessionConflictError, SessionNotFoundError
 
 
 async def test_model_and_document_updates_survive_concurrency():
@@ -438,3 +441,91 @@ def test_application_has_no_unversioned_full_session_writers():
         if ".update_session(" in path.read_text(encoding="utf-8"):
             offenders.append(str(path.relative_to(source)))
     assert offenders == []
+
+
+class _ConcurrentlyDeletedSessions:
+    """Fake ``sessions`` container simulating a delete that lands in the gap
+    between a method's existence check and its own write.
+
+    ``read_item`` still succeeds (the check-before-write step), but every
+    ``patch_item``/``delete_item`` call raises ``CosmosResourceNotFoundError``,
+    mimicking another concurrent request deleting the session first.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.item = {**session.model_dump(mode="json"), "_etag": "e1"}
+
+    async def read_item(self, *, item, partition_key):
+        return dict(self.item)
+
+    async def patch_item(
+        self,
+        *,
+        item,
+        partition_key,
+        patch_operations,
+        etag=None,
+        match_condition=None,
+    ):
+        raise CosmosResourceNotFoundError(message="deleted concurrently")
+
+    async def delete_item(self, *, item, partition_key):
+        raise CosmosResourceNotFoundError(message="deleted concurrently")
+
+
+class _EmptyQueryContainer:
+    """Fake ``messages``/``documents`` container with no rows, so
+    ``delete_session``'s cascade loops are no-ops before it reaches the
+    final (concurrently-raced) ``sessions.delete_item`` call."""
+
+    async def query_items(self, *, query, parameters=None, partition_key=None):
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+
+@pytest.mark.parametrize(
+    "method_name, call_kwargs",
+    [
+        ("patch_session", {"changes": {"model": "gpt-5.2"}}),
+        ("touch_session", {}),
+        (
+            "invalidate_summary",
+            {},
+        ),
+    ],
+)
+async def test_cosmos_patch_paths_translate_concurrent_delete_to_not_found(
+    method_name, call_kwargs
+):
+    session = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _ConcurrentlyDeletedSessions(session)
+    method = getattr(repo, method_name)
+    with pytest.raises(SessionNotFoundError):
+        await method("u1", session.id, **call_kwargs)
+
+
+async def test_cosmos_mutate_library_document_ids_translates_concurrent_delete():
+    session = Session(userId="u1", libraryDocumentIds=[])
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _ConcurrentlyDeletedSessions(session)
+    with pytest.raises(SessionNotFoundError):
+        await repo.mutate_library_document_ids("u1", session.id, "doc-a", add=True)
+
+
+async def test_cosmos_generated_title_translates_concurrent_delete_to_not_found():
+    session = Session(userId="u1")  # title="New chat", titleSource="auto" (eligible)
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _ConcurrentlyDeletedSessions(session)
+    with pytest.raises(SessionNotFoundError):
+        await repo.set_generated_title_if_eligible("u1", session.id, "Generated")
+
+
+async def test_cosmos_delete_session_translates_concurrent_delete_to_not_found():
+    session = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _ConcurrentlyDeletedSessions(session)
+    repo._messages = _EmptyQueryContainer()
+    repo._documents = _EmptyQueryContainer()
+    with pytest.raises(SessionNotFoundError):
+        await repo.delete_session("u1", session.id)

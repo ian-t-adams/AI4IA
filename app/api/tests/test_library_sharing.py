@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from ai4ia_api.auth.base import AuthCredentials
 from ai4ia_api.library.models import UserDocument, Visibility
+from ai4ia_api.library.repository import DocumentNotFoundError
 from ai4ia_api.main import create_app
 from tests.conftest import make_settings
 
@@ -251,3 +252,51 @@ def test_revoke_idempotent_and_shared_excludes_self(client):
 
     # The owner never sees their own shared doc in "shared with me".
     assert client.get("/api/library/shared").json() == []
+
+
+# --- concurrent-delete race: update_document can still raise DocumentNotFoundError
+# after the router's own ownership check passed (the document vanished in the
+# gap). Both share-mutating endpoints must translate that into a 404, matching
+# every other document-not-found path, instead of letting it bubble up as a
+# raw 500 from the app's generic exception handler. ---
+class _UpdateRacesDeleteRepo:
+    """Wraps a real repo; ``update_document`` raises as if a concurrent delete
+    landed between the router's ownership read and this write."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def update_document(self, document):
+        raise DocumentNotFoundError(document.id)
+
+
+def test_set_shares_document_deleted_concurrently_is_404(client):
+    owner = _uid(client)
+    doc = _seed(client, userId=owner, filename="race.pdf")
+    client.app.state.document_library = _UpdateRacesDeleteRepo(
+        client.app.state.document_library
+    )
+    resp = client.put(
+        f"/api/library/documents/{doc.id}/shares",
+        json={"visibility": "shared", "grantees": ["bob@example.com"]},
+    )
+    assert resp.status_code == 404
+
+
+def test_revoke_share_document_deleted_concurrently_is_404(client):
+    owner = _uid(client)
+    doc = _seed(
+        client,
+        userId=owner,
+        filename="race.pdf",
+        visibility=Visibility.shared,
+        acl=["bob@example.com"],
+    )
+    client.app.state.document_library = _UpdateRacesDeleteRepo(
+        client.app.state.document_library
+    )
+    resp = client.delete(f"/api/library/documents/{doc.id}/shares/bob@example.com")
+    assert resp.status_code == 404

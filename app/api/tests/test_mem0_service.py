@@ -25,12 +25,14 @@ from ai4ia_api.memory.service import NoopMemoryService
 class FakeAsyncMemory:
     """Records calls and returns canned payloads, mimicking AsyncMemory v1.1."""
 
-    def __init__(self, *, search_results=None, get_all_results=None) -> None:
+    def __init__(self, *, search_results=None, get_all_results=None, get_results=None) -> None:
         self._search_results = search_results or []
         self._get_all_results = get_all_results if get_all_results is not None else []
+        self._get_results = get_results or {}
         self.search_calls: list[dict] = []
         self.add_calls: list[dict] = []
         self.get_all_calls: list[dict] = []
+        self.get_calls: list[str] = []
         self.delete_calls: list[dict] = []
         self.delete_by_id_calls: list[dict] = []
 
@@ -47,6 +49,10 @@ class FakeAsyncMemory:
     async def get_all(self, *, filters=None, top_k=20, **kwargs):
         self.get_all_calls.append({"filters": filters, "top_k": top_k})
         return {"results": list(self._get_all_results)}
+
+    async def get(self, memory_id):
+        self.get_calls.append(memory_id)
+        return self._get_results.get(memory_id)
 
     async def delete_all(self, user_id=None, agent_id=None, run_id=None):
         self.delete_calls.append({"user_id": user_id, "run_id": run_id})
@@ -258,6 +264,44 @@ async def test_forget_document_propagates_errors():
     svc = _service(Boom())
     with pytest.raises(RuntimeError):
         await svc.forget_document("u1", "docA")
+
+
+# --- delete_memory ------------------------------------------------------
+
+async def test_delete_memory_deletes_owned_memory_via_direct_lookup():
+    mem = FakeAsyncMemory(get_results={"m1": {"id": "m1", "user_id": "u1"}})
+    svc = _service(mem)
+    assert await svc.delete_memory("u1", "m1") is True
+    assert mem.get_calls == ["m1"]
+    assert mem.delete_by_id_calls == [{"memory_id": "m1"}]
+    # A direct get(id) lookup replaces the old list-then-scan approach, so it
+    # never lists the user's other memories.
+    assert mem.get_all_calls == []
+
+
+async def test_delete_memory_returns_false_when_memory_missing():
+    mem = FakeAsyncMemory(get_results={})
+    svc = _service(mem)
+    assert await svc.delete_memory("u1", "missing") is False
+    assert mem.delete_by_id_calls == []
+
+
+async def test_delete_memory_returns_false_for_other_users_memory():
+    # Ownership is enforced from the fetched item's user_id, not the caller's
+    # say-so: a memory that exists but belongs to someone else must not delete.
+    mem = FakeAsyncMemory(get_results={"m1": {"id": "m1", "user_id": "attacker"}})
+    svc = _service(mem)
+    assert await svc.delete_memory("u1", "m1") is False
+    assert mem.delete_by_id_calls == []
+
+
+async def test_delete_memory_not_bounded_by_forget_list_cap():
+    """Regression: the old implementation listed up to _FORGET_LIST_CAP memories
+    and reported "not found" for anything beyond that enumeration bound. A
+    direct get(id) lookup has no such scale-dependent blind spot."""
+    mem = FakeAsyncMemory(get_results={"beyond-cap": {"id": "beyond-cap", "user_id": "u1"}})
+    svc = _service(mem)
+    assert await svc.delete_memory("u1", "beyond-cap") is True
 
 
 # --- lazy build / lifecycle -------------------------------------------------

@@ -164,6 +164,17 @@ async def test_erase_user_and_session_return_counts():
     assert sess_args == ("u1", "s1")
 
 
+async def test_erase_document_is_a_safe_no_op():
+    # The ``memories`` table has no document_id column: erase_document must not
+    # raise (MemoryStore requires it — callers like MemoryService.remember_document
+    # / forget_document call it unconditionally) and must honestly report 0.
+    conn = FakeConn()
+    store = _store(conn)
+    assert await store.erase_document("u1", "doc-1") == 0
+    # No DELETE/erase statement is issued — there's nothing to key it on.
+    assert conn.fetchvals == []
+
+
 async def test_vector_literal_rejects_wrong_dimension():
     store = _store(FakeConn(), expected_dim=3)
     with pytest.raises(ValueError, match="dimension"):

@@ -444,12 +444,17 @@ class Mem0MemoryService:
         return records
 
     async def delete_memory(self, user_id: str, memory_id: str) -> bool:
+        """Delete one memory by id, verifying ownership first.
+
+        Uses a direct ``get(memory_id)`` lookup rather than listing the user's
+        memories (unlike the bulk ``forget_*`` paths): a listing is bounded by
+        ``_FORGET_LIST_CAP`` and would report "not found" for a memory that
+        exists but falls outside that enumeration once a user has more than
+        the cap, silently failing legitimate deletes at scale.
+        """
         mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
-        listing = await self._call(
-            lambda: mem.get_all(filters={"user_id": user_id}, top_k=_FORGET_LIST_CAP),
-            self._op_timeout_s,
-        )
-        if not any(str(item.get("id")) == memory_id for item in _results(listing)):
+        item = await self._call(lambda: mem.get(memory_id), self._op_timeout_s)
+        if item is None or str(item.get("user_id")) != user_id:
             return False
         await self._call(lambda: mem.delete(memory_id=memory_id), self._op_timeout_s)
         return True

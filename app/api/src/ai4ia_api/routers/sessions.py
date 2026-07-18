@@ -1,6 +1,7 @@
 """Per-user session + message CRUD. Every operation is ownership-scoped."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from collections.abc import Mapping
@@ -29,6 +30,8 @@ from ..sessions.repository import (
     SessionNotFoundError,
     SessionRepository,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
@@ -78,6 +81,11 @@ def _repo(request: Request) -> SessionRepository:
 
 
 async def _conversation_addable_tools(request: Request, user_id: str) -> set[str]:
+    """Tool names (``mcp:<server>/<tool>`` included) the caller may add as an
+    override, unioning static app tools with the caller's BYO and official MCP
+    tools. Each MCP source fails closed independently (its error contributes
+    an empty set, logged) so a store/discovery blip can only narrow what a
+    user may add, never widen it; the caller surfaces a 422 on rejection."""
     allowed = set(request.app.state.agent_service.attachable_tools)
     service = getattr(request.app.state, "mcp_service", None)
     if service is not None:
@@ -87,8 +95,8 @@ async def _conversation_addable_tools(request: Request, user_id: str) -> set[str
                 for server in await service.list_for(user_id)
                 for tool in server.discoveredTools
             )
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001 - validation must not 500 on a store blip
+            logger.warning("mcp tool-name resolution failed", exc_info=True)
     official = getattr(request.app.state, "official_mcp_service", None)
     if official is not None:
         try:
@@ -97,8 +105,8 @@ async def _conversation_addable_tools(request: Request, user_id: str) -> set[str
                 for server in await official.list_all()
                 for tool in server.discoveredTools
             )
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001 - validation must not 500 on a discovery blip
+            logger.warning("official mcp tool-name resolution failed", exc_info=True)
     return allowed
 
 

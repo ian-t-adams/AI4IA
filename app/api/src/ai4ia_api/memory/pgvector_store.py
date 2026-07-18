@@ -284,6 +284,24 @@ class PgVectorStore:
             count = await conn.fetchval(_ERASE_SESSION, user_id, session_id)
         return int(count or 0)
 
+    async def erase_document(self, user_id: str, document_id: str) -> int:
+        """No-op: the ``memories`` table has no ``document_id`` column to key
+        an erase on (see the module docstring / factory.py). Returning ``0``
+        is honest (nothing is tracked by document here) and, crucially, does
+        not raise — the caller's protocol requires this method to exist, and
+        without it every "save to memory"/"forget from memory" call for a
+        document-scoped save on this backend previously raised
+        ``AttributeError``. A future schema migration can replace this.
+        """
+        await self.ensure_ready()
+        logger.debug(
+            "erase_document is a no-op on the pgvector backend (no document_id "
+            "column); user=%s document=%s",
+            user_id,
+            document_id,
+        )
+        return 0
+
     async def close(self) -> None:
         if self._owns_pool and self._pool is not None:
             await self._safe_close_pool()
