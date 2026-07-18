@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import logging
 
+from ai4ia_api.sessions.cosmos_repo import CosmosSessionRepository
+from ai4ia_api.sessions.models import Session
+
 
 class _RaisingMcpService:
     async def list_for(self, user_id: str):
@@ -17,6 +20,26 @@ class _RaisingMcpService:
 class _RaisingOfficialMcpService:
     async def list_all(self):
         raise RuntimeError("discovery endpoint timed out")
+
+
+class _LegacyDocContainer:
+    """Cosmos container stand-in serving one already-stored session document
+    whose ``toolOverrides`` predates/violates the current schema (e.g.
+    written before the field existed, or hand-edited)."""
+
+    def __init__(self, item: dict) -> None:
+        self.item = item
+
+    async def read_item(self, *, item, partition_key):
+        return dict(self.item)
+
+    async def patch_item(
+        self, *, item, partition_key, patch_operations, etag=None, match_condition=None
+    ):
+        for operation in patch_operations:
+            self.item[operation["path"].lstrip("/")] = operation["value"]
+        self.item["_etag"] = "e2"
+        return dict(self.item)
 
 
 def _create(client, **overrides):
@@ -64,3 +87,49 @@ def test_official_mcp_lookup_failure_fails_closed_and_logs(client, caplog):
     assert resp.status_code == 422, resp.text
     messages = " ".join(r.getMessage() for r in caplog.records)
     assert "official mcp tool-name resolution failed" in messages
+
+
+def test_patch_non_tool_field_survives_corrupted_persisted_tool_overrides(client):
+    """Production regression: PATCH /api/sessions/<id> returned 500 whenever
+    a persisted document's ``toolOverrides`` no longer matched the schema
+    (e.g. written before the field existed, or hand-edited). ``update_session``
+    falls back to ``session.toolOverrides`` for any PATCH that doesn't touch
+    the field itself, and the read that produces it — ``Session.model_validate``
+    inside the Cosmos repository's ``_owned_session`` — used to raise an
+    uncaught ``ValidationError`` for a malformed value, turning every future
+    GET/PATCH of that one session into a permanent 500. This drives the real
+    ``PATCH`` endpoint (not just the repository or model directly) against a
+    Cosmos-shaped document with a corrupted ``toolOverrides``.
+    """
+    created = _create(client)
+    assert created.status_code == 201, created.text
+    session = Session.model_validate(created.json())
+
+    doc = {**session.model_dump(mode="json"), "toolOverrides": None, "_etag": "e1"}
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _LegacyDocContainer(doc)
+    client.app.state.session_repo = repo
+
+    resp = client.patch(f"/api/sessions/{session.id}", json={"title": "Renamed"})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["title"] == "Renamed"
+    assert body["toolOverrides"] == {"added": [], "removed": []}
+
+
+def test_patch_non_tool_field_preserves_existing_tool_overrides(client):
+    """A PATCH that only changes an unrelated field (title) must not disturb
+    already-configured, well-formed tool overrides."""
+    created = _create(
+        client, toolOverrides={"added": ["calculator"], "removed": []}
+    )
+    assert created.status_code == 201, created.text
+    session_id = created.json()["id"]
+
+    resp = client.patch(f"/api/sessions/{session_id}", json={"title": "Renamed"})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["title"] == "Renamed"
+    assert body["toolOverrides"] == {"added": ["calculator"], "removed": []}
