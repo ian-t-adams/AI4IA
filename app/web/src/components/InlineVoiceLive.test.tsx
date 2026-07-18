@@ -19,6 +19,7 @@ import {
   useInlineVoiceLive,
   voiceMessagesForSession,
 } from "./InlineVoiceLive";
+import { ApiError } from "@/lib/api";
 import type { VoiceTurnInput } from "@/lib/types";
 import {
   DEFAULT_VOICE,
@@ -721,6 +722,106 @@ describe("inline Voice Live chat", () => {
       screen.getByRole("button", { name: "Start live voice conversation" }),
     );
     expect(mocks.start).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression: production correlation showed session PATCH/POST calls
+  // failing fast with HTTP 500 (a backend type-mismatch defect, tracked
+  // separately). A fast failure must resolve exactly like a hung request --
+  // persistenceError set, saving cleared, Retry/Discard available -- without
+  // waiting on the 20s timeout, and it must never gate the live connection's
+  // own teardown, which stop() already fires unconditionally before persist()
+  // settles either way.
+  it("surfaces a fast-failing save (e.g. a session-update 500) as persistenceError immediately, without waiting on the timeout", async () => {
+    const persist = vi.fn(() =>
+      Promise.reject(new ApiError(500, "Internal Server Error")),
+    );
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "Fails fast",
+          pending: false,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    const { rerender } = render(<Harness persist={persist} />);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+    // The underlying WS/mic/AudioContext teardown is unconditional: it runs
+    // synchronously inside stop() and never waits on the background save.
+    expect(mocks.stop).toHaveBeenCalledTimes(1);
+
+    controller = makeController();
+    rerender(<Harness persist={persist} />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("500: Internal Server Error"),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Retry saving" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: "Saving live voice transcript" }),
+    ).toBeNull();
+    expect(mocks.start).not.toHaveBeenCalled();
+
+    // The same escape hatch that recovers a hung save also recovers this one.
+    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+    expect(screen.getByText("Voice Live ready")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Start live voice conversation" }),
+    ).toBeEnabled();
+  });
+
+  // Regression: ensureSession() is contractually async (Promise<string>), but
+  // persist() cannot rely on that alone -- it is always invoked as
+  // `void persist()` immediately followed by more code in the same scope,
+  // most critically stop()'s subsequent stopLive() teardown call. A
+  // synchronous throw here (a contract violation, mirroring the kind of
+  // type mismatch already seen causing backend session-update failures)
+  // must not propagate out of persist() and skip that teardown.
+  it("never lets a synchronously-throwing ensureSession skip the underlying stop teardown", async () => {
+    const ensureSession = vi.fn(() => {
+      throw new Error("ensureSession contract violation");
+    });
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "Needs a session",
+          pending: false,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    const { rerender } = render(<Harness ensureSession={ensureSession} />);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+
+    expect(mocks.stop).toHaveBeenCalledTimes(1);
+    controller = makeController();
+    rerender(<Harness ensureSession={ensureSession} />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("ensureSession contract violation"),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
   });
 
   it("exposes hasUnsavedTurns/exitLocked only once real data would be lost, not merely while live", () => {

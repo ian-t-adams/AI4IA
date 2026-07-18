@@ -235,9 +235,31 @@ export function useInlineVoiceLive({
     // moments ago by the render-time adjustment above is never missed: the
     // ref only caches an in-flight ensureSession() call made while no session
     // was bound yet, to dedupe concurrent persist() attempts.
-    const sessionPromise = boundSessionId
-      ? Promise.resolve(boundSessionId)
-      : (sessionPromiseRef.current ?? ensureSession());
+    //
+    // ensureSession() is contractually async (Promise<string>) and should
+    // never throw synchronously, but persist() itself must not either:
+    // callers fire it with `void persist()` and immediately run more code
+    // afterward -- stop() calls the real WS/mic/AudioContext teardown
+    // (stopLive()) on the very next line. If ensureSession violated its
+    // contract and threw synchronously (e.g. a future bug, or a caller-side
+    // regression mirroring the kind of type mismatch that has caused
+    // backend session-update failures), an uncaught throw here would abort
+    // stop() before stopLive() ever ran, trapping the live connection open.
+    // Catching it and funneling it through the same terminal state as any
+    // other save failure keeps that teardown guarantee unconditional.
+    let sessionPromise: Promise<string>;
+    try {
+      sessionPromise = boundSessionId
+        ? Promise.resolve(boundSessionId)
+        : (sessionPromiseRef.current ?? ensureSession());
+    } catch (error) {
+      setPersistenceError(
+        error instanceof Error
+          ? error.message
+          : "Couldn't save the Voice Live transcript.",
+      );
+      return Promise.resolve();
+    }
     sessionPromiseRef.current = sessionPromise;
     setPersistenceError(null);
     setSaving(true);
