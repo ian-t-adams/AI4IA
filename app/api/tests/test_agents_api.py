@@ -110,6 +110,30 @@ def test_delete_is_idempotent(client):
     assert client.delete("/api/agents/ghost").status_code == 204
 
 
+def test_update_cannot_modify_another_users_agent(client):
+    other = {"X-Dev-User": "stranger"}
+    assert _create(client).status_code == 201
+    # Stranger's own partition has no "pirate" -> 404, not a leak/edit of mine.
+    resp = client.put(
+        "/api/agents/pirate", json={"systemPrompt": "hijacked"}, headers=other
+    )
+    assert resp.status_code == 404, resp.text
+    mine = client.get("/api/agents/mine").json()["agents"]
+    assert mine[0]["systemPrompt"] == "Arr, talk like a pirate."
+
+
+def test_delete_cannot_remove_another_users_agent(client):
+    other = {"X-Dev-User": "stranger"}
+    assert _create(client).status_code == 201
+    # Idempotent no-op in the stranger's own (empty) partition -> 204, but my
+    # agent must survive untouched.
+    resp = client.delete("/api/agents/pirate", headers=other)
+    assert resp.status_code == 204, resp.text
+    assert [a["name"] for a in client.get("/api/agents/mine").json()["agents"]] == [
+        "pirate"
+    ]
+
+
 def test_user_agent_is_mentionable_end_to_end(client):
     gw = _CapturingGateway()
     client.app.state.gateway = gw
