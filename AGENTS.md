@@ -44,7 +44,14 @@ Package scripts currently resolve to `eslint .`, `vitest run`, and `next build`.
 
 ### API (`app/api` plus repo-root catalog checks)
 
-CI uses Python 3.12. In `app/api` it installs:
+CI uses Python 3.12. `app/api/Dockerfile`'s `FROM python:3.12-slim` must track this
+same version deliberately (see the comment above that line) — a June 2026
+Dependabot major-version bump to `python:3.14-slim` went unreviewed for weeks
+(no CI job exercised the built image, and nothing else in the repo asserted the
+two stay in sync) before it was traced to azure-cosmos/aiohttp `DeprecationWarning`
+noise in production logs. Contrast `app/web`'s Node bump: that one was reviewed and
+accepted the same day, with `package.json`'s `engines.node` range widened to
+document it. In `app/api` it installs:
 
 ```powershell
 python -m pip install --upgrade pip
