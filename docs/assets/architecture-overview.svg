@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="930" viewBox="0 0 1600 930" role="img" aria-labelledby="title desc">
+  <!-- Deterministic local rendering of docs/architecture-overview.excalidraw; no external renderer or web service. -->
+  <title id="title">AI4IA system context and governed request paths</title>
+  <desc id="desc">Architecture diagram showing browser, Next.js, FastAPI, SimpleL7Proxy, model and realtime APIM APIs, Foundry, MCP, canonical data, derived data, and three separate core gateway credentials.</desc>
+  <defs>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0078D4"/></marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#107C10"/></marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#F7630C"/></marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#5C2D91"/></marker>
+    <marker id="arrow-black" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#1E1E1E"/></marker>
+    <style>
+      text { fill: #000000; font-family: "Segoe UI", Arial, sans-serif; }
+      .title { font-size: 28px; font-weight: 600; }
+      .subtitle { font-size: 16px; }
+      .section { font-size: 18px; font-weight: 600; text-anchor: middle; }
+      .box { font-size: 14px; text-anchor: middle; }
+      .label { font-size: 12px; text-anchor: middle; }
+      .container { fill: none; stroke-width: 2; rx: 12; }
+      .leaf { stroke-width: 1.5; rx: 10; }
+      .flow { fill: none; stroke-width: 2.5; }
+    </style>
+  </defs>
+  <rect width="1600" height="930" fill="#ffffff"/>
+
+  <text class="title" x="40" y="50">AI4IA system context and governed request paths</text>
+  <text class="subtitle" x="40" y="92">FastAPI is the application boundary. Compatible HTTP/SSE uses SimpleL7Proxy; realtime WebSockets bypass only that HTTP proxy and still use APIM.</text>
+
+  <rect class="container" x="40" y="130" width="240" height="560" stroke="#0078D4"/>
+  <text class="section" x="160" y="173">Experience boundary</text>
+  <rect class="leaf" x="70" y="210" width="180" height="90" stroke="#0078D4" fill="#CFE4FA"/>
+  <text class="box" x="160" y="238"><tspan x="160">Browser</tspan><tspan x="160" dy="20">chat, voice, library,</tspan><tspan x="160" dy="20">settings, admin</tspan></text>
+  <rect class="leaf" x="70" y="390" width="180" height="100" stroke="#0078D4" fill="#CFE4FA"/>
+  <text class="box" x="160" y="418"><tspan x="160">Next.js web</tspan><tspan x="160" dy="20">same-origin HTTP proxy</tspan><tspan x="160" dy="20">runtime visibility</tspan></text>
+
+  <rect class="container" x="320" y="130" width="330" height="560" stroke="#107C10"/>
+  <text class="section" x="485" y="173">Application trust boundary</text>
+  <rect class="leaf" x="360" y="210" width="250" height="90" stroke="#107C10" fill="#DFF6DD"/>
+  <text class="box" x="485" y="238"><tspan x="485">FastAPI</tspan><tspan x="485" dy="20">identity, sessions, routing,</tspan><tspan x="485" dy="20">persistence and metering</tspan></text>
+  <rect class="leaf" x="360" y="350" width="250" height="100" stroke="#107C10" fill="#DFF6DD"/>
+  <text class="box" x="485" y="378"><tspan x="485">Agent + tool runtime</tspan><tspan x="485" dy="20">budgets, approvals,</tspan><tspan x="485" dy="20">execution-time rechecks</tspan></text>
+  <rect class="leaf" x="360" y="500" width="250" height="100" stroke="#107C10" fill="#DFF6DD"/>
+  <text class="box" x="485" y="528"><tspan x="485">Server-authoritative policy</tspan><tspan x="485" dy="20">feature gates, ownership,</tspan><tspan x="485" dy="20">redaction and safe activity</tspan></text>
+
+  <rect class="container" x="690" y="130" width="430" height="560" stroke="#F7630C"/>
+  <text class="section" x="905" y="173">Gateway and credential boundaries</text>
+  <rect class="leaf" x="730" y="210" width="160" height="100" stroke="#F7630C" fill="#FFF4CE"/>
+  <text class="box" x="810" y="238"><tspan x="810">SimpleL7Proxy</tspan><tspan x="810" dy="20">HTTP/SSE queue</tspan><tspan x="810" dy="20">+ delayed requeue</tspan></text>
+  <rect class="leaf" x="930" y="210" width="160" height="100" stroke="#F7630C" fill="#FFF4CE"/>
+  <text class="box" x="1010" y="238"><tspan x="1010">Model APIM API</tspan><tspan x="1010" dy="20">catalog routing</tspan><tspan x="1010" dy="20">+ regional failover</tspan></text>
+  <rect class="leaf" x="930" y="360" width="160" height="110" stroke="#F7630C" fill="#FFF4CE"/>
+  <text class="box" x="1010" y="388"><tspan x="1010">Realtime APIM APIs</tspan><tspan x="1010" dy="20">/openai/realtime</tspan><tspan x="1010" dy="20">optional Speech API</tspan></text>
+  <rect class="leaf" x="930" y="530" width="160" height="100" stroke="#F7630C" fill="#FFF4CE"/>
+  <text class="box" x="1010" y="558"><tspan x="1010">Official MCP APIM</tspan><tspan x="1010" dy="20">MCP-only product</tspan><tspan x="1010" dy="20">+ managed identity</tspan></text>
+
+  <rect class="container" x="1160" y="130" width="400" height="760" stroke="#5C2D91"/>
+  <text class="section" x="1360" y="173">AI, data, and service planes</text>
+  <rect class="leaf" x="1200" y="210" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
+  <text class="box" x="1360" y="238"><tspan x="1360">Microsoft Foundry deployments</tspan><tspan x="1360" dy="20">multi-model, multi-region</tspan><tspan x="1360" dy="20">APIM managed identity</tspan></text>
+  <rect class="leaf" x="1200" y="350" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
+  <text class="box" x="1360" y="378"><tspan x="1360">AIServices Voice Live</tspan><tspan x="1360" dy="20">optional, default-off</tspan><tspan x="1360" dy="20">scoped MI + fourth key</tspan></text>
+  <rect class="leaf" x="1200" y="490" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
+  <text class="box" x="1360" y="518"><tspan x="1360">Curated MCP + Foundry Toolbox</tspan><tspan x="1360" dy="20">WebIQ is a separate</tspan><tspan x="1360" dy="20">server-side capability</tspan></text>
+  <rect class="leaf" x="1200" y="630" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
+  <text class="box" x="1360" y="658"><tspan x="1360">Cosmos + Blob</tspan><tspan x="1360" dy="20">canonical user records,</tspan><tspan x="1360" dy="20">source docs and artifacts</tspan></text>
+  <rect class="leaf" x="1200" y="770" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
+  <text class="box" x="1360" y="798"><tspan x="1360">Postgres/pgvector + AI Search</tspan><tspan x="1360" dy="20">rebuildable memory vectors,</tspan><tspan x="1360" dy="20">chunks and indexes</tspan></text>
+
+  <rect class="container" x="320" y="730" width="800" height="160" stroke="#1E1E1E"/>
+  <text class="section" x="720" y="772">Direct native planes and cross-cutting operations</text>
+  <rect class="leaf" x="360" y="795" width="320" height="70" stroke="#1E1E1E" fill="#F3F2F1"/>
+  <text class="box" x="520" y="835">CU, Key Vault, Storage, Cosmos, Search</text>
+  <rect class="leaf" x="740" y="795" width="340" height="70" stroke="#1E1E1E" fill="#F3F2F1"/>
+  <text class="box" x="910" y="835">App Insights + Log Analytics + Monitor</text>
+
+  <path class="flow" d="M160 300 L160 390" stroke="#0078D4" marker-end="url(#arrow-blue)"/>
+  <text class="label" x="160" y="345">HTTPS + Entra/dev auth</text>
+  <path class="flow" d="M250 440 L360 255" stroke="#107C10" marker-end="url(#arrow-green)"/>
+  <text class="label" x="305" y="350"><tspan x="305">same-origin</tspan><tspan x="305" dy="17">/api/*</tspan></text>
+  <path class="flow" d="M250 255 L360 255" stroke="#107C10" stroke-dasharray="8 6" marker-end="url(#arrow-green)"/>
+  <text class="label" x="305" y="215"><tspan x="305">Voice Live WSS</tspan><tspan x="305" dy="17">direct to API</tspan></text>
+  <path class="flow" d="M610 255 L730 255" stroke="#F7630C" marker-end="url(#arrow-orange)"/>
+  <text class="label" x="670" y="218"><tspan x="670">1. proxy-ingress</tspan><tspan x="670" dy="17">S7P-KEY</tspan></text>
+  <path class="flow" d="M890 255 L930 255" stroke="#F7630C" marker-end="url(#arrow-orange)"/>
+  <text class="label" x="910" y="330"><tspan x="910">2. model-only</tspan><tspan x="910" dy="17">APIM key</tspan></text>
+  <path class="flow" d="M1090 255 L1200 255" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
+  <text class="label" x="1145" y="220">managed identity</text>
+  <path class="flow" d="M610 270 L770 270 L930 415" stroke="#F7630C" stroke-dasharray="8 6" marker-end="url(#arrow-orange)"/>
+  <text class="label" x="815" y="350"><tspan x="815">3. realtime-only APIM key</tspan><tspan x="815" dy="17">(SimpleL7Proxy bypass)</tspan></text>
+  <path class="flow" d="M1090 395 L1200 285" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
+  <path class="flow" d="M1090 415 L1200 395" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
+  <text class="label" x="1145" y="448"><tspan x="1145">optional fourth key</tspan><tspan x="1145" dy="17">+ managed identity</tspan></text>
+  <path class="flow" d="M610 400 L770 400 L930 580" stroke="#F7630C" marker-end="url(#arrow-orange)"/>
+  <text class="label" x="835" y="520">MCP-only APIM key</text>
+  <path class="flow" d="M1090 580 L1200 535" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
+  <path class="flow" d="M610 285 L1010 675 L1200 675" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
+  <text class="label" x="1095" y="652">owned canonical records</text>
+  <path class="flow" d="M610 300 L970 815 L1200 815" stroke="#5C2D91" stroke-dasharray="8 6" marker-end="url(#arrow-purple)"/>
+  <text class="label" x="1095" y="792">rebuildable derivatives</text>
+  <path class="flow" d="M485 600 L520 795" stroke="#1E1E1E" marker-end="url(#arrow-black)"/>
+  <path class="flow" d="M580 600 L910 795" stroke="#1E1E1E" stroke-dasharray="8 6" marker-end="url(#arrow-black)"/>
+
+  <rect class="container" x="40" y="730" width="240" height="160" stroke="#1E1E1E"/>
+  <text x="60" y="758" font-size="14" font-weight="600">Credential rule</text>
+  <text x="60" y="785" font-size="14"><tspan x="60">1 FastAPI -&gt; proxy</tspan><tspan x="60" dy="20">2 proxy -&gt; model APIM</tspan><tspan x="60" dy="20">3 FastAPI -&gt; realtime APIM</tspan><tspan x="60" dy="28" font-weight="600">Never reuse these values.</tspan></text>
+</svg>

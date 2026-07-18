@@ -17,6 +17,7 @@
         { "path": "README.md", "title": "Repository overview", "desc": "What AI4IA is, current state, layout, key decisions and how to deploy." },
         { "path": "docs/user-guide.md", "title": "User guide", "desc": "How to use the app: chat, agents, voice, library, media, memory and admin views." },
         { "path": "docs/architecture.md", "title": "Architecture", "desc": "Governed multi-model design, request lifecycle, components and MCP planes." },
+        { "path": "docs/platform-audit.md", "title": "Platform audit", "desc": "Evergreen architecture, remediation status, validation evidence, residual gaps, and explicit owner actions." },
         { "path": "AGENTS.md", "title": "Agent & contributor guide", "desc": "Machine-facing map for humans and AI agents: invariants, CI commands, and how to add tools, models, flags and routers." }
       ]
     },

@@ -34,6 +34,17 @@ code**.
 This is the maximal "through the proxy + APIM" outcome with minimal surface: one catalog
 entry, one RBAC grant, one feature flag.
 
+### Foundry web search is not WebIQ
+
+The Toolbox `web_search` tool and AI4IA's WebIQ integration are independent
+capabilities. WebIQ is built directly into the FastAPI agent runtime as five
+feature-gated tools (`web_search`, `news_search`, `video_search`, `image_search`,
+and `browse_url`) using `AI4IA_WEB_SEARCH_ENABLED` plus API-key or managed-identity
+auth. Its bounded results are fenced as untrusted model context. Enabling the
+Foundry Toolbox does not enable WebIQ, and disabling WebIQ does not remove the
+Toolbox's own `web_search`. Current implementation/remediation status is tracked in
+the [`platform audit`](./platform-audit.md).
+
 ## Why this approach
 
 - **Reuse, don't rebuild.** The app is a custom in-process agent runtime; tools are the
@@ -140,6 +151,12 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 | `toolbox_search_preview` | **Tool search** — let the model pick tools from a large set | none | Add this so the toolbox self-describes its tools to the model. |
 | `mcp` | Nest another MCP server as a tool | `serverLabel`, `serverUrl`, `requireApproval`, `projectConnectionId` | Lets the toolbox aggregate upstream MCP servers. Identified by `serverLabel`. |
 
+> **Available vs. deployed:** this table lists every type supported by the schema
+> and provisioning script. The canonical `ai4ia-toolbox` in
+> `foundry/toolbox.manifest.json` currently contains only `web_search`,
+> `code_interpreter`, and `toolbox_search_preview`.
+> `foundry/toolbox.manifest.example.json` is the broader copy-and-edit reference.
+
 > **Not toolbox tools:** `computer_use` and `bing_custom_search` exist only as *agent-level* tools
 > in the SDK (`ComputerUsePreviewTool` / `BingCustomSearchPreviewTool`) with no `*ToolboxTool`
 > counterpart, so they cannot be added to a toolbox. Attach them directly to an agent instead.
@@ -198,6 +215,12 @@ Skill `name` must match `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (max 64). The create p
    # optional: emit the `azd ai toolbox create --from-file` YAML instead
    python scripts/provision-foundry-toolbox.py --emit-yaml foundry/toolbox.azd.yaml
    ```
+
+   Re-running `--create` for the same manifest name is safe but is **not** a
+   no-op: Foundry creates another version under the same named toolbox. The skills
+   create path follows the same versioning model. Do not run either command
+   unconditionally on every deployment; run it deliberately when the manifest or
+   skill changes.
 
 5. **Register the entry.** Paste the printed object into `infra/mcp-servers.json` (`servers[]`)
    and regenerate the packaged runtime catalog:

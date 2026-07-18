@@ -24,6 +24,10 @@ and tool safety; the web app is the user interface.
   sessions.
 - Treat cited document snippets and tool output as grounded context, not as
   permission to skip review.
+- Temperature and Top P currently remain visible even when the selected model does
+  not support them. The API clamps or normalizes accepted values and strips/ignores
+  unsupported values for GPT-5 and o-series requests. UI help is explanatory only;
+  control visibility does not grant a model capability or override server policy.
 
 ## Agents and workflows
 
@@ -39,6 +43,21 @@ and tool safety; the web app is the user interface.
   conversation-level tool changes; the API authorizes every call again at execution.
 - Tool rows state whether a capability is available in typed chat, Voice Live, or
   both. Typed-only tools are never silently advertised to Voice Live.
+
+### Agent activity
+
+Tool-using turns show live activity such as searching, reading, running a tool,
+being blocked, or encountering an error. Completed turns retain a collapsed,
+activity list. The required contract is an execution trace, **not**
+chain-of-thought: it may contain only the step type, tool name, and coarse outcome,
+never hidden reasoning, credentials, arguments/results, prompts or queries, audio,
+or transcripts.
+
+That privacy contract depends on the hardening assigned to PR #189. Until that fix
+is merged and deployed, current activity details and agent INFO logs may retain
+ordinary prompt/query argument text even after secret redaction. Treat those
+surfaces as potentially sensitive; the accepted fix must remove argument content,
+not classify it as safe.
 
 ## Documents and media
 
@@ -75,7 +94,9 @@ stale id remains in an older session record.
 
 ## Voice
 
-- Turn-based speech uses the normal API path.
+- Turn-based transcription and text-to-speech use compatible HTTP calls on the
+  normal `FastAPI -> SimpleL7Proxy -> APIM -> Foundry` path. The **Play** control
+  synthesizes an assistant message independently of any Voice Live connection.
 - Voice Live uses a browser WebSocket directly to the API ingress because the
   Next.js proxy does not proxy WebSockets.
 - The API still enforces auth, Origin checks, entitlements, metering, deployment
