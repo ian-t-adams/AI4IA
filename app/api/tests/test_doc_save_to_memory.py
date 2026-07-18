@@ -279,3 +279,44 @@ def test_delete_document_survives_memory_forget_failure(client):
     assert client.delete(f"/api/library/documents/{doc.id}").status_code == 204
     with pytest.raises(DocumentNotFoundError):
         asyncio.run(client.app.state.document_library.get_document(uid, doc.id))
+
+
+# --- production defect: pgvector's erase_document cannot key on document_id ---
+
+
+class _NoDocumentEraseStore(InMemoryVectorStore):
+    """Stands in for PgVectorStore: every op works except erase_document,
+    which raises NotImplementedError instead of the store's old false-success
+    no-op (see memory/pgvector_store.py)."""
+
+    async def erase_document(self, user_id: str, document_id: str) -> int:
+        raise NotImplementedError("document-scoped erase is not supported")
+
+
+def test_save_to_memory_502_when_store_cannot_erase_by_document(client):
+    """Production defect: PgVectorStore.erase_document used to report a false
+    success (0 removed) while a document's memories stayed fully recallable,
+    so remember_document's idempotent re-save silently duplicated them on
+    every repeat save. It now raises instead of lying; the explicit save
+    endpoint must surface that as 502 ("memory failures surface because the
+    user explicitly asked to save"), never a false 201."""
+    client.app.state.memory = MemoryService(
+        store=_NoDocumentEraseStore(), embedder=FakeEmbedder()
+    )
+    uid = _uid(client)
+    doc = asyncio.run(_seed(client, uid=uid))
+    resp = client.post(f"/api/library/documents/{doc.id}/memory")
+    assert resp.status_code == 502, resp.text
+
+
+def test_forget_document_502_when_store_cannot_erase_by_document(client):
+    """Same production defect from the forget side: forgetting a document's
+    memories must surface an honest 502, not a false ``forgotten: 0``, when
+    the backing store cannot key an erase on document_id."""
+    client.app.state.memory = MemoryService(
+        store=_NoDocumentEraseStore(), embedder=FakeEmbedder()
+    )
+    uid = _uid(client)
+    doc = asyncio.run(_seed(client, uid=uid))
+    resp = client.delete(f"/api/library/documents/{doc.id}/memory")
+    assert resp.status_code == 502, resp.text

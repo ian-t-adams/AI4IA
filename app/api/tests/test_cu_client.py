@@ -13,7 +13,7 @@ from ai4ia_api.content_understanding.client import (
     ContentUnderstandingClient,
     ContentUnderstandingError,
 )
-from ai4ia_api.content_understanding.models import parse_result
+from ai4ia_api.content_understanding.models import is_valid_analyzer_id, parse_result
 
 _OP_URL = (
     "https://cu.example/contentunderstanding/analyzerResults/req-1"
@@ -206,3 +206,70 @@ def test_parse_result_handles_missing_result():
     assert result.markdown == ""
     assert result.fields == {}
     assert not result.succeeded
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "prebuilt-documentSearch",
+        "a",
+        "a" * 64,
+        "with.dots.allowed",
+        "-leading-hyphen",
+        "_leading_underscore",
+        ".leading-dot",
+    ],
+)
+def test_is_valid_analyzer_id_accepts_contract_charset(value):
+    assert is_valid_analyzer_id(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "a" * 65,
+        "foo/bar",
+        "foo?x=1",
+        "foo#frag",
+        "foo bar",
+        "foo\n",
+        "foo\r\n",
+        "../secrets",
+    ],
+)
+def test_is_valid_analyzer_id_rejects_invalid_values(value):
+    # "foo\n" is the key regression case: a validator built on ``match(...) +
+    # "$"`` instead of ``fullmatch`` would incorrectly accept this, because
+    # "$" alone matches just before a trailing newline.
+    assert not is_valid_analyzer_id(value)
+
+
+def test_submit_url_builds_expected_path_for_valid_analyzer_id():
+    settings = _settings()
+    client = ContentUnderstandingClient(settings)
+    assert client.submit_url("prebuilt-documentSearch") == (
+        "https://cu.example/contentunderstanding/analyzers/"
+        "prebuilt-documentSearch:analyzeBinary?api-version=2025-11-01"
+    )
+
+
+def test_submit_url_rejects_invalid_analyzer_id():
+    # Defense in depth: even if a caller bypasses the request-model validator
+    # (e.g. a persisted/legacy Analyzer.baseAnalyzerId, which has no validator
+    # of its own), the client must not build a request URL from it.
+    settings = _settings()
+    client = ContentUnderstandingClient(settings)
+    with pytest.raises(ValueError, match="invalid content understanding analyzer id"):
+        client.submit_url("../secrets")
+
+
+async def test_submit_binary_rejects_invalid_analyzer_id_before_any_request():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no HTTP request should be made for an invalid analyzer id")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = ContentUnderstandingClient(_settings(), http_client=http)
+        with pytest.raises(ValueError, match="invalid content understanding analyzer id"):
+            await client.submit_binary("foo\n", b"x", "application/pdf")
+

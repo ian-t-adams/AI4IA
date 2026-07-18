@@ -8,6 +8,8 @@ injected (in-memory library + blob + a fake Code Interpreter); no network.
 """
 from __future__ import annotations
 
+import asyncio
+
 from ai4ia_api.code_interpreter.models import CodeInterpreterResult
 from ai4ia_api.library.blob_store import (
     PARSED_NAME,
@@ -413,8 +415,11 @@ async def test_export_writes_new_version_and_bumps_manifest():
     refreshed = await library.get_document("u1", doc.id)
     assert refreshed.version_count == 2
     assert [v.n for v in refreshed.versions] == [1, 2]
-    # The version blobs exist under the versions/ prefix.
-    assert await blob.get(version_prefix("u1", doc.id, 1) + "out.md") == b"# v1 content"
+    # The version blob is looked up via the manifest's own stored path (the
+    # path includes a per-attempt token, so it's never reconstructed from
+    # (user, doc, n, filename) alone - see version_path()).
+    v1 = next(v for v in refreshed.versions if v.n == 1)
+    assert await blob.get(v1.path) == b"# v1 content"
 
 
 async def test_export_leaves_original_immutable():
@@ -456,7 +461,9 @@ async def test_export_caps_content_length():
     doc = await _seed_doc(library, blob)
     res = await export.export_version("u1", doc.id, content="0123456789", filename="big.md")
     assert res["truncated"] is True
-    stored = await blob.get(version_prefix("u1", doc.id, 1) + "big.md")
+    refreshed = await library.get_document("u1", doc.id)
+    v1 = next(v for v in refreshed.versions if v.n == 1)
+    stored = await blob.get(v1.path)
     assert stored == b"01234"
 
 
@@ -512,6 +519,78 @@ async def test_export_orphan_blob_cleaned_on_generic_manifest_failure():
     res = await export.export_version("u1", doc.id, content="adjusted", filename="new.md")
     assert "error" in res
     assert await blob.delete_prefix(version_prefix("u1", doc.id, 1)) == 0
+
+
+async def test_export_concurrent_race_does_not_delete_winners_blob():
+    """Production-grade HIGH finding: two concurrent export_version calls on
+    the same document both read next_version before either commits, so both
+    can compute the same version number n and (with the same filename) the
+    same pre-fix blob path. The optimistic-concurrency loser's orphan-blob
+    cleanup must never delete the winner's already-committed blob.
+
+    This drives a *real* race via asyncio.gather against a repo that
+    deterministically reproduces the production shape: both callers observe
+    the same starting document snapshot (mirroring two overlapping requests
+    that each load the doc before either writes), then whichever
+    update_document call arrives first wins and the second is rejected with
+    DocumentNotFoundError - exactly what CosmosDocumentLibraryRepository
+    raises when CosmosAccessConditionFailedError fires because the other
+    writer's commit already moved the etag (see cosmos_repo.update_document).
+    """
+
+    class RacingRepo(InMemoryDocumentLibraryRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self._readers = 0
+            self._both_read = asyncio.Event()
+            self._read_lock = asyncio.Lock()
+            self._updates = 0
+            self._update_lock = asyncio.Lock()
+
+        async def get_document(self, user_id, document_id):
+            doc = await super().get_document(user_id, document_id)
+            async with self._read_lock:
+                self._readers += 1
+                if self._readers >= 2:
+                    self._both_read.set()
+            await asyncio.wait_for(self._both_read.wait(), timeout=5)
+            return doc
+
+        async def update_document(self, document):
+            async with self._update_lock:
+                self._updates += 1
+                call_no = self._updates
+            if call_no == 1:
+                return await super().update_document(document)
+            # Second concurrent writer: Cosmos's real conditional replace_item
+            # would fail here (etag already moved) and get mapped to
+            # DocumentNotFoundError - reproduce that exact shape.
+            raise DocumentNotFoundError(document.id)
+
+    library = RacingRepo()
+    blob = InMemoryBlobStore()
+    export = _export(library, blob, _settings())
+    doc = await _seed_doc(library, blob)
+
+    # Same filename on both racers: pre-fix, this is what makes their
+    # (identical, pre-fix) paths collide.
+    results = await asyncio.gather(
+        export.export_version("u1", doc.id, content="content A", filename="adjusted.md"),
+        export.export_version("u1", doc.id, content="content B", filename="adjusted.md"),
+    )
+
+    oks = [r for r in results if "error" not in r]
+    errors = [r for r in results if "error" in r]
+    assert len(oks) == 1
+    assert len(errors) == 1
+
+    refreshed = await library.get_document("u1", doc.id)
+    assert refreshed.version_count == 1
+    winner = refreshed.versions[0]
+    # The winner's manifest entry must still resolve to its own content - the
+    # loser's cleanup must not have deleted the winner's committed blob.
+    data = await blob.get(winner.path)
+    assert data in (b"content A", b"content B")
 
 
 async def test_export_list_and_read_version_gated():

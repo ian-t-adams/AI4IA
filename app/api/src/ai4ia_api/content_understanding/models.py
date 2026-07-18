@@ -7,12 +7,30 @@ extracted fields and the raw envelope (kept for grounding/citations later).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 # Terminal CU operation states (case-insensitive). ``Running``/``NotStarted`` mean
 # keep polling.
 TERMINAL_STATES = frozenset({"succeeded", "failed"})
+
+# Content Understanding analyzer-id contract: 1-64 characters of letters, digits,
+# '.', '_' and '-' (matches the service's own resource-id rules). ``fullmatch`` (not
+# ``match`` + ``$``) so a trailing newline can never sneak through — ``$`` alone
+# matches just before a final "\n", which ``fullmatch`` correctly rejects.
+#
+# Shared between the request-model validator (``AnalyzerCreate.baseAnalyzerId`` in
+# routers/library.py) and :meth:`ContentUnderstandingClient.submit_url` below, so a
+# persisted/legacy analyzer id that predates or otherwise bypasses the request
+# model (the ``Analyzer`` domain model itself has no such validator) can never be
+# interpolated into a live CU request URL.
+ANALYZER_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+def is_valid_analyzer_id(value: str) -> bool:
+    """Whether ``value`` satisfies the CU analyzer-id contract above."""
+    return bool(ANALYZER_ID_RE.fullmatch(value))
 
 
 @dataclass(slots=True)

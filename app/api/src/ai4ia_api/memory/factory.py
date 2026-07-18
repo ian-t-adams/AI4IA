@@ -71,10 +71,12 @@ def _build_store(kind: MemoryStoreKind, settings: Settings) -> MemoryStore | Non
             # misconfig fails closed (Noop) rather than building a broken store.
             logger.warning("memory disabled: pgvector requires postgres_host + postgres_user")
             return None
-        # PgVectorStore.erase_document is a no-op (see pgvector_store.py): the
-        # ``memories`` table has no document_id column to key a real erase on.
-        # It still satisfies the MemoryStore protocol so save/forget-by-document
-        # degrade to "not tracked" instead of raising.
+        # PgVectorStore.erase_document raises NotImplementedError (see
+        # pgvector_store.py): the ``memories`` table has no document_id column
+        # to key a real erase on, and reporting a fake success would let
+        # forget-by-document lie and re-save-by-document silently duplicate.
+        # It still satisfies the MemoryStore protocol; callers already treat a
+        # memory-operation failure as a surfaced error (routers/library.py).
         return PgVectorStore(
             host=settings.postgres_host,
             database=settings.postgres_database,

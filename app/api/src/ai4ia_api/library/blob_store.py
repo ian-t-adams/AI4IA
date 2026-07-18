@@ -24,8 +24,8 @@ CHUNKS_NAME = "chunks.jsonl"
 # extracted from the CU result, served to the media player. Optional sidecar —
 # absent for documents and for AV without scene detail.
 MEDIA_NAME = "media.json"
-# Subdirectory under a document's prefix holding "adjust & return" exports
-# Each export writes ``{userId}/{documentId}/versions/{n}/{name}``,
+# Subdirectory under a document's prefix holding "adjust & return" exports.
+# Each export writes ``{userId}/{documentId}/versions/{n}/{token}/{name}``,
 # leaving the original raw/parsed artifacts immutable.
 VERSIONS_DIR = "versions"
 
@@ -46,8 +46,20 @@ def version_prefix(user_id: str, document_id: str, n: int) -> str:
     return f"{document_prefix(user_id, document_id)}{VERSIONS_DIR}/{n}/"
 
 
-def version_path(user_id: str, document_id: str, n: int, name: str) -> str:
-    return f"{version_prefix(user_id, document_id, n)}{name}"
+def version_path(user_id: str, document_id: str, n: int, token: str, name: str) -> str:
+    """Path for one export *attempt's* blob.
+
+    ``token`` must be unique per attempt, not just per version number ``n``:
+    two concurrent exports of the same document can both read the same
+    ``next_version`` before either has committed, so both compute the same
+    ``n``. Without a per-attempt token, they would collide on the identical
+    path ``versions/{n}/{name}`` — and the losing attempt's orphan-blob
+    cleanup (``delete_prefix`` on that shared path) would then delete the
+    winning attempt's already-committed blob out from under its manifest
+    entry. Keying the path on a random token as well as ``n`` guarantees a
+    cleanup can only ever remove the exact blob its own attempt wrote.
+    """
+    return f"{version_prefix(user_id, document_id, n)}{token}/{name}"
 
 
 @runtime_checkable

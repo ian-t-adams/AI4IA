@@ -26,6 +26,7 @@ producer/consumer parity exactly like the retrieval service.
 from __future__ import annotations
 
 import logging
+import secrets
 
 from ..config import Settings
 from .blob_store import BlobNotFoundError, BlobStore, version_path
@@ -122,7 +123,13 @@ class DocumentExportService:
         safe_name = _safe_filename(filename)
         safe_note = _one_line(note, _NOTE_LIMIT)
         n = doc.next_version
-        path = version_path(user_id, document_id, n, safe_name)
+        # A random per-attempt token (not just n) keys the blob path: two
+        # concurrent exports of the same document both read next_version
+        # before either commits, so they can compute the same n. Without a
+        # unique path per attempt, the loser's cleanup below could delete the
+        # winner's already-committed blob (see version_path's docstring).
+        token = secrets.token_hex(8)
+        path = version_path(user_id, document_id, n, token, safe_name)
         data = body.encode("utf-8")
         try:
             await self._blob.put(path, data, content_type or "text/markdown")

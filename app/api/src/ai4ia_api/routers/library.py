@@ -13,7 +13,6 @@ ships only the storage spine so the data model and governance are settled first.
 from __future__ import annotations
 
 import logging
-import re
 import time
 from datetime import datetime, timezone
 
@@ -35,6 +34,7 @@ from ..auth.dependencies import get_current_user
 from ..entitlements.service import EntitlementService
 from ..logging_setup import emit_custom_event
 from ..memory.telemetry import emit_memory_operation
+from ..content_understanding.models import is_valid_analyzer_id
 from ..library.access import (
     can_access,
     list_accessible_documents,
@@ -57,6 +57,7 @@ from ..library.models import (
 from ..library.repository import (
     AnalyzerConflictError,
     AnalyzerNotFoundError,
+    DocumentConflictError,
     DocumentLibraryRepository,
     DocumentNotFoundError,
 )
@@ -146,10 +147,11 @@ class LibrarySummary(BaseModel):
 
 # A custom analyzer's baseAnalyzerId is interpolated directly into the Content
 # Understanding request URL path (see ContentUnderstandingClient.submit_url), so
-# it is restricted to a conservative resource-id charset. This blocks "/", "?",
-# "#", whitespace, and control characters from reaching URL construction; it is
-# not required to exactly mirror every id the CU service itself would accept.
-_ANALYZER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+# it is restricted to the same charset the CU service itself uses for analyzer
+# ids. This blocks "/", "?", "#", whitespace, and control characters (including
+# a trailing newline) from reaching URL construction. The rule lives in
+# ``content_understanding.models`` so this validator and the CU client's own
+# defense-in-depth check can never drift apart.
 
 
 class AnalyzerCreate(BaseModel):
@@ -162,10 +164,10 @@ class AnalyzerCreate(BaseModel):
     @field_validator("baseAnalyzerId")
     @classmethod
     def validate_base_analyzer_id(cls, value: str | None) -> str | None:
-        if value is not None and not _ANALYZER_ID_RE.match(value):
+        if value is not None and not is_valid_analyzer_id(value):
             raise ValueError(
-                "baseAnalyzerId may only contain letters, digits, '-' and '_' "
-                "(max 128 characters)."
+                "baseAnalyzerId may only contain letters, digits, '.', '-' and "
+                "'_' (1-64 characters)."
             )
         return value
 
@@ -934,6 +936,11 @@ async def set_document_shares(
         saved = await repo.update_document(doc)
     except DocumentNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    except DocumentConflictError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document changed concurrently; reload and try again.",
+        )
     logger.info(
         "share-set user=%s id=%s visibility=%s grantees=%d",
         uid, document_id, doc.visibility.value, len(doc.acl),
@@ -971,6 +978,11 @@ async def revoke_document_share(
             doc = await repo.update_document(doc)
         except DocumentNotFoundError:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        except DocumentConflictError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Document changed concurrently; reload and try again.",
+            )
         logger.info("share-revoke user=%s id=%s", uid, document_id)
     return ShareState.of(doc)
 
@@ -1085,6 +1097,11 @@ async def create_annotation(
         await repo.update_document(doc)
     except DocumentNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    except DocumentConflictError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document changed concurrently; reload and try again.",
+        )
     logger.info("annotation created user=%s doc=%s id=%s", uid, document_id, annotation.id)
     return AnnotationView.of(annotation)
 
@@ -1125,6 +1142,11 @@ async def update_annotation(
         await repo.update_document(doc)
     except DocumentNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    except DocumentConflictError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document changed concurrently; reload and try again.",
+        )
     return AnnotationView.of(annotation)
 
 
@@ -1150,6 +1172,11 @@ async def delete_annotation(
             await repo.update_document(doc)
         except DocumentNotFoundError:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        except DocumentConflictError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Document changed concurrently; reload and try again.",
+            )
 
 
 # --- analyzers ---

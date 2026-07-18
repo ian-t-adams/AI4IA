@@ -22,7 +22,7 @@ from azure.cosmos.exceptions import (
 from ai4ia_api.library.cosmos_repo import CosmosDocumentLibraryRepository
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
 from ai4ia_api.library.models import DocumentStatus, UserDocument
-from ai4ia_api.library.repository import DocumentNotFoundError
+from ai4ia_api.library.repository import DocumentConflictError, DocumentNotFoundError
 
 
 class _FakeDocs:
@@ -125,13 +125,16 @@ async def test_update_deleted_between_read_and_replace_raises():
         await repo.update_document(doc)
 
 
-async def test_update_etag_conflict_raises():
+async def test_update_etag_conflict_raises_conflict_not_not_found():
     # The item was modified (ETag moved) between read and replace — precondition
-    # failed. Treat as gone for enrich's purposes (do not clobber newer state).
+    # failed. This is a genuine conflict, not a not-found: the document still
+    # exists, so a 404-shaped error here would be a false negative (production
+    # finding — a caller previously saw a false "document not found" for a
+    # document that was very much still there).
     doc = _doc(user="alice")
     repo, fake = _repo(existing={"id": doc.id, "userId": "alice", "_etag": "e1"})
     fake.replace_error = CosmosAccessConditionFailedError(message="etag")
-    with pytest.raises(DocumentNotFoundError):
+    with pytest.raises(DocumentConflictError):
         await repo.update_document(doc)
 
 
@@ -168,7 +171,8 @@ async def test_update_document_rejects_write_when_callers_etag_is_stale():
     # underlying store's current etag has moved on since the caller loaded
     # the document (simulated here via replace_error, since the fake does not
     # itself implement CAS matching), the update must lose rather than
-    # clobber whatever changed it.
+    # clobber whatever changed it — and the caller must see a conflict, not a
+    # false "not found".
     doc = _doc(user="alice", summary="before")
     doc._etag = "caller-stale-etag"
     repo, fake = _repo(
@@ -176,7 +180,7 @@ async def test_update_document_rejects_write_when_callers_etag_is_stale():
     )
     fake.replace_error = CosmosAccessConditionFailedError(message="etag")
     doc.summary = "after"
-    with pytest.raises(DocumentNotFoundError):
+    with pytest.raises(DocumentConflictError):
         await repo.update_document(doc)
     assert fake.replace_etags == ["caller-stale-etag"]
 
@@ -212,6 +216,58 @@ async def test_in_memory_update_missing_id_raises():
     repo = InMemoryDocumentLibraryRepository()
     with pytest.raises(DocumentNotFoundError):
         await repo.update_document(_doc(user="alice"))
+
+
+async def test_in_memory_update_rejects_write_when_callers_etag_is_stale():
+    # Parity with the Cosmos repo: a write built from a document whose etag no
+    # longer matches the stored one must be rejected as a conflict, not
+    # silently applied (which would clobber whatever changed it in between).
+    repo = InMemoryDocumentLibraryRepository()
+    created = await repo.create_document(_doc(user="alice", summary="before"))
+    stale = created.model_copy(deep=True)
+    stale._etag = created._etag
+    # Someone else updates the document first, advancing its stored etag.
+    other_edit = created.model_copy(deep=True)
+    other_edit._etag = created._etag
+    other_edit.summary = "edited by someone else"
+    await repo.update_document(other_edit)
+    # The caller's copy is now stale relative to the stored document.
+    stale.summary = "after"
+    with pytest.raises(DocumentConflictError):
+        await repo.update_document(stale)
+
+
+async def test_update_document_parity_conflict_vs_not_found_across_backends():
+    """Direct side-by-side parity check requested in review: both backends
+    must raise the *same* domain errors for the *same* scenarios — a missing
+    document is always ``DocumentNotFoundError`` (never resurrected), and a
+    write built from a stale load is always ``DocumentConflictError`` (never
+    silently applied, and never misreported as a not-found)."""
+    memory_repo = InMemoryDocumentLibraryRepository()
+    cosmos_repo, fake = _repo(existing=None)
+
+    missing_doc = _doc(user="alice")
+    with pytest.raises(DocumentNotFoundError):
+        await memory_repo.update_document(missing_doc)
+    with pytest.raises(DocumentNotFoundError):
+        await cosmos_repo.update_document(missing_doc)
+
+    created = await memory_repo.create_document(_doc(user="alice", summary="before"))
+    stale = created.model_copy(deep=True)
+    other_edit = created.model_copy(deep=True)
+    other_edit.summary = "edited concurrently"
+    await memory_repo.update_document(other_edit)
+    stale.summary = "after"
+    with pytest.raises(DocumentConflictError):
+        await memory_repo.update_document(stale)
+
+    cosmos_repo, fake = _repo(
+        existing={"id": stale.id, "userId": "alice", "_etag": "fresh-current-etag"}
+    )
+    stale._etag = "caller-stale-etag"
+    fake.replace_error = CosmosAccessConditionFailedError(message="etag")
+    with pytest.raises(DocumentConflictError):
+        await cosmos_repo.update_document(stale)
 
 
 async def test_ingest_patch_retries_cas_without_restoring_revoked_acl():

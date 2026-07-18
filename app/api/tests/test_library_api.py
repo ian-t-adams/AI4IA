@@ -168,3 +168,48 @@ def test_create_analyzer_rejects_unsafe_base_analyzer_id(client, bad_id):
         json={"name": "Invoices", "baseAnalyzerId": bad_id},
     )
     assert resp.status_code == 422
+
+
+def test_create_analyzer_accepts_base_analyzer_id_with_dot_and_at_64_chars(client):
+    # The Content Understanding analyzer-id contract allows dots and up to 64
+    # characters (ai4ia_api.content_understanding.models.ANALYZER_ID_RE).
+    value = "a" * 63 + "."
+    resp = client.post(
+        "/api/library/analyzers",
+        json={"name": "Invoices", "baseAnalyzerId": value},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["baseAnalyzerId"] == value
+
+
+def test_create_analyzer_rejects_base_analyzer_id_over_64_chars(client):
+    resp = client.post(
+        "/api/library/analyzers",
+        json={"name": "Invoices", "baseAnalyzerId": "a" * 65},
+    )
+    assert resp.status_code == 422
+
+
+def test_create_analyzer_rejects_base_analyzer_id_with_trailing_newline(client):
+    # Regression: a validator built on ``match(pattern + "$")`` instead of
+    # ``fullmatch`` would incorrectly accept this, because "$" alone matches
+    # just before a trailing newline.
+    resp = client.post(
+        "/api/library/analyzers",
+        json={"name": "Invoices", "baseAnalyzerId": "prebuilt-invoice\n"},
+    )
+    assert resp.status_code == 422
+
+
+def test_create_analyzer_accepts_base_analyzer_id_not_starting_with_alnum(client):
+    # Unlike the previous validator (which required an alphanumeric first
+    # character), the CU analyzer-id contract
+    # (fullmatch(r'[A-Za-z0-9._-]{1,64}', value)) allows '.', '_' and '-' in
+    # any position, including first.
+    value = "-custom.analyzer_v2"
+    resp = client.post(
+        "/api/library/analyzers",
+        json={"name": "Invoices", "baseAnalyzerId": value},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["baseAnalyzerId"] == value

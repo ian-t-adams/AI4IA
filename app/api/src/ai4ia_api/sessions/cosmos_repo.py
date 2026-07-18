@@ -366,6 +366,8 @@ class CosmosSessionRepository:
         )
 
     async def delete_session(self, user_id: str, session_id: str) -> None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
         await self._owned_session(user_id, session_id)
         # Delete child messages first (partition = sessionId).
         query = "SELECT c.id FROM c WHERE c.sessionId = @sid"
@@ -373,13 +375,24 @@ class CosmosSessionRepository:
         async for doc in self._messages.query_items(
             query=query, parameters=params, partition_key=session_id
         ):
-            await self._messages.delete_item(item=doc["id"], partition_key=session_id)
+            try:
+                await self._messages.delete_item(item=doc["id"], partition_key=session_id)
+            except CosmosResourceNotFoundError:
+                # Another concurrent delete/cascade (e.g. a duplicate request,
+                # or a racing single-message delete) already removed this
+                # child between the query above and this call. The cascade's
+                # goal -- no messages left for this session -- already holds
+                # for this item, so treat it as done and keep going rather
+                # than surfacing a raw SDK error for a row that's already gone.
+                continue
         # Cascade-delete uploaded documents (also partitioned by sessionId).
         async for doc in self._documents.query_items(
             query=query, parameters=params, partition_key=session_id
         ):
-            await self._documents.delete_item(item=doc["id"], partition_key=session_id)
-        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+            try:
+                await self._documents.delete_item(item=doc["id"], partition_key=session_id)
+            except CosmosResourceNotFoundError:
+                continue  # same idempotent reasoning as the messages loop above
 
         try:
             await self._sessions.delete_item(item=session_id, partition_key=user_id)
@@ -432,13 +445,18 @@ class CosmosSessionRepository:
         ]
 
     async def clear_messages(self, user_id: str, session_id: str) -> None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
         await self._owned_session(user_id, session_id)
         query = "SELECT c.id FROM c WHERE c.sessionId = @sid"
         params = [{"name": "@sid", "value": session_id}]
         async for doc in self._messages.query_items(
             query=query, parameters=params, partition_key=session_id
         ):
-            await self._messages.delete_item(item=doc["id"], partition_key=session_id)
+            try:
+                await self._messages.delete_item(item=doc["id"], partition_key=session_id)
+            except CosmosResourceNotFoundError:
+                continue  # already gone (concurrent clear/delete) -- idempotent
 
     async def add_document(self, user_id: str, document: Document) -> Document:
         await self._owned_session(user_id, document.sessionId)

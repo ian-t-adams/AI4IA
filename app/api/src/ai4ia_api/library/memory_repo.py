@@ -20,6 +20,7 @@ from .models import (
 from .repository import (
     AnalyzerConflictError,
     AnalyzerNotFoundError,
+    DocumentConflictError,
     DocumentNotFoundError,
 )
 
@@ -102,8 +103,16 @@ class InMemoryDocumentLibraryRepository:
             bucket = self._docs.get(document.userId, {})
             if document.id not in bucket:
                 raise DocumentNotFoundError(document.id)
-            document.touch()
             current = bucket[document.id]
+            # Parity with the Cosmos repo's optimistic-concurrency check:
+            # reject a write built from a stale load instead of silently
+            # discarding whatever changed in between (e.g. two concurrent
+            # annotation edits, or the enrich worker patching status mid-edit).
+            # A document that was never loaded (no ``_etag`` of its own) has
+            # nothing to defend, matching the Cosmos repo's fallback.
+            if document._etag is not None and document._etag != current._etag:
+                raise DocumentConflictError(document.id)
+            document.touch()
             document._etag = str(int(current._etag or "0") + 1)
             bucket[document.id] = document
             return document.model_copy(deep=True)

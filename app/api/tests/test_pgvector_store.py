@@ -164,15 +164,20 @@ async def test_erase_user_and_session_return_counts():
     assert sess_args == ("u1", "s1")
 
 
-async def test_erase_document_is_a_safe_no_op():
-    # The ``memories`` table has no document_id column: erase_document must not
-    # raise (MemoryStore requires it — callers like MemoryService.remember_document
-    # / forget_document call it unconditionally) and must honestly report 0.
+async def test_erase_document_raises_not_implemented_without_db_access():
+    """Regression: the pgvector ``memories`` table has no document_id column,
+    so erase_document previously returned a success-shaped 0 while the
+    document's memories stayed fully recallable, and remember_document's
+    idempotent re-save silently duplicated them on every repeat save. It must
+    now raise (never a false-success) so the callers' existing "memory
+    operation failed" handling (routers/library.py -> 502) surfaces the
+    truth. No DB round trip is attempted - there's nothing valid to run."""
     conn = FakeConn()
     store = _store(conn)
-    assert await store.erase_document("u1", "doc-1") == 0
-    # No DELETE/erase statement is issued — there's nothing to key it on.
+    with pytest.raises(NotImplementedError, match="document_id"):
+        await store.erase_document("u1", "doc-1")
     assert conn.fetchvals == []
+    assert conn.executed == []
 
 
 async def test_vector_literal_rejects_wrong_dimension():

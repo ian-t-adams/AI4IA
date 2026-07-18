@@ -531,6 +531,81 @@ async def test_cosmos_delete_session_translates_concurrent_delete_to_not_found()
         await repo.delete_session("u1", session.id)
 
 
+class _SucceedingSessions:
+    """Fake ``sessions`` container where reads and the final delete both
+    succeed normally -- isolates the child-container race (below) from the
+    session's own concurrent-delete race, which is already covered by
+    ``_ConcurrentlyDeletedSessions`` above."""
+
+    def __init__(self, session: Session) -> None:
+        self.item = {**session.model_dump(mode="json"), "_etag": "e1"}
+        self.deleted = False
+
+    async def read_item(self, *, item, partition_key):
+        return dict(self.item)
+
+    async def delete_item(self, *, item, partition_key):
+        self.deleted = True
+
+
+class _RacedChildContainer:
+    """Fake ``messages``/``documents`` container whose listed rows are each
+    already gone by the time this container's own ``delete_item`` runs --
+    every delete raises ``CosmosResourceNotFoundError``, exactly as Cosmos
+    does for a real concurrent double-delete (e.g. a duplicate request, or a
+    racing single-item delete) landing in the query-then-delete gap."""
+
+    def __init__(self, ids: list[str]) -> None:
+        self._ids = ids
+        self.delete_attempts: list[str] = []
+
+    async def query_items(self, *, query, parameters=None, partition_key=None):
+        for item_id in self._ids:
+            yield {"id": item_id}
+
+    async def delete_item(self, *, item, partition_key):
+        self.delete_attempts.append(item)
+        raise CosmosResourceNotFoundError(message="deleted concurrently")
+
+
+async def test_cosmos_delete_session_tolerates_concurrently_deleted_children():
+    """Production-shape regression: delete_session's cascade previously let a
+    raw CosmosResourceNotFoundError from the *messages* or *documents*
+    container escape uncaught when a concurrent request/cascade removed a
+    child row between this call's own query and its delete_item. That 404 is
+    the cascade's already-achieved goal state for that row, so it must be
+    swallowed and the cascade must continue -- and the still-existing session
+    must still be deleted, not misreported as SessionNotFoundError."""
+    session = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _SucceedingSessions(session)
+    messages = _RacedChildContainer(["m1", "m2"])
+    documents = _RacedChildContainer(["d1"])
+    repo._messages = messages
+    repo._documents = documents
+
+    await repo.delete_session("u1", session.id)  # must not raise
+
+    assert messages.delete_attempts == ["m1", "m2"]
+    assert documents.delete_attempts == ["d1"]
+    assert repo._sessions.deleted is True
+
+
+async def test_cosmos_clear_messages_tolerates_concurrently_deleted_messages():
+    """Same idempotent-child-404 reasoning as delete_session's cascade,
+    applied to the standalone clear-messages path (identical query-then-
+    delete-per-row shape, same race)."""
+    session = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _SucceedingSessions(session)
+    messages = _RacedChildContainer(["m1"])
+    repo._messages = messages
+
+    await repo.clear_messages("u1", session.id)  # must not raise
+
+    assert messages.delete_attempts == ["m1"]
+
+
 class _LegacyDocSessions:
     """Cosmos container stand-in serving one already-stored document whose
     ``toolOverrides`` predates/violates the current schema (e.g. written by

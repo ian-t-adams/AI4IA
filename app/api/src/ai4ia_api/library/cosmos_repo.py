@@ -33,6 +33,7 @@ from .models import (
 from .repository import (
     AnalyzerConflictError,
     AnalyzerNotFoundError,
+    DocumentConflictError,
     DocumentNotFoundError,
 )
 
@@ -188,9 +189,12 @@ class CosmosDocumentLibraryRepository:
             # Deleted between the read and the write.
             raise DocumentNotFoundError(document.id) from exc
         except CosmosAccessConditionFailedError as exc:
-            # Etag moved (concurrent modify/delete since the caller's load) —
-            # treat as gone so the caller does not overwrite a newer state.
-            raise DocumentNotFoundError(document.id) from exc
+            # Etag moved (concurrent modify since the caller's load). The
+            # document still exists — this is a genuine conflict, not a
+            # not-found, so it must not be reported as one: a 404 here would
+            # be a false negative that could lead a caller to (re)create a
+            # "missing" document instead of reloading the real, current one.
+            raise DocumentConflictError(document.id) from exc
         document._etag = updated.get("_etag")
         return document
 

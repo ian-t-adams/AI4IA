@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from ai4ia_api.auth.base import AuthCredentials
 from ai4ia_api.library.models import UserDocument, Visibility
-from ai4ia_api.library.repository import DocumentNotFoundError
+from ai4ia_api.library.repository import DocumentConflictError, DocumentNotFoundError
 from ai4ia_api.main import create_app
 from tests.conftest import make_settings
 
@@ -300,3 +300,52 @@ def test_revoke_share_document_deleted_concurrently_is_404(client):
     )
     resp = client.delete(f"/api/library/documents/{doc.id}/shares/bob@example.com")
     assert resp.status_code == 404
+
+
+# --- etag conflict: update_document can also lose an optimistic-concurrency
+# race (the document still exists but was modified since the router's own
+# read). That must surface as 409, distinct from the 404 case above — a
+# stale-write conflict is not a not-found, and reporting it as one would be a
+# false negative that could mislead a client into thinking the document is
+# gone. ---
+class _UpdateRacesConflictRepo:
+    """Wraps a real repo; ``update_document`` raises as if the document was
+    modified (etag moved) between the router's ownership read and this write."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def update_document(self, document):
+        raise DocumentConflictError(document.id)
+
+
+def test_set_shares_document_modified_concurrently_is_409(client):
+    owner = _uid(client)
+    doc = _seed(client, userId=owner, filename="race.pdf")
+    client.app.state.document_library = _UpdateRacesConflictRepo(
+        client.app.state.document_library
+    )
+    resp = client.put(
+        f"/api/library/documents/{doc.id}/shares",
+        json={"visibility": "shared", "grantees": ["bob@example.com"]},
+    )
+    assert resp.status_code == 409
+
+
+def test_revoke_share_document_modified_concurrently_is_409(client):
+    owner = _uid(client)
+    doc = _seed(
+        client,
+        userId=owner,
+        filename="race.pdf",
+        visibility=Visibility.shared,
+        acl=["bob@example.com"],
+    )
+    client.app.state.document_library = _UpdateRacesConflictRepo(
+        client.app.state.document_library
+    )
+    resp = client.delete(f"/api/library/documents/{doc.id}/shares/bob@example.com")
+    assert resp.status_code == 409
