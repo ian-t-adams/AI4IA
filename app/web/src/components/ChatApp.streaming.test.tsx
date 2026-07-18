@@ -248,9 +248,11 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-// Submits `text` through the real Composer and returns the StreamHandlers
-// ChatApp registered with streamChat for that turn.
-async function sendAndCaptureHandlers(
+// Submits `text` through the already-rendered Composer and returns the
+// StreamHandlers ChatApp registered with streamChat for that turn. Split out
+// from sendAndCaptureHandlers so a test can drive a second same-session send
+// without remounting (and thereby losing) the first turn's component state.
+async function sendMessageAndCaptureHandlers(
   user: ReturnType<typeof userEvent.setup>,
   text: string,
 ): Promise<StreamHandlers> {
@@ -259,7 +261,6 @@ async function sendAndCaptureHandlers(
     captured = handlers;
     return vi.fn();
   });
-  render(<ChatApp />);
   const textbox = await screen.findByLabelText("Message");
   await user.type(textbox, text);
   const sendButton = await screen.findByRole("button", { name: "Send" });
@@ -267,6 +268,15 @@ async function sendAndCaptureHandlers(
   await user.click(sendButton);
   await waitFor(() => expect(captured).not.toBeNull());
   return captured!;
+}
+
+// Renders a fresh ChatApp and submits `text` through it.
+async function sendAndCaptureHandlers(
+  user: ReturnType<typeof userEvent.setup>,
+  text: string,
+): Promise<StreamHandlers> {
+  render(<ChatApp />);
+  return sendMessageAndCaptureHandlers(user, text);
 }
 
 describe("ChatApp streaming render (real MessageList, no mocks on the render path)", () => {
@@ -467,5 +477,141 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
 
     expect(screen.queryByText("Old session question")).toBeNull();
     expect(screen.queryByText("Old session answer.")).toBeNull();
+  });
+
+  it("does not let a stale finalize from a rapid same-session resend wipe the newer turn's live stream", async () => {
+    // isSameConversation() only checked sessionId/generation, so a second
+    // send in the *same* session (no navigation) wasn't caught by it. A
+    // per-turn token is required to detect this case too.
+    const user = userEvent.setup();
+    const handlers1 = await sendAndCaptureHandlers(user, "First question");
+    act(() => {
+      handlers1.onDelta("First partial");
+    });
+    expect(await screen.findByText("First partial", { exact: false })).toBeInTheDocument();
+
+    let resolveFirstFetch!: (value: Message[]) => void;
+    mocks.listMessages.mockImplementationOnce(
+      () =>
+        new Promise<Message[]>((resolve) => {
+          resolveFirstFetch = resolve;
+        }),
+    );
+    const listSessionsCallsBeforeFirstDone = mocks.listSessions.mock.calls.length;
+    act(() => {
+      handlers1.onDone();
+    });
+
+    // Composer re-enables as soon as finalize's synchronous prefix runs,
+    // while turn 1's reconciliation fetch is still pending.
+    const textbox = await screen.findByLabelText("Message");
+    await waitFor(() => expect(textbox).toBeEnabled());
+
+    const handlers2 = await sendMessageAndCaptureHandlers(user, "Second question");
+    act(() => {
+      handlers2.onDelta("Second partial");
+      handlers2.onStep?.({ kind: "tool_start", label: "Second tool", tool: "web_search" });
+    });
+    expect(await screen.findByText("Second partial", { exact: false })).toBeInTheDocument();
+    expect(await screen.findByText("Second tool")).toBeInTheDocument();
+
+    // Turn 1's stale fetch now resolves successfully. Without a per-turn
+    // guard this would reconcile using turn 1's data and wipe turn 2's live
+    // streamingText/liveSteps in the process.
+    act(() => {
+      resolveFirstFetch([
+        persistedMessage({ id: "u1", role: "user", content: "First question" }),
+        persistedMessage({ id: "a1", role: "assistant", content: "First partial" }),
+      ]);
+    });
+    await waitFor(() =>
+      expect(mocks.listSessions.mock.calls.length).toBeGreaterThan(
+        listSessionsCallsBeforeFirstDone,
+      ),
+    );
+
+    expect(await screen.findByText("Second partial", { exact: false })).toBeInTheDocument();
+    expect(await screen.findByText("Second tool")).toBeInTheDocument();
+  });
+
+  it("supersedes an earlier synthetic fallback reply once a later turn's successful reconciliation lands", async () => {
+    // reconcileMessages only drops a previous-only message if its ID is in
+    // removeIds. The per-turn optimisticUser.id set used to cover only the
+    // *current* turn, so an earlier turn's local-* fallback (created after a
+    // failed refetch) never got removed once the real persisted copy arrived.
+    const user = userEvent.setup();
+    const handlers1 = await sendAndCaptureHandlers(user, "First question");
+    act(() => {
+      handlers1.onDelta("Fallback answer");
+    });
+    expect(await screen.findByText("Fallback answer", { exact: false })).toBeInTheDocument();
+
+    mocks.listMessages.mockRejectedValueOnce(new Error("network blip"));
+    act(() => {
+      handlers1.onDone();
+    });
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Fallback answer")).toBeInTheDocument();
+
+    const handlers2 = await sendMessageAndCaptureHandlers(user, "Second question");
+    act(() => {
+      handlers2.onDelta("Second answer");
+    });
+    expect(await screen.findByText("Second answer", { exact: false })).toBeInTheDocument();
+
+    // Turn 2 succeeds, and its reconciliation returns the full authoritative
+    // history -- including turn 1's real persisted reply under a different ID.
+    mocks.listMessages.mockResolvedValueOnce([
+      persistedMessage({ id: "u1", role: "user", content: "First question" }),
+      persistedMessage({ id: "a1", role: "assistant", content: "Fallback answer" }),
+      persistedMessage({ id: "u2", role: "user", content: "Second question" }),
+      persistedMessage({ id: "a2", role: "assistant", content: "Second answer" }),
+    ]);
+    act(() => {
+      handlers2.onDone();
+    });
+
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledTimes(2));
+    // Only the persisted copy should remain -- no duplicate from the earlier
+    // synthetic local-* fallback bubble.
+    expect(await screen.findAllByText("Fallback answer")).toHaveLength(1);
+    expect(await screen.findByText("Second answer")).toBeInTheDocument();
+  });
+
+  it("retries a stale-but-successful reconciliation and falls back to the buffered reply instead of dropping it", async () => {
+    // The backend can send SSE [DONE] before its own finally-block Cosmos
+    // upsert lands, so a refetch right after [DONE] can succeed (no throw)
+    // yet still return the pre-completion "streaming" placeholder.
+    const user = userEvent.setup();
+    const handlers = await sendAndCaptureHandlers(user, "Stale reconciliation question");
+    act(() => {
+      handlers.onDelta("Answer built from the live stream.");
+    });
+    expect(
+      await screen.findByText("Answer built from the live stream.", { exact: false }),
+    ).toBeInTheDocument();
+
+    const streamingPlaceholder = () => [
+      persistedMessage({ id: "u1", role: "user", content: "Stale reconciliation question" }),
+      persistedMessage({ id: "a1", role: "assistant", content: "", status: "streaming" }),
+    ];
+    mocks.listMessages.mockResolvedValueOnce(streamingPlaceholder());
+    mocks.listMessages.mockResolvedValueOnce(streamingPlaceholder());
+    act(() => {
+      handlers.onDone();
+    });
+
+    // Both the initial attempt and its retry must run before giving up.
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    // Neither attempt ever showed a terminal reply, so the buffered stream
+    // content must still render instead of being silently dropped.
+    expect(
+      await screen.findByText(
+        "Answer built from the live stream.",
+        {},
+        { timeout: 3000 },
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Generating")).toBeNull();
   });
 });

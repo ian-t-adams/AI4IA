@@ -113,6 +113,43 @@ function reconcileMessages(
   );
 }
 
+// The backend upserts a "streaming" placeholder before the model call, then
+// rewrites it with the final content only after SSE sends `[DONE]` (chat.py).
+// A refetch right after `[DONE]` can race that upsert and see the placeholder.
+function isReconciliationStale(messages: Message[]): boolean {
+  const latestAssistant = messages.reduce<Message | undefined>((latest, message) => {
+    if (message.role !== "assistant") return latest;
+    if (!latest || Date.parse(message.createdAt) >= Date.parse(latest.createdAt)) {
+      return message;
+    }
+    return latest;
+  }, undefined);
+  return !latestAssistant || latestAssistant.status === "streaming";
+}
+
+const RECONCILE_MAX_ATTEMPTS = 2;
+const RECONCILE_RETRY_DELAY_MS = 150;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Retries briefly on a stale result (see isReconciliationStale). Returns
+// null -- not partial data -- on a throw or exhausted retries, so the
+// caller can fall back to its own buffer instead of trusting stale data.
+async function fetchReconciledMessages(sessionId: string): Promise<Message[] | null> {
+  try {
+    for (let attempt = 0; attempt < RECONCILE_MAX_ATTEMPTS; attempt++) {
+      const candidate = await api.listMessages(sessionId);
+      if (!isReconciliationStale(candidate)) return candidate;
+      if (attempt < RECONCILE_MAX_ATTEMPTS - 1) await wait(RECONCILE_RETRY_DELAY_MS);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function getProviderDefaultVoice(provider: VoiceProvider): string {
   const voices = provider.capabilities.voices.options as readonly string[];
   return provider.capabilities.voices.default ?? voices[0] ?? "";
@@ -299,6 +336,14 @@ export function ChatApp() {
   const abortRef = useRef<(() => void) | null>(null);
   // Synchronous in-flight flag so guards work before React state settles.
   const streamingRef = useRef(false);
+  // Monotonic per-turn token: a finalize() call only touches the live
+  // streaming UI while its captured turnId still matches this ref, so a
+  // stale finalize from an earlier turn (even in the same session) is a no-op.
+  const turnCounterRef = useRef(0);
+  // Client-only message IDs not yet superseded by persisted data: optimistic
+  // user placeholders and synthetic fallback replies. Cleared once a
+  // confirmed non-stale reconciliation supersedes them, avoiding duplicates.
+  const localMessageIdsRef = useRef<Set<string>>(new Set());
   // Holds an in-flight lazy session-creation promise so a rapid send + upload
   // (or two uploads) share a single session instead of racing to create two.
   const creatingRef = useRef<Promise<string> | null>(null);
@@ -1162,18 +1207,15 @@ export function ChatApp() {
       }
 
       // Captured once so `finalize` can tell -- after its awaited network
-      // calls settle -- whether the user has since switched to a different
-      // conversation (session-switching is normally blocked while streaming,
-      // but `finalize` itself clears that lock before its own awaits finish,
-      // opening a brief window). Mirrors the capturedSession/generation guard
-      // idiom used by removeDocument/removeLibraryDocument above.
+      // calls settle -- whether this is still the turn the user is watching:
+      // same conversation (finalize clears the streaming lock before its own
+      // awaits finish) and no newer send has since started in it.
       const turnSessionId = sessionId;
       const turnGeneration = selectionGenerationRef.current;
-      // Mirrors streamingText/liveSteps outside React state: `send` is a
-      // memoized callback that does not depend on (and so does not see fresh
-      // values of) that state. If the post-stream reconciliation fetch below
-      // fails, this is what lets `finalize` reconstruct exactly what the user
-      // watched stream in, instead of silently losing it.
+      const turnId = ++turnCounterRef.current;
+      // Mirrors streamingText/liveSteps outside React state, since `send` is
+      // memoized and won't see fresh values of that state. Lets `finalize`
+      // reconstruct the reply if the reconciliation fetch fails or is stale.
       let bufferedContent = "";
       let bufferedSteps: ActivityStep[] = [];
 
@@ -1193,62 +1235,66 @@ export function ChatApp() {
         new Date(userCreatedAt.getTime() + 1).toISOString(),
       );
       setMessages((prev) => [...prev, optimisticUser]);
+      // Tracked across turns so a later successful reconciliation can drop
+      // every not-yet-superseded local placeholder -- this bubble and any
+      // earlier turn's synthetic fallback reply (see finalize below).
+      localMessageIdsRef.current.add(optimisticUser.id);
 
       const isCommand = content.trimStart().startsWith("/");
-      // True while this turn's conversation is still the one being viewed;
-      // false once the user has switched away, so a late-resolving fetch from
-      // this turn can't clobber whatever the user is looking at now.
-      const isSameConversation = () =>
+      // True only while this is still the most recent turn for the
+      // conversation on screen, so a late-resolving fetch from an
+      // overtaken turn can't clobber whatever is now live.
+      const isCurrentTurn = () =>
         turnSessionId === sessionIdRef.current &&
-        turnGeneration === selectionGenerationRef.current;
+        turnGeneration === selectionGenerationRef.current &&
+        turnId === turnCounterRef.current;
       const finalize = async (status: "complete" | "cancelled" | "error") => {
         streamingRef.current = false;
         setStreaming(false);
         abortRef.current = null;
-        try {
-          const fresh = await api.listMessages(turnSessionId);
-          if (isSameConversation()) {
-            setMessages((previous) =>
-              reconcileMessages(
-                previous,
-                fresh,
-                new Set([optimisticUser.id]),
-              ),
-            );
-            setInspectorVersion((value) => value + 1);
-          }
-        } catch {
-          // The reconciling refetch failed (transient network/auth blip)
-          // even though the turn itself finished streaming. Reconstruct it
-          // from the local buffer instead of silently dropping the reply the
-          // user just watched arrive -- the next successful session load (or
-          // a manual refresh) replaces this with the authoritative persisted
-          // copy, since the backend already persisted the turn independently
-          // of this refetch.
-          if (
-            isSameConversation() &&
-            (bufferedContent.trim().length > 0 || bufferedSteps.length > 0)
-          ) {
-            setMessages((previous) => [
-              ...previous,
-              {
-                id: `local-${Date.now()}`,
-                sessionId: turnSessionId,
-                userId: "me",
-                role: "assistant",
-                content: bufferedContent,
-                status,
-                model: selectedModel,
-                agent: null,
-                createdAt: new Date().toISOString(),
-                steps: bufferedSteps.length ? bufferedSteps : undefined,
-              },
-            ]);
-          }
+        const fresh = await fetchReconciledMessages(turnSessionId);
+        if (fresh && isCurrentTurn()) {
+          // Snapshot the set before clearing the ref: setMessages's updater
+          // runs on React's own schedule, so reading localMessageIdsRef.current
+          // inside it could otherwise see the post-clear empty set.
+          const supersededIds = localMessageIdsRef.current;
+          localMessageIdsRef.current = new Set();
+          setMessages((previous) =>
+            reconcileMessages(previous, fresh, supersededIds),
+          );
+          setInspectorVersion((value) => value + 1);
+        } else if (
+          !fresh &&
+          isCurrentTurn() &&
+          (bufferedContent.trim().length > 0 || bufferedSteps.length > 0)
+        ) {
+          // The refetch failed, or every attempt still showed the backend's
+          // non-terminal placeholder. Reconstruct the reply from the local
+          // buffer instead of dropping it -- the next successful load
+          // replaces this with the authoritative persisted copy.
+          const fallbackId = `local-${turnId}`;
+          localMessageIdsRef.current.add(fallbackId);
+          setMessages((previous) => [
+            ...previous,
+            {
+              id: fallbackId,
+              sessionId: turnSessionId,
+              userId: "me",
+              role: "assistant",
+              content: bufferedContent,
+              status,
+              model: selectedModel,
+              agent: null,
+              createdAt: new Date().toISOString(),
+              steps: bufferedSteps.length ? bufferedSteps : undefined,
+            },
+          ]);
         }
-        setStreamingText("");
-        setStreamingStartedAt(null);
-        setLiveSteps([]);
+        if (isCurrentTurn()) {
+          setStreamingText("");
+          setStreamingStartedAt(null);
+          setLiveSteps([]);
+        }
         // A slash command can change the session's model or system prompt on the
         // server; re-sync the controls so the change holds for the next turn.
         if (isCommand) {
@@ -1256,7 +1302,7 @@ export function ChatApp() {
             const all = await api.listSessions();
             setSessions(all);
             const s = all.find((x) => x.id === turnSessionId);
-            if (s && isSameConversation()) {
+            if (s && isCurrentTurn()) {
               if (s.model) setSelectedModel(s.model);
               setSystemPrompt(s.systemPrompt ?? "");
             }
