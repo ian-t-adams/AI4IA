@@ -529,3 +529,65 @@ async def test_cosmos_delete_session_translates_concurrent_delete_to_not_found()
     repo._documents = _EmptyQueryContainer()
     with pytest.raises(SessionNotFoundError):
         await repo.delete_session("u1", session.id)
+
+
+class _LegacyDocSessions:
+    """Cosmos container stand-in serving one already-stored document whose
+    ``toolOverrides`` predates/violates the current schema (e.g. written by
+    an older code path, or hand-edited)."""
+
+    def __init__(self, item: dict) -> None:
+        self.item = item
+
+    async def read_item(self, *, item, partition_key):
+        return dict(self.item)
+
+    async def patch_item(
+        self, *, item, partition_key, patch_operations, etag=None, match_condition=None
+    ):
+        for operation in patch_operations:
+            self.item[operation["path"].lstrip("/")] = operation["value"]
+        self.item["_etag"] = "e2"
+        return dict(self.item)
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [None, [], "corrupt", {"add": ["x"]}, {"added": "not-a-list"}],
+)
+def test_session_model_tolerates_malformed_persisted_tool_overrides(malformed):
+    """Regression for a production 500 on PATCH /api/sessions/<id> traced to
+    ``sessions.py``'s ``update_session`` -> ``_validate_policy_fields`` reading
+    ``session.toolOverrides`` as its unset-field fallback. The root cause was
+    upstream: ``Session.model_validate`` raised ``ValidationError`` (not
+    caught anywhere in the read path) whenever a persisted document's
+    ``toolOverrides`` didn't match the current schema, making every future
+    read *and* patch of that one session a permanent 500. A malformed value
+    must be tolerated as "no overrides" instead of failing the whole read.
+    """
+    session = Session(userId="u1", title="Legacy chat")
+    doc = {**session.model_dump(mode="json"), "toolOverrides": malformed}
+    restored = Session.model_validate(doc)
+    assert restored.toolOverrides == ToolOverrides(added=[], removed=[])
+
+
+async def test_cosmos_get_and_patch_session_survive_corrupted_tool_overrides():
+    """End-to-end version of the above through the actual Cosmos repository:
+    both ``get_session`` (GET) and ``patch_session`` (PATCH) must succeed
+    against a legacy/corrupted document rather than 500ing, and the field
+    self-heals to empty overrides on the next write."""
+    session = Session(userId="u1", title="Legacy chat")
+    doc = {
+        **session.model_dump(mode="json"),
+        "toolOverrides": None,
+        "_etag": "e1",
+    }
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _LegacyDocSessions(doc)
+
+    fetched = await repo.get_session("u1", session.id)
+    assert fetched.toolOverrides == ToolOverrides(added=[], removed=[])
+
+    patched = await repo.patch_session("u1", session.id, {"title": "Renamed"})
+    assert patched.title == "Renamed"
+    assert patched.toolOverrides == ToolOverrides(added=[], removed=[])
