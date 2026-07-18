@@ -134,9 +134,9 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 | `azure_ai_search` | RAG over an AI Search index | `indexName`, connection | Needs a project connection to the Search service. |
 | `code_interpreter` | Sandboxed Python | `container` | Foundry-managed sandbox (distinct from AI4IA's existing direct Responses-API code interpreter). |
 | `code_interpreter` (custom) | BYO container image | `container` (custom image ref) | "Custom code interpreter"; runs your image in the Foundry sandbox. Give it a distinct `name`. |
-| `file_search` | Search uploaded files | vector store / file refs | Connectionless once files are attached. |
+| `file_search` | Search uploaded files | `vectorStoreIds` | Connectionless once files are attached. |
 | `browser_automation_preview` | Drive a hosted browser | connection / config | Preview; heavier isolation review recommended. |
-| `openapi` | Call an OpenAPI-described API | `spec`, connection | Wraps a REST API as a tool. |
+| `openapi` | Call an OpenAPI-described API | `openapi` (nested `name`, `spec`, `auth`) | Wraps a REST API as a tool; `auth` can be anonymous or a project connection. |
 | `toolbox_search_preview` | **Tool search** — let the model pick tools from a large set | none | Add this so the toolbox self-describes its tools to the model. |
 | `mcp` | Nest another MCP server as a tool | `serverLabel`, `serverUrl`, `requireApproval`, `projectConnectionId` | Lets the toolbox aggregate upstream MCP servers. Identified by `serverLabel`. |
 
@@ -158,7 +158,8 @@ Add a `description` to every tool — the model uses it for tool selection, whic
 when `toolbox_search_preview` is present.
 
 **Copy-paste starting point:** `foundry/toolbox.manifest.example.json` is a populated reference
-manifest with one of each toolbox tool (plus a connection and a bound skill), all uniquely named.
+manifest with one of each toolbox tool (plus two connections and a bound skill), all uniquely
+identified (by `name`, or `serverLabel` for the `mcp` tool).
 The shipped `foundry/toolbox.manifest.json` is the canonical `ai4ia-toolbox` definition; edit it (or
 the example, passing `--manifest foundry/toolbox.manifest.example.json`), prune what you don't need,
 create any referenced connections, then run `provision-foundry-toolbox.py`. The script creates the toolbox via

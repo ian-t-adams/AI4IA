@@ -72,6 +72,7 @@ _CAMEL_TO_SNAKE = {
     "indexName": "index_name",
     "customSearchConfiguration": "custom_search_configuration",
     "instanceName": "instance_name",
+    "vectorStoreIds": "vector_store_ids",
 }
 
 

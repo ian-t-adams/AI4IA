@@ -156,26 +156,43 @@ def test_manifest_matches_its_schema():
 
 
 def test_example_manifest_is_populated_valid_and_schema_valid():
-    # The reference manifest shows every supported tool; unlike the shipped inert one it must
-    # be populated, provisionable, and schema-valid so operators can copy it verbatim.
+    # The reference manifest shows one of *every* supported tool type (docs/foundry-toolbox.md
+    # and foundry/README.md both claim this); unlike the shipped inert one it must be populated,
+    # provisionable, and schema-valid so operators can copy it verbatim.
     manifest = _tb.load_manifest(_EXAMPLE_MANIFEST)
     assert _tb.validate_manifest(manifest) == []
     tool_types = {t["type"] for t in manifest["tools"]}
-    assert {
-        "web_search",
-        "azure_ai_search",
-        "code_interpreter",
-        "browser_automation_preview",
-        "toolbox_search_preview",
-    } <= tool_types
+    # Pin the "one of each type" doc claim as an executable invariant so the two never drift
+    # apart again (this is exactly what regressed before: the example was missing file_search,
+    # openapi, and mcp while the docs still claimed full coverage).
+    assert tool_types == _tb._ALLOWED_TOOL_TYPES
     # non-toolbox tool types must not appear
     assert "computer_use" not in tool_types and "bing_custom_search" not in tool_types
     # both a default and a custom code_interpreter are present (the custom one is named)
     ci = [t for t in manifest["tools"] if t["type"] == "code_interpreter"]
     assert any("name" in t for t in ci) and len(ci) >= 2
+    # mcp tools are identified by serverLabel, not name (per the "one unnamed tool" rule).
+    mcp = next(t for t in manifest["tools"] if t["type"] == "mcp")
+    assert mcp.get("serverLabel") and not mcp.get("name")
+    # Every projectConnectionId reference must resolve to a declared connection so the example
+    # is actually self-consistent (not just individually schema-valid fields).
+    conn_names = {c["name"] for c in manifest["connections"]}
+    for t in manifest["tools"]:
+        if t.get("projectConnectionId"):
+            assert t["projectConnectionId"] in conn_names
     jsonschema = pytest.importorskip("jsonschema")
     schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
     jsonschema.validate(manifest, schema)
+
+
+def test_plan_tools_maps_file_search_vector_store_ids():
+    # file_search's vectorStoreIds -> vector_store_ids mapping was missing from
+    # _CAMEL_TO_SNAKE (found while adding the file_search example above); a real
+    # provisioning run would have sent the untranslated camelCase key to the SDK.
+    manifest = {**_valid_manifest(), "tools": [{"type": "file_search", "name": "fs", "vectorStoreIds": ["vs-1", "vs-2"]}]}
+    planned = _tb.plan_tools(manifest)
+    assert planned[0]["vector_store_ids"] == ["vs-1", "vs-2"]
+    assert "vectorStoreIds" not in planned[0]
 
 
 # ----------------------------------- skills -------------------------------------------

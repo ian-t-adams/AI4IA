@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from ai4ia_api.http_retry import RetryPolicy, request_with_retry
+from ai4ia_api.http_retry import RetryPolicy, parse_retry_after, request_with_retry
 
 
 class _Sender:
@@ -187,3 +187,37 @@ async def test_total_deadline_stops_retry_early():
     assert resp.status_code == 503
     assert sender.calls == 1
     assert slept == []
+
+
+# --------------------------------------------------------------------------- #
+# parse_retry_after: public so ai4ia_api.websearch.client can reuse the exact
+# same Retry-After parsing for the Web IQ SDK's BrowseResponse.retryAfter field
+# (same delta-seconds / HTTP-date shape, but not an httpx.Response header).
+# --------------------------------------------------------------------------- #
+def test_parse_retry_after_parses_delta_seconds():
+    assert parse_retry_after("5") == 5.0
+
+
+def test_parse_retry_after_parses_http_date():
+    when = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=3))
+    seconds = parse_retry_after(when)
+    assert seconds is not None
+    assert 0.0 <= seconds <= 5.0
+
+
+def test_parse_retry_after_rejects_empty_or_blank():
+    assert parse_retry_after("") is None
+    assert parse_retry_after("   ") is None
+
+
+def test_parse_retry_after_rejects_unparseable_value():
+    assert parse_retry_after("not-a-number-or-date") is None
+
+
+def test_parse_retry_after_is_reused_by_websearch_client():
+    # Guards against silently re-privatizing this helper: the websearch client
+    # wrapper imports this exact function to parse an in-progress on-demand
+    # crawl's retryAfter value, not just this module's own Retry-After header.
+    from ai4ia_api.websearch import client as websearch_client
+
+    assert websearch_client.parse_retry_after is parse_retry_after

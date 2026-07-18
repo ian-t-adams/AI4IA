@@ -83,8 +83,14 @@ def _backoff_delay(attempt: int, policy: RetryPolicy) -> float:
     return random.uniform(0.0, capped)
 
 
-def _parse_retry_after(value: str) -> float | None:
-    """Parse a ``Retry-After`` value (delta-seconds or an HTTP-date) to seconds."""
+def parse_retry_after(value: str) -> float | None:
+    """Parse a ``Retry-After``-shaped value (delta-seconds or an HTTP-date) to seconds.
+
+    Public (not just used by :func:`request_with_retry`'s header handling below):
+    :mod:`ai4ia_api.websearch.client` reuses this to parse the Web IQ SDK's
+    ``BrowseResponse.retryAfter`` field, which carries the same delta-seconds /
+    HTTP-date shape for an in-progress on-demand crawl.
+    """
     value = value.strip()
     if not value:
         return None
@@ -108,7 +114,7 @@ def _retry_after_delay(response: httpx.Response, policy: RetryPolicy) -> float |
     raw = response.headers.get("retry-after")
     if not raw:
         return None
-    seconds = _parse_retry_after(raw)
+    seconds = parse_retry_after(raw)
     if seconds is None:
         return None
     return min(seconds, policy.retry_after_cap_seconds)
