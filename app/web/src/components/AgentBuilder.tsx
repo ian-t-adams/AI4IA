@@ -24,6 +24,11 @@ import {
 } from "@/lib/customTools";
 import { BUILT_IN_TOOL_HELP, toolRiskSummary } from "@/lib/toolHelp";
 import { HelpTooltip } from "./HelpTooltip";
+import {
+  formatContextWindow,
+  groupConversationalModels,
+  ModelCategoryNote,
+} from "./ModelPicker";
 import { Pill } from "./Pill";
 import {
   checkRow,
@@ -102,9 +107,13 @@ export function AgentBuilder({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const chatModels = useMemo(
-    () => models.filter((m) => m.conversational),
+  const groupedModels = useMemo(
+    () => groupConversationalModels(models),
     [models],
+  );
+  const selectedModel = useMemo(
+    () => models.find((m) => m.id === form.defaultModel) ?? null,
+    [models, form.defaultModel],
   );
   const linkOptions = useMemo(
     () => agents.filter((a) => a.name !== form.name),
@@ -370,7 +379,17 @@ export function AgentBuilder({
         </div>
 
         <div>
-          <label style={labelStyle} htmlFor="ag-model">Preferred model</label>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <label style={{ ...labelStyle, marginBottom: 0 }} htmlFor="ag-model">
+              Preferred model
+            </label>
+            <HelpTooltip label="Preferred model" size="sm">
+              Overrides the model for any conversation using this agent, no
+              matter which model is chosen in the chat header. Leave as
+              &quot;Session default&quot; to let each conversation use whatever
+              model the user picked there instead.
+            </HelpTooltip>
+          </div>
           <select
             id="ag-model"
             value={form.defaultModel}
@@ -378,10 +397,20 @@ export function AgentBuilder({
             style={inputStyle}
           >
             <option value="">Session default</option>
-            {chatModels.map((m) => (
-              <option key={m.id} value={m.id}>{m.displayName}</option>
+            {Object.entries(groupedModels).map(([category, entries]) => (
+              <optgroup key={category} label={category}>
+                {entries.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.displayName}
+                    {m.contextWindow != null
+                      ? ` — ${formatContextWindow(m.contextWindow)} ctx`
+                      : ""}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
+          <ModelCategoryNote category={selectedModel?.category} />
         </div>
 
         <fieldset style={fieldset}>
@@ -395,6 +424,7 @@ export function AgentBuilder({
                   type="checkbox"
                   checked={form.tools.includes(t)}
                   onChange={() => toggleIn("tools", t)}
+                  aria-label={label}
                 />
                 {label}
                 {help && (
@@ -464,6 +494,7 @@ export function AgentBuilder({
                         type="checkbox"
                         checked={form.tools.includes(t.namespacedName)}
                         onChange={() => toggleIn("tools", t.namespacedName)}
+                        aria-label={t.toolName}
                       />
                       {t.toolName}
                       {t.description && (
@@ -513,7 +544,7 @@ export function AgentBuilder({
           </fieldset>
         )}
 
-        <fieldset style={fieldset}>
+        <fieldset style={fieldset} aria-label={`Delegate to (links, max ${MAX_LINKS})`}>
           <legend style={labelStyle}>
             Delegate to (links, max {MAX_LINKS}){" "}
             <HelpTooltip label="Delegate to (links)" size="sm">
@@ -532,6 +563,7 @@ export function AgentBuilder({
                 type="checkbox"
                 checked={form.links.includes(a.name)}
                 onChange={() => toggleIn("links", a.name)}
+                aria-label={a.displayName || a.name}
               />
               {a.displayName || a.name}
               <span style={{ fontSize: "0.72em", color: "var(--fg-muted)" }}>

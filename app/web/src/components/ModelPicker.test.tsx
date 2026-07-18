@@ -82,4 +82,36 @@ describe("ModelPicker", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "llama");
     expect(onChange).toHaveBeenCalledWith("llama");
   });
+
+  it("shows plain-language category help for the selected model", () => {
+    const { rerender } = render(
+      <ModelPicker
+        value="reason"
+        onChange={vi.fn()}
+        models={[
+          model({ id: "reason", displayName: "Deep Thinker", category: "reasoning" }),
+          model({ id: "plain", displayName: "Plain", category: "unknown-category" }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/Reasoning\./)).toBeInTheDocument();
+    expect(screen.getByText(/multi-step logic/)).toBeInTheDocument();
+    // The note lives inside the same wrapping <label> as the <select>; it
+    // must not leak into the select's accessible name (regression test).
+    expect(screen.getByRole("combobox", { name: "Model" })).toBeInTheDocument();
+
+    // A category with no curated help copy (or no selection) shows no note
+    // instead of a blank/broken block.
+    rerender(
+      <ModelPicker
+        value="plain"
+        onChange={vi.fn()}
+        models={[
+          model({ id: "reason", displayName: "Deep Thinker", category: "reasoning" }),
+          model({ id: "plain", displayName: "Plain", category: "unknown-category" }),
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/Reasoning\./)).toBeNull();
+  });
 });

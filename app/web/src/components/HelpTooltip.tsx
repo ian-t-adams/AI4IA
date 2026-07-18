@@ -10,6 +10,26 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+/**
+ * Inline help affordance: a small trigger with its own `aria-label`
+ * ("Help: {label}") that opens a floating, plain-language note on
+ * hover/focus/click.
+ *
+ * Gotcha when placing this next to a form control: the trigger's
+ * `aria-label` is itself an accessible name, so if you nest a HelpTooltip
+ * *inside* a `<label htmlFor>` / wrapping `<label>` / `<legend>` for that
+ * control, it gets pulled into the control's (or fieldset's) own
+ * computed accessible name (per the "name from content" step of the
+ * accname spec), overriding what you intended the name to be. Same risk for
+ * any control whose name is computed from surrounding content, e.g. a
+ * `<select>` inside a wrapping `<label>` that also contains other text.
+ *
+ * Fix: either (a) give the control an explicit `aria-label={visibleLabel}`
+ * so it short-circuits before falling back to content, or (b) keep the
+ * HelpTooltip as a sibling of the label/legend rather than nested inside
+ * it. See AgentBuilder.tsx's tool/agent-link checkboxes and ModelPicker.tsx
+ * for examples of (a).
+ */
 export function HelpTooltip({
   label,
   children,
