@@ -1,5 +1,8 @@
 "use client";
 
+import { useEffect } from "react";
+import { reportClientEvent } from "@/lib/clientTelemetry";
+
 export default function Error({
   error,
   reset,
@@ -7,6 +10,17 @@ export default function Error({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  // Best-effort: surfaces render-boundary errors to the backend telemetry
+  // bridge (see lib/clientTelemetry.ts) so they're observable without a user
+  // report. reportClientEvent de-dupes by (event, message), so re-renders of
+  // this boundary for the same error don't spam the backend.
+  useEffect(() => {
+    reportClientEvent("render_error", {
+      message: error.message,
+      route: typeof window !== "undefined" ? window.location.pathname : undefined,
+    });
+  }, [error]);
+
   return (
     <main
       id="main"
