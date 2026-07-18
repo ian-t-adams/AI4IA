@@ -26,7 +26,7 @@ Vendored (not a submodule) from microsoft/SimpleL7Proxy @
 
 ### Intentional source deviation
 
-Three files carry AI4IA security/correctness patches over the audited pin:
+Four files carry AI4IA security/correctness patches over the audited pin:
 
 - `SimpleL7Proxy/Config/IncomingAuthValidator.cs` applies `ValidateAuthConfig`'s `header=` value to the actual key lookup (upstream otherwise keeps
   reading the default `S7P-KEY`, which rejects AI4IA's `Ocp-Apim-Subscription-Key` ingress);
@@ -39,9 +39,17 @@ Three files carry AI4IA security/correctness patches over the audited pin:
   `/deployments/{name}/...` when the request body correctly omits `model`. This
   supplies the generated APIM catalog header for chat, embeddings, image, and
   audio calls while preserving body-based model detection for Responses API.
+- `SimpleL7Proxy/server.cs`'s `ValidateAuthKey()` compares the incoming proxy auth key against
+  `ValidateAuthKey1`/`ValidateAuthKey2` with a constant-time `SecretComparer.FixedTimeEquals`
+  helper (new file: `SimpleL7Proxy/Config/SecretComparer.cs`) instead of upstream's
+  `string.Equals(..., StringComparison.OrdinalIgnoreCase)`. These keys are opaque, high-entropy
+  APIM subscription keys (see `gateway.bicep`'s `sharedProxyIngressSubscription.listSecrets().primaryKey`),
+  not case-insensitive identifiers, and a non-constant-time comparison of a secret is a timing
+  side-channel.
 
 All other files in the three source directories remain byte-for-byte upstream. Re-evaluate and
-drop this patch when refreshing to an upstream commit that fixes both behaviors.
+drop the `IncomingAuthValidator.cs` patch when refreshing to an upstream commit that fixes both
+behaviors it addresses.
 
 To refresh the vendored copy, check out the audited upstream commit and mirror the three project
 directories from upstream `src/` (excluding `bin/`/`obj/`). Keep this README and the root
