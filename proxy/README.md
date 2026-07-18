@@ -51,6 +51,13 @@ All other files in the three source directories remain byte-for-byte upstream. R
 drop the `IncomingAuthValidator.cs` patch when refreshing to an upstream commit that fixes both
 behaviors it addresses.
 
+**Provenance validation (2026-07-18):** verified by fetching `microsoft/SimpleL7Proxy` at the
+pinned commit and SHA-256-hashing every file in `Shared/`, `Shared-parser/`, and `SimpleL7Proxy/`
+(174 shared files) against the local vendored copies. Exactly the four files above differ from
+upstream, and their diffs match the descriptions given for each; the other 170 files are
+byte-for-byte identical. Re-run this check whenever the pin or the deviation list changes, and
+update this note.
+
 To refresh the vendored copy, check out the audited upstream commit and mirror the three project
 directories from upstream `src/` (excluding `bin/`/`obj/`). Keep this README and the root
 `Dockerfile`, reapply/test the documented source patches, verify every other source file is
