@@ -140,6 +140,12 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 | `toolbox_search_preview` | **Tool search** — let the model pick tools from a large set | none | Add this so the toolbox self-describes its tools to the model. |
 | `mcp` | Nest another MCP server as a tool | `serverLabel`, `serverUrl`, `requireApproval`, `projectConnectionId` | Lets the toolbox aggregate upstream MCP servers. Identified by `serverLabel`. |
 
+> **Available vs. deployed:** this table is every tool type the schema/provisioning script
+> support. The live canonical `ai4ia-toolbox` (`foundry/toolbox.manifest.json`) currently uses
+> only three: `web_search`, `code_interpreter`, and `toolbox_search_preview`. See
+> `foundry/toolbox.manifest.example.json` for one of each type, populated as a starting point for
+> adding more.
+
 > **Not toolbox tools:** `computer_use` and `bing_custom_search` exist only as *agent-level* tools
 > in the SDK (`ComputerUsePreviewTool` / `BingCustomSearchPreviewTool`) with no `*ToolboxTool`
 > counterpart, so they cannot be added to a toolbox. Attach them directly to an agent instead.
@@ -198,6 +204,15 @@ Skill `name` must match `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (max 64). The create p
    # optional: emit the `azd ai toolbox create --from-file` YAML instead
    python scripts/provision-foundry-toolbox.py --emit-yaml foundry/toolbox.azd.yaml
    ```
+
+   > **Idempotency note:** re-running `--create` with the same manifest `name` does not fail or
+   > duplicate the toolbox -- it calls `create_version(name, ...)` again, which adds a new version
+   > under the same named toolbox (same behavior for `provision-foundry-skills.py`'s
+   > `skills.create(...)`, which auto-creates the parent skill once and versions it thereafter).
+   > That makes repeat runs *safe* but not a true no-op: each `--create` accumulates a version even
+   > when the manifest is unchanged. There is no script-side dedup/diff against the latest version,
+   > so avoid scripting unconditional `--create` on every deploy; run it deliberately when the
+   > manifest changes.
 
 5. **Register the entry.** Paste the printed object into `infra/mcp-servers.json` (`servers[]`)
    and regenerate the packaged runtime catalog:

@@ -449,7 +449,11 @@ def build_web_search_capability(
         if gate is not None:
             return gate
         try:
-            page = await client.browse(url, max_length=browse_cap)
+            # "fallback" only live-crawls on a cache miss: previously-indexed URLs
+            # are served from cache (fast, cheap) exactly as before, but a URL the
+            # model asks to read that isn't indexed now actually gets fetched
+            # instead of silently returning nothing — the tool's whole purpose.
+            page = await client.browse(url, max_length=browse_cap, live_crawl="fallback")
         except WebSearchError as exc:
             return _fail(exc)
         except Exception:  # noqa: BLE001

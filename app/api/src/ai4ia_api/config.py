@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .official_mcp_catalog import load_official_mcp_catalog
 from .voice_provider_catalog import (
     EXPECTED_PROVIDER_IDS,
     SPEECH_VOICE_LIVE_PROVIDER_ID,
@@ -1021,6 +1022,21 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "Official MCP is enabled but AI4IA_OFFICIAL_MCP_SUBSCRIPTION_KEY is "
                 "not set. Provide the MCP APIM subscription key, or disable it with "
+                "AI4IA_OFFICIAL_MCP_ENABLED=false."
+            )
+        if self.official_mcp_enabled and not load_official_mcp_catalog(
+            self.official_mcp_catalog_path
+        ).servers:
+            # An enabled plane with zero catalog entries would silently wire no
+            # official tools at all — a URL + key correctly configured but nothing
+            # to call is almost certainly a corrupted/missing packaged catalog
+            # (or a hand-edited infra/mcp-servers.json with no servers), not an
+            # intentional deploy. Fail loud instead of silently no-op'ing, mirroring
+            # the voice-provider-catalog shape check above.
+            raise RuntimeError(
+                "Official MCP is enabled but the official MCP catalog has no "
+                "servers. Regenerate it with `python scripts/gen-mcp-catalog.py` "
+                "from infra/mcp-servers.json, or disable it with "
                 "AI4IA_OFFICIAL_MCP_ENABLED=false."
             )
 

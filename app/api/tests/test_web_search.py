@@ -261,7 +261,7 @@ async def test_image_search_happy_path_passes_filters():
 
 
 async def test_browse_happy_path_is_fenced_and_metered():
-    _, handlers, _, _, met = _caps(nonce="zz")
+    _, handlers, client, _, met = _caps(nonce="zz")
     res = await handlers[BROWSE_TOOL_NAME]({"url": "https://a.example/1"}, ctx=None)
     assert "error" not in res
     assert res["url"] == "https://a.example/1"
@@ -270,6 +270,10 @@ async def test_browse_happy_path_is_fenced_and_metered():
     assert "page body text" in res["content"]
     assert "untrusted" in res["note"]
     assert len(met.calls) == 1
+    # Cache-miss URLs must still be fetched: "fallback" only live-crawls when the
+    # URL isn't already indexed, so previously-cached URLs are unaffected while a
+    # URL the model needs to actually read no longer silently returns nothing.
+    assert client.calls[0]["live_crawl"] == "fallback"
 
 
 # --------------------------------------------------------------------------- #
