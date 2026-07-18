@@ -731,6 +731,7 @@ export function ConversationInspector({
                           removed.delete(tool.name);
                           if (!inheritedTools.includes(tool.name)) added.add(tool.name);
                         } else if (inheritedTools.includes(tool.name)) {
+                          added.delete(tool.name);
                           removed.add(tool.name);
                         } else {
                           added.delete(tool.name);
