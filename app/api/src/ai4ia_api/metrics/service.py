@@ -28,6 +28,12 @@ class _PanelSpec:
     display_name: str
     id_attr: str  # Settings attribute holding the ARM resource id
     metrics: tuple[MetricRequest, ...]
+    # Override DEFAULT_GRANULARITY_MINUTES when this panel's metrics don't all
+    # support it together. Azure Monitor's batch metrics API requires every
+    # metric in one query to share a common supported time grain and rejects
+    # the whole call with 400 BadRequest otherwise, so a panel that mixes a
+    # coarser-grained metric with finer ones must request the coarser grain.
+    granularity_minutes: int | None = None
 
 
 # Curated, low-cardinality metric set per resource. Names are the Azure Monitor
@@ -74,6 +80,11 @@ PANEL_SPECS: tuple[_PanelSpec, ...] = (
                 unit="%",
             ),
         ),
+        # ServiceAvailability only supports a 1-hour time grain (TotalRequests
+        # and TotalRequestUnits support down to 1 minute); querying all three
+        # together at the service default of 5 minutes is rejected by Azure
+        # Monitor: "BadRequest: ... only support common time grain 01:00:00".
+        granularity_minutes=60,
     ),
     _PanelSpec(
         key="containerApp",
@@ -135,12 +146,17 @@ class ResourceMetricsService:
             return ResourcePanel.unavailable(
                 spec.key, spec.display_name, "Azure Monitor client unavailable."
             )
+        # A panel-specific override (see _PanelSpec.granularity_minutes) always
+        # wins; Azure Monitor requires the timespan to cover at least one full
+        # bucket, so widen the window to match rather than ask for a partial one.
+        granularity = spec.granularity_minutes or self._granularity
+        window = max(self._window, granularity)
         try:
             points = await querier.query(
                 resource_id,
                 list(spec.metrics),
-                window_minutes=self._window,
-                granularity_minutes=self._granularity,
+                window_minutes=window,
+                granularity_minutes=granularity,
             )
         except Exception:  # noqa: BLE001 - resource panels are best-effort
             logger.warning(
