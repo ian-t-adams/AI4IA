@@ -13,7 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { getDocumentShares, setDocumentShares } from "@/lib/api";
 import type { ShareVisibility } from "@/lib/library";
-import { useModalFocus } from "./useModalFocus";
+import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 
 interface SharePanelProps {
   documentId: string;
@@ -59,7 +59,8 @@ export default function SharePanel({
   onClose,
   onChanged,
 }: SharePanelProps) {
-  const modal = useModalFocus(onClose);
+  const modalRef = useModalFocus();
+  const onModalKeyDown = useModalKeyDown(onClose);
   const [visibility, setVisibility] = useState<ShareVisibility>("private");
   const [grantees, setGrantees] = useState<string[]>([]);
   const [draftEmail, setDraftEmail] = useState("");
@@ -128,8 +129,8 @@ export default function SharePanel({
 
   return (
     <div
-      ref={modal.ref}
-      onKeyDown={modal.onKeyDown}
+      ref={modalRef}
+      onKeyDown={onModalKeyDown}
       role="dialog"
       aria-label={`Share ${filename}`}
       aria-modal="true"

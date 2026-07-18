@@ -175,14 +175,17 @@ export function AgentBuilder({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch-on-mount; setState only runs after the awaited call resolves
     void refreshMine();
   }, [refreshMine]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch that also re-runs when `customToolsEnabled` flips; kept separate from the other refreshes so toggling it doesn't re-fetch unrelated data
     void refreshMcp();
   }, [refreshMcp]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch-on-mount; setState only runs after the awaited call resolves
     void refreshOfficialMcp();
   }, [refreshOfficialMcp]);
 

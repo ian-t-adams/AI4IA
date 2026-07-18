@@ -22,7 +22,7 @@ import type {
 import { MediaPlayer } from "./MediaPlayer";
 import AnnotationsPanel from "./AnnotationsPanel";
 import SharePanel from "./SharePanel";
-import { useModalFocus } from "./useModalFocus";
+import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 
 // Per-document "save to memory" UI state, including forget.
 // Keyed by document id.
@@ -63,7 +63,8 @@ function formatSize(bytes: number): string {
 }
 
 export function LibraryPanel({ onClose }: { onClose: () => void }) {
-  const modal = useModalFocus(onClose);
+  const modalRef = useModalFocus();
+  const onModalKeyDown = useModalKeyDown(onClose);
   const [docs, setDocs] = useState<LibraryDocument[]>([]);
   const [analyzers, setAnalyzers] = useState<LibraryAnalyzer[]>([]);
   const [analyzerId, setAnalyzerId] = useState<string>("");
@@ -198,8 +199,8 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
   return (
     <>
       <div
-        ref={modal.ref}
-        onKeyDown={modal.onKeyDown}
+        ref={modalRef}
+        onKeyDown={onModalKeyDown}
         role="dialog"
         aria-label="Document library"
         aria-modal="true"

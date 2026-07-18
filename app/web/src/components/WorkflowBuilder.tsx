@@ -94,6 +94,7 @@ export function WorkflowBuilder({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch-on-mount; setState only runs after the awaited call resolves
     void refreshMine();
   }, [refreshMine]);
 

@@ -745,6 +745,7 @@ export function AdminDashboard() {
 
   useEffect(() => {
     if (phase !== "ready") return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch-on-filter-change; setState only runs after `load`'s awaited requests settle, not synchronously
     void load(days, identifyUsers);
     return () => loadAbortRef.current?.abort();
   }, [phase, days, identifyUsers, load]);

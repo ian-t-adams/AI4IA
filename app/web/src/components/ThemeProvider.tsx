@@ -129,6 +129,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const saved = JSON.parse(raw);
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time hydration of persisted prefs from localStorage on mount; localStorage isn't readable during SSR render, so this can't be a lazy useState initializer
         if (saved.theme) setThemeState(saved.theme);
         if (saved.fontScale) setFontScaleState(saved.fontScale);
         if (saved.accent) setAccentState(saved.accent);

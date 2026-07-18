@@ -27,7 +27,7 @@ import { ModelPicker } from "./ModelPicker";
 import { ParamControls } from "./ParamControls";
 import { VoiceSettingsPanel, type VoiceSettingsPanelProps } from "./VoiceSettingsPanel";
 import { useMediaQuery } from "./useMediaQuery";
-import { useModalFocus } from "./useModalFocus";
+import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 
 type Section = "model" | "instructions" | "tools" | "context" | "memory" | "usage" | "voice";
 type LoadPhase = "idle" | "loading" | "ready" | "error";
@@ -167,11 +167,8 @@ export function ConversationInspector({
   const drawerOpenerRef = useRef<HTMLButtonElement>(null);
   const drawerReturnFocusRef = useRef<HTMLElement | null>(null);
   const drawer = useMediaQuery("(max-width: 1050px)") && !collapsed;
-  const drawerFocus = useModalFocus<HTMLElement>(
-    onToggle,
-    drawer,
-    drawerReturnFocusRef,
-  );
+  const drawerFocusRef = useModalFocus<HTMLElement>(drawer, drawerReturnFocusRef);
+  const onDrawerKeyDown = useModalKeyDown<HTMLElement>(onToggle, drawer);
 
   useEffect(() => setPromptDraft(systemPrompt), [systemPrompt]);
   useEffect(
@@ -461,8 +458,8 @@ export function ConversationInspector({
 
   return (
     <aside
-      ref={drawerFocus.ref}
-      onKeyDown={drawerFocus.onKeyDown}
+      ref={drawerFocusRef}
+      onKeyDown={onDrawerKeyDown}
       className="conversation-inspector"
       aria-label="Conversation inspector"
       aria-busy={loading}

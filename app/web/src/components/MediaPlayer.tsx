@@ -15,7 +15,7 @@ import type {
   MediaTimeline,
   MediaTimelineSegment,
 } from "@/lib/library";
-import { useModalFocus } from "./useModalFocus";
+import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 
 function formatTimecode(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -59,7 +59,8 @@ export function MediaPlayer({
   seekToMs?: number;
   onClose: () => void;
 }) {
-  const modal = useModalFocus(onClose);
+  const modalRef = useModalFocus();
+  const onModalKeyDown = useModalKeyDown(onClose);
   const isVideo = doc.modality === "video";
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const [mediaUrl, setMediaUrl] = useState<string | null>(null);
@@ -135,8 +136,8 @@ export function MediaPlayer({
 
   return (
     <div
-      ref={modal.ref}
-      onKeyDown={modal.onKeyDown}
+      ref={modalRef}
+      onKeyDown={onModalKeyDown}
       role="dialog"
       aria-label={`Media player for ${doc.filename}`}
       aria-modal="true"
