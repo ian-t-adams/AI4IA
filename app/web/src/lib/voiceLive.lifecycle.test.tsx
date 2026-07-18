@@ -36,7 +36,18 @@ class FakeAudioContext {
   currentTime = 0;
   destination = {};
   audioWorklet = { addModule: vi.fn(async () => {}) };
-  resume = vi.fn(async () => {});
+  // Real AudioContexts start "suspended" until a user-gesture-driven
+  // resume(); voiceLive.ts's start() awaits that resume before proceeding,
+  // so by the time any of this file's tests reach a running session the
+  // context is already "running" -- matching every existing test's implicit
+  // assumption. onstatechange models the real "statechange" event so tests
+  // can drive AudioContext suspension (e.g. tab backgrounding) explicitly.
+  state: "running" | "suspended" | "closed" = "running";
+  onstatechange: (() => void) | null = null;
+  resume = vi.fn(async () => {
+    this.state = "running";
+    this.onstatechange?.();
+  });
   close = vi.fn(async () => {});
   createMediaStreamSource = vi.fn(() => ({
     connect: vi.fn(),
@@ -73,13 +84,14 @@ class FakeAudioWorkletNode {
 }
 
 // A minimal MediaStreamTrack double with real (not stubbed) addEventListener/
-// removeEventListener semantics, so tests can prove the "ended" listener
-// voiceLive.ts attaches in start() is both invoked and later detached —
-// jsdom does not implement MediaStreamTrack at all, and the plain `{ stop }`
-// objects used elsewhere in this file intentionally have no event target
-// behavior (some browsers' tracks don't extend EventTarget either).
+// removeEventListener semantics, so tests can prove the "ended"/"mute"
+// listeners voiceLive.ts attaches in start() are both invoked and later
+// detached — jsdom does not implement MediaStreamTrack at all, and the plain
+// `{ stop }` objects used elsewhere in this file intentionally have no event
+// target behavior (some browsers' tracks don't extend EventTarget either).
 class FakeMediaStreamTrack {
   stop = vi.fn();
+  muted = false;
   private listeners = new Map<string, Set<() => void>>();
 
   addEventListener(type: string, listener: () => void) {
@@ -97,6 +109,11 @@ class FakeMediaStreamTrack {
 
   dispatchEnded() {
     for (const listener of [...(this.listeners.get("ended") ?? [])]) listener();
+  }
+
+  dispatchMute() {
+    this.muted = true;
+    for (const listener of [...(this.listeners.get("mute") ?? [])]) listener();
   }
 }
 
@@ -804,6 +821,287 @@ describe("useVoiceLive lifecycle", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  // Regression: a track can go silent while staying readyState === "live" —
+  // no "ended" event ever fires for this — via the browser flipping `muted`
+  // true and firing "mute" (OS-level privacy toggle, another app grabbing
+  // exclusive device access, audio-routing hiccups). Previously nothing
+  // observed this either, so a muted-mid-call track reproduced "voice no
+  // longer hears them" with status staying "live" and the socket looking
+  // perfectly healthy throughout.
+  it("reports an actionable error and fully tears down when the microphone track is muted mid-session", async () => {
+    auth.getToken.mockResolvedValue("token");
+    const track = new FakeMediaStreamTrack();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+    );
+
+    act(() => {
+      result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.onopen?.());
+    await waitFor(() => expect(result.current.status).toBe("live"));
+
+    act(() => track.dispatchMute());
+
+    expect(onError).toHaveBeenCalledWith(
+      "Microphone stopped receiving audio (it may have been muted by your system or another app). Reconnect to continue.",
+    );
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(socket.close).toHaveBeenCalledTimes(1);
+    expect(FakeAudioContext.instances[0].close).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(result.current.status).toBe("idle"));
+
+    // A late, expected onclose for the socket we just asked to close must
+    // not report a second, spurious error.
+    act(() => socket.onclose?.());
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not leave a stale mute listener that could fire after a clean stop", async () => {
+    auth.getToken.mockResolvedValue("token");
+    const track = new FakeMediaStreamTrack();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+    );
+
+    act(() => {
+      result.current.start();
+    });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    act(() => FakeWebSocket.instances[0].onopen?.());
+    await waitFor(() => expect(result.current.status).toBe("live"));
+
+    act(() => {
+      result.current.stop();
+    });
+    expect(result.current.status).toBe("idle");
+
+    // stop() already called track.stop(); a device driver can still fire
+    // "mute" afterwards for a track that's already stopped. Because
+    // cleanupSession removes the listener before stopping the track, this
+    // must be a no-op.
+    act(() => track.dispatchMute());
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  // Regression: unlike "ended", `muted` can already be true the moment
+  // getUserMedia resolves (another app already held exclusive access, or the
+  // OS mic toggle was off when permission was granted). No "mute"
+  // *transition* event ever fires for that case — there's nothing to
+  // transition from — so relying on the event alone would let a
+  // dead-on-arrival mic reach "live" and stay there for the whole call.
+  it("reports an actionable error immediately when the microphone track starts already muted", async () => {
+    auth.getToken.mockResolvedValue("token");
+    const track = new FakeMediaStreamTrack();
+    track.muted = true;
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+    );
+
+    act(() => {
+      result.current.start();
+    });
+
+    await waitFor(() =>
+      expect(onError).toHaveBeenCalledWith(
+        "Microphone stopped receiving audio (it may have been muted by your system or another app). Reconnect to continue.",
+      ),
+    );
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(FakeWebSocket.instances[0]?.close).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(FakeAudioContext.instances[0]?.close).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.status).toBe("idle"));
+    // The session must never have been allowed to reach "live" with a mic
+    // that was already known to be dead.
+    expect(result.current.status).not.toBe("live");
+  });
+
+  // Regression: Chrome/Safari can suspend an active AudioContext purely from
+  // backgrounding the tab -- even with a live, unmuted mic track and a
+  // healthy socket -- silently halting the capture worklet with no other
+  // observable signal. A brief glance away and back must self-heal silently
+  // rather than tearing the whole session down.
+  it("self-heals silently when the AudioContext resumes within the grace period", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      auth.getToken.mockResolvedValue("token");
+      const track = new FakeMediaStreamTrack();
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+      });
+      const onError = vi.fn();
+      const { result } = renderHook(() =>
+        useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+      );
+
+      act(() => {
+        result.current.start();
+      });
+      await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+      const socket = FakeWebSocket.instances[0];
+      act(() => socket.onopen?.());
+      await waitFor(() => expect(result.current.status).toBe("live"));
+
+      const ctx = FakeAudioContext.instances[0];
+      // Drive the "browser recovered" notification explicitly, independently
+      // of resume()'s own promise -- a real UA's resume() resolving and its
+      // next genuine "statechange" event are two separate (if usually
+      // near-simultaneous) things, so the fake shouldn't conflate them here.
+      ctx.resume = vi.fn(async () => {});
+
+      // The tab gets backgrounded; the UA suspends the context.
+      act(() => {
+        ctx.state = "suspended";
+        ctx.onstatechange?.();
+      });
+      expect(ctx.resume).toHaveBeenCalledTimes(1);
+      expect(onError).not.toHaveBeenCalled();
+
+      // The user glances back well within the grace period; the UA reports
+      // the context running again.
+      act(() => {
+        ctx.state = "running";
+        ctx.onstatechange?.();
+      });
+
+      // Advancing all the way past the *original* 4s grace period must not
+      // trigger the fatal path -- proving the recovery timer was actually
+      // cleared, not just "hasn't fired yet".
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+
+      expect(onError).not.toHaveBeenCalled();
+      expect(result.current.status).toBe("live");
+      expect(ctx.close).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Regression: if the suspension outlasts the grace period -- the tab stays
+  // backgrounded, or the browser defers/ignores resume() while hidden -- the
+  // session must not stay silently stuck "live" forever. It must report an
+  // explicit, actionable error and fully tear down, the same as a dead or
+  // muted mic.
+  it("reports an actionable error and fully tears down when AudioContext suspension outlasts the grace period", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      auth.getToken.mockResolvedValue("token");
+      const track = new FakeMediaStreamTrack();
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+      });
+      const onError = vi.fn();
+      const { result } = renderHook(() =>
+        useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+      );
+
+      act(() => {
+        result.current.start();
+      });
+      await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+      const socket = FakeWebSocket.instances[0];
+      act(() => socket.onopen?.());
+      await waitFor(() => expect(result.current.status).toBe("live"));
+
+      const ctx = FakeAudioContext.instances[0];
+      // Simulate a browser that defers/ignores resume() entirely while the
+      // tab stays hidden -- resume() never actually flips state back.
+      ctx.resume = vi.fn(async () => {});
+
+      act(() => {
+        ctx.state = "suspended";
+        ctx.onstatechange?.();
+      });
+      expect(onError).not.toHaveBeenCalled();
+
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+
+      expect(onError).toHaveBeenCalledWith(
+        "Live voice paused because the browser suspended audio processing (often from backgrounding the tab). Reconnect to continue.",
+      );
+      expect(track.stop).toHaveBeenCalledTimes(1);
+      expect(socket.close).toHaveBeenCalledTimes(1);
+      expect(ctx.close).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(result.current.status).toBe("idle"));
+
+      // A late, expected onclose for the socket we just asked to close must
+      // not report a second, spurious error.
+      act(() => socket.onclose?.());
+      expect(onError).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not leave a stale AudioContext suspend-recovery timer that could fire after a clean stop", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      auth.getToken.mockResolvedValue("token");
+      const track = new FakeMediaStreamTrack();
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+      });
+      const onError = vi.fn();
+      const { result } = renderHook(() =>
+        useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+      );
+
+      act(() => {
+        result.current.start();
+      });
+      await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+      const socket = FakeWebSocket.instances[0];
+      act(() => socket.onopen?.());
+      await waitFor(() => expect(result.current.status).toBe("live"));
+
+      const ctx = FakeAudioContext.instances[0];
+      ctx.resume = vi.fn(async () => {});
+      act(() => {
+        ctx.state = "suspended";
+        ctx.onstatechange?.();
+      });
+
+      act(() => {
+        result.current.stop();
+      });
+      expect(result.current.status).toBe("idle");
+
+      // The pending grace-period timer must not survive a clean, user-
+      // initiated stop -- it must never fire a stale, spurious error for a
+      // session that is already gone.
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("deterministically tears down the microphone, audio context, and socket on unmount while live", async () => {
     auth.getToken.mockResolvedValue("token");
     const track = new FakeMediaStreamTrack();
@@ -828,9 +1126,10 @@ describe("useVoiceLive lifecycle", () => {
     expect(track.stop).toHaveBeenCalledTimes(1);
     expect(FakeAudioContext.instances[0].close).toHaveBeenCalledTimes(1);
     expect(socket.close).toHaveBeenCalledTimes(1);
-    // The track listener must also be detached so a post-unmount "ended"
-    // event (the component is gone, but the OS/browser event can still
+    // The track listeners must also be detached so a post-unmount "ended" or
+    // "mute" event (the component is gone, but the OS/browser event can still
     // fire) can never touch React state on an unmounted hook.
     expect(track.listenerCount("ended")).toBe(0);
+    expect(track.listenerCount("mute")).toBe(0);
   });
 });
