@@ -1479,6 +1479,15 @@ export function ChatApp() {
                   durableUserId,
                 )
               : previous;
+            const existingAssistant = withDurableUserId.find(
+              (message) => message.id === fallback.id,
+            );
+            if (
+              existingAssistant &&
+              existingAssistant.status !== "streaming"
+            ) {
+              return withDurableUserId;
+            }
             return reconcileMessages(withDurableUserId, [fallback]);
           });
         } else if (info.definitePreAcceptance === true) {

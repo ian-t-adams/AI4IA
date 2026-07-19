@@ -9,7 +9,7 @@ from starlette.responses import StreamingResponse
 from ai4ia_api.agents.runtime import AgentRunResult
 from ai4ia_api.auth.base import AuthenticatedUser
 from ai4ia_api.catalog import DeploymentOption
-from ai4ia_api.gateway.client import ModelGatewayError
+from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
 from ai4ia_api.routers import chat as chat_router
 from ai4ia_api.routers.chat import _agentic_stream, _stream_with_placeholder
 from ai4ia_api.sessions.models import Message, MessageRole, MessageStatus
@@ -257,6 +257,58 @@ def test_gateway_error_is_persisted_before_terminal_error(client, monkeypatch):
     assert events == ["upsert:error", "error"]
     assert json.loads(payloads[-1])["error"] == "gateway failed"
     assert "[DONE]" not in payloads
+
+
+def test_raw_gateway_error_is_persisted_before_one_sanitized_error(
+    client, monkeypatch
+):
+    class RawErrorGateway:
+        async def stream(self, **_kwargs):
+            delta = {"choices": [{"delta": {"content": "partial answer"}}]}
+            yield ChatChunk(delta="partial answer", raw=json.dumps(delta))
+            yield ChatChunk(
+                raw=json.dumps(
+                    {
+                        "error": {
+                            "message": "internal deployment secret",
+                            "code": "backend_failure",
+                        }
+                    }
+                )
+            )
+            yield ChatChunk(raw=json.dumps({"error": "duplicate"}))
+
+    session_id = _create_session(client)
+    client.app.state.gateway = RawErrorGateway()
+    repo = client.app.state.session_repo
+    original_upsert = repo.upsert_message
+    events: list[str] = []
+    _track_terminal_yields(monkeypatch, events)
+
+    async def tracked_upsert(user_id, message):
+        result = await original_upsert(user_id, message)
+        events.append(f"upsert:{message.status.value}")
+        return result
+
+    monkeypatch.setattr(repo, "upsert_message", tracked_upsert)
+    response = client.post(
+        "/api/chat",
+        json={"sessionId": session_id, "content": "hello", "stream": True},
+    )
+    payloads = _sse_payloads(response.text)
+    errors = [
+        json.loads(payload)
+        for payload in payloads
+        if payload != "[DONE]" and "error" in json.loads(payload)
+    ]
+
+    assert events == ["upsert:error", "error"]
+    assert errors == [{"error": "Model stream failed."}]
+    assert "internal deployment secret" not in response.text
+    assert "[DONE]" not in payloads
+    messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    assert messages[-1]["status"] == "error"
+    assert messages[-1]["content"] == "partial answer"
 
 
 @pytest.mark.asyncio

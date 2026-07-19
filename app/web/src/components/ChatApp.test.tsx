@@ -117,11 +117,20 @@ vi.mock("./MessageList", () => ({
       id: string;
       content: string;
       steps?: { kind: string; label: string }[] | null;
+      source?: string;
+      agent?: string | null;
+      attachments?: unknown[];
     }[];
   }) => (
     <div aria-label="Conversation">
       {messages.map((message) => (
-        <div key={message.id} data-message-id={message.id}>
+        <div
+          key={message.id}
+          data-message-id={message.id}
+          data-source={message.source}
+          data-agent={message.agent ?? undefined}
+          data-attachment-count={message.attachments?.length ?? 0}
+        >
           {message.content}
           {(message.steps ?? []).map((step) => (
             <span key={`${step.kind}-${step.label}`}>{step.label}</span>
@@ -809,6 +818,64 @@ describe("ChatApp stream reconciliation", () => {
     expect(screen.getAllByText("Authoritative answer")).toHaveLength(1);
     expect(screen.getByText("Searched the web")).toBeInTheDocument();
     expect(screen.queryByText("Searching the web")).toBeNull();
+  });
+
+  it("does not overlay fallback onto a concurrent same-id terminal row", async () => {
+    mocks.listMessages.mockResolvedValueOnce([]).mockResolvedValue([
+      chatMessage("user-1", "user", "hello from draft"),
+      chatMessage("assistant-1", "assistant", "", "streaming"),
+    ]);
+    mocks.appendVoiceTurns.mockResolvedValueOnce([
+      {
+        ...chatMessage(
+          "assistant-1",
+          "assistant",
+          "Authoritative concurrent answer",
+        ),
+        source: "voice",
+        agent: "voice-agent",
+        attachments: [
+          {
+            id: "artifact-1",
+            kind: "image",
+            mimeType: "image/png",
+            prompt: null,
+            model: "image-model",
+            size: "1024x1024",
+          },
+        ],
+      },
+    ]);
+    const handlers = captureStreamHandlers();
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    act(() => {
+      handlers().onMetadata({
+        userMessageId: "user-1",
+        assistantMessageId: "assistant-1",
+      });
+      handlers().onDelta("Short buffered fallback");
+    });
+    await act(async () => {
+      await mocks.voiceOptions!.persistConversation("A", "conversation", [
+        { role: "assistant", text: "Authoritative concurrent answer" },
+      ]);
+    });
+    const authoritative = await screen.findByText(
+      "Authoritative concurrent answer",
+    );
+    act(() => handlers().onDone());
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send draft message" })).toBeEnabled(),
+    );
+    expect(authoritative).toHaveAttribute("data-message-id", "assistant-1");
+    expect(authoritative).toHaveAttribute("data-source", "voice");
+    expect(authoritative).toHaveAttribute("data-agent", "voice-agent");
+    expect(authoritative).toHaveAttribute("data-attachment-count", "1");
+    expect(screen.queryByText("Short buffered fallback")).toBeNull();
   });
 
   it("keeps Voice history monotonic when a stale refresh regresses the same id", async () => {

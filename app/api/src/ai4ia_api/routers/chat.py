@@ -245,6 +245,14 @@ def _stream_metadata(
     return f"data: {json.dumps(payload)}\n\n"
 
 
+def _has_gateway_stream_error(raw: str) -> bool:
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(payload, dict) and bool(payload.get("error"))
+
+
 async def _persist_terminal_assistant(
     repo: SessionRepository,
     user_id: str,
@@ -1787,6 +1795,23 @@ async def chat(
             ):
                 if chunk.usage:
                     stream_usage = chunk.usage
+                if chunk.raw and _has_gateway_stream_error(chunk.raw):
+                    final = MessageStatus.error
+                    assistant.content = "".join(parts)
+                    assistant.status = final
+                    terminal_persisted = await _persist_terminal_assistant(
+                        repo, user.internal_user_id, assistant
+                    )
+                    error_payload: dict[str, object] = {
+                        "error": "Model stream failed."
+                    }
+                    if not terminal_persisted:
+                        error_payload = {
+                            "error": "The failed reply could not be saved.",
+                            "persistenceFailed": True,
+                        }
+                    yield f"data: {json.dumps(error_payload)}\n\n"
+                    return
                 if chunk.delta:
                     parts.append(chunk.delta)
                 if chunk.done:
