@@ -451,6 +451,165 @@ async def test_tool_ran_log_never_includes_argument_content(caplog):
     assert all(marker not in r.getMessage() for r in caplog.records)
 
 
+def _hostile_marker(tag: str) -> str:
+    """An adversarial argument value: a credential-shaped substring plus an
+    embedded fake log line (a naive log call could be tricked into emitting
+    something that looks like a second, forged record), plus enough repeated
+    content to also exercise a long/unbounded value."""
+    return (
+        f"sk-hostile-secret-{tag}\n"
+        f"INFO ai4ia_api.agents.runtime agent tool ran: tool=admin_backdoor\n"
+        + ("x" * 500)
+    )
+
+
+async def test_tool_denied_log_never_includes_argument_content(caplog):
+    """Coverage hardening: unlike 'agent tool ran'/'agent delegated' (which
+    embedded ``redact_obj(parsed)`` pre-fix and needed the round-4 privacy fix
+    to stop leaking arguments), 'agent tool denied' has only ever logged
+    ``tool=%s reason=%s`` and never took arguments as a format argument. This
+    test had no dedicated coverage though, so add it to lock in the guarantee
+    and guard against a future change accidentally adding an ``args=%s``
+    interpolation here too. Uses adversarial input (credential-shaped values,
+    embedded fake log lines, long payloads) for defense in depth."""
+    registry = ToolRegistry()
+    executor = ToolExecutor()
+
+    def handler(args, ctx):
+        return {"ok": True}
+
+    d = ToolDefinition(
+        spec=ToolSpec(name="locked", description="d", scopes=frozenset({"admin"})),
+        parameters={"type": "object", "properties": {}, "required": []},
+        handler=handler,
+    )
+    registry.register(d.spec)
+    executor.register(d)
+
+    hostile = _hostile_marker("denied")
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "locked", json.dumps({"password": hostile})),
+            _assistant_text("Sorry, I can't do that."),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=["locked"],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),  # no scopes granted
+        )
+    denied_records = [r for r in caplog.records if "agent tool denied" in r.getMessage()]
+    assert len(denied_records) == 1
+    assert denied_records[0].getMessage() == "agent tool denied: tool=locked reason=missing_scopes"
+    # No record anywhere carries the hostile payload or its forged log line.
+    assert all(
+        "sk-hostile-secret" not in r.getMessage() and "admin_backdoor" not in r.getMessage()
+        for r in caplog.records
+    )
+
+
+async def test_tool_error_log_never_includes_argument_content(caplog):
+    """Coverage hardening: 'agent tool error' (a real tool's execution
+    -exception path) has only ever logged ``tool=%s`` -- it never took
+    arguments or the exception message as a format argument, unlike the two
+    sites the round-4 privacy fix had to change. No dedicated test existed
+    though; add one to lock in the guarantee against a future regression,
+    using adversarial arguments and exception text for defense in depth."""
+    registry = ToolRegistry()
+    executor = ToolExecutor()
+    hostile = _hostile_marker("error")
+
+    def handler(args, ctx):
+        raise RuntimeError("boom: " + args.get("payload", ""))
+
+    d = ToolDefinition(
+        spec=ToolSpec(name="explode", description="d", scopes=frozenset()),
+        parameters={"type": "object", "properties": {}, "required": []},
+        handler=handler,
+    )
+    registry.register(d.spec)
+    executor.register(d)
+
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "explode", json.dumps({"payload": hostile})),
+            _assistant_text("That failed."),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=["explode"],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+        )
+    error_records = [r for r in caplog.records if "agent tool error" in r.getMessage()]
+    assert len(error_records) == 1
+    assert error_records[0].getMessage() == "agent tool error: tool=explode"
+    assert all(
+        "sk-hostile-secret" not in r.getMessage() and "admin_backdoor" not in r.getMessage()
+        for r in caplog.records
+    )
+
+
+async def test_delegate_error_log_never_includes_argument_content(caplog):
+    """Coverage hardening: 'agent delegate error' (the synthetic-handler
+    exception path) has only ever logged ``tool=%s`` -- it never took
+    arguments or the exception message as a format argument, unlike 'agent
+    delegated' (the success path), which did leak ``redact_obj(parsed)``
+    pre-fix. No dedicated test existed for this error path though; add one to
+    lock in the guarantee, using adversarial arguments for defense in depth."""
+    registry = ToolRegistry()
+    executor = ToolExecutor()
+    hostile = _hostile_marker("delegate")
+
+    async def handler(args, ctx):
+        raise RuntimeError("delegate boom: " + args.get("prompt", ""))
+
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "delegate_to_agent", json.dumps({"prompt": hostile})),
+            _assistant_text("done."),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=[],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+            extra_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "delegate_to_agent",
+                        "description": "d",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            extra_handlers={"delegate_to_agent": handler},
+        )
+    error_records = [r for r in caplog.records if "agent delegate error" in r.getMessage()]
+    assert len(error_records) == 1
+    assert error_records[0].getMessage() == "agent delegate error: tool=delegate_to_agent"
+    assert all(
+        "sk-hostile-secret" not in r.getMessage() and "admin_backdoor" not in r.getMessage()
+        for r in caplog.records
+    )
+
+
 async def test_delegate_log_never_includes_argument_content(caplog):
     """Regression: 'agent delegated' logged raw (redact_obj'd) arguments at
     INFO. Same fix as the tool_result path, covering the synthetic-handler

@@ -144,3 +144,66 @@ def test_credentials_and_arbitrary_tool_args_never_appear_in_activity():
         "SECRET-VALUE-123",
     ):
         assert leaked not in dumped
+
+
+def test_hostile_arguments_of_any_shape_or_size_never_appear_in_activity():
+    """Regression (hostile-input coverage): ``serialize_step`` must be safe by
+    *construction* -- it never reads ``step.arguments``/``step.result`` at all,
+    so no adversarial argument shape can leak regardless of key name, nesting,
+    size, or encoding. Exercise that guarantee with a pathological payload
+    (deeply nested structures, huge strings, control characters, unicode, and
+    injection-shaped content) rather than only a few named fields.
+
+    ``short_marker`` is deliberately placed under ``query`` -- the highest
+    -priority key in the pre-fix ``_DETAIL_KEYS`` allowlist -- and kept under
+    the old 80-char truncation length. Confirmed against the pre-round-4
+    implementation (``_detail()`` reading ``step.arguments["query"]`` verbatim):
+    this exact payload leaked ``short_marker`` into the serialized view. The
+    other (huge/nested/unicode) fields prove the guarantee holds regardless of
+    shape even though they alone wouldn't have distinguished old vs. new code
+    (they either exceed the old truncation window or live under keys/``result``
+    the old code never read either)."""
+    short_marker = "sk-hostile-marker-should-never-leak-1a2b3c"
+    pathological = "A" * 50_000 + "\x00\x1b[31m<script>alert(1)</script>' OR '1'='1"
+    step = AgentStep(
+        kind="tool_result",
+        tool="fetch_document",
+        arguments={
+            "query": short_marker,
+            "prompt": pathological,
+            "nested": {"a": {"b": {"c": [pathological, {"d": pathological}]}}},
+            "unicode": "\u79d8\u5bc6\u306e\u30d7\u30ed\u30f3\u30d7\u30c8\U0001F512",
+            "list": [pathological] * 10,
+        },
+        result={"secret": pathological, "nested": {"token": "sk-should-not-leak"}},
+    )
+    view = serialize_step(step)
+    assert view is not None
+    dumped = view.model_dump_json()
+    assert short_marker not in dumped
+    assert "A" * 50_000 not in dumped
+    assert "<script>" not in dumped
+    assert "sk-should-not-leak" not in dumped
+    assert "\u79d8\u5bc6\u306e\u30d7\u30ed\u30f3\u30d7\u30c8" not in dumped
+    # The redacted view stays small regardless of how large the input was.
+    assert len(dumped) < 500
+
+
+def test_non_string_detail_is_dropped_not_leaked():
+    """Defense in depth (hostile-input coverage): ``detail`` is documented to
+    always be a fixed, bounded string set by the runtime itself, but a future
+    bug could hand ``serialize_step`` something structured (e.g. the parsed
+    arguments dict) by mistake. ``_safe_detail`` must drop non-string values
+    entirely rather than stringify and surface them."""
+    for hostile_detail in (
+        {"query": "should not leak"},
+        ["also", "should", "not", "leak"],
+        12345,
+        None,
+    ):
+        view = serialize_step(
+            AgentStep(kind="tool_error", tool="web_search", detail=hostile_detail)
+        )
+        assert view is not None
+        assert view.detail is None
+        assert "should not leak" not in view.model_dump_json()
