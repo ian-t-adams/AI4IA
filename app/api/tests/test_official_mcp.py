@@ -317,6 +317,21 @@ def test_official_mcp_enabled_with_url_and_key_validates():
     s.validate_runtime()  # no raise
 
 
+def test_official_mcp_enabled_with_empty_catalog_is_rejected(tmp_path):
+    # A correctly-configured URL + key with a corrupted/emptied catalog file
+    # would silently wire zero official tools; that must fail loud instead.
+    empty_catalog = tmp_path / "empty_official_mcp_catalog.json"
+    empty_catalog.write_text(json.dumps({"servers": []}), encoding="utf-8")
+    s = _settings(
+        official_mcp_enabled=True,
+        official_mcp_gateway_url="https://apim/",
+        official_mcp_subscription_key="k",
+        official_mcp_catalog_path=str(empty_catalog),
+    )
+    with pytest.raises(RuntimeError, match="catalog has no servers"):
+        s.validate_runtime()
+
+
 # --- Multi-plane merge (build_mcp_turn_tools_multi) --------------------------
 
 

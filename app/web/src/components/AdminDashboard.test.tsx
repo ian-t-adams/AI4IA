@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { AdminDashboard } from "./AdminDashboard";
 
@@ -494,6 +495,47 @@ describe("AdminDashboard new analytics panels", () => {
     expect(within(panel).getByText("alice-00…3333")).toBeInTheDocument();
     // Unknown user degrades to just the short hash (no name/email line).
     expect(within(panel).getByText("bob-0000…4444")).toBeInTheDocument();
+  });
+
+  it("discloses a user's full id (and email) via focus/click, not hover-only title", async () => {
+    window.localStorage.setItem("ai4ia.admin.showRealIdentities", "true");
+    vi.mocked(fetchByUser).mockResolvedValue({
+      sinceDays: 30,
+      fromTime: "",
+      toTime: "",
+      truncated: false,
+      scannedRecords: 1,
+      totalUsers: 1,
+      limit: 20,
+      offset: 0,
+      byUser: [
+        {
+          userId: "alice-0000-1111-2222-3333",
+          requests: 2,
+          erroredRequests: 0,
+          promptTokens: 10,
+          completionTokens: 5,
+          totalTokens: 15,
+          costMicroUsd: 0,
+          costKnown: true,
+          displayName: "Ada Lovelace",
+          email: "ada@example.com",
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<AdminDashboard />);
+    const panel = await panelByHeading("Top users");
+    await within(panel).findByText("Ada Lovelace");
+    // A real <button> (not a hover-only title/tabIndex div) is reachable by
+    // keyboard and shows up in the accessibility tree unconditionally.
+    const helpButton = within(panel).getByRole("button", {
+      name: "Help: full id for alice-00…3333",
+    });
+    await user.click(helpButton);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "Full id: alice-0000-1111-2222-3333, email: ada@example.com",
+    );
   });
 
   it("falls back to the short hash in Top users when no name is known", async () => {

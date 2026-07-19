@@ -37,6 +37,7 @@ import logging
 from typing import Any
 
 from ..config import Settings
+from ..http_retry import parse_retry_after
 
 logger = logging.getLogger(__name__)
 
@@ -371,7 +372,15 @@ class WebSearchClient:
         max_length: int | None = None,
         live_crawl: str = "none",
     ) -> dict[str, Any]:
-        """Fetch one URL -> ``{url, title, content}`` (markdown content)."""
+        """Fetch one URL -> ``{url, title, content, retry_after}`` (markdown content).
+
+        ``retry_after`` (seconds, or ``None``) mirrors the SDK's
+        ``BrowseResponse.retryAfter``: it is only set when a ``live_crawl`` of
+        ``"fallback"``/``"always"`` triggered an on-demand crawl that has not
+        finished yet, in which case ``title``/``content`` are **not** populated.
+        Callers must treat a non-``None`` ``retry_after`` as "not fetched yet" —
+        never as a genuinely empty page — and must not report it as success.
+        """
         types = self._load_types()
         client = self._ensure_client()
         try:
@@ -385,10 +394,12 @@ class WebSearchClient:
             raise
         except Exception as exc:  # noqa: BLE001
             raise self._map_error(exc) from exc
+        raw_retry_after = getattr(resp, "retryAfter", None)
         return {
             "url": getattr(resp, "url", None) or url,
             "title": getattr(resp, "title", None),
             "content": getattr(resp, "content", None),
+            "retry_after": parse_retry_after(raw_retry_after) if raw_retry_after else None,
         }
 
     async def close(self) -> None:

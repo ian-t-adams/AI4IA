@@ -12,47 +12,8 @@ import {
   MAX_STEPS,
   nameError,
 } from "@/lib/studio";
-
-const labelStyle: React.CSSProperties = {
-  fontSize: "0.8em",
-  color: "var(--fg-muted)",
-  marginBottom: 4,
-  display: "block",
-};
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  borderRadius: 8,
-  border: "1px solid var(--border)",
-  background: "var(--bg)",
-  color: "var(--fg)",
-  font: "inherit",
-};
-const primaryBtn: React.CSSProperties = {
-  padding: "9px 16px",
-  borderRadius: 8,
-  border: "none",
-  background: "var(--accent)",
-  color: "var(--accent-fg)",
-  fontWeight: 600,
-  cursor: "pointer",
-};
-const ghostBtn: React.CSSProperties = {
-  padding: "4px 8px",
-  borderRadius: 6,
-  border: "1px solid var(--border)",
-  background: "var(--bg)",
-  color: "var(--fg)",
-  cursor: "pointer",
-  fontSize: "0.85em",
-};
-const iconBtn: React.CSSProperties = {
-  border: "none",
-  background: "transparent",
-  color: "var(--fg-muted)",
-  padding: "4px 6px",
-  cursor: "pointer",
-};
+import { HelpTooltip } from "./HelpTooltip";
+import { checkRow, ghostBtn, iconBtn, inputStyle, labelStyle, primaryBtn } from "./builderStyles";
 
 // Client-only stable key so React can track step rows across reorder/remove
 // without the instruction/agent values "travelling" to the wrong row.
@@ -122,6 +83,7 @@ export function WorkflowBuilder({
   const [running, setRunning] = useState(false);
 
   const agentNames = useMemo(() => new Set(agents.map((a) => a.name)), [agents]);
+  const agentsByName = useMemo(() => new Map(agents.map((a) => [a.name, a])), [agents]);
 
   const refreshMine = useCallback(async () => {
     try {
@@ -132,6 +94,7 @@ export function WorkflowBuilder({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch-on-mount; setState only runs after the awaited call resolves
     void refreshMine();
   }, [refreshMine]);
 
@@ -293,7 +256,9 @@ export function WorkflowBuilder({
         <option value="">Select agent…</option>
         {missing && <option value={current}>{current} (missing)</option>}
         {agents.map((a) => (
-          <option key={a.name} value={a.name}>{a.displayName || a.name}</option>
+          <option key={a.name} value={a.name} title={a.description || undefined}>
+            {a.displayName || a.name}
+          </option>
         ))}
       </>
     );
@@ -364,14 +329,20 @@ export function WorkflowBuilder({
                     onChange={(e) => setRunInput(e.target.value)}
                     style={{ ...inputStyle, resize: "vertical" }}
                   />
-                  <button
-                    onClick={doRun}
-                    disabled={running || !runInput.trim() || !runModel}
-                    title={!runModel ? "Pick a model in the chat header first" : undefined}
-                    style={primaryBtn}
-                  >
-                    {running ? "Running…" : "Run in new chat"}
-                  </button>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button
+                      onClick={doRun}
+                      disabled={running || !runInput.trim() || !runModel}
+                      style={primaryBtn}
+                    >
+                      {running ? "Running…" : "Run in new chat"}
+                    </button>
+                    {!runModel && (
+                      <span style={{ ...labelStyle, margin: 0 }}>
+                        Pick a model in the chat header first.
+                      </span>
+                    )}
+                  </div>
                 </div>
               )}
             </li>
@@ -425,7 +396,18 @@ export function WorkflowBuilder({
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={labelStyle}>Steps ({form.steps.length}/{MAX_STEPS})</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={labelStyle}>Steps ({form.steps.length}/{MAX_STEPS})</span>
+              <HelpTooltip label="About workflow steps" size="sm">
+                Steps run in order. Each is at least one model call, but a step whose agent
+                uses tools can take up to three (an initial tool-calling attempt, a follow-up
+                with the tool result, and a forced final answer if it keeps requesting tools)
+                — every extra step and tool call adds latency and cost. Only the immediately
+                prior step&apos;s output is passed forward via {" "}
+                {"{previous}"}, truncated to 8,000 characters — not the full conversation
+                history.
+              </HelpTooltip>
+            </span>
             <button onClick={addStep} disabled={form.steps.length >= MAX_STEPS} style={ghostBtn}>
               + Add step
             </button>
@@ -434,51 +416,57 @@ export function WorkflowBuilder({
             Use {INPUT_TOKEN} for the run input and {"{previous}"} for the prior step&apos;s
             output. The first step must include {INPUT_TOKEN}.
           </p>
-          {form.steps.map((s, i) => (
-            <div
-              key={s.key}
-              style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, display: "flex", flexDirection: "column", gap: 8 }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <strong style={{ fontSize: "0.85em" }}>Step {i + 1}</strong>
-                <select
-                  aria-label={`Step ${i + 1} agent`}
-                  value={s.agent}
-                  onChange={(e) => patchStep(s.key, { agent: e.target.value })}
-                  style={{ ...inputStyle, width: "auto", flex: 1 }}
-                >
-                  {agentOptions(s.agent)}
-                </select>
-                <button onClick={() => moveStep(s.key, -1)} disabled={i === 0} aria-label="Move up" style={iconBtn}>↑</button>
-                <button onClick={() => moveStep(s.key, 1)} disabled={i === form.steps.length - 1} aria-label="Move down" style={iconBtn}>↓</button>
-                <button
-                  onClick={() => removeStep(s.key)}
-                  disabled={form.steps.length <= 1}
-                  aria-label="Remove step"
-                  style={iconBtn}
-                >
-                  ✕
-                </button>
+          {form.steps.map((s, i) => {
+            const selectedAgent = agentsByName.get(s.agent);
+            return (
+              <div
+                key={s.key}
+                style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, display: "flex", flexDirection: "column", gap: 8 }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <strong style={{ fontSize: "0.85em" }}>Step {i + 1}</strong>
+                  <select
+                    aria-label={`Step ${i + 1} agent`}
+                    value={s.agent}
+                    onChange={(e) => patchStep(s.key, { agent: e.target.value })}
+                    style={{ ...inputStyle, width: "auto", flex: 1 }}
+                  >
+                    {agentOptions(s.agent)}
+                  </select>
+                  <button onClick={() => moveStep(s.key, -1)} disabled={i === 0} aria-label="Move up" style={iconBtn}>↑</button>
+                  <button onClick={() => moveStep(s.key, 1)} disabled={i === form.steps.length - 1} aria-label="Move down" style={iconBtn}>↓</button>
+                  <button
+                    onClick={() => removeStep(s.key)}
+                    disabled={form.steps.length <= 1}
+                    aria-label="Remove step"
+                    style={iconBtn}
+                  >
+                    ✕
+                  </button>
+                </div>
+                {selectedAgent?.description && (
+                  <p style={{ ...labelStyle, margin: 0 }}>{selectedAgent.description}</p>
+                )}
+                <textarea
+                  aria-label={`Step ${i + 1} instruction`}
+                  value={s.instruction}
+                  maxLength={MAX_INSTRUCTION_LEN}
+                  rows={2}
+                  placeholder={i === 0 ? `Answer this: ${INPUT_TOKEN}` : "Refine: {previous}"}
+                  onChange={(e) => patchStep(s.key, { instruction: e.target.value })}
+                  style={{ ...inputStyle, resize: "vertical" }}
+                />
+                {i === 0 && firstMissingInput && (
+                  <p role="alert" style={{ color: "var(--danger)", fontSize: "0.8em", margin: 0 }}>
+                    First step must include {INPUT_TOKEN}.
+                  </p>
+                )}
               </div>
-              <textarea
-                aria-label={`Step ${i + 1} instruction`}
-                value={s.instruction}
-                maxLength={MAX_INSTRUCTION_LEN}
-                rows={2}
-                placeholder={i === 0 ? `Answer this: ${INPUT_TOKEN}` : "Refine: {previous}"}
-                onChange={(e) => patchStep(s.key, { instruction: e.target.value })}
-                style={{ ...inputStyle, resize: "vertical" }}
-              />
-              {i === 0 && firstMissingInput && (
-                <p role="alert" style={{ color: "var(--danger)", fontSize: "0.8em", margin: 0 }}>
-                  First step must include {INPUT_TOKEN}.
-                </p>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
 
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.9em" }}>
+        <label style={checkRow}>
           <input
             type="checkbox"
             checked={form.enabled}

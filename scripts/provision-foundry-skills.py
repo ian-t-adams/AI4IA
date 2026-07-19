@@ -12,7 +12,10 @@ foundry/toolbox.manifest.json (see scripts/provision-foundry-toolbox.py), so any
 at the single toolbox endpoint. No app runtime code is required.
 
 Default is a dry run (offline, no Azure calls). Pass ``--create`` to write to Foundry
-(requires the optional ``foundry`` dependency group: azure-ai-projects + azure-identity).
+(requires the optional ``foundry`` dependency group: azure-ai-projects + azure-identity). Every
+``--create`` call passes ``default=True``, so the version it just created is immediately
+activated as the one served -- both for a brand-new skill and for a later version of an
+existing one (there is no separate promotion step, unlike the toolbox script).
 All of this is public preview; do not use in production without validation.
 """
 
@@ -101,8 +104,17 @@ def resolve_project_endpoint(arg: str | None) -> str:
 # --------------------------------------------------------------------------------------
 # Live path (isolated Azure SDK import)
 # --------------------------------------------------------------------------------------
-def create_skill(project: Any, skill: dict[str, Any]) -> Any:  # pragma: no cover - live only
-    """Create one skill version from inline content. Auto-creates the parent skill."""
+def create_skill(project: Any, skill: dict[str, Any]) -> Any:
+    """Create one skill version from inline content and activate it as the default version.
+
+    ``default=True`` is required on every call: ``create()`` is the single, idempotent REST
+    operation for both "create the skill for the first time" and "add a later version to an
+    already-existing skill" (its own docstring: "Creates a new version of a skill. If the skill
+    does not exist, it will be created."). Without an explicit ``default=True``, a later version
+    is created but never served -- the skills analogue of the toolbox's
+    ``create_version`` + ``update(default_version=...)`` two-call promotion, except skills'
+    ``create()`` supports promoting the version it just created in the very same call.
+    """
     from azure.ai.projects.models import SkillInlineContent
 
     return project.beta.skills.create(
@@ -111,6 +123,7 @@ def create_skill(project: Any, skill: dict[str, Any]) -> Any:  # pragma: no cove
             description=skill["description"],
             instructions=skill["instructions"],
         ),
+        default=True,
     )
 
 
@@ -121,7 +134,7 @@ def _project_client(endpoint: str) -> Any:  # pragma: no cover - live only
     except ImportError as exc:
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.3.0 azure-identity'
         ) from exc
     return AIProjectClient(endpoint=endpoint, credential=DefaultAzureCredential(), allow_preview=True)
 
@@ -145,7 +158,16 @@ def main(argv: list[str] | None = None) -> int:
     for skill in skills:
         errors = validate_skill(skill)
         status = "OK" if not errors else "INVALID"
-        print(f"[{status}] {skill.get('name') or skill['path'].parent.name}  ({skill['path'].relative_to(REPO_ROOT)})")
+        skill_path = skill["path"]
+        try:
+            # Cosmetic only: prefer a repo-relative path when --skills-dir is (as normal) under
+            # REPO_ROOT. A custom --skills-dir (e.g. a test's tmp_path, or an operator pointing at
+            # a scratch directory) is not an error, so fall back to the absolute path instead of
+            # crashing (Path.relative_to() raises ValueError when it is not a subpath).
+            skill_path = skill_path.relative_to(REPO_ROOT)
+        except ValueError:
+            pass
+        print(f"[{status}] {skill.get('name') or skill['path'].parent.name}  ({skill_path})")
         for e in errors:
             print(f"    - {e}", file=sys.stderr)
             invalid = True
@@ -162,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     project = _project_client(endpoint)
     for skill in skills:
         created = create_skill(project, skill)
-        print(f"Created skill '{skill['name']}' version {getattr(created, 'version', '?')}.")
+        print(f"Created skill '{skill['name']}' version {getattr(created, 'version', '?')} and activated it as the default version.")
     print("\nNow bind them: add each under `skills` in foundry/toolbox.manifest.json and re-run")
     print("scripts/provision-foundry-toolbox.py --create to publish a toolbox version that references them.")
     return 0
