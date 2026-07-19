@@ -27,7 +27,8 @@ The audit covered:
   RBAC, canonical data, and feature prerequisites;
 - API/web sources for routing, ownership, agent execution, redacted activity,
   Voice Live/TTS, WebIQ, Foundry Toolbox, error behavior, and observability;
-- current heads, descriptions, changed files, and diffs for open PRs #184-#190;
+- current heads, descriptions, changed files, diffs, and merge status for PRs
+  #184-#190;
 - contributor guidance and CI workflow definitions; and
 - GitHub REST evidence for branch protection/rulesets.
 
@@ -67,7 +68,7 @@ The audit confirmed these load-bearing facts:
 | Toolbox `--create` repeat behavior was under-specified | Documented safe version creation and warned that repeat calls are not a no-op |
 | WebIQ browse behavior under active remediation could be read as current | This report labels PR #184 open; current docs do not claim its pending-crawl/retry fixes are merged |
 | Voice docs emphasized Voice Live but not turn-based TTS routing | Clarified that TTS/transcription are HTTP calls on the normal proxy path and are independent of the Voice Live socket |
-| Proxy README repeated the stale shared-ingress/realtime-key claim | Corrected it to the three-credential core design |
+| Proxy README repeated the stale shared-ingress/realtime-key claim | #185 corrected it to the three-credential core design; this rebase preserves that merged wording |
 | Docs portal would not surface an evergreen audit | Added this report to `site/data/docs.manifest.json` and regenerated `docs.js` |
 
 `AGENTS.md` already states the correct routing, catalog, ownership, feature-gate,
@@ -141,7 +142,7 @@ paths, balanced Mermaid fences, transparent Excalidraw containers, filled leaves
 black text with explicit dimensions, unique element ids, and the rendered SVG
 `viewBox`/content labels.
 
-Full implementation validation remains owned by the parallel PRs and existing CI:
+Full implementation validation remains owned by the remaining PRs and existing CI:
 web lint/test/build, API ruff/pyright/pytest, Bicep/schema validation, proxy .NET
 build/tests, quality, CodeQL, security scans, and PR-time Docker image builds.
 
@@ -165,7 +166,7 @@ build/tests, quality, CodeQL, security scans, and PR-time Docker image builds.
 | Priority | Owner action | Exit evidence |
 | --- | --- | --- |
 | P0 | Add a `main` ruleset requiring pull requests, one approving review, stale-approval dismissal, conversation resolution, and blocked force-push/deletion | Ruleset visible through GitHub API/UI and a test PR cannot merge without requirements |
-| P0 | Require both `app-ci` jobs (`web`, `api`), `infra-validate / bicep-lint-build`, every `quality` job, the two blocking `security-scan` jobs, and both CodeQL language analyses; require the API/web Docker build jobs after #187 merges and their contexts are stable | Ruleset lists the exact job contexts and a test PR cannot merge when one is absent/failing |
+| P0 | Require both `app-ci` jobs (`web`, `api`), `infra-validate / bicep-lint-build`, every `quality` job, the two blocking `security-scan` jobs, both CodeQL language analyses, and the API/web Docker build jobs after confirming their contexts are stable | Ruleset lists the exact job contexts and a test PR cannot merge when one is absent/failing |
 | P0 | Add and merge the #189 privacy-hardening commit that removes prompt/query/tool-argument content from activity details and ordinary INFO logs before accepting PR #191 | Tests prove activity and INFO telemetry contain metadata only; #189 merged SHA is recorded here |
 | P0 | Merge the remaining implementation PRs only after each branch is rebased, conflicts are resolved, and its stated validation is rerun | Merged SHA plus green required checks; report table updated |
 | P1 | Reconcile #184 documentation hunks against this architecture/audit instead of reintroducing stale wording | Final merged docs preserve the credential, privacy-dependency, and status tables |
