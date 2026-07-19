@@ -164,6 +164,53 @@ def test_superseded_summary_stream_has_no_assistant_metadata_or_done(client, mon
     assert "metadata" not in payloads[0]
 
 
+def test_plain_tool_stream_disconnect_before_iteration_has_no_placeholder(
+    client, monkeypatch
+):
+    class WebSearch:
+        def build_capability(self, **_kwargs):
+            async def handler(_arguments):
+                return {"ok": True}
+
+            return (
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                {"web_search": handler},
+            )
+
+    class DisconnectBeforeIteration(StreamingResponse):
+        async def __call__(self, _scope, _receive, send):
+            await self.body_iterator.aclose()  # type: ignore[attr-defined]
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": self.status_code,
+                    "headers": self.raw_headers,
+                }
+            )
+            await send({"type": "http.response.body", "body": b""})
+
+    client.app.state.web_search = WebSearch()
+    monkeypatch.setattr(chat_router, "StreamingResponse", DisconnectBeforeIteration)
+    session_id = _create_session(client)
+    response = client.post(
+        "/api/chat",
+        json={"sessionId": session_id, "content": "find current news", "stream": True},
+    )
+
+    assert response.status_code == 200
+    messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    assert [message["role"] for message in messages] == ["user"]
+
+
 def test_persistence_failure_is_explicit_and_never_reports_done(client, monkeypatch):
     session_id = _create_session(client)
     repo = client.app.state.session_repo

@@ -1627,7 +1627,6 @@ async def chat(
                         model=deployment.deploymentName,
                         agent=agent_name,
                     )
-                    await repo.add_message(user.internal_user_id, placeholder)
 
                     def _run_plain(on_step: Callable[[AgentStep], Awaitable[None]]):
                         return run_agent_turn(
@@ -1655,21 +1654,26 @@ async def chat(
                         return _extract_text(res), TokenUsage.parse(res.get("usage"))
 
                     return StreamingResponse(
-                        _agentic_stream(
-                            assistant=placeholder,
-                            run=_run_plain,
+                        _stream_with_placeholder(
                             repo=repo,
-                            memory=memory,
-                            metering=metering,
-                            user=user,
-                            session_id=body.sessionId,
-                            model_id=model_id,
-                            deployment=deployment,
-                            agent_name=agent_name,
-                            correlation_id=correlation_id,
-                            content_for_model=content_for_model,
-                            user_message_id=user_msg.id,
-                            fallback=_rag_fallback,
+                            user_id=user.internal_user_id,
+                            assistant=placeholder,
+                            events=_agentic_stream(
+                                assistant=placeholder,
+                                run=_run_plain,
+                                repo=repo,
+                                memory=memory,
+                                metering=metering,
+                                user=user,
+                                session_id=body.sessionId,
+                                model_id=model_id,
+                                deployment=deployment,
+                                agent_name=agent_name,
+                                correlation_id=correlation_id,
+                                content_for_model=content_for_model,
+                                user_message_id=user_msg.id,
+                                fallback=_rag_fallback,
+                            ),
                         ),
                         media_type="text/event-stream",
                     )
