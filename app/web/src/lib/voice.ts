@@ -4,9 +4,16 @@
 // lifecycle (start/stop, track cleanup), a start-race guard, and staleness
 // handling so a transcription that resolves after unmount is dropped. The hook
 // owns no UI: it exposes state + a single toggle and calls back with the text.
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { transcribeAudio, synthesizeSpeech } from "./api";
+import { reportClientEvent } from "./clientTelemetry";
 
 // Preference order. Chrome/Firefox favor webm/opus; Safari only does mp4.
 const MIME_CANDIDATES = [
@@ -47,6 +54,29 @@ export interface VoiceRecorder {
   toggle: () => void;
 }
 
+// Whether this browser can capture voice input at all (getUserMedia +
+// MediaRecorder). Capability can't change while the page is open, so this is
+// read via useSyncExternalStore instead of an effect+setState: ordinary
+// client renders call getClientVoiceInputSupport() directly (no extra
+// commit-then-cascading-render pass), and only actual SSR/hydration falls
+// back to getServerVoiceInputSupport()'s fixed `false` — matching the old
+// "starts false, resolves after mount" behavior without needing a mount
+// effect to flip it.
+function subscribeToNothing(): () => void {
+  return () => {};
+}
+function getClientVoiceInputSupport(): boolean {
+  return (
+    typeof navigator !== "undefined" &&
+    !!navigator.mediaDevices?.getUserMedia &&
+    typeof window !== "undefined" &&
+    typeof window.MediaRecorder !== "undefined"
+  );
+}
+function getServerVoiceInputSupport(): boolean {
+  return false;
+}
+
 export function useVoiceRecorder(
   onTranscript: (text: string) => void,
   onError: (message: string) => void,
@@ -55,7 +85,11 @@ export function useVoiceRecorder(
   const [transcribing, setTranscribing] = useState(false);
   // Resolved after mount to avoid an SSR/client hydration mismatch on the
   // button's disabled state.
-  const [supported, setSupported] = useState(false);
+  const supported = useSyncExternalStore(
+    subscribeToNothing,
+    getClientVoiceInputSupport,
+    getServerVoiceInputSupport,
+  );
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -75,12 +109,6 @@ export function useVoiceRecorder(
 
   useEffect(() => {
     mountedRef.current = true;
-    setSupported(
-      typeof navigator !== "undefined" &&
-        !!navigator.mediaDevices?.getUserMedia &&
-        typeof window !== "undefined" &&
-        typeof window.MediaRecorder !== "undefined",
-    );
     return () => {
       mountedRef.current = false;
       const recorder = recorderRef.current;
@@ -164,6 +192,9 @@ export function useVoiceRecorder(
         if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
       recorder.onerror = () => {
+        if (mountedRef.current && recorderRef.current === recorder) {
+          reportClientEvent("microphone_error");
+        }
         stopTracks();
         recorderRef.current = null;
         if (mountedRef.current) {
@@ -175,9 +206,17 @@ export function useVoiceRecorder(
       recorderRef.current = recorder;
       recorder.start();
       setRecording(true);
-    } catch {
+    } catch (error) {
       stopTracks();
-      onErrorRef.current("Microphone access was denied or unavailable.");
+      if (mountedRef.current) {
+        reportClientEvent("microphone_error", {
+          code:
+            error instanceof Error || error instanceof DOMException
+              ? error.name
+              : null,
+        });
+        onErrorRef.current("Microphone access was denied or unavailable.");
+      }
     } finally {
       startingRef.current = false;
     }
@@ -256,6 +295,32 @@ function splitOversized(unit: string, limit: number): string[] {
   return out;
 }
 
+// Numeric HTMLMediaElement/MediaError codes per the HTML spec (fixed values,
+// unchanged across browsers), used directly instead of the `MediaError`
+// global so this works the same in jsdom/test environments that may not
+// define it. Appended to the generic "Couldn't play the synthesized audio."
+// message so a real decode/format failure in production is distinguishable
+// from a transient network blip instead of being one opaque, unhelpful string.
+const MEDIA_ERR_ABORTED = 1;
+const MEDIA_ERR_NETWORK = 2;
+const MEDIA_ERR_DECODE = 3;
+const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
+
+function mediaErrorDetail(audio: HTMLAudioElement): string {
+  switch (audio.error?.code) {
+    case MEDIA_ERR_ABORTED:
+      return " Playback was aborted.";
+    case MEDIA_ERR_NETWORK:
+      return " A network error interrupted the download. Check your connection and try again.";
+    case MEDIA_ERR_DECODE:
+      return " The audio could not be decoded.";
+    case MEDIA_ERR_SRC_NOT_SUPPORTED:
+      return " This browser can't play the returned audio format.";
+    default:
+      return "";
+  }
+}
+
 // Single-active text-to-speech playback keyed by message id. Fetching a new clip
 // stops/revokes the previous one; a request token drops results that resolve
 // after the user moved on or the component unmounted.
@@ -327,10 +392,18 @@ export function useSpeechPlayback(
       };
       audio.onerror = () => {
         cancelPlaybackRef.current = null;
-        reject(new Error("Couldn't play the synthesized audio."));
+        if (mountedRef.current && audioRef.current === audio) {
+          reportClientEvent("media_playback_error");
+        }
+        reject(new Error(`Couldn't play the synthesized audio.${mediaErrorDetail(audio)}`));
       };
       audio.play().catch((e) => {
         cancelPlaybackRef.current = null;
+        if (mountedRef.current && audioRef.current === audio) {
+          reportClientEvent("media_playback_error", {
+            code: e instanceof Error ? e.name : null,
+          });
+        }
         reject(e as Error);
       });
     });
@@ -385,7 +458,9 @@ export function useSpeechPlayback(
             setBusyId(null);
             setActiveId(null);
             const msg = (e as Error).message;
-            if (msg !== "__stopped__") onErrorRef.current(msg);
+            if (msg !== "__stopped__") {
+              onErrorRef.current(msg);
+            }
           }
         }
       })();

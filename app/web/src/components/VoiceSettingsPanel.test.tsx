@@ -86,6 +86,10 @@ describe("VoiceSettingsPanel", () => {
       "Azure OpenAI",
       "Azure Speech",
     ]);
+    expect(select).toHaveAccessibleDescription(PROVIDERS[0].description);
+    for (const option of within(select).getAllByRole("option")) {
+      expect(option).not.toHaveAttribute("title");
+    }
   });
 
   it("only lists realtime catalog models plus the default option", () => {

@@ -19,6 +19,7 @@ import {
 } from "react";
 
 import { getApiAccessToken, isEntraEnabled } from "./auth";
+import { reportClientEvent } from "./clientTelemetry";
 import {
   DEFAULT_VOICE_PROVIDER_ID,
   voiceProviderCatalog,
@@ -593,6 +594,16 @@ interface LiveSession {
   cleaned: boolean;
   errorReported: boolean;
   protocolError: SafeProtocolError | null;
+  // Bound to every captured track's "ended" event so cleanup can remove the
+  // listener deterministically (see onTrackEnded wiring in start()).
+  onTrackEnded: (() => void) | null;
+  // Same deterministic-removal pattern as onTrackEnded, but for "mute" (see
+  // MIC_TRACK_MUTED_MESSAGE for why this needs its own listener).
+  onTrackMuted: (() => void) | null;
+  // Bounded grace-period timer started when ctx.onstatechange observes the
+  // AudioContext go "suspended" mid-session (see AUDIO_CONTEXT_SUSPENDED_MESSAGE).
+  // Tracked on the session so cleanupSession can clear it deterministically.
+  suspendRecoveryTimer: ReturnType<typeof setTimeout> | null;
 }
 
 // The message shown when the WebSocket fails or closes before ever reaching
@@ -603,6 +614,38 @@ interface LiveSession {
 const GATEWAY_UNAVAILABLE_MESSAGE =
   "Voice gateway or realtime service is unavailable. Try again.";
 const LIVE_CONNECTION_ERROR_MESSAGE = "Live voice connection error.";
+// The browser/OS can kill the mic track out from under an otherwise-healthy
+// WebSocket (permission revoked from the address bar mid-call, input device
+// unplugged/disconnected, another app taking exclusive access, a laptop lid
+// close). Nothing else observes this — the socket stays open and "live" — so
+// without an explicit `ended` listener the session silently stops hearing the
+// user with no error at all. This is surfaced through the same finishSession
+// path as a protocol error so it gets one consistent teardown + message.
+const MIC_TRACK_ENDED_MESSAGE =
+  "Microphone stopped providing audio (permission revoked or device disconnected). Reconnect to continue.";
+// `track.muted` is a *different* failure mode than "ended": the track stays
+// `readyState === "live"` (so `onended` never fires) while the underlying
+// source stops delivering samples -- e.g. an OS-level privacy mute toggle, a
+// hardware conflict with another app grabbing the mic, or a Bluetooth/OS
+// audio-routing hiccup. Unlike "ended", `muted` doesn't consistently signal a
+// *permanent* loss (browsers can unmute on their own), but silently staying
+// "live" with a muted track is exactly the "voice no longer hears me" failure
+// mode this reconnect message exists to make explicit rather than silent.
+const MIC_TRACK_MUTED_MESSAGE =
+  "Microphone stopped receiving audio (it may have been muted by your system or another app). Reconnect to continue.";
+// Chrome (since v66) and Safari can and do suspend an active AudioContext --
+// even one with a live MediaStreamTrack source feeding an AudioWorkletNode --
+// when a tab is backgrounded, to save power; this is not reliably prevented
+// just because audio capture is in progress. Suspension silently stops the
+// capture worklet with no other observable signal (the mic track stays
+// "live" and unmuted, the socket stays open) -- another way "voice no longer
+// hears them" can happen with everything else looking healthy. A brief grace
+// period lets a quick resume() (e.g. the user glances right back at the tab)
+// self-heal silently; only a suspension that outlasts the grace period is
+// treated as the same explicit, fatal failure as a dead/muted mic.
+const AUDIO_CONTEXT_SUSPENDED_MESSAGE =
+  "Live voice paused because the browser suspended audio processing (often from backgrounding the tab). Reconnect to continue.";
+const AUDIO_CONTEXT_RESUME_GRACE_MS = 4000;
 
 interface PendingLiveSession {
   ctx: AudioContext | null;
@@ -804,7 +847,13 @@ export function useVoiceLive(
     } catch {
       /* ignore */
     }
-    for (const t of s.stream.getTracks()) t.stop();
+    for (const t of s.stream.getTracks()) {
+      if (typeof t.removeEventListener === "function") {
+        if (s.onTrackEnded) t.removeEventListener("ended", s.onTrackEnded);
+        if (s.onTrackMuted) t.removeEventListener("mute", s.onTrackMuted);
+      }
+      t.stop();
+    }
     try {
       if (s.ws.readyState === WebSocket.OPEN || s.ws.readyState === WebSocket.CONNECTING) {
         s.ws.close(1000, "client closed");
@@ -812,6 +861,13 @@ export function useVoiceLive(
     } catch {
       /* ignore */
     }
+    if (s.suspendRecoveryTimer !== null) {
+      clearTimeout(s.suspendRecoveryTimer);
+      s.suspendRecoveryTimer = null;
+    }
+    // Detach before close() so our own shutdown never re-enters this session
+    // via a self-triggered "closed" statechange notification.
+    s.ctx.onstatechange = null;
     void s.ctx.close().catch(() => {});
   }, []);
 
@@ -859,6 +915,17 @@ export function useVoiceLive(
       const streamPromise = navigator.mediaDevices
         .getUserMedia({
           audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+        })
+        .catch((error: unknown) => {
+          if (attempt === attemptRef.current) {
+            reportClientEvent("microphone_error", {
+              code:
+                error instanceof Error || error instanceof DOMException
+                  ? error.name
+                  : null,
+            });
+          }
+          throw error;
         })
         .then((stream) => {
           if (attempt !== attemptRef.current) {
@@ -925,9 +992,116 @@ export function useVoiceLive(
         cleaned: false,
         errorReported: false,
         protocolError: null,
+        onTrackEnded: null,
+        onTrackMuted: null,
+        suspendRecoveryTimer: null,
       };
       sessionRef.current = session;
       pendingRef.current = null;
+
+      // The mic track can die out from under an otherwise-healthy socket
+      // (permission revoked mid-call, device unplugged, another app taking
+      // exclusive access, lid close). Without this, the session silently
+      // stops hearing the user forever with no error. finishSession() is a
+      // hoisted function declaration defined below in this same scope, so
+      // it's safe to reference here. Guarded with a typeof check because
+      // some test doubles for MediaStreamTrack only implement stop().
+      const handleTrackEnded = () => finishSession(MIC_TRACK_ENDED_MESSAGE, true);
+      // A track can also go silent while staying readyState === "live" (so
+      // "ended" never fires): the spec requires the browser to flip `muted`
+      // true and fire "mute" whenever it "receives no data from the source"
+      // (OS-level privacy toggle, another app grabbing exclusive access,
+      // audio-routing hiccups). Left unhandled, this reproduces "voice no
+      // longer hears them" with the socket otherwise looking perfectly
+      // healthy. Treated as fatal (same as "ended") rather than a recoverable
+      // wait-for-unmute, matching this app's "capture failures are explicit"
+      // requirement.
+      const handleTrackMuted = () => finishSession(MIC_TRACK_MUTED_MESSAGE, true);
+      session.onTrackEnded = handleTrackEnded;
+      session.onTrackMuted = handleTrackMuted;
+      for (const track of stream.getTracks()) {
+        if (typeof track.addEventListener === "function") {
+          track.addEventListener("ended", handleTrackEnded);
+          track.addEventListener("mute", handleTrackMuted);
+        }
+      }
+      // The stream was captured well before this point -- ctx.resume(),
+      // buildSubprotocols() (an auth round-trip), and addModule() were all
+      // awaited above with no listeners attached yet. A track that already
+      // ended somewhere in that gap (permission revoked, device unplugged)
+      // won't refire "ended" for the listener just attached above -- that
+      // only catches a *future* transition. Query the current readyState
+      // directly so a track that died during the gap is still caught before
+      // ever reaching "live".
+      const endedTrack = stream.getTracks().find(
+        (track) => track.readyState === "ended",
+      );
+      if (endedTrack) {
+        handleTrackEnded();
+        return;
+      }
+      // Same gap, different failure mode: a track can likewise already be
+      // muted -- from the OS toggle, another app grabbing exclusive access,
+      // or simply having muted itself during the startup await above -- in
+      // which case no "mute" *transition* event ever fires for the listener
+      // just attached (there's nothing to transition from, or the
+      // transition already happened). Catch that immediately instead of
+      // reaching "live" with a track that will never deliver audio for the
+      // whole call.
+      const alreadyMutedTrack = stream.getTracks().find((track) => track.muted);
+      if (alreadyMutedTrack) {
+        handleTrackMuted();
+        return;
+      }
+
+      // See AUDIO_CONTEXT_SUSPENDED_MESSAGE: browsers can suspend an active
+      // AudioContext (silently halting the capture worklet) purely from tab
+      // backgrounding, independent of mic/track/socket health. finishSession()
+      // is a hoisted function declaration, safe to reference here (see the
+      // comment on handleTrackEnded above).
+      const clearSuspendRecoveryTimer = () => {
+        if (session.suspendRecoveryTimer !== null) {
+          clearTimeout(session.suspendRecoveryTimer);
+          session.suspendRecoveryTimer = null;
+        }
+      };
+      const handleContextStateChange = () => {
+        if (sessionRef.current !== session) return;
+        if (ctx.state === "running") {
+          clearSuspendRecoveryTimer();
+          return;
+        }
+        // "closed" only happens via our own cleanupSession() calling
+        // ctx.close(); that path already tears everything down, so this is a
+        // no-op rather than a second, redundant finishSession(). Every other
+        // state falls through to the same bounded recovery below --
+        // including Safari/WebKit's non-standard "interrupted" (fired e.g.
+        // on a phone call or Siri taking the mic), which TypeScript's
+        // AudioContextState type doesn't even know about. Treating anything
+        // other than "running"/"closed" as recoverable-or-fatal, rather than
+        // matching only the literal "suspended" string, ensures the client
+        // never keeps reporting a live/open session against a context that
+        // silently stopped producing audio for any reason.
+        if (ctx.state === "closed" || session.suspendRecoveryTimer !== null) {
+          return;
+        }
+        void ctx.resume().catch(() => {});
+        session.suspendRecoveryTimer = setTimeout(() => {
+          session.suspendRecoveryTimer = null;
+          if (sessionRef.current === session && ctx.state !== "running") {
+            finishSession(AUDIO_CONTEXT_SUSPENDED_MESSAGE);
+          }
+        }, AUDIO_CONTEXT_RESUME_GRACE_MS);
+      };
+      ctx.onstatechange = handleContextStateChange;
+      // ctx.resume() was already awaited above, but some browsers defer or
+      // silently ignore resume() while the tab is hidden, or require a fresh
+      // user gesture -- onstatechange only fires on a *future* transition,
+      // so a context that is already stuck "suspended" right now (rather
+      // than transitioning to it later) would otherwise never start the
+      // recovery grace period. Evaluate the current state immediately
+      // through the same handler a real transition would use.
+      handleContextStateChange();
 
       let activeResponseId: string | null = null;
       let activeAssistantItemId: string | null = null;
@@ -1277,10 +1451,11 @@ export function useVoiceLive(
       // onerror/onclose fires first) tears down and reports exactly once. The
       // message depends on whether the session ever reached "live"
       // (session.opened).
-      function finishSession(message: string) {
+      function finishSession(message: string, reportMicrophoneError = false) {
         if (sessionRef.current !== session) return;
         if (!session.errorReported) {
           session.errorReported = true;
+          if (reportMicrophoneError) reportClientEvent("microphone_error");
           onErrorRef.current(message);
         }
         cleanupSession(session);
