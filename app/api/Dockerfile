@@ -1,7 +1,13 @@
 # AI4IA backend image (Python FastAPI on Azure Container Apps).
 # Build context is app/api (see azure.yaml); the model catalog is bundled into
 # the package by scripts/gen-model-catalog.py before build.
-FROM python:3.14-slim AS base
+# Keep this version in sync with app-ci.yml's actions/setup-python version and
+# the invariant documented in AGENTS.md ("CI uses Python 3.12"). Bump deliberately
+# alongside a CI version update (and note the reason here), not via an unreviewed
+# Dependabot major-version merge: see AI4IA#187 for a base-image drift that reached
+# python:3.14-slim untested and caused azure-cosmos/aiohttp DeprecationWarning noise
+# in production before anything exercised that combination.
+FROM python:3.12-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
