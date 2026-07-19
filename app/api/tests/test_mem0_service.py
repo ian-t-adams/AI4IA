@@ -13,8 +13,10 @@ import pytest
 from ai4ia_api.config import MemoryStoreKind, Settings
 from ai4ia_api.memory.factory import build_memory_service
 from ai4ia_api.memory.mem0_service import (
+    _FORGET_LIST_CAP,
     Mem0Bundle,
     Mem0MemoryService,
+    MemoryScanIncompleteError,
     build_mem0_config,
 )
 from ai4ia_api.memory.mem0_store import normalize_azure_openai_endpoint
@@ -264,6 +266,63 @@ async def test_forget_document_propagates_errors():
     svc = _service(Boom())
     with pytest.raises(RuntimeError):
         await svc.forget_document("u1", "docA")
+
+
+# --- round 6 MEDIUM acceptance finding: mem0 forget/replace must not silently
+# under-scan. mem0's get_all() has no document-scoped filter and no pagination
+# cursor -- only a top_k cap -- so a user with >= _FORGET_LIST_CAP memories
+# could have stray document-tagged memories sitting beyond the enumerated
+# page. Reporting "N forgotten" in that case previously left the document's
+# memories fully recallable while every caller believed the erase (or
+# idempotent re-save's pre-delete) had fully succeeded. ---
+
+
+async def test_forget_document_raises_when_listing_hits_the_cap():
+    # Exactly _FORGET_LIST_CAP rows come back: the listing may have been
+    # truncated by mem0, so completeness cannot be verified.
+    mem = FakeAsyncMemory(
+        get_all_results=[
+            {"id": f"m{i}", "metadata": {"document_id": "docA"}}
+            for i in range(_FORGET_LIST_CAP)
+        ]
+    )
+    svc = _service(mem)
+    with pytest.raises(MemoryScanIncompleteError):
+        await svc.forget_document("u1", "docA")
+    # Fails closed: nothing was deleted from a possibly-incomplete view.
+    assert mem.delete_by_id_calls == []
+
+
+async def test_forget_document_below_cap_boundary_still_succeeds():
+    # One row under the cap: get_all's top_k was not exhausted, so the
+    # listing is provably complete and normal deletion proceeds.
+    mem = FakeAsyncMemory(
+        get_all_results=[
+            {"id": f"m{i}", "metadata": {"document_id": "docA"}}
+            for i in range(_FORGET_LIST_CAP - 1)
+        ]
+    )
+    svc = _service(mem)
+    n = await svc.forget_document("u1", "docA")
+    assert n == _FORGET_LIST_CAP - 1
+    assert len(mem.delete_by_id_calls) == _FORGET_LIST_CAP - 1
+
+
+async def test_remember_document_raises_when_listing_hits_the_cap():
+    # The idempotent pre-delete shares _forget_document, so a re-save must
+    # also refuse to proceed rather than add a new generation on top of an
+    # erase that could not verify it removed every prior one.
+    mem = FakeAsyncMemory(
+        get_all_results=[
+            {"id": f"m{i}", "metadata": {"document_id": "docA"}}
+            for i in range(_FORGET_LIST_CAP)
+        ]
+    )
+    svc = _service(mem)
+    with pytest.raises(MemoryScanIncompleteError):
+        await svc.remember_document("u1", items=["new gist"], document_id="docA")
+    # Fails before adding the new generation -- no partial duplicate state.
+    assert mem.add_calls == []
 
 
 # --- delete_memory ------------------------------------------------------

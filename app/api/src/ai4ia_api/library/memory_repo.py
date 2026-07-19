@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from datetime import datetime, timezone
 
 from .hashing import dedupe_key
 from .models import (
@@ -44,10 +45,19 @@ class InMemoryDocumentLibraryRepository:
         doc = self._docs.get(user_id, {}).get(document_id)
         if doc is None or doc.userId != user_id:
             raise DocumentNotFoundError(document_id)
+        if doc.deletingAt is not None:
+            # Tombstoned by mark_deleting; see the Cosmos repo's get_document
+            # for why treating this as not-found is the fence that closes
+            # the delete-vs-save-to-memory race.
+            raise DocumentNotFoundError(document_id)
         return doc.model_copy(deep=True)
 
     async def list_documents(self, user_id: str) -> list[UserDocument]:
-        docs = list(self._docs.get(user_id, {}).values())
+        docs = [
+            doc
+            for doc in self._docs.get(user_id, {}).values()
+            if doc.deletingAt is None
+        ]
         indexed = enumerate(docs)
         return [
             doc
@@ -142,6 +152,30 @@ class InMemoryDocumentLibraryRepository:
             bucket = self._docs.get(user_id, {})
             # Idempotent delete; ownership is implicit in the per-user bucket.
             bucket.pop(document_id, None)
+
+    async def mark_deleting(self, user_id: str, document_id: str) -> None:
+        """CAS-equivalent tombstone for the in-memory repo: lock-guarded
+        set-if-not-already-set. Idempotent (an already-gone or
+        already-tombstoned document is a no-op) so a retried delete request
+        never fails. See the Cosmos repo's ``mark_deleting`` for the full
+        rationale; this repo needs no CAS retry loop since the lock already
+        serializes readers/writers within the single process."""
+        async with self._lock:
+            doc = self._docs.get(user_id, {}).get(document_id)
+            if doc is None or doc.userId != user_id:
+                return  # already gone
+            if doc.deletingAt is None:
+                doc.deletingAt = datetime.now(timezone.utc)
+
+    async def clear_deleting(self, user_id: str, document_id: str) -> None:
+        """Revert an in-progress ``mark_deleting`` tombstone (see the Cosmos
+        repo's ``clear_deleting`` for the full rationale). Idempotent/
+        best-effort: a no-op if the document is already gone or was never
+        tombstoned."""
+        async with self._lock:
+            doc = self._docs.get(user_id, {}).get(document_id)
+            if doc is not None and doc.userId == user_id:
+                doc.deletingAt = None
 
     async def find_by_dedupe_key(
         self, user_id: str, content_hash: str, analyzer_id: str | None

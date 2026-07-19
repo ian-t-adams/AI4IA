@@ -54,6 +54,22 @@ logger = logging.getLogger(__name__)
 _FORGET_LIST_CAP = 1000
 
 
+class MemoryScanIncompleteError(RuntimeError):
+    """Raised when a document-scoped memory operation cannot verify it saw
+    every one of the user's memories.
+
+    mem0's ``get_all`` has no document-scoped filter (only entity-level
+    ``user_id``/``agent_id``/``run_id``) and no pagination cursor -- only a
+    ``top_k`` cap -- so document-scoped erase must list-then-filter
+    client-side. Once a user has at least ``_FORGET_LIST_CAP`` memories, the
+    listing may be truncated and some memories tagged with the target
+    ``document_id`` could sit beyond the cap, unseen. Raising here (instead of
+    reporting a possibly-partial "N forgotten" count) keeps the caller from
+    treating the document as fully erased when stray memories may remain
+    recallable.
+    """
+
+
 @dataclass
 class Mem0Bundle:
     """A built mem0 object plus a sync closer for the resources it owns."""
@@ -400,7 +416,9 @@ class Mem0MemoryService:
 
         mem0's ``delete_all`` only scopes by entity (user/run), not by custom
         metadata, so document-scoped deletion lists the user's memories and
-        removes by id the ones whose ``metadata.document_id`` matches."""
+        removes by id the ones whose ``metadata.document_id`` matches. Raises
+        :class:`MemoryScanIncompleteError` rather than under-reporting if that
+        listing may have been truncated -- see ``_forget_document``."""
         mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
         return await self._forget_document(mem, user_id, document_id)
 
@@ -462,13 +480,27 @@ class Mem0MemoryService:
     async def _forget_document(self, mem: Any, user_id: str, document_id: str) -> int:
         """List the user's memories and delete by id those tagged with
         ``document_id``. Shared by the idempotent re-save and the explicit
-        forget-by-document path; failures propagate (explicit deletion)."""
+        forget-by-document path; failures propagate (explicit deletion).
+
+        Raises :class:`MemoryScanIncompleteError` instead of returning a
+        possibly-partial count when the listing hits ``_FORGET_LIST_CAP`` --
+        see that class's docstring for why completeness cannot otherwise be
+        verified against this backend.
+        """
         listing = await self._call(
             lambda: mem.get_all(filters={"user_id": user_id}, top_k=_FORGET_LIST_CAP),
             self._op_timeout_s,
         )
+        results = _results(listing)
+        if len(results) >= _FORGET_LIST_CAP:
+            raise MemoryScanIncompleteError(
+                f"cannot verify a complete document-memory scan for user "
+                f"(memory count >= {_FORGET_LIST_CAP}); document {document_id} "
+                "erase aborted rather than risk leaving stray memories "
+                "recallable"
+            )
         deleted = 0
-        for item in _results(listing):
+        for item in results:
             metadata = item.get("metadata") or {}
             if metadata.get("document_id") != document_id:
                 continue

@@ -80,7 +80,11 @@ class _FakeDocs:
             raise CosmosAccessConditionFailedError(message="etag")
         assert self._existing is not None
         for operation in patch_operations:
-            self._existing[operation["path"].lstrip("/")] = operation["value"]
+            path = operation["path"].lstrip("/")
+            if operation["op"] == "remove":
+                self._existing.pop(path, None)
+            else:
+                self._existing[path] = operation["value"]
         self._existing["_etag"] = "e3"
         return self._existing
 
@@ -347,3 +351,131 @@ async def test_cosmos_get_by_id_returns_first_or_none():
     blank, blank_fake = _query_repo([doc.model_dump(mode="json")])
     assert await blank.get_by_id("") is None
     assert blank_fake.last_query is None
+
+
+# --- round 6 HIGH acceptance finding: delete-vs-save-to-memory tombstone fence.
+# ``mark_deleting``/``clear_deleting`` CAS the document's ``deletingAt`` field and
+# ``list_documents`` must exclude a tombstoned row so a listing never surfaces a
+# document mid-delete. These tests are query/patch-shape driven (not just "the
+# repo returns success") so a regression that drops the WHERE clause or sends
+# the wrong patch op is actually caught. ---
+class _ListDocumentsContainer:
+    """Fake ``documents`` container for ``list_documents``. Only excludes
+    tombstoned rows when the *actual* query text asks for it (checking for the
+    ``deletingAt`` clause, not just replicating the intended filter
+    unconditionally) so this test is sensitive to a regression that removes
+    the WHERE clause from ``list_documents`` itself."""
+
+    def __init__(self, items: list[dict]) -> None:
+        self._items = items
+
+    async def query_items(self, *, query, parameters=None):
+        user_id = next(
+            (p["value"] for p in (parameters or []) if p["name"] == "@uid"), None
+        )
+        excludes_tombstoned = "deletingAt" in query
+        for item in self._items:
+            if item.get("userId") != user_id:
+                continue
+            if excludes_tombstoned and item.get("deletingAt") is not None:
+                continue
+            yield item
+
+
+async def test_cosmos_list_documents_excludes_tombstoned_documents():
+    """HIGH-2 (round 6) hardening: once ``mark_deleting`` tombstones a document
+    (before the memory-forget/manifest-removal steps run), a concurrent listing
+    must not show it -- otherwise a user could open a document via the list
+    that is mid-delete, racing the fence ``get_document`` and
+    ``save_document_to_memory`` already enforce on direct reads."""
+    active = _doc(user="alice")
+    tombstoned = _doc(user="alice")
+    repo = object.__new__(CosmosDocumentLibraryRepository)
+    repo._docs = _ListDocumentsContainer(
+        [
+            active.model_dump(mode="json"),
+            {
+                **tombstoned.model_dump(mode="json"),
+                "deletingAt": "2020-01-01T00:00:00Z",
+            },
+        ]
+    )
+
+    docs = await repo.list_documents("alice")
+
+    ids = {d.id for d in docs}
+    assert active.id in ids
+    assert tombstoned.id not in ids
+
+
+async def test_cosmos_mark_deleting_sets_tombstone_with_callers_etag():
+    doc = _doc(user="alice")
+    existing = {**doc.model_dump(mode="json"), "_etag": "e1"}
+    repo, fake = _repo(existing=existing)
+
+    await repo.mark_deleting("alice", doc.id)
+
+    assert fake.patch_etags == ["e1"]
+    assert fake._existing["deletingAt"] is not None
+
+
+async def test_cosmos_mark_deleting_retries_once_on_cas_conflict():
+    doc = _doc(user="alice")
+    existing = {**doc.model_dump(mode="json"), "_etag": "e1"}
+    repo, fake = _repo(existing=existing)
+    fake.patch_conflicts = 1
+
+    await repo.mark_deleting("alice", doc.id)
+
+    # First attempt used the stale etag and lost the race; the retry re-read
+    # the item (picking up the fake's simulated post-conflict etag "e2")
+    # before the patch that actually lands.
+    assert fake.patch_etags == ["e1", "e2"]
+    assert fake._existing["deletingAt"] is not None
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        None,
+        {"userId": "alice", "id": "doc-1", "deletingAt": "2020-01-01T00:00:00Z"},
+    ],
+    ids=["already-gone", "already-tombstoned"],
+)
+async def test_cosmos_mark_deleting_is_idempotent(existing):
+    repo, fake = _repo(existing=existing)
+
+    await repo.mark_deleting("alice", "doc-1")  # must not raise
+
+    assert fake.patch_etags == []  # no patch attempted -- already a no-op
+
+
+async def test_cosmos_clear_deleting_removes_tombstone_via_remove_op():
+    doc = _doc(user="alice")
+    existing = {
+        **doc.model_dump(mode="json"),
+        "deletingAt": "2020-01-01T00:00:00Z",
+        "_etag": "e1",
+    }
+    repo, fake = _repo(existing=existing)
+
+    await repo.clear_deleting("alice", doc.id)
+
+    assert fake.patch_etags == ["e1"]
+    assert "deletingAt" not in fake._existing  # reverted, not just nulled
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        None,
+        {"userId": "alice", "id": "doc-1"},  # never tombstoned
+    ],
+    ids=["already-gone", "never-tombstoned"],
+)
+async def test_cosmos_clear_deleting_is_idempotent(existing):
+    repo, fake = _repo(existing=existing)
+
+    await repo.clear_deleting("alice", "doc-1")  # must not raise
+
+    assert fake.patch_etags == []  # no patch attempted -- already a no-op

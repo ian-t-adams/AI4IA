@@ -62,6 +62,18 @@ def version_path(user_id: str, document_id: str, n: int, token: str, name: str) 
     return f"{version_prefix(user_id, document_id, n)}{token}/{name}"
 
 
+def _log_safe_blob_name(name: str) -> str:
+    """``name`` with its final path segment stripped for safe logging.
+
+    A blob's last path segment can be a model/user-supplied export filename
+    (see ``version_path``); everything before it is opaque ids + a random
+    attempt token. Logging the trimmed name lets an operator locate the blob
+    without persisting document content/filename into Container Apps / Log
+    Analytics.
+    """
+    return name.rsplit("/", 1)[0] if "/" in name else name
+
+
 @runtime_checkable
 class BlobStore(Protocol):
     async def put(self, path: str, data: bytes, content_type: str | None = None) -> str: ...
@@ -164,8 +176,17 @@ class AzureBlobStore:
             try:
                 await container.delete_blob(blob.name)
                 deleted += 1
-            except Exception:  # noqa: BLE001 - best-effort purge
-                logger.warning("blob delete failed path=%s", blob.name, exc_info=True)
+            except Exception as exc:  # noqa: BLE001 - best-effort purge
+                # Log only the trimmed path and the exception's *type* -- not
+                # exc_info/the raw blob name, whose final segment can be a
+                # model/user-supplied filename, and not the exception's own
+                # message/traceback, which for storage SDK errors can embed
+                # the full request path. See _log_safe_blob_name.
+                logger.warning(
+                    "blob delete failed path=%s error_type=%s",
+                    _log_safe_blob_name(blob.name),
+                    type(exc).__name__,
+                )
         return deleted
 
     async def close(self) -> None:

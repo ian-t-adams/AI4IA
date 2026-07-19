@@ -535,10 +535,18 @@ class _SucceedingSessions:
     """Fake ``sessions`` container where reads, the tombstone CAS ``patch``,
     and the final delete all succeed normally -- isolates the child-container
     race (below) from the session's own concurrent-delete race, which is
-    already covered by ``_ConcurrentlyDeletedSessions`` above."""
+    already covered by ``_ConcurrentlyDeletedSessions`` above.
 
-    def __init__(self, session: Session) -> None:
+    ``deleting_at`` optionally pre-seeds an existing tombstone timestamp (a
+    session already marked deleting by an earlier call) so tests can prove
+    the grace-period-elapsed finalize path without sleeping: a far-past
+    value simulates "this session was tombstoned long ago", letting
+    ``delete_session`` hard-delete on this same call."""
+
+    def __init__(self, session: Session, *, deleting_at: str | None = None) -> None:
         self.item = {**session.model_dump(mode="json"), "_etag": "e1"}
+        if deleting_at is not None:
+            self.item["deletingAt"] = deleting_at
         self.deleted = False
 
     async def read_item(self, *, item, partition_key):
@@ -587,10 +595,15 @@ async def test_cosmos_delete_session_tolerates_concurrently_deleted_children():
     child row between this call's own query and its delete_item. That 404 is
     the cascade's already-achieved goal state for that row, so it must be
     swallowed and the cascade must continue -- and the still-existing session
-    must still be deleted, not misreported as SessionNotFoundError."""
+    must still be deleted, not misreported as SessionNotFoundError.
+
+    Pre-seeds an already-old tombstone so this call's grace period has
+    elapsed and hard-delete happens immediately -- isolating the
+    concurrent-children-tolerance behavior under test from the separate
+    grace-period-timing behavior covered by the tests below."""
     session = Session(userId="u1")
     repo = object.__new__(CosmosSessionRepository)
-    repo._sessions = _SucceedingSessions(session)
+    repo._sessions = _SucceedingSessions(session, deleting_at="2020-01-01T00:00:00Z")
     messages = _RacedChildContainer(["m1", "m2"])
     documents = _RacedChildContainer(["d1"])
     repo._messages = messages
@@ -785,6 +798,13 @@ async def test_cosmos_delete_session_resumes_after_interrupted_sweep():
     assert sessions_fake.deleted is False
     assert sessions_fake.item.get("deletingAt") is not None
 
+    # Backdate the tombstone to simulate a retry happening well after the
+    # grace period (e.g. a client retry, or a later ops/reconciliation pass)
+    # rather than an immediate one -- isolating the resumability behavior
+    # under test here from the separate grace-period-timing behavior covered
+    # by the tests below.
+    sessions_fake.item["deletingAt"] = "2020-01-01T00:00:00Z"
+
     await repo.delete_session("u1", session.id)  # retry resumes and completes
 
     assert sessions_fake.deleted is True
@@ -825,7 +845,7 @@ async def test_cosmos_delete_session_sweep_catches_child_appearing_on_later_pass
             return
             yield  # pragma: no cover - makes this an async generator
 
-    session_fake = _SucceedingSessions(session)
+    session_fake = _SucceedingSessions(session, deleting_at="2020-01-01T00:00:00Z")
     repo = object.__new__(CosmosSessionRepository)
     repo._sessions = session_fake
     messages = _StragglerMessages()
@@ -836,6 +856,154 @@ async def test_cosmos_delete_session_sweep_catches_child_appearing_on_later_pass
 
     assert messages.delete_attempts == ["m1"]
     assert session_fake.deleted is True
+
+
+async def test_cosmos_delete_session_defers_hard_delete_within_grace_period():
+    """HIGH-1 (round 6) regression: a fresh tombstone must not be treated as
+    license to hard-delete the parent on the very same call -- a stale
+    replica elsewhere could still let a child write land after this call's
+    sweep already ran and found nothing. The session must stay tombstoned
+    (already invisible to every caller via ``_owned_session``, so the DELETE
+    endpoint's contract is unaffected) until a later call -- a retry,
+    duplicate request, or future reconciliation pass -- finds the grace
+    period has elapsed since the *original* tombstone timestamp."""
+    session = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    session_fake = _SucceedingSessions(session)  # fresh tombstone, no pre-seed
+    repo._sessions = session_fake
+    repo._messages = _EmptyQueryContainer()
+    repo._documents = _EmptyQueryContainer()
+
+    await repo.delete_session("u1", session.id)
+
+    assert session_fake.deleted is False
+    assert session_fake.item.get("deletingAt") is not None
+
+    # Backdate the stored tombstone to simulate the grace period elapsing
+    # (e.g. a client retry, duplicate request, or a later ops/reconciliation
+    # pass), then a follow-up call finalizes.
+    session_fake.item["deletingAt"] = "2020-01-01T00:00:00Z"
+    await repo.delete_session("u1", session.id)
+
+    assert session_fake.deleted is True
+
+
+class _StaleThenConvergingMessages:
+    """Simulates a replica that is arbitrarily stale for an entire call's
+    3-pass sweep (every pass sees no children at all -- e.g. the child's
+    write is still replicating/propagating), then later "converges" once
+    ``converged`` is flipped, exposing the real row. Models the coordinator's
+    explicit "arbitrarily stale independent reads" case: a reader that never
+    observes a child during one call's whole duration, not just a single
+    query."""
+
+    def __init__(self, real_ids: list[str]) -> None:
+        self._real_ids = list(real_ids)
+        self.converged = False
+        self.delete_attempts: list[str] = []
+
+    async def query_items(self, *, query, parameters=None, partition_key=None):
+        if not self.converged:
+            return
+            yield  # pragma: no cover - makes this an async generator
+        for item_id in list(self._real_ids):
+            yield {"id": item_id}
+
+    async def delete_item(self, *, item, partition_key):
+        self.delete_attempts.append(item)
+        if item in self._real_ids:
+            self._real_ids.remove(item)
+
+
+async def test_cosmos_delete_session_grace_period_prevents_orphan_from_stale_sweep():
+    """HIGH-1 (round 6) regression, the coordinator's explicit "arbitrarily
+    stale independent reads" case: a replica that is stale for this call's
+    *entire* 3-pass sweep (every pass sees no children -- not just the first
+    of several) must not cause the parent to be hard-deleted, because that
+    would permanently orphan the child the instant it does land -- nothing
+    else ever re-sweeps a session id once its parent row is gone. The grace
+    period defers finalization to a later call, whose fresh read/sweep
+    catches the straggler before the parent is ever removed. This is the
+    exact gap the fixed, no-delay 3-pass sweep alone (round 5) left open:
+    that design would have hard-deleted the parent at the end of this same
+    first call, orphaning ``m1`` forever the moment it later landed."""
+    session = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    session_fake = _SucceedingSessions(session)  # fresh tombstone
+    repo._sessions = session_fake
+    stale_then_converging = _StaleThenConvergingMessages(["m1"])
+    repo._messages = stale_then_converging
+    repo._documents = _EmptyQueryContainer()
+
+    # First call: every one of the 3 sweep passes sees an empty (stale)
+    # container -- the child is invisible for this call's entire duration.
+    await repo.delete_session("u1", session.id)
+
+    assert session_fake.deleted is False  # not hard-deleted despite a "clean" sweep
+    assert stale_then_converging.delete_attempts == []
+    assert "m1" in stale_then_converging._real_ids  # child untouched, still real
+
+    # Convergence: this reader now sees the real row, and the grace period
+    # has elapsed (simulating a retry/duplicate/reconciliation call later).
+    stale_then_converging.converged = True
+    session_fake.item["deletingAt"] = "2020-01-01T00:00:00Z"
+
+    await repo.delete_session("u1", session.id)
+
+    assert stale_then_converging.delete_attempts == ["m1"]
+    assert session_fake.deleted is True  # only now, after catching the straggler
+
+
+class _ListSessionsContainer:
+    """Fake ``sessions`` container for ``list_sessions``. Only excludes
+    tombstoned rows when the *actual* query text asks for it (checking for
+    the ``deletingAt`` clause, not just replicating the intended filter
+    unconditionally) so this test is sensitive to regressions that remove
+    the WHERE clause from ``list_sessions`` itself."""
+
+    def __init__(self, items: list[dict]) -> None:
+        self._items = items
+
+    async def query_items(self, *, query, parameters=None, partition_key=None):
+        user_id = next(
+            (p["value"] for p in (parameters or []) if p["name"] == "@uid"), None
+        )
+        excludes_tombstoned = "deletingAt" in query
+        for item in self._items:
+            if item.get("userId") != user_id:
+                continue
+            if excludes_tombstoned and item.get("deletingAt") is not None:
+                continue
+            yield item
+
+
+async def test_cosmos_list_sessions_excludes_tombstoned_sessions():
+    """HIGH-1 (round 6) hardening: the grace period intentionally leaves a
+    tombstoned session's row in place for up to ``_DELETE_GRACE_PERIOD``
+    before the parent is hard-deleted. Without a matching filter here, a
+    session the caller just "deleted" would reappear in ``GET /api/sessions``
+    (which returns ``list_sessions`` results unfiltered) until the grace
+    period elapses -- a user-visible regression the fixed, no-delay round-5
+    design never had, since that design almost always hard-deleted within the
+    same call."""
+    active = Session(userId="u1")
+    tombstoned = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _ListSessionsContainer(
+        [
+            active.model_dump(mode="json"),
+            {
+                **tombstoned.model_dump(mode="json"),
+                "deletingAt": "2020-01-01T00:00:00Z",
+            },
+        ]
+    )
+
+    sessions = await repo.list_sessions("u1")
+
+    ids = {s.id for s in sessions}
+    assert active.id in ids
+    assert tombstoned.id not in ids
 
 
 class _LegacyDocSessions:
@@ -906,10 +1074,17 @@ class _SessionsDeletedOnce:
     consistent "does the session currently exist" view across multiple
     reads, unlike the simpler check-then-write fakes above which only model
     a single race shape. ``patch_item`` supports delete_session's tombstone
-    CAS step (setting ``deletingAt`` without removing the item)."""
+    CAS step (setting ``deletingAt`` without removing the item).
 
-    def __init__(self, session: Session) -> None:
+    ``deleting_at`` optionally pre-seeds an existing tombstone timestamp, same
+    as ``_SucceedingSessions`` above, so a test can prove the grace period
+    has already elapsed and isolate a different race from HIGH-1's
+    grace-period-timing behavior."""
+
+    def __init__(self, session: Session, *, deleting_at: str | None = None) -> None:
         self.item = {**session.model_dump(mode="json"), "_etag": "e1"}
+        if deleting_at is not None:
+            self.item["deletingAt"] = deleting_at
         self.deleted = False
 
     async def read_item(self, *, item, partition_key):
@@ -937,10 +1112,18 @@ async def test_cosmos_add_message_self_compensates_when_write_lands_after_sweep(
     session still existed, then have its write land strictly AFTER
     delete_session's children-sweep query had already run (and seen
     nothing) but before the session was gone -- so neither side ever
-    caught it. The fix (a) reorders delete_session to delete the parent
-    FIRST, and (b) adds a post-write recheck-and-compensate to every
-    child-writer; this test drives the exact worst-case interleaving that
-    only the combination of both closes.
+    caught it. The fix (a) tombstones the session up front (round 5) so
+    every ownership check -- including add_message's own post-write
+    recheck -- rejects it from that instant on, and (b) adds a post-write
+    recheck-and-compensate to every child-writer; this test drives the
+    exact worst-case interleaving that only the combination of both closes.
+
+    This does not depend on delete_session's own parent-row hard-delete
+    completing within this call (round 6's grace period can, and here
+    does, defer that to a later call) -- only on the tombstone, which is
+    set synchronously up front and is what every ownership check (both
+    add_message's pre-write check and its post-write recheck) actually
+    keys off.
     """
     session = Session(userId="u1")
     write_gate = asyncio.Event()
@@ -977,7 +1160,7 @@ async def test_cosmos_add_message_self_compensates_when_write_lands_after_sweep(
             yield  # pragma: no cover - makes this an async generator
 
     repo = object.__new__(CosmosSessionRepository)
-    repo._sessions = _SessionsDeletedOnce(session)
+    repo._sessions = _SessionsDeletedOnce(session)  # fresh tombstone, no pre-seed
     messages = _GatedMessages()
     repo._messages = messages
     repo._documents = _SignalingEmptyDocuments()
@@ -990,10 +1173,14 @@ async def test_cosmos_add_message_self_compensates_when_write_lands_after_sweep(
         return_exceptions=True,
     )
 
-    assert delete_result is None  # delete_session succeeded outright
+    assert delete_result is None  # delete_session succeeded (didn't raise)
+    # Fresh tombstone: round 6's grace period defers the parent's hard
+    # delete to a later call -- the session stays tombstoned (already
+    # invisible via _owned_session, which is what matters for this race).
+    assert repo._sessions.deleted is False
     assert isinstance(add_result, SessionNotFoundError)
     # The message must not survive the race: add_message's own post-write
-    # recheck caught the gone parent and self-compensated.
+    # recheck caught the now-tombstoned parent and self-compensated.
     assert message.id not in messages.items
     assert messages.delete_attempts == [message.id]
 

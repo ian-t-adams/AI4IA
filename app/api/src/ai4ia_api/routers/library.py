@@ -578,6 +578,16 @@ async def delete_document(
         # Never reveal another user's document via delete.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
+    # Durable tombstone BEFORE memory-forget/manifest removal starts: closes
+    # the race where a concurrent save_document_to_memory call could read
+    # the manifest, pause, and write a "successful" memory save *after* this
+    # delete has already forgotten the document's memories, orphaning that
+    # save. get_document (used by both save_document_to_memory's initial
+    # load and its post-write recheck) treats a tombstoned document as
+    # not-found from the moment this patch is visible, independent of how
+    # far the rest of this delete has actually progressed.
+    await repo.mark_deleting(uid, document_id)
+
     # Forget anything this document contributed to the owner's durable memory
     # (save-to-memory) BEFORE deleting the manifest, and let a failure abort
     # the delete instead of swallowing it. Once the manifest is gone there is
@@ -600,6 +610,22 @@ async def delete_document(
                 document_id,
                 exc_info=True,
             )
+            # The delete is aborting, so the tombstone set above must be
+            # reverted -- otherwise the document would stay permanently
+            # invisible even though the manifest itself was never touched,
+            # breaking the "abort leaves a fully usable, retryable document"
+            # contract this same abort path guarantees. Best-effort: a
+            # failure here must not mask the real 502 below.
+            try:
+                await repo.clear_deleting(uid, document_id)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "failed to revert delete tombstone user=%s id=%s after "
+                    "aborted memory-forget",
+                    uid,
+                    document_id,
+                    exc_info=True,
+                )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Could not update memory right now; document was not deleted.",
@@ -738,6 +764,35 @@ async def save_document_to_memory(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Could not save to memory right now.",
         )
+
+    # Post-write recheck: the initial get_document above could have raced a
+    # concurrent delete_document that tombstones, forgets, and hard-deletes
+    # the manifest entirely within the gap between that read and this write
+    # landing (e.g. while _document_memory_items was reading excerpts, or
+    # while memory.remember_document was in flight). get_document treats a
+    # tombstoned-or-gone document as not-found, so seeing that here means
+    # this save just wrote memories for a document that is being (or was
+    # just) deleted -- self-compensate by forgetting them again rather than
+    # reporting a false success the caller would have no reason to distrust.
+    try:
+        await repo.get_document(uid, document_id)
+    except DocumentNotFoundError:
+        try:
+            await memory.forget_document(uid, document_id)
+        except Exception:  # noqa: BLE001 - best-effort; the delete's own
+            # forget_document call (or a future retry of it) remains the
+            # authoritative cleanup path if this compensation also fails.
+            logger.warning(
+                "save-to-memory compensating forget failed user=%s id=%s",
+                uid,
+                document_id,
+                exc_info=True,
+            )
+        emit_memory_operation("save", "compensated", "document_library", started)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+
     logger.info("save-to-memory user=%s id=%s saved=%s", uid, document_id, saved)
     emit_memory_operation("save", "ok", "document_library", started, count=saved)
     return SaveToMemoryResult(saved=saved)
