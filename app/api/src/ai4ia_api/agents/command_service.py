@@ -14,13 +14,20 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from ..auth.base import AuthenticatedUser
 from ..catalog import ModelCatalog
 from ..memory.service import MemoryServiceProtocol
-from ..sessions.models import Message, MessageRole, MessageStatus, Session
+from ..sessions.models import (
+    Message,
+    MessageRole,
+    MessageStatus,
+    Session,
+    turn_message_id,
+)
 from ..sessions.repository import SessionRepository
 from .agent_catalog import AgentCatalog
 from .commands import CommandKind, ParsedInput
@@ -79,6 +86,8 @@ async def execute_command(
     memory: MemoryServiceProtocol | None = None,
     summarizer: SummarizationService | None = None,
     gateway: "ModelGatewayClient | None" = None,
+    client_turn_id: str | None = None,
+    client_request_fingerprint: str | None = None,
 ) -> Message:
     """Run the parsed command, persist its effects, and return the reply message."""
     command = parsed.command
@@ -90,6 +99,45 @@ async def execute_command(
     }
     expected_summary_version: int | None = None
     persist_reply = True
+    claimed_assistant: Message | None = None
+
+    def turn_message(role: MessageRole, content: str, **changes: Any) -> Message:
+        return Message(
+            id=(
+                turn_message_id(user_id, session.id, client_turn_id, role)
+                if client_turn_id
+                else uuid.uuid4().hex
+            ),
+            sessionId=session.id,
+            userId=user_id,
+            role=role,
+            content=content,
+            clientTurnId=client_turn_id,
+            clientRequestFingerprint=client_request_fingerprint,
+            **changes,
+        )
+
+    if client_turn_id and command.kind not in (
+        CommandKind.clear,
+        CommandKind.summarize,
+    ):
+        user_message = turn_message(
+            MessageRole.user,
+            parsed.raw,
+            status=MessageStatus.complete,
+            fromCommand=True,
+        )
+        claimed_assistant = turn_message(
+            MessageRole.assistant,
+            "",
+            status=MessageStatus.streaming,
+            fromCommand=True,
+        )
+        _, saved_assistant, claimed = await repo.claim_chat_turn(
+            user_id, user_message, claimed_assistant
+        )
+        if not claimed:
+            return saved_assistant
 
     # /clear wipes history (including the command itself), so it skips echoing
     # the user's command message; everything else records it for context.
@@ -103,17 +151,16 @@ async def execute_command(
         session.summarizedThroughMessageId = cleared.summarizedThroughMessageId
         session.summaryVersion = cleared.summaryVersion
     else:
-        await repo.add_message(
-            user_id,
-            Message(
-                sessionId=session.id,
-                userId=user_id,
-                role=MessageRole.user,
-                content=parsed.raw,
-                status=MessageStatus.complete,
-                fromCommand=True,
-            ),
-        )
+        if claimed_assistant is None:
+            await repo.add_message(
+                user_id,
+                turn_message(
+                    MessageRole.user,
+                    parsed.raw,
+                    status=MessageStatus.complete,
+                    fromCommand=True,
+                ),
+            )
         if command.kind is CommandKind.forget:
             reply = await _forget_reply(memory, user_id, session.id, command.args)
         elif command.kind is CommandKind.summarize:
@@ -137,15 +184,16 @@ async def execute_command(
     else:
         await repo.touch_session(user_id, session.id)
 
-    assistant = Message(
-        sessionId=session.id,
-        userId=user_id,
-        role=MessageRole.assistant,
-        content=reply,
+    assistant = claimed_assistant or turn_message(
+        MessageRole.assistant,
+        reply,
         status=MessageStatus.complete,
         fromCommand=True,
         summaryVersion=expected_summary_version,
     )
+    assistant.content = reply
+    assistant.status = MessageStatus.complete
+    assistant.summaryVersion = expected_summary_version
     if not persist_reply:
         return assistant
     if expected_summary_version is not None:
@@ -158,6 +206,8 @@ async def execute_command(
             assistant.content = "Summary was superseded by a newer conversation state."
             assistant.summaryVersion = None
             return assistant
+    elif claimed_assistant is not None:
+        await repo.upsert_message(user_id, assistant)
     else:
         await repo.add_message(user_id, assistant)
     return assistant
@@ -172,6 +222,8 @@ async def execute_tool_command(
     registry: ToolRegistry,
     executor: ToolExecutor,
     correlation_id: str | None = None,
+    client_turn_id: str | None = None,
+    client_request_fingerprint: str | None = None,
 ) -> Message:
     """Run a *direct* tool named by a slash command and persist the user echo +
     the result reply. These tools (see :data:`DIRECT_SLASH_TOOLS`) are
@@ -181,17 +233,45 @@ async def execute_tool_command(
     assert command is not None, "execute_tool_command requires a parsed command"
     user_id = user.internal_user_id
 
-    await repo.add_message(
-        user_id,
-        Message(
-            sessionId=session.id,
-            userId=user_id,
-            role=MessageRole.user,
-            content=parsed.raw,
-            status=MessageStatus.complete,
-            fromCommand=True,
+    user_message = Message(
+        id=(
+            turn_message_id(user_id, session.id, client_turn_id, MessageRole.user)
+            if client_turn_id
+            else uuid.uuid4().hex
         ),
+        sessionId=session.id,
+        userId=user_id,
+        role=MessageRole.user,
+        content=parsed.raw,
+        status=MessageStatus.complete,
+        fromCommand=True,
+        clientTurnId=client_turn_id,
+        clientRequestFingerprint=client_request_fingerprint,
     )
+    assistant = Message(
+        id=(
+            turn_message_id(user_id, session.id, client_turn_id, MessageRole.assistant)
+            if client_turn_id
+            else uuid.uuid4().hex
+        ),
+        sessionId=session.id,
+        userId=user_id,
+        role=MessageRole.assistant,
+        content="",
+        status=MessageStatus.streaming,
+        fromCommand=True,
+        clientTurnId=client_turn_id,
+        clientRequestFingerprint=client_request_fingerprint,
+    )
+    claimed = False
+    if client_turn_id:
+        _, saved_assistant, claimed = await repo.claim_chat_turn(
+            user_id, user_message, assistant
+        )
+        if not claimed:
+            return saved_assistant
+    else:
+        await repo.add_message(user_id, user_message)
 
     reply = await _run_direct_tool(
         command.name, command.args, registry, executor, correlation_id
@@ -199,15 +279,12 @@ async def execute_tool_command(
 
     await repo.touch_session(user_id, session.id)
 
-    assistant = Message(
-        sessionId=session.id,
-        userId=user_id,
-        role=MessageRole.assistant,
-        content=reply,
-        status=MessageStatus.complete,
-        fromCommand=True,
-    )
-    await repo.add_message(user_id, assistant)
+    assistant.content = reply
+    assistant.status = MessageStatus.complete
+    if claimed:
+        await repo.upsert_message(user_id, assistant)
+    else:
+        await repo.add_message(user_id, assistant)
     return assistant
 
 

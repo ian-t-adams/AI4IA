@@ -11,15 +11,17 @@ messages for attribution and future tracing.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
@@ -34,8 +36,10 @@ from ..sessions.models import (
     MessageRole,
     MessageStatus,
     Session,
+    turn_message_id,
 )
 from ..sessions.repository import (
+    ClientTurnConflictError,
     SessionConflictError,
     SessionNotFoundError,
     SessionRepository,
@@ -94,7 +98,73 @@ class ChatRequest(BaseModel):
     region: str | None = None
     dataZone: str | None = None
     stream: bool = True
-    params: dict = {}
+    params: dict = Field(default_factory=dict)
+    clientTurnId: str | None = Field(
+        default=None,
+        min_length=36,
+        max_length=36,
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        ),
+    )
+
+
+def _client_request_fingerprint(body: ChatRequest) -> str:
+    payload = body.model_dump(exclude={"stream", "clientTurnId"}, mode="json")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _turn_message(
+    *,
+    body: ChatRequest,
+    user_id: str,
+    role: MessageRole,
+    content: str,
+    fingerprint: str,
+    **changes: Any,
+) -> Message:
+    assert body.clientTurnId is not None
+    return Message(
+        id=turn_message_id(user_id, body.sessionId, body.clientTurnId, role),
+        sessionId=body.sessionId,
+        userId=user_id,
+        role=role,
+        content=content,
+        clientTurnId=body.clientTurnId,
+        clientRequestFingerprint=fingerprint,
+        **changes,
+    )
+
+
+def _turn_metadata(user_message: Message, assistant: Message) -> dict[str, str]:
+    metadata = {
+        "messageId": assistant.id,
+        "userMessageId": user_message.id,
+        "status": assistant.status.value,
+    }
+    if assistant.clientTurnId:
+        metadata["clientTurnId"] = assistant.clientTurnId
+    return metadata
+
+
+def _replay_response(
+    session_id: str, user_message: Message, assistant: Message, stream: bool
+):
+    if not stream:
+        return {"sessionId": session_id, "message": assistant}
+
+    async def gen():
+        yield f"data: {json.dumps(_turn_metadata(user_message, assistant))}\n\n"
+        for step in assistant.steps or []:
+            yield f"data: {json.dumps({'step': step.model_dump(exclude_none=True)})}\n\n"
+        if assistant.content:
+            chunk = {"choices": [{"delta": {"content": assistant.content}}]}
+            yield f"data: {json.dumps(chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 def _history(messages: list[Message], system_prompt: str | None) -> list[dict]:
@@ -232,7 +302,9 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _local_reply_response(session_id: str, assistant: Message, stream: bool):
+def _local_reply_response(
+    session_id: str, user_message: Message | None, assistant: Message, stream: bool
+):
     """Uniform response for a locally-produced reply (command / agent notice).
 
     Mirrors the model SSE shape so the frontend parser is unchanged: one content
@@ -242,6 +314,8 @@ def _local_reply_response(session_id: str, assistant: Message, stream: bool):
         return {"sessionId": session_id, "message": assistant}
 
     async def gen():
+        if user_message is not None:
+            yield f"data: {json.dumps(_turn_metadata(user_message, assistant))}\n\n"
         chunk = {"choices": [{"delta": {"content": assistant.content}}]}
         yield f"data: {json.dumps(chunk)}\n\n"
         yield "data: [DONE]\n\n"
@@ -302,7 +376,14 @@ async def _agentic_stream(
         # can correlate its optimistic bubbles to this exact turn's persisted
         # rows by id instead of a timestamp heuristic (assistant.id is
         # assigned at construction, before this generator ever starts).
-        yield f"data: {json.dumps({'messageId': assistant.id, 'userMessageId': user_message_id})}\n\n"
+        metadata = {
+            "messageId": assistant.id,
+            "userMessageId": user_message_id,
+            "status": assistant.status.value,
+        }
+        if assistant.clientTurnId:
+            metadata["clientTurnId"] = assistant.clientTurnId
+        yield f"data: {json.dumps(metadata)}\n\n"
         result: AgentRunResult | None = None
         run_error: Exception | None = None
         while True:
@@ -391,14 +472,48 @@ async def _persist_local_reply(
     user: AuthenticatedUser,
     user_content: str,
     reply: str,
+    body: ChatRequest,
+    fingerprint: str,
     agent: str | None = None,
-) -> Message:
+) -> tuple[Message, Message]:
     """Persist a user echo + a local assistant reply (both excluded from model
     context via ``fromCommand``) and return the assistant message."""
     uid = user.internal_user_id
-    await repo.add_message(
-        uid,
-        Message(
+    if body.clientTurnId:
+        user_message = _turn_message(
+            body=body,
+            user_id=uid,
+            role=MessageRole.user,
+            content=user_content,
+            fingerprint=fingerprint,
+            status=MessageStatus.complete,
+            fromCommand=True,
+            agent=agent,
+        )
+        assistant = _turn_message(
+            body=body,
+            user_id=uid,
+            role=MessageRole.assistant,
+            content=reply,
+            fingerprint=fingerprint,
+            status=MessageStatus.complete,
+            fromCommand=True,
+            agent=agent,
+        )
+        try:
+            saved_user, saved_assistant, claimed = await repo.claim_chat_turn(
+                uid, user_message, assistant
+            )
+        except ClientTurnConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="clientTurnId was already used for a different chat request.",
+            ) from exc
+        if claimed:
+            await repo.touch_session(uid, session.id)
+        return saved_user, saved_assistant
+
+    user_message = Message(
             sessionId=session.id,
             userId=uid,
             role=MessageRole.user,
@@ -406,8 +521,8 @@ async def _persist_local_reply(
             status=MessageStatus.complete,
             fromCommand=True,
             agent=agent,
-        ),
     )
+    await repo.add_message(uid, user_message)
     assistant = Message(
         sessionId=session.id,
         userId=uid,
@@ -419,7 +534,7 @@ async def _persist_local_reply(
     )
     await repo.add_message(uid, assistant)
     await repo.touch_session(uid, session.id)
-    return assistant
+    return user_message, assistant
 
 
 # --- Capability-tool slash commands -------------------------------------------
@@ -599,6 +714,7 @@ async def chat(
     except SessionNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
+    fingerprint = _client_request_fingerprint(body)
     parsed = parse_input(body.content)
 
     # A slash command may name a *tool* (e.g. /calculator, /generate_image)
@@ -616,16 +732,41 @@ async def chat(
     if parsed.command is not None and parsed.command.kind is CommandKind.unknown:
         cmd_name = parsed.command.name
         if cmd_name in DIRECT_SLASH_TOOLS:
-            assistant = await execute_tool_command(
-                parsed=parsed,
-                session=session,
-                user=user,
-                repo=repo,
-                registry=registry,
-                executor=executor,
-                correlation_id=get_correlation_id(),
+            try:
+                assistant = await execute_tool_command(
+                    parsed=parsed,
+                    session=session,
+                    user=user,
+                    repo=repo,
+                    registry=registry,
+                    executor=executor,
+                    correlation_id=get_correlation_id(),
+                    client_turn_id=body.clientTurnId,
+                    client_request_fingerprint=fingerprint,
+                )
+            except ClientTurnConflictError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "clientTurnId was already used for a different chat request."
+                    ),
+                ) from exc
+            command_user = (
+                _turn_message(
+                    body=body,
+                    user_id=user.internal_user_id,
+                    role=MessageRole.user,
+                    content=parsed.raw,
+                    fingerprint=fingerprint,
+                    status=MessageStatus.complete,
+                    fromCommand=True,
+                )
+                if body.clientTurnId
+                else None
             )
-            return _local_reply_response(body.sessionId, assistant, body.stream)
+            return _local_reply_response(
+                body.sessionId, command_user, assistant, body.stream
+            )
         if cmd_name in SELECTABLE_SYNTHETIC_TOOL_NAMES:
             capability_tool = cmd_name
         elif cmd_name == RESEARCH_COMMAND_NAME:
@@ -645,23 +786,31 @@ async def chat(
             web_search=web_search,
             memory=memory,
         ):
-            assistant = await _persist_local_reply(
+            user_message, assistant = await _persist_local_reply(
                 repo=repo,
                 session=session,
                 user=user,
                 user_content=parsed.raw,
                 reply=f"/{capability_tool} isn't enabled in this environment yet.",
+                body=body,
+                fingerprint=fingerprint,
             )
-            return _local_reply_response(body.sessionId, assistant, body.stream)
+            return _local_reply_response(
+                body.sessionId, user_message, assistant, body.stream
+            )
         if not parsed.text:
-            assistant = await _persist_local_reply(
+            user_message, assistant = await _persist_local_reply(
                 repo=repo,
                 session=session,
                 user=user,
                 user_content=parsed.raw,
                 reply=_TOOL_COMMAND_USAGE[capability_tool],
+                body=body,
+                fingerprint=fingerprint,
             )
-            return _local_reply_response(body.sessionId, assistant, body.stream)
+            return _local_reply_response(
+                body.sessionId, user_message, assistant, body.stream
+            )
         tool_agent = _ephemeral_tool_agent(capability_tool)
 
     # Compose the caller's user-defined agents on top of the curated catalog only
@@ -687,7 +836,7 @@ async def chat(
             agent = agents.get(selected_agent_name)
             if agent is None or not agent.enabled:
                 if parsed.agent is not None:
-                    assistant = await _persist_local_reply(
+                    user_message, assistant = await _persist_local_reply(
                         repo=repo,
                         session=session,
                         user=user,
@@ -696,8 +845,12 @@ async def chat(
                             f"Unknown agent: @{parsed.agent}. "
                             "Type /agents to see the agents you can mention."
                         ),
+                        body=body,
+                        fingerprint=fingerprint,
                     )
-                    return _local_reply_response(body.sessionId, assistant, body.stream)
+                    return _local_reply_response(
+                        body.sessionId, user_message, assistant, body.stream
+                    )
                 agent = None
 
         # Slash commands (/help, /clear, /system, /model, /agents, ...) are handled
@@ -705,18 +858,45 @@ async def chat(
         # mention (e.g. "@coder /help" runs /help); the mention was already
         # validated above. (A /tool command was already routed above.)
         if parsed.is_command:
-            assistant = await execute_command(
-                parsed=parsed,
-                session=session,
-                user=user,
-                repo=repo,
-                catalog=catalog,
-                agents=agents,
-                memory=memory,
-                summarizer=summarizer,
-                gateway=gateway,
+            try:
+                assistant = await execute_command(
+                    parsed=parsed,
+                    session=session,
+                    user=user,
+                    repo=repo,
+                    catalog=catalog,
+                    agents=agents,
+                    memory=memory,
+                    summarizer=summarizer,
+                    gateway=gateway,
+                    client_turn_id=body.clientTurnId,
+                    client_request_fingerprint=fingerprint,
+                )
+            except ClientTurnConflictError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "clientTurnId was already used for a different chat request."
+                    ),
+                ) from exc
+            command_user = (
+                _turn_message(
+                    body=body,
+                    user_id=user.internal_user_id,
+                    role=MessageRole.user,
+                    content=parsed.raw,
+                    fingerprint=fingerprint,
+                    status=MessageStatus.complete,
+                    fromCommand=True,
+                )
+                if body.clientTurnId
+                and parsed.command is not None
+                and parsed.command.kind is not CommandKind.clear
+                else None
             )
-            return _local_reply_response(body.sessionId, assistant, body.stream)
+            return _local_reply_response(
+                body.sessionId, command_user, assistant, body.stream
+            )
 
     policy = await resolve_conversation_policy(
         request.app.state,
@@ -741,7 +921,7 @@ async def chat(
     if agent is not None:
         content_for_model = parsed.text
         if not content_for_model:
-            assistant = await _persist_local_reply(
+            user_message, assistant = await _persist_local_reply(
                 repo=repo,
                 session=session,
                 user=user,
@@ -750,9 +930,13 @@ async def chat(
                     f"You mentioned @{agent.name} but didn't include a message. "
                     "What would you like to ask?"
                 ),
+                body=body,
+                fingerprint=fingerprint,
                 agent=agent.name,
             )
-            return _local_reply_response(body.sessionId, assistant, body.stream)
+            return _local_reply_response(
+                body.sessionId, user_message, assistant, body.stream
+            )
         system_prompt = policy.instructions if tool_agent is None else agent.systemPrompt
         # Precedence: explicit body model > session's standing model > agent's
         # preferred model. The agent default is a per-turn fallback only and is
@@ -848,15 +1032,80 @@ async def chat(
         )
 
     prior = await repo.list_messages(user.internal_user_id, body.sessionId)
-    user_msg = Message(
-        sessionId=body.sessionId,
-        userId=user.internal_user_id,
-        role=MessageRole.user,
-        content=content_for_model,
-        status=MessageStatus.complete,
-        agent=agent_name,
-    )
-    await repo.add_message(user.internal_user_id, user_msg)
+    claimed_assistant: Message | None = None
+    if body.clientTurnId:
+        user_msg = _turn_message(
+            body=body,
+            user_id=user.internal_user_id,
+            role=MessageRole.user,
+            content=content_for_model,
+            fingerprint=fingerprint,
+            status=MessageStatus.complete,
+            agent=agent_name,
+        )
+        claimed_assistant = _turn_message(
+            body=body,
+            user_id=user.internal_user_id,
+            role=MessageRole.assistant,
+            content="",
+            fingerprint=fingerprint,
+            status=MessageStatus.streaming,
+            model=deployment.deploymentName,
+            agent=agent_name,
+        )
+        try:
+            saved_user, saved_assistant, claimed = await repo.claim_chat_turn(
+                user.internal_user_id, user_msg, claimed_assistant
+            )
+        except ClientTurnConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="clientTurnId was already used for a different chat request.",
+            ) from exc
+        if not claimed:
+            return _replay_response(
+                body.sessionId, saved_user, saved_assistant, body.stream
+            )
+    else:
+        user_msg = Message(
+            sessionId=body.sessionId,
+            userId=user.internal_user_id,
+            role=MessageRole.user,
+            content=content_for_model,
+            status=MessageStatus.complete,
+            agent=agent_name,
+        )
+        await repo.add_message(user.internal_user_id, user_msg)
+
+    async def assistant_placeholder() -> Message:
+        nonlocal claimed_assistant
+        if claimed_assistant is not None:
+            return claimed_assistant
+        claimed_assistant = Message(
+            sessionId=body.sessionId,
+            userId=user.internal_user_id,
+            role=MessageRole.assistant,
+            content="",
+            status=MessageStatus.streaming,
+            model=deployment.deploymentName,
+            agent=agent_name,
+        )
+        await repo.add_message(user.internal_user_id, claimed_assistant)
+        return claimed_assistant
+
+    async def persist_assistant(
+        content: str,
+        *,
+        steps: list[ActivityStep] | None = None,
+        attachments: list[MessageAttachment] | None = None,
+    ) -> Message:
+        assistant = await assistant_placeholder()
+        assistant.content = content
+        assistant.status = MessageStatus.complete
+        assistant.steps = steps
+        assistant.attachments = attachments or []
+        await repo.upsert_message(user.internal_user_id, assistant)
+        return assistant
 
     payload_messages = _history(prior, system_prompt)
     correlation_id = get_correlation_id()
@@ -1270,16 +1519,7 @@ async def chat(
         if body.stream:
             # Live-stream the agent's activity, then its answer; persist + meter in
             # the generator's cancel-safe finally (mirrors the plain-stream path).
-            placeholder = Message(
-                sessionId=body.sessionId,
-                userId=user.internal_user_id,
-                role=MessageRole.assistant,
-                content="",
-                status=MessageStatus.streaming,
-                model=deployment.deploymentName,
-                agent=agent_name,
-            )
-            await repo.add_message(user.internal_user_id, placeholder)
+            placeholder = await assistant_placeholder()
 
             def _run(on_step: Callable[[AgentStep], Awaitable[None]]):
                 return run_agent_turn(
@@ -1335,18 +1575,11 @@ async def chat(
         total_usage = run.usage
         for sub_usage in usage_sink:
             total_usage = total_usage.add(sub_usage)
-        assistant = Message(
-            sessionId=body.sessionId,
-            userId=user.internal_user_id,
-            role=MessageRole.assistant,
-            content=run.text,
-            status=MessageStatus.complete,
-            model=deployment.deploymentName,
-            agent=agent_name,
+        assistant = await persist_assistant(
+            run.text,
             attachments=[*image_sink, *video_sink, *doc_sink],
             steps=persisted_trace(run.steps) or None,
         )
-        await repo.add_message(user.internal_user_id, assistant)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
         await metering.record_completion(
             user_id=user.internal_user_id,
@@ -1448,16 +1681,7 @@ async def chat(
                     # no answer (or fails), the generator finishes with a plain call
                     # so the response never dead-ends — the streaming equivalent of
                     # the non-stream fall-through to the RAG path below.
-                    placeholder = Message(
-                        sessionId=body.sessionId,
-                        userId=user.internal_user_id,
-                        role=MessageRole.assistant,
-                        content="",
-                        status=MessageStatus.streaming,
-                        model=deployment.deploymentName,
-                        agent=agent_name,
-                    )
-                    await repo.add_message(user.internal_user_id, placeholder)
+                    placeholder = await assistant_placeholder()
 
                     def _run_plain(on_step: Callable[[AgentStep], Awaitable[None]]):
                         return run_agent_turn(
@@ -1517,17 +1741,10 @@ async def chat(
                     extra_handlers=plain_handlers or None,
                 )
                 if run.text.strip():
-                    assistant = Message(
-                        sessionId=body.sessionId,
-                        userId=user.internal_user_id,
-                        role=MessageRole.assistant,
-                        content=run.text,
-                        status=MessageStatus.complete,
-                        model=deployment.deploymentName,
-                        agent=agent_name,
+                    assistant = await persist_assistant(
+                        run.text,
                         steps=persisted_trace(run.steps) or None,
                     )
-                    await repo.add_message(user.internal_user_id, assistant)
                     await memory.remember(
                         user.internal_user_id, body.sessionId, content_for_model
                     )
@@ -1558,18 +1775,12 @@ async def chat(
                 api=api,
             )
         except ModelGatewayError as exc:
+            assistant = await assistant_placeholder()
+            assistant.status = MessageStatus.error
+            await repo.upsert_message(user.internal_user_id, assistant)
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.detail)
         text = _extract_text(result)
-        assistant = Message(
-            sessionId=body.sessionId,
-            userId=user.internal_user_id,
-            role=MessageRole.assistant,
-            content=text,
-            status=MessageStatus.complete,
-            model=deployment.deploymentName,
-            agent=agent_name,
-        )
-        await repo.add_message(user.internal_user_id, assistant)
+        assistant = await persist_assistant(text)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
         await metering.record_completion(
             user_id=user.internal_user_id,
@@ -1587,16 +1798,7 @@ async def chat(
     # assemble server-side and upsert the final status (best-effort, shielded).
     # The agent attribution is set on the placeholder so a cancelled/errored
     # turn keeps it.
-    assistant = Message(
-        sessionId=body.sessionId,
-        userId=user.internal_user_id,
-        role=MessageRole.assistant,
-        content="",
-        status=MessageStatus.streaming,
-        model=deployment.deploymentName,
-        agent=agent_name,
-    )
-    await repo.add_message(user.internal_user_id, assistant)
+    assistant = await assistant_placeholder()
 
     async def event_stream():
         parts: list[str] = []
@@ -1609,7 +1811,7 @@ async def chat(
             # rows by id (assistant.id/user_msg.id are assigned at
             # construction, before this generator ever starts) instead of a
             # timestamp heuristic.
-            yield f"data: {json.dumps({'messageId': assistant.id, 'userMessageId': user_msg.id})}\n\n"
+            yield f"data: {json.dumps(_turn_metadata(user_msg, assistant))}\n\n"
             async for chunk in gateway.stream(
                 deployment=deployment.deploymentName,
                 messages=payload_messages,

@@ -96,6 +96,9 @@ export interface Message {
   createdAt: string;
   attachments?: MessageAttachment[];
   source?: MessageSource;
+  // Stable browser-generated correlation shared by one typed user/assistant turn.
+  // Absent on historical rows and Voice Live messages.
+  clientTurnId?: string | null;
   // Redacted activity trace for an agentic/tool turn; absent for plain turns.
   steps?: ActivityStep[] | null;
 }

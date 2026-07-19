@@ -26,7 +26,11 @@ from .models import (
     normalize_session_patch_changes,
     normalize_session_title,
 )
-from .repository import SessionConflictError, SessionNotFoundError
+from .repository import (
+    ClientTurnConflictError,
+    SessionConflictError,
+    SessionNotFoundError,
+)
 
 
 class CosmosSessionRepository:
@@ -47,7 +51,10 @@ class CosmosSessionRepository:
 
     @staticmethod
     def _to_doc(model: Session | Message | Document) -> dict[str, Any]:
-        return model.model_dump(mode="json")
+        doc = model.model_dump(mode="json")
+        if isinstance(model, Message) and model.clientRequestFingerprint is not None:
+            doc["clientRequestFingerprint"] = model.clientRequestFingerprint
+        return doc
 
     async def _owned_session(self, user_id: str, session_id: str) -> Session:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
@@ -361,6 +368,57 @@ class CosmosSessionRepository:
         message.userId = user_id
         await self._messages.create_item(self._to_doc(message))
         return message
+
+    async def claim_chat_turn(
+        self, user_id: str, user_message: Message, assistant_message: Message
+    ) -> tuple[Message, Message, bool]:
+        from azure.cosmos.exceptions import (
+            CosmosBatchOperationError,
+            CosmosResourceNotFoundError,
+        )
+
+        await self._owned_session(user_id, user_message.sessionId)
+        if (
+            user_message.sessionId != assistant_message.sessionId
+            or not user_message.clientTurnId
+            or user_message.clientTurnId != assistant_message.clientTurnId
+        ):
+            raise ValueError("A chat turn must have one session and clientTurnId.")
+        user_message.userId = user_id
+        assistant_message.userId = user_id
+        try:
+            await self._messages.execute_item_batch(
+                [
+                    ("create", (self._to_doc(user_message),)),
+                    ("create", (self._to_doc(assistant_message),)),
+                ],
+                partition_key=user_message.sessionId,
+            )
+            return user_message, assistant_message, True
+        except CosmosBatchOperationError:
+            try:
+                user_doc = await self._messages.read_item(
+                    item=user_message.id, partition_key=user_message.sessionId
+                )
+                assistant_doc = await self._messages.read_item(
+                    item=assistant_message.id, partition_key=user_message.sessionId
+                )
+            except CosmosResourceNotFoundError as exc:
+                raise ClientTurnConflictError(user_message.clientTurnId) from exc
+            saved_user = Message.model_validate(user_doc)
+            saved_assistant = Message.model_validate(assistant_doc)
+            if (
+                saved_user.userId != user_id
+                or saved_assistant.userId != user_id
+                or saved_user.clientTurnId != user_message.clientTurnId
+                or saved_assistant.clientTurnId != user_message.clientTurnId
+                or saved_user.clientRequestFingerprint
+                != user_message.clientRequestFingerprint
+                or saved_assistant.clientRequestFingerprint
+                != assistant_message.clientRequestFingerprint
+            ):
+                raise ClientTurnConflictError(user_message.clientTurnId)
+            return saved_user, saved_assistant, False
 
     async def add_message_if_summary_version(
         self, user_id: str, message: Message, *, expected_version: int

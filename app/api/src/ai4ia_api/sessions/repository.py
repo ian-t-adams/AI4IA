@@ -19,6 +19,10 @@ class SessionConflictError(Exception):
     """Raised when a bounded session CAS mutation cannot be committed."""
 
 
+class ClientTurnConflictError(Exception):
+    """Raised when a client turn id is reused with incompatible request input."""
+
+
 @runtime_checkable
 class SessionRepository(Protocol):
     async def create_session(self, session: Session) -> Session: ...
@@ -66,6 +70,10 @@ class SessionRepository(Protocol):
     async def delete_session(self, user_id: str, session_id: str) -> None: ...
 
     async def add_message(self, user_id: str, message: Message) -> Message: ...
+
+    async def claim_chat_turn(
+        self, user_id: str, user_message: Message, assistant_message: Message
+    ) -> tuple[Message, Message, bool]: ...
 
     async def add_message_if_summary_version(
         self, user_id: str, message: Message, *, expected_version: int

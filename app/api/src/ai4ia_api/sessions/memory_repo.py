@@ -15,7 +15,11 @@ from .models import (
     normalize_session_patch_changes,
     normalize_session_title,
 )
-from .repository import SessionConflictError, SessionNotFoundError
+from .repository import (
+    ClientTurnConflictError,
+    SessionConflictError,
+    SessionNotFoundError,
+)
 
 
 class InMemorySessionRepository:
@@ -163,6 +167,46 @@ class InMemorySessionRepository:
             message.userId = user_id
             self._messages.setdefault(message.sessionId, []).append(message)
             return message
+
+    async def claim_chat_turn(
+        self, user_id: str, user_message: Message, assistant_message: Message
+    ) -> tuple[Message, Message, bool]:
+        async with self._lock:
+            await self._owned_session(user_id, user_message.sessionId)
+            if (
+                user_message.sessionId != assistant_message.sessionId
+                or not user_message.clientTurnId
+                or user_message.clientTurnId != assistant_message.clientTurnId
+            ):
+                raise ValueError("A chat turn must have one session and clientTurnId.")
+            bucket = self._messages.setdefault(user_message.sessionId, [])
+            existing = [
+                message
+                for message in bucket
+                if message.clientTurnId == user_message.clientTurnId
+            ]
+            if existing:
+                by_role = {message.role: message for message in existing}
+                saved_user = by_role.get(user_message.role)
+                saved_assistant = by_role.get(assistant_message.role)
+                if (
+                    saved_user is None
+                    or saved_assistant is None
+                    or saved_user.clientRequestFingerprint
+                    != user_message.clientRequestFingerprint
+                    or saved_assistant.clientRequestFingerprint
+                    != assistant_message.clientRequestFingerprint
+                ):
+                    raise ClientTurnConflictError(user_message.clientTurnId)
+                return (
+                    saved_user.model_copy(deep=True),
+                    saved_assistant.model_copy(deep=True),
+                    False,
+                )
+            user_message.userId = user_id
+            assistant_message.userId = user_id
+            bucket.extend((user_message, assistant_message))
+            return user_message, assistant_message, True
 
     async def add_message_if_summary_version(
         self, user_id: str, message: Message, *, expected_version: int

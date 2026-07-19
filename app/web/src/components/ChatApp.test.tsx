@@ -183,7 +183,9 @@ beforeEach(() => {
     ...session("C"),
     ...value,
   }));
-  mocks.streamChat.mockResolvedValue(undefined);
+  // Real streamChat is synchronous and returns an abort callback immediately
+  // (see api.ts); ChatApp's unmount cleanup invokes it directly.
+  mocks.streamChat.mockReturnValue(vi.fn());
   mocks.associateLibraryDocument.mockImplementation(
     async (sessionId: string, documentId: string) => ({
       ...session(sessionId),

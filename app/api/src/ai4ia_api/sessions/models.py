@@ -24,6 +24,14 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
+def turn_message_id(
+    user_id: str, session_id: str, client_turn_id: str, role: "MessageRole"
+) -> str:
+    """Return a stable message id for one client-originated chat turn."""
+    value = f"{user_id}\0{session_id}\0{client_turn_id}\0{role.value}"
+    return uuid.uuid5(uuid.NAMESPACE_URL, value).hex
+
+
 class MessageRole(str, Enum):
     system = "system"
     user = "user"
@@ -115,6 +123,12 @@ class Message(BaseModel):
     # Voice Live exchange persisted back into the same session). Voice turns still
     # feed model context like any other; this is provenance only.
     source: MessageSource = MessageSource.chat
+    # Browser-generated UUID shared by the user/assistant rows for one typed turn.
+    # Optional so historical Cosmos documents continue to validate unchanged.
+    clientTurnId: str | None = None
+    # Internal hash used to reject reuse of a turn id for different request input.
+    # It is persisted by repositories but excluded from HTTP response models.
+    clientRequestFingerprint: str | None = Field(default=None, exclude=True)
     # Non-text artifacts produced during the turn (e.g. generated images). Empty
     # for ordinary text replies; each entry references a durable blob served
     # through an authenticated endpoint.

@@ -486,9 +486,15 @@ export async function deleteSession(id: string): Promise<void> {
   }
 }
 
-export async function listMessages(sessionId: string): Promise<Message[]> {
+export async function listMessages(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<Message[]> {
   return jsonOrThrow(
-    await apiFetch(`/api/sessions/${sessionId}/messages`, { cache: "no-store" }),
+    await apiFetch(`/api/sessions/${sessionId}/messages`, {
+      cache: "no-store",
+      signal,
+    }),
   );
 }
 
@@ -734,13 +740,16 @@ export interface StreamHandlers {
   // the UI can show "Searching the web..." while it runs. Ignored by callers that
   // don't render activity.
   onStep?: (step: ActivityStep) => void;
-  // Called once, as early as possible (before any delta/step), with the
-  // server's own already-persisted ids for this turn's user + assistant
-  // messages. Lets the caller correlate its optimistic bubbles to the exact
-  // persisted turn instead of a timestamp heuristic. Never called for an
-  // already-fully-persisted reply (e.g. a slash-command echo), since there
-  // is no race to correlate away in that case.
-  onMessageIds?: (ids: { userMessageId: string; assistantMessageId: string }) => void;
+  // Called once, as early as possible, with safe persisted-turn metadata.
+  // clientTurnId is authoritative; row ids retain rolling-server compatibility.
+  onMessageIds?: (ids: {
+    userMessageId: string;
+    assistantMessageId: string;
+    clientTurnId?: string;
+    status?: Message["status"];
+  }) => void;
+  // A definitive HTTP rejection before an SSE body was accepted.
+  onRejected?: (status: number, detail: string) => void;
   // Called when the caller aborts the stream (e.g. Stop button). Lets the UI
   // reconcile with the server, which persists a `cancelled` assistant message.
   onAbort?: () => void;
@@ -756,80 +765,121 @@ export function streamChat(
     region?: string | null;
     dataZone?: string | null;
     params?: ChatParams;
+    clientTurnId: string;
   },
   handlers: StreamHandlers,
 ): () => void {
   const controller = new AbortController();
 
   (async () => {
-    let sawDone = false;
-    try {
-      const resp = await apiFetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...input, stream: true }),
-        signal: controller.signal,
-      });
-      if (!resp.ok || !resp.body) {
-        const detail = await resp.text().catch(() => resp.statusText);
-        handlers.onError(`${resp.status}: ${detail}`);
-        return;
-      }
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split("\n\n");
-        buffer = events.pop() ?? "";
-        for (const evt of events) {
-          const line = evt.trim();
-          if (!line.startsWith("data:")) continue;
-          const payload = line.slice("data:".length).trim();
-          if (payload === "[DONE]") {
-            sawDone = true;
-            handlers.onDone();
-            return;
-          }
-          try {
-            const obj = JSON.parse(payload);
-            if (obj.error) {
-              handlers.onError(String(obj.error));
+    const maxAttempts = 2;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      let sawEvent = false;
+      try {
+        const resp = await apiFetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...input, stream: true }),
+          signal: controller.signal,
+        });
+        if (!resp.ok || !resp.body) {
+          const detail = await resp.text().catch(() => resp.statusText);
+          handlers.onRejected?.(resp.status, detail);
+          handlers.onError(`${resp.status}: ${detail}`);
+          return;
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split("\n\n");
+          buffer = events.pop() ?? "";
+          for (const evt of events) {
+            const line = evt.trim();
+            if (!line.startsWith("data:")) continue;
+            sawEvent = true;
+            const payload = line.slice("data:".length).trim();
+            if (payload === "[DONE]") {
+              handlers.onDone();
               return;
             }
-            if (obj.step) {
-              handlers.onStep?.(obj.step as ActivityStep);
-              continue;
+            try {
+              const obj = JSON.parse(payload);
+              if (obj.error) {
+                handlers.onError(String(obj.error));
+                return;
+              }
+              if (obj.step) {
+                handlers.onStep?.(obj.step as ActivityStep);
+                continue;
+              }
+              if (obj.messageId && obj.userMessageId) {
+                handlers.onMessageIds?.({
+                  userMessageId: String(obj.userMessageId),
+                  assistantMessageId: String(obj.messageId),
+                  clientTurnId: obj.clientTurnId
+                    ? String(obj.clientTurnId)
+                    : undefined,
+                  status: obj.status as Message["status"] | undefined,
+                });
+                continue;
+              }
+              const delta: string =
+                obj?.choices?.[0]?.delta?.content ?? "";
+              if (delta) handlers.onDelta(delta);
+            } catch {
+              /* skip non-JSON keepalive lines */
             }
-            if (obj.messageId && obj.userMessageId) {
-              handlers.onMessageIds?.({
-                userMessageId: String(obj.userMessageId),
-                assistantMessageId: String(obj.messageId),
-              });
-              continue;
-            }
-            const delta: string =
-              obj?.choices?.[0]?.delta?.content ?? "";
-            if (delta) handlers.onDelta(delta);
-          } catch {
-            /* skip non-JSON keepalive lines */
           }
         }
-      }
-      // Reached EOF without a terminating [DONE]: treat as a truncated stream
-      // rather than a clean completion so the UI can surface/reconcile it.
-      if (sawDone) handlers.onDone();
-      else handlers.onError("Stream ended unexpectedly.");
-    } catch (err) {
-      if ((err as Error).name === "AbortError") {
-        handlers.onAbort?.();
+        // A response accepted but lost before its first SSE byte is safe to retry:
+        // clientTurnId makes the POST idempotent at the API persistence boundary.
+        if (!sawEvent && attempt < maxAttempts - 1) {
+          await abortableDelay(100, controller.signal);
+          continue;
+        }
+        handlers.onError("Stream ended unexpectedly.");
+        return;
+      } catch (err) {
+        if ((err as Error).name === "AbortError") {
+          handlers.onAbort?.();
+          return;
+        }
+        if (!sawEvent && attempt < maxAttempts - 1) {
+          try {
+            await abortableDelay(100, controller.signal);
+            continue;
+          } catch {
+            handlers.onAbort?.();
+            return;
+          }
+        }
+        handlers.onError((err as Error).message);
         return;
       }
-      handlers.onError((err as Error).message);
     }
   })();
 
   return () => controller.abort();
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = globalThis.setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        globalThis.clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      },
+      { once: true },
+    );
+  });
 }

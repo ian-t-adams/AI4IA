@@ -84,6 +84,21 @@ import { EditableSessionTitle } from "./EditableSessionTitle";
 const MOBILE_SIDEBAR_QUERY = "(max-width: 720px)";
 const MOBILE_INSPECTOR_QUERY = "(max-width: 1050px)";
 
+function newClientTurnId(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0"));
+  return [
+    hex.slice(0, 4).join(""),
+    hex.slice(4, 6).join(""),
+    hex.slice(6, 8).join(""),
+    hex.slice(8, 10).join(""),
+    hex.slice(10).join(""),
+  ].join("-");
+}
+
 function pickDefaultModel(models: ModelEntry[]): string | null {
   // Never default to a capability model: prefer a plain "chat" model, then any
   // conversational model, and only then give up.
@@ -100,11 +115,26 @@ function reconcileMessages(
   fresh: Message[],
   removeIds: ReadonlySet<string> = new Set(),
 ): Message[] {
-  const byId = new Map(fresh.map((message) => [message.id, message]));
+  const byId = new Map<string, Message>();
   for (const message of previous) {
-    if (!removeIds.has(message.id) && !byId.has(message.id)) {
+    if (!removeIds.has(message.id)) byId.set(message.id, message);
+  }
+  for (const message of fresh) {
+    const existing = byId.get(message.id);
+    if (!existing) {
       byId.set(message.id, message);
+      continue;
     }
+    const existingTerminal = existing.status !== "streaming";
+    if (existingTerminal && message.status === "streaming") continue;
+    byId.set(message.id, {
+      ...message,
+      content: message.content || existing.content,
+      steps:
+        finalizedSteps(message.steps ?? existing.steps ?? []) ??
+        message.steps ??
+        existing.steps,
+    });
   }
   return [...byId.values()].sort(
     (left, right) =>
@@ -116,24 +146,52 @@ function reconcileMessages(
 // The backend upserts a "streaming" placeholder before the model call, then
 // rewrites it with the final content only after SSE sends `[DONE]` (chat.py).
 // A refetch right after `[DONE]` can race that upsert and see the placeholder.
-// `assistantMessageId` is this specific turn's own server-assigned id (see
-// PendingTurn) -- a null id means the turn never got one (the local-reply
-// path, which is fully persisted before any SSE bytes are sent), so there is
-// no race to check and the very first fetch is always trusted.
+// Every new browser turn has a clientTurnId before POST. Server row ids are a
+// rolling-deployment fallback only; exact clientTurnId + source is authoritative.
+function correlatedRows(messages: Message[], pending: PendingTurn): Message[] {
+  const byClientTurn = messages.filter(
+    (message) =>
+      (message.source ?? "chat") === pending.source &&
+      message.clientTurnId === pending.clientTurnId,
+  );
+  if (byClientTurn.length) return byClientTurn;
+  // Rolling deployment compatibility with the previous server contract, which
+  // emitted durable row ids over SSE but did not yet persist clientTurnId.
+  const oldServerIds = new Set(
+    [pending.userMessageId, pending.assistantMessageId].filter(
+      (id): id is string => Boolean(id),
+    ),
+  );
+  return oldServerIds.size
+    ? messages.filter((message) => oldServerIds.has(message.id))
+    : [];
+}
+
 function isReconciliationStale(
   messages: Message[],
-  assistantMessageId: string | null,
+  pending: PendingTurn,
 ): boolean {
-  if (!assistantMessageId) return false;
-  const row = messages.find((message) => message.id === assistantMessageId);
+  const row = correlatedRows(messages, pending).find(
+    (message) => message.role === "assistant",
+  );
   return !row || row.status === "streaming";
 }
 
 const RECONCILE_MAX_ATTEMPTS = 2;
 const RECONCILE_RETRY_DELAY_MS = 150;
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function wait(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      },
+      { once: true },
+    );
+  });
 }
 
 // Retries briefly on a stale result (see isReconciliationStale). Returns
@@ -144,17 +202,18 @@ function wait(ms: number): Promise<void> {
 // polling instead of retrying against a conversation no one is watching.
 async function fetchReconciledMessages(
   sessionId: string,
-  assistantMessageId: string | null,
+  pending: PendingTurn,
   isCancelled: () => boolean,
+  signal: AbortSignal,
 ): Promise<Message[] | null> {
   try {
     for (let attempt = 0; attempt < RECONCILE_MAX_ATTEMPTS; attempt++) {
       if (isCancelled()) return null;
-      const candidate = await api.listMessages(sessionId);
+      const candidate = await api.listMessages(sessionId, signal);
       if (isCancelled()) return null;
-      if (!isReconciliationStale(candidate, assistantMessageId)) return candidate;
+      if (!isReconciliationStale(candidate, pending)) return candidate;
       if (attempt < RECONCILE_MAX_ATTEMPTS - 1) {
-        await wait(RECONCILE_RETRY_DELAY_MS);
+        await wait(RECONCILE_RETRY_DELAY_MS, signal);
         if (isCancelled()) return null;
       }
     }
@@ -173,16 +232,18 @@ async function fetchReconciledMessages(
 // structurally unable to match an unrelated turn (an interleaved Voice Live
 // exchange gets ids from an entirely different namespace, so it can never
 // be mistaken for, or need special-casing against, a concurrent text turn).
-// Both ids are null together only for the local-reply path (chat.py fully
-// persists that turn before any SSE bytes are sent, so there is no race to
-// correlate away in the first place -- see isReconciliationStale).
+// The row ids remain optional for compatibility with the immediately preceding
+// server version; new servers persist clientTurnId on local and model replies.
 interface PendingTurn {
   sessionId: string;
   generation: number;
+  clientTurnId: string;
+  source: "chat";
+  knownMessageIds: ReadonlySet<string>;
   optimisticUserId: string;
   placeholderId: string | null;
-  assistantMessageId: string | null;
-  userMessageId: string | null;
+  assistantMessageId?: string;
+  userMessageId?: string;
 }
 
 // Resolves and/or prunes `pendingTurns` (mutated in place) against an
@@ -197,35 +258,52 @@ interface PendingTurn {
 // latter would otherwise duplicate the still-showing optimistic user bubble
 // -- and so must be excluded from whatever the caller merges into `messages`.
 function resolvePendingTurns(
-  pendingTurns: Map<number, PendingTurn>,
+  pendingTurns: Map<string, PendingTurn>,
   fetchedSessionId: string,
   fresh: Message[],
   activeGeneration: number,
 ): { removeIds: Set<string>; openRowIds: Set<string> } {
   const removeIds = new Set<string>();
   const openRowIds = new Set<string>();
-  const freshById = new Map(fresh.map((message) => [message.id, message]));
-  for (const [turnId, entry] of [...pendingTurns.entries()]) {
+  for (const [clientTurnId, entry] of [...pendingTurns.entries()]) {
     if (entry.sessionId !== fetchedSessionId) continue;
     // A stale-generation entry's messages were already wiped by whatever
     // reselect bumped the generation; nothing left here to resolve.
     if (entry.generation !== activeGeneration) {
-      pendingTurns.delete(turnId);
+      pendingTurns.delete(clientTurnId);
       continue;
     }
-    const persistedAssistant = entry.assistantMessageId
-      ? freshById.get(entry.assistantMessageId)
-      : undefined;
-    const resolved = entry.assistantMessageId
-      ? persistedAssistant !== undefined && persistedAssistant.status !== "streaming"
-      : true;
+    const rows = correlatedRows(fresh, entry);
+    const persistedAssistant = rows.find(
+      (message) => message.role === "assistant",
+    );
+    const resolved =
+      persistedAssistant !== undefined &&
+      persistedAssistant.status !== "streaming";
     if (resolved) {
       removeIds.add(entry.optimisticUserId);
       if (entry.placeholderId) removeIds.add(entry.placeholderId);
-      pendingTurns.delete(turnId);
+      pendingTurns.delete(clientTurnId);
     } else {
-      if (entry.assistantMessageId) openRowIds.add(entry.assistantMessageId);
-      if (entry.userMessageId) openRowIds.add(entry.userMessageId);
+      for (const row of rows) openRowIds.add(row.id);
+      if (
+        rows.length === 0 &&
+        !entry.assistantMessageId &&
+        !entry.userMessageId
+      ) {
+        // A fully old server neither persisted clientTurnId nor emitted row ids.
+        // Such rows cannot be safely attributed to this turn. Keep only rows that
+        // were already known before POST; never guess by timestamp/content.
+        for (const message of fresh) {
+          if (
+            (message.source ?? "chat") === entry.source &&
+            !message.clientTurnId &&
+            !entry.knownMessageIds.has(message.id)
+          ) {
+            openRowIds.add(message.id);
+          }
+        }
+      }
     }
   }
   return { removeIds, openRowIds };
@@ -354,6 +432,7 @@ export function ChatApp() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const messagesRef = useRef<Message[]>([]);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   // Library docs attached via the paperclip this view (only used when
   // libraryEnabled). Transient: cleared on new chat / session switch, but the
@@ -433,10 +512,13 @@ export function ChatApp() {
   // confirmed. Keyed by turnId so applyReconciledMessages can resolve each
   // turn independently -- an earlier turn stuck behind a slow/failed refetch
   // must not be clobbered or duplicated by a later turn's own reconciliation.
-  const pendingTurnsRef = useRef<Map<number, PendingTurn>>(new Map());
+  const pendingTurnsRef = useRef<Map<string, PendingTurn>>(new Map());
   // Set false on unmount so an in-flight reconciliation retry/wait stops
   // instead of touching state after the component is gone.
   const mountedRef = useRef(true);
+  const historySequenceRef = useRef(0);
+  const latestHistoryRequestRef = useRef<Map<string, number>>(new Map());
+  const historyControllersRef = useRef<Set<AbortController>>(new Set());
   // Holds an in-flight lazy session-creation promise so a rapid send + upload
   // (or two uploads) share a single session instead of racing to create two.
   const creatingRef = useRef<Promise<string> | null>(null);
@@ -456,9 +538,22 @@ export function ChatApp() {
     sessionIdRef.current = activeId;
   }, [activeId]);
   useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  useEffect(() => {
     mountedRef.current = true;
+    // Captured once per mount: these containers are stable, mutated-in-place
+    // refs (never reassigned), so closing over them here -- rather than
+    // re-reading `.current` inside the cleanup -- satisfies the ref-in-effect
+    // lint rule without changing behavior.
+    const historyControllers = historyControllersRef.current;
+    const pendingTurns = pendingTurnsRef.current;
     return () => {
       mountedRef.current = false;
+      abortRef.current?.();
+      for (const controller of historyControllers) controller.abort();
+      historyControllers.clear();
+      pendingTurns.clear();
     };
   }, []);
 
@@ -469,8 +564,18 @@ export function ChatApp() {
   // them can leave a stale local id behind or duplicate an unresolved turn's
   // persisted rows (see resolvePendingTurns).
   const applyReconciledMessages = useCallback(
-    (fetchedSessionId: string, fresh: Message[]) => {
+    (
+      fetchedSessionId: string,
+      fresh: Message[],
+      requestVersion?: number,
+    ) => {
       if (fetchedSessionId !== sessionIdRef.current) return;
+      if (
+        requestVersion !== undefined &&
+        latestHistoryRequestRef.current.get(fetchedSessionId) !== requestVersion
+      ) {
+        return;
+      }
       const { removeIds, openRowIds } = resolvePendingTurns(
         pendingTurnsRef.current,
         fetchedSessionId,
@@ -484,6 +589,30 @@ export function ChatApp() {
     },
     [],
   );
+
+  const requestHistory = useCallback(async (sessionId: string) => {
+    const version = ++historySequenceRef.current;
+    latestHistoryRequestRef.current.set(sessionId, version);
+    const controller = new AbortController();
+    historyControllersRef.current.add(controller);
+    try {
+      const messages = await api.listMessages(sessionId, controller.signal);
+      if (
+        controller.signal.aborted ||
+        latestHistoryRequestRef.current.get(sessionId) !== version
+      ) {
+        return null;
+      }
+      return { messages, version };
+    } finally {
+      historyControllersRef.current.delete(controller);
+    }
+  }, []);
+
+  const cancelHistoryRequests = useCallback(() => {
+    for (const controller of historyControllersRef.current) controller.abort();
+    historyControllersRef.current.clear();
+  }, []);
 
   const loadAttachmentCapabilities = useCallback(async () => {
     const generation = ++capabilityGenerationRef.current;
@@ -580,27 +709,20 @@ export function ChatApp() {
       const generation = isSameSession
         ? selectionGenerationRef.current
         : ++selectionGenerationRef.current;
+      cancelHistoryRequests();
       sessionIdRef.current = id;
       setActiveId(id);
+      if (!isSameSession) setMessages([]);
       setError(null);
       try {
-        const [msgs, all, docs] = await Promise.all([
-          api.listMessages(id),
+        const [snapshot, all, docs] = await Promise.all([
+          requestHistory(id),
           api.listSessions(),
           api.listDocuments(id).catch(() => [] as DocumentSummary[]),
         ]);
         if (generation !== selectionGenerationRef.current) return;
-        if (isSameSession) {
-          // Route through the same per-turn-aware merge finalize() uses, so
-          // an in-flight local turn survives a same-session reselect instead
-          // of being clobbered by a snapshot that may not reflect it yet.
-          applyReconciledMessages(id, msgs);
-        } else {
-          setMessages(msgs);
-          // Not this session's turns to merge live, but any of its pending
-          // turns this fetch happens to resolve should still be cleaned up
-          // now instead of lingering in pendingTurnsRef indefinitely.
-          resolvePendingTurns(pendingTurnsRef.current, id, msgs, generation);
+        if (snapshot) {
+          applyReconciledMessages(id, snapshot.messages, snapshot.version);
         }
         setDocuments(docs);
         // Library chips are a transient per-view confirmation; the docs persist
@@ -635,10 +757,16 @@ export function ChatApp() {
           }
         }
       } catch (e) {
+        if ((e as Error).name === "AbortError") return;
         setError((e as Error).message);
       }
     },
-    [libraryEnabled, applyReconciledMessages],
+    [
+      libraryEnabled,
+      applyReconciledMessages,
+      cancelHistoryRequests,
+      requestHistory,
+    ],
   );
 
   const newChat = useCallback(() => {
@@ -648,6 +776,8 @@ export function ChatApp() {
       return;
     }
     if (voiceActiveRef.current) voiceStopRef.current();
+    cancelHistoryRequests();
+    pendingTurnsRef.current.clear();
     selectionGenerationRef.current += 1;
     sessionIdRef.current = null;
     setActiveId(null);
@@ -664,7 +794,7 @@ export function ChatApp() {
     setStreamingText("");
     setStreamingStartedAt(null);
     setError(null);
-  }, [models]);
+  }, [models, cancelHistoryRequests]);
 
   const refreshAgents = useCallback(async () => {
     try {
@@ -940,23 +1070,23 @@ export function ChatApp() {
         turns,
       );
       if (sessionIdRef.current === sessionId) {
-        setMessages((previous) => {
-          const createdIds = new Set(created.map((message) => message.id));
-          return [
-            ...previous.filter((message) => !createdIds.has(message.id)),
-            ...created,
-          ];
-        });
+        applyReconciledMessages(sessionId, created);
       }
       void Promise.allSettled([
-        api.listMessages(sessionId).then((fresh) => {
-          applyReconciledMessages(sessionId, fresh);
+        requestHistory(sessionId).then((snapshot) => {
+          if (snapshot) {
+            applyReconciledMessages(
+              sessionId,
+              snapshot.messages,
+              snapshot.version,
+            );
+          }
         }),
         refreshSessions(),
       ]);
       setInspectorVersion((value) => value + 1);
     },
-    [refreshSessions, applyReconciledMessages],
+    [refreshSessions, applyReconciledMessages, requestHistory],
   );
 
   // Voice Live settings disclosure: persisted picks (agent/model/voice/tools/
@@ -1354,24 +1484,17 @@ export function ChatApp() {
       const turnSessionId = sessionId;
       const turnGeneration = selectionGenerationRef.current;
       const turnId = ++turnCounterRef.current;
+      const clientTurnId = newClientTurnId();
       // Mirrors streamingText/liveSteps outside React state, since `send` is
       // memoized and won't see fresh values of that state. Lets `finalize`
       // reconstruct the reply if the reconciliation fetch fails or is stale.
       let bufferedContent = "";
       let bufferedSteps: ActivityStep[] = [];
-      // Populated as soon as the server echoes them (see onMessageIds below):
-      // its own already-stable Message.id for this turn's user + assistant
-      // rows, used as the sole correlation key for reconciliation instead of
-      // a timestamp heuristic. Both stay null for the local-reply path
-      // (chat.py fully persists that turn before any SSE bytes are sent, so
-      // it has nothing to echo and no race to correlate away in the first
-      // place -- see isReconciliationStale/PendingTurn).
-      let assistantMessageId: string | null = null;
-      let userMessageId: string | null = null;
-
+      // The browser id below is authoritative. Server row ids, when echoed,
+      // support a rolling deployment against the preceding API version.
       const userCreatedAt = new Date();
       const optimisticUser: Message = {
-        id: `tmp-${Date.now()}`,
+        id: `tmp-${clientTurnId}`,
         sessionId,
         userId: "me",
         role: "user",
@@ -1379,12 +1502,26 @@ export function ChatApp() {
         status: "complete",
         model: selectedModel,
         agent: null,
+        source: "chat",
+        clientTurnId,
         createdAt: userCreatedAt.toISOString(),
       };
       setStreamingStartedAt(
         new Date(userCreatedAt.getTime() + 1).toISOString(),
       );
       setMessages((prev) => [...prev, optimisticUser]);
+      const pendingTurn: PendingTurn = {
+        sessionId: turnSessionId,
+        generation: turnGeneration,
+        clientTurnId,
+        source: "chat",
+        knownMessageIds: new Set(
+          messagesRef.current.map((message) => message.id),
+        ),
+        optimisticUserId: optimisticUser.id,
+        placeholderId: null,
+      };
+      pendingTurnsRef.current.set(clientTurnId, pendingTurn);
 
       const isCommand = content.trimStart().startsWith("/");
       // True only while this is still the most recent turn for the
@@ -1394,41 +1531,36 @@ export function ChatApp() {
         turnSessionId === sessionIdRef.current &&
         turnGeneration === selectionGenerationRef.current &&
         turnId === turnCounterRef.current;
-      const finalize = async (status: "complete" | "cancelled" | "error") => {
-        const hasContent = bufferedContent.trim().length > 0 || bufferedSteps.length > 0;
-        // No server-assigned id was ever echoed AND no content/steps ever
-        // arrived: this turn was rejected before the backend persisted
-        // anything (chat.py rejects entitlement/model/rate-limit failures
-        // strictly before writing the user message -- see api.ts's
-        // pre-flight !resp.ok branch, which never reads a single SSE byte).
-        // There is nothing to reconcile, so strip the optimistic bubble
-        // immediately rather than tracking a turn that can never resolve
-        // and would otherwise leak in pendingTurnsRef forever.
-        if (!assistantMessageId && !hasContent) {
-          setMessages((previous) => previous.filter((m) => m.id !== optimisticUser.id));
-          streamingRef.current = false;
-          setStreaming(false);
-          abortRef.current = null;
-          if (isCurrentTurn()) {
-            setStreamingText("");
-            setStreamingStartedAt(null);
-            setLiveSteps([]);
-          }
-          return;
+      let finalized = false;
+      let rejected = false;
+      const releaseLiveTurn = () => {
+        streamingRef.current = false;
+        setStreaming(false);
+        abortRef.current = null;
+        if (isCurrentTurn()) {
+          setStreamingText("");
+          setStreamingStartedAt(null);
+          setLiveSteps([]);
         }
-        const placeholderId = hasContent ? `local-${turnId}` : null;
+      };
+      const rejectOptimisticTurn = () => {
+        rejected = true;
+        pendingTurnsRef.current.delete(clientTurnId);
+        setMessages((previous) =>
+          previous.filter((message) => message.id !== optimisticUser.id),
+        );
+        releaseLiveTurn();
+      };
+      const finalize = async (status: "complete" | "cancelled" | "error") => {
+        if (finalized || rejected) return;
+        finalized = true;
+        const hasContent = bufferedContent.trim().length > 0 || bufferedSteps.length > 0;
+        const placeholderId = hasContent ? `local-${clientTurnId}` : null;
         // Track this turn so its optimistic user bubble (and placeholder, if
         // any) is superseded once a fetch -- this turn's own, or any later
         // turn's in the same session -- proves the persisted reply. See
         // applyReconciledMessages/resolvePendingTurns above.
-        pendingTurnsRef.current.set(turnId, {
-          sessionId: turnSessionId,
-          generation: turnGeneration,
-          optimisticUserId: optimisticUser.id,
-          placeholderId,
-          assistantMessageId,
-          userMessageId,
-        });
+        pendingTurn.placeholderId = placeholderId;
         if (placeholderId) {
           // Materialized *before* the streaming lock is released, so the
           // reply is never absent from both streamingText and `messages` --
@@ -1445,6 +1577,8 @@ export function ChatApp() {
               status,
               model: selectedModel,
               agent: null,
+              source: "chat",
+              clientTurnId,
               createdAt: new Date().toISOString(),
               steps: finalizedSteps(bufferedSteps),
             },
@@ -1454,26 +1588,35 @@ export function ChatApp() {
         // call while it's held), so releasing it here always belongs to the
         // turn currently running finalize -- unconditional, unlike the
         // per-turn checks below that guard the *shared* live-preview state.
-        streamingRef.current = false;
-        setStreaming(false);
-        abortRef.current = null;
-        if (isCurrentTurn()) {
-          setStreamingText("");
-          setStreamingStartedAt(null);
-          setLiveSteps([]);
-        }
+        releaseLiveTurn();
 
+        const controller = new AbortController();
+        const requestVersion = ++historySequenceRef.current;
+        latestHistoryRequestRef.current.set(turnSessionId, requestVersion);
+        historyControllersRef.current.add(controller);
         const isCancelled = () =>
           !mountedRef.current ||
+          controller.signal.aborted ||
           turnSessionId !== sessionIdRef.current ||
-          turnGeneration !== selectionGenerationRef.current;
-        const fresh = await fetchReconciledMessages(
-          turnSessionId,
-          assistantMessageId,
-          isCancelled,
-        );
+          turnGeneration !== selectionGenerationRef.current ||
+          pendingTurnsRef.current.get(clientTurnId) !== pendingTurn;
+        let fresh: Message[] | null = null;
+        try {
+          fresh = await fetchReconciledMessages(
+            turnSessionId,
+            pendingTurn,
+            isCancelled,
+            controller.signal,
+          );
+        } finally {
+          historyControllersRef.current.delete(controller);
+        }
         if (fresh) {
-          applyReconciledMessages(turnSessionId, fresh);
+          applyReconciledMessages(
+            turnSessionId,
+            fresh,
+            requestVersion,
+          );
           if (isCurrentTurn()) setInspectorVersion((value) => value + 1);
         }
         // A slash command can change the session's model or system prompt on the
@@ -1500,7 +1643,7 @@ export function ChatApp() {
       };
 
       abortRef.current = api.streamChat(
-        { sessionId, content, model: selectedModel, params },
+        { sessionId, content, model: selectedModel, params, clientTurnId },
         {
           onDelta: (t) => {
             bufferedContent += t;
@@ -1511,14 +1654,17 @@ export function ChatApp() {
             setLiveSteps((prev) => [...prev, step]);
           },
           onMessageIds: (ids) => {
-            assistantMessageId = ids.assistantMessageId;
-            userMessageId = ids.userMessageId;
+            if (ids.clientTurnId && ids.clientTurnId !== clientTurnId) return;
+            pendingTurn.assistantMessageId = ids.assistantMessageId;
+            pendingTurn.userMessageId = ids.userMessageId;
           },
           onDone: () => void finalize("complete"),
           onError: (msg) => {
             setError(msg);
+            if (rejected) return;
             void finalize("error");
           },
+          onRejected: () => rejectOptimisticTurn(),
           // Stop button: reconcile with the server's cancelled message.
           onAbort: () => void finalize("cancelled"),
         },

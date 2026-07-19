@@ -1028,6 +1028,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     expect(await screen.findByText("This will be refused")).toBeInTheDocument();
 
     act(() => {
+      handlers.onRejected?.(429, "Too many requests. Try again in 30 seconds.");
       handlers.onError("429: Too many requests. Try again in 30 seconds.");
     });
 
@@ -1042,5 +1043,127 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     // The composer is immediately usable again for a retry.
     const textbox = await screen.findByLabelText("Message");
     await waitFor(() => expect(textbox).toBeEnabled());
+  });
+
+  it("reconciles by the browser clientTurnId even when the first metadata SSE is lost", async () => {
+    const user = userEvent.setup();
+    const handlers = await sendAndCaptureHandlers(user, "Recover without metadata");
+    const input = mocks.streamChat.mock.calls[0][0] as {
+      clientTurnId: string;
+    };
+    expect(input.clientTurnId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    mocks.listMessages.mockResolvedValueOnce([
+      persistedMessage({
+        id: "server-user",
+        role: "user",
+        content: "Recover without metadata",
+        source: "chat",
+        clientTurnId: input.clientTurnId,
+      }),
+      persistedMessage({
+        id: "server-assistant",
+        role: "assistant",
+        content: "Recovered durably",
+        source: "chat",
+        clientTurnId: input.clientTurnId,
+      }),
+    ]);
+
+    act(() => handlers.onDone());
+
+    expect(await screen.findByText("Recovered durably")).toBeInTheDocument();
+    expect(screen.getAllByText("Recover without metadata")).toHaveLength(1);
+  });
+
+  it("keeps the local fallback without guessing against a fully old null-ID server", async () => {
+    const user = userEvent.setup();
+    const handlers = await sendAndCaptureHandlers(user, "Legacy request");
+    act(() => handlers.onDelta("Legacy answer"));
+    mocks.listMessages.mockResolvedValue([
+      persistedMessage({ id: "legacy-u", role: "user", content: "Legacy request" }),
+      persistedMessage({
+        id: "legacy-a",
+        role: "assistant",
+        content: "Legacy answer",
+      }),
+    ]);
+
+    act(() => handlers.onDone());
+
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledTimes(2));
+    expect(screen.getAllByText("Legacy request")).toHaveLength(1);
+    expect(screen.getAllByText("Legacy answer")).toHaveLength(1);
+  });
+
+  it("discards an older same-session history snapshot that resolves last", async () => {
+    mocks.listSessions.mockResolvedValue([session("A")]);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    const sessionButton = await screen.findByRole("button", { name: "Session A" });
+    mocks.listMessages.mockResolvedValueOnce([
+      persistedMessage({ id: "a1", role: "assistant", content: "initial" }),
+    ]);
+    await user.click(sessionButton);
+    expect(await screen.findByText("initial")).toBeInTheDocument();
+
+    let resolveOlder!: (messages: Message[]) => void;
+    let resolveNewer!: (messages: Message[]) => void;
+    mocks.listMessages
+      .mockImplementationOnce(
+        () =>
+          new Promise<Message[]>((resolve) => {
+            resolveOlder = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<Message[]>((resolve) => {
+            resolveNewer = resolve;
+          }),
+      );
+    await user.click(sessionButton);
+    await waitFor(() => expect(resolveOlder).toBeTypeOf("function"));
+    await user.click(sessionButton);
+    await waitFor(() => expect(resolveNewer).toBeTypeOf("function"));
+    act(() => {
+      resolveNewer([
+        persistedMessage({ id: "a1", role: "assistant", content: "newest" }),
+      ]);
+    });
+    expect(await screen.findByText("newest")).toBeInTheDocument();
+    act(() => {
+      resolveOlder([
+        persistedMessage({ id: "a1", role: "assistant", content: "stale older" }),
+      ]);
+    });
+    await act(async () => {});
+    expect(screen.queryByText("stale older")).toBeNull();
+    expect(screen.getByText("newest")).toBeInTheDocument();
+  });
+
+  it("never regresses a terminal assistant row to a delayed streaming snapshot", async () => {
+    mocks.listSessions.mockResolvedValue([session("A")]);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    const sessionButton = await screen.findByRole("button", { name: "Session A" });
+    mocks.listMessages.mockResolvedValueOnce([
+      persistedMessage({ id: "a1", role: "assistant", content: "final answer" }),
+    ]);
+    await user.click(sessionButton);
+    expect(await screen.findByText("final answer")).toBeInTheDocument();
+
+    mocks.listMessages.mockResolvedValueOnce([
+      persistedMessage({
+        id: "a1",
+        role: "assistant",
+        content: "",
+        status: "streaming",
+      }),
+    ]);
+    await user.click(sessionButton);
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("final answer")).toBeInTheDocument();
   });
 });
