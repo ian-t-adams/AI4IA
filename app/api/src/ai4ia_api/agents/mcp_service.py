@@ -276,7 +276,7 @@ class McpServerService:
         try:
             tools = await self._discover(current.endpoint, auth)
         except McpConnectionError as exc:
-            current.lastError = str(exc)
+            current.lastError = mcp_health.summarize_error(exc)
             current.updatedAt = _now()
             # A user-initiated reconnect that fails counts against health; repeated
             # failures here can quarantine the server just like execution failures.
@@ -420,26 +420,28 @@ class McpServerService:
         try:
             tools = await self._connector.discover(endpoint=endpoint, auth=auth)
         except McpServerError as exc:
+            category = mcp_health.summarize_error(exc)
             obs.emit(
                 event=obs.EVENT_DISCOVER,
                 server=host or endpoint,
                 host=host,
                 outcome=obs.OUTCOME_ERROR,
                 latency_ms=timer.ms,
-                detail=str(exc),
+                detail=category,
             )
             raise
         except Exception as exc:  # noqa: BLE001 - normalize any transport error
-            logger.warning("mcp discovery failed", exc_info=True)
+            category = mcp_health.summarize_error(exc)
+            logger.warning("mcp discovery failed category=%s", category)
             obs.emit(
                 event=obs.EVENT_DISCOVER,
                 server=host or endpoint,
                 host=host,
                 outcome=obs.OUTCOME_ERROR,
                 latency_ms=timer.ms,
-                detail=str(exc),
+                detail=category,
             )
-            raise McpConnectionError(f"Could not connect to the MCP server: {exc}") from exc
+            raise McpConnectionError("Could not connect to the MCP server.") from exc
         obs.emit(
             event=obs.EVENT_DISCOVER,
             server=host or endpoint,

@@ -483,18 +483,38 @@ function ResourcePanels({ panels }: { panels: ResourcePanel[] }) {
       {panels.map((p) => (
         <div key={p.key} style={card}>
           <div style={{ fontWeight: 600 }}>{p.displayName}</div>
-          {p.status === "ok" ? (
-            <ul style={{ listStyle: "none", padding: 0, margin: "8px 0 0" }}>
-              {p.metrics.map((m) => (
-                <li key={m.name} style={{ display: "flex", justifyContent: "space-between", fontSize: "0.85em", padding: "2px 0" }}>
-                  <span style={muted}>{m.label}</span>
-                  <span>
-                    {m.value == null ? "—" : formatCompact(m.value)}
-                    {m.unit ? ` ${m.unit}` : ""}
-                  </span>
-                </li>
-              ))}
-            </ul>
+          {p.status === "ok" || p.status === "partial" ? (
+            <>
+              {p.status === "partial" ? (
+                <div style={{ color: "var(--danger)", fontSize: "0.8em", marginTop: 4 }}>
+                  Partial{p.detail ? ` — ${p.detail}` : ""}
+                </div>
+              ) : null}
+              <ul style={{ listStyle: "none", padding: 0, margin: "8px 0 0" }}>
+                {p.metrics.map((m) => (
+                  <li key={m.name} style={{ display: "flex", justifyContent: "space-between", fontSize: "0.85em", padding: "2px 0" }}>
+                    <span style={muted}>{m.label}</span>
+                    {m.error ? (
+                      <span
+                        style={{ color: "var(--danger)" }}
+                        title={
+                          m.errorCode
+                            ? `${m.errorCode}${m.errorMessage ? `: ${m.errorMessage}` : ""}`
+                            : m.error
+                        }
+                      >
+                        Unavailable{m.errorCode ? ` (${m.errorCode})` : ""}
+                      </span>
+                    ) : (
+                      <span>
+                        {m.value == null ? "—" : formatCompact(m.value)}
+                        {m.unit ? ` ${m.unit}` : ""}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
           ) : (
             <div style={{ ...muted, marginTop: 8 }}>Unavailable — {p.detail}</div>
           )}

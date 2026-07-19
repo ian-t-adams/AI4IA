@@ -166,7 +166,12 @@ export interface AdminByUserResponse {
   byUser: AdminUserRow[];
 }
 
-export type PanelStatus = "ok" | "unavailable";
+// Mirrors ai4ia_api.metrics.models.PanelStatus. "partial" means at least one
+// (but not all) of the panel's metrics failed its own query -- the panel
+// still carries every point (successful ones with a value, failed ones with
+// `error` set instead), so the UI can show what did resolve rather than
+// hiding the whole panel behind "unavailable".
+export type PanelStatus = "ok" | "partial" | "unavailable";
 
 export interface MetricPoint {
   name: string;
@@ -174,6 +179,12 @@ export interface MetricPoint {
   aggregation: string;
   value?: number | null;
   unit?: string | null;
+  // Set only when this specific metric's own query failed (a short, safe
+  // reason -- see ai4ia_api.metrics.models.MetricPoint). None covers both a
+  // resolved value and legitimate no-data-yet.
+  error?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
 }
 
 export interface ResourcePanel {

@@ -11,8 +11,10 @@ Key behaviors / design notes:
   creates its table in ``__init__``, and the LLM/embedder clients are sync. The
   whole ``mem0`` object is therefore built once, under a lock, inside
   ``asyncio.to_thread`` (``warmup`` or first use), mirroring the custom store's
-  lazy ``ensure_ready``. A build failure degrades to "no memory" and is retried
-  on the next call (``forget`` is the exception — it surfaces failures).
+  lazy ``ensure_ready``. A build failure degrades to "no memory" for
+  ``recall``/``remember`` and is retried on the next call. The destructive
+  ``forget_*`` paths never reach this build at all -- see "No verified
+  hard-delete" below.
 
 - **Non-blocking calls, bounded.** ``AsyncMemory`` runs its sync providers via
   ``asyncio.to_thread``. We wrap each call in a timeout (so a slow gateway can't
@@ -21,13 +23,37 @@ Key behaviors / design notes:
   concurrency can cause "database is locked").
 
 - **Scoping policy.** ``remember`` maps ``session_id -> run_id`` so recall is
-  user-global (memories span sessions) while ``forget_session`` can target one
-  session. A memory written with ``session_id=None`` is user-scoped only and is
-  not removable by ``forget_session`` (by construction).
+  user-global (memories span sessions) while ``forget_session`` is *scoped* to
+  one session by design (see "No verified hard-delete" below for why it
+  currently fails closed rather than acting on that scope). A memory written
+  with ``session_id=None`` is user-scoped only and would not be removable by
+  ``forget_session`` (by construction) if forgetting were supported.
 
 - **Scoping asymmetry.** ``mem0`` takes ``user_id``/``run_id`` as top-level
-  kwargs on ``add``/``delete_all`` but requires a ``filters`` dict on
-  ``search``/``get_all`` (top-level entity kwargs are rejected). Handled here.
+  kwargs on ``add`` but requires a ``filters`` dict on ``search``/``get_all``
+  (top-level entity kwargs are rejected). Handled here.
+
+- **No verified hard-delete.** mem0's own ``AsyncMemory.delete_all`` lists
+  matches via the vector store's default page size (100 for pgvector, not a
+  cap we control) and swallows per-id delete failures, unconditionally
+  reporting success. An earlier revision of this module replaced that with
+  application-level list-then-delete-by-id, re-querying until the scope
+  converged to empty. That approach was reverted (round 11 acceptance):
+  mem0 2.0.12 (pinned) also keeps a full plaintext copy of every added/
+  updated/deleted memory in its own ``history`` store (see
+  ``history_db_path`` below) that vector-store deletion never touches, and
+  provides no cross-replica write fencing, so a multi-pass scan-then-delete
+  can only ever observe *this* replica's view between passes -- a concurrent
+  write landing in the same scope from another replica during the scan is
+  indistinguishable from "no progress" or a spurious "converged to empty".
+  Neither gap can be closed by more application-level scanning, so every
+  destructive operation (single-memory delete, ``forget_user``/
+  ``forget_session``/``forget_document``, and the idempotent pre-delete
+  inside ``remember_document``) now fails closed with
+  :class:`MemoryEraseUnsupportedError` *before* touching mem0 at all, rather
+  than reporting a possibly-partial or falsely-successful erase. This is
+  scoped to mem0's own destructive-delete surface; it does not affect
+  recall/remember (best-effort, unchanged) or any other memory backend.
 
 ``mem0`` is imported lazily (only when the backend is built) so the app and
 tests run without it; tests inject a fake ``AsyncMemory`` via the ``factory``.
@@ -40,7 +66,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, NoReturn
 
 from .formatting import format_memory_context
 from .models import MemoryRecord
@@ -48,10 +74,48 @@ from .telemetry import emit_memory_operation
 
 logger = logging.getLogger(__name__)
 
-# Upper bound on how many memories we enumerate to report a forget() count.
-# delete_all() itself returns no count, so we list-then-delete; a generous cap
-# keeps the reported number honest at personal/demo scale without unbounded IO.
+# Upper bound on how many memories a single get_all() listing returns.
+# Only list_memories() uses this now -- the forget_* paths below fail closed
+# without listing anything at all; see MemoryEraseUnsupportedError.
 _FORGET_LIST_CAP = 1000
+
+
+class MemoryEraseUnsupportedError(RuntimeError):
+    """Raised instead of performing any mem0 destructive mutation.
+
+    The API layer maps this intrinsic backend limitation to ``501 Not
+    Implemented`` and leaves existing records untouched.
+
+    mem0 2.0.12 (pinned) cannot honestly satisfy hard-forget semantics, for
+    two independent reasons that no amount of application-level
+    list-then-delete logic can close:
+
+    1. mem0 keeps a full plaintext copy of every added/updated/deleted
+       memory in its own internal ``history`` store (see
+       ``history_db_path`` in :func:`build_mem0_config`); deleting rows from
+       the vector store never touches it.
+    2. mem0 provides no cross-replica write fencing, so a multi-pass
+       "list until empty" scan can only observe the *calling replica's own*
+       view between passes -- a write landing in the same scope from a
+       different API replica during the scan is indistinguishable from "no
+       progress" or a false "converged to empty".
+
+    ``delete_memory``, ``forget_user``, ``forget_session``,
+    ``forget_document``, and the idempotent pre-delete previously performed
+    by ``remember_document`` (when ``document_id`` is given) therefore raise
+    this immediately, before any call to mem0. A single vector-store delete
+    is no more honest than a batch delete: the plaintext history row remains.
+    """
+
+
+def _raise_erase_unsupported(*, user_id: str, scope: str) -> NoReturn:
+    """Fail closed for a destructive mem0 operation -- see
+    :class:`MemoryEraseUnsupportedError`. Never touches mem0."""
+    raise MemoryEraseUnsupportedError(
+        f"mem0 cannot verify a hard-forget for user {user_id!r} "
+        f"(scope={scope}); refusing to mutate rather than risk a partial "
+        "or falsely-successful erase"
+    )
 
 
 @dataclass
@@ -140,6 +204,7 @@ class Mem0MemoryService:
     """Per-user semantic memory backed by the real ``mem0`` library."""
 
     enabled = True
+    supports_delete = False
 
     def __init__(
         self,
@@ -342,20 +407,25 @@ class Mem0MemoryService:
         verbatim, not an utterance to distill. Returns how many items were
         stored.
 
-        When ``document_id`` is given the excerpts are tagged with it
-        (``metadata``) and any prior generation for that document is removed
-        first, so a re-save is idempotent rather than duplicating."""
+        ``document_id`` is unsupported: re-saving a document used to forget
+        the prior generation first for an idempotent replace, but that
+        forget cannot be verified against this backend (see
+        :class:`MemoryEraseUnsupportedError`), so passing a ``document_id``
+        with non-empty ``items`` raises immediately instead of silently
+        duplicating memories on every re-save. Called with no ``items``
+        this still returns ``0`` without touching mem0, matching prior
+        behavior for an empty document."""
         texts = [t.strip() for t in items if t and t.strip()]
         if not texts:
             return 0
+        if document_id is not None:
+            _raise_erase_unsupported(
+                user_id=user_id, scope=f"document:{document_id} (replace)"
+            )
         add_kwargs: dict[str, Any] = {"user_id": user_id, "infer": False}
         if session_id:
             add_kwargs["run_id"] = session_id
-        if document_id is not None:
-            add_kwargs["metadata"] = {"document_id": document_id}
         mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
-        if document_id is not None:
-            await self._forget_document(mem, user_id, document_id)
         stored = 0
         for text in texts:
             await self._call(
@@ -366,43 +436,25 @@ class Mem0MemoryService:
         return stored
 
     async def forget_user(self, user_id: str) -> int:
-        """Erase all of a user's memories (NOT swallowed — explicit deletion).
+        """Not supported -- see :class:`MemoryEraseUnsupportedError`.
 
-        The returned count is capped at ``_FORGET_LIST_CAP`` (the enumeration
-        bound); ``delete_all`` still erases every matching row regardless.
-        """
-        mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
-        listing = await self._call(
-            lambda: mem.get_all(filters={"user_id": user_id}, top_k=_FORGET_LIST_CAP),
-            self._op_timeout_s,
-        )
-        count = len(_results(listing))
-        await self._call(lambda: mem.delete_all(user_id=user_id), self._op_timeout_s)
-        return count
+        Raises immediately without touching mem0 (no client build, no list,
+        no delete)."""
+        _raise_erase_unsupported(user_id=user_id, scope="user")
 
     async def forget_session(self, user_id: str, session_id: str) -> int:
-        """Erase a user's memories for one session (NOT swallowed)."""
-        filters = {"user_id": user_id, "run_id": session_id}
-        mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
-        listing = await self._call(
-            lambda: mem.get_all(filters=filters, top_k=_FORGET_LIST_CAP),
-            self._op_timeout_s,
-        )
-        count = len(_results(listing))
-        await self._call(
-            lambda: mem.delete_all(user_id=user_id, run_id=session_id),
-            self._op_timeout_s,
-        )
-        return count
+        """Not supported -- see :class:`MemoryEraseUnsupportedError`.
+
+        Raises immediately without touching mem0 (no client build, no list,
+        no delete)."""
+        _raise_erase_unsupported(user_id=user_id, scope=f"session:{session_id}")
 
     async def forget_document(self, user_id: str, document_id: str) -> int:
-        """Erase a user's memories saved from one document (NOT swallowed).
+        """Not supported -- see :class:`MemoryEraseUnsupportedError`.
 
-        mem0's ``delete_all`` only scopes by entity (user/run), not by custom
-        metadata, so document-scoped deletion lists the user's memories and
-        removes by id the ones whose ``metadata.document_id`` matches."""
-        mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
-        return await self._forget_document(mem, user_id, document_id)
+        Raises immediately without touching mem0 (no client build, no list,
+        no delete)."""
+        _raise_erase_unsupported(user_id=user_id, scope=f"document:{document_id}")
 
     async def list_memories(self, user_id: str, *, limit: int = 100) -> list[MemoryRecord]:
         mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
@@ -444,37 +496,14 @@ class Mem0MemoryService:
         return records
 
     async def delete_memory(self, user_id: str, memory_id: str) -> bool:
-        mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
-        listing = await self._call(
-            lambda: mem.get_all(filters={"user_id": user_id}, top_k=_FORGET_LIST_CAP),
-            self._op_timeout_s,
-        )
-        if not any(str(item.get("id")) == memory_id for item in _results(listing)):
-            return False
-        await self._call(lambda: mem.delete(memory_id=memory_id), self._op_timeout_s)
-        return True
+        """Not supported -- see :class:`MemoryEraseUnsupportedError`.
 
-    async def _forget_document(self, mem: Any, user_id: str, document_id: str) -> int:
-        """List the user's memories and delete by id those tagged with
-        ``document_id``. Shared by the idempotent re-save and the explicit
-        forget-by-document path; failures propagate (explicit deletion)."""
-        listing = await self._call(
-            lambda: mem.get_all(filters={"user_id": user_id}, top_k=_FORGET_LIST_CAP),
-            self._op_timeout_s,
-        )
-        deleted = 0
-        for item in _results(listing):
-            metadata = item.get("metadata") or {}
-            if metadata.get("document_id") != document_id:
-                continue
-            mem_id = item.get("id")
-            if mem_id is None:
-                continue
-            await self._call(
-                lambda i=mem_id: mem.delete(memory_id=i), self._op_timeout_s
-            )
-            deleted += 1
-        return deleted
+        Raises before even looking up the record. Ownership lookup followed by
+        vector deletion would still leave mem0's plaintext history copy intact,
+        so returning either ``False`` or success would misrepresent hard-delete
+        semantics.
+        """
+        _raise_erase_unsupported(user_id=user_id, scope=f"memory:{memory_id}")
 
     def format_context(self, records: list[MemoryRecord]) -> str | None:
         """Render recalled records as a capped, untrusted-labelled context block."""

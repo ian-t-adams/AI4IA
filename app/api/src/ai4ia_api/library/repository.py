@@ -20,6 +20,16 @@ class DocumentNotFoundError(Exception):
     """Raised when a library document does not exist or is not owned by the user."""
 
 
+class DocumentConflictError(Exception):
+    """Raised when ``update_document`` loses an optimistic-concurrency race.
+
+    The document still exists (unlike :class:`DocumentNotFoundError`) but was
+    modified since the caller last loaded it, so the caller's write was
+    rejected to avoid silently discarding the intervening change. Callers
+    should reload the current document and retry if the edit still applies.
+    """
+
+
 class AnalyzerNotFoundError(Exception):
     """Raised when an analyzer does not exist or is not owned by the user."""
 

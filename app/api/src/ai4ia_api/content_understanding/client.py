@@ -26,7 +26,7 @@ import httpx
 
 from ..config import GatewayAuthMode, Settings
 from ..http_retry import request_with_retry
-from .models import TERMINAL_STATES, CUResult, parse_result
+from .models import TERMINAL_STATES, CUResult, is_valid_analyzer_id, parse_result
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,12 @@ class ContentUnderstandingClient:
         self._owns_token_provider = token_provider is None
 
     def submit_url(self, analyzer_id: str) -> str:
+        # Defense in depth: the request model validates this at creation time,
+        # but the ``Analyzer`` domain model itself does not, so a persisted
+        # legacy id (or any other path that builds an ``Analyzer`` directly)
+        # could otherwise reach this URL unvalidated.
+        if not is_valid_analyzer_id(analyzer_id):
+            raise ValueError(f"invalid content understanding analyzer id: {analyzer_id!r}")
         return (
             f"{self._base}/contentunderstanding/analyzers/{analyzer_id}"
             f":analyzeBinary?api-version={self._api_version}"

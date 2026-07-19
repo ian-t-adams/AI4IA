@@ -13,6 +13,7 @@ results and a stub resolver yields a public IP unless a test simulates a rebind.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -26,7 +27,6 @@ from ai4ia_api.agents.mcp_client import (
 )
 from ai4ia_api.agents.mcp_execution import (
     MAX_MCP_TOOL_CALLS_PER_TURN,
-    auto_approved_tool_names,
     build_mcp_tool_definitions,
     build_mcp_turn_tools,
 )
@@ -37,6 +37,7 @@ from ai4ia_api.agents.mcp_servers import (
     McpToolApproval,
     UserMcpServer,
     UserMcpServerCreate,
+    tool_alias,
 )
 from ai4ia_api.agents.mcp_service import McpServerService
 from ai4ia_api.agents.mcp_store import InMemoryUserMcpServerStore
@@ -161,13 +162,17 @@ def test_build_merges_builtins_with_attached_mcp_tools():
     )
     assert built is not None
     registry, executor, ctx = built
+    alias = tool_alias("weather", "forecast")
     # Built-ins are present alongside the MCP tool (fresh, not the app singletons).
+    # The MCP tool is registered under its provider-safe alias, not the raw
+    # governance name (which stays reserved for attachment/ownership matching).
     assert registry.get("calculator") is not None
-    assert registry.get("mcp:weather/forecast") is not None
-    assert executor.get("mcp:weather/forecast") is not None
+    assert registry.get(alias) is not None
+    assert executor.get(alias) is not None
     # Egress check is skipped (empty target_hosts); trusted server -> auto-approved.
     assert ctx.target_hosts == frozenset()
-    assert ctx.approvals == frozenset({"mcp:weather/forecast"})
+    assert ctx.approvals == frozenset({alias})
+    assert ctx.tool_aliases == {"mcp:weather/forecast": alias}
 
 
 def test_build_only_includes_attached_owned_tools():
@@ -179,16 +184,82 @@ def test_build_only_includes_attached_owned_tools():
         connector=FakeMcpConnector(),
         budget={"used": 0},
     )
-    assert [d.spec.name for d in defs] == ["mcp:weather/forecast"]
+    assert [d.spec.name for d in defs] == [tool_alias("weather", "forecast")]
 
 
-def test_auto_approved_tool_names_only_for_trusted_servers():
+def test_turn_tools_approve_only_trusted_servers():
     servers = [
         _server("a", trusted=True, tools=[_tool("x")]),
         _server("b", trusted=False, tools=[_tool("y")]),
     ]
-    names = auto_approved_tool_names(servers, ["mcp:a/x", "mcp:b/y"])
-    assert names == frozenset({"mcp:a/x"})
+    built = build_mcp_turn_tools(
+        servers=servers,
+        attached_tool_names=["mcp:a/x", "mcp:b/y"],
+        secrets=_Secrets(),
+        connector=FakeMcpConnector(),
+    )
+    assert built is not None
+    _registry, _executor, ctx = built
+    assert ctx.approvals == frozenset({tool_alias("a", "x")})
+
+
+def test_build_rejects_alias_collision_instead_of_overwriting(monkeypatch, caplog):
+    """A (server, tool) pair whose alias collides with an earlier one this turn
+    must be skipped outright -- never silently registered over the first tool.
+    A real 64-bit hash collision is astronomically unlikely, so this is exercised
+    by forcing the collision directly."""
+    import ai4ia_api.agents.mcp_execution as mcp_execution_module
+
+    monkeypatch.setattr(
+        mcp_execution_module,
+        "tool_alias",
+        lambda _server, _tool, **_kwargs: "mcp_forced_collision",
+    )
+    servers = [
+        _server("a", host="a.example.com", tools=[_tool("ta")]),
+        _server("b", host="b.example.com", tools=[_tool("tb")]),
+    ]
+    with caplog.at_level(logging.WARNING, logger="ai4ia_api.agents.mcp_execution"):
+        defs = build_mcp_tool_definitions(
+            servers,
+            attached_tool_names=["mcp:a/ta", "mcp:b/tb"],
+            secrets=_Secrets(),
+            connector=FakeMcpConnector(),
+            budget={"used": 0},
+        )
+    # Only the first (server, tool) pair registers; the second is dropped, not
+    # merged or overwritten.
+    assert len(defs) == 1
+    assert defs[0].spec.name == "mcp_forced_collision"
+    assert any("alias collision" in r.message for r in caplog.records)
+
+
+async def test_same_raw_tool_name_on_two_servers_gets_distinct_aliases_and_dispatches_right():
+    """Two different servers may legitimately expose a tool under the identical
+    raw name (e.g. both call it "search"). The alias must still disambiguate
+    them for the model, and each alias must dispatch to its OWN server -- never
+    the other's -- even though the raw dispatch name is identical."""
+    servers = [
+        _server("a", host="a.example.com", trusted=True, tools=[_tool("search")]),
+        _server("b", host="b.example.com", trusted=True, tools=[_tool("search")]),
+    ]
+    alias_a, alias_b = tool_alias("a", "search"), tool_alias("b", "search")
+    assert alias_a != alias_b
+    connector = FakeMcpConnector(
+        call_results={"search": McpToolResult(content="canned")}
+    )
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_calls([("c1", alias_a, "{}"), ("c2", alias_b, "{}")]),
+            _assistant_text("done"),
+        ]
+    )
+    result = await _run_turn(
+        servers, ["mcp:a/search", "mcp:b/search"], connector, gateway
+    )
+    assert not [s for s in result.steps if s.kind == "tool_denied"]
+    endpoints = {call[0] for call in connector.tool_calls}
+    assert endpoints == {"https://a.example.com/rpc", "https://b.example.com/rpc"}
 
 
 def test_mcp_tool_uses_inputschema_as_parameters():
@@ -223,6 +294,43 @@ async def _run_handler(defn, args, ctx=None):
     return await defn.handler(args, ctx or ToolContext())
 
 
+async def test_handler_observability_never_emits_the_raw_tool_name(monkeypatch):
+    """The raw remote tool name (however odd-looking) must never reach the MCP
+    observability event -- only the alias. This is the actual vulnerability
+    the alias closes: emit() logs a plain key=value line and forwards to
+    Application-Insights custom events with zero sanitization of ``tool``."""
+    hostile_raw_name = "search; DROP*weird name/with:odd|chars"
+    servers = [_server("weather", tools=[_tool(hostile_raw_name)])]
+    connector = FakeMcpConnector(
+        call_results={hostile_raw_name: McpToolResult(content="ok", is_error=False)}
+    )
+    defs = build_mcp_tool_definitions(
+        servers,
+        attached_tool_names=[f"mcp:weather/{hostile_raw_name}"],
+        secrets=_Secrets(),
+        connector=connector,
+        resolver=_PUBLIC_RESOLVER,
+        budget={"used": 0},
+    )
+    assert len(defs) == 1
+    alias = defs[0].spec.name
+    assert alias == tool_alias("weather", hostile_raw_name)
+
+    emitted: list[dict] = []
+    import ai4ia_api.agents.mcp_execution as mcp_execution_module
+
+    monkeypatch.setattr(
+        mcp_execution_module.obs, "emit", lambda **kwargs: emitted.append(kwargs)
+    )
+    out = await _run_handler(defs[0], {})
+
+    assert out == {"content": "ok", "isError": False}
+    assert len(emitted) == 1
+    assert emitted[0]["tool"] == alias
+    # The raw name (and any substring of it) never appears in any emitted field.
+    assert all(hostile_raw_name not in str(v) for v in emitted[0].values())
+
+
 async def test_handler_success_returns_bounded_dict():
     servers = [_server("weather", tools=[_tool("forecast")])]
     connector = FakeMcpConnector(
@@ -243,6 +351,25 @@ async def test_handler_success_returns_bounded_dict():
     assert endpoint == "https://weather.example.com/rpc"
     assert tool == "forecast"
     assert args == {"city": "SEA"}
+
+
+async def test_handler_dispatches_exact_raw_name_not_governance_or_alias():
+    raw = "  weather.get/forecast 获取  "
+    tool = DiscoveredTool(name=raw, rawName=raw)
+    servers = [_server("weather", tools=[tool])]
+    connector = FakeMcpConnector()
+    defs = build_mcp_tool_definitions(
+        servers,
+        attached_tool_names=[f"mcp:weather/{raw}"],
+        secrets=_Secrets(),
+        connector=connector,
+        resolver=_PUBLIC_RESOLVER,
+        budget={"used": 0},
+    )
+
+    await _run_handler(defs[0], {})
+
+    assert connector.tool_calls[0][1] == raw
 
 
 async def test_handler_surfaces_remote_error_flag():
@@ -391,9 +518,10 @@ async def test_trusted_server_tool_runs_without_approval():
     connector = FakeMcpConnector(
         call_results={"forecast": McpToolResult(content="Clear skies")}
     )
+    alias = tool_alias("weather", "forecast")
     gateway = ScriptedGateway(
         [
-            _assistant_tool_calls([("c1", "mcp:weather/forecast", "{}")]),
+            _assistant_tool_calls([("c1", alias, "{}")]),
             _assistant_text("It will be clear."),
         ]
     )
@@ -404,14 +532,17 @@ async def test_trusted_server_tool_runs_without_approval():
     step = next(s for s in result.steps if s.kind == "tool_result")
     assert step.result == {"content": "Clear skies", "isError": False}
     assert len(connector.tool_calls) == 1
+    first_schema = gateway.calls[0]["params"]["tools"]
+    assert [entry["function"]["name"] for entry in first_schema] == [alias]
 
 
 async def test_untrusted_server_tool_denied_without_approval():
     servers = [_server("weather", trusted=False, tools=[_tool("forecast")])]
     connector = FakeMcpConnector()
+    alias = tool_alias("weather", "forecast")
     gateway = ScriptedGateway(
         [
-            _assistant_tool_calls([("c1", "mcp:weather/forecast", "{}")]),
+            _assistant_tool_calls([("c1", alias, "{}")]),
             _assistant_text("Sorry, blocked."),
         ]
     )
@@ -427,9 +558,10 @@ async def test_untrusted_server_tool_allowed_with_approval():
     connector = FakeMcpConnector(
         call_results={"forecast": McpToolResult(content="Approved run")}
     )
+    alias = tool_alias("weather", "forecast")
     gateway = ScriptedGateway(
         [
-            _assistant_tool_calls([("c1", "mcp:weather/forecast", "{}")]),
+            _assistant_tool_calls([("c1", alias, "{}")]),
             _assistant_text("Done."),
         ]
     )
@@ -438,7 +570,7 @@ async def test_untrusted_server_tool_allowed_with_approval():
         ["mcp:weather/forecast"],
         connector,
         gateway,
-        approved=["mcp:weather/forecast"],
+        approved=[alias],
     )
     kinds = [s.kind for s in result.steps]
     assert "tool_result" in kinds and "tool_denied" not in kinds
@@ -456,10 +588,11 @@ async def test_two_servers_both_run_no_cross_denial():
             "tb": McpToolResult(content="from-b"),
         }
     )
+    alias_a, alias_b = tool_alias("a", "ta"), tool_alias("b", "tb")
     gateway = ScriptedGateway(
         [
             _assistant_tool_calls(
-                [("c1", "mcp:a/ta", "{}"), ("c2", "mcp:b/tb", "{}")]
+                [("c1", alias_a, "{}"), ("c2", alias_b, "{}")]
             ),
             _assistant_text("Both done."),
         ]
@@ -470,8 +603,8 @@ async def test_two_servers_both_run_no_cross_denial():
         s.tool: s.result for s in result.steps if s.kind == "tool_result"
     }
     # Neither tool was egress-denied because of the OTHER server's host.
-    assert results["mcp:a/ta"] == {"content": "from-a", "isError": False}
-    assert results["mcp:b/tb"] == {"content": "from-b", "isError": False}
+    assert results[alias_a] == {"content": "from-a", "isError": False}
+    assert results[alias_b] == {"content": "from-b", "isError": False}
     assert not [s for s in result.steps if s.kind == "tool_denied"]
 
 
@@ -484,10 +617,11 @@ async def test_secret_bearing_io_is_redacted_in_trace():
         }
     )
     secret_arg = "supersecretvalue1234567890ABCDEFGHIJ"
+    alias = tool_alias("weather", "forecast")
     gateway = ScriptedGateway(
         [
             _assistant_tool_calls(
-                [("c1", "mcp:weather/forecast", json.dumps({"api_key": secret_arg}))]
+                [("c1", alias, json.dumps({"api_key": secret_arg}))]
             ),
             _assistant_text("ok"),
         ]
@@ -503,9 +637,10 @@ async def test_secret_bearing_io_is_redacted_in_trace():
 async def test_disabled_server_tool_is_denied():
     servers = [_server("weather", trusted=True, enabled=False, tools=[_tool("forecast")])]
     connector = FakeMcpConnector()
+    alias = tool_alias("weather", "forecast")
     gateway = ScriptedGateway(
         [
-            _assistant_tool_calls([("c1", "mcp:weather/forecast", "{}")]),
+            _assistant_tool_calls([("c1", alias, "{}")]),
             _assistant_text("blocked"),
         ]
     )
@@ -572,7 +707,7 @@ async def test_tools_call_content_is_redacted_and_truncated_through_runtime():
     servers = [_server("weather", trusted=True, tools=[_tool("forecast")])]
     gateway = ScriptedGateway(
         [
-            _assistant_tool_calls([("c1", "mcp:weather/forecast", "{}")]),
+            _assistant_tool_calls([("c1", tool_alias("weather", "forecast"), "{}")]),
             _assistant_text("done"),
         ]
     )
@@ -657,15 +792,13 @@ def test_quarantine_auto_recovers_after_window():
         budget={"used": 0},
         now=datetime(2025, 6, 1, tzinfo=timezone.utc),
     )
-    assert [d.spec.name for d in defs] == ["mcp:weather/forecast"]
+    assert [d.spec.name for d in defs] == [tool_alias("weather", "forecast")]
 
 
 def test_per_tool_never_override_pre_approves_on_untrusted_server():
     server = _server("weather", trusted=False, tools=[_tool("forecast")])
     server.toolApprovals = {"forecast": McpToolApproval.never}
-    names = auto_approved_tool_names([server], ["mcp:weather/forecast"])
-    assert names == frozenset({"mcp:weather/forecast"})
-    # And the projected spec agrees: no approval required.
+    # The projected spec agrees: no approval required despite an untrusted server.
     defs = build_mcp_tool_definitions(
         [server],
         attached_tool_names=["mcp:weather/forecast"],
@@ -680,8 +813,6 @@ def test_per_tool_always_override_forces_approval_on_trusted_server():
     server = _server("weather", trusted=True, tools=[_tool("forecast")])
     server.toolApprovals = {"forecast": McpToolApproval.always}
     # A trusted server would normally pre-approve; the per-tool ``always`` overrides.
-    names = auto_approved_tool_names([server], ["mcp:weather/forecast"])
-    assert names == frozenset()
     defs = build_mcp_tool_definitions(
         [server],
         attached_tool_names=["mcp:weather/forecast"],
@@ -744,12 +875,12 @@ async def test_handler_reports_unhealthy_on_transport_failure():
         budget={"used": 0},
         health=health,
     )
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ToolExecutionError, match="MCP tool execution failed"):
         await _run_handler(defs[0], {})
     assert len(health.calls) == 1
     name, ok, error = health.calls[0]
     assert (name, ok) == ("weather", False)
-    assert error is boom
+    assert error == "transport_error"
 
 
 async def test_handler_reports_unhealthy_on_dns_rebind():

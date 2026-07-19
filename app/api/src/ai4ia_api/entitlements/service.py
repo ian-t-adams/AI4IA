@@ -209,12 +209,12 @@ class EntitlementService:
             if ent.tokensPerMonth is not None and totals.totalTokens >= ent.tokensPerMonth:
                 return self._deny(
                     "tokens_per_month", ent.tokensPerMonth, totals.totalTokens,
-                    DAY_SECONDS, "Monthly token budget reached.",
+                    MONTH_SECONDS, "Monthly token budget reached.",
                 )
             if ent.costPerMonthMicroUsd is not None and totals.costMicroUsd >= ent.costPerMonthMicroUsd:
                 return self._deny(
                     "cost_per_month", ent.costPerMonthMicroUsd, totals.costMicroUsd,
-                    DAY_SECONDS, "Monthly cost budget reached.",
+                    MONTH_SECONDS, "Monthly cost budget reached.",
                 )
 
         return EntitlementDecision.allow()

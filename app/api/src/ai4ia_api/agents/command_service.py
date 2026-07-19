@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..auth.base import AuthenticatedUser
 from ..catalog import ModelCatalog
+from ..memory.mem0_service import MemoryEraseUnsupportedError
 from ..memory.service import MemoryServiceProtocol
 from ..sessions.models import Message, MessageRole, MessageStatus, Session
 from ..sessions.repository import SessionRepository
@@ -368,16 +369,22 @@ async def _forget_reply(
     """Erase stored memories. ``/forget`` (or ``session``) clears this chat;
     ``/forget me`` (or ``all``) clears everything for the user."""
     scope = (args or "").strip().lower()
-    if scope in ("", "session", "this"):
-        if memory is None or not memory.enabled:
-            return "There are no stored memories for this conversation."
-        count = await memory.forget_session(user_id, session_id)
-        return f"Forgot {count} stored {_plural(count)} from this conversation."
-    if scope in ("me", "all", "everything"):
-        if memory is None or not memory.enabled:
-            return "There are no stored memories to forget."
-        count = await memory.forget_user(user_id)
-        return f"Forgot all {count} stored {_plural(count)}."
+    try:
+        if scope in ("", "session", "this"):
+            if memory is None or not memory.enabled:
+                return "There are no stored memories for this conversation."
+            count = await memory.forget_session(user_id, session_id)
+            return f"Forgot {count} stored {_plural(count)} from this conversation."
+        if scope in ("me", "all", "everything"):
+            if memory is None or not memory.enabled:
+                return "There are no stored memories to forget."
+            count = await memory.forget_user(user_id)
+            return f"Forgot all {count} stored {_plural(count)}."
+    except MemoryEraseUnsupportedError:
+        return (
+            "Forgetting isn't supported by the configured memory backend. "
+            "No memories were deleted."
+        )
     return "Usage: /forget [session|me]"
 
 

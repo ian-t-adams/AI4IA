@@ -58,6 +58,43 @@ class CosmosSessionRepository:
             raise SessionNotFoundError(session_id) from exc
         return Session.model_validate(doc)
 
+    async def _patch_session_item(
+        self,
+        user_id: str,
+        session_id: str,
+        patch_operations: list[dict[str, Any]],
+        *,
+        etag: str | None = None,
+    ) -> None:
+        """``patch_item`` on the sessions container, not-found translated the
+        same way every read in this repository already is.
+
+        Every caller re-checks (or just read) the session before patching, but
+        a concurrent delete can still land in the gap between that check and
+        this call. Without translation the raw Cosmos 404 would reach the
+        app's generic Azure-error handler and surface as a 500/503 instead of
+        the session's normal 404. ``etag`` makes the patch conditional
+        (``IfNotModified``) so a concurrent *edit* instead raises
+        ``CosmosAccessConditionFailedError`` for the caller's own retry loop.
+        """
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        kwargs: dict[str, Any] = {}
+        if etag is not None:
+            from azure.core import MatchConditions
+
+            kwargs["etag"] = etag
+            kwargs["match_condition"] = MatchConditions.IfNotModified
+        try:
+            await self._sessions.patch_item(
+                item=session_id,
+                partition_key=user_id,
+                patch_operations=patch_operations,
+                **kwargs,
+            )
+        except CosmosResourceNotFoundError as exc:
+            raise SessionNotFoundError(session_id) from exc
+
     async def create_session(self, session: Session) -> Session:
         await self._sessions.create_item(self._to_doc(session))
         return session
@@ -103,17 +140,12 @@ class CosmosSessionRepository:
                 "value": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
         )
-        await self._sessions.patch_item(
-            item=session_id,
-            partition_key=user_id,
-            patch_operations=operations,
-        )
+        await self._patch_session_item(user_id, session_id, operations)
         return await self._owned_session(user_id, session_id)
 
     async def set_generated_title_if_eligible(
         self, user_id: str, session_id: str, title: str
     ) -> bool:
-        from azure.core import MatchConditions
         from azure.cosmos.exceptions import (
             CosmosAccessConditionFailedError,
             CosmosResourceNotFoundError,
@@ -132,10 +164,10 @@ class CosmosSessionRepository:
             if raw.get("titleSource", "auto") == "manual":
                 return False
             try:
-                await self._sessions.patch_item(
-                    item=session_id,
-                    partition_key=user_id,
-                    patch_operations=[
+                await self._patch_session_item(
+                    user_id,
+                    session_id,
+                    [
                         {"op": "set", "path": "/title", "value": normalized},
                         {"op": "set", "path": "/titleSource", "value": "auto"},
                         {
@@ -147,7 +179,6 @@ class CosmosSessionRepository:
                         },
                     ],
                     etag=raw.get("_etag"),
-                    match_condition=MatchConditions.IfNotModified,
                 )
                 return True
             except CosmosAccessConditionFailedError:
@@ -163,7 +194,6 @@ class CosmosSessionRepository:
         add: bool,
         legacy_ids: list[str] | None = None,
     ) -> Session:
-        from azure.core import MatchConditions
         from azure.cosmos.exceptions import CosmosAccessConditionFailedError
 
         for _attempt in range(3):
@@ -189,10 +219,10 @@ class CosmosSessionRepository:
             elif not add:
                 values = [value for value in values if value != document_id]
             try:
-                await self._sessions.patch_item(
-                    item=session_id,
-                    partition_key=user_id,
-                    patch_operations=[
+                await self._patch_session_item(
+                    user_id,
+                    session_id,
+                    [
                         {
                             "op": "set",
                             "path": "/libraryDocumentIds",
@@ -207,7 +237,6 @@ class CosmosSessionRepository:
                         },
                     ],
                     etag=raw.get("_etag"),
-                    match_condition=MatchConditions.IfNotModified,
                 )
                 return await self._owned_session(user_id, session_id)
             except CosmosAccessConditionFailedError:
@@ -276,7 +305,6 @@ class CosmosSessionRepository:
         summary: str | None,
         summarized_through_message_id: str | None,
     ) -> Session | None:
-        from azure.core import MatchConditions
         from azure.cosmos.exceptions import (
             CosmosAccessConditionFailedError,
             CosmosResourceNotFoundError,
@@ -294,10 +322,10 @@ class CosmosSessionRepository:
                 return None
             next_version = version + 1
             try:
-                await self._sessions.patch_item(
-                    item=session_id,
-                    partition_key=user_id,
-                    patch_operations=[
+                await self._patch_session_item(
+                    user_id,
+                    session_id,
+                    [
                         {"op": "set", "path": "/summary", "value": summary},
                         {
                             "op": "set",
@@ -318,7 +346,6 @@ class CosmosSessionRepository:
                         },
                     ],
                     etag=raw.get("_etag"),
-                    match_condition=MatchConditions.IfNotModified,
                 )
                 committed = await self._owned_session(user_id, session_id)
                 await self._delete_summary_replies_before(
@@ -332,15 +359,36 @@ class CosmosSessionRepository:
     async def touch_session(self, user_id: str, session_id: str) -> None:
         await self._owned_session(user_id, session_id)
         updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        await self._sessions.patch_item(
-            item=session_id,
-            partition_key=user_id,
-            patch_operations=[
-                {"op": "set", "path": "/updatedAt", "value": updated_at}
-            ],
+        await self._patch_session_item(
+            user_id,
+            session_id,
+            [{"op": "set", "path": "/updatedAt", "value": updated_at}],
         )
 
     async def delete_session(self, user_id: str, session_id: str) -> None:
+        """Cascade-delete a session's messages and documents, then the session.
+
+        RESIDUAL GAP (not fixed here): this method's own cascade is
+        idempotent against *itself* (every delete below tolerates a row
+        already being gone), but it is not a fence against a concurrent
+        writer. A ``add_message``/``add_document`` call that passes the
+        ownership check in another request between this method's cascade
+        query and its own write can still land afterwards, orphaning that
+        child forever. Earlier revisions of this method attempted to close
+        that race with a CAS "deletingAt" tombstone plus a bounded sweep-loop
+        and a delayed hard-delete; that machinery was reverted because a
+        single Cosmos read is not a durable cross-replica consistency
+        barrier, so the tombstone could not actually guarantee no in-flight
+        write is missed -- it just made the failure mode harder to reason
+        about while still not closing the race. Closing this properly needs
+        either a real distributed transaction (children + parent in one
+        atomic unit) or a background reconciliation/change-feed job that
+        finds and removes orphaned children after the fact; neither exists
+        today. Tracked as a known architectural limitation, not a bug to
+        chase with another timing-based mitigation.
+        """
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
         await self._owned_session(user_id, session_id)
         # Delete child messages first (partition = sessionId).
         query = "SELECT c.id FROM c WHERE c.sessionId = @sid"
@@ -348,13 +396,31 @@ class CosmosSessionRepository:
         async for doc in self._messages.query_items(
             query=query, parameters=params, partition_key=session_id
         ):
-            await self._messages.delete_item(item=doc["id"], partition_key=session_id)
+            try:
+                await self._messages.delete_item(item=doc["id"], partition_key=session_id)
+            except CosmosResourceNotFoundError:
+                # Another concurrent delete/cascade (e.g. a duplicate request,
+                # or a racing single-message delete) already removed this
+                # child between the query above and this call. The cascade's
+                # goal -- no messages left for this session -- already holds
+                # for this item, so treat it as done and keep going rather
+                # than surfacing a raw SDK error for a row that's already gone.
+                continue
         # Cascade-delete uploaded documents (also partitioned by sessionId).
         async for doc in self._documents.query_items(
             query=query, parameters=params, partition_key=session_id
         ):
-            await self._documents.delete_item(item=doc["id"], partition_key=session_id)
-        await self._sessions.delete_item(item=session_id, partition_key=user_id)
+            try:
+                await self._documents.delete_item(item=doc["id"], partition_key=session_id)
+            except CosmosResourceNotFoundError:
+                continue  # same idempotent reasoning as the messages loop above
+
+        try:
+            await self._sessions.delete_item(item=session_id, partition_key=user_id)
+        except CosmosResourceNotFoundError as exc:
+            # Deleted concurrently during the cascade above (e.g. a duplicate
+            # request) — same outcome as never having existed for this call.
+            raise SessionNotFoundError(session_id) from exc
 
     async def add_message(self, user_id: str, message: Message) -> Message:
         await self._owned_session(user_id, message.sessionId)
@@ -400,13 +466,18 @@ class CosmosSessionRepository:
         ]
 
     async def clear_messages(self, user_id: str, session_id: str) -> None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
         await self._owned_session(user_id, session_id)
         query = "SELECT c.id FROM c WHERE c.sessionId = @sid"
         params = [{"name": "@sid", "value": session_id}]
         async for doc in self._messages.query_items(
             query=query, parameters=params, partition_key=session_id
         ):
-            await self._messages.delete_item(item=doc["id"], partition_key=session_id)
+            try:
+                await self._messages.delete_item(item=doc["id"], partition_key=session_id)
+            except CosmosResourceNotFoundError:
+                continue  # already gone (concurrent clear/delete) -- idempotent
 
     async def add_document(self, user_id: str, document: Document) -> Document:
         await self._owned_session(user_id, document.sessionId)

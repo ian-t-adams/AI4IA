@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 
 def _now() -> datetime:
@@ -236,6 +236,27 @@ class Session(BaseModel):
     summaryVersion: int = 0
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
+
+    @field_validator("toolOverrides", mode="before")
+    @classmethod
+    def _tolerate_malformed_tool_overrides(cls, value: object) -> object:
+        """Treat a persisted document's unreadable ``toolOverrides`` as "no
+        overrides" instead of failing the whole session read.
+
+        Every HTTP/write path (``normalize_tool_overrides`` and
+        ``normalize_session_patch_changes``) already rejects a malformed shape
+        up front, so this should never see anything but a well-formed value —
+        but a record written before this field existed, edited by hand, or
+        corrupted in some other way must not turn every future read/patch of
+        that one session into a permanent 500.
+        """
+        if isinstance(value, ToolOverrides):
+            return value
+        try:
+            ToolOverrides.model_validate(value)
+        except ValidationError:
+            return {}
+        return value
 
 
 class Document(BaseModel):

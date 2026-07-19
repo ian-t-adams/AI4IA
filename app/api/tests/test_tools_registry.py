@@ -3,6 +3,7 @@ from ai4ia_api.agents.tools import (
     ToolRegistry,
     ToolRisk,
     ToolSpec,
+    is_safe_tool_name,
     redact,
     redact_obj,
 )
@@ -137,3 +138,77 @@ def test_redact_obj_masks_secret_keys_and_nested():
     assert out["nested"]["password"] == "***REDACTED***"
     assert out["nested"]["note"] == "fine"
     assert "abcdef0123456789" not in out["items"][1]
+
+
+def test_is_safe_tool_name_accepts_every_current_builtin_and_synthetic_name():
+    # Every name this codebase actually registers today (see tool_exec.py's
+    # builtins and runtime.py's delegate_to_agent synthetic capability) must
+    # remain accepted -- the contract must never regress a legitimate name.
+    for name in (
+        "calculator",
+        "get_current_time",
+        "web_search",
+        "news_search",
+        "video_search",
+        "image_search",
+        "browse_url",
+        "run_code",
+        "export_document",
+        "fetch_document",
+        "process_document",
+        "analyze_attachment",
+        "generate_image",
+        "generate_video",
+        "recall_memory",
+        "delegate_to_agent",
+    ):
+        assert is_safe_tool_name(name), name
+
+
+def test_is_safe_tool_name_accepts_bounded_hyphenated_dynamic_names():
+    # A plausible dynamic (non-namespaced) tool name: hyphens, mixed case, digits.
+    assert is_safe_tool_name("my-server-Tool_2")
+    assert is_safe_tool_name("a")
+    assert is_safe_tool_name("a" * 64)
+
+
+def test_is_safe_tool_name_accepts_well_formed_mcp_namespaced_names():
+    # Regression: MCP tools are dispatched under the pre-existing canonical
+    # "mcp:<server>/<tool>" form (see mcp_servers.namespaced_tool_name). A
+    # bounded-charset check that only recognized bare names used to sentinel
+    # every real MCP tool call to "unknown_tool" in logs/activity, since the
+    # namespaced form legitimately contains ":" and "/". These must resolve
+    # as safe so a genuine MCP call's real name reaches logs/activity.
+    assert is_safe_tool_name("mcp:a/ta")
+    assert is_safe_tool_name("mcp:my-server_1/get-weather_2")
+    assert is_safe_tool_name(f"mcp:{'s' * 32}/{'t' * 64}")
+
+
+def test_is_safe_tool_name_rejects_malformed_mcp_namespaced_names():
+    for hostile in (
+        "mcp:a/tool\nname",  # newline smuggled into the tool component
+        "mcp:a/tool/extra",  # an extra "/" -- not the canonical shape
+        "mcp:/ta",  # empty server component
+        "mcp:a/",  # empty tool component
+        "mcp:a\n/ta",  # newline smuggled into the server component
+        f"mcp:{'s' * 33}/t",  # server component over the bound
+        f"mcp:a/{'t' * 65}",  # tool component over the bound
+        "mcpx:a/ta",  # not actually the "mcp:" prefix
+    ):
+        assert not is_safe_tool_name(hostile), hostile
+
+
+def test_is_safe_tool_name_rejects_malformed_or_hostile_names():
+    for hostile in (
+        "",
+        "a" * 65,
+        "tool\nwith\nnewline",
+        "tool with spaces",
+        "tool\twith\ttab",
+        "tool.with.dots",
+        "tool/with/slash",
+        "tool\x00null",
+        "emoji\U0001f600",
+        "quoted\"tool",
+    ):
+        assert not is_safe_tool_name(hostile), hostile

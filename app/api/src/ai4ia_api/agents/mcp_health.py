@@ -21,7 +21,6 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 
 from .mcp_servers import UserMcpServer
-from .tools import redact
 
 # Consecutive transport failures tolerated before a server is quarantined.
 QUARANTINE_THRESHOLD = 3
@@ -107,12 +106,26 @@ def health_status(
 
 
 def summarize_error(error: object) -> str:
-    """A bounded, secret-redacted one-line summary of a failure."""
-    text = " ".join(str(error).split())
-    text = redact(text)
-    if len(text) > MAX_HEALTH_ERROR_LEN:
-        text = text[: MAX_HEALTH_ERROR_LEN - 1].rstrip() + "…"
-    return text
+    """Return a fixed, non-leaky failure category.
+
+    Remote exception text can contain server-controlled content, URLs, or
+    credentials. Health state and quarantine UI therefore persist categories
+    only, never ``str(error)``.
+    """
+    if isinstance(error, str) and error in {
+        "egress_blocked",
+        "transport_error",
+        "connection_error",
+        "protocol_error",
+        "execution_error",
+    }:
+        return error
+    name = type(error).__name__.lower()
+    if "ssrf" in name:
+        return "egress_blocked"
+    if "connection" in name or "http" in name or "timeout" in name:
+        return "connection_error"
+    return "execution_error"
 
 
 def record_success(server: UserMcpServer, *, now: datetime | None = None) -> bool:

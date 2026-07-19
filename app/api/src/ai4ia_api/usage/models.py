@@ -295,9 +295,10 @@ def summarize_records(
             bucket = ModelUsageBucket(model=rec.model)
             by_model[rec.model] = bucket
         bucket.requests += 1
-        bucket.promptTokens += rec.promptTokens or 0
-        bucket.completionTokens += rec.completionTokens or 0
-        bucket.totalTokens += rec.totalTokens or 0
+        if rec.usageKnown:
+            bucket.promptTokens += rec.promptTokens or 0
+            bucket.completionTokens += rec.completionTokens or 0
+            bucket.totalTokens += rec.totalTokens or 0
         if rec.costKnown and rec.estCostMicroUsd is not None:
             bucket.costMicroUsd += rec.estCostMicroUsd
         elif rec.billable:
@@ -309,7 +310,8 @@ def summarize_records(
             dbucket = DayUsageBucket(day=day)
             by_day[day] = dbucket
         dbucket.requests += 1
-        dbucket.totalTokens += rec.totalTokens or 0
+        if rec.usageKnown:
+            dbucket.totalTokens += rec.totalTokens or 0
         if rec.costKnown and rec.estCostMicroUsd is not None:
             dbucket.costMicroUsd += rec.estCostMicroUsd
 

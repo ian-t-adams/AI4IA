@@ -141,3 +141,43 @@ def test_summarize_counts_and_costs():
     bucket = next(b for b in s.byModel if b.model == "gpt-5.2")
     assert bucket.requests == 4
     assert bucket.costKnown is False
+
+
+def test_summarize_per_model_and_per_day_ignore_unknown_usage_tokens():
+    """A record with usageKnown=False must not contribute tokens to the
+    byModel/byDay breakdowns, mirroring the top-level total. Real records never
+    carry stale token fields alongside usageKnown=False (build_record nulls
+    them out), but the aggregator must not rely on that invariant holding for
+    every past or future record it is handed (e.g. legacy Cosmos rows)."""
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=30)
+    records = [
+        _rec(
+            status="complete",
+            billable=True,
+            usageKnown=True,
+            promptTokens=100,
+            completionTokens=50,
+            totalTokens=150,
+            createdAt=now,
+        ),
+        # Stale/unexpected shape: usage explicitly unknown, but token fields
+        # are still populated. Must be excluded from every breakdown.
+        _rec(
+            status="error",
+            billable=False,
+            usageKnown=False,
+            promptTokens=999,
+            completionTokens=999,
+            totalTokens=1998,
+            createdAt=now,
+        ),
+    ]
+    s = summarize_records("u1", records, since_days=30, from_time=since, to_time=now)
+    assert s.totalTokens == 150  # top-level total already guarded this
+    bucket = next(b for b in s.byModel if b.model == "gpt-5.2")
+    assert bucket.totalTokens == 150
+    assert bucket.promptTokens == 100
+    assert bucket.completionTokens == 50
+    day_bucket = s.byDay[0]
+    assert day_bucket.totalTokens == 150

@@ -457,6 +457,18 @@ def test_serve_endpoint_rejects_malformed_id(client):
     assert r.status_code in (404, 400)
 
 
+def test_artifact_id_pattern_matches_only_a_uuid4_hex_token():
+    # Every real artifact id is uuid4().hex: exactly 32 lowercase hex chars.
+    # A too-short or too-long hex run must not match, even though it would
+    # still 404 (via blob-not-found) either way over HTTP.
+    from ai4ia_api.routers.docprocessing import _ARTIFACT_ID_RE
+
+    assert _ARTIFACT_ID_RE.match("a" * 32)
+    assert not _ARTIFACT_ID_RE.match("a" * 31)
+    assert not _ARTIFACT_ID_RE.match("a" * 33)
+    assert not _ARTIFACT_ID_RE.match("a" * 8)
+
+
 def test_serve_endpoint_unknown_id_404(client):
     r = client.get(
         "/api/documents/artifacts/" + "a" * 32, headers={"X-Dev-User": "ian"}

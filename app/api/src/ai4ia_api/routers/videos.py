@@ -22,9 +22,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/videos", tags=["videos"])
 
-# An artifact id is a uuid4 hex token. Constrain the path param to that shape so
-# it can never carry a separator or traversal.
-_ARTIFACT_ID_RE = re.compile(r"^[0-9a-f]{8,64}$")
+# An artifact id is a uuid4 hex token (32 lowercase hex chars, no dashes).
+# Constrain the path param to exactly that shape so it can never carry a
+# separator or traversal.
+_ARTIFACT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 @router.get("/artifacts/{artifact_id}")
