@@ -830,6 +830,104 @@ describe("ChatApp uploads", () => {
     expect(mocks.createSession).toHaveBeenCalledTimes(1);
   });
 
+  // Regression (acceptance review of 7dabeda, HIGH): entry.mismatchClaimed
+  // used to be claimed unconditionally by whichever caller's continuation
+  // happened to resume first once a SHARED in-flight creation settled --
+  // even an already-ineligible one (stillCurrentSelection/stillWanted
+  // false). Unlike the test above (which starts from a blank view, so
+  // noSessionActiveYet alone grants activation regardless of
+  // mismatchClaimed), this scenario needs a DIFFERENT, already-active
+  // session in place first so only the settingsMismatch branch -- the one
+  // mismatchClaimed actually gates -- can satisfy activation. A discarded
+  // caller's continuation running first must never be able to burn the
+  // entry's one-shot mismatch claim ahead of a second, genuinely eligible
+  // caller sharing that identical entry.
+  it("lets a still-wanted caller supersede an already-active, differently-configured session even though a discarded caller sharing its entry's mismatch check ran first", async () => {
+    const resolvers: Array<() => void> = [];
+    const created = [session("INITIAL"), session("LATER")];
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          const value = created[resolvers.length];
+          resolvers.push(() => resolve(value));
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    // An initial creation fires under the current (blank) settings. It must
+    // stay unresolved for now: ensureSession() short-circuits to whatever
+    // is already active (sessionIdRef.current) before it ever looks at
+    // settings, so the entry the next two callers join below has to be
+    // created while NOTHING is active yet -- exactly as it would be if this
+    // and the shared entry were two genuinely concurrent intents.
+    const initialCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let initialResult: Promise<string> | undefined;
+    act(() => {
+      initialResult = initialCall.ensureSession(() => true);
+    });
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+
+    // Before it resolves, settings change (a genuinely different intent
+    // key from the initial call's), and two callers share THAT entry --
+    // back-to-back, no await between them, so both see the same still-empty
+    // creatingRef slot for the new key and join the SAME in-flight
+    // creation. The first is already discarded by the time it asks (e.g.
+    // Voice Live's "Stop waiting"); the second still wants whatever session
+    // that shared creation produces (e.g. a plain send/upload).
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.type(screen.getByLabelText("System prompt"), "Later prompt");
+    const laterCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let discardedResult: Promise<string> | undefined;
+    let stillWantedResult: Promise<string> | undefined;
+    act(() => {
+      discardedResult = laterCall.ensureSession(() => false);
+      stillWantedResult = laterCall.ensureSession(() => true);
+    });
+    expect(mocks.createSession).toHaveBeenCalledTimes(2);
+
+    // The initial creation resolves first -- nothing else is active yet, so
+    // it goes through the noSessionActiveYet path, untouched by
+    // mismatchClaimed, and activates.
+    await act(async () => {
+      resolvers[0]();
+      await initialResult;
+    });
+    expect(
+      await screen.findByText("Session INITIAL", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+
+    // The shared, differently-configured entry resolves next, with
+    // "INITIAL" already active. Both waiters' continuations now compete for
+    // the entry's one-shot mismatch claim -- the discarded one first, since
+    // it raced the shared promise first.
+    await act(async () => {
+      resolvers[1]();
+      await Promise.all([discardedResult, stillWantedResult]);
+    });
+
+    // The discarded caller's continuation running first must not have spent
+    // the entry's one-shot mismatch claim: the still-wanted second caller
+    // must still be able to supersede the already-active "INITIAL" session
+    // with the newly created, correctly-configured "LATER" one.
+    expect(await stillWantedResult).toBe("LATER");
+    expect(
+      await screen.findByText("Session LATER", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    expect(mocks.createSession).toHaveBeenCalledTimes(2);
+  });
+
   // Regression (final acceptance review, Finding 2): persistVoiceConversation
   // used to gate its client-side commits only on the session-generation
   // check -- it never re-checked the caller's (InlineVoiceLive's) own

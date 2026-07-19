@@ -395,14 +395,23 @@ export function ChatApp() {
   // trips, or immediately via abandonPendingSessionCreation() (wired to
   // voice's "Stop waiting") -- instead of merely being ignored while it
   // keeps running forever in the background. mismatchClaimed lets at most
-  // ONE caller sharing this entry (same generation + settings, hence the
-  // same key) ever attempt a cross-key mismatch supersession against
-  // activeIntentKeyRef (see ensureSession) -- two such callers normally
-  // settle back-to-back in the same microtask flush, but are not guaranteed
-  // to, and without this a second one could re-observe "the active key
-  // differs from mine" (because a third, genuinely different intent
-  // superseded in the gap) and incorrectly flip activation back to this
-  // entry's own, already-adjudicated key.
+  // ONE *eligible* caller sharing this entry (same generation + settings,
+  // hence the same key) ever attempt a cross-key mismatch supersession
+  // against activeIntentKeyRef (see ensureSession) -- two such callers
+  // normally settle back-to-back in the same microtask flush, but are not
+  // guaranteed to, and without this a second one could re-observe "the
+  // active key differs from mine" (because a third, genuinely different
+  // intent superseded in the gap) and incorrectly flip activation back to
+  // this entry's own, already-adjudicated key. The claim itself is gated on
+  // the claiming caller's own eligibility (ensureSession's
+  // eligibleToActivate), not taken unconditionally by whichever caller's
+  // continuation happens to resume first: an already-ineligible caller
+  // (e.g. Voice Live already discarded via "Stop waiting") running first
+  // must never be able to burn this one-shot claim ahead of a second,
+  // genuinely eligible caller sharing the same entry under identical
+  // settings, which would otherwise silently deny that second caller its
+  // own correct mismatch check and strand it on the stale, already-active
+  // session.
   //
   // sequence is assigned exactly ONCE, when this entry is first created (not
   // per caller that later joins it), from a single monotonically-increasing
@@ -964,6 +973,13 @@ export function ChatApp() {
       const stillCurrentSelection =
         selectionGenerationRef.current === capturedGeneration;
       const stillWanted = isStillWanted ? isStillWanted() : true;
+      // Whether THIS caller could ever legitimately act on any outcome
+      // below -- computed once, up front, so it gates both the shared
+      // one-shot mismatch claim (immediately below) and the final
+      // activation decision from the exact same eligibility snapshot. No
+      // await separates this from the claim, so the check-and-set stays
+      // naturally atomic (single-threaded JS, no yield point in between).
+      const eligibleToActivate = stillCurrentSelection && stillWanted;
       const noSessionActiveYet = !sessionIdRef.current;
       // A session that already has a real, in-flight consumer (an active
       // stream or upload) must never be superseded out from under it:
@@ -996,13 +1012,27 @@ export function ChatApp() {
           Array.from(uploadTargetsRef.current.values()).some(
             (target) => target.sessionId === sessionIdRef.current,
           ));
-      // At most one caller sharing this entry ever gets to attempt a
-      // cross-key mismatch supersession -- see the mismatchClaimed comment
-      // on creatingRef. Claimed unconditionally (regardless of the outcome
-      // below), since the invariant is "this key's one comparison has
-      // happened", not "this key's comparison succeeded".
-      const canClaimMismatch = !entry.mismatchClaimed;
-      entry.mismatchClaimed = true;
+      // At most one *eligible* caller sharing this entry ever gets to
+      // attempt a cross-key mismatch supersession -- see the
+      // mismatchClaimed comment on creatingRef. Gated on eligibleToActivate,
+      // not claimed unconditionally: entry.mismatchClaimed lives on the
+      // entry shared by every caller under this key, and each caller's own
+      // continuation resumes in whatever microtask order the shared
+      // creation happens to settle in -- NOT in eligibility order. An
+      // already-ineligible caller (stillCurrentSelection or stillWanted
+      // false -- e.g. Voice Live already discarded via "Stop waiting")
+      // running first must never be able to burn the entry's one-shot
+      // claim ahead of a second, genuinely eligible caller sharing the same
+      // entry (e.g. a plain send/upload under identical settings): doing so
+      // would silently deny that second caller its own correct
+      // settingsMismatch check and strand it on the stale, already-active
+      // session. Only a caller that could actually act on the result if it
+      // wins ever consumes the claim; an ineligible caller running first
+      // leaves it available for whichever eligible caller checks next.
+      const canClaimMismatch = eligibleToActivate && !entry.mismatchClaimed;
+      if (canClaimMismatch) {
+        entry.mismatchClaimed = true;
+      }
       // entry.sequence > activeActivationSequenceRef.current is what
       // actually decides "is this challenger genuinely later than whoever
       // is currently active" -- see the sequence comment on creatingRef and
@@ -1026,11 +1056,7 @@ export function ChatApp() {
         !currentSessionInUse &&
         activeIntentKeyRef.current !== intentKey &&
         entry.sequence > activeActivationSequenceRef.current;
-      if (
-        stillCurrentSelection &&
-        stillWanted &&
-        (noSessionActiveYet || settingsMismatch)
-      ) {
+      if (eligibleToActivate && (noSessionActiveYet || settingsMismatch)) {
         sessionIdRef.current = id;
         activeIntentKeyRef.current = intentKey;
         activeActivationSequenceRef.current = entry.sequence;
