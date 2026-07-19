@@ -31,7 +31,8 @@ PR #125, with **zero new runtime code**. APIM injects the managed-identity beare
 ## Provisioning (operator, one time)
 
 ```bash
-# 0. Install the provisioning-only extra (not in the runtime container / CI).
+# 0. Install the provisioning-only extra (CI's app-ci.yml api job installs it too, so the
+#    real-SDK toolbox construction tests run there; the runtime container never does).
 uv pip install -e "app/api[foundry]"
 
 # 1. Create skills (dry run first; --create writes to Foundry).
@@ -51,10 +52,11 @@ python scripts/provision-foundry-toolbox.py --create
 python scripts/provision-private-tool-catalog.py     # dry run: prints APIM URLs to catalog
 python scripts/provision-private-tool-catalog.py --create
 
-# 5. (optional) Create a routine. Its tool calls target the toolbox, so they
-#    inherit the APIM bridge. Edit foundry/routines/example.routine.json first.
-python scripts/provision-foundry-routine.py          # dry run: prints steps + tool calls
-python scripts/provision-foundry-routine.py --create
+# 5. (optional) Validate a routine and see its plan. Its tool calls target the toolbox, so
+#    they inherit the APIM bridge. Edit foundry/routines/example.routine.json first.
+#    There is no --create: azure-ai-projects 2.3.0's routines surface (an event-trigger model)
+#    cannot faithfully represent this steps-based workflow shape -- see docs/foundry-toolbox.md.
+python scripts/provision-foundry-routine.py          # validates + prints steps and tool calls
 
 # 6. (optional) Expose a deployed agent over A2A, fronted through APIM. Edit
 #    foundry/a2a/example.a2a.json, then emit the enable + APIM-front commands.
