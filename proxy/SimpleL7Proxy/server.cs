@@ -925,9 +925,12 @@ public class Server : BackgroundService, IConfigChangeSubscriber
 
     private (bool isValid, string message) ValidateAuthKey(string? incomingKey, string message)
     {
+        // These are opaque APIM subscription-key secrets, not case-insensitive
+        // identifiers: compare case-sensitively and in constant time so casing
+        // can't be guessed and comparison time can't leak how much matched.
         if (!string.IsNullOrEmpty(incomingKey) &&
-            (string.Equals(incomingKey, _options.ValidateAuthKey1, StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(incomingKey, _options.ValidateAuthKey2, StringComparison.OrdinalIgnoreCase)))
+            (SecretComparer.FixedTimeEquals(incomingKey, _options.ValidateAuthKey1) ||
+             SecretComparer.FixedTimeEquals(incomingKey, _options.ValidateAuthKey2)))
         {
             return (true, message);
         }

@@ -54,13 +54,15 @@ python scripts\gen-model-catalog.py --check
 python scripts\gen-mcp-catalog.py --check
 python scripts\gen-gateway-policy.py --check
 python -m unittest scripts.tests.test_gateway_policy
+python scripts\gen-voice-provider-catalog.py --check
+python -m unittest scripts.tests.test_voice_provider_catalog
 python scripts\validate-catalog.py
 python scripts\validate-feature-prereqs.py
 ```
 
 ### Infra and operations
 
-Use Bicep and schema validation for infra changes. Do not run `azd up`, `azd provision`, or `azd deploy` unless the maintainer explicitly asks.
+Use Bicep and schema validation for infra changes. Do not run `azd up`, `azd provision`, or `azd deploy` unless the maintainer explicitly asks. CI installs a pinned standalone [Bicep CLI](https://learn.microsoft.com/azure/azure-resource-manager/bicep/install) release; if you don't have it locally but already have Azure CLI, substitute `az bicep build --file infra\main.bicep --stdout` (same output, no separate install).
 
 ```powershell
 check-jsonschema --schemafile infra\models.schema.json infra\models.json

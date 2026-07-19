@@ -43,6 +43,11 @@ htmlcov/
 main.json
 *.arm.json
 
+# --- .NET build artifacts (proxy/ SimpleL7Proxy fork + test projects) ---
+bin/
+obj/
+*.user
+
 # --- Editors / OS ---
 .vscode/*
 !.vscode/extensions.json

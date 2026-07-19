@@ -26,7 +26,7 @@ Vendored (not a submodule) from microsoft/SimpleL7Proxy @
 
 ### Intentional source deviation
 
-Three files carry AI4IA security/correctness patches over the audited pin:
+Four files carry AI4IA security/correctness patches over the audited pin:
 
 - `SimpleL7Proxy/Config/IncomingAuthValidator.cs` applies `ValidateAuthConfig`'s `header=` value to the actual key lookup (upstream otherwise keeps
   reading the default `S7P-KEY`, which rejects AI4IA's `Ocp-Apim-Subscription-Key` ingress);
@@ -39,9 +39,43 @@ Three files carry AI4IA security/correctness patches over the audited pin:
   `/deployments/{name}/...` when the request body correctly omits `model`. This
   supplies the generated APIM catalog header for chat, embeddings, image, and
   audio calls while preserving body-based model detection for Responses API.
+- `SimpleL7Proxy/server.cs`'s `ValidateAuthKey()` compares the incoming proxy auth key against
+  `ValidateAuthKey1`/`ValidateAuthKey2` with a constant-time `SecretComparer.FixedTimeEquals`
+  helper (new file: `SimpleL7Proxy/Config/SecretComparer.cs`) instead of upstream's
+  `string.Equals(..., StringComparison.OrdinalIgnoreCase)`. These keys are opaque, high-entropy
+  APIM subscription keys (see `gateway.bicep`'s `sharedProxyIngressSubscription.listSecrets().primaryKey`),
+  not case-insensitive identifiers, and a non-constant-time comparison of a secret is a timing
+  side-channel.
 
-All other files in the three source directories remain byte-for-byte upstream. Re-evaluate and
-drop this patch when refreshing to an upstream commit that fixes both behaviors.
+All other files in the three source directories are upstream-identical in content once line-ending
+style is normalized (most are exact byte-for-byte matches; see "Provenance validation" below for
+the precise blob-level breakdown). Re-evaluate and drop the `IncomingAuthValidator.cs` patch when
+refreshing to an upstream commit that fixes both behaviors it addresses.
+
+**Provenance validation (2026-07-18, corrected):** an earlier version of this note claimed 170
+byte-for-byte-identical files, based on SHA-256-hashing a `git checkout` of the pinned upstream
+commit against the local working tree. That method is unreliable: git's checkout-time CRLF/LF
+normalization (`core.autocrlf`) can make genuinely different stored content look identical (or
+vice versa) once both sides pass through the same checkout filters. The corrected check compares
+git blob SHA1s directly — via `git ls-tree`/`git cat-file` against the pinned upstream commit,
+which read repository object-database bytes and never touch a working tree — across all 174 shared
+files in `Shared/`, `Shared-parser/`, and `SimpleL7Proxy/`:
+
+- **142 files** have an identical blob SHA1 (true byte-for-byte identity with upstream).
+- **28 files** have a different blob SHA1, but identical content once CRLF/LF line endings are
+  normalized on both sides: these are stored with LF locally and CRLF upstream. They are not
+  functional deviations and are not part of the intentional-deviation list.
+- **4 files** are the intentional deviations listed above; their diffs were re-confirmed against
+  the pinned commit and match the descriptions given for each.
+- **1 file** (`SimpleL7Proxy/Config/SecretComparer.cs`) is new, added locally, with no upstream
+  counterpart.
+
+142 + 28 + 4 = 174, matching the upstream file count exactly (174 + 1 new file = 175 local files).
+Also confirmed via `git ls-remote https://github.com/microsoft/SimpleL7Proxy.git main` that upstream
+`main` is still exactly `d9eb1d1fa42820792a9699bfc253562fba07d977` — the pin is the current
+upstream tip, not a stale snapshot, so there is no newer commit to refresh to. Re-run the blob-level
+comparison (not a working-tree hash) whenever the pin or the deviation list changes, and update
+this note.
 
 To refresh the vendored copy, check out the audited upstream commit and mirror the three project
 directories from upstream `src/` (excluding `bin/`/`obj/`). Keep this README and the root
@@ -79,10 +113,22 @@ proxy dispatch; the proxy owns delayed requeue, queue TTL, and its per-replica c
 The synchronous queue is in-memory and per replica, so it is not a durable or globally ordered
 fairness mechanism.
 
-The API uses a separate APIM subscription scoped only to the realtime API. That key also
-authenticates the API to the proxy, where it is stripped before the proxy injects its own
-model-API subscription key. This temporary key design is isolated per hop and stored only as
-Container App secrets; the migration target is Entra workload authentication at both edges.
+Three distinct APIM subscription keys separate these hops, each a Container App secret:
+
+- The API authenticates to the proxy with a proxy-ingress key (`AI4IA_MODEL_GATEWAY_API_KEY`)
+  scoped to an APIM product with no APIs attached, so it cannot invoke any model or realtime API
+  even if leaked.
+- The proxy authenticates to APIM's model API with its own key (`sharedProxyModelSubscription` in
+  `gateway.bicep`), injected only into the proxy's `Host1` configuration and never exposed to the
+  API; it strips the incoming ingress key before forwarding and injects this key instead.
+- The FastAPI realtime relay authenticates directly to APIM's realtime WebSocket API with a third,
+  separately scoped key (`AI4IA_REALTIME_GATEWAY_API_KEY`), bypassing the proxy entirely because it
+  cannot proxy WebSockets.
+
+`app/api`'s `Settings.validate_runtime()` fails startup if the realtime key and the proxy-ingress
+key are ever set to the same value, so the two cannot be silently reused for each other. This
+temporary key design is isolated per hop; the migration target is Entra workload authentication at
+every edge.
 
 ## Optional controls
 

@@ -2,8 +2,9 @@ name: quality
 
 # Static linting of the repo's operational surface: GitHub Actions workflows
 # (actionlint + shellcheck for embedded bash), PowerShell operator scripts
-# (PSScriptAnalyzer), the AI4IA-owned Dockerfiles (hadolint), YAML (yamllint) and
-# the generated portal documentation index (gen-docs-catalog.py --check).
+# (PSScriptAnalyzer), the AI4IA-owned Dockerfiles (hadolint), YAML (yamllint),
+# the generated portal documentation index (gen-docs-catalog.py --check), and
+# stdlib-only unit tests for operator scripts that aren't covered elsewhere.
 # Additive/quality only - it builds and deploys nothing.
 
 on:
@@ -123,3 +124,21 @@ jobs:
           # site/data/meta.js feature posture contradicts infra/main.parameters.json.
           # Regenerate locally with: python scripts/gen-docs-catalog.py
           python3 scripts/gen-docs-catalog.py --check
+
+  script-tests:
+    name: operator script unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Run voice-live-canary unit tests
+        run: |
+          set -euo pipefail
+          # scripts/voice-live-canary.py is an operator-invoked canary for the
+          # governed Voice Live relay path (redacts bearer tokens/JWTs, enforces
+          # wss:// + exact-path + no-query-token URL rules). Its test suite is
+          # stdlib-only (aiohttp is imported lazily and mocked in tests), so no
+          # dependency install is needed. It isn't run by app-ci or
+          # infra-validate, so it's exercised here instead of going untested.
+          python3 -m unittest scripts.tests.test_voice_live_canary
