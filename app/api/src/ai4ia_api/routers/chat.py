@@ -237,6 +237,28 @@ async def _resolved_replay_response(
     return _replay_response(session_id, user_message, assistant, stream)
 
 
+async def _persist_terminal_assistant(
+    repo: SessionRepository,
+    user_id: str,
+    assistant: Message,
+) -> Message:
+    """Persist one terminal assistant result without bypassing claim ownership."""
+    if assistant.claimLeaseId is None:
+        return await repo.upsert_message(user_id, assistant)
+    persisted = await repo.terminalize_chat_turn(
+        user_id,
+        assistant.sessionId,
+        assistant.id,
+        status=assistant.status,
+        content=assistant.content,
+        expected_claim_lease_id=assistant.claimLeaseId,
+        steps=assistant.steps,
+        attachments=assistant.attachments,
+        summary_version=assistant.summaryVersion,
+    )
+    return persisted or assistant
+
+
 def _history(messages: list[Message], system_prompt: str | None) -> list[dict]:
     out: list[dict] = []
     if system_prompt:
@@ -509,7 +531,11 @@ async def _agentic_stream(
         if get_attachments is not None:
             assistant.attachments = get_attachments()
         try:
-            await asyncio.shield(repo.upsert_message(user.internal_user_id, assistant))
+            await asyncio.shield(
+                _persist_terminal_assistant(
+                    repo, user.internal_user_id, assistant
+                )
+            )
         except Exception:  # noqa: BLE001 - best-effort durability
             logger.exception("Failed to persist assistant message %s", assistant.id)
         _status_map = {
@@ -744,9 +770,10 @@ async def _terminalize_claimed_request(
     terminal_status: MessageStatus,
     content: str,
 ) -> None:
-    assistant_id = getattr(request.state, "claimed_chat_turn", None)
-    if assistant_id is None:
+    claim = getattr(request.state, "claimed_chat_turn", None)
+    if claim is None:
         return
+    assistant_id, claim_lease_id = claim
     repo: SessionRepository = request.app.state.session_repo
     try:
         await asyncio.shield(
@@ -756,6 +783,7 @@ async def _terminalize_claimed_request(
                 assistant_id,
                 status=terminal_status,
                 content=content,
+                expected_claim_lease_id=claim_lease_id,
             )
         )
     except Exception:
@@ -836,6 +864,30 @@ async def _chat_impl(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
     fingerprint = _client_request_fingerprint(body)
+    claim_lease_id = secrets.token_urlsafe(24)
+    if body.clientTurnId:
+        try:
+            existing = await repo.get_chat_turn(
+                user.internal_user_id,
+                body.sessionId,
+                body.clientTurnId,
+                fingerprint,
+            )
+        except ClientTurnConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="clientTurnId was already used for a different chat request.",
+            ) from exc
+        if existing is not None:
+            saved_user, saved_assistant = existing
+            return await _resolved_replay_response(
+                repo=repo,
+                user_id=user.internal_user_id,
+                session_id=body.sessionId,
+                user_message=saved_user,
+                assistant=saved_assistant,
+                stream=body.stream,
+            )
     parsed = parse_input(body.content)
 
     # A slash command may name a *tool* (e.g. /calculator, /generate_image)
@@ -854,11 +906,14 @@ async def _chat_impl(
         cmd_name = parsed.command.name
         if cmd_name in DIRECT_SLASH_TOOLS:
             if body.clientTurnId:
-                request.state.claimed_chat_turn = turn_message_id(
-                    user.internal_user_id,
-                    body.sessionId,
-                    body.clientTurnId,
-                    MessageRole.assistant,
+                request.state.claimed_chat_turn = (
+                    turn_message_id(
+                        user.internal_user_id,
+                        body.sessionId,
+                        body.clientTurnId,
+                        MessageRole.assistant,
+                    ),
+                    claim_lease_id,
                 )
             try:
                 assistant = await execute_tool_command(
@@ -871,6 +926,7 @@ async def _chat_impl(
                     correlation_id=get_correlation_id(),
                     client_turn_id=body.clientTurnId,
                     client_request_fingerprint=fingerprint,
+                    claim_lease_id=claim_lease_id,
                 )
             except ClientTurnConflictError as exc:
                 request.state.claimed_chat_turn = None
@@ -999,16 +1055,15 @@ async def _chat_impl(
         # mention (e.g. "@coder /help" runs /help); the mention was already
         # validated above. (A /tool command was already routed above.)
         if parsed.is_command:
-            if (
-                body.clientTurnId
-                and parsed.command is not None
-                and parsed.command.kind is not CommandKind.clear
-            ):
-                request.state.claimed_chat_turn = turn_message_id(
-                    user.internal_user_id,
-                    body.sessionId,
-                    body.clientTurnId,
-                    MessageRole.assistant,
+            if body.clientTurnId and parsed.command is not None:
+                request.state.claimed_chat_turn = (
+                    turn_message_id(
+                        user.internal_user_id,
+                        body.sessionId,
+                        body.clientTurnId,
+                        MessageRole.assistant,
+                    ),
+                    claim_lease_id,
                 )
             try:
                 assistant = await execute_command(
@@ -1023,6 +1078,7 @@ async def _chat_impl(
                     gateway=gateway,
                     client_turn_id=body.clientTurnId,
                     client_request_fingerprint=fingerprint,
+                    claim_lease_id=claim_lease_id,
                 )
             except ClientTurnConflictError as exc:
                 request.state.claimed_chat_turn = None
@@ -1044,7 +1100,6 @@ async def _chat_impl(
                 )
                 if body.clientTurnId
                 and parsed.command is not None
-                and parsed.command.kind is not CommandKind.clear
                 else None
             )
             if (
@@ -1217,6 +1272,7 @@ async def _chat_impl(
             status=MessageStatus.streaming,
             model=deployment.deploymentName,
             agent=agent_name,
+            claimLeaseId=claim_lease_id,
         )
         try:
             saved_user, saved_assistant, claimed = await repo.claim_chat_turn(
@@ -1236,7 +1292,10 @@ async def _chat_impl(
                 assistant=saved_assistant,
                 stream=body.stream,
             )
-        request.state.claimed_chat_turn = claimed_assistant.id
+        request.state.claimed_chat_turn = (
+            claimed_assistant.id,
+            claim_lease_id,
+        )
     else:
         user_msg = Message(
             sessionId=body.sessionId,
@@ -1271,12 +1330,18 @@ async def _chat_impl(
         attachments: list[MessageAttachment] | None = None,
     ) -> Message:
         assistant = await assistant_placeholder()
-        assistant.content = content
-        assistant.status = MessageStatus.complete
-        assistant.steps = steps
-        assistant.attachments = attachments or []
-        await repo.upsert_message(user.internal_user_id, assistant)
-        return assistant
+        terminal = assistant.model_copy(
+            update={
+                "content": content,
+                "status": MessageStatus.complete,
+                "steps": steps,
+                "attachments": attachments or [],
+            },
+            deep=True,
+        )
+        return await _persist_terminal_assistant(
+            repo, user.internal_user_id, terminal
+        )
 
     payload_messages = _history(prior, system_prompt)
     correlation_id = get_correlation_id()
@@ -1947,7 +2012,9 @@ async def _chat_impl(
             assistant = await assistant_placeholder()
             assistant.status = MessageStatus.error
             assistant.content = SAFE_TURN_ERROR
-            await repo.upsert_message(user.internal_user_id, assistant)
+            await _persist_terminal_assistant(
+                repo, user.internal_user_id, assistant
+            )
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.detail)
         except (asyncio.CancelledError, GeneratorExit):
             raise
@@ -1955,7 +2022,9 @@ async def _chat_impl(
             assistant = await assistant_placeholder()
             assistant.status = MessageStatus.error
             assistant.content = SAFE_TURN_ERROR
-            await repo.upsert_message(user.internal_user_id, assistant)
+            await _persist_terminal_assistant(
+                repo, user.internal_user_id, assistant
+            )
             raise
         text = _extract_text(result)
         assistant = await persist_assistant(text)
@@ -2021,7 +2090,9 @@ async def _chat_impl(
             assistant.status = final
             try:
                 await asyncio.shield(
-                    repo.upsert_message(user.internal_user_id, assistant)
+                    _persist_terminal_assistant(
+                        repo, user.internal_user_id, assistant
+                    )
                 )
             except Exception:  # noqa: BLE001 - best-effort durability
                 logger.exception("Failed to persist assistant message %s", assistant.id)

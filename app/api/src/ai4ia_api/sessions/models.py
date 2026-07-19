@@ -129,6 +129,10 @@ class Message(BaseModel):
     # Internal hash used to reject reuse of a turn id for different request input.
     # It is persisted by repositories but excluded from HTTP response models.
     clientRequestFingerprint: str | None = Field(default=None, exclude=True)
+    # Per-attempt ownership lease for a streaming assistant claim. Completion and
+    # error writes must present this value and may only transition that same
+    # still-streaming claim. It is internal protocol state, never an HTTP field.
+    claimLeaseId: str | None = Field(default=None, exclude=True)
     # Non-text artifacts produced during the turn (e.g. generated images). Empty
     # for ordinary text replies; each entry references a durable blob served
     # through an authenticated endpoint.

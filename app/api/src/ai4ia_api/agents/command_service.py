@@ -88,6 +88,7 @@ async def execute_command(
     gateway: "ModelGatewayClient | None" = None,
     client_turn_id: str | None = None,
     client_request_fingerprint: str | None = None,
+    claim_lease_id: str | None = None,
 ) -> Message:
     """Run the parsed command, persist its effects, and return the reply message."""
     command = parsed.command
@@ -98,8 +99,8 @@ async def execute_command(
         "systemPrompt": session.systemPrompt,
     }
     expected_summary_version: int | None = None
-    persist_reply = True
     claimed_assistant: Message | None = None
+    claimed_user: Message | None = None
 
     def turn_message(role: MessageRole, content: str, **changes: Any) -> Message:
         return Message(
@@ -114,10 +115,15 @@ async def execute_command(
             content=content,
             clientTurnId=client_turn_id,
             clientRequestFingerprint=client_request_fingerprint,
+            claimLeaseId=(
+                claim_lease_id
+                if client_turn_id and role is MessageRole.assistant
+                else None
+            ),
             **changes,
         )
 
-    if client_turn_id and command.kind is not CommandKind.clear:
+    if client_turn_id:
         user_message = turn_message(
             MessageRole.user,
             parsed.raw,
@@ -130,16 +136,24 @@ async def execute_command(
             status=MessageStatus.streaming,
             fromCommand=True,
         )
-        _, saved_assistant, claimed = await repo.claim_chat_turn(
+        saved_user, saved_assistant, claimed = await repo.claim_chat_turn(
             user_id, user_message, claimed_assistant
         )
         if not claimed:
             return saved_assistant
+        claimed_user = saved_user
+        claimed_assistant = saved_assistant
 
-    # /clear wipes history (including the command itself), so it skips echoing
-    # the user's command message; everything else records it for context.
     if command.kind is CommandKind.clear:
-        await repo.clear_messages(user_id, session.id)
+        if claimed_user is not None and claimed_assistant is not None:
+            await repo.clear_messages_before(
+                user_id,
+                session.id,
+                cutoff=claimed_assistant.createdAt,
+                preserve_ids=frozenset((claimed_user.id, claimed_assistant.id)),
+            )
+        else:
+            await repo.clear_messages(user_id, session.id)
         reply = "Conversation cleared."
         # Clear summary state as one versioned mutation. Any summarizer that
         # started before this increment will discard its stale result.
@@ -161,7 +175,7 @@ async def execute_command(
         if command.kind is CommandKind.forget:
             reply = await _forget_reply(memory, user_id, session.id, command.args)
         elif command.kind is CommandKind.summarize:
-            reply, expected_summary_version, persist_reply = await _summarize_reply(
+            reply, expected_summary_version = await _summarize_reply(
                 summarizer, gateway, repo, catalog, user_id, session
             )
         else:
@@ -181,18 +195,32 @@ async def execute_command(
     else:
         await repo.touch_session(user_id, session.id)
 
-    assistant = claimed_assistant or turn_message(
+    if claimed_assistant is not None:
+        if claim_lease_id is None:
+            raise ValueError("Claimed command turns require an ownership lease.")
+        if expected_summary_version is not None:
+            latest = await repo.get_session(user_id, session.id)
+            if latest.summaryVersion != expected_summary_version:
+                reply = "Summary was superseded by a newer conversation state."
+                expected_summary_version = None
+        persisted = await repo.terminalize_chat_turn(
+            user_id,
+            session.id,
+            claimed_assistant.id,
+            status=MessageStatus.complete,
+            content=reply,
+            expected_claim_lease_id=claim_lease_id,
+            summary_version=expected_summary_version,
+        )
+        return persisted or claimed_assistant
+
+    assistant = turn_message(
         MessageRole.assistant,
         reply,
         status=MessageStatus.complete,
         fromCommand=True,
         summaryVersion=expected_summary_version,
     )
-    assistant.content = reply
-    assistant.status = MessageStatus.complete
-    assistant.summaryVersion = expected_summary_version
-    if not persist_reply:
-        return assistant
     if expected_summary_version is not None:
         persisted = await repo.add_message_if_summary_version(
             user_id,
@@ -203,10 +231,8 @@ async def execute_command(
             assistant.content = "Summary was superseded by a newer conversation state."
             assistant.summaryVersion = None
             return assistant
-    elif claimed_assistant is not None:
-        await repo.upsert_message(user_id, assistant)
-    else:
-        await repo.add_message(user_id, assistant)
+        return assistant
+    await repo.add_message(user_id, assistant)
     return assistant
 
 
@@ -221,6 +247,7 @@ async def execute_tool_command(
     correlation_id: str | None = None,
     client_turn_id: str | None = None,
     client_request_fingerprint: str | None = None,
+    claim_lease_id: str | None = None,
 ) -> Message:
     """Run a *direct* tool named by a slash command and persist the user echo +
     the result reply. These tools (see :data:`DIRECT_SLASH_TOOLS`) are
@@ -244,6 +271,7 @@ async def execute_tool_command(
         fromCommand=True,
         clientTurnId=client_turn_id,
         clientRequestFingerprint=client_request_fingerprint,
+        claimLeaseId=claim_lease_id if client_turn_id else None,
     )
     assistant = Message(
         id=(
@@ -276,11 +304,21 @@ async def execute_tool_command(
 
     await repo.touch_session(user_id, session.id)
 
-    assistant.content = reply
-    assistant.status = MessageStatus.complete
     if claimed:
-        await repo.upsert_message(user_id, assistant)
+        if claim_lease_id is None:
+            raise ValueError("Claimed tool turns require an ownership lease.")
+        persisted = await repo.terminalize_chat_turn(
+            user_id,
+            session.id,
+            assistant.id,
+            status=MessageStatus.complete,
+            content=reply,
+            expected_claim_lease_id=claim_lease_id,
+        )
+        return persisted or assistant
     else:
+        assistant.content = reply
+        assistant.status = MessageStatus.complete
         await repo.add_message(user_id, assistant)
     return assistant
 
@@ -382,21 +420,21 @@ async def _summarize_reply(
     catalog: ModelCatalog,
     user_id: str,
     session: Session,
-) -> tuple[str, int | None, bool]:
+) -> tuple[str, int | None]:
     """Manual ``/summarize``: condense the conversation into a running summary,
     persist it on the session (mutated in place; the caller's update_session
     commits it), and show the digest. Fail-soft: any model/store error degrades
     to a friendly message and never raises out of the command path."""
     if summarizer is None or gateway is None:
-        return "Summarizing long chats isn't available in this environment yet.", None, True
+        return "Summarizing long chats isn't available in this environment yet.", None
     if not session.model:
         return (
             "Choose a model for this conversation first (use /model <model-id> "
             "or the model menu), then run /summarize."
-        ), None, True
+        ), None
     deployment = catalog.resolve_deployment(session.model)
     if deployment is None:
-        return f"Can't summarize: '{session.model}' is not an available model.", None, True
+        return f"Can't summarize: '{session.model}' is not an available model.", None
     entry = catalog.get(session.model)
     api = entry.api if entry is not None else "chat"
     prior = await repo.list_messages(user_id, session.id)
@@ -415,16 +453,15 @@ async def _summarize_reply(
         return (
             "Sorry — I couldn't summarize the conversation just now. "
             "Please try again in a moment."
-        ), None, True
+        ), None
     if result.status is ManualSummaryStatus.superseded:
-        return "Summary was superseded by a newer conversation state.", None, False
+        return "Summary was superseded by a newer conversation state.", None
     if result.status is ManualSummaryStatus.insufficient:
-        return "There's not enough conversation here to summarize yet.", None, True
+        return "There's not enough conversation here to summarize yet.", None
     assert result.summary is not None and result.committed_version is not None
     return (
         f"Here's a running summary of the conversation so far:\n\n{result.summary}",
         result.committed_version,
-        True,
     )
 
 

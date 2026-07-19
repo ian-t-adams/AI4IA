@@ -110,6 +110,73 @@ async def test_clear_invalidates_inflight_summary():
     assert messages[0].content == "Conversation cleared."
 
 
+async def test_idempotent_summarize_race_keeps_durable_terminal_claim_with_copies():
+    repo = InMemorySessionRepository()
+    created = await repo.create_session(Session(userId="u1", model="gpt-5.2"))
+    for message in _prior(created.id):
+        await repo.add_message("u1", message)
+    user = AuthenticatedUser(
+        internal_user_id="u1", subject="sub", issuer="iss", provider="dev"
+    )
+    gateway = BlockingSummaryGateway("stale summary")
+    summary_turn_id = "123e4567-e89b-42d3-a456-426614174000"
+    pending = asyncio.create_task(
+        execute_command(
+            parsed=parse_input("/summarize"),
+            session=await repo.get_session("u1", created.id),
+            user=user,
+            repo=repo,
+            catalog=load_catalog(),
+            agents=load_agent_catalog(),
+            summarizer=_service(),
+            gateway=gateway,
+            client_turn_id=summary_turn_id,
+            client_request_fingerprint="summary-fingerprint",
+            claim_lease_id="summary-lease",
+        )
+    )
+    await gateway.started.wait()
+    await execute_command(
+        parsed=parse_input("/clear"),
+        session=await repo.get_session("u1", created.id),
+        user=user,
+        repo=repo,
+        catalog=load_catalog(),
+        agents=load_agent_catalog(),
+        client_turn_id="123e4567-e89b-42d3-b456-426614174001",
+        client_request_fingerprint="clear-fingerprint",
+        claim_lease_id="clear-lease",
+    )
+    gateway.release.set()
+    result = await pending
+
+    assert result.status.value == "complete"
+    assert result.content == "Summary was superseded by a newer conversation state."
+    messages = await repo.list_messages("u1", created.id)
+    summary_rows = [
+        message for message in messages if message.clientTurnId == summary_turn_id
+    ]
+    assert len(summary_rows) == 2
+    assert summary_rows[-1].status.value == "complete"
+    assert summary_rows[-1].content == result.content
+
+    replay = await execute_command(
+        parsed=parse_input("/summarize"),
+        session=await repo.get_session("u1", created.id),
+        user=user,
+        repo=repo,
+        catalog=load_catalog(),
+        agents=load_agent_catalog(),
+        summarizer=_service(),
+        gateway=BlockingSummaryGateway("must not run"),
+        client_turn_id=summary_turn_id,
+        client_request_fingerprint="summary-fingerprint",
+        claim_lease_id="different-lease",
+    )
+    assert replay.id == result.id
+    assert replay.content == result.content
+
+
 async def test_same_version_summary_commits_and_advances_version():
     repo = InMemorySessionRepository()
     session = await repo.create_session(Session(userId="u1", model="gpt-5.2"))
@@ -312,8 +379,11 @@ async def test_clear_before_summary_commit_suppresses_insufficient_fallback():
     final = await repo.get_session("u1", created.id)
     assert final.summary is None
     assert final.summarizedThroughMessageId is None
-    assert [message.content for message in await repo.list_messages("u1", created.id)] == [
-        "Conversation cleared."
+    assert [
+        message.content for message in await repo.list_messages("u1", created.id)
+    ] == [
+        "Conversation cleared.",
+        "Summary was superseded by a newer conversation state.",
     ]
 
 

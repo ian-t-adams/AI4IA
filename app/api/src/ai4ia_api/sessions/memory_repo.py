@@ -9,12 +9,16 @@ import asyncio
 from datetime import datetime, timezone
 
 from .models import (
+    ActivityStep,
     Document,
     Message,
+    MessageAttachment,
+    MessageRole,
     MessageStatus,
     Session,
     normalize_session_patch_changes,
     normalize_session_title,
+    turn_message_id,
 )
 from .repository import (
     ClientTurnConflictError,
@@ -120,7 +124,8 @@ class InMemorySessionRepository:
             self._messages[session_id] = [
                 message
                 for message in self._messages.get(session_id, [])
-                if message.summaryVersion is None
+                if message.clientTurnId is not None
+                or message.summaryVersion is None
                 or message.summaryVersion >= session.summaryVersion
             ]
             return session.model_copy(deep=True)
@@ -145,7 +150,8 @@ class InMemorySessionRepository:
             self._messages[session_id] = [
                 message
                 for message in self._messages.get(session_id, [])
-                if message.summaryVersion is None
+                if message.clientTurnId is not None
+                or message.summaryVersion is None
                 or message.summaryVersion >= session.summaryVersion
             ]
             return session.model_copy(deep=True)
@@ -206,8 +212,56 @@ class InMemorySessionRepository:
                 )
             user_message.userId = user_id
             assistant_message.userId = user_id
-            bucket.extend((user_message, assistant_message))
-            return user_message, assistant_message, True
+            bucket.extend(
+                (
+                    user_message.model_copy(deep=True),
+                    assistant_message.model_copy(deep=True),
+                )
+            )
+            return (
+                user_message.model_copy(deep=True),
+                assistant_message.model_copy(deep=True),
+                True,
+            )
+
+    async def get_chat_turn(
+        self,
+        user_id: str,
+        session_id: str,
+        client_turn_id: str,
+        fingerprint: str,
+    ) -> tuple[Message, Message] | None:
+        async with self._lock:
+            await self._owned_session(user_id, session_id)
+            bucket = self._messages.get(session_id, [])
+            ids = {
+                role: turn_message_id(user_id, session_id, client_turn_id, role)
+                for role in (MessageRole.user, MessageRole.assistant)
+            }
+            found = {
+                message.role: message
+                for message in bucket
+                if message.id in ids.values()
+            }
+            if not found:
+                return None
+            saved_user = found.get(MessageRole.user)
+            saved_assistant = found.get(MessageRole.assistant)
+            if (
+                saved_user is None
+                or saved_assistant is None
+                or saved_user.userId != user_id
+                or saved_assistant.userId != user_id
+                or saved_user.clientTurnId != client_turn_id
+                or saved_assistant.clientTurnId != client_turn_id
+                or saved_user.clientRequestFingerprint != fingerprint
+                or saved_assistant.clientRequestFingerprint != fingerprint
+            ):
+                raise ClientTurnConflictError(client_turn_id)
+            return (
+                saved_user.model_copy(deep=True),
+                saved_assistant.model_copy(deep=True),
+            )
 
     async def terminalize_chat_turn(
         self,
@@ -217,8 +271,14 @@ class InMemorySessionRepository:
         *,
         status: MessageStatus,
         content: str,
+        expected_claim_lease_id: str | None = None,
         stale_before: datetime | None = None,
+        steps: list[ActivityStep] | None = None,
+        attachments: list[MessageAttachment] | None = None,
+        summary_version: int | None = None,
     ) -> Message | None:
+        if expected_claim_lease_id is None and stale_before is None:
+            raise ValueError("A claim lease or stale cutoff is required.")
         async with self._lock:
             await self._owned_session(user_id, session_id)
             for message in self._messages.get(session_id, []):
@@ -228,16 +288,26 @@ class InMemorySessionRepository:
                     raise SessionNotFoundError(session_id)
                 if message.status.value != "streaming":
                     return message.model_copy(deep=True)
+                if (
+                    expected_claim_lease_id is not None
+                    and message.claimLeaseId != expected_claim_lease_id
+                ):
+                    return message.model_copy(deep=True)
                 if stale_before is not None and message.createdAt > stale_before:
                     return message.model_copy(deep=True)
                 message.status = status
                 message.content = content
+                message.steps = steps
+                message.attachments = list(attachments or [])
+                message.summaryVersion = summary_version
                 return message.model_copy(deep=True)
             return None
 
     async def add_message_if_summary_version(
         self, user_id: str, message: Message, *, expected_version: int
     ) -> bool:
+        if message.claimLeaseId is not None:
+            raise ValueError("Claimed turns must use terminalize_chat_turn.")
         async with self._lock:
             session = await self._owned_session(user_id, message.sessionId)
             if session.summaryVersion != expected_version:
@@ -254,6 +324,8 @@ class InMemorySessionRepository:
             return True
 
     async def upsert_message(self, user_id: str, message: Message) -> Message:
+        if message.claimLeaseId is not None:
+            raise ValueError("Claimed turns must use terminalize_chat_turn.")
         async with self._lock:
             await self._owned_session(user_id, message.sessionId)
             message.userId = user_id
@@ -268,7 +340,10 @@ class InMemorySessionRepository:
     async def list_messages(self, user_id: str, session_id: str) -> list[Message]:
         await self._owned_session(user_id, session_id)
         return sorted(
-            self._messages.get(session_id, []),
+            [
+                message.model_copy(deep=True)
+                for message in self._messages.get(session_id, [])
+            ],
             key=lambda message: message.createdAt,
         )
 
@@ -276,6 +351,30 @@ class InMemorySessionRepository:
         async with self._lock:
             await self._owned_session(user_id, session_id)
             self._messages[session_id] = []
+
+    async def clear_messages_before(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        cutoff: datetime,
+        preserve_ids: frozenset[str],
+    ) -> None:
+        async with self._lock:
+            await self._owned_session(user_id, session_id)
+            streaming_turn_ids = {
+                message.clientTurnId
+                for message in self._messages.get(session_id, [])
+                if message.status is MessageStatus.streaming
+                and message.clientTurnId is not None
+            }
+            self._messages[session_id] = [
+                message
+                for message in self._messages.get(session_id, [])
+                if message.id in preserve_ids
+                or message.clientTurnId in streaming_turn_ids
+                or message.createdAt > cutoff
+            ]
 
     async def add_document(self, user_id: str, document: Document) -> Document:
         async with self._lock:

@@ -748,7 +748,8 @@ export interface StreamHandlers {
     clientTurnId?: string;
     status?: Message["status"];
   }) => void;
-  // A definitive HTTP rejection before an SSE body was accepted.
+  // An HTTP rejection before an SSE body was accepted. Some 5xx responses are
+  // ambiguous because the server may already have persisted the turn.
   onRejected?: (status: number, detail: string) => void;
   // The same id is already executing in another request. This is deliberately
   // distinct from completion: callers keep the turn pending and reconcile later.

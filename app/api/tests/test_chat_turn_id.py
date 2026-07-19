@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from azure.cosmos.exceptions import CosmosBatchOperationError
 
+from ai4ia_api.entitlements.models import EntitlementDecision
 from ai4ia_api.gateway.client import ModelGatewayError
 from ai4ia_api.routers.chat import (
     ChatRequest,
@@ -190,6 +191,138 @@ def test_stale_streaming_claim_recovers_to_terminal_error(client, monkeypatch):
     assert "couldn't be completed" in recovered.json()["message"]["content"]
 
 
+def test_recovered_error_cannot_be_overwritten_by_late_success(client, monkeypatch):
+    class BlockingGateway:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        async def complete(self, **_kwargs):
+            self.started.set()
+            await asyncio.to_thread(self.release.wait, 3)
+            return {"choices": [{"message": {"content": "late success"}}]}
+
+    chat_module = importlib.import_module("ai4ia_api.routers.chat")
+    monkeypatch.setattr(chat_module, "CHAT_TURN_REPLAY_WAIT_SECONDS", 0)
+    monkeypatch.setattr(chat_module, "CHAT_TURN_LEASE_SECONDS", -1)
+    gateway = BlockingGateway()
+    client.app.state.gateway = gateway
+    session_id = _session(client)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        original = pool.submit(_chat, client, session_id)
+        assert gateway.started.wait(2)
+        recovered = _chat(client, session_id)
+        assert recovered.status_code == 200
+        assert recovered.json()["message"]["status"] == "error"
+        gateway.release.set()
+        late = original.result(timeout=3)
+
+    assert late.status_code == 200
+    assert late.json()["message"]["status"] == "error"
+    messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    assert messages[-1]["status"] == "error"
+    assert "late success" not in messages[-1]["content"]
+
+
+def test_direct_tool_late_result_cannot_overwrite_recovered_error(
+    client, monkeypatch
+):
+    started = threading.Event()
+    release = threading.Event()
+
+    async def blocked_execute(_name, _args, _ctx):
+        started.set()
+        await asyncio.to_thread(release.wait, 3)
+        return {"expression": "2 + 2", "result": 4}
+
+    chat_module = importlib.import_module("ai4ia_api.routers.chat")
+    monkeypatch.setattr(chat_module, "CHAT_TURN_REPLAY_WAIT_SECONDS", 0)
+    monkeypatch.setattr(chat_module, "CHAT_TURN_LEASE_SECONDS", -1)
+    monkeypatch.setattr(client.app.state.tool_executor, "execute", blocked_execute)
+    session_id = _session(client)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        original = pool.submit(
+            _chat, client, session_id, content="/calculator 2 + 2"
+        )
+        assert started.wait(2)
+        recovered = _chat(client, session_id, content="/calculator 2 + 2")
+        assert recovered.json()["message"]["status"] == "error"
+        release.set()
+        late = original.result(timeout=3)
+
+    assert late.json()["message"]["status"] == "error"
+    assert client.get(f"/api/sessions/{session_id}/messages").json()[-1][
+        "status"
+    ] == "error"
+
+
+def test_agentic_late_result_cannot_overwrite_recovered_error(client, monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+
+    async def blocked_agent_turn(**_kwargs):
+        from ai4ia_api.agents.runtime import AgentRunResult
+        from ai4ia_api.usage.models import TokenUsage
+
+        started.set()
+        await asyncio.to_thread(release.wait, 3)
+        return AgentRunResult(
+            text="late agent success",
+            model="gpt-5.2",
+            steps=[],
+            usage=TokenUsage.empty(),
+        )
+
+    chat_module = importlib.import_module("ai4ia_api.routers.chat")
+    monkeypatch.setattr(chat_module, "CHAT_TURN_REPLAY_WAIT_SECONDS", 0)
+    monkeypatch.setattr(chat_module, "CHAT_TURN_LEASE_SECONDS", -1)
+    monkeypatch.setattr(chat_module, "run_agent_turn", blocked_agent_turn)
+    session_id = _session(client)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        original = pool.submit(
+            _chat, client, session_id, content="@general hello"
+        )
+        assert started.wait(2)
+        recovered = _chat(client, session_id, content="@general hello")
+        assert recovered.json()["message"]["status"] == "error"
+        release.set()
+        late = original.result(timeout=3)
+
+    assert late.json()["message"]["status"] == "error"
+    assert "late agent success" not in client.get(
+        f"/api/sessions/{session_id}/messages"
+    ).json()[-1]["content"]
+
+
+def test_completed_retry_replays_before_new_entitlement_denial(client):
+    class ExhaustAfterFirstCheck:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def check(self, _user_id):
+            self.calls += 1
+            if self.calls == 1:
+                return EntitlementDecision.allow()
+            return EntitlementDecision(
+                allowed=False,
+                code=429,
+                reason="Quota exhausted.",
+            )
+
+    entitlements = ExhaustAfterFirstCheck()
+    client.app.state.entitlements = entitlements
+    session_id = _session(client)
+    first = _chat(client, session_id)
+    retry = _chat(client, session_id)
+
+    assert first.status_code == retry.status_code == 200
+    assert retry.json()["message"]["id"] == first.json()["message"]["id"]
+    assert entitlements.calls == 1
+
+
 def test_summarize_retry_is_idempotent_and_conflict_safe(client):
     session_id = _session(client)
     first = _chat(client, session_id, content="/summarize")
@@ -202,6 +335,41 @@ def test_summarize_retry_is_idempotent_and_conflict_safe(client):
     conflict = _chat(client, session_id, content="/help")
     assert conflict.status_code == 409
     assert len(client.get(f"/api/sessions/{session_id}/messages").json()) == 2
+
+
+def test_clear_retry_does_not_delete_messages_added_after_first_clear(client):
+    session_id = _session(client)
+    assert _chat(client, session_id, content="before clear").status_code == 200
+
+    clear_payload = {
+        "sessionId": session_id,
+        "content": "/clear",
+        "stream": False,
+        "clientTurnId": OTHER_TURN_ID,
+    }
+    first = client.post("/api/chat", json=clear_payload)
+    assert first.status_code == 200
+
+    new_turn_id = "123e4567-e89b-42d3-8456-426614174002"
+    after = _chat(
+        client,
+        session_id,
+        content="after clear",
+        clientTurnId=new_turn_id,
+    )
+    assert after.status_code == 200
+
+    replay = client.post("/api/chat", json=clear_payload)
+    assert replay.status_code == 200
+    assert replay.json()["message"]["id"] == first.json()["message"]["id"]
+    messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    assert [message["clientTurnId"] for message in messages] == [
+        OTHER_TURN_ID,
+        OTHER_TURN_ID,
+        new_turn_id,
+        new_turn_id,
+    ]
+    assert any(message["content"] == "after clear" for message in messages)
 
 
 def test_summarize_claim_enforces_session_ownership(client):
@@ -245,6 +413,22 @@ class _CosmosClaimMessages:
     async def read_item(self, *, item, partition_key):
         return dict(self.items[item])
 
+    async def patch_item(
+        self,
+        *,
+        item,
+        partition_key,
+        patch_operations,
+        etag,
+        match_condition,
+    ):
+        saved = dict(self.items[item])
+        for operation in patch_operations:
+            saved[operation["path"].removeprefix("/")] = operation["value"]
+        saved["_etag"] = str(int(saved.get("_etag", "0")) + 1)
+        self.items[item] = saved
+        return dict(saved)
+
 
 async def test_cosmos_claim_conflict_verifies_and_replays_existing_turn():
     session = Session(id="session", userId="user", model="gpt-5.2")
@@ -283,6 +467,64 @@ async def test_cosmos_claim_conflict_verifies_and_replays_existing_turn():
     assert claimed is False
     assert saved_user.id == user_message.id
     assert saved_assistant.content == "summary"
+
+
+async def test_cosmos_terminal_copy_cannot_regress_recovered_error_to_success():
+    session = Session(id="session", userId="user", model="gpt-5.2")
+    body = ChatRequest(
+        sessionId=session.id,
+        content="hello",
+        stream=False,
+        clientTurnId=TURN_ID,
+    )
+    fingerprint = _client_request_fingerprint(body)
+    stale = datetime.now(timezone.utc) - timedelta(minutes=10)
+    user_message = _turn_message(
+        body=body,
+        user_id="user",
+        role=MessageRole.user,
+        content="hello",
+        fingerprint=fingerprint,
+        status=MessageStatus.complete,
+        createdAt=stale,
+    )
+    assistant = _turn_message(
+        body=body,
+        user_id="user",
+        role=MessageRole.assistant,
+        content="",
+        fingerprint=fingerprint,
+        status=MessageStatus.streaming,
+        createdAt=stale,
+        claimLeaseId="original-lease",
+    )
+    messages = _CosmosClaimMessages(user_message, assistant)
+    messages.items[assistant.id]["_etag"] = "0"
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _CosmosClaimSessions(session)
+    repo._messages = messages
+
+    recovered = await repo.terminalize_chat_turn(
+        "user",
+        session.id,
+        assistant.id,
+        status=MessageStatus.error,
+        content="recovered",
+        stale_before=datetime.now(timezone.utc),
+    )
+    late = await repo.terminalize_chat_turn(
+        "user",
+        session.id,
+        assistant.id,
+        status=MessageStatus.complete,
+        content="late success",
+        expected_claim_lease_id="original-lease",
+    )
+
+    assert recovered is not None and recovered.status is MessageStatus.error
+    assert late is not None and late.status is MessageStatus.error
+    assert late.content == "recovered"
+    assert messages.items[assistant.id]["status"] == "error"
 
 
 def test_local_reply_and_direct_tool_rows_carry_turn_id(client):

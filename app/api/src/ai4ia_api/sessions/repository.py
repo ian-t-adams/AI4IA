@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from .models import Document, Message, MessageStatus, Session
+from .models import ActivityStep, Document, Message, MessageAttachment, MessageStatus, Session
 
 
 class SessionNotFoundError(Exception):
@@ -76,6 +76,14 @@ class SessionRepository(Protocol):
         self, user_id: str, user_message: Message, assistant_message: Message
     ) -> tuple[Message, Message, bool]: ...
 
+    async def get_chat_turn(
+        self,
+        user_id: str,
+        session_id: str,
+        client_turn_id: str,
+        fingerprint: str,
+    ) -> tuple[Message, Message] | None: ...
+
     async def terminalize_chat_turn(
         self,
         user_id: str,
@@ -84,7 +92,11 @@ class SessionRepository(Protocol):
         *,
         status: MessageStatus,
         content: str,
+        expected_claim_lease_id: str | None = None,
         stale_before: datetime | None = None,
+        steps: list[ActivityStep] | None = None,
+        attachments: list[MessageAttachment] | None = None,
+        summary_version: int | None = None,
     ) -> Message | None: ...
 
     async def add_message_if_summary_version(
@@ -96,6 +108,15 @@ class SessionRepository(Protocol):
     async def list_messages(self, user_id: str, session_id: str) -> list[Message]: ...
 
     async def clear_messages(self, user_id: str, session_id: str) -> None: ...
+
+    async def clear_messages_before(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        cutoff: datetime,
+        preserve_ids: frozenset[str],
+    ) -> None: ...
 
     async def add_document(self, user_id: str, document: Document) -> Document: ...
 

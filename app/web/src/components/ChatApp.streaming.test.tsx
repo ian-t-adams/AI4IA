@@ -420,6 +420,40 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     expect(await screen.findByText("Trigger an error")).toBeInTheDocument();
   });
 
+  it("reconciles a claimed turn when its HTTP request fails after persistence", async () => {
+    const user = userEvent.setup();
+    const handlers = await sendAndCaptureHandlers(user, "Accepted before the 500");
+    const input = mocks.streamChat.mock.calls[0][0] as {
+      clientTurnId: string;
+    };
+    mocks.listMessages.mockResolvedValueOnce([
+      persistedMessage({
+        id: "persisted-user",
+        role: "user",
+        content: "Accepted before the 500",
+        clientTurnId: input.clientTurnId,
+      }),
+      persistedMessage({
+        id: "persisted-assistant",
+        role: "assistant",
+        content: "This turn couldn't be completed. Please try again.",
+        status: "error",
+        clientTurnId: input.clientTurnId,
+      }),
+    ]);
+
+    act(() => {
+      handlers.onRejected?.(500, "Internal Server Error");
+      handlers.onError("500: Internal Server Error");
+    });
+
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalled());
+    expect(
+      await screen.findByText("This turn couldn't be completed. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Accepted before the 500")).toHaveLength(1);
+  });
+
   it("reproduces the reported production bug: reconciliation fetch fails after the stream finishes, and the reply must not vanish", async () => {
     // This is the direct regression test for the root cause: finalize()
     // used to clear the streaming placeholder immediately, then rely
@@ -1094,6 +1128,23 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     const textbox = await screen.findByLabelText("Message");
     await waitFor(() => expect(textbox).toBeEnabled());
   });
+
+  it.each([401, 422])(
+    "removes an optimistic turn immediately for definitive pre-claim HTTP %s",
+    async (status) => {
+      const user = userEvent.setup();
+      const handlers = await sendAndCaptureHandlers(user, `Rejected with ${status}`);
+      act(() => {
+        handlers.onRejected?.(status, "Rejected before persistence");
+        handlers.onError(`${status}: Rejected before persistence`);
+      });
+
+      await waitFor(() =>
+        expect(screen.queryByText(`Rejected with ${status}`)).toBeNull(),
+      );
+      expect(mocks.listMessages).not.toHaveBeenCalled();
+    },
+  );
 
   it("reconciles by the browser clientTurnId even when the first metadata SSE is lost", async () => {
     const user = userEvent.setup();

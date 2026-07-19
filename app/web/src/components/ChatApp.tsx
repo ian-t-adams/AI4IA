@@ -224,6 +224,41 @@ async function fetchReconciledMessages(
   return null;
 }
 
+async function fetchRejectedTurn(
+  sessionId: string,
+  pending: PendingTurn,
+  isCancelled: () => boolean,
+  signal: AbortSignal,
+): Promise<{ messages: Message[]; claimFound: boolean } | null> {
+  let last: Message[] = [];
+  try {
+    for (let attempt = 0; attempt < RECONCILE_MAX_ATTEMPTS; attempt++) {
+      if (isCancelled()) return null;
+      last = await api.listMessages(sessionId, signal);
+      if (isCancelled()) return null;
+      const rows = correlatedRows(last, pending);
+      const terminal = rows.some(
+        (message) =>
+          message.role === "assistant" && message.status !== "streaming",
+      );
+      if (terminal) return { messages: last, claimFound: true };
+      if (attempt < RECONCILE_MAX_ATTEMPTS - 1) {
+        await wait(RECONCILE_RETRY_DELAY_MS, signal);
+      }
+    }
+    return {
+      messages: last,
+      claimFound: correlatedRows(last, pending).length > 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const DEFINITIVE_PRECLAIM_REJECTIONS = new Set([
+  400, 401, 403, 404, 409, 422, 429,
+]);
+
 // A turn tracked from the moment its stream finalizes until an authoritative
 // fetch confirms its persisted reply. `assistantMessageId`/`userMessageId`
 // are the backend's own already-stable Message.id values for this turn's
@@ -1560,6 +1595,7 @@ export function ChatApp() {
         turnId === turnCounterRef.current;
       let finalized = false;
       let rejected = false;
+      let httpRejected = false;
       const releaseLiveTurn = () => {
         streamingRef.current = false;
         setStreaming(false);
@@ -1577,6 +1613,41 @@ export function ChatApp() {
           previous.filter((message) => message.id !== optimisticUser.id),
         );
         releaseLiveTurn();
+      };
+      const reconcileRejectedTurn = async () => {
+        releaseLiveTurn();
+        const controller = new AbortController();
+        const requestVersion = ++historySequenceRef.current;
+        latestHistoryRequestRef.current.set(turnSessionId, requestVersion);
+        historyControllersRef.current.add(controller);
+        const isCancelled = () =>
+          !mountedRef.current ||
+          controller.signal.aborted ||
+          turnSessionId !== sessionIdRef.current ||
+          turnGeneration !== selectionGenerationRef.current ||
+          pendingTurnsRef.current.get(clientTurnId) !== pendingTurn;
+        let result: Awaited<ReturnType<typeof fetchRejectedTurn>> = null;
+        try {
+          result = await fetchRejectedTurn(
+            turnSessionId,
+            pendingTurn,
+            isCancelled,
+            controller.signal,
+          );
+        } finally {
+          historyControllersRef.current.delete(controller);
+        }
+        if (!result) return;
+        if (!result.claimFound) {
+          rejectOptimisticTurn();
+          return;
+        }
+        applyReconciledMessages(
+          turnSessionId,
+          result.messages,
+          requestVersion,
+        );
+        if (isCurrentTurn()) setInspectorVersion((value) => value + 1);
       };
       const finalize = async (status: "complete" | "cancelled" | "error") => {
         if (finalized || rejected) return;
@@ -1697,10 +1768,17 @@ export function ChatApp() {
           onDone: () => void finalize("complete"),
           onError: (msg) => {
             setError(msg);
-            if (rejected) return;
+            if (rejected || httpRejected) return;
             void finalize("error");
           },
-          onRejected: () => rejectOptimisticTurn(),
+          onRejected: (status) => {
+            httpRejected = true;
+            if (DEFINITIVE_PRECLAIM_REJECTIONS.has(status)) {
+              rejectOptimisticTurn();
+              return;
+            }
+            void reconcileRejectedTurn();
+          },
           // Stop button: reconcile with the server's cancelled message.
           onAbort: () => void finalize("cancelled"),
         },

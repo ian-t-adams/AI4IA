@@ -20,12 +20,16 @@ from typing import Any
 from pydantic import BaseModel
 
 from .models import (
+    ActivityStep,
     Document,
     Message,
+    MessageAttachment,
+    MessageRole,
     MessageStatus,
     Session,
     normalize_session_patch_changes,
     normalize_session_title,
+    turn_message_id,
 )
 from .repository import (
     ClientTurnConflictError,
@@ -55,6 +59,8 @@ class CosmosSessionRepository:
         doc = model.model_dump(mode="json")
         if isinstance(model, Message) and model.clientRequestFingerprint is not None:
             doc["clientRequestFingerprint"] = model.clientRequestFingerprint
+        if isinstance(model, Message) and model.claimLeaseId is not None:
+            doc["claimLeaseId"] = model.claimLeaseId
         return doc
 
     async def _owned_session(self, user_id: str, session_id: str) -> Session:
@@ -229,7 +235,8 @@ class CosmosSessionRepository:
 
         query = (
             "SELECT c.id FROM c WHERE c.sessionId = @sid "
-            "AND IS_DEFINED(c.summaryVersion) AND c.summaryVersion < @version"
+            "AND IS_DEFINED(c.summaryVersion) AND c.summaryVersion < @version "
+            "AND (NOT IS_DEFINED(c.clientTurnId) OR IS_NULL(c.clientTurnId))"
         )
         params = [
             {"name": "@sid", "value": session_id},
@@ -421,6 +428,45 @@ class CosmosSessionRepository:
                 raise ClientTurnConflictError(user_message.clientTurnId)
             return saved_user, saved_assistant, False
 
+    async def get_chat_turn(
+        self,
+        user_id: str,
+        session_id: str,
+        client_turn_id: str,
+        fingerprint: str,
+    ) -> tuple[Message, Message] | None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        await self._owned_session(user_id, session_id)
+        ids = {
+            role: turn_message_id(user_id, session_id, client_turn_id, role)
+            for role in (MessageRole.user, MessageRole.assistant)
+        }
+        raw: dict[MessageRole, dict[str, Any]] = {}
+        for role, message_id in ids.items():
+            try:
+                raw[role] = await self._messages.read_item(
+                    item=message_id, partition_key=session_id
+                )
+            except CosmosResourceNotFoundError:
+                continue
+        if not raw:
+            return None
+        if len(raw) != 2:
+            raise ClientTurnConflictError(client_turn_id)
+        saved_user = Message.model_validate(raw[MessageRole.user])
+        saved_assistant = Message.model_validate(raw[MessageRole.assistant])
+        if (
+            saved_user.userId != user_id
+            or saved_assistant.userId != user_id
+            or saved_user.clientTurnId != client_turn_id
+            or saved_assistant.clientTurnId != client_turn_id
+            or saved_user.clientRequestFingerprint != fingerprint
+            or saved_assistant.clientRequestFingerprint != fingerprint
+        ):
+            raise ClientTurnConflictError(client_turn_id)
+        return saved_user, saved_assistant
+
     async def terminalize_chat_turn(
         self,
         user_id: str,
@@ -429,7 +475,11 @@ class CosmosSessionRepository:
         *,
         status: MessageStatus,
         content: str,
+        expected_claim_lease_id: str | None = None,
         stale_before: datetime | None = None,
+        steps: list[ActivityStep] | None = None,
+        attachments: list[MessageAttachment] | None = None,
+        summary_version: int | None = None,
     ) -> Message | None:
         from azure.core import MatchConditions
         from azure.cosmos.exceptions import (
@@ -437,6 +487,8 @@ class CosmosSessionRepository:
             CosmosResourceNotFoundError,
         )
 
+        if expected_claim_lease_id is None and stale_before is None:
+            raise ValueError("A claim lease or stale cutoff is required.")
         await self._owned_session(user_id, session_id)
         for _ in range(3):
             try:
@@ -450,16 +502,47 @@ class CosmosSessionRepository:
                 raise SessionNotFoundError(session_id)
             if current.status.value != "streaming":
                 return current
+            if (
+                expected_claim_lease_id is not None
+                and current.claimLeaseId != expected_claim_lease_id
+            ):
+                return current
             if stale_before is not None and current.createdAt > stale_before:
                 return current
+            operations = [
+                {"op": "set", "path": "/status", "value": status.value},
+                {"op": "set", "path": "/content", "value": content},
+                {
+                    "op": "set",
+                    "path": "/attachments",
+                    "value": [
+                        attachment.model_dump(mode="json")
+                        for attachment in attachments or []
+                    ],
+                },
+                {
+                    "op": "set",
+                    "path": "/steps",
+                    "value": (
+                        [step.model_dump(mode="json") for step in steps]
+                        if steps is not None
+                        else None
+                    ),
+                },
+            ]
+            if summary_version is not None:
+                operations.append(
+                    {
+                        "op": "set",
+                        "path": "/summaryVersion",
+                        "value": summary_version,
+                    }
+                )
             try:
                 saved = await self._messages.patch_item(
                     item=assistant_message_id,
                     partition_key=session_id,
-                    patch_operations=[
-                        {"op": "set", "path": "/status", "value": status.value},
-                        {"op": "set", "path": "/content", "value": content},
-                    ],
+                    patch_operations=operations,
                     etag=raw.get("_etag"),
                     match_condition=MatchConditions.IfNotModified,
                 )
@@ -476,6 +559,8 @@ class CosmosSessionRepository:
     ) -> bool:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
+        if message.claimLeaseId is not None:
+            raise ValueError("Claimed turns must use terminalize_chat_turn.")
         session = await self._owned_session(user_id, message.sessionId)
         if session.summaryVersion != expected_version:
             return False
@@ -494,6 +579,8 @@ class CosmosSessionRepository:
         return False
 
     async def upsert_message(self, user_id: str, message: Message) -> Message:
+        if message.claimLeaseId is not None:
+            raise ValueError("Claimed turns must use terminalize_chat_turn.")
         await self._owned_session(user_id, message.sessionId)
         message.userId = user_id
         await self._messages.upsert_item(self._to_doc(message))
@@ -516,6 +603,52 @@ class CosmosSessionRepository:
             query=query, parameters=params, partition_key=session_id
         ):
             await self._messages.delete_item(item=doc["id"], partition_key=session_id)
+
+    async def clear_messages_before(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        cutoff: datetime,
+        preserve_ids: frozenset[str],
+    ) -> None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        await self._owned_session(user_id, session_id)
+        query = (
+            "SELECT c.id, c.clientTurnId, c.status FROM c WHERE c.sessionId = @sid "
+            "AND c.createdAt <= @cutoff"
+        )
+        params = [
+            {"name": "@sid", "value": session_id},
+            {
+                "name": "@cutoff",
+                "value": cutoff.isoformat().replace("+00:00", "Z"),
+            },
+        ]
+        candidates = [
+            doc
+            async for doc in self._messages.query_items(
+                query=query, parameters=params, partition_key=session_id
+            )
+        ]
+        streaming_turn_ids = {
+            doc.get("clientTurnId")
+            for doc in candidates
+            if doc.get("status") == MessageStatus.streaming.value
+            and doc.get("clientTurnId")
+        }
+        for doc in candidates:
+            if doc["id"] in preserve_ids:
+                continue
+            if doc.get("clientTurnId") in streaming_turn_ids:
+                continue
+            try:
+                await self._messages.delete_item(
+                    item=doc["id"], partition_key=session_id
+                )
+            except CosmosResourceNotFoundError:
+                pass
 
     async def add_document(self, user_id: str, document: Document) -> Document:
         await self._owned_session(user_id, document.sessionId)
