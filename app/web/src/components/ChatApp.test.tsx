@@ -1454,6 +1454,102 @@ describe("ChatApp uploads", () => {
     ).toBeInTheDocument();
   });
 
+  // Regression (voice acceptance round 13 background review, HIGH): once a
+  // real send() has already activated its own session AND begun actively
+  // streaming into it, a later-resolving, differently-keyed intent (e.g.
+  // Voice Live, racing its own creation under different settings) must
+  // never be allowed to supersede it. send()/runUpload() capture their own
+  // session id ONCE and never re-read activeId/sessionIdRef afterward, so
+  // a superseding activation wouldn't confuse send()'s own closure (it
+  // would keep correctly streaming into and reconciling its original
+  // session) -- but the visible header/sidebar would flip to a different,
+  // unrelated session while the message pane kept showing/updating the
+  // original one, and any OTHER caller reading activeId (a second send, a
+  // voice turn) would then target the wrong conversation entirely.
+  it("keeps a real, already-streaming send()'s session active against a later-resolving, differently-keyed voice intent", async () => {
+    const resolvers: Array<() => void> = [];
+    const created = [session("VOICE"), session("SEND")];
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          const value = created[resolvers.length];
+          resolvers.push(() => resolve(value));
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    // Voice Live starts creating a session under the current (blank)
+    // settings.
+    const voiceCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let voiceResult: Promise<string> | undefined;
+    act(() => {
+      voiceResult = voiceCall.ensureSession(() => true);
+    });
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+
+    // The user then edits the draft system prompt and sends a real message
+    // -- send()'s own ensureSession() call, under different settings,
+    // fires its own concurrent creation rather than sharing voice's.
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.type(screen.getByLabelText("System prompt"), "Send prompt");
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(2));
+
+    // send()'s OWN creation resolves FIRST this time: nothing is active
+    // yet, so it activates AND immediately begins real, visible streaming
+    // (the mock never calls onDone, so it stays actively "in flight" just
+    // like a real in-progress response).
+    await act(async () => {
+      resolvers[1]();
+    });
+    await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+    expect(mocks.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "SEND" }),
+      expect.anything(),
+    );
+    expect(
+      await screen.findByText("Session SEND", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+
+    // Voice's differently-keyed creation resolves SECOND, after send() has
+    // already activated and started actively streaming into "SEND". Even
+    // though voice's settings genuinely differ from what's active (a
+    // mismatch that would otherwise win per the "latest-intent-wins"
+    // design), it must NOT be allowed to supersede a session with a real,
+    // in-flight consumer.
+    await act(async () => {
+      resolvers[0]();
+      await voiceResult;
+    });
+
+    // Voice's own call falls back to the session that's actually current
+    // and in use, rather than being hijacked into its own orphaned
+    // "VOICE" session that nothing is showing.
+    expect(await voiceResult).toBe("SEND");
+    // The header must still show "SEND" -- never flip to "VOICE" out from
+    // under the actively-streaming conversation.
+    expect(
+      screen.getByText("Session SEND", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Session VOICE", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).not.toBeInTheDocument();
+    // Only ONE stream was ever started, and only into "SEND".
+    expect(mocks.streamChat).toHaveBeenCalledTimes(1);
+  });
+
   // Regression (voice acceptance round 13, HIGH): a hung createSession()
   // network call (dropped connection, backend stall) previously stayed
   // cached in creatingRef forever -- a later Retry (after voice's own
@@ -1571,6 +1667,84 @@ describe("ChatApp uploads", () => {
     ).toBeInTheDocument();
 
     vi.useRealTimers();
+  });
+
+  // Regression (voice acceptance round 13 background review, HIGH):
+  // abandonPendingSessionCreation ("Stop waiting") must never abort a
+  // creation that's still genuinely relied upon by ANOTHER concurrent
+  // caller sharing the exact same in-flight request -- the intentional
+  // dedup design lets identical settings + selection generation join one
+  // network call. The "Stop waiting" control is visible/clickable as soon
+  // as voice.saving is true, with no gating on any timeout and no
+  // disabling of the Composer while voice is saving, so a user could
+  // previously click it while an unrelated, healthy plain send() was
+  // sharing that exact same pending creation -- aborting it out from
+  // under that unrelated send, which would then fail with a raw abort
+  // error instead of ever getting its session.
+  it("does not abort a shared pending session creation still relied upon by another caller when only one side abandons it", async () => {
+    let resolveCreate!: (value: ReturnType<typeof session>) => void;
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    const call = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+      abandonPendingSessionCreation: () => void;
+    };
+
+    // Voice starts creating a session under the current (blank) settings.
+    let voiceResult: Promise<string> | undefined;
+    act(() => {
+      voiceResult = call.ensureSession(() => true);
+    });
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+    const [, signal] = mocks.createSession.mock.calls[0] as [
+      unknown,
+      AbortSignal,
+    ];
+    expect(signal.aborted).toBe(false);
+
+    // A second, unrelated caller under the IDENTICAL settings/selection
+    // generation (e.g. a plain text send racing the same lazy-creation
+    // path) joins the SAME in-flight request rather than firing its own --
+    // the existing, intentional dedup design.
+    let otherResult: Promise<string> | undefined;
+    act(() => {
+      otherResult = call.ensureSession(() => true);
+    });
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+
+    // Voice abandons its OWN wait ("Stop waiting"). The other caller is
+    // still relying on this exact same request, so the underlying network
+    // call must be left running rather than aborted out from under it.
+    act(() => {
+      call.abandonPendingSessionCreation();
+    });
+    expect(signal.aborted).toBe(false);
+
+    // The underlying request now resolves normally -- BOTH callers' own
+    // ensureSession() invocations race the same entry.promise regardless
+    // of abandon (which never rejects/settles either specific call, only
+    // the shared cache slot and the network controller), so both must
+    // still succeed and converge on the same activated session.
+    await act(async () => {
+      resolveCreate(session("C"));
+      await Promise.all([voiceResult, otherResult]);
+    });
+    expect(await voiceResult).toBe("C");
+    expect(await otherResult).toBe("C");
+    expect(
+      await screen.findByText("Session C", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
   });
 
   // Regression (voice acceptance round 13, MEDIUM): the intent key must

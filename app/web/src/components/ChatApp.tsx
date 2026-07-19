@@ -346,6 +346,19 @@ export function ChatApp() {
   const abortRef = useRef<(() => void) | null>(null);
   // Synchronous in-flight flag so guards work before React state settles.
   const streamingRef = useRef(false);
+  // The CONCRETE session id a real, already-resolved send() is actively
+  // streaming into -- set only once send() has an actual id in hand (never
+  // merely because streamingRef.current is true), cleared in finalize().
+  // streamingRef.current alone can't gate ensureSession()'s supersession
+  // check below: it's set synchronously at the very top of send(), before
+  // send() even knows its own eventual session id, so it's also true while
+  // send()'s OWN ensureSession() call is still deciding whether to activate
+  // its first-ever session -- a false "someone is already consuming the
+  // active session" signal about to be produced by that very call. Keying
+  // on the concrete id instead means the flag can only ever match an
+  // ALREADY-established sessionIdRef.current that a DIFFERENT, prior
+  // send() actually finished activating and started consuming.
+  const streamingSessionIdRef = useRef<string | null>(null);
   // Holds an in-flight lazy session-creation promise so a rapid send + upload
   // (or two uploads) share a single session instead of racing to create two.
   // Keyed by an "intent" fingerprint (see ensureSession) of the exact
@@ -374,13 +387,24 @@ export function ChatApp() {
   // to, and without this a second one could re-observe "the active key
   // differs from mine" (because a third, genuinely different intent
   // superseded in the gap) and incorrectly flip activation back to this
-  // entry's own, already-adjudicated key.
+  // entry's own, already-adjudicated key. waiterCount tracks how many
+  // ensureSession() calls are CURRENTLY awaiting this exact entry's outcome
+  // (incremented right before, decremented right after, regardless of
+  // whether the entry was just created or an existing one was joined) so
+  // abandonPendingSessionCreation() can tell "only the abandoning attempt's
+  // own call is left" (safe to abort) apart from "someone else -- a
+  // concurrent send()/upload/other voice attempt sharing this exact entry --
+  // is also relying on it" (must not abort out from under them). A caller's
+  // OWN outer timeout firing (e.g. voice's PERSIST_TIMEOUT_MS) never itself
+  // decrements this: only this entry's Promise.race actually settling does,
+  // so the count stays accurate regardless of who's still listening to it.
   const creatingRef = useRef<{
     intentKey: string;
     promise: Promise<string>;
     startedAt: number;
     controller: AbortController;
     mismatchClaimed: boolean;
+    waiterCount: number;
   } | null>(null);
   // Synchronous mirror of activeId so ensureSession sees a just-created session
   // immediately (before the setActiveId state flush), preventing a double create
@@ -741,10 +765,17 @@ export function ChatApp() {
   // arbitrates between brand-new, still-racing candidates on a blank
   // starting point -- never against an already-established, in-use
   // conversation (activation is impossible once sessionIdRef.current is set
-  // unless the intent key genuinely differs). The return value below
-  // guarantees every OTHER caller -- one whose own intent didn't end up
-  // activating -- still ends up with the session that is actually current
-  // by the time its own call resolves, never its own now-orphaned creation.
+  // unless the intent key genuinely differs) -- AND never against a session
+  // that already has a real, in-flight consumer (see currentSessionInUse
+  // below): once a real send()/upload is actively using a session, no
+  // later-resolving mismatched intent may rip the UI over to a different
+  // one out from under it, since send()/upload capture their own session id
+  // once and would keep silently updating the visible transcript for the
+  // no-longer-"active" session while the header/sidebar showed another. The
+  // return value below guarantees every OTHER caller -- one whose own
+  // intent didn't end up activating -- still ends up with the session that
+  // is actually current by the time its own call resolves, never its own
+  // now-orphaned creation.
   //
   // A pending creation's wait is bounded to SESSION_CREATION_TIMEOUT_MS from
   // when it STARTED (not from when each caller joined), for every caller
@@ -800,9 +831,15 @@ export function ChatApp() {
           startedAt: Date.now(),
           controller,
           mismatchClaimed: false,
+          waiterCount: 0,
         };
         creatingRef.current = entry;
       }
+      // Counts this call among the entry's current waiters for the whole
+      // span it's awaiting the race below, regardless of whether it just
+      // created the entry or joined an existing one -- see the waiterCount
+      // comment on creatingRef.
+      entry.waiterCount += 1;
       let id: string;
       try {
         id = await Promise.race([
@@ -826,11 +863,44 @@ export function ChatApp() {
         }
         entry.controller.abort();
         throw waitError;
+      } finally {
+        entry.waiterCount -= 1;
       }
       const stillCurrentSelection =
         selectionGenerationRef.current === capturedGeneration;
       const stillWanted = isStillWanted ? isStillWanted() : true;
       const noSessionActiveYet = !sessionIdRef.current;
+      // A session that already has a real, in-flight consumer (an active
+      // stream or upload) must never be superseded out from under it:
+      // send()/runUpload() capture their own session id ONCE and never
+      // re-read activeId/sessionIdRef afterward, so reactivating a
+      // DIFFERENT session mid-stream wouldn't confuse THEIR own closures
+      // (they'd keep correctly targeting their original session), but it
+      // would desynchronize the visible transcript -- still being updated
+      // for the original session -- from whatever the header/sidebar now
+      // report as active, with nothing ever reloading messages for the new
+      // one. This only ever gates the mismatch-supersession branch below,
+      // never noSessionActiveYet: a caller activating the very first
+      // session for a blank chat may itself have already set
+      // streamingRef.current before its own ensureSession() call resolves,
+      // and that first-ever activation must still succeed.
+      //
+      // Deliberately keyed on the CONCRETE session id (streamingSessionIdRef
+      // / each upload target's own sessionId), not the caller-agnostic
+      // streamingRef.current/activeUploadCountRef.current booleans: those
+      // flip on before the setting caller itself has a session id (send()
+      // marks streamingRef.current synchronously before calling
+      // ensureSession() for its OWN first session), so a same-call read
+      // would misreport "the active session is in use" for a session that
+      // doesn't even exist yet. Comparing concrete ids means this can only
+      // ever match a DIFFERENT, already-resolved call's real target --
+      // never this invocation's own not-yet-known id.
+      const currentSessionInUse =
+        sessionIdRef.current !== null &&
+        (streamingSessionIdRef.current === sessionIdRef.current ||
+          Array.from(uploadTargetsRef.current.values()).some(
+            (target) => target.sessionId === sessionIdRef.current,
+          ));
       // At most one caller sharing this entry ever gets to attempt a
       // cross-key mismatch supersession -- see the mismatchClaimed comment
       // on creatingRef. Claimed unconditionally (regardless of the outcome
@@ -841,6 +911,7 @@ export function ChatApp() {
       const settingsMismatch =
         canClaimMismatch &&
         !noSessionActiveYet &&
+        !currentSessionInUse &&
         activeIntentKeyRef.current !== intentKey;
       if (
         stillCurrentSelection &&
@@ -892,12 +963,30 @@ export function ChatApp() {
   // Likewise a no-op if this intent already activated or failed, since
   // creatingRef is cleared by the original `.finally()` once a creation
   // settles -- there is nothing left in flight to abandon.
+  //
+  // Detaching from the cache slot (so no FUTURE caller joins this entry) is
+  // always safe and happens unconditionally. Actually cancelling the
+  // in-flight network request is NOT always safe: this exact entry may be
+  // shared by a concurrent, unrelated send()/upload()/other voice attempt
+  // that never asked to abandon anything (ensureSession dedupes ANY callers
+  // whose settings/generation produce the same key, not just voice's own).
+  // entry.waiterCount (see the comment on creatingRef) always includes this
+  // abandoning attempt's own still-pending ensureSession() call even though
+  // its caller (persist()) has already stopped listening via its own
+  // PERSIST_TIMEOUT_MS -- that outer timeout doesn't cancel the underlying
+  // ensureSession() call, only this explicit abort does -- so a count of 1
+  // means "just me" (safe to abort) and a count above 1 means someone else
+  // is genuinely still relying on the live result (must not abort out from
+  // under them; they'll still resolve normally, or evict/retry on their own
+  // if the bound eventually trips).
   const abandonPendingSessionCreation = useCallback(() => {
     const intentKey = computeSessionIntentKey(selectionGenerationRef.current);
     const entry = creatingRef.current;
     if (entry && entry.intentKey === intentKey) {
       creatingRef.current = null;
-      entry.controller.abort();
+      if (entry.waiterCount <= 1) {
+        entry.controller.abort();
+      }
     }
   }, [computeSessionIntentKey]);
 
@@ -1526,6 +1615,14 @@ export function ChatApp() {
         }
       }
 
+      // sessionId is now a real, resolved id this call is about to actively
+      // consume -- record it so a later-resolving, differently-keyed
+      // ensureSession() call can detect a genuine in-flight consumer (see
+      // currentSessionInUse) instead of only seeing the caller-agnostic
+      // streamingRef.current, which was already true before this call had
+      // any session id at all.
+      streamingSessionIdRef.current = sessionId;
+
       const userCreatedAt = new Date();
       const optimisticUser: Message = {
         id: `tmp-${Date.now()}`,
@@ -1546,6 +1643,13 @@ export function ChatApp() {
       const isCommand = content.trimStart().startsWith("/");
       const finalize = async () => {
         streamingRef.current = false;
+        // Identity-safe: only clear if it's still this call's own session id
+        // (there's only ever one in-flight send() at a time thanks to the
+        // streamingRef.current guard above, but this keeps the invariant
+        // explicit rather than relying on that external guarantee).
+        if (streamingSessionIdRef.current === sessionId) {
+          streamingSessionIdRef.current = null;
+        }
         setStreaming(false);
         abortRef.current = null;
         try {
