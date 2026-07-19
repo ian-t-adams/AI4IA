@@ -729,14 +729,29 @@ export async function revokeDocumentShare(
 export interface StreamHandlers {
   onDelta: (text: string) => void;
   onDone: () => void;
-  onError: (message: string) => void;
+  onError: (
+    message: string,
+    info: {
+      accepted: boolean;
+      persistenceFailed: boolean;
+      definitePreAcceptance?: boolean;
+    },
+  ) => void;
+  onMetadata: (metadata: {
+    userMessageId: string | null;
+    assistantMessageId: string;
+  }) => void;
   // Called for each live activity event during an agentic (tool-using) turn, so
   // the UI can show "Searching the web..." while it runs. Ignored by callers that
   // don't render activity.
   onStep?: (step: ActivityStep) => void;
   // Called when the caller aborts the stream (e.g. Stop button). Lets the UI
   // reconcile with the server, which persists a `cancelled` assistant message.
-  onAbort?: () => void;
+  onAbort?: (info?: {
+    accepted: boolean;
+    persistenceFailed: boolean;
+    definitePreAcceptance?: boolean;
+  }) => void;
 }
 
 // Streams a chat completion. Returns an abort function the caller can invoke
@@ -756,6 +771,7 @@ export function streamChat(
 
   (async () => {
     let sawDone = false;
+    let sawMetadata = false;
     try {
       const resp = await apiFetch("/api/chat", {
         method: "POST",
@@ -765,7 +781,11 @@ export function streamChat(
       });
       if (!resp.ok || !resp.body) {
         const detail = await resp.text().catch(() => resp.statusText);
-        handlers.onError(`${resp.status}: ${detail}`);
+        handlers.onError(`${resp.status}: ${detail}`, {
+          accepted: false,
+          persistenceFailed: false,
+          definitePreAcceptance: resp.status >= 400 && resp.status < 500,
+        });
         return;
       }
       const reader = resp.body.getReader();
@@ -782,14 +802,44 @@ export function streamChat(
           if (!line.startsWith("data:")) continue;
           const payload = line.slice("data:".length).trim();
           if (payload === "[DONE]") {
+            if (!sawMetadata) {
+              handlers.onError("Stream completed without message metadata.", {
+                accepted: false,
+                persistenceFailed: false,
+                definitePreAcceptance: false,
+              });
+              return;
+            }
             sawDone = true;
             handlers.onDone();
             return;
           }
           try {
             const obj = JSON.parse(payload);
+            if (obj.metadata) {
+              const userMessageId = obj.metadata.userMessageId;
+              const assistantMessageId = obj.metadata.assistantMessageId;
+              if (
+                (typeof userMessageId !== "string" && userMessageId !== null) ||
+                typeof assistantMessageId !== "string"
+              ) {
+                handlers.onError("Stream returned invalid message metadata.", {
+                  accepted: false,
+                  persistenceFailed: false,
+                  definitePreAcceptance: false,
+                });
+                return;
+              }
+              sawMetadata = true;
+              handlers.onMetadata({ userMessageId, assistantMessageId });
+              continue;
+            }
             if (obj.error) {
-              handlers.onError(String(obj.error));
+              handlers.onError(String(obj.error), {
+                accepted: sawMetadata,
+                persistenceFailed: obj.persistenceFailed === true,
+                definitePreAcceptance: false,
+              });
               return;
             }
             if (obj.step) {
@@ -807,13 +857,27 @@ export function streamChat(
       // Reached EOF without a terminating [DONE]: treat as a truncated stream
       // rather than a clean completion so the UI can surface/reconcile it.
       if (sawDone) handlers.onDone();
-      else handlers.onError("Stream ended unexpectedly.");
+      else {
+        handlers.onError("Stream ended unexpectedly.", {
+          accepted: sawMetadata,
+          persistenceFailed: false,
+          definitePreAcceptance: false,
+        });
+      }
     } catch (err) {
       if ((err as Error).name === "AbortError") {
-        handlers.onAbort?.();
+        handlers.onAbort?.({
+          accepted: sawMetadata,
+          persistenceFailed: false,
+          definitePreAcceptance: false,
+        });
         return;
       }
-      handlers.onError((err as Error).message);
+      handlers.onError((err as Error).message, {
+        accepted: sawMetadata,
+        persistenceFailed: false,
+        definitePreAcceptance: false,
+      });
     }
   })();
 

@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 import secrets
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -232,16 +232,72 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _local_reply_response(session_id: str, assistant: Message, stream: bool):
+def _stream_metadata(
+    user_message_id: str | None,
+    assistant_message_id: str,
+) -> str:
+    payload = {
+        "metadata": {
+            "userMessageId": user_message_id,
+            "assistantMessageId": assistant_message_id,
+        }
+    }
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _has_gateway_stream_error(raw: str) -> bool:
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(payload, dict) and bool(payload.get("error"))
+
+
+async def _persist_terminal_assistant(
+    repo: SessionRepository,
+    user_id: str,
+    assistant: Message,
+) -> bool:
+    write = asyncio.create_task(repo.upsert_message(user_id, assistant))
+    try:
+        await asyncio.shield(write)
+        return True
+    except asyncio.CancelledError:
+        try:
+            await write
+        except Exception:  # noqa: BLE001 - cancellation path retries terminal state
+            logger.exception("Failed to persist assistant message %s", assistant.id)
+        raise
+    except Exception:  # noqa: BLE001 - converted to an explicit stream failure
+        logger.exception("Failed to persist assistant message %s", assistant.id)
+        return False
+
+
+def _local_reply_response(
+    session_id: str,
+    assistant: Message,
+    stream: bool,
+    *,
+    user_message_id: str | None,
+    assistant_persisted: bool = True,
+):
     """Uniform response for a locally-produced reply (command / agent notice).
 
-    Mirrors the model SSE shape so the frontend parser is unchanged: one content
-    delta, then ``[DONE]``.
+    Durable replies expose their row ids before content. Intentionally suppressed
+    command replies fail explicitly without claiming an assistant row exists.
     """
     if not stream:
         return {"sessionId": session_id, "message": assistant}
 
     async def gen():
+        if not assistant_persisted:
+            payload = {
+                "error": "The command result was superseded before it could be saved.",
+                "persistenceSuppressed": True,
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+            return
+        yield _stream_metadata(user_message_id, assistant.id)
         chunk = {"choices": [{"delta": {"content": assistant.content}}]}
         yield f"data: {json.dumps(chunk)}\n\n"
         yield "data: [DONE]\n\n"
@@ -249,12 +305,52 @@ def _local_reply_response(session_id: str, assistant: Message, stream: bool):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+async def _stream_with_placeholder(
+    *,
+    repo: SessionRepository,
+    user_id: str,
+    assistant: Message,
+    events: AsyncGenerator[str, None],
+) -> AsyncGenerator[str, None]:
+    """Own placeholder persistence within the response iterator lifecycle."""
+    placeholder_persisted = False
+    try:
+        write = asyncio.create_task(repo.add_message(user_id, assistant))
+        try:
+            await asyncio.shield(write)
+            placeholder_persisted = True
+        except asyncio.CancelledError:
+            try:
+                await write
+                placeholder_persisted = True
+            except Exception:  # noqa: BLE001 - no row exists to finalize
+                logger.exception(
+                    "Failed to persist assistant placeholder %s", assistant.id
+                )
+            raise
+        except Exception:  # noqa: BLE001 - headers are already committed
+            logger.exception("Failed to persist assistant placeholder %s", assistant.id)
+            payload = {
+                "error": "The reply could not be initialized.",
+                "persistenceFailed": True,
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+            return
+        async for event in events:
+            yield event
+    finally:
+        await events.aclose()
+        if placeholder_persisted and assistant.status is MessageStatus.streaming:
+            assistant.status = MessageStatus.cancelled
+            await _persist_terminal_assistant(repo, user_id, assistant)
+
+
 # Live activity + final answer for an agentic (tool-using) turn. The turn's tool
 # path is non-streaming internally, so today it dumps the whole answer at once and
 # the bubble stays blank while tools run. This runs the turn as a shielded task and
 # forwards its step trace live as ``{"step": {...}}`` SSE events (older clients that
 # only read ``choices[0].delta.content`` ignore them), then a single content delta,
-# then ``[DONE]`` — mirroring the plain-stream path's cancel-safe persist/meter.
+# then durably persists the terminal row before ``[DONE]``.
 async def _agentic_stream(
     *,
     assistant: Message,
@@ -269,10 +365,11 @@ async def _agentic_stream(
     agent_name: str | None,
     correlation_id: str,
     content_for_model: str,
+    user_message_id: str,
     extra_usage: list[TokenUsage] | None = None,
     fallback: Callable[[], Awaitable[tuple[str, TokenUsage]]] | None = None,
     get_attachments: Callable[[], list[MessageAttachment]] | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     queue: asyncio.Queue = asyncio.Queue()
     sentinel = object()
 
@@ -296,7 +393,9 @@ async def _agentic_stream(
     content = ""
     persisted: list[ActivityStep] | None = None
     remembered = False
+    terminal_persisted = False
     try:
+        yield _stream_metadata(user_message_id, assistant.id)
         result: AgentRunResult | None = None
         run_error: Exception | None = None
         while True:
@@ -330,27 +429,66 @@ async def _agentic_stream(
         elif run_error is not None:
             raise run_error
 
-        if content:
-            yield f"data: {json.dumps({'choices': [{'delta': {'content': content}}]})}\n\n"
-        yield "data: [DONE]\n\n"
-    except ModelGatewayError as exc:
-        final = MessageStatus.error
-        yield f"data: {json.dumps({'error': exc.detail})}\n\n"
-    except (asyncio.CancelledError, GeneratorExit):
-        final = MessageStatus.cancelled
-        raise
-    finally:
-        if not task.done():
-            task.cancel()
         assistant.content = content
         assistant.status = final
         assistant.steps = persisted
         if get_attachments is not None:
             assistant.attachments = get_attachments()
-        try:
-            await asyncio.shield(repo.upsert_message(user.internal_user_id, assistant))
-        except Exception:  # noqa: BLE001 - best-effort durability
-            logger.exception("Failed to persist assistant message %s", assistant.id)
+        if content:
+            yield f"data: {json.dumps({'choices': [{'delta': {'content': content}}]})}\n\n"
+        terminal_persisted = await _persist_terminal_assistant(
+            repo, user.internal_user_id, assistant
+        )
+        if not terminal_persisted:
+            yield f"data: {json.dumps({'error': 'The reply could not be saved.', 'persistenceFailed': True})}\n\n"
+        else:
+            yield "data: [DONE]\n\n"
+    except ModelGatewayError as exc:
+        final = MessageStatus.error
+        assistant.content = content
+        assistant.status = final
+        assistant.steps = persisted
+        if get_attachments is not None:
+            assistant.attachments = get_attachments()
+        terminal_persisted = await _persist_terminal_assistant(
+            repo, user.internal_user_id, assistant
+        )
+        detail = exc.detail if terminal_persisted else "The failed reply could not be saved."
+        error_payload: dict[str, object] = {"error": detail}
+        if not terminal_persisted:
+            error_payload["persistenceFailed"] = True
+        yield f"data: {json.dumps(error_payload)}\n\n"
+    except Exception:
+        final = MessageStatus.error
+        assistant.content = content
+        assistant.status = final
+        assistant.steps = persisted
+        if get_attachments is not None:
+            assistant.attachments = get_attachments()
+        terminal_persisted = await _persist_terminal_assistant(
+            repo, user.internal_user_id, assistant
+        )
+        error_payload = {"error": "Chat completion failed."}
+        if not terminal_persisted:
+            error_payload = {
+                "error": "The failed reply could not be saved.",
+                "persistenceFailed": True,
+            }
+        yield f"data: {json.dumps(error_payload)}\n\n"
+    except (asyncio.CancelledError, GeneratorExit):
+        if not terminal_persisted:
+            final = MessageStatus.cancelled
+        raise
+    finally:
+        if not task.done():
+            task.cancel()
+        if not terminal_persisted:
+            assistant.content = content
+            assistant.status = final
+            assistant.steps = persisted
+            if get_attachments is not None:
+                assistant.attachments = get_attachments()
+            await _persist_terminal_assistant(repo, user.internal_user_id, assistant)
         _status_map = {
             MessageStatus.complete: "complete",
             MessageStatus.cancelled: "cancelled",
@@ -364,14 +502,22 @@ async def _agentic_stream(
                     model_id=model_id,
                     deployment=deployment,
                     usage=total_usage,
-                    status=_status_map.get(final, "error"),  # pyright: ignore[reportArgumentType]
+                    status=_status_map.get(
+                        final if terminal_persisted else MessageStatus.error,
+                        "error",
+                    ),  # pyright: ignore[reportArgumentType]
                     agent=agent_name,
                     correlation_id=correlation_id,
                 )
             )
         except Exception:  # noqa: BLE001 - metering must never break a turn
             logger.warning("usage metering failed for %s", assistant.id, exc_info=True)
-        if final == MessageStatus.complete and content.strip() and not remembered:
+        if (
+            final == MessageStatus.complete
+            and terminal_persisted
+            and content.strip()
+            and not remembered
+        ):
             remembered = True
             await asyncio.shield(
                 memory.remember(user.internal_user_id, session_id, content_for_model)
@@ -386,22 +532,20 @@ async def _persist_local_reply(
     user_content: str,
     reply: str,
     agent: str | None = None,
-) -> Message:
+) -> tuple[Message, Message]:
     """Persist a user echo + a local assistant reply (both excluded from model
     context via ``fromCommand``) and return the assistant message."""
     uid = user.internal_user_id
-    await repo.add_message(
-        uid,
-        Message(
-            sessionId=session.id,
-            userId=uid,
-            role=MessageRole.user,
-            content=user_content,
-            status=MessageStatus.complete,
-            fromCommand=True,
-            agent=agent,
-        ),
+    user_message = Message(
+        sessionId=session.id,
+        userId=uid,
+        role=MessageRole.user,
+        content=user_content,
+        status=MessageStatus.complete,
+        fromCommand=True,
+        agent=agent,
     )
+    await repo.add_message(uid, user_message)
     assistant = Message(
         sessionId=session.id,
         userId=uid,
@@ -413,7 +557,7 @@ async def _persist_local_reply(
     )
     await repo.add_message(uid, assistant)
     await repo.touch_session(uid, session.id)
-    return assistant
+    return user_message, assistant
 
 
 # --- Capability-tool slash commands -------------------------------------------
@@ -610,6 +754,7 @@ async def chat(
     if parsed.command is not None and parsed.command.kind is CommandKind.unknown:
         cmd_name = parsed.command.name
         if cmd_name in DIRECT_SLASH_TOOLS:
+            command_users: list[Message] = []
             assistant = await execute_tool_command(
                 parsed=parsed,
                 session=session,
@@ -618,8 +763,14 @@ async def chat(
                 registry=registry,
                 executor=executor,
                 correlation_id=get_correlation_id(),
+                on_user_message=command_users.append,
             )
-            return _local_reply_response(body.sessionId, assistant, body.stream)
+            return _local_reply_response(
+                body.sessionId,
+                assistant,
+                body.stream,
+                user_message_id=command_users[-1].id if command_users else None,
+            )
         if cmd_name in SELECTABLE_SYNTHETIC_TOOL_NAMES:
             capability_tool = cmd_name
         elif cmd_name == RESEARCH_COMMAND_NAME:
@@ -639,23 +790,33 @@ async def chat(
             web_search=web_search,
             memory=memory,
         ):
-            assistant = await _persist_local_reply(
+            user_message, assistant = await _persist_local_reply(
                 repo=repo,
                 session=session,
                 user=user,
                 user_content=parsed.raw,
                 reply=f"/{capability_tool} isn't enabled in this environment yet.",
             )
-            return _local_reply_response(body.sessionId, assistant, body.stream)
+            return _local_reply_response(
+                body.sessionId,
+                assistant,
+                body.stream,
+                user_message_id=user_message.id,
+            )
         if not parsed.text:
-            assistant = await _persist_local_reply(
+            user_message, assistant = await _persist_local_reply(
                 repo=repo,
                 session=session,
                 user=user,
                 user_content=parsed.raw,
                 reply=_TOOL_COMMAND_USAGE[capability_tool],
             )
-            return _local_reply_response(body.sessionId, assistant, body.stream)
+            return _local_reply_response(
+                body.sessionId,
+                assistant,
+                body.stream,
+                user_message_id=user_message.id,
+            )
         tool_agent = _ephemeral_tool_agent(capability_tool)
 
     # Compose the caller's user-defined agents on top of the curated catalog only
@@ -681,7 +842,7 @@ async def chat(
             agent = agents.get(selected_agent_name)
             if agent is None or not agent.enabled:
                 if parsed.agent is not None:
-                    assistant = await _persist_local_reply(
+                    user_message, assistant = await _persist_local_reply(
                         repo=repo,
                         session=session,
                         user=user,
@@ -691,7 +852,12 @@ async def chat(
                             "Type /agents to see the agents you can mention."
                         ),
                     )
-                    return _local_reply_response(body.sessionId, assistant, body.stream)
+                    return _local_reply_response(
+                        body.sessionId,
+                        assistant,
+                        body.stream,
+                        user_message_id=user_message.id,
+                    )
                 agent = None
 
         # Slash commands (/help, /clear, /system, /model, /agents, ...) are handled
@@ -699,6 +865,8 @@ async def chat(
         # mention (e.g. "@coder /help" runs /help); the mention was already
         # validated above. (A /tool command was already routed above.)
         if parsed.is_command:
+            command_users = []
+            command_assistants: list[Message] = []
             assistant = await execute_command(
                 parsed=parsed,
                 session=session,
@@ -709,8 +877,16 @@ async def chat(
                 memory=memory,
                 summarizer=summarizer,
                 gateway=gateway,
+                on_user_message=command_users.append,
+                on_assistant_message=command_assistants.append,
             )
-            return _local_reply_response(body.sessionId, assistant, body.stream)
+            return _local_reply_response(
+                body.sessionId,
+                assistant,
+                body.stream,
+                user_message_id=command_users[-1].id if command_users else None,
+                assistant_persisted=bool(command_assistants),
+            )
 
     policy = await resolve_conversation_policy(
         request.app.state,
@@ -735,7 +911,7 @@ async def chat(
     if agent is not None:
         content_for_model = parsed.text
         if not content_for_model:
-            assistant = await _persist_local_reply(
+            user_message, assistant = await _persist_local_reply(
                 repo=repo,
                 session=session,
                 user=user,
@@ -746,7 +922,12 @@ async def chat(
                 ),
                 agent=agent.name,
             )
-            return _local_reply_response(body.sessionId, assistant, body.stream)
+            return _local_reply_response(
+                body.sessionId,
+                assistant,
+                body.stream,
+                user_message_id=user_message.id,
+            )
         system_prompt = policy.instructions if tool_agent is None else agent.systemPrompt
         # Precedence: explicit body model > session's standing model > agent's
         # preferred model. The agent default is a per-turn fallback only and is
@@ -1262,8 +1443,8 @@ async def chat(
             except Exception:  # noqa: BLE001 - recall must never break a turn
                 logger.warning("recall capability build failed", exc_info=True)
         if body.stream:
-            # Live-stream the agent's activity, then its answer; persist + meter in
-            # the generator's cancel-safe finally (mirrors the plain-stream path).
+            # Live-stream the agent's activity, then its answer; the generator
+            # persists the terminal row before signaling completion.
             placeholder = Message(
                 sessionId=body.sessionId,
                 userId=user.internal_user_id,
@@ -1273,8 +1454,6 @@ async def chat(
                 model=deployment.deploymentName,
                 agent=agent_name,
             )
-            await repo.add_message(user.internal_user_id, placeholder)
-
             def _run(on_step: Callable[[AgentStep], Awaitable[None]]):
                 return run_agent_turn(
                     deployment=deployment.deploymentName,
@@ -1291,21 +1470,27 @@ async def chat(
                 )
 
             return StreamingResponse(
-                _agentic_stream(
-                    assistant=placeholder,
-                    run=_run,
+                _stream_with_placeholder(
                     repo=repo,
-                    memory=memory,
-                    metering=metering,
-                    user=user,
-                    session_id=body.sessionId,
-                    model_id=model_id,
-                    deployment=deployment,
-                    agent_name=agent_name,
-                    correlation_id=correlation_id,
-                    content_for_model=content_for_model,
-                    extra_usage=usage_sink,  # live list: sub-turn usage lands during the run
-                    get_attachments=lambda: [*image_sink, *video_sink, *doc_sink],
+                    user_id=user.internal_user_id,
+                    assistant=placeholder,
+                    events=_agentic_stream(
+                        assistant=placeholder,
+                        run=_run,
+                        repo=repo,
+                        memory=memory,
+                        metering=metering,
+                        user=user,
+                        session_id=body.sessionId,
+                        model_id=model_id,
+                        deployment=deployment,
+                        agent_name=agent_name,
+                        correlation_id=correlation_id,
+                        content_for_model=content_for_model,
+                        user_message_id=user_msg.id,
+                        extra_usage=usage_sink,
+                        get_attachments=lambda: [*image_sink, *video_sink, *doc_sink],
+                    ),
                 ),
                 media_type="text/event-stream",
             )
@@ -1450,7 +1635,6 @@ async def chat(
                         model=deployment.deploymentName,
                         agent=agent_name,
                     )
-                    await repo.add_message(user.internal_user_id, placeholder)
 
                     def _run_plain(on_step: Callable[[AgentStep], Awaitable[None]]):
                         return run_agent_turn(
@@ -1478,20 +1662,26 @@ async def chat(
                         return _extract_text(res), TokenUsage.parse(res.get("usage"))
 
                     return StreamingResponse(
-                        _agentic_stream(
-                            assistant=placeholder,
-                            run=_run_plain,
+                        _stream_with_placeholder(
                             repo=repo,
-                            memory=memory,
-                            metering=metering,
-                            user=user,
-                            session_id=body.sessionId,
-                            model_id=model_id,
-                            deployment=deployment,
-                            agent_name=agent_name,
-                            correlation_id=correlation_id,
-                            content_for_model=content_for_model,
-                            fallback=_rag_fallback,
+                            user_id=user.internal_user_id,
+                            assistant=placeholder,
+                            events=_agentic_stream(
+                                assistant=placeholder,
+                                run=_run_plain,
+                                repo=repo,
+                                memory=memory,
+                                metering=metering,
+                                user=user,
+                                session_id=body.sessionId,
+                                model_id=model_id,
+                                deployment=deployment,
+                                agent_name=agent_name,
+                                correlation_id=correlation_id,
+                                content_for_model=content_for_model,
+                                user_message_id=user_msg.id,
+                                fallback=_rag_fallback,
+                            ),
                         ),
                         media_type="text/event-stream",
                     )
@@ -1576,7 +1766,7 @@ async def chat(
         return {"sessionId": body.sessionId, "message": assistant}
 
     # Streaming path: persist a placeholder so a record always exists, then
-    # assemble server-side and upsert the final status (best-effort, shielded).
+    # assemble server-side and durably upsert the final status before completion.
     # The agent attribution is set on the placeholder so a cancelled/errored
     # turn keeps it.
     assistant = Message(
@@ -1588,14 +1778,14 @@ async def chat(
         model=deployment.deploymentName,
         agent=agent_name,
     )
-    await repo.add_message(user.internal_user_id, assistant)
-
     async def event_stream():
         parts: list[str] = []
         final = MessageStatus.complete
         saw_done = False
         stream_usage: dict | None = None
+        terminal_persisted = False
         try:
+            yield _stream_metadata(user_msg.id, assistant.id)
             async for chunk in gateway.stream(
                 deployment=deployment.deploymentName,
                 messages=payload_messages,
@@ -1605,29 +1795,80 @@ async def chat(
             ):
                 if chunk.usage:
                     stream_usage = chunk.usage
+                if chunk.raw and _has_gateway_stream_error(chunk.raw):
+                    final = MessageStatus.error
+                    assistant.content = "".join(parts)
+                    assistant.status = final
+                    terminal_persisted = await _persist_terminal_assistant(
+                        repo, user.internal_user_id, assistant
+                    )
+                    error_payload: dict[str, object] = {
+                        "error": "Model stream failed."
+                    }
+                    if not terminal_persisted:
+                        error_payload = {
+                            "error": "The failed reply could not be saved.",
+                            "persistenceFailed": True,
+                        }
+                    yield f"data: {json.dumps(error_payload)}\n\n"
+                    return
                 if chunk.delta:
                     parts.append(chunk.delta)
                 if chunk.done:
                     saw_done = True
-                    yield "data: [DONE]\n\n"
                     break
                 if chunk.raw:
                     yield f"data: {chunk.raw}\n\n"
+            if not saw_done:
+                final = MessageStatus.error
+            assistant.content = "".join(parts)
+            assistant.status = final
+            terminal_persisted = await _persist_terminal_assistant(
+                repo, user.internal_user_id, assistant
+            )
+            if not terminal_persisted:
+                yield f"data: {json.dumps({'error': 'The reply could not be saved.', 'persistenceFailed': True})}\n\n"
+            elif saw_done:
+                yield "data: [DONE]\n\n"
+            else:
+                yield f"data: {json.dumps({'error': 'Stream ended unexpectedly.'})}\n\n"
         except ModelGatewayError as exc:
             final = MessageStatus.error
-            yield f"data: {json.dumps({'error': exc.detail})}\n\n"
+            assistant.content = "".join(parts)
+            assistant.status = final
+            terminal_persisted = await _persist_terminal_assistant(
+                repo, user.internal_user_id, assistant
+            )
+            detail = exc.detail if terminal_persisted else "The failed reply could not be saved."
+            error_payload: dict[str, object] = {"error": detail}
+            if not terminal_persisted:
+                error_payload["persistenceFailed"] = True
+            yield f"data: {json.dumps(error_payload)}\n\n"
+        except Exception:
+            final = MessageStatus.error
+            assistant.content = "".join(parts)
+            assistant.status = final
+            terminal_persisted = await _persist_terminal_assistant(
+                repo, user.internal_user_id, assistant
+            )
+            error_payload = {"error": "Chat completion failed."}
+            if not terminal_persisted:
+                error_payload = {
+                    "error": "The failed reply could not be saved.",
+                    "persistenceFailed": True,
+                }
+            yield f"data: {json.dumps(error_payload)}\n\n"
         except (asyncio.CancelledError, GeneratorExit):
-            final = MessageStatus.cancelled
+            if not terminal_persisted:
+                final = MessageStatus.cancelled
             raise
         finally:
             assistant.content = "".join(parts)
             assistant.status = final
-            try:
-                await asyncio.shield(
-                    repo.upsert_message(user.internal_user_id, assistant)
+            if not terminal_persisted:
+                await _persist_terminal_assistant(
+                    repo, user.internal_user_id, assistant
                 )
-            except Exception:  # noqa: BLE001 - best-effort durability
-                logger.exception("Failed to persist assistant message %s", assistant.id)
             # Meter the turn (best-effort, shielded so a client disconnect still
             # records it). Non-complete turns are recorded as non-billable status
             # rows; record_completion gates billability on status == "complete".
@@ -1644,7 +1885,10 @@ async def chat(
                         model_id=model_id,
                         deployment=deployment,
                         usage=TokenUsage.parse(stream_usage),
-                        status=_status_map.get(final, "error"),  # pyright: ignore[reportArgumentType]
+                        status=_status_map.get(
+                            final if terminal_persisted else MessageStatus.error,
+                            "error",
+                        ),  # pyright: ignore[reportArgumentType]
                         agent=agent_name,
                         correlation_id=correlation_id,
                     )
@@ -1655,14 +1899,22 @@ async def chat(
             # cleanly (a clean end-of-stream marker), so a truncated or errored
             # turn doesn't seed memory. Best-effort: remember() swallows its own
             # failures. (A durable store will move this off the response path.)
-            if final == MessageStatus.complete and saw_done:
+            if final == MessageStatus.complete and saw_done and terminal_persisted:
                 await asyncio.shield(
                     memory.remember(
                         user.internal_user_id, body.sessionId, content_for_model
                     )
                 )
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        _stream_with_placeholder(
+            repo=repo,
+            user_id=user.internal_user_id,
+            assistant=assistant,
+            events=event_stream(),
+        ),
+        media_type="text/event-stream",
+    )
 
 
 def _extract_text(result: dict) -> str:
