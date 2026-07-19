@@ -13,7 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { getDocumentShares, setDocumentShares } from "@/lib/api";
 import type { ShareVisibility } from "@/lib/library";
-import { useModalFocus } from "./useModalFocus";
+import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 
 interface SharePanelProps {
   documentId: string;
@@ -59,7 +59,8 @@ export default function SharePanel({
   onClose,
   onChanged,
 }: SharePanelProps) {
-  const modal = useModalFocus(onClose);
+  const modalRef = useModalFocus();
+  const onModalKeyDown = useModalKeyDown(onClose);
   const [visibility, setVisibility] = useState<ShareVisibility>("private");
   const [grantees, setGrantees] = useState<string[]>([]);
   const [draftEmail, setDraftEmail] = useState("");
@@ -128,8 +129,8 @@ export default function SharePanel({
 
   return (
     <div
-      ref={modal.ref}
-      onKeyDown={modal.onKeyDown}
+      ref={modalRef}
+      onKeyDown={onModalKeyDown}
       role="dialog"
       aria-label={`Share ${filename}`}
       aria-modal="true"
@@ -239,6 +240,38 @@ export default function SharePanel({
                 </label>
               ))}
             </div>
+
+            {visibility === "private" && grantees.length > 0 && (
+              <p
+                role="status"
+                style={{
+                  margin: 0,
+                  fontSize: "0.8em",
+                  color: "var(--danger, #dc2626)",
+                }}
+              >
+                Saving now will remove access for the {grantees.length}{" "}
+                {grantees.length === 1 ? "person" : "people"} currently shared
+                with — switch back to &ldquo;Specific people&rdquo; to keep them.
+              </p>
+            )}
+
+            {visibility === "public" && grantees.length > 0 && (
+              <p
+                role="status"
+                style={{
+                  margin: 0,
+                  fontSize: "0.8em",
+                  color: "var(--danger, #dc2626)",
+                }}
+              >
+                Saving now will clear your list of {grantees.length} named{" "}
+                {grantees.length === 1 ? "person" : "people"} &mdash; they
+                won&apos;t lose access, though: with &ldquo;Anyone in your
+                organization&rdquo; selected, everyone in your tenant
+                (including them) can still open this document.
+              </p>
+            )}
 
             {visibility === "shared" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

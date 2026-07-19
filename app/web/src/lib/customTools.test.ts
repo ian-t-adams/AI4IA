@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   approvalPosture,
   attachableMcpTools,
+  attachableToolApprovalPosture,
   effectiveToolApproval,
   healthBadge,
   healthStatus,
   isMcpToolName,
   isQuarantined,
   mcpEndpointError,
+  MCP_TOOL_APPROVALS,
   mcpSecretError,
   mcpServerNameError,
   namespacedToolName,
@@ -134,11 +136,15 @@ describe("namespaced tool names", () => {
 });
 
 describe("approvalPosture", () => {
-  it("requires approval for untrusted servers and scopes egress to the host", () => {
+  it("is unavailable (no live prompt) for untrusted servers, and scopes egress to the host", () => {
     const p = approvalPosture({ trusted: false, host: "api.example.com" });
     expect(p.requiresApproval).toBe(true);
-    expect(p.label).toMatch(/approval/i);
+    // Must not imply a live in-chat approval prompt exists.
+    expect(p.label).not.toMatch(/on each use/i);
+    expect(p.label).not.toMatch(/prompt/i);
     expect(p.detail).toContain("api.example.com");
+    expect(p.detail).toMatch(/no live approval prompt/i);
+    expect(p.detail).toMatch(/left out of what the model can call/i);
   });
 
   it("runs without approval for trusted servers", () => {
@@ -146,6 +152,26 @@ describe("approvalPosture", () => {
     expect(p.requiresApproval).toBe(false);
     expect(p.label).toMatch(/trusted/i);
     expect(p.detail).toContain("api.example.com");
+  });
+
+  it("is unavailable when the server is disabled, even if trusted", () => {
+    const p = approvalPosture({ trusted: true, host: "api.example.com", blocking: "disabled" });
+    expect(p.requiresApproval).toBe(true);
+    expect(p.label).toMatch(/unavailable/i);
+    expect(p.label).toMatch(/off/i);
+    expect(p.detail).toContain("api.example.com");
+    expect(p.detail).toMatch(/turned off/i);
+    // Trust is beside the point here — being off blocks it regardless.
+    expect(p.detail).toMatch(/no matter (their|its) trust or approval/i);
+  });
+
+  it("is unavailable when the server is quarantined, even if trusted", () => {
+    const p = approvalPosture({ trusted: true, host: "api.example.com", blocking: "quarantined" });
+    expect(p.requiresApproval).toBe(true);
+    expect(p.label).toMatch(/unavailable/i);
+    expect(p.label).toMatch(/quarantined/i);
+    expect(p.detail).toMatch(/quarantined/i);
+    expect(p.detail).toMatch(/recovers automatically/i);
   });
 });
 
@@ -249,7 +275,14 @@ describe("per-tool approval", () => {
     const p = toolApprovalPosture(s, "forecast");
     expect(p.posture).toBe("always");
     expect(p.requiresApproval).toBe(true);
+    // Label consistently as "Unavailable" (not a live per-use prompt), and
+    // don't let it imply trusting the server would fix it — only changing
+    // the override itself does.
+    expect(p.label).toMatch(/unavailable/i);
     expect(p.label).toMatch(/always/i);
+    expect(p.detail).toMatch(/no live approval prompt/i);
+    expect(p.detail).toMatch(/even on a trusted server/i);
+    expect(p.detail).not.toMatch(/on each use/i);
   });
 
   it("honors a `never` override even on an untrusted server", () => {
@@ -259,6 +292,19 @@ describe("per-tool approval", () => {
     expect(p.posture).toBe("never");
     expect(p.requiresApproval).toBe(false);
     expect(p.label).toMatch(/pre-approved/i);
+  });
+
+  it("resolves the default posture on an untrusted server as unavailable, not a per-use prompt", () => {
+    const s = makeServer({ trusted: false });
+    const p = toolApprovalPosture(s, "forecast");
+    expect(p.posture).toBe("default");
+    expect(p.requiresApproval).toBe(true);
+    // No prompt exists at call time — the tool is simply omitted from the
+    // model's schema, so the copy must not claim a per-use approval step.
+    expect(p.label).not.toMatch(/on each use/i);
+    expect(p.label).not.toMatch(/prompt/i);
+    expect(p.detail).toMatch(/no live approval prompt/i);
+    expect(p.detail).toMatch(/left out of what the model can call/i);
   });
 
   it("only overrides the named tool", () => {
@@ -282,6 +328,105 @@ describe("per-tool approval", () => {
     const tools = attachableMcpTools(servers);
     expect(tools[0]).toMatchObject({ toolName: "forecast", requiresApproval: false, approval: "never" });
     expect(tools[1]).toMatchObject({ toolName: "alerts", requiresApproval: true, approval: "default" });
+  });
+
+  it("gives attachableToolApprovalPosture the same label/detail as toolApprovalPosture, without a fake server object", () => {
+    const s = makeServer({
+      trusted: true,
+      toolApprovals: { forecast: "always" },
+      discoveredTools: [{ name: "forecast", description: "", inputSchema: {} }],
+    });
+    const [tool] = attachableMcpTools([s]);
+    const fromTool = attachableToolApprovalPosture(tool);
+    const fromServer = toolApprovalPosture(s, "forecast");
+    expect(fromTool).toEqual(fromServer);
+    expect(fromTool.label).toMatch(/unavailable/i);
+  });
+
+  it("is unavailable when the server is disabled, even with a `never` override", () => {
+    const s = makeServer({ enabled: false, trusted: true, toolApprovals: { forecast: "never" } });
+    const p = toolApprovalPosture(s, "forecast");
+    expect(p.requiresApproval).toBe(true);
+    expect(p.label).toMatch(/unavailable/i);
+    expect(p.label).toMatch(/off/i);
+    expect(p.detail).toMatch(/turned off/i);
+  });
+
+  it("is unavailable when the server is quarantined, even with a `never` override", () => {
+    const s = makeServer({ trusted: false, toolApprovals: { forecast: "never" } });
+    const p = toolApprovalPosture(s, "forecast", /* quarantined */ true);
+    expect(p.requiresApproval).toBe(true);
+    expect(p.label).toMatch(/unavailable/i);
+    expect(p.label).toMatch(/quarantined/i);
+    expect(p.detail).toMatch(/quarantined/i);
+  });
+
+  it("threads the quarantined flag into attachableToolApprovalPosture identically to toolApprovalPosture", () => {
+    const s = makeServer({
+      trusted: true,
+      toolApprovals: { forecast: "always" },
+      discoveredTools: [{ name: "forecast", description: "", inputSchema: {} }],
+    });
+    const [tool] = attachableMcpTools([s]);
+    const fromTool = attachableToolApprovalPosture(tool, true);
+    const fromServer = toolApprovalPosture(s, "forecast", true);
+    expect(fromTool).toEqual(fromServer);
+    // Quarantine overrides even an `always` override's own "Unavailable" label.
+    expect(fromTool.label).toMatch(/quarantined/i);
+  });
+
+  it("attachableToolApprovalPosture reflects a disabled server via the tool's own `enabled` field", () => {
+    const s = makeServer({
+      enabled: false,
+      trusted: true,
+      discoveredTools: [{ name: "forecast", description: "", inputSchema: {} }],
+    });
+    const [tool] = attachableMcpTools([s]);
+    expect(tool.enabled).toBe(false);
+    const p = attachableToolApprovalPosture(tool);
+    expect(p.requiresApproval).toBe(true);
+    expect(p.label).toMatch(/unavailable/i);
+    expect(p.label).toMatch(/off/i);
+  });
+});
+
+describe("MCP_TOOL_APPROVALS copy", () => {
+  it("does not promise a per-use approval prompt for 'always' (chat has none)", () => {
+    const always = MCP_TOOL_APPROVALS.find((a) => a.value === "always");
+    expect(always).toBeDefined();
+    // Must not claim the model/user is prompted for approval on each use.
+    expect(always?.hint).not.toMatch(/prompt for approval/i);
+    expect(always?.hint).not.toMatch(/on every use/i);
+    // Accurately reflects that the tool is dropped from the model-facing
+    // schema rather than gated behind a live in-chat approval step.
+    expect(always?.hint).toMatch(/no live approval prompt/i);
+    expect(always?.hint).toMatch(/left out of what the model can call/i);
+  });
+
+  it("does not promise a per-use prompt for 'default' either (chat has none)", () => {
+    const def = MCP_TOOL_APPROVALS.find((a) => a.value === "default");
+    expect(def).toBeDefined();
+    expect(def?.hint).not.toMatch(/prompt for approval/i);
+    expect(def?.hint).not.toMatch(/on every use/i);
+    expect(def?.hint).not.toMatch(/on each use/i);
+    expect(def?.hint).toMatch(/no live approval prompt/i);
+    expect(def?.hint).toMatch(/left out of what the model can call/i);
+  });
+
+  it("does not promise a per-use prompt for 'never' either", () => {
+    const option = MCP_TOOL_APPROVALS.find((a) => a.value === "never");
+    expect(option?.hint).not.toMatch(/prompt/i);
+  });
+
+  it("warns that 'default' and 'never' can't rescue a disabled or quarantined server", () => {
+    // These are the two options a user might read as "this will make the tool
+    // work" — so they must not overpromise when a server-level block applies.
+    const def = MCP_TOOL_APPROVALS.find((a) => a.value === "default");
+    const never = MCP_TOOL_APPROVALS.find((a) => a.value === "never");
+    for (const option of [def, never]) {
+      expect(option?.hint).toMatch(/turned off|disabled/i);
+      expect(option?.hint).toMatch(/quarantined/i);
+    }
   });
 });
 

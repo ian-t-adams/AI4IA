@@ -1,5 +1,8 @@
 "use client";
 
+import { useEffect } from "react";
+import { reportClientEvent } from "@/lib/clientTelemetry";
+
 export default function Error({
   error,
   reset,
@@ -7,6 +10,20 @@ export default function Error({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  // Best-effort: surfaces render-boundary errors to the backend telemetry
+  // bridge (see lib/clientTelemetry.ts) so they're observable without a user
+  // report. Only a stable error name and whether Next.js attached a digest
+  // are sent -- never error.message, which may contain arbitrary app/user
+  // content. reportClientEvent de-dupes by (event, code, severity,
+  // hasDigest), so re-renders of this boundary for the same kind of error
+  // don't spam the backend.
+  useEffect(() => {
+    reportClientEvent("render_error", {
+      code: error.name,
+      hasDigest: Boolean(error.digest),
+    });
+  }, [error]);
+
   return (
     <main
       id="main"
