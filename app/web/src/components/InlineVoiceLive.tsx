@@ -232,7 +232,10 @@ export function useInlineVoiceLive({
   // Mirrors live.active alongside live.turns for persist()'s synchronous
   // first call (fired from stop() before teardown/re-render), which must
   // read a ref rather than the reactive `live.active` prop directly -- see
-  // finalizedTurns() above and the call site below.
+  // finalizedTurns() above and the call site below. stop() also writes this
+  // ref directly and eagerly (see stop() below) -- this effect subsequently
+  // re-confirms the same `false` value once live.active itself catches up,
+  // never overwriting it back to a stale `true`.
   const liveActiveRef = useRef(live.active);
   useLayoutEffect(() => {
     turnsRef.current = live.turns;
@@ -426,6 +429,24 @@ export function useInlineVoiceLive({
   }, [activeSessionId, persist, persistenceError, startLive]);
 
   const stop = useCallback(() => {
+    // stopLive() (voiceLive.ts's own stop()) tears down the socket/mic/
+    // AudioContext fully synchronously (no awaits before its own status
+    // flips to "idle"), so no turn can gain any more text after this point
+    // -- the connection is over the instant this function runs, even though
+    // live.active's reactive update (and the mirroring effect above) won't
+    // catch up until React's next commit. Writing the ref directly, right
+    // now, makes this call's finalizedTurns() computation already treat any
+    // still-open turn's real content as final, instead of computing an
+    // incomplete result off the stale `true` and caching it as if it were
+    // everything: persist()'s own in-flight/already-persisted guards assume
+    // a cycle's calls are all asking for the same thing, which only holds if
+    // every call agrees on `active` up front. Without this, a call made
+    // moments later by the effect below (once live.active genuinely
+    // flips) recomputes the correct, larger result but is then silently
+    // discarded by those guards, permanently dropping a still-open turn's
+    // content whenever an earlier turn in the same call had already
+    // finished normally.
+    liveActiveRef.current = false;
     void persist();
     stopLive();
   }, [persist, stopLive]);

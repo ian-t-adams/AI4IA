@@ -1404,6 +1404,112 @@ describe("inline Voice Live chat", () => {
     expect(screen.getAllByText("Here is the partial ans")).toHaveLength(1);
   });
 
+  // Regression (independent review of round 9's own MEDIUM fix): the test
+  // above only has a single, still-streaming turn in `turns`, which passed
+  // even before this fix by coincidence -- finalizedTurns(turns, /* active
+  // */ true) computes an *empty* array when that lone turn is the only one
+  // present (it's neither settled nor is `active` false yet), so persist()
+  // takes its `turns.length === 0` early return and never claims the
+  // in-flight guard, leaving it open for the correct, later call. That
+  // coincidence breaks completely once an earlier, already-settled exchange
+  // also exists: stop() itself calls persist() synchronously, before
+  // voiceLive.ts's teardown propagates through a render, so at that instant
+  // finalizedTurns(turns, true) is non-empty -- it contains the settled
+  // exchange but omits the still-open cutoff turn -- so persist() proceeds
+  // past the early return and claims persistenceRef.current with an
+  // *incomplete* payload. The later, correct call (from the wasActiveRef
+  // effect, once `active` genuinely reads false) then hits the
+  // `if (persistenceRef.current) return persistenceRef.current;` guard and
+  // is discarded without ever recomputing finalizedTurns -- permanently
+  // dropping the cutoff turn's content, with no retry surfaced. stop() now
+  // writes liveActiveRef.current = false itself before calling persist(), so
+  // its own synchronous first call already computes the same complete
+  // result the later effect-driven call would.
+  it("includes a still-streaming turn's content in the save payload alongside an earlier settled exchange, instead of losing it to a stale in-flight guard", async () => {
+    const settledUserTurn = {
+      id: "u1",
+      role: "user" as const,
+      text: "First question",
+      pending: false,
+      streaming: false,
+      tool: "",
+    };
+    const settledAssistantTurn = {
+      id: "a1",
+      role: "assistant" as const,
+      text: "First answer",
+      pending: false,
+      streaming: false,
+      tool: "",
+    };
+    const cutoffTurn = {
+      id: "a2",
+      role: "assistant" as const,
+      text: "Here is the second, partial ans",
+      pending: false,
+      streaming: true,
+      tool: "",
+    };
+    const persistCalls: VoiceTurnInput[][] = [];
+    let resolvePersist: (() => void) | undefined;
+    const persist = vi.fn((_sessionId: string, _conversationId: string, turns: VoiceTurnInput[]) => {
+      persistCalls.push(turns);
+      return new Promise<void>((resolve) => {
+        resolvePersist = resolve;
+      });
+    });
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [settledUserTurn, settledAssistantTurn, cutoffTurn],
+    });
+    const { rerender } = render(
+      <Harness activeSessionId="session-1" persist={persist} />,
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+    // stop() tears the connection down synchronously, but voiceLive.ts never
+    // clears/settles `turns` -- the same still-streaming cutoff turn remains
+    // alongside the two already-settled ones, exactly as it would after a
+    // real stop() call mid-response to a second question.
+    controller = makeController({
+      status: "idle",
+      active: false,
+      turns: [settledUserTurn, settledAssistantTurn, cutoffTurn],
+    });
+    rerender(<Harness activeSessionId="session-1" persist={persist} />);
+
+    // Exactly one save call is made -- not a stale/incomplete first call
+    // that wins the guard, followed by a discarded correct one -- and it
+    // carries every turn's real content, including the cutoff turn's
+    // partial answer.
+    await waitFor(() => expect(persistCalls.length).toBeGreaterThan(0));
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persistCalls[0]).toEqual([
+      expect.objectContaining({ role: "user", text: "First question" }),
+      expect.objectContaining({ role: "assistant", text: "First answer" }),
+      expect.objectContaining({
+        role: "assistant",
+        text: "Here is the second, partial ans",
+      }),
+    ]);
+
+    resolvePersist?.();
+    await waitFor(() =>
+      expect(screen.getByText("Voice Live ready")).toBeInTheDocument(),
+    );
+
+    // The cutoff turn's content genuinely reached the durable side
+    // (simulated by the Harness's persistedMessages) instead of being
+    // silently discarded by a guard that returned a stale, incomplete
+    // promise.
+    expect(
+      screen.getAllByText("Here is the second, partial ans"),
+    ).toHaveLength(1);
+  });
+
   it("adopts a session created by a text send in the same empty chat", () => {
     function BindingHarness({
       activeSessionId,
