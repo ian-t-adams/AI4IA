@@ -42,7 +42,10 @@ class FakeAudioContext {
   // context is already "running" -- matching every existing test's implicit
   // assumption. onstatechange models the real "statechange" event so tests
   // can drive AudioContext suspension (e.g. tab backgrounding) explicitly.
-  state: "running" | "suspended" | "closed" = "running";
+  // "interrupted" is Safari/WebKit's non-standard state (e.g. a phone call or
+  // Siri taking the mic) that TypeScript's built-in AudioContextState type
+  // doesn't know about -- included here so tests can drive it explicitly too.
+  state: "running" | "suspended" | "interrupted" | "closed" = "running";
   onstatechange: (() => void) | null = null;
   resume = vi.fn(async () => {
     this.state = "running";
@@ -1207,6 +1210,124 @@ describe("useVoiceLive lifecycle", () => {
       // come -- advancing past it alone (with no manual onstatechange call)
       // must reach the same fatal, fully-torn-down outcome as an observed
       // mid-session suspension.
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+
+      expect(onError).toHaveBeenCalledWith(
+        "Live voice paused because the browser suspended audio processing (often from backgrounding the tab). Reconnect to continue.",
+      );
+      expect(track.stop).toHaveBeenCalledTimes(1);
+      expect(FakeWebSocket.instances[0].close).toHaveBeenCalledTimes(1);
+      expect(ctx.close).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(result.current.status).toBe("idle"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Regression (final acceptance review, MEDIUM): Safari/WebKit's
+  // non-standard "interrupted" AudioContext state (e.g. a phone call or Siri
+  // taking the mic) used to be ignored entirely -- handleContextStateChange
+  // only ever matched "running" or "closed" and no-op'd on anything else it
+  // didn't recognize as a real transition trigger, when in fact it already
+  // falls through to the same bounded resume+grace-period recovery as
+  // "suspended". This proves that path handles "interrupted" the same way,
+  // and eventually fails safe (actionable error + full teardown) if it
+  // outlasts the grace period, the same as an ordinary suspension would.
+  it("reports an actionable error and fully tears down when an interrupted AudioContext (Safari/WebKit) outlasts the grace period", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      auth.getToken.mockResolvedValue("token");
+      const track = new FakeMediaStreamTrack();
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+      });
+      const onError = vi.fn();
+      const { result } = renderHook(() =>
+        useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+      );
+
+      act(() => {
+        result.current.start();
+      });
+      await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+      const socket = FakeWebSocket.instances[0];
+      act(() => socket.onopen?.());
+      await waitFor(() => expect(result.current.status).toBe("live"));
+
+      const ctx = FakeAudioContext.instances[0];
+      // Simulate a browser that defers/ignores resume() entirely while the
+      // interruption (e.g. a phone call) is ongoing -- resume() never
+      // actually flips state back.
+      ctx.resume = vi.fn(async () => {});
+
+      act(() => {
+        ctx.state = "interrupted";
+        ctx.onstatechange?.();
+      });
+      expect(ctx.resume).toHaveBeenCalledTimes(1);
+      expect(onError).not.toHaveBeenCalled();
+
+      await act(async () => {
+        vi.advanceTimersByTime(4000);
+      });
+
+      expect(onError).toHaveBeenCalledWith(
+        "Live voice paused because the browser suspended audio processing (often from backgrounding the tab). Reconnect to continue.",
+      );
+      expect(track.stop).toHaveBeenCalledTimes(1);
+      expect(socket.close).toHaveBeenCalledTimes(1);
+      expect(ctx.close).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(result.current.status).toBe("idle"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts the suspend-recovery grace period immediately if the AudioContext is already interrupted (Safari/WebKit) the moment monitoring is wired up", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const token = deferred<string | null>();
+      auth.getToken.mockReturnValue(token.promise);
+      const track = new FakeMediaStreamTrack();
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+      });
+      const onError = vi.fn();
+      const { result } = renderHook(() =>
+        useVoiceLive(CONFIG, "azure_openai", "catalog-model", "eastus2", "alloy", onError),
+      );
+
+      act(() => {
+        result.current.start();
+      });
+      // Simulate a browser that is already mid-interruption (e.g. a phone
+      // call started right as the session was opening) throughout the
+      // auth/addModule startup gap, with a neutered resume() so nothing
+      // brings it back on its own.
+      const ctx = FakeAudioContext.instances[0];
+      ctx.resume = vi.fn(async () => {});
+      ctx.state = "interrupted";
+
+      // onstatechange has not been assigned yet -- the auth round-trip is
+      // still pending -- so there is nothing to observe this pre-existing
+      // interruption until wiring completes a little later. No transition
+      // into "interrupted" ever happens in this test; it starts that way.
+      expect(ctx.onstatechange).toBeNull();
+
+      act(() => token.resolve("token"));
+      await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+      act(() => FakeWebSocket.instances[0].onopen?.());
+      await waitFor(() => expect(result.current.status).toBe("live"));
+
+      // The grace period must already be running from the immediate
+      // post-wiring evaluation, not waiting on a transition that will never
+      // come -- advancing past it alone (with no manual onstatechange call)
+      // must reach the same fatal, fully-torn-down outcome as an observed
+      // mid-session interruption.
       await act(async () => {
         vi.advanceTimersByTime(4000);
       });

@@ -580,36 +580,46 @@ export function ChatApp() {
   // still real and already persisted on the backend either way, so it always
   // joins the sidebar list -- only becoming the *active/navigated-to* session
   // is gated.
+  //
+  // Only the network call + sidebar append is shared via creatingRef: the
+  // activation gate below runs independently for EVERY caller, each with its
+  // own capturedGeneration/isStillWanted. A single shared gate (evaluated
+  // once, using only the first caller's answer) would let a later, still-
+  // valid caller's "yes" be silently discarded just because it happened to
+  // share the same in-flight creation as an earlier caller's "no".
   const ensureSession = useCallback(
     async (isStillWanted?: () => boolean): Promise<string> => {
       if (sessionIdRef.current) return sessionIdRef.current;
-      if (creatingRef.current) return creatingRef.current;
       const capturedGeneration = selectionGenerationRef.current;
-      const p = (async () => {
-        const created = await api.createSession({
-          model: selectedModel,
-          systemPrompt: systemPrompt || null,
-          agentName: draftDefaults.agentName,
-          toolOverrides: draftDefaults.toolOverrides,
-          libraryDocumentIds: draftDefaults.libraryDocumentIds,
-        });
-        setSessions((prev) => [created, ...prev]);
-        const stillCurrentSelection =
-          selectionGenerationRef.current === capturedGeneration &&
-          !sessionIdRef.current;
-        const stillWanted = isStillWanted ? isStillWanted() : true;
-        if (stillCurrentSelection && stillWanted) {
-          sessionIdRef.current = created.id;
-          setActiveId(created.id);
-        }
-        return created.id;
-      })();
-      creatingRef.current = p;
-      try {
-        return await p;
-      } finally {
-        creatingRef.current = null;
+      let creation = creatingRef.current;
+      if (!creation) {
+        creation = (async () => {
+          try {
+            const created = await api.createSession({
+              model: selectedModel,
+              systemPrompt: systemPrompt || null,
+              agentName: draftDefaults.agentName,
+              toolOverrides: draftDefaults.toolOverrides,
+              libraryDocumentIds: draftDefaults.libraryDocumentIds,
+            });
+            setSessions((prev) => [created, ...prev]);
+            return created.id;
+          } finally {
+            creatingRef.current = null;
+          }
+        })();
+        creatingRef.current = creation;
       }
+      const id = await creation;
+      const stillCurrentSelection =
+        selectionGenerationRef.current === capturedGeneration &&
+        !sessionIdRef.current;
+      const stillWanted = isStillWanted ? isStillWanted() : true;
+      if (stillCurrentSelection && stillWanted) {
+        sessionIdRef.current = id;
+        setActiveId(id);
+      }
+      return id;
     },
     [draftDefaults, selectedModel, systemPrompt],
   );
@@ -781,19 +791,39 @@ export function ChatApp() {
   // Persist a finished Voice Live exchange back into the shared session so voice
   // turns land in the text transcript and the user can keep typing in the same
   // conversation. Lazily creates the session if the live chat was the first turn.
+  //
+  // isStillValid is re-checked by the caller (InlineVoiceLive) right after the
+  // backend append resolves -- it reports false once this exact voice attempt
+  // has been discarded or superseded by a newer cycle. The append itself is
+  // never aborted (a save already in flight keeps running server-side), but
+  // every client-side commit derived from its result -- messages, inspector
+  // version, the post-append refetch/reconcile -- is gated on both that
+  // predicate and the same session-generation check used elsewhere (selectSession/
+  // ensureSession), so a stale attempt can never splice old voice turns into a
+  // conversation the user has since discarded, restarted, or navigated away from
+  // and back to.
   const persistVoiceConversation = useCallback(
     async (
       sessionId: string,
       conversationId: string,
       turns: VoiceTurnInput[],
+      isStillValid: () => boolean,
     ) => {
       if (turns.length === 0) return;
+      const capturedGeneration = selectionGenerationRef.current;
+      const isCurrent = () =>
+        isCurrentSessionGeneration(
+          sessionId,
+          capturedGeneration,
+          sessionIdRef.current,
+          selectionGenerationRef.current,
+        ) && isStillValid();
       const created = await api.appendVoiceTurns(
         sessionId,
         conversationId,
         turns,
       );
-      if (sessionIdRef.current === sessionId) {
+      if (isCurrent()) {
         setMessages((previous) => {
           const createdIds = new Set(created.map((message) => message.id));
           return [
@@ -801,16 +831,16 @@ export function ChatApp() {
             ...created,
           ];
         });
+        setInspectorVersion((value) => value + 1);
       }
       void Promise.allSettled([
         api.listMessages(sessionId).then((fresh) => {
-          if (sessionIdRef.current === sessionId) {
+          if (isCurrent()) {
             setMessages((previous) => reconcileMessages(previous, fresh));
           }
         }),
         refreshSessions(),
       ]);
-      setInspectorVersion((value) => value + 1);
     },
     [refreshSessions],
   );

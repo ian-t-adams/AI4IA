@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   getLibrarySummary: vi.fn(),
   deleteMemory: vi.fn(),
   useInlineVoiceLive: vi.fn(),
+  appendVoiceTurns: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => mocks);
@@ -99,7 +100,17 @@ vi.mock("./Composer", () => ({
   ),
 }));
 vi.mock("./MessageList", () => ({
-  MessageList: () => <div aria-label="Conversation" />,
+  MessageList: ({
+    messages,
+  }: {
+    messages: { id: string; content: string }[];
+  }) => (
+    <div aria-label="Conversation">
+      {messages.map((message) => (
+        <div key={message.id}>{message.content}</div>
+      ))}
+    </div>
+  ),
 }));
 vi.mock("./InlineVoiceLive", () => ({
   InlineVoiceLiveStatus: () => null,
@@ -174,6 +185,7 @@ beforeEach(() => {
     modalities: ["document"],
   });
   mocks.listMessages.mockResolvedValue([]);
+  mocks.appendVoiceTurns.mockResolvedValue([]);
   mocks.listDocuments.mockResolvedValue([]);
   mocks.listLibraryDocuments.mockResolvedValue([]);
   mocks.listSharedWithMe.mockResolvedValue([]);
@@ -759,5 +771,221 @@ describe("ChatApp uploads", () => {
     expect(
       await screen.findByRole("button", { name: "Session C" }),
     ).toBeInTheDocument();
+  });
+
+  // Regression (final acceptance review, Finding 1): creatingRef only ever
+  // deduplicated the underlying network call -- the activation gate itself
+  // used to run ONCE, inside that shared promise, evaluating only the FIRST
+  // caller's isStillWanted. A later, still-valid caller (e.g. a text send
+  // that starts moments after Voice Live kicks off a creation it then
+  // abandons) shared that same in-flight promise and had its own "yes"
+  // silently discarded. Each caller must now get its own independent
+  // activation check after the shared network call resolves.
+  it("lets a later still-wanted caller activate a session even though an earlier caller sharing its in-flight creation was discarded", async () => {
+    let resolveCreate!: (value: ReturnType<typeof session>) => void;
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    const { ensureSession } = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+
+    // Two callers race for the exact same in-flight creation, back-to-back
+    // with no await between them so both see creatingRef already set and
+    // share it. The first (Voice Live) is already abandoned by the time it
+    // asks; the second (e.g. a text send/upload moments later) still wants
+    // whatever session that shared creation produces.
+    let firstResult: Promise<string> | undefined;
+    let secondResult: Promise<string> | undefined;
+    act(() => {
+      firstResult = ensureSession(() => false);
+      secondResult = ensureSession(() => true);
+    });
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveCreate(session("C"));
+      await Promise.all([firstResult, secondResult]);
+    });
+
+    // The second caller's "yes" must win: sharing an in-flight creation with
+    // an already-discarded caller must never silently veto a later caller's
+    // own, still-valid activation.
+    expect(
+      await screen.findByText("Session C", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression (final acceptance review, Finding 2): persistVoiceConversation
+  // used to gate its client-side commits only on the session-generation
+  // check -- it never re-checked the caller's (InlineVoiceLive's) own
+  // attempt-validity signal, so a save already in flight when the user
+  // discarded that exact voice attempt would still blindly apply its result
+  // once appendVoiceTurns finally resolved. These two tests drive the *real*
+  // persistVoiceConversation callback ChatApp passes into the (mocked)
+  // useInlineVoiceLive hook -- not a test double -- to prove each of its two
+  // independent gates (the caller's isStillValid predicate, and the
+  // pre-existing session-generation check) can, on its own, keep a stale
+  // voice save's content out of the transcript.
+  it("keeps a discarded voice save's content out of the transcript even when the active session never changes", async () => {
+    let resolveAppend!: (
+      value: Awaited<ReturnType<typeof mocks.appendVoiceTurns>>,
+    ) => void;
+    mocks.appendVoiceTurns.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveAppend = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    expect(
+      await screen.findByText("Session A", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+
+    const { persistConversation } = mocks.useInlineVoiceLive.mock.calls.at(
+      -1,
+    )![0] as {
+      persistConversation: (
+        sessionId: string,
+        conversationId: string,
+        turns: { role: "user" | "assistant"; text: string }[],
+        isStillValid: () => boolean,
+      ) => Promise<void>;
+    };
+
+    // A voice save for the currently active session is still in flight when
+    // the exact attempt that started it gets discarded (Discard, or a newer
+    // voice cycle beginning) -- nothing about the active session changes.
+    let stillValid = true;
+    let persistResult: Promise<void> | undefined;
+    act(() => {
+      persistResult = persistConversation(
+        "A",
+        "conversation-1",
+        [{ role: "user", text: "Stale voice turn" }],
+        () => stillValid,
+      );
+    });
+    stillValid = false;
+
+    await act(async () => {
+      resolveAppend([
+        {
+          id: "m1",
+          sessionId: "A",
+          userId: "u1",
+          role: "user",
+          content: "Stale voice turn",
+          status: "complete",
+          model: null,
+          agent: null,
+          createdAt: "",
+          source: "voice",
+        },
+      ]);
+      await persistResult;
+      // Flush the fire-and-forget reconcile/refresh chain
+      // persistVoiceConversation kicks off after the append settles, so the
+      // assertion below covers that later work too, not just the immediate
+      // append result.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.queryByText("Stale voice turn")).not.toBeInTheDocument();
+  });
+
+  it("keeps a voice save's content out of the transcript when the user navigates away and back before it resolves, even though the attempt itself was never invalidated", async () => {
+    let resolveAppend!: (
+      value: Awaited<ReturnType<typeof mocks.appendVoiceTurns>>,
+    ) => void;
+    mocks.appendVoiceTurns.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveAppend = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    expect(
+      await screen.findByText("Session A", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+
+    const { persistConversation } = mocks.useInlineVoiceLive.mock.calls.at(
+      -1,
+    )![0] as {
+      persistConversation: (
+        sessionId: string,
+        conversationId: string,
+        turns: { role: "user" | "assistant"; text: string }[],
+        isStillValid: () => boolean,
+      ) => Promise<void>;
+    };
+
+    // The attempt itself is never invalidated -- isStillValid stays true for
+    // the whole test -- but the user navigates A -> B -> A before the save
+    // resolves. Only the session-generation half of the gate (not
+    // isStillValid) can catch this: the session id matches again ("A"), but
+    // its generation has moved on.
+    let persistResult: Promise<void> | undefined;
+    act(() => {
+      persistResult = persistConversation(
+        "A",
+        "conversation-1",
+        [{ role: "user", text: "Stale voice turn" }],
+        () => true,
+      );
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Session B" }));
+    expect(
+      await screen.findByText("Session B", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    expect(
+      await screen.findByText("Session A", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      resolveAppend([
+        {
+          id: "m1",
+          sessionId: "A",
+          userId: "u1",
+          role: "user",
+          content: "Stale voice turn",
+          status: "complete",
+          model: null,
+          agent: null,
+          createdAt: "",
+          source: "voice",
+        },
+      ]);
+      await persistResult;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.queryByText("Stale voice turn")).not.toBeInTheDocument();
   });
 });

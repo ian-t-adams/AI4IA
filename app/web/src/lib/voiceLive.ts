@@ -1061,8 +1061,16 @@ export function useVoiceLive(
         }
         // "closed" only happens via our own cleanupSession() calling
         // ctx.close(); that path already tears everything down, so this is a
-        // no-op rather than a second, redundant finishSession().
-        if (ctx.state !== "suspended" || session.suspendRecoveryTimer !== null) {
+        // no-op rather than a second, redundant finishSession(). Every other
+        // state falls through to the same bounded recovery below --
+        // including Safari/WebKit's non-standard "interrupted" (fired e.g.
+        // on a phone call or Siri taking the mic), which TypeScript's
+        // AudioContextState type doesn't even know about. Treating anything
+        // other than "running"/"closed" as recoverable-or-fatal, rather than
+        // matching only the literal "suspended" string, ensures the client
+        // never keeps reporting a live/open session against a context that
+        // silently stopped producing audio for any reason.
+        if (ctx.state === "closed" || session.suspendRecoveryTimer !== null) {
           return;
         }
         void ctx.resume().catch(() => {});

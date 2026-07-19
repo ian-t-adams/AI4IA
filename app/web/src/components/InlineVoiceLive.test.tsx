@@ -109,6 +109,7 @@ function Harness({
     sessionId: string,
     conversationId: string,
     turns: VoiceTurnInput[],
+    isStillValid: () => boolean,
   ) => Promise<void>;
   onSend?: (text: string) => void;
   ensureSession?: () => Promise<string>;
@@ -124,8 +125,9 @@ function Harness({
       sessionId: string,
       conversationId: string,
       turns: VoiceTurnInput[],
+      isStillValid: () => boolean,
     ) => {
-      await persist(sessionId, conversationId, turns);
+      await persist(sessionId, conversationId, turns, isStillValid);
       setPersistedMessages(
         turns.map((turn, index) => ({
           id: `persisted-${index}`,
@@ -378,6 +380,7 @@ describe("inline Voice Live chat", () => {
           { role: "user", text: "Hello" },
           { role: "assistant", text: "Hi there" },
         ],
+        expect.any(Function),
       ),
     );
     expect(mocks.stop).toHaveBeenCalledTimes(1);
@@ -586,6 +589,7 @@ describe("inline Voice Live chat", () => {
         "original-session",
         expect.any(String),
         [{ role: "user", text: "Stay with the original chat" }],
+        expect.any(Function),
       ),
     );
     expect(ensureSession).not.toHaveBeenCalled();
@@ -975,6 +979,66 @@ describe("inline Voice Live chat", () => {
     expect(capturedIsStillWanted?.()).toBe(false);
   });
 
+  // Regression (final acceptance review, Finding 2): persist()'s isStillWanted
+  // predicate only gated whether ChatApp's ensureSession() could force-
+  // navigate to a lazily-created session -- it was never propagated INTO
+  // persistConversation() itself. A discarded attempt's still-in-flight
+  // appendVoiceTurns() call could then have its result blindly applied by
+  // ChatApp (setMessages/setInspectorVersion/reconcile) even though the user
+  // had already discarded this exact voice attempt. persistConversation()
+  // now accepts a 4th isStillValid predicate that reports false the instant
+  // this attempt is discarded or superseded, mirroring ensureSession's
+  // isStillWanted above, so ChatApp can gate its own client-side commits
+  // without ever needing to (or being able to) cancel the underlying save.
+  it("passes persistConversation a predicate that turns false the instant this attempt is discarded", async () => {
+    let capturedIsStillValid: (() => boolean) | undefined;
+    const persist = vi.fn(
+      (
+        _sessionId: string,
+        _conversationId: string,
+        _turns: VoiceTurnInput[],
+        isStillValid: () => boolean,
+      ) => {
+        capturedIsStillValid = isStillValid;
+        // Never resolves in this test: mirrors a slow/hung appendVoiceTurns()
+        // call so the predicate's answer can be observed changing while it's
+        // still "in flight" from ChatApp's perspective.
+        return new Promise<void>(() => {});
+      },
+    );
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "Discard me too",
+          pending: false,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    render(<Harness activeSessionId="session-1" persist={persist} />);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+
+    await waitFor(() => expect(persist).toHaveBeenCalledTimes(1));
+    expect(capturedIsStillValid).toBeInstanceOf(Function);
+    // Still the current (only) attempt: the predicate must say so.
+    expect(capturedIsStillValid?.()).toBe(true);
+
+    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+
+    // Same predicate instance, re-queried after discard: it must now report
+    // false so ChatApp knows not to commit any state from this save once its
+    // still-pending appendVoiceTurns() call eventually resolves.
+    expect(capturedIsStillValid?.()).toBe(false);
+  });
+
   // Regression: ensureSession() is contractually async (Promise<string>), but
   // persist() cannot rely on that alone -- it is always invoked as
   // `void persist()` immediately followed by more code in the same scope,
@@ -1109,6 +1173,88 @@ describe("inline Voice Live chat", () => {
     // Inactive + nothing finalized: this turn can never be completed or
     // saved, so it must not block navigation forever with no recovery UI.
     expect(getByTestId("locked").textContent).toBe("false");
+  });
+
+  // Regression (final acceptance review, Finding 4): the test above proves
+  // exitLocked recovers, but the rendered transcript previously still kept
+  // showing a permanent "Listening…" bubble for this same never-finalized
+  // turn -- clearing the navigation lock alone didn't fix what the user
+  // actually saw on screen. Once live becomes inactive, a turn that is
+  // still open with no real text must disappear from the transcript
+  // entirely, not just stop blocking navigation.
+  it("clears the rendered 'Listening…' placeholder once stop() ends the call with an incomplete turn", async () => {
+    const pendingTurn = {
+      id: "u1",
+      role: "user" as const,
+      text: "",
+      pending: true,
+      streaming: false,
+      tool: "",
+    };
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [pendingTurn],
+    });
+    const { rerender } = render(<Harness />);
+    expect(screen.getByText("Listening…")).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+    // stop() tears the connection down synchronously, but voiceLive.ts never
+    // clears `turns` -- the same never-finalized turn remains afterward,
+    // exactly as it would after a real stop() call.
+    controller = makeController({
+      status: "idle",
+      active: false,
+      turns: [pendingTurn],
+    });
+    rerender(<Harness />);
+
+    expect(screen.queryByText("Listening…")).not.toBeInTheDocument();
+  });
+
+  // Regression (final acceptance review, Finding 4 companion): the fix must
+  // not throw away turns that captured real content before the connection
+  // ended -- only the still-open placeholder case (no content at all) is
+  // dropped. A turn with genuine partial content keeps that content and
+  // simply stops being presented as in-progress.
+  it("keeps a turn's real partial content after stop() while turning off its live indicator", async () => {
+    const partialTurn = {
+      id: "a1",
+      role: "assistant" as const,
+      text: "Partial answer before the call",
+      pending: false,
+      streaming: true,
+      tool: "",
+    };
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [partialTurn],
+    });
+    const { rerender } = render(<Harness />);
+    expect(
+      screen.getByText("Partial answer before the call"),
+    ).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+    controller = makeController({
+      status: "idle",
+      active: false,
+      turns: [partialTurn],
+    });
+    rerender(<Harness />);
+
+    // Content survives -- it is not a placeholder, so it must never be
+    // dropped just because the connection closed while still "streaming".
+    expect(
+      screen.getByText("Partial answer before the call"),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Generating")).not.toBeInTheDocument();
   });
 
   it("adopts a session created by a text send in the same empty chat", () => {

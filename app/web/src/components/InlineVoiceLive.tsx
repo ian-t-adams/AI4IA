@@ -62,6 +62,12 @@ interface InlineVoiceLiveOptions {
     sessionId: string,
     conversationId: string,
     turns: VoiceTurnInput[],
+    // Re-checked by the caller (ChatApp) right before it commits any
+    // client-side state from this save -- mirrors isStillWanted above.
+    // Reports false once this exact attempt has been discarded or
+    // superseded by a newer cycle, even though the underlying save request
+    // itself (already in flight) is left to complete in the background.
+    isStillValid: () => boolean,
   ) => Promise<void>;
 }
 
@@ -340,7 +346,12 @@ export function useInlineVoiceLive({
           }
           setBindingCommitted(true);
           setBoundSessionId(sessionId);
-          return persistConversation(sessionId, conversationIdForAttempt, turns);
+          return persistConversation(
+            sessionId,
+            conversationIdForAttempt,
+            turns,
+            () => attemptIdRef.current === attemptId,
+          );
         })
         .then(() => finish(null))
         .catch((error: unknown) =>
@@ -459,22 +470,37 @@ export function useInlineVoiceLive({
 
   const messages = useMemo<DisplayMessage[]>(() => {
     return live.turns
-      .filter(
-        (turn) =>
-          !persisted || turn.pending || turn.streaming || !turn.text.trim(),
-      )
-      .map((turn) => ({
-        id: `voice-live-${cycleId}-${turn.id}`,
-        role: turn.role,
-        content:
-          turn.text ||
-          (turn.role === "user" && turn.pending ? "Listening…" : ""),
-        createdAt: turn.createdAt,
-        pending: turn.pending || turn.streaming,
-        source: "voice",
-        agent: turn.role === "assistant" ? agent : null,
-      }));
-  }, [agent, cycleId, live.turns, persisted]);
+      .filter((turn) => {
+        const stillOpen = turn.pending || turn.streaming;
+        // Once the live connection has ended, a turn that is still open but
+        // never received any real content -- the user started speaking and
+        // stopped before a transcript arrived, or the assistant was cut off
+        // before its first token -- can never resolve. Drop it outright
+        // instead of leaving a permanent "Listening…"/generating indicator
+        // with no way to complete. A turn that already has real text is
+        // kept (see the map below, which turns its live indicator off), so
+        // a genuine partial exchange stays visible.
+        if (!live.active && stillOpen && !turn.text.trim()) return false;
+        return !persisted || stillOpen || !turn.text.trim();
+      })
+      .map((turn) => {
+        // Mirrors the filter above: a turn still open the instant the
+        // connection closed can never receive more content, so stop
+        // presenting it as in-progress even though it was never explicitly
+        // finalized.
+        const stillLive = live.active && (turn.pending || turn.streaming);
+        return {
+          id: `voice-live-${cycleId}-${turn.id}`,
+          role: turn.role,
+          content:
+            turn.text || (stillLive && turn.role === "user" ? "Listening…" : ""),
+          createdAt: turn.createdAt,
+          pending: stillLive,
+          source: "voice",
+          agent: turn.role === "assistant" ? agent : null,
+        };
+      });
+  }, [agent, cycleId, live.active, live.turns, persisted]);
 
   // Whether leaving now would lose data. A live (or connecting) session with
   // no exchanges yet is NOT unsaved — nothing has been said. Once the call
@@ -606,7 +632,7 @@ export function InlineVoiceLiveStatus({
         <button
           type="button"
           onClick={voice.discardPersistence}
-          title="Abandon this voice transcript without saving it. Chat navigation unlocks immediately."
+          title="Stop waiting on this voice transcript so chat navigation unlocks immediately. A save already in progress isn't cancelled and may still complete in the background."
           style={{
             border: "1px solid var(--border)",
             borderRadius: 999,
