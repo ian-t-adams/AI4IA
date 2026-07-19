@@ -59,6 +59,7 @@ from .routers import attachments as attachments_router
 from .routers import admin_usage as admin_usage_router
 from .routers import catalog as catalog_router
 from .routers import chat as chat_router
+from .routers import client_events as client_events_router
 from .routers import docprocessing as docprocessing_router
 from .routers import documents as documents_router
 from .routers import entitlements as entitlements_router
@@ -543,6 +544,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(sessions_router.router)
     app.include_router(tools_router.router)
     app.include_router(chat_router.router)
+    app.include_router(client_events_router.router)
     app.include_router(documents_router.router)
     app.include_router(images_router.router)
     app.include_router(inspector_router.router)

@@ -1,6 +1,7 @@
 "use client";
 
 import type { ChatParams, ModelEntry } from "@/lib/types";
+import { HelpTooltip } from "./HelpTooltip";
 
 // Fallback max-output ceiling when the active model declares no metadata
 // (e.g. model-router). Mirrors the previous hardcoded input bound so behavior
@@ -15,6 +16,7 @@ function Slider({
   step,
   onChange,
   disabled,
+  help,
 }: {
   label: string;
   value: number;
@@ -23,13 +25,19 @@ function Slider({
   step: number;
   onChange: (v: number) => void;
   disabled: boolean;
+  help: React.ReactNode;
 }) {
   const id = `param-${label.replace(/\s+/g, "-").toLowerCase()}`;
   return (
-    <label htmlFor={id} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      <span style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}>
-        {label}: <strong>{value}</strong>
-      </span>
+    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <label htmlFor={id} style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}>
+          {label}: <strong>{value}</strong>
+        </label>
+        <HelpTooltip label={label} size="sm">
+          {help}
+        </HelpTooltip>
+      </div>
       <input
         id={id}
         type="range"
@@ -40,7 +48,7 @@ function Slider({
         disabled={disabled}
         onChange={(e) => onChange(Number(e.target.value))}
       />
-    </label>
+    </div>
   );
 }
 
@@ -70,6 +78,16 @@ export function ParamControls({
         step={0.1}
         disabled={disabled}
         onChange={(v) => onChange({ ...params, temperature: v })}
+        help={
+          <>
+            Controls how much randomness the model uses when choosing words. Lower it
+            (toward 0) for consistent, predictable answers like code or facts; raise it
+            (toward 2) for more varied, creative output. Higher values also increase the
+            chance of less accurate or coherent answers. Default is 0.7. GPT-5 and
+            o-series models ignore this control on the server and always use their own
+            fixed default instead, no matter what&apos;s set here.
+          </>
+        }
       />
       <Slider
         label="Top P"
@@ -79,17 +97,56 @@ export function ParamControls({
         step={0.05}
         disabled={disabled}
         onChange={(v) => onChange({ ...params, top_p: v })}
+        help={
+          <>
+            An alternate way to control variety: the model only considers the smallest
+            set of next-word options whose combined likelihood reaches this value. 1
+            means &ldquo;consider everything&rdquo;; lowering it narrows the model to
+            its most likely words. Most people adjust Temperature or Top P, not both, to
+            keep behavior predictable. Default is 1. Like Temperature, GPT-5 and
+            o-series models ignore this on the server and always use their own fixed
+            default instead.
+          </>
+        }
       />
-      <label style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <span style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}>
-          Max tokens{" "}
-          {model?.maxOutputTokens != null && (
-            <span style={{ opacity: 0.7 }}>
-              (model max: {model.maxOutputTokens.toLocaleString()})
-            </span>
-          )}
-        </span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <label htmlFor="param-max-tokens" style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}>
+            Max tokens{" "}
+            {model?.maxOutputTokens != null && (
+              <span style={{ opacity: 0.7 }}>
+                (model max: {model.maxOutputTokens.toLocaleString()})
+              </span>
+            )}
+          </label>
+          <HelpTooltip label="Max tokens" size="sm">
+            The maximum length of the model&apos;s reply, in tokens (roughly 3&ndash;4
+            characters each). Raise it for long-form answers like essays or code files;
+            lower it to keep replies short. Longer replies cost more and take longer to
+            generate.{" "}
+            {model?.maxOutputTokens != null ? (
+              <>
+                This value is capped by the selected model&apos;s published maximum
+                output (currently {model.maxOutputTokens.toLocaleString()}). Leaving it
+                at the default, 1024, is treated as &ldquo;no preference&rdquo; and
+                expands to the model&apos;s full ceiling instead of actually capping the
+                reply at 1024 &mdash; pick a different value if you want a genuinely
+                short reply.
+              </>
+            ) : (
+              <>
+                This model publishes no maximum-output size, so 1024 is sent as a
+                literal cap on the reply length instead of expanding to a model
+                ceiling &mdash; raise it if replies are getting cut short.
+              </>
+            )}{" "}
+            A few flagship models also enforce a much higher minimum (at least 16,384)
+            regardless of a lower value here, since part of that budget goes to hidden
+            reasoning before the visible reply is written.
+          </HelpTooltip>
+        </div>
         <input
+          id="param-max-tokens"
           type="number"
           min={1}
           max={cap}
@@ -102,7 +159,7 @@ export function ParamControls({
           }}
           style={{ padding: "6px 8px" }}
         />
-      </label>
+      </div>
     </div>
   );
 }

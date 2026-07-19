@@ -27,7 +27,7 @@ import { ModelPicker } from "./ModelPicker";
 import { ParamControls } from "./ParamControls";
 import { VoiceSettingsPanel, type VoiceSettingsPanelProps } from "./VoiceSettingsPanel";
 import { useMediaQuery } from "./useMediaQuery";
-import { useModalFocus } from "./useModalFocus";
+import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 
 type Section = "model" | "instructions" | "tools" | "context" | "memory" | "usage" | "voice";
 type LoadPhase = "idle" | "loading" | "ready" | "error";
@@ -167,11 +167,8 @@ export function ConversationInspector({
   const drawerOpenerRef = useRef<HTMLButtonElement>(null);
   const drawerReturnFocusRef = useRef<HTMLElement | null>(null);
   const drawer = useMediaQuery("(max-width: 1050px)") && !collapsed;
-  const drawerFocus = useModalFocus<HTMLElement>(
-    onToggle,
-    drawer,
-    drawerReturnFocusRef,
-  );
+  const drawerFocusRef = useModalFocus<HTMLElement>(drawer, drawerReturnFocusRef);
+  const onDrawerKeyDown = useModalKeyDown<HTMLElement>(onToggle, drawer);
 
   useEffect(() => setPromptDraft(systemPrompt), [systemPrompt]);
   useEffect(
@@ -430,6 +427,13 @@ export function ConversationInspector({
       )
       .sort((left, right) => left.label.localeCompare(right.label));
   }, [toolQuery, tools]);
+  // What the currently-selected agent does, regardless of whether it came from
+  // a live session snapshot or a not-yet-started conversation's draft default.
+  const agentDescription = useMemo(() => {
+    if (sessionId) return snapshot?.agent.description || null;
+    if (!draftDefaults.agentName) return null;
+    return agents.find((agent) => agent.name === draftDefaults.agentName)?.description || null;
+  }, [agents, draftDefaults.agentName, sessionId, snapshot]);
 
   if (collapsed) {
     return (
@@ -454,8 +458,8 @@ export function ConversationInspector({
 
   return (
     <aside
-      ref={drawerFocus.ref}
-      onKeyDown={drawerFocus.onKeyDown}
+      ref={drawerFocusRef}
+      onKeyDown={onDrawerKeyDown}
       className="conversation-inspector"
       aria-label="Conversation inspector"
       aria-busy={loading}
@@ -607,6 +611,7 @@ export function ConversationInspector({
             ) : snapshot?.instructions.editable === false ? (
               <div className="inspector-empty">
                 <strong>{snapshot.agent.displayName}</strong>
+                {snapshot.agent.description ? <p>{snapshot.agent.description}</p> : null}
                 <p>The agent persona owns instructions. Edit the agent in Agents & workflows.</p>
               </div>
             ) : snapshot ? (
@@ -665,10 +670,13 @@ export function ConversationInspector({
               >
                 <option value="">Generic assistant</option>
                 {agents.filter((agent) => agent.enabled).map((agent) => (
-                  <option key={agent.name} value={agent.name}>{agent.displayName}</option>
+                  <option key={agent.name} value={agent.name} title={agent.description || undefined}>
+                    {agent.displayName}
+                  </option>
                 ))}
               </select>
             </label>
+            {agentDescription ? <p className="inspector-note">{agentDescription}</p> : null}
             <label>
               Search tools
               <input
@@ -687,8 +695,27 @@ export function ConversationInspector({
                 <button type="button" onClick={() => void loadTools()}>Retry</button>
               </div>
             ) : null}
+            {phases.tools === "ready" && toolEntries.length > 0 ? (
+              <div className="tool-list-header">
+                <span>Tools</span>
+                <HelpTooltip label="How to read the tool list" size="sm">
+                  Each row shows, in order: whether it&apos;s <strong>inherited</strong>{" "}
+                  from the agent, <strong>added</strong>/<strong>removed</strong> by
+                  this conversation&apos;s overrides, and whether it&apos;s{" "}
+                  <strong>effective</strong> right now. Then its{" "}
+                  <strong>source</strong> and <strong>ownership</strong>; its{" "}
+                  <strong>risk</strong> tier (safe, external, or destructive); whether
+                  it <strong>needs approval</strong> — chat has no live approval
+                  prompt, so this means the tool is unavailable, not merely
+                  slower; its <strong>scopes</strong> (specific permissions it can
+                  exercise); and
+                  whether it&apos;s <strong>typed</strong> (schema-validated inputs) or{" "}
+                  <strong>voice</strong>-capable (works during a Voice Live call).
+                </HelpTooltip>
+              </div>
+            ) : null}
             <div className="tool-list">
-              {toolEntries.map((tool) => {
+              {toolEntries.map((tool, index) => {
                 const inherited = sessionId
                   ? snapshot?.tools.inherited.includes(tool.name) ?? false
                   : draftInheritedTools.includes(tool.name);
@@ -705,10 +732,29 @@ export function ConversationInspector({
                 const removed = sessionId
                   ? snapshot?.tools.removed.includes(tool.name) ?? false
                   : draftDefaults.toolOverrides.removed.includes(tool.name);
+                const lockedOut = tool.available && !tool.selectable && !inherited;
+                // Index-based, not name-based: aria-describedby (like all
+                // IDREFS attributes) is a whitespace-separated token list, so
+                // an id built from a raw tool name containing a space (e.g. a
+                // discovered tool literally named "foo bar") would silently
+                // split into two bogus tokens and break the association.
+                // A per-render index is always whitespace-free and unique.
+                const toolInputId = `tool-input-${index}`;
+                const toolStatusId = `tool-status-${index}`;
+                const toolLockedId = `tool-locked-${index}`;
                 return (
-                  <label key={tool.name} className="tool-row">
+                  // A <label> can only own one interactive control; nesting the
+                  // HelpTooltip's own button inside it (as before) folded "Help:
+                  // …" into the checkbox's computed name alongside the rest of
+                  // the row's text. Use an explicit id/htmlFor pair scoped to
+                  // just the visible label text, keep the tooltip as a sibling,
+                  // and carry the rich status/lockout detail via
+                  // aria-describedby instead of the accessible name.
+                  <div key={tool.name} className="tool-row">
                     <input
                       type="checkbox"
+                      id={toolInputId}
+                      aria-describedby={lockedOut ? `${toolStatusId} ${toolLockedId}` : toolStatusId}
                       checked={effective}
                       disabled={
                         (sessionId ? !canMutate : false) ||
@@ -748,8 +794,15 @@ export function ConversationInspector({
                       }}
                     />
                     <span>
-                      <strong>{tool.label}</strong>
-                      <small>
+                      <label htmlFor={toolInputId}>
+                        <strong>{tool.label}</strong>
+                      </label>
+                      {tool.description ? (
+                        <HelpTooltip label={`${tool.label} description`} size="sm">
+                          {tool.description}
+                        </HelpTooltip>
+                      ) : null}
+                      <small id={toolStatusId}>
                         {inherited ? "inherited · " : ""}
                         {added ? "added · " : ""}
                         {removed ? "removed · " : ""}
@@ -769,8 +822,15 @@ export function ConversationInspector({
                         {` · typed ${tool.typed === null ? "unknown" : tool.typed ? "yes" : "no"} · voice ${tool.voice === null ? "unknown" : tool.voice ? "yes" : "no"}`}
                         {!tool.available && tool.detail ? ` · ${tool.detail}` : ""}
                       </small>
+                      {lockedOut ? (
+                        <small id={toolLockedId}>
+                          Can&apos;t enable from here — it needs approval, scopes, or
+                          restricted access that only a pre-built agent can grant, not
+                          an ad-hoc conversation toggle.
+                        </small>
+                      ) : null}
                     </span>
-                  </label>
+                  </div>
                 );
               })}
               {phases.tools === "ready" && toolEntries.length === 0 ? (

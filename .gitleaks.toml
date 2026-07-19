@@ -73,3 +73,19 @@ paths = ['''app/api/tests/test_realtime_logic\.py''']
 regexes = [
   '''eyJhbGciOiJSUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.signature-value''',
 ]
+
+# 6) Synthetic base64 "credential" fixture in the content-free client-events
+#    telemetry schema's hostile-input test corpus. Commit 240c178 briefly
+#    stored a base64-encoded textbook example credential ("alice:password") as a
+#    dummy value proving `ClientEventReport`'s `extra="forbid"` rejects an
+#    illegal nested field regardless of its content; a follow-up commit
+#    replaced it with a low-entropy repeated-character placeholder, but that
+#    original commit's diff still contains the literal. Scoped to the exact
+#    historical commit AND file (by SHA, not by regex, so this entry never has
+#    to repeat the secret-shaped string itself) so any other secret added to
+#    this file in a different commit remains blocking.
+[[allowlists]]
+description = "Synthetic base64 credential-shaped fixture, replaced with a low-entropy placeholder in a follow-up commit (historical false positive in commit 240c178)."
+condition = "AND"
+commits = ["240c178da9db50e477e9d2eff65caacfedc1bc58"]
+paths = ['''app/api/tests/test_client_events_api\.py''']

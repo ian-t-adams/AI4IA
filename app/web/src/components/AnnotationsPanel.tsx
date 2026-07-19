@@ -14,7 +14,7 @@ import {
   updateLibraryAnnotation,
 } from "@/lib/api";
 import type { DocumentAnnotation } from "@/lib/library";
-import { useModalFocus } from "./useModalFocus";
+import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 
 interface AnnotationsPanelProps {
   documentId: string;
@@ -33,7 +33,8 @@ export default function AnnotationsPanel({
   filename,
   onClose,
 }: AnnotationsPanelProps) {
-  const modal = useModalFocus(onClose);
+  const modalRef = useModalFocus();
+  const onModalKeyDown = useModalKeyDown(onClose);
   const [annotations, setAnnotations] = useState<DocumentAnnotation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +59,7 @@ export default function AnnotationsPanel({
   }, [documentId]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch-on-mount; setState only runs after the awaited call resolves
     void refresh();
   }, [refresh]);
 
@@ -125,8 +127,8 @@ export default function AnnotationsPanel({
 
   return (
     <div
-      ref={modal.ref}
-      onKeyDown={modal.onKeyDown}
+      ref={modalRef}
+      onKeyDown={onModalKeyDown}
       role="dialog"
       aria-label={`Notes for ${filename}`}
       aria-modal="true"

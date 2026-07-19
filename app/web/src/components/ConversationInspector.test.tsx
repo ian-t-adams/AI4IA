@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { InspectorSnapshot } from "@/lib/inspector";
@@ -544,6 +544,150 @@ describe("ConversationInspector", () => {
       "approval unknown",
     );
     expect(screen.getByText(/scopes unknown/)).toHaveTextContent("typed unknown");
+  });
+
+  it("surfaces a tool's description and an accessible reason it can't be toggled here", async () => {
+    mocks.listTools.mockResolvedValue([
+      {
+        name: "shell",
+        label: "Shell",
+        description: "Runs a shell command on the host.",
+        source: "built-in",
+        risk: "destructive",
+        requiresApproval: true,
+        scopes: ["shell:exec"],
+        available: true,
+        selectable: false,
+        detail: null,
+        ownership: "application",
+        typed: true,
+        voice: false,
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<ConversationInspector {...props()} />);
+    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    const checkbox = await screen.findByRole("checkbox", { name: "Shell" });
+    // The row is a <div>, not a <label> — a HelpTooltip's own button lives
+    // alongside it instead of nested inside a control's label.
+    expect(checkbox.closest("label")).toBeNull();
+    const row = checkbox.closest(".tool-row") as HTMLElement;
+    expect(row).not.toHaveAttribute("title");
+
+    await user.click(within(row).getByRole("button", { name: "Help: Shell description" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "Runs a shell command on the host.",
+    );
+
+    const lockedReason = within(row).getByText(/Can't enable from here/);
+    expect(lockedReason).toHaveTextContent(/only a pre-built agent can grant/);
+    // The rich status/lockout detail is wired to the checkbox for screen
+    // readers via aria-describedby rather than folded into its name.
+    expect(checkbox).toHaveAccessibleName("Shell");
+    expect(checkbox.getAttribute("aria-describedby")).toContain(
+      lockedReason.id,
+    );
+  });
+
+  it("computes a correct accessible description for a discovered tool whose name contains whitespace", async () => {
+    mocks.listTools.mockResolvedValue([
+      {
+        name: "foo bar",
+        label: "Foo Bar",
+        description: "A discovered MCP tool with a space in its name.",
+        source: "mcp",
+        risk: "external",
+        requiresApproval: true,
+        scopes: [],
+        available: true,
+        selectable: false,
+        detail: null,
+        ownership: "user",
+        typed: true,
+        voice: false,
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<ConversationInspector {...props()} />);
+    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    const checkbox = await screen.findByRole("checkbox", { name: "Foo Bar" });
+
+    // Regression test: ids built from the raw tool name (e.g.
+    // `tool-status-foo bar`) get silently split into two bogus IDREF tokens
+    // by aria-describedby's whitespace-separated-list semantics, so no
+    // element resolves and the computed accessible description goes empty —
+    // even though a naive `.toContain()` check on the raw attribute string
+    // wouldn't catch it (both sides are built from the same template
+    // literal, so containment holds regardless of whitespace). Ids must be
+    // generated independent of the tool name (e.g. by row index) so this
+    // keeps resolving correctly no matter what a discovered tool is named.
+    expect(checkbox).toHaveAccessibleDescription(/external/);
+    expect(checkbox).toHaveAccessibleDescription(/Can't enable from here/);
+  });
+
+  it("explains the tool list's dot-joined columns via a glossary tooltip", async () => {
+    mocks.listTools.mockResolvedValue([
+      {
+        name: "calculator",
+        label: "Calculator",
+        description: "Calculate",
+        source: "built-in",
+        risk: "safe",
+        requiresApproval: false,
+        scopes: [],
+        available: true,
+        selectable: true,
+        detail: null,
+        ownership: "application",
+        typed: true,
+        voice: true,
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<ConversationInspector {...props()} />);
+    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await screen.findByText("Calculator");
+    await user.click(
+      screen.getByRole("button", { name: "Help: How to read the tool list" }),
+    );
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/schema-validated/);
+  });
+
+  it("shows the selected agent's description for both live sessions and new-conversation drafts", async () => {
+    const value = snapshot("s1");
+    value.agent = { name: "analyst", displayName: "Analyst", description: "Crunches numbers.", enabled: true };
+    mocks.getInspector.mockResolvedValue(value);
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ConversationInspector
+        {...props()}
+        agents={[
+          { name: "analyst", displayName: "Analyst", description: "Crunches numbers.", enabled: true },
+        ]}
+      />,
+    );
+    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    expect(await screen.findByText("Crunches numbers.")).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "Analyst" }),
+    ).toHaveAttribute("title", "Crunches numbers.");
+
+    const draftDefaults: ConversationDraftDefaults = {
+      agentName: "analyst",
+      toolOverrides: { added: [], removed: [] },
+      libraryDocumentIds: [],
+    };
+    rerender(
+      <ConversationInspector
+        {...props(null)}
+        agents={[
+          { name: "analyst", displayName: "Analyst", description: "Crunches numbers.", enabled: true },
+        ]}
+        draftDefaults={draftDefaults}
+      />,
+    );
+    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    expect(await screen.findByText("Crunches numbers.")).toBeInTheDocument();
   });
 
   it("discards a late document association after switching conversations", async () => {
