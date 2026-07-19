@@ -138,7 +138,7 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 | `openapi` | Call an OpenAPI-described API | `openapi` (nested `name`, `spec`, `auth`) | Wraps a REST API as a tool; `auth.type` is `anonymous` (no other field), `project_connection` (ONLY `auth.securityScheme.projectConnectionId`), or `managed_identity` (ONLY `auth.securityScheme.audience`) -- each is a strictly closed shape (schema `oneOf`, `additionalProperties: false` at every level), so e.g. a stray `securityScheme` on `anonymous` or an extra key alongside `projectConnectionId`/`audience` is rejected, not silently ignored. `spec` is passed through **byte-for-byte unmodified** -- its property names describe someone else's API and are never snake_cased, so a JSON-schema property genuinely named e.g. `topK` is never corrupted into `top_k`. |
 | `toolbox_search_preview` | **Tool search** — let the model pick tools from a large set | none | Add this so the toolbox self-describes its tools to the model. |
 | `mcp` | Nest another MCP server as a tool | `serverLabel`, one of `serverUrl`/`connectorId`, `requireApproval`, `projectConnectionId`, `serverDescription`/`allowedTools`/`deferLoading` (optional) | Lets the toolbox aggregate upstream MCP servers. Identified by `serverLabel`. Unlike `azure_ai_search`/`browser_automation_preview`, `mcp`'s `projectConnectionId` genuinely is a tool-root field in the SDK. `requireApproval` is the literal `"always"`/`"never"`, or an object with `always`/`never` keys each holding a tool filter (`toolNames`/`readOnly`); an empty object is rejected. `allowedTools` is either a non-empty array of tool-name strings or that same tool-filter shape, restricting which discovered upstream tools are exposed. `serverDescription` is free text surfaced to the model; `deferLoading` (boolean) defers fetching the server's tool list until first use. There is no BYO-container-image tool type; if you need to run genuinely custom execution logic, wrap it in your own server and expose it as an `mcp` tool instead of trying to pass a custom image to `code_interpreter.container`. The SDK's `mcp` model also exposes `authorization` (an OAuth bearer token) and `headers` (which can carry auth material); AI4IA does not expose either for the same secret-sprawl reason as `networkPolicy.domainSecrets` above -- put credentials in the referenced project connection instead. |
-| `a2a_preview` | Delegate to a remote Agent-to-Agent (A2A) protocol agent | one of `projectConnectionId`/`baseUrl`, `agentCardPath`/`sendCredentialsForAgentCard` (optional) | SDK 2.3.0's `A2APreviewToolboxTool` -- the **inbound** direction (AI4IA's toolbox *calling out* to someone else's A2A agent), the inverse of the "Routines and Agent-to-Agent (A2A)" section below (AI4IA *exposing* its own agent as an A2A endpoint for others to call). Use `projectConnectionId` to delegate through a project connection storing the remote agent's endpoint and auth (Microsoft's documented approach), or `baseUrl` (+ optional `agentCardPath`, `sendCredentialsForAgentCard`) for a self-contained, connectionless call to an anonymous agent. Exactly one of `projectConnectionId`/`baseUrl` is required; fields specific to other tool types (e.g. `serverLabel`, `requireApproval`) are rejected. |
+| `a2a_preview` | Delegate to a remote Agent-to-Agent (A2A) protocol agent | at least one of `projectConnectionId`/`baseUrl`, `agentCardPath`/`sendCredentialsForAgentCard` (optional) | SDK 2.3.0's `A2APreviewToolboxTool` -- the **inbound** direction (AI4IA's toolbox *calling out* to someone else's A2A agent), the inverse of the "Routines and Agent-to-Agent (A2A)" section below (AI4IA *exposing* its own agent as an A2A endpoint for others to call). Use `projectConnectionId` to delegate through a project connection storing the remote agent's endpoint and auth (Microsoft's documented approach), `baseUrl` (+ optional `agentCardPath`, `sendCredentialsForAgentCard`) for a self-contained, connectionless call to an anonymous agent, or both together (e.g. `baseUrl` as the target plus `projectConnectionId` for auth) -- the SDK constructor and schema both accept either or both; neither is client-side exclusive of the other. At least one is required; fields specific to other tool types (e.g. `serverLabel`, `requireApproval`) are rejected. |
 | `fabric_iq_preview` | Ground responses in a Microsoft Fabric IQ knowledge source | `projectConnectionId` (required), `serverLabel`/`serverUrl`/`requireApproval` (optional) | SDK 2.3.0's `FabricIQPreviewToolboxTool`. Shares the `serverLabel`/`serverUrl`/`requireApproval` field *names* with `mcp`, but not `allowedTools`/`serverDescription`/`deferLoading` (those are mcp-only and rejected here). |
 | `work_iq_preview` | Ground responses in Microsoft 365 Work IQ | `projectConnectionId` (required; the tool's only field) | SDK 2.3.0's `WorkIQPreviewToolboxTool`. Unlike `fabric_iq_preview`, does **not** accept `serverLabel`/`serverUrl`/`requireApproval` or any other field. |
 | `reminder_preview` | Let the model schedule reminders for the caller | none | SDK 2.3.0's `ReminderPreviewToolboxTool`. No type-specific fields or connection required -- only the common `name`/`description`/`toolConfigs` below. |
@@ -225,8 +225,10 @@ then activates that new version (see the idempotency note below).
 A **skill** is a `foundry/skills/<name>/SKILL.md` file (Agent Skills spec,
 [agentskills.io](https://agentskills.io)): YAML front matter (`name`, `description`) plus a
 Markdown instruction body. `scripts/provision-foundry-skills.py` discovers, validates, and
-(`--create`) uploads each via `project.beta.skills.create(...)`. Bind a skill to the toolbox by
-listing it under `skills` in the manifest. The example
+(`--create`) uploads each via `project.beta.skills.create(..., default=True)`, which both creates
+the version and activates it as the default in the same call (see the idempotency note below for
+how this differs from the toolbox script's two-call create-then-activate). Bind a skill to the
+toolbox by listing it under `skills` in the manifest. The example
 `foundry/skills/citation-discipline/SKILL.md` enforces grounded, cited answers.
 
 Skill `name` must match `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (max 64). The create path sends
@@ -272,18 +274,19 @@ Skill `name` must match `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (max 64). The create p
 
    > **Idempotency note:** re-running `--create` with the same manifest `name` does not fail or
    > duplicate the toolbox -- it calls `create_version(name, ...)` again, which adds a new version
-   > under the same named toolbox (same behavior for `provision-foundry-skills.py`'s
-   > `skills.create(...)`, which auto-creates the parent skill once and versions it thereafter).
-   > `create_version` alone does **not** change what the toolbox's MCP endpoint serves: a toolbox's
-   > `default_version` pointer is fixed at creation and does not auto-advance to newer versions. So
-   > after every successful `create_version`, the script also calls
-   > `project.toolboxes.update(name, default_version=<new version>)` to explicitly activate it --
-   > without that, repeat `--create` runs would keep creating versions that are never actually
-   > served, silently. That makes repeat runs *safe* (each one activates cleanly) but not a true
-   > no-op: each `--create` still accumulates an immutable version even when the manifest is
+   > under the same named toolbox. `create_version` alone does **not** change what the toolbox's
+   > MCP endpoint serves: a toolbox's `default_version` pointer is fixed at creation and does not
+   > auto-advance to newer versions. So after every successful `create_version`, the script also
+   > calls `project.toolboxes.update(name, default_version=<new version>)` to explicitly activate
+   > it -- without that, repeat `--create` runs would keep creating versions that are never
+   > actually served, silently. That makes repeat runs *safe* (each one activates cleanly) but not
+   > a true no-op: each `--create` still accumulates an immutable version even when the manifest is
    > unchanged. There is no script-side dedup/diff against the latest version's content, so avoid
    > scripting unconditional `--create` on every deploy; run it deliberately when the manifest
-   > changes.
+   > changes. **Skills differ:** `provision-foundry-skills.py`'s `skills.create(name, ...,
+   > default=True)` is a single idempotent call that both creates the version (auto-creating the
+   > parent skill on first use) AND activates it as the default, so there is no separate
+   > "create-then-activate" step to forget for skills the way there is for the toolbox.
 
 5. **Register the entry.** Paste the printed object into `infra/mcp-servers.json` (`servers[]`)
    and regenerate the packaged runtime catalog:
@@ -337,30 +340,49 @@ no second auth path. The shipped `infra/mcp-servers.json` now contains the activ
 `ai4ia-toolbox` entry, so the script plans that MCP asset by default; an empty catalog is still a
 clean no-op for consumers who remove all official servers.
 
-## P7 — Routines and Agent-to-Agent (A2A): shipped (scaffold; live paths preview)
+## P7 — Routines and Agent-to-Agent (A2A): mixed status (routines validation-only by design; A2A endpoint scaffold shipped)
 
-Routines and A2A are Foundry **managed-agent-runtime** features. Their offline-verifiable surface
-(manifests, schemas, validation/planning, `--emit-az`, unit tests) is **shipped and green**; only the
-final live calls (`--create` / enabling the endpoint) run against a tenant, and those use the pinned
-preview `azure-ai-projects` SDK / `az` CLI. Both keep every tool call and endpoint on the proxy.
+Routines and A2A are Foundry **managed-agent-runtime** features, but their offline-verifiable
+surface diverges by design, not by omission. **Routines** is permanently validation/planning-only
+-- see below for why no faithful `--create` exists against the pinned SDK. **A2A**'s
+schema/validation/`--emit-az` scaffold is shipped and green; only the final live calls (enabling
+the endpoint on a tenant) remain an operator step, using the pinned preview `az` CLI / SDK. Both
+keep every tool call and endpoint on the proxy.
 
 ### Routines
 
-A [routine](https://learn.microsoft.com/azure/foundry/agents/how-to/use-routines) is a managed,
-multi-step agent definition that runs *inside* the Foundry agent. Key insight for this app: **a
-routine that needs tools calls the toolbox MCP endpoint, which is already fronted by APIM** -- so
-routines inherit the bridge's governance for free and add no new APIM surface for our runtime.
+A [routine](https://learn.microsoft.com/azure/foundry/agents/how-to/use-routines) in
+azure-ai-projects 2.3.0 is **not** the multi-step, tool-calling workflow this repo's manifest
+schema models. There is no `project.routines` at all; the actual (public preview) surface is
+`project.beta.routines.create_or_update(routine_name, *, triggers, action)`, which models an event
+**trigger** (a custom event, a GitHub issue, a cron schedule, or a timer) that invokes ONE
+already-existing Foundry agent by name with a static input payload -- fundamentally different from
+"run these N steps, each calling toolbox tools." Our manifest schema
+(`name`/`description`/`model`/`toolbox`/`steps[].{name,instructions,tools}`) has no trigger-type
+field and no target-agent-name field, so there is no faithful, non-inventive translation from one
+shape to the other.
 
-Shipped (mirrors `provision-foundry-toolbox.py`):
-- `foundry/routines/routine.schema.json` + `foundry/routines/example.routine.json` -- a schema and a
-  populated example routine (steps, tool references, model).
-- `scripts/provision-foundry-routine.py` -- pure `load`/`validate`/`plan`/`referenced_tools` functions
-  (dependency-free, unit-tested in `test_foundry_routine.py`) plus an isolated `--create` path using the
-  pinned preview SDK. Dry-run default.
-- The routine references the toolbox tools by name, so every tool call it makes still flows through the
-  MCP APIM. Nothing is consumed by the app runtime directly.
+**Residual gap:** rather than fake-map semantics (e.g. silently treating a step as a trigger and
+guessing an agent name for `action.agent_name`), `scripts/provision-foundry-routine.py` is
+permanently validation/planning-only: it loads, validates, and prints the plan (steps, model,
+referenced toolbox tools, project endpoint if configured) for `foundry/routines/*.routine.json`,
+and never imports or calls the Azure SDK. There is intentionally **no `--create`** -- it was
+removed rather than faked. This will be revisited if AI4IA defines a manifest schema that actually
+captures a trigger + target-agent shape, or the SDK's routines surface gains step-based workflow
+support.
 
-Run it: `python scripts/provision-foundry-routine.py` (dry run prints the plan), then `--create`.
+Shipped:
+- `foundry/routines/routine.schema.json` + `foundry/routines/example.routine.json` -- a schema and
+  a populated example routine (steps, tool references, model) documenting the workflow shape
+  AI4IA plans for, kept to make the residual gap concrete and forward-compatible.
+- `scripts/provision-foundry-routine.py` -- pure `load_manifest`/`validate_manifest`/`plan_steps`/
+  `referenced_tools` functions (dependency-free, unit-tested in `test_foundry_routine.py`; the
+  script never imports `azure.ai.projects`).
+- The routine references toolbox tools by name, so if/when a live path exists, every tool call it
+  makes will still flow through the MCP APIM. Nothing is consumed by the app runtime today.
+
+Run it: `python scripts/provision-foundry-routine.py` (validates the manifest and prints the plan;
+there is no `--create`).
 
 ### Agent-to-Agent (A2A) endpoint
 
@@ -414,7 +436,12 @@ scaffold and the APIM-fronting commands are shipped and tested.
 - `app/api/tests/test_private_tool_catalog.py` pins the API Center registration script: each
   server projects to an MCP asset carrying the **APIM consumer URL**, the emitted
   `az apic api create` command shape, and fail-closed input resolution.
-- `app/api/tests/test_foundry_routine.py` and `test_foundry_a2a.py` pin the routine and A2A
-  scripts: manifest validation, the toolbox-tool references a routine makes, the raw-vs-APIM
-  endpoint URLs, the emitted `az` command shape, and that the A2A `agents.json` stub constructs
-  as a real `AgentSpec` (so the links seam can consume it).
+- `app/api/tests/test_foundry_routine.py` pins the routine script: manifest validation, the
+  toolbox-tool references a routine makes, that `--create`/`create_routine` no longer exist
+  (guarding against a silent regression back to fake-mapping), and that the dry-run plan tolerates
+  a missing project endpoint. `app/api/tests/test_foundry_a2a.py` separately pins the A2A endpoint
+  script: manifest validation, the raw-vs-APIM endpoint URLs, the emitted `az` command shape, and
+  that the emitted `agents.json` stub constructs as a real `AgentSpec` (so the links seam can
+  consume it). `app/api/tests/test_foundry_skills.py` pins the skills script: `SKILL.md`
+  parse/validate/discover, and that `create_skill()` always passes `default=True` so a new version
+  is activated on both first create and later updates.

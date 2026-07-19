@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Provision a Foundry Agent Service routine from a foundry/routines/*.routine.json manifest.
+"""Validate a Foundry routine manifest and print its plan (foundry/routines/*.routine.json).
 
-Operator-run, provisioning-time companion to the routines plan in docs/foundry-toolbox.md (P7).
-It does NOT run during `azd up`, in CI, or in the app runtime.
+Operator-run, validation-only companion to the routines plan in docs/foundry-toolbox.md (P7).
+It does NOT run during `azd up`, in CI (beyond validating the shipped example), or in the app
+runtime, and it never imports or calls the Azure SDK -- see "Why there is no --create" below.
 
 The bridge, in one line: a routine's tool calls target the shared toolbox, which is already
 fronted by the official-MCP APIM -- so routines inherit that governance and add NO new APIM
@@ -11,14 +12,28 @@ surface for our runtime.
 What it does
 ------------
 1. Loads + validates a routine manifest (default: foundry/routines/example.routine.json).
-2. Resolves the primary project endpoint (``--project-endpoint`` or the
-   ``AZURE_FOUNDRY_PROJECT_ENDPOINT`` azd output).
-3. Prints the *plan*: the steps, the model, and which toolbox tools each step calls (a reminder
-   that every tool call flows through the APIM-fronted toolbox MCP endpoint).
-4. With ``--create``, creates the routine via the ``azure-ai-projects`` SDK (install the
-   optional ``foundry`` dependency group). Without it, the script is a safe offline dry run.
+2. Prints the *plan*: the steps, the model, and which toolbox tools each step calls (a reminder
+   that every tool call flows through the APIM-fronted toolbox MCP endpoint), plus the project
+   endpoint if one is configured (informational only -- this script never calls it).
 
-All routine features are Azure public preview; do not use in production without validation.
+Why there is no --create
+-------------------------
+This manifest models a multi-step, model-driven, tool-calling workflow (``name``/``description``/
+``model``/``toolbox``/``steps[].{name,instructions,tools}``). azure-ai-projects 2.3.0 has no
+``project.routines`` at all -- its actual (public preview) routines surface is
+``project.beta.routines.create_or_update(routine_name, *, triggers, action)``, which models
+something fundamentally different: an event **trigger** (a custom event, a GitHub issue, a cron
+schedule, or a timer) that invokes ONE **already-existing** Foundry agent by name with a static
+input payload -- not "run these N steps, each calling tools." There is no trigger-type field and
+no target-agent-name field anywhere in this manifest schema, so there is no faithful,
+non-inventive translation from one shape to the other. Rather than fake-map semantics (e.g.
+silently treating a step as a trigger and guessing an agent name), this script is
+validation/planning-only until AI4IA defines a manifest schema that actually captures a
+trigger + target-agent shape, or the SDK's routines surface gains step-based workflow support.
+See docs/foundry-toolbox.md's "Routines" section for the full residual-gap writeup.
+
+All routine features referenced here are Azure public preview; do not use in production without
+validation.
 """
 
 from __future__ import annotations
@@ -113,49 +128,17 @@ def resolve_project_endpoint(arg: str | None) -> str:
 
 
 # --------------------------------------------------------------------------------------
-# Live path (isolated Azure SDK import; requires the optional `foundry` dependency group)
-# --------------------------------------------------------------------------------------
-def create_routine(manifest: dict[str, Any], project_endpoint: str) -> Any:  # pragma: no cover - live only
-    """Create the routine via azure-ai-projects. Imported lazily so dry runs need no SDK."""
-    try:
-        from azure.ai.projects import AIProjectClient
-        from azure.identity import DefaultAzureCredential
-    except ImportError as exc:
-        raise SystemExit(
-            "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.3.0 azure-identity'
-        ) from exc
-
-    project = AIProjectClient(endpoint=project_endpoint, credential=DefaultAzureCredential())
-    kwargs: dict[str, Any] = {
-        "name": manifest["name"],
-        "description": manifest.get("description", ""),
-        "model": manifest["model"],
-        "steps": plan_steps(manifest),
-    }
-    if manifest.get("toolbox"):
-        kwargs["toolbox"] = manifest["toolbox"]
-    # `routines` is a public-preview surface not yet in the azure-ai-projects typed stubs; access it
-    # defensively so a pinned SDK that lacks it fails with a clear message, not an AttributeError, and
-    # we never ship a hard call to an unverifiable attribute.
-    routines = getattr(project, "routines", None)
-    if routines is None:
-        raise SystemExit(
-            "This azure-ai-projects build does not expose `project.routines` (routines are public "
-            "preview). Pin a preview SDK that includes the routines surface, or create the routine via "
-            "the az/azd CLI (see docs/foundry-toolbox.md)."
-        )
-    return routines.create_routine(**kwargs)
-
-
-# --------------------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------------------
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help="Path to a *.routine.json manifest.")
-    parser.add_argument("--project-endpoint", default=None, help="Foundry project endpoint (else AZURE_FOUNDRY_PROJECT_ENDPOINT).")
-    parser.add_argument("--create", action="store_true", help="Actually create the routine (needs azure-ai-projects). Default is a dry run.")
+    parser.add_argument(
+        "--project-endpoint",
+        default=None,
+        help="Foundry project endpoint (else AZURE_FOUNDRY_PROJECT_ENDPOINT), shown for context only "
+        "-- this script never calls Azure (see module docstring: 'Why there is no --create').",
+    )
     args = parser.parse_args(argv)
 
     if not args.manifest.exists():
@@ -169,7 +152,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {e}", file=sys.stderr)
         return 1
 
-    endpoint = resolve_project_endpoint(args.project_endpoint)
+    # Informational only: unlike the toolbox/skills scripts, this script has no live call, so a
+    # missing endpoint is not fatal here (see module docstring: 'Why there is no --create').
+    try:
+        endpoint = resolve_project_endpoint(args.project_endpoint)
+    except SystemExit:
+        endpoint = "(not configured -- informational only; this script never calls Azure)"
     steps = plan_steps(manifest)
     tools = referenced_tools(manifest)
     toolbox = manifest.get("toolbox") or "(default toolbox)"
@@ -182,14 +170,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Tool calls        : {', '.join(tools) or '(none)'}")
     print("\nEvery tool call above targets the toolbox MCP endpoint, which is fronted by the")
     print("official-MCP APIM -- so this routine inherits the bridge's governance for free.")
-
-    if not args.create:
-        print("\n(dry run) Re-run with --create to create the routine in Foundry.")
-        return 0
-
-    result = create_routine(manifest, endpoint)
-    rid = getattr(result, "id", None) or getattr(result, "name", manifest["name"])
-    print(f"\nCreated routine '{manifest['name']}' ({rid}).")
+    print("\n(validation-only -- there is no --create; azure-ai-projects 2.3.0's actual routines")
+    print("surface cannot faithfully represent this manifest today. See module docstring / ")
+    print("docs/foundry-toolbox.md's 'Routines' section for why.)")
     return 0
 
 

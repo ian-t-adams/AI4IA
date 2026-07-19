@@ -149,8 +149,20 @@ def load_manifest(path: Path) -> dict[str, Any]:
 
 
 def validate_manifest(manifest: dict[str, Any]) -> list[str]:
-    """Return a list of human-readable validation errors (empty => valid to provision)."""
+    """Return a list of human-readable validation errors (empty => valid to provision).
+
+    Type-safe by construction: a malformed root shape (not a JSON object, or `tools`/`skills`/
+    `connections` not arrays, or a non-object tool entry) produces a clean error here instead of
+    an ``AttributeError``/``TypeError``. This matters because ``main()`` runs the strict,
+    inherently type-safe ``validate_manifest_schema()`` (below) *first* and short-circuits on any
+    schema error -- but this function must still be safe to call on its own (e.g. when the
+    optional ``jsonschema`` dependency is not installed and it is the only check that runs).
+    """
     errors: list[str] = []
+    if not isinstance(manifest, dict):
+        errors.append(f"manifest must be a JSON object, got {type(manifest).__name__}.")
+        return errors
+
     name = manifest.get("name")
     if not isinstance(name, str) or not _SLUG_RE.match(name):
         errors.append("`name` must be a lowercase slug matching ^[a-z][a-z0-9-]{0,38}[a-z0-9]$ (2-40 chars, starts with a letter).")
@@ -160,6 +172,15 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
     tools = manifest.get("tools") or []
     skills = manifest.get("skills") or []
     connections = manifest.get("connections") or []
+    if not isinstance(tools, list):
+        errors.append(f"`tools` must be a JSON array, got {type(tools).__name__}.")
+        tools = []
+    if not isinstance(skills, list):
+        errors.append(f"`skills` must be a JSON array, got {type(skills).__name__}.")
+        skills = []
+    if not isinstance(connections, list):
+        errors.append(f"`connections` must be a JSON array, got {type(connections).__name__}.")
+        connections = []
     if not (tools or skills or connections):
         errors.append(
             "manifest is inert: add at least one of `tools`, `skills`, or `connections` "
@@ -168,6 +189,9 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
 
     unnamed = 0
     for i, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            errors.append(f"tools[{i}] must be a JSON object, got {type(tool).__name__}.")
+            continue
         ttype = tool.get("type")
         if ttype not in _ALLOWED_TOOL_TYPES:
             errors.append(f"tools[{i}].type '{ttype}' is not one of {sorted(_ALLOWED_TOOL_TYPES)}.")
@@ -405,10 +429,18 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"Manifest not found: {args.manifest}")
     manifest = load_manifest(args.manifest)
 
-    errors = validate_manifest(manifest)
-    # Strict, per-tool-type schema validation (required nested fields, cardinality, unknown
-    # properties) -- applied here, before any SDK construction, not just linted separately in CI.
+    # Schema validation runs FIRST: a JSON Schema validator never raises on a malformed shape (a
+    # root array, `tools: [null]`, a non-object tool entry, etc. all produce clean validation
+    # errors, never a crash), so running it before the handwritten `validate_manifest()` below
+    # guarantees a confirmed-malformed manifest is reported cleanly and stops here -- we never
+    # reach `validate_manifest()`'s `.get()` calls on a shape it cannot safely process. (Round-10
+    # finding: the old order let `validate_manifest()` run first and crash with an unhandled
+    # AttributeError/TypeError on exactly these shapes.) `validate_manifest()` is *also* hardened
+    # with isinstance() guards (see its docstring) as a fallback for when the optional
+    # `jsonschema` dependency below is not installed and it is the only check that runs.
     schema_errors = validate_manifest_schema(manifest)
+    errors: list[str] = []
+    schema_unavailable_msg: str | None = None
     if schema_errors is None:
         if args.create:
             errors.append(
@@ -417,15 +449,27 @@ def main(argv: list[str] | None = None) -> int:
                 'uv pip install -e "app/api[foundry]"   # or: pip install jsonschema'
             )
         else:
-            print(
+            schema_unavailable_msg = (
                 "(jsonschema not installed -- skipping strict schema validation; only the "
-                "hand-written checks above ran. Install it, or use --create's `foundry` extra, "
-                "for full validation.)",
-                file=sys.stderr,
+                "hand-written checks below ran. Install it, or use --create's `foundry` extra, "
+                "for full validation.)"
             )
     else:
         errors.extend(f"schema: {e}" for e in schema_errors)
 
+    if errors:
+        print("Manifest is not ready to provision:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        return 1
+    if schema_unavailable_msg:
+        print(schema_unavailable_msg, file=sys.stderr)
+
+    # Strict, per-tool-type schema validation already ran above; this hand-written pass adds the
+    # checks the schema does not express (at-most-one-unnamed-tool cardinality across the whole
+    # manifest, etc.) -- applied here, before any SDK construction, not just linted separately in
+    # CI.
+    errors = validate_manifest(manifest)
     if errors:
         print("Manifest is not ready to provision:", file=sys.stderr)
         for e in errors:

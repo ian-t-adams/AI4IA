@@ -3,13 +3,15 @@
 Pins the *pure* validation/projection logic with no Azure SDK/network: manifest validation,
 the toolbox-tool references a routine's steps make (the bridge point -- every call flows through
 the APIM-fronted toolbox), the step projection, fail-closed endpoint resolution, and that the
-shipped example validates against foundry/routines/routine.schema.json.
+shipped example validates against foundry/routines/routine.schema.json. Also guards the round-10
+finding that this script must NEVER grow a live `--create` path: azure-ai-projects 2.3.0 has no
+`project.routines` compatible with this manifest's steps-based shape (see the module's "Why there
+is no --create" docstring section), so faking a translation would be worse than not having one.
 """
 from __future__ import annotations
 
 import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -107,15 +109,39 @@ def test_example_validates_against_schema():
     jsonschema.validate(manifest, schema)
 
 
-def test_create_routine_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch):
-    # Mirrors test_foundry_toolbox.py's round-9 regression: create_routine()'s ImportError
-    # fallback used to suggest an unpinned `pip install azure-ai-projects azure-identity`,
-    # bypassing the audited, exact `azure-ai-projects==2.3.0` pin in pyproject.toml/uv.lock.
-    # Force the SDK to appear absent (the standard sys.modules=None cache trick; monkeypatch
-    # restores the real module afterwards) and assert the real SystemExit message is pinned.
-    monkeypatch.setitem(sys.modules, "azure.ai.projects", None)
+def test_create_routine_and_dash_dash_create_do_not_exist(monkeypatch):
+    # Round-10 regression: this script must never regain a live --create path. There is no
+    # non-inventive translation from this manifest's steps to azure-ai-projects 2.3.0's actual
+    # routines surface (project.beta.routines.create_or_update, an event-trigger-invokes-an-
+    # existing-agent model) -- so both the function AND the CLI flag must stay gone.
+    assert not hasattr(_r, "create_routine")
+    monkeypatch.delenv("AZURE_FOUNDRY_PROJECT_ENDPOINT", raising=False)
     with pytest.raises(SystemExit) as exc_info:
-        _r.create_routine(_valid(), "https://p")
-    message = str(exc_info.value)
-    assert "pip install azure-ai-projects==2.3.0 azure-identity" in message
-    assert "pip install azure-ai-projects azure-identity" not in message
+        _r.main(["--manifest", str(_EXAMPLE), "--create"])
+    # argparse rejects an unrecognized argument with exit code 2, not a live call.
+    assert exc_info.value.code == 2
+
+
+def test_main_dry_run_tolerates_a_missing_project_endpoint(monkeypatch, capsys, tmp_path):
+    # The script never makes a live call, so a missing/unset project endpoint must not be fatal
+    # -- it is shown for context only (round-10: main() used to hard-require it via
+    # resolve_project_endpoint() before the --create removal made that check pointless).
+    monkeypatch.delenv("AZURE_FOUNDRY_PROJECT_ENDPOINT", raising=False)
+    manifest_path = tmp_path / "example.routine.json"
+    manifest_path.write_text(_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+
+    exit_code = _r.main(["--manifest", str(manifest_path)])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "not configured" in out
+    assert "no --create" in out
+
+
+def test_main_reports_clean_validation_errors_without_crashing(tmp_path):
+    bad = tmp_path / "bad.routine.json"
+    bad.write_text(json.dumps({"name": "Bad_Name", "steps": []}), encoding="utf-8")
+
+    exit_code = _r.main(["--manifest", str(bad)])
+
+    assert exit_code == 1

@@ -1059,6 +1059,74 @@ def test_main_accepts_schema_valid_manifest_in_dry_run(tmp_path, capsys):
     assert "dry run" in captured.out
 
 
+# ----------------- round 10: malformed-shape crash guard (Finding 3) -------------------
+# The old main() ran the handwritten validate_manifest() BEFORE the inherently type-safe
+# jsonschema-based validate_manifest_schema(), so a malformed root shape crashed with an
+# unhandled AttributeError/TypeError instead of a clean "not ready to provision" message.
+# These cases must report cleanly, both with jsonschema available (schema catches it first)
+# and without it (validate_manifest()'s own isinstance() guards catch it as a fallback).
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        pytest.param([], id="root_is_a_list"),
+        pytest.param(None, id="root_is_null"),
+        pytest.param("ai4ia-toolbox", id="root_is_a_string"),
+        pytest.param({**_valid_manifest(), "tools": [None]}, id="tools_contains_null"),
+        pytest.param({**_valid_manifest(), "tools": "web_search"}, id="tools_is_a_string"),
+        pytest.param({**_valid_manifest(), "tools": [{"name": "x"}, "not-a-dict"]}, id="tools_has_non_dict_entry"),
+    ],
+)
+def test_main_reports_malformed_manifests_cleanly_instead_of_crashing(tmp_path, capsys, manifest):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    rc = _tb.main(["--manifest", str(manifest_path)])  # must not raise
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not ready to provision" in captured.err
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        pytest.param([], id="root_is_a_list"),
+        pytest.param({**_valid_manifest(), "tools": [None]}, id="tools_contains_null"),
+    ],
+)
+def test_main_reports_malformed_manifests_cleanly_even_without_jsonschema(tmp_path, capsys, monkeypatch, manifest):
+    # Forces validate_manifest_schema() to report "unavailable" (None) so validate_manifest()'s
+    # own isinstance() guards are the ONLY thing standing between a malformed manifest and a
+    # crash -- proving the hardening is not merely redundant with the schema check.
+    import sys
+
+    monkeypatch.setitem(sys.modules, "jsonschema", None)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    rc = _tb.main(["--manifest", str(manifest_path)])  # must not raise
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not ready to provision" in captured.err
+
+
+def test_validate_manifest_isinstance_guards_cover_every_malformed_shape():
+    # Direct unit coverage of validate_manifest() itself (independent of main()/schema).
+    assert "manifest must be a JSON object" in _tb.validate_manifest([])[0]
+    assert "manifest must be a JSON object" in _tb.validate_manifest(None)[0]
+    assert "manifest must be a JSON object" in _tb.validate_manifest("nope")[0]
+
+    tools_not_list = _tb.validate_manifest({**_valid_manifest(), "tools": "web_search"})
+    assert any("`tools` must be a JSON array" in e for e in tools_not_list)
+
+    tool_is_null = _tb.validate_manifest({**_valid_manifest(), "tools": [None]})
+    assert any("tools[0] must be a JSON object" in e for e in tool_is_null)
+
+    tool_is_string = _tb.validate_manifest({**_valid_manifest(), "tools": [{"type": "web_search", "name": "w"}, "nope"]})
+    assert any("tools[1] must be a JSON object" in e for e in tool_is_string)
+
+
 # ----------------- round 7: new SDK 2.3.0 toolbox types --------------------------------
 # a2a_preview, fabric_iq_preview, work_iq_preview, reminder_preview were newly added to
 # azure-ai-projects 2.3.0's toolbox model set but omitted from _TYPE_TO_MODEL / the schema /
@@ -1066,8 +1134,10 @@ def test_main_accepts_schema_valid_manifest_in_dry_run(tmp_path, capsys):
 # real-SDK construction check (both directions matter: the schema alone doesn't prove the
 # provisioner's camelCase mapping actually reaches the SDK constructor).
 def test_schema_and_sdk_accept_a2a_preview_via_project_connection_id_or_base_url():
-    # A2APreviewToolboxTool requires ONE of project_connection_id / base_url; both
-    # individually-valid forms must validate AND construct against the real locked SDK.
+    # A2APreviewToolboxTool requires AT LEAST ONE of project_connection_id / base_url (the SDK
+    # constructor enforces no exclusivity at all -- both may be set together); all three forms
+    # (connection-only, base-url-only, and both together) must validate AND construct against
+    # the real locked SDK.
     jsonschema = pytest.importorskip("jsonschema")
     m = pytest.importorskip("azure.ai.projects.models")
     schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
@@ -1105,6 +1175,27 @@ def test_schema_and_sdk_accept_a2a_preview_via_project_connection_id_or_base_url
     built = m.A2APreviewToolboxTool(**fields)
     assert built.base_url == "https://agent.example.com"
     assert built.send_credentials_for_agent_card is True
+
+    # Round-10 finding: docs previously claimed "exactly one" of projectConnectionId/baseUrl,
+    # implying the other is rejected when the first is present. Neither the schema (`anyOf`, not
+    # `oneOf`) nor the SDK constructor (a bare passthrough with no cross-field validation) enforce
+    # that -- both together must validate and construct cleanly too.
+    both = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "a2a_preview",
+                "name": "a2a",
+                "projectConnectionId": "a2a-conn",
+                "baseUrl": "https://agent.example.com",
+            }
+        ],
+    }
+    jsonschema.validate(both, schema)  # must not raise
+    fields = {k: v for k, v in _tb._convert_keys(both["tools"][0]).items() if k != "type"}
+    built = m.A2APreviewToolboxTool(**fields)
+    assert built.project_connection_id == "a2a-conn"
+    assert built.base_url == "https://agent.example.com"
 
 
 def test_schema_and_sdk_reject_a2a_preview_missing_connection_and_foreign_fields():

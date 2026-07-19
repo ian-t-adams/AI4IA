@@ -189,7 +189,7 @@
     {
       "type": "a2a_preview",
       "name": "a2a-agent",
-      "description": "Delegate to a remote Agent-to-Agent (A2A) protocol agent (azure-ai-projects 2.3.0's A2APreviewToolboxTool). Requires the 'ai4ia-a2a-agent' project connection, which stores the remote agent's endpoint and auth -- this is Microsoft's documented approach. One of projectConnectionId or baseUrl is required; use baseUrl+agentCardPath instead (with sendCredentialsForAgentCard) for a self-contained, connectionless call to an anonymous agent.",
+      "description": "Delegate to a remote Agent-to-Agent (A2A) protocol agent (azure-ai-projects 2.3.0's A2APreviewToolboxTool). Requires the 'ai4ia-a2a-agent' project connection, which stores the remote agent's endpoint and auth -- this is Microsoft's documented approach. At least one of projectConnectionId or baseUrl is required (both are accepted together; the SDK does not enforce exclusivity); baseUrl+agentCardPath (with sendCredentialsForAgentCard) is the alternative for a self-contained, connectionless call to an anonymous agent.",
       "projectConnectionId": "ai4ia-a2a-agent",
       "agentCardPath": "/.well-known/agent-card.json"
     },
