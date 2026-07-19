@@ -132,13 +132,12 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 | --- | --- | --- | --- |
 | `web_search` | Grounded web search | `name`, `description` | Connectionless. |
 | `azure_ai_search` | RAG over an AI Search index | `azureAiSearch.indexes[].indexName`, `.projectConnectionId` | Nested shape (SDK 2.3.0's `AzureAISearchToolResource`); do **not** put `indexName`/`projectConnectionId` at the tool root -- the SDK constructor silently ignores them there (no error, fields just deserialize to `None`). At most one index per tool today. |
-| `code_interpreter` | Sandboxed Python | `container` | Foundry-managed sandbox (distinct from AI4IA's existing direct Responses-API code interpreter). |
-| `code_interpreter` (custom) | BYO container image | `container` (custom image ref) | "Custom code interpreter"; runs your image in the Foundry sandbox. Give it a distinct `name`. |
-| `file_search` | Search uploaded files | `vectorStoreIds` | Connectionless once files are attached. |
+| `code_interpreter` | Sandboxed Python | `container` (optional) | Foundry-managed sandbox (distinct from AI4IA's existing direct Responses-API code interpreter). `container`, if set, is either an **existing container ID** (string; a pre-registered container resource) or a nested `{"type": "auto", ...}` object (SDK 2.3.0's `AutoCodeInterpreterToolParam`) for the managed sandbox with custom `fileIds`/`memoryLimit`. Omit it entirely for the plain default sandbox. |
+| `file_search` | Search uploaded files | `vectorStoreIds` | Connectionless once files are attached. If set, must be non-empty (an empty list is inert). |
 | `browser_automation_preview` | Drive a hosted browser | `browserAutomationPreview.connection.projectConnectionId` | Nested shape (SDK 2.3.0's `BrowserAutomationToolParameters`). The connection must be a **Playwright Workspace** connection, not a plain API connection. Preview; heavier isolation review recommended. |
-| `openapi` | Call an OpenAPI-described API | `openapi` (nested `name`, `spec`, `auth`) | Wraps a REST API as a tool; `auth` can be anonymous or a project connection. |
+| `openapi` | Call an OpenAPI-described API | `openapi` (nested `name`, `spec`, `auth`) | Wraps a REST API as a tool; `auth.type` is `anonymous`, `project_connection` (needs `auth.securityScheme.projectConnectionId`), or `managed_identity` (needs `auth.securityScheme.audience`). `spec` is passed through **byte-for-byte unmodified** -- its property names describe someone else's API and are never snake_cased, so a JSON-schema property genuinely named e.g. `topK` is never corrupted into `top_k`. |
 | `toolbox_search_preview` | **Tool search** — let the model pick tools from a large set | none | Add this so the toolbox self-describes its tools to the model. |
-| `mcp` | Nest another MCP server as a tool | `serverLabel`, `serverUrl`, `requireApproval`, `projectConnectionId` | Lets the toolbox aggregate upstream MCP servers. Identified by `serverLabel`. Unlike `azure_ai_search`/`browser_automation_preview`, `mcp`'s `projectConnectionId` genuinely is a tool-root field in the SDK. |
+| `mcp` | Nest another MCP server as a tool | `serverLabel`, one of `serverUrl`/`connectorId`, `requireApproval`, `projectConnectionId` | Lets the toolbox aggregate upstream MCP servers. Identified by `serverLabel`. Unlike `azure_ai_search`/`browser_automation_preview`, `mcp`'s `projectConnectionId` genuinely is a tool-root field in the SDK. There is no BYO-container-image tool type; if you need to run genuinely custom execution logic, wrap it in your own server and expose it as an `mcp` tool instead of trying to pass a custom image to `code_interpreter.container`. |
 
 > **Available vs. deployed:** this table is every tool type the schema/provisioning script
 > support. The live canonical `ai4ia-toolbox` (`foundry/toolbox.manifest.json`) currently uses
@@ -154,12 +153,22 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 > other tool needs a unique `name` (or `serverLabel` for `mcp`). The provisioning script and schema
 > both enforce this.
 
-> **Nested shapes are enforced, not just documented:** `foundry/toolbox.manifest.schema.json`
-> requires `azureAiSearch.indexes[]` on every `azure_ai_search` tool and rejects root-level
-> `indexName`/`projectConnectionId`; it requires `browserAutomationPreview.connection` on every
-> `browser_automation_preview` tool. `scripts/provision-foundry-toolbox.py` recursively snake_cases
-> nested manifest keys before constructing SDK models, so nested camelCase config (not just
-> top-level) is translated correctly.
+> **Nested shapes are enforced, not just documented:** `foundry/toolbox.manifest.schema.json` sets
+> `additionalProperties: false` on every tool and has a strict per-`type` branch (required nested
+> fields, cardinality, and which fields are legal for that type) for **all eight** tool types --
+> not just `azure_ai_search`/`browser_automation_preview`. For example: `azure_ai_search` requires
+> `azureAiSearch.indexes[]` (>= 1 entry) and rejects root-level `indexName`/`projectConnectionId`;
+> `browser_automation_preview` requires `browserAutomationPreview.connection`; `mcp` requires
+> `serverLabel` plus one of `serverUrl`/`connectorId`; `openapi` requires `openapi.name`/`.spec`/`.auth`
+> and enforces `auth`'s per-type nested fields. `scripts/provision-foundry-toolbox.py` **applies this
+> schema itself** (via the optional `jsonschema` dependency, which ships with the `foundry` extra)
+> before constructing any SDK model -- not just via CI's separate `check-jsonschema` lint step. `--create`
+> refuses to run at all if `jsonschema` isn't installed; the dependency-free dry run best-effort
+> validates when it happens to be available and otherwise only runs the hand-written structural checks.
+> `scripts/provision-foundry-toolbox.py` also recursively snake_cases nested manifest keys before
+> constructing SDK models (so nested camelCase config, not just top-level, is translated correctly)
+> -- **except** `openapi.spec`, which is copied through untouched because it is an externally-authored
+> OpenAPI document whose own property names are not AI4IA manifest keys.
 
 Add a `description` to every tool — the model uses it for tool selection, which matters most
 when `toolbox_search_preview` is present.

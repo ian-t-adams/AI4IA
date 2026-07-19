@@ -8,7 +8,11 @@ definition a new environment reproduces after infrastructure deploy.
 
 What it does
 ------------
-1. Loads + validates foundry/toolbox.manifest.json.
+1. Loads + validates foundry/toolbox.manifest.json: hand-written structural checks (name
+   pattern, at-most-one-unnamed-tool, ...) plus strict JSON Schema validation against
+   foundry/toolbox.manifest.schema.json (required nested fields per tool type, cardinality,
+   unknown-property rejection) when the optional ``jsonschema`` package is installed -- it ships
+   with the ``foundry`` extra, and ``--create`` refuses to run without it.
 2. Resolves the primary project endpoint (``--project-endpoint`` or the
    ``AZURE_FOUNDRY_PROJECT_ENDPOINT`` azd output).
 3. Prints the *plan*: the tools it will create, the toolbox **consumer** MCP URL, and a
@@ -66,6 +70,7 @@ _ALLOWED_TOOL_TYPES = set(_TYPE_TO_MODEL)
 _CAMEL_TO_SNAKE = {
     "serverLabel": "server_label",
     "serverUrl": "server_url",
+    "connectorId": "connector_id",
     "requireApproval": "require_approval",
     "projectConnectionId": "project_connection_id",
     "azureAiSearch": "azure_ai_search",
@@ -77,7 +82,21 @@ _CAMEL_TO_SNAKE = {
     "instanceName": "instance_name",
     "vectorStoreIds": "vector_store_ids",
     "browserAutomationPreview": "browser_automation_preview",
+    "fileIds": "file_ids",
+    "memoryLimit": "memory_limit",
+    "networkPolicy": "network_policy",
+    "securityScheme": "security_scheme",
+    "defaultParams": "default_params",
 }
+# Manifest keys whose VALUE is an opaque, externally-authored payload that must be copied
+# verbatim -- never key-rewritten -- even though _convert_keys() otherwise recurses through
+# every nested dict/list. Keyed by the (parent key, key) pair so only the specific nesting we
+# mean is treated as opaque (a "spec" key appearing somewhere unrelated is unaffected).
+# `openapi.spec` is an arbitrary OpenAPI/JSON-Schema document describing someone else's API: its
+# property/schema names (e.g. a request parameter genuinely named `topK`) are that API's
+# contract, not AI4IA toolbox manifest config, so snake-casing them would silently corrupt the
+# spec the model calls against.
+_OPAQUE_NESTED_KEYS = {("openapi", "spec")}
 
 
 # --------------------------------------------------------------------------------------
@@ -123,16 +142,48 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
     return errors
 
 
+_MANIFEST_SCHEMA_PATH = REPO_ROOT / "foundry" / "toolbox.manifest.schema.json"
+
+
+def validate_manifest_schema(manifest: dict[str, Any]) -> list[str] | None:
+    """Validate ``manifest`` against foundry/toolbox.manifest.schema.json.
+
+    Returns ``None`` if the optional ``jsonschema`` dependency is not installed (callers decide
+    how strict to be about that -- see ``main()``: ``--create`` requires it, the dependency-free
+    dry run only best-effort validates). Otherwise returns a list of human-readable error strings
+    (empty => schema-valid). This is the strict, per-tool-type structural check (required nested
+    fields, cardinality, no unknown properties) that ``validate_manifest`` above does not cover;
+    CI's separate `check-jsonschema` step lints the same schema but the provisioner did not use
+    to apply it itself before constructing SDK models.
+    """
+    try:
+        import jsonschema
+    except ImportError:
+        return None
+    schema = json.loads(_MANIFEST_SCHEMA_PATH.read_text(encoding="utf-8"))
+    validator = jsonschema.Draft7Validator(schema)
+    errors = sorted(validator.iter_errors(manifest), key=lambda e: list(e.path))
+    return [f"{'/'.join(str(p) for p in e.path) or '<root>'}: {e.message}" for e in errors]
+
+
 def _to_snake(key: str) -> str:
     return _CAMEL_TO_SNAKE.get(key, key)
 
 
-def _convert_keys(value: Any) -> Any:
-    """Recursively rewrite camelCase manifest keys to the API's snake_case."""
+def _convert_keys(value: Any, *, parent_key: str | None = None) -> Any:
+    """Recursively rewrite camelCase manifest keys to the API's snake_case.
+
+    ``(parent_key, key)`` pairs in ``_OPAQUE_NESTED_KEYS`` (currently just ``openapi.spec``) are
+    copied verbatim -- not recursed into -- so an externally-authored payload's own property
+    names are never mistaken for AI4IA manifest keys and rewritten (see ``_OPAQUE_NESTED_KEYS``).
+    """
     if isinstance(value, dict):
-        return {_to_snake(k): _convert_keys(v) for k, v in value.items()}
+        return {
+            _to_snake(k): (v if (parent_key, k) in _OPAQUE_NESTED_KEYS else _convert_keys(v, parent_key=k))
+            for k, v in value.items()
+        }
     if isinstance(value, list):
-        return [_convert_keys(v) for v in value]
+        return [_convert_keys(v, parent_key=parent_key) for v in value]
     return value
 
 
@@ -306,6 +357,26 @@ def main(argv: list[str] | None = None) -> int:
     manifest = load_manifest(args.manifest)
 
     errors = validate_manifest(manifest)
+    # Strict, per-tool-type schema validation (required nested fields, cardinality, unknown
+    # properties) -- applied here, before any SDK construction, not just linted separately in CI.
+    schema_errors = validate_manifest_schema(manifest)
+    if schema_errors is None:
+        if args.create:
+            errors.append(
+                "jsonschema is not installed; --create requires strict schema validation before "
+                "SDK construction. Install the optional provisioning group: "
+                'uv pip install -e "app/api[foundry]"   # or: pip install jsonschema'
+            )
+        else:
+            print(
+                "(jsonschema not installed -- skipping strict schema validation; only the "
+                "hand-written checks above ran. Install it, or use --create's `foundry` extra, "
+                "for full validation.)",
+                file=sys.stderr,
+            )
+    else:
+        errors.extend(f"schema: {e}" for e in schema_errors)
+
     if errors:
         print("Manifest is not ready to provision:", file=sys.stderr)
         for e in errors:

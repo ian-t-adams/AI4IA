@@ -42,6 +42,7 @@
       "description": "Connectionless built-in tools and MCP tools to include. The service allows at most ONE tool total to omit `name`; give every other tool a unique `name`. Add a `description` to every tool to help model tool selection.",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "required": ["type"],
         "properties": {
           "type": {
@@ -79,6 +80,7 @@
                 "items": {
                   "type": "object",
                   "additionalProperties": false,
+                  "required": ["indexName"],
                   "properties": {
                     "indexName": { "type": "string", "minLength": 1 },
                     "projectConnectionId": { "type": "string", "minLength": 1 },
@@ -107,9 +109,156 @@
                 }
               }
             }
+          },
+          "container": {
+            "description": "Optional code_interpreter execution target, mirroring azure-ai-projects 2.3.0's CodeInterpreterToolboxTool.container: an EXISTING container ID (string -- a pre-registered container resource, NOT an image reference), or the Foundry-managed auto/managed-sandbox object (AutoCodeInterpreterToolParam) with optional resource limits. Omit entirely for the plain managed sandbox. There is no toolbox-level way to run a custom/BYO container image; for genuinely custom execution logic, expose it as your own server and add it as an `mcp` tool instead.",
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type"],
+                "properties": {
+                  "type": { "const": "auto" },
+                  "fileIds": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+                  "memoryLimit": { "type": "string", "enum": ["1g", "4g", "16g", "64g"] }
+                }
+              }
+            ]
+          },
+          "vectorStoreIds": {
+            "type": "array",
+            "description": "Required-if-present vector store IDs to search (azure-ai-projects 2.3.0's FileSearchToolboxTool.vector_store_ids). The SDK allows omitting it, but a file_search tool with an empty list is inert, so if present it must be non-empty.",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          },
+          "openapi": {
+            "type": "object",
+            "description": "Required nested function definition for openapi tools, mirroring azure-ai-projects 2.3.0's OpenApiFunctionDefinition. `spec` is an arbitrary, externally-authored OpenAPI document; scripts/provision-foundry-toolbox.py passes its contents through UNMODIFIED (property names inside spec are never rewritten, so e.g. a JSON-schema property genuinely named `topK` survives as `topK`).",
+            "additionalProperties": false,
+            "required": ["name", "spec", "auth"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The function name the model calls (OpenApiFunctionDefinition.name)."
+              },
+              "description": { "type": "string" },
+              "spec": {
+                "type": "object",
+                "minProperties": 1,
+                "description": "Opaque OpenAPI 3.x document. NOT validated or key-rewritten by this schema/script -- authored and owned by the API being described."
+              },
+              "auth": {
+                "type": "object",
+                "description": "OpenApiAuthDetails: anonymous | project_connection | managed_identity.",
+                "required": ["type"],
+                "properties": {
+                  "type": { "type": "string", "enum": ["anonymous", "project_connection", "managed_identity"] },
+                  "securityScheme": { "type": "object" }
+                },
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": { "type": { "const": "project_connection" } },
+                      "required": ["type"]
+                    },
+                    "then": {
+                      "required": ["securityScheme"],
+                      "properties": {
+                        "securityScheme": {
+                          "type": "object",
+                          "required": ["projectConnectionId"],
+                          "properties": { "projectConnectionId": { "type": "string", "minLength": 1 } }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": { "type": { "const": "managed_identity" } },
+                      "required": ["type"]
+                    },
+                    "then": {
+                      "required": ["securityScheme"],
+                      "properties": {
+                        "securityScheme": {
+                          "type": "object",
+                          "required": ["audience"],
+                          "properties": { "audience": { "type": "string", "minLength": 1 } }
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              "defaultParams": {
+                "type": "array",
+                "description": "OpenAPI spec parameter names that use the caller-provided defaults instead of model-chosen values.",
+                "items": { "type": "string" }
+              }
+            }
+          },
+          "serverLabel": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Required identifier for mcp tools (used to identify the tool in tool calls; also what satisfies the 'at most one unnamed tool' rule for mcp, in place of `name`)."
+          },
+          "serverUrl": {
+            "type": "string",
+            "minLength": 1,
+            "description": "mcp tool target URL. One of `serverUrl` or `connectorId` is required."
+          },
+          "connectorId": {
+            "type": "string",
+            "enum": [
+              "connector_dropbox",
+              "connector_gmail",
+              "connector_googlecalendar",
+              "connector_googledrive",
+              "connector_microsoftteams",
+              "connector_outlookcalendar",
+              "connector_outlookemail",
+              "connector_sharepoint"
+            ],
+            "description": "mcp tool built-in service connector (alternative to `serverUrl`). One of `serverUrl` or `connectorId` is required."
+          },
+          "projectConnectionId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "mcp-only tool-root project connection (unlike azure_ai_search/browser_automation_preview, this genuinely is a tool-root field in the SDK for mcp)."
+          },
+          "requireApproval": {
+            "description": "mcp tool call approval policy: 'always' | 'never', or a per-tool-name policy object (azure-ai-projects 2.3.0's MCPToolRequireApproval; not deeply modeled here).",
+            "oneOf": [
+              { "type": "string", "enum": ["always", "never"] },
+              { "type": "object" }
+            ]
           }
         },
         "allOf": [
+          {
+            "if": {
+              "properties": { "type": { "const": "web_search" } },
+              "required": ["type"]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  { "required": ["azureAiSearch"] },
+                  { "required": ["browserAutomationPreview"] },
+                  { "required": ["container"] },
+                  { "required": ["vectorStoreIds"] },
+                  { "required": ["openapi"] },
+                  { "required": ["serverLabel"] },
+                  { "required": ["serverUrl"] },
+                  { "required": ["connectorId"] },
+                  { "required": ["projectConnectionId"] },
+                  { "required": ["requireApproval"] }
+                ]
+              }
+            }
+          },
           {
             "if": {
               "properties": { "type": { "const": "azure_ai_search" } },
@@ -118,7 +267,60 @@
             "then": {
               "required": ["azureAiSearch"],
               "not": {
-                "anyOf": [{ "required": ["indexName"] }, { "required": ["projectConnectionId"] }]
+                "anyOf": [
+                  { "required": ["indexName"] },
+                  { "required": ["browserAutomationPreview"] },
+                  { "required": ["container"] },
+                  { "required": ["vectorStoreIds"] },
+                  { "required": ["openapi"] },
+                  { "required": ["serverLabel"] },
+                  { "required": ["serverUrl"] },
+                  { "required": ["connectorId"] },
+                  { "required": ["projectConnectionId"] },
+                  { "required": ["requireApproval"] }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "code_interpreter" } },
+              "required": ["type"]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  { "required": ["azureAiSearch"] },
+                  { "required": ["browserAutomationPreview"] },
+                  { "required": ["vectorStoreIds"] },
+                  { "required": ["openapi"] },
+                  { "required": ["serverLabel"] },
+                  { "required": ["serverUrl"] },
+                  { "required": ["connectorId"] },
+                  { "required": ["projectConnectionId"] },
+                  { "required": ["requireApproval"] }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "file_search" } },
+              "required": ["type"]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  { "required": ["azureAiSearch"] },
+                  { "required": ["browserAutomationPreview"] },
+                  { "required": ["container"] },
+                  { "required": ["openapi"] },
+                  { "required": ["serverLabel"] },
+                  { "required": ["serverUrl"] },
+                  { "required": ["connectorId"] },
+                  { "required": ["projectConnectionId"] },
+                  { "required": ["requireApproval"] }
+                ]
               }
             }
           },
@@ -127,7 +329,85 @@
               "properties": { "type": { "const": "browser_automation_preview" } },
               "required": ["type"]
             },
-            "then": { "required": ["browserAutomationPreview"] }
+            "then": {
+              "required": ["browserAutomationPreview"],
+              "not": {
+                "anyOf": [
+                  { "required": ["azureAiSearch"] },
+                  { "required": ["container"] },
+                  { "required": ["vectorStoreIds"] },
+                  { "required": ["openapi"] },
+                  { "required": ["serverLabel"] },
+                  { "required": ["serverUrl"] },
+                  { "required": ["connectorId"] },
+                  { "required": ["projectConnectionId"] },
+                  { "required": ["requireApproval"] }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "openapi" } },
+              "required": ["type"]
+            },
+            "then": {
+              "required": ["openapi"],
+              "not": {
+                "anyOf": [
+                  { "required": ["azureAiSearch"] },
+                  { "required": ["browserAutomationPreview"] },
+                  { "required": ["container"] },
+                  { "required": ["vectorStoreIds"] },
+                  { "required": ["serverLabel"] },
+                  { "required": ["serverUrl"] },
+                  { "required": ["connectorId"] },
+                  { "required": ["projectConnectionId"] },
+                  { "required": ["requireApproval"] }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "toolbox_search_preview" } },
+              "required": ["type"]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  { "required": ["azureAiSearch"] },
+                  { "required": ["browserAutomationPreview"] },
+                  { "required": ["container"] },
+                  { "required": ["vectorStoreIds"] },
+                  { "required": ["openapi"] },
+                  { "required": ["serverLabel"] },
+                  { "required": ["serverUrl"] },
+                  { "required": ["connectorId"] },
+                  { "required": ["projectConnectionId"] },
+                  { "required": ["requireApproval"] }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "mcp" } },
+              "required": ["type"]
+            },
+            "then": {
+              "required": ["serverLabel"],
+              "anyOf": [{ "required": ["serverUrl"] }, { "required": ["connectorId"] }],
+              "not": {
+                "anyOf": [
+                  { "required": ["azureAiSearch"] },
+                  { "required": ["browserAutomationPreview"] },
+                  { "required": ["container"] },
+                  { "required": ["vectorStoreIds"] },
+                  { "required": ["openapi"] }
+                ]
+              }
+            }
           }
         ]
       }

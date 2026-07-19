@@ -41,9 +41,9 @@
     },
     {
       "type": "code_interpreter",
-      "name": "custom-code-interpreter",
-      "description": "Custom code interpreter: runs a BYO container image in the Foundry sandbox.",
-      "container": "myacr.azurecr.io/ai4ia-code-interpreter:latest"
+      "name": "code-interpreter-custom-limits",
+      "description": "Foundry-managed sandbox with custom resource limits (nested auto object). NOT a custom/BYO container image: `container` as a string means an EXISTING container ID, and the object form only supports the auto/managed sandbox (fileIds/memoryLimit), never an arbitrary image reference. For genuinely custom execution logic, run your own server and add it as an `mcp` tool instead (see the `mcp` example below).",
+      "container": { "type": "auto", "memoryLimit": "4g" }
     },
     {
       "type": "browser_automation_preview",

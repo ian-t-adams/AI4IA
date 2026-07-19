@@ -194,6 +194,32 @@ def test_example_manifest_is_populated_valid_and_schema_valid():
     jsonschema.validate(manifest, schema)
 
 
+def test_example_manifest_code_interpreter_customization_is_managed_auto_shape_not_an_image():
+    # Regression guard: the second code_interpreter example used to pass an ACR image URI
+    # (e.g. "myacr.azurecr.io/ai4ia-code-interpreter:latest") as `container`, implying BYO
+    # container image support. `CodeInterpreterToolboxTool.container`'s string form is an
+    # EXISTING CONTAINER ID, not an image reference, and there is no toolbox-level BYO-image
+    # mechanism in the SDK -- so that example silently modeled an unsupported capability. The
+    # customized entry must use the real `AutoCodeInterpreterToolParam` nested-object shape
+    # (managed sandbox with custom limits), never a bare string that looks like an image ref.
+    manifest = _tb.load_manifest(_EXAMPLE_MANIFEST)
+    ci = [t for t in manifest["tools"] if t["type"] == "code_interpreter"]
+    assert len(ci) >= 2
+    customized = [t for t in ci if "container" in t]
+    assert customized, "expected at least one code_interpreter example with a non-default container"
+    for t in customized:
+        container = t["container"]
+        assert isinstance(container, dict), f"container must be the nested auto-object shape, got {container!r}"
+        assert container.get("type") == "auto"
+        # No tool anywhere in the example may claim BYO-image support via a bare image-like string.
+        assert not isinstance(container, str)
+    # The false claim must not resurface in the manifest's own descriptions either.
+    for t in manifest["tools"]:
+        desc = (t.get("description") or "").lower()
+        assert "byo" not in desc or "not a custom/byo container image" in desc
+        assert ".azurecr.io" not in desc
+
+
 def test_plan_tools_maps_file_search_vector_store_ids():
     # file_search's vectorStoreIds -> vector_store_ids mapping was missing from
     # _CAMEL_TO_SNAKE (found while adding the file_search example above); a real
@@ -239,6 +265,65 @@ def test_plan_tools_recursively_converts_nested_azure_ai_search_and_browser_auto
     assert browser["browser_automation_preview"]["connection"]["project_connection_id"] == "browser-conn"
 
 
+def test_plan_tools_preserves_opaque_openapi_spec_keys_but_still_converts_auth():
+    # Regression guard: _convert_keys() used to recurse into EVERY nested dict, including
+    # openapi.spec -- an opaque, externally-authored OpenAPI/JSON-Schema document describing
+    # someone else's API. That silently rewrote the API's own property names whenever they
+    # happened to collide with an AI4IA manifest key (e.g. a request parameter or response
+    # property genuinely named `topK`, `indexName`, `serverUrl`, or `requireApproval` would be
+    # mangled to `top_k`/`index_name`/`server_url`/`require_approval`), corrupting the spec the
+    # model calls against. `spec` must survive byte-for-byte; sibling `auth` (an AI4IA/SDK-known
+    # shape, not opaque) must still be correctly snake_cased.
+    spec = {
+        "openapi": "3.0.0",
+        "paths": {
+            "/search": {
+                "get": {
+                    "operationId": "search_docs",
+                    "parameters": [
+                        {"name": "topK", "in": "query", "schema": {"type": "integer"}},
+                        {"name": "serverUrl", "in": "query", "schema": {"type": "string"}},
+                    ],
+                }
+            }
+        },
+        "components": {
+            "schemas": {
+                "SearchResult": {
+                    "properties": {
+                        "topK": {"type": "integer"},
+                        "indexName": {"type": "string"},
+                        "requireApproval": {"type": "boolean"},
+                    }
+                }
+            }
+        },
+    }
+    manifest = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "openapi",
+                "name": "weird-api",
+                "openapi": {
+                    "name": "search_docs",
+                    "auth": {
+                        "type": "project_connection",
+                        "securityScheme": {"projectConnectionId": "conn-1"},
+                    },
+                    "spec": spec,
+                },
+            }
+        ],
+    }
+    planned = _tb.plan_tools(manifest)[0]
+    # spec is untouched, including keys that collide with AI4IA manifest keys.
+    assert planned["openapi"]["spec"] == spec
+    # auth (a real, AI4IA/SDK-known nested shape) is still correctly snake_cased.
+    assert planned["openapi"]["auth"]["security_scheme"]["project_connection_id"] == "conn-1"
+    assert "securityScheme" not in planned["openapi"]["auth"]
+
+
 def test_schema_rejects_root_level_azure_ai_search_fields_and_bare_browser_automation():
     # Direct regression guard for the exact shape that silently mis-provisioned before: root-
     # level indexName/projectConnectionId on azure_ai_search, and browser_automation_preview
@@ -273,6 +358,143 @@ def test_schema_rejects_root_level_azure_ai_search_fields_and_bare_browser_autom
         ],
     }
     jsonschema.validate(good, schema)  # must not raise
+
+
+def test_schema_rejects_azure_ai_search_empty_or_incomplete_indexes():
+    # A tool with no indexes, or an index entry missing the required indexName, is inert or
+    # unprovisionable; the schema must reject both instead of silently accepting them.
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    empty_indexes = {
+        **_valid_manifest(),
+        "tools": [{"type": "azure_ai_search", "name": "x", "azureAiSearch": {"indexes": []}}],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(empty_indexes, schema)
+
+    missing_index_name = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "azure_ai_search",
+                "name": "x",
+                "azureAiSearch": {"indexes": [{"projectConnectionId": "c"}]},
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing_index_name, schema)
+
+
+def test_schema_rejects_openapi_missing_required_nested_fields_and_bad_auth():
+    # openapi.name/spec/auth are all required (OpenApiFunctionDefinition); a project_connection
+    # auth without securityScheme.projectConnectionId is unusable at runtime. All must be rejected.
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    missing_spec_and_auth = {
+        **_valid_manifest(),
+        "tools": [{"type": "openapi", "name": "o", "openapi": {"name": "x"}}],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing_spec_and_auth, schema)
+
+    bad_project_connection_auth = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "openapi",
+                "name": "o",
+                "openapi": {
+                    "name": "x",
+                    "spec": {"openapi": "3.0.0"},
+                    "auth": {"type": "project_connection"},
+                },
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad_project_connection_auth, schema)
+
+    bad_managed_identity_auth = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "openapi",
+                "name": "o",
+                "openapi": {
+                    "name": "x",
+                    "spec": {"openapi": "3.0.0"},
+                    "auth": {"type": "managed_identity"},
+                },
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad_managed_identity_auth, schema)
+
+    good = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "openapi",
+                "name": "o",
+                "openapi": {
+                    "name": "x",
+                    "spec": {"openapi": "3.0.0"},
+                    "auth": {"type": "project_connection", "securityScheme": {"projectConnectionId": "c"}},
+                },
+            }
+        ],
+    }
+    jsonschema.validate(good, schema)  # must not raise
+
+
+def test_schema_rejects_mcp_missing_both_server_url_and_connector_id():
+    # MCPToolboxTool requires server_label plus ONE of server_url/connector_id; a tool with
+    # neither is unreachable. Both individually-valid forms must still pass.
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    neither = {**_valid_manifest(), "tools": [{"type": "mcp", "serverLabel": "x"}]}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(neither, schema)
+
+    with_url = {**_valid_manifest(), "tools": [{"type": "mcp", "serverLabel": "x", "serverUrl": "https://x/mcp"}]}
+    jsonschema.validate(with_url, schema)  # must not raise
+
+    with_connector = {
+        **_valid_manifest(),
+        "tools": [{"type": "mcp", "serverLabel": "x", "connectorId": "connector_sharepoint"}],
+    }
+    jsonschema.validate(with_connector, schema)  # must not raise
+
+
+def test_schema_rejects_unknown_tool_property_and_cross_type_field_pollution():
+    # additionalProperties:false at the tool level must reject typos/unknown fields, and each
+    # type's if/then branch must reject another type's nested field showing up on the wrong tool
+    # (e.g. an azureAiSearch block on a code_interpreter tool -- a copy/paste mistake that would
+    # otherwise silently no-op instead of erroring).
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    unknown_property = {**_valid_manifest(), "tools": [{"type": "web_search", "name": "x", "bogusField": 1}]}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(unknown_property, schema)
+
+    cross_type_pollution = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "code_interpreter",
+                "name": "x",
+                "azureAiSearch": {"indexes": [{"indexName": "i"}]},
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(cross_type_pollution, schema)
 
 
 # ----------------- live-SDK guard: real model construction (gated, optional dep) ------
@@ -335,6 +557,44 @@ def test_create_toolbox_constructs_real_sdk_models_with_nested_fields_populated(
     assert conn is not None
     assert conn.project_connection_id == "ai4ia-browser-automation"
 
+    # openapi.spec (OpenApiFunctionDefinition.spec: dict[str, Any]) must reach the real SDK
+    # model completely unconverted, even though it sits next to auth's SDK-known nested shape.
+    openapi_tool = next(t for t in tools if isinstance(t, m.OpenApiToolboxTool))
+    example_manifest = json.loads(_EXAMPLE_MANIFEST.read_text(encoding="utf-8"))
+    original_spec = next(t for t in example_manifest["tools"] if t["type"] == "openapi")["openapi"]["spec"]
+    assert openapi_tool.openapi.spec == original_spec
+
+
+def test_create_toolbox_passes_openapi_spec_through_untouched_even_with_colliding_keys(monkeypatch):
+    # Direct regression guard for the exact failure mode: a spec property genuinely named like an
+    # AI4IA manifest key (topK, indexName) must reach OpenApiFunctionDefinition.spec unchanged.
+    pytest.importorskip("azure.ai.projects")
+    pytest.importorskip("azure.identity")
+    from azure.ai.projects import models as m
+
+    captured: dict = {}
+    _install_fake_ai_project_client(monkeypatch, returned_version="1", captured=captured)
+
+    spec = {
+        "openapi": "3.0.0",
+        "components": {"schemas": {"Result": {"properties": {"topK": {"type": "integer"}, "indexName": {"type": "string"}}}}},
+    }
+    manifest = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "openapi",
+                "name": "weird-api",
+                "openapi": {"name": "search_docs", "auth": {"type": "anonymous"}, "spec": spec},
+            }
+        ],
+    }
+    _tb.create_toolbox(manifest, _ENDPOINT)
+
+    _, kwargs = captured["create_version"]
+    openapi_tool = next(t for t in kwargs["tools"] if isinstance(t, m.OpenApiToolboxTool))
+    assert openapi_tool.openapi.spec == spec
+
 
 @pytest.mark.parametrize("returned_version", ["1", "3"])
 def test_create_toolbox_activates_returned_version_as_default(monkeypatch, returned_version):
@@ -367,6 +627,78 @@ def test_create_toolbox_fails_loud_when_create_version_has_no_version(monkeypatc
     with pytest.raises(SystemExit):
         _tb.create_toolbox(_valid_manifest(), _ENDPOINT)
     assert "update_calls" not in captured
+
+
+# ----------------- provisioner-side schema enforcement (Finding 3, round 4) ------------
+def test_validate_manifest_schema_reports_errors_for_invalid_manifest():
+    pytest.importorskip("jsonschema")
+    bad = {**_valid_manifest(), "tools": [{"type": "mcp", "serverLabel": "x"}]}
+    errors = _tb.validate_manifest_schema(bad)
+    assert errors is not None and errors != []
+
+    assert _tb.validate_manifest_schema(_valid_manifest()) == []
+
+
+def test_validate_manifest_schema_returns_none_when_jsonschema_unavailable(monkeypatch):
+    # Deterministic regardless of whether jsonschema happens to be installed in this
+    # environment: force the `import jsonschema` inside validate_manifest_schema() to raise
+    # ImportError (sys.modules[name] = None is the standard trick) and confirm the function
+    # reports "unknown" (None) rather than raising or silently treating it as valid.
+    import sys
+
+    monkeypatch.setitem(sys.modules, "jsonschema", None)
+    assert _tb.validate_manifest_schema(_valid_manifest()) is None
+
+
+def test_main_hard_fails_create_when_jsonschema_unavailable(tmp_path, monkeypatch):
+    # Finding 3 (round 4): the provisioner must actually APPLY the schema before SDK
+    # construction, not just rely on CI's separate check-jsonschema lint step. Since
+    # --create needs jsonschema to do that, it must refuse to run (not silently skip
+    # validation) when the optional dependency is missing -- regardless of whether the
+    # manifest itself happens to be valid.
+    import sys
+
+    monkeypatch.setitem(sys.modules, "jsonschema", None)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(_valid_manifest()), encoding="utf-8")
+
+    rc = _tb.main(["--manifest", str(manifest_path), "--create"])
+    assert rc == 1
+
+
+def test_main_blocks_on_schema_violation_before_any_sdk_construction(tmp_path, capsys):
+    # End-to-end guard for the literal Finding 3 complaint ("provisioner doesn't apply the
+    # JSON schema"): main() must reject a manifest that passes the hand-written
+    # validate_manifest() checks but violates the strict per-type schema (here: an mcp tool
+    # missing both serverUrl/connectorId), and must do so WITHOUT ever attempting SDK
+    # construction (no --create-only azure-ai-projects/azure-identity dependency needed here
+    # since it fails before reaching create_toolbox()).
+    pytest.importorskip("jsonschema")
+    bad_manifest = {
+        "name": "bad-toolbox",
+        "description": "d",
+        "tools": [{"type": "mcp", "serverLabel": "x"}],
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(bad_manifest), encoding="utf-8")
+
+    rc = _tb.main(["--manifest", str(manifest_path)])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "schema:" in captured.err
+
+
+def test_main_accepts_schema_valid_manifest_in_dry_run(tmp_path, capsys):
+    # Sanity complement to the previous test: a schema-VALID manifest must still sail
+    # through the dry-run path (no false positives from the new strict schema).
+    pytest.importorskip("jsonschema")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(_valid_manifest()), encoding="utf-8")
+
+    rc = _tb.main(["--manifest", str(manifest_path), "--project-endpoint", _ENDPOINT])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "dry run" in captured.out
 
 
 # ----------------------------------- skills -------------------------------------------

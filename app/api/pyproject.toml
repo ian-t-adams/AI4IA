@@ -121,16 +121,22 @@ dev = [
     "anyio>=4.4",
     "ruff>=0.5",
     "pyright>=1.1.400",
+    # Lets tests exercise real foundry/toolbox.manifest.schema.json validation (see
+    # test_foundry_toolbox.py) instead of skipping via pytest.importorskip("jsonschema").
+    "jsonschema>=4.18",
 ]
 # Provisioning-only extra for the Foundry toolbox/skills scripts (scripts/provision-foundry-*.py).
 # NOT installed by CI or the runtime container; operators install it at provisioning time:
 #   uv pip install -e "app/api[foundry]"
 # The azure-ai-projects preview SDK carries the toolboxes/skills clients used by --create;
 # azure-mgmt-apicenter registers the private-tool-catalog assets (scripts/provision-private-tool-catalog.py --create).
+# jsonschema backs scripts/provision-foundry-toolbox.py's strict manifest-schema validation,
+# which --create requires before constructing any SDK model.
 foundry = [
     "azure-ai-projects>=1.0.0b1",
     "azure-identity>=1.17",
     "azure-mgmt-apicenter>=1.0.0",
+    "jsonschema>=4.18",
 ]
 
 [tool.hatch.build.targets.wheel]
