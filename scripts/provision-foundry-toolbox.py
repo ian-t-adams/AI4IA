@@ -148,6 +148,29 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _require_array_or_absent(manifest: dict[str, Any], key: str, errors: list[str]) -> list[Any]:
+    """Return ``manifest[key]``, defaulting to ``[]`` only when the key is genuinely absent.
+
+    A bare ``manifest.get(key) or []`` looks equivalent but is not: it coerces ANY *falsy* value
+    actually present in the manifest (JSON ``null``, ``{}``, ``""``, ``false``, ``0``) into an
+    empty list *before* an ``isinstance`` check ever runs -- so ``{"tools": null}`` or
+    ``{"skills": {}}`` silently validated as "no tools/skills" instead of being reported as the
+    malformed manifest it is (round-12 finding: this let a schema-rejectable manifest pass the
+    no-``jsonschema`` fallback path and exit 0). Checking key presence (``key not in manifest``)
+    rather than the retrieved value's truthiness keeps "absent" (default to ``[]``, no error) and
+    "present but the wrong type -- including a present-but-falsy wrong type" (report an error)
+    distinguishable, which a truthiness check can never do since ``None``/absent are otherwise
+    indistinguishable via ``.get()``.
+    """
+    if key not in manifest:
+        return []
+    value = manifest[key]
+    if not isinstance(value, list):
+        errors.append(f"`{key}` must be a JSON array, got {type(value).__name__}.")
+        return []
+    return value
+
+
 def validate_manifest(manifest: dict[str, Any]) -> list[str]:
     """Return a list of human-readable validation errors (empty => valid to provision).
 
@@ -169,18 +192,9 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
     if not manifest.get("description"):
         errors.append("`description` is required and must be non-empty.")
 
-    tools = manifest.get("tools") or []
-    skills = manifest.get("skills") or []
-    connections = manifest.get("connections") or []
-    if not isinstance(tools, list):
-        errors.append(f"`tools` must be a JSON array, got {type(tools).__name__}.")
-        tools = []
-    if not isinstance(skills, list):
-        errors.append(f"`skills` must be a JSON array, got {type(skills).__name__}.")
-        skills = []
-    if not isinstance(connections, list):
-        errors.append(f"`connections` must be a JSON array, got {type(connections).__name__}.")
-        connections = []
+    tools = _require_array_or_absent(manifest, "tools", errors)
+    skills = _require_array_or_absent(manifest, "skills", errors)
+    connections = _require_array_or_absent(manifest, "connections", errors)
     if not (tools or skills or connections):
         errors.append(
             "manifest is inert: add at least one of `tools`, `skills`, or `connections` "

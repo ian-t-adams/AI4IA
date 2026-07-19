@@ -1284,6 +1284,66 @@ def test_validate_manifest_isinstance_guards_cover_every_malformed_shape():
     assert any("tools[1] must be a JSON object" in e for e in tool_is_string)
 
 
+# ----------------- round 12: present-but-FALSY tools/skills/connections must still fail --------
+# `manifest.get(key) or []` coerced ANY falsy value actually present in the manifest (JSON `null`,
+# `{}`, `""`, `false`, `0`) into an empty list *before* the isinstance() type check ever ran, so
+# e.g. `{"tools": null}` validated as "no tools" with zero errors instead of being reported as
+# malformed -- and, without jsonschema installed, `main()`'s dry run (no --create) exited 0 for a
+# manifest the schema itself would reject. Fixed via `_require_array_or_absent()`, which checks
+# key PRESENCE (`key not in manifest`) rather than the retrieved value's truthiness before
+# defaulting, so "absent" (default to [], no error) and "present but the wrong type -- including a
+# present-but-falsy wrong type" (report an error) stay distinguishable.
+_FALSY_NON_ARRAY_VALUES = [
+    pytest.param(None, id="null"),
+    pytest.param({}, id="empty-dict"),
+    pytest.param("", id="empty-string"),
+    pytest.param(False, id="false"),
+    pytest.param(0, id="zero"),
+]
+
+
+@pytest.mark.parametrize("key", ["tools", "skills", "connections"])
+@pytest.mark.parametrize("falsy_value", _FALSY_NON_ARRAY_VALUES)
+def test_validate_manifest_rejects_present_but_falsy_non_array_values(key, falsy_value):
+    manifest = {**_valid_manifest(), key: falsy_value}
+
+    errors = _tb.validate_manifest(manifest)
+
+    assert any(f"`{key}` must be a JSON array, got {type(falsy_value).__name__}." in e for e in errors), errors
+
+
+@pytest.mark.parametrize("key", ["tools", "skills", "connections"])
+@pytest.mark.parametrize("falsy_value", _FALSY_NON_ARRAY_VALUES)
+def test_main_dry_run_exits_nonzero_for_falsy_non_array_values_even_without_jsonschema(tmp_path, capsys, monkeypatch, key, falsy_value):
+    # Forces validate_manifest_schema() to report "unavailable" (None) so validate_manifest()'s
+    # own presence-then-type check is the ONLY thing standing between this malformed manifest and
+    # a false "success" dry run -- this is the exact reported scenario ("ensure dry-run exits
+    # nonzero" without jsonschema installed).
+    monkeypatch.setitem(sys.modules, "jsonschema", None)
+    manifest = {**_valid_manifest(), key: falsy_value}
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    rc = _tb.main(["--manifest", str(manifest_path)])  # must not raise, must not exit 0
+
+    captured = capsys.readouterr()
+    assert rc == 1, f"expected dry run to fail for {key}={falsy_value!r}, got rc={rc}: {captured.err}"
+    assert "not ready to provision" in captured.err
+    assert f"`{key}` must be a JSON array" in captured.err
+
+
+def test_validate_manifest_defaults_absent_tools_skills_connections_to_empty_without_error():
+    # The key being entirely ABSENT (as opposed to present-and-falsy) is the one legitimate case
+    # that should still default to [] with zero errors -- exactly the distinction a truthiness
+    # check (`manifest.get(key) or []`) cannot make, since `.get()` returns the same `None` both
+    # when a key is absent and when it is explicitly `"key": null`.
+    base = _valid_manifest()
+    for key in ("tools", "skills", "connections"):
+        manifest = {k: v for k, v in base.items() if k != key}
+        errors = _tb.validate_manifest(manifest)
+        assert errors == [], f"dropping `{key}` entirely should still validate cleanly: {errors}"
+
+
 # ----------------- round 7: new SDK 2.3.0 toolbox types --------------------------------
 # a2a_preview, fabric_iq_preview, work_iq_preview, reminder_preview were newly added to
 # azure-ai-projects 2.3.0's toolbox model set but omitted from _TYPE_TO_MODEL / the schema /
