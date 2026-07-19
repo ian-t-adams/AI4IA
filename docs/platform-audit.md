@@ -8,7 +8,8 @@
 > merges privacy-hardening commit `c351131`, which removes
 > prompt/query/tool-argument content from user-facing activity and ordinary agent
 > INFO logs. The fix is retained at reviewed #189 head
-> `c71b6e172778835f4ac37a053853b85fe819383f` but is not on `main` or deployed.
+> `c71b6e172778835f4ac37a053853b85fe819383f` but is not on `main`;
+> deployment parity is not established.
 >
 > **Governance risk:** `main` currently has **no branch protection and no repository
 > ruleset**. A direct push can bypass every CI workflow and review. The owner should
@@ -88,13 +89,13 @@ change is still not evidence of deployment.
 
 | PR | Reviewed-through head | Category | Proposed/remediated work | Status used by this report |
 | --- | --- | --- | --- | --- |
-| #184 | `4070269beca1` | Foundry Toolbox and WebIQ | WebIQ browse live-crawl/pending-retry handling, official MCP fail-closed catalog checks, Toolbox SDK/schema/provisioning corrections | Open; reviewed through listed head, not deployed |
+| #184 | `4070269beca1` | Foundry Toolbox and WebIQ | WebIQ browse live-crawl/pending-retry handling, official MCP fail-closed catalog checks, Toolbox SDK/schema/provisioning corrections | Open; reviewed through listed head; deployment not established |
 | #185 | merge `18fd952e91d9` | Gateway/proxy and API health | Confirms routing invariant, separates credential wording, constant-time proxy auth comparison, and API health probes | Merged to `main`; deployment not established |
-| #186 | `bf66deb29def` | Chat rendering reliability | Per-turn local reconciliation plus streamed-reply/race protection | Open; reviewed through listed head, not on `main` or deployed |
+| #186 | `bf66deb29def` | Chat rendering reliability | Per-turn local reconciliation plus streamed-reply/race protection | Open; reviewed through listed head, not on `main`; deployment not established |
 | #187 | merge `fd22072e29c9` | CI/Docker | PR-time API/web image builds plus Docker/CI hygiene | Merged to `main`; Docker jobs exist but are not protected required checks |
-| #188 | `409ac91be679` | Voice lifecycle and TTS | Input/playback/session lifecycle, race cleanup, navigation locking, accessibility, and TTS fixes | Open; reviewed through listed head, not on `main` or deployed |
+| #188 | `409ac91be679` | Voice lifecycle and TTS | Input/playback/session lifecycle, race cleanup, navigation locking, accessibility, and TTS fixes | Open; reviewed through listed head, not on `main`; deployment not established |
 | #189 | `c71b6e172778` | API reliability and privacy | Ownership, race, persistence, metrics, explicit failures, metadata-only activity/log privacy, and hostile-input coverage | Open; required `c351131` privacy fix is retained but unmerged, so PR #191 remains blocked on #189 merging |
-| #190 | `d3bd4a4b155a` | Web UX and help | Accessibility, advanced-setting/tool help, client telemetry/privacy, modal/focus, and UI consistency | Open; reviewed through listed head, not on `main` or deployed |
+| #190 | `d3bd4a4b155a` | Web UX and help | Accessibility, advanced-setting/tool help, client telemetry/privacy, modal/focus, and UI consistency | Open; reviewed through listed head, not on `main`; deployment not established |
 
 Because these branches can evolve, merge owners should refresh this table and rerun
 the validation matrix after each PR merges. Resolve overlapping documentation
@@ -157,7 +158,7 @@ build/tests, quality, CodeQL, security scans, and PR-time Docker image builds.
 | --- | --- | --- |
 | No `main` ruleset or branch protection | Reviews and checks can be bypassed | Owner action required; audit did not mutate live settings |
 | `app-ci`, `infra-validate`, and `docker-build` are path-filtered | Requiring their conditional job contexts directly would deadlock docs-only and other out-of-scope PRs because those contexts are never emitted | Add always-emitted aggregate/no-op-success contexts first, then require only those unconditional aggregates |
-| Open PRs #184, #186, and #188-#190 | Proposed fixes are not guaranteed on `main` or deployed | Status is explicit; merge and validate independently |
+| Open PRs #184, #186, and #188-#190 | Proposed fixes are not guaranteed on `main`; deployment parity is unverified | Status is explicit; merge and validate independently |
 | Activity and INFO logs can contain ordinary prompt/query argument text | User content can reach persisted activity or telemetry despite secret redaction | Block PR #191 on the corresponding #189 privacy-hardening commit; restrict activity/log access until it is deployed |
 | No evidence in this audit of production deployment parity | Repository truth may lead the live revision | Use inventory, revision SHA, smoke tests, and approved what-if before claiming parity |
 | Proxy queue state is per-replica memory | No durable/global ordering or exact fairness | Warm replica, bounded expiry/requeue, explicit telemetry limitations |
