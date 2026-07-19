@@ -148,6 +148,50 @@ function replaceTemporaryMessageId(
   ];
 }
 
+function discoverAcceptedUserId(
+  fresh: Message[],
+  knownMessageIds: ReadonlySet<string>,
+  sentContent: string,
+): string | null {
+  const users = fresh.filter(
+    (message) =>
+      !knownMessageIds.has(message.id) &&
+      message.role === "user" &&
+      message.source !== "voice" &&
+      message.content === sentContent,
+  );
+  return users.length === 1 ? users[0].id : null;
+}
+
+function discoverAcceptedPair(
+  fresh: Message[],
+  knownMessageIds: ReadonlySet<string>,
+  sentContent: string,
+): { userMessageId: string; assistantMessageId: string } | null {
+  const userMessageId = discoverAcceptedUserId(
+    fresh,
+    knownMessageIds,
+    sentContent,
+  );
+  if (!userMessageId) return null;
+  const userIndex = fresh.findIndex((message) => message.id === userMessageId);
+  const user = fresh[userIndex];
+  const assistant = fresh[userIndex + 1];
+  if (
+    !assistant ||
+    knownMessageIds.has(assistant.id) ||
+    assistant.role !== "assistant" ||
+    assistant.source === "voice" ||
+    assistant.source !== user.source
+  ) {
+    return null;
+  }
+  return {
+    userMessageId: user.id,
+    assistantMessageId: assistant.id,
+  };
+}
+
 function terminalMessage(messages: Message[], id: string): boolean {
   const message = messages.find((candidate) => candidate.id === id);
   return Boolean(message && message.status !== "streaming");
@@ -1388,23 +1432,27 @@ export function ChatApp() {
         sessionIdRef.current === sessionId;
       const applyFresh = (fresh: Message[]): boolean => {
         if (!ownsTurn()) return false;
-        const newRows = fresh.filter(
-          (message) => !knownMessageIds.has(message.id),
-        );
-        const durableUserId =
-          metadata?.userMessageId ??
-          newRows.find((message) => message.role === "user")?.id ??
-          null;
+        const discovered = metadata
+          ? null
+          : discoverAcceptedPair(fresh, knownMessageIds, content);
+        const discoveredUserId =
+          discovered?.userMessageId ??
+          (metadata
+            ? null
+            : discoverAcceptedUserId(fresh, knownMessageIds, content));
+        const durableUserId = metadata
+          ? metadata.userMessageId
+          : discoveredUserId;
         const durableAssistantId =
           metadata?.assistantMessageId ??
-          newRows.find((message) => message.role === "assistant")?.id ??
+          discovered?.assistantMessageId ??
           null;
-        if (!metadata && durableAssistantId) {
+        if (!metadata && discovered) {
           metadata = {
-            userMessageId: durableUserId,
-            assistantMessageId: durableAssistantId,
+            userMessageId: discovered.userMessageId,
+            assistantMessageId: discovered.assistantMessageId,
           };
-          trackPendingAssistant(sessionId, durableAssistantId);
+          trackPendingAssistant(sessionId, discovered.assistantMessageId);
         }
         setMessages((previous) => {
           let adopted = previous;

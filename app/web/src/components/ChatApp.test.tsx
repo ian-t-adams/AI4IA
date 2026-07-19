@@ -748,6 +748,149 @@ describe("ChatApp stream reconciliation", () => {
     expect(mocks.streamChat).toHaveBeenCalledTimes(1);
   });
 
+  it("correlates the sent turn without binding stale initial history", async () => {
+    const stale = [
+      chatMessage("stale-user", "user", "older question"),
+      chatMessage("stale-assistant", "assistant", "Older answer"),
+    ];
+    mocks.listMessages
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValueOnce([
+        ...stale,
+        chatMessage("current-user", "user", "hello from draft"),
+        chatMessage("current-assistant", "assistant", "Current answer"),
+      ]);
+    const handlers = captureStreamHandlers();
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await screen.findByText("Older answer");
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    act(() => {
+      handlers().onDelta("Buffered current answer");
+      handlers().onError("Stream ended unexpectedly.", {
+        accepted: false,
+        persistenceFailed: false,
+        definitePreAcceptance: false,
+      });
+    });
+
+    expect(await screen.findByText("Current answer")).toHaveAttribute(
+      "data-message-id",
+      "current-assistant",
+    );
+    expect(screen.getByText("Older answer")).toHaveAttribute(
+      "data-message-id",
+      "stale-assistant",
+    );
+    expect(screen.queryByText("Buffered current answer")).toBeNull();
+  });
+
+  it("does not bind an interleaved Voice row and keeps polling", async () => {
+    let resolvePoll!: (messages: ReturnType<typeof chatMessage>[]) => void;
+    const ambiguous = [
+      { ...chatMessage("voice-user", "user", "voice question"), source: "voice" as const },
+      {
+        ...chatMessage("voice-assistant", "assistant", "Voice answer"),
+        source: "voice" as const,
+      },
+      chatMessage("current-user", "user", "hello from draft"),
+      {
+        ...chatMessage("interleaved-voice", "assistant", "Interleaved voice"),
+        source: "voice" as const,
+      },
+      chatMessage("current-assistant", "assistant", "", "streaming"),
+    ];
+    mocks.listMessages
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(ambiguous)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolvePoll = resolve;
+          }),
+      );
+    const handlers = captureStreamHandlers();
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    act(() => {
+      handlers().onDelta("Unbound fallback");
+      handlers().onError("Stream ended unexpectedly.", {
+        accepted: false,
+        persistenceFailed: false,
+        definitePreAcceptance: false,
+      });
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send draft message" })).toBeEnabled(),
+    );
+    expect(screen.getAllByText("hello from draft")).toHaveLength(1);
+    expect(screen.getByText("hello from draft")).toHaveAttribute(
+      "data-message-id",
+      "current-user",
+    );
+    expect(screen.getByText("Unbound fallback").getAttribute("data-message-id")).toMatch(
+      /^tmp-assistant-/,
+    );
+    await waitFor(
+      () => expect(mocks.listMessages).toHaveBeenCalledTimes(3),
+      { timeout: 1000 },
+    );
+
+    await act(async () => {
+      resolvePoll([
+        ambiguous[0],
+        ambiguous[1],
+        chatMessage("current-user", "user", "hello from draft"),
+        chatMessage("current-assistant", "assistant", "Recovered current answer"),
+      ]);
+    });
+    expect(await screen.findByText("Recovered current answer")).toHaveAttribute(
+      "data-message-id",
+      "current-assistant",
+    );
+    expect(screen.queryByText("Unbound fallback")).toBeNull();
+  });
+
+  it("keeps duplicate-content recovery ambiguous through bounded polling", async () => {
+    const ambiguous = [
+      chatMessage("duplicate-user-1", "user", "hello from draft"),
+      chatMessage("duplicate-assistant-1", "assistant", "First possible answer"),
+      chatMessage("duplicate-user-2", "user", "hello from draft"),
+      chatMessage("duplicate-assistant-2", "assistant", "Second possible answer"),
+    ];
+    mocks.listMessages
+      .mockResolvedValueOnce([])
+      .mockResolvedValue(ambiguous);
+    const handlers = captureStreamHandlers();
+    const user = userEvent.setup();
+    const view = render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    act(() => {
+      handlers().onDelta("Ambiguous fallback");
+      handlers().onError("Stream ended unexpectedly.", {
+        accepted: false,
+        persistenceFailed: false,
+        definitePreAcceptance: false,
+      });
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send draft message" })).toBeEnabled(),
+    );
+    await waitFor(
+      () => expect(mocks.listMessages.mock.calls.length).toBeGreaterThanOrEqual(3),
+      { timeout: 1000 },
+    );
+    expect(
+      screen.getByText("Ambiguous fallback").getAttribute("data-message-id"),
+    ).toMatch(/^tmp-assistant-/);
+    expect(screen.getAllByText("hello from draft")).toHaveLength(3);
+    view.unmount();
+  });
+
   it("keeps a suppressed command honest without inventing assistant metadata", async () => {
     mocks.listMessages
       .mockResolvedValueOnce([])
@@ -775,6 +918,7 @@ describe("ChatApp stream reconciliation", () => {
         document.querySelector('[data-message-id="summary-user"]'),
       ).toHaveTextContent("hello from draft"),
     );
+    expect(screen.getAllByText("hello from draft")).toHaveLength(1);
     expect(
       screen.getByText(
         "The command result was superseded before it could be saved.",
