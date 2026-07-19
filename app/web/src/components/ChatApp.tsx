@@ -126,6 +126,28 @@ function reconcileMessages(
   );
 }
 
+function replaceTemporaryMessageId(
+  messages: Message[],
+  temporaryId: string,
+  durableId: string,
+): Message[] {
+  const temporary = messages.find((message) => message.id === temporaryId);
+  if (!temporary) return messages;
+  const durable = messages.find((message) => message.id === durableId);
+  const replacement =
+    durable?.role === "assistant" &&
+    durable.status === "streaming" &&
+    temporary.status !== "streaming"
+      ? { ...temporary, id: durableId }
+      : (durable ?? { ...temporary, id: durableId });
+  return [
+    ...messages.filter(
+      (message) => message.id !== temporaryId && message.id !== durableId,
+    ),
+    replacement,
+  ];
+}
+
 function terminalMessage(messages: Message[], id: string): boolean {
   const message = messages.find((candidate) => candidate.id === id);
   return Boolean(message && message.status !== "streaming");
@@ -327,6 +349,7 @@ export function ChatApp() {
   // immediately (before the setActiveId state flush), preventing a double create
   // when an upload is quickly followed by a send.
   const sessionIdRef = useRef<string | null>(null);
+  const messagesRef = useRef<Message[]>([]);
   const selectionGenerationRef = useRef(0);
   const turnGenerationRef = useRef(0);
   const reconciliationTimersRef = useRef(new Set<number>());
@@ -342,6 +365,9 @@ export function ChatApp() {
   useEffect(() => {
     sessionIdRef.current = activeId;
   }, [activeId]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const clearReconciliationTimers = useCallback(() => {
     for (const timer of reconciliationTimersRef.current) {
@@ -383,29 +409,45 @@ export function ChatApp() {
   const scheduleReconciliation = useCallback(
     (
       sessionId: string,
-      assistantId: string,
+      assistantId: string | null,
       selectionGeneration: number,
+      turnGeneration: number,
+      applyFresh?: (fresh: Message[]) => boolean,
     ) => {
+      const ownsReconciliation = () =>
+        mountedRef.current &&
+        sessionIdRef.current === sessionId &&
+        selectionGenerationRef.current === selectionGeneration &&
+        turnGenerationRef.current === turnGeneration;
       const runAttempt = (attempt: number) => {
-        if (attempt >= RECONCILIATION_DELAYS_MS.length) return;
+        if (
+          attempt >= RECONCILIATION_DELAYS_MS.length ||
+          !ownsReconciliation()
+        ) {
+          return;
+        }
         const timer = window.setTimeout(async () => {
           reconciliationTimersRef.current.delete(timer);
-          if (
-            sessionIdRef.current !== sessionId ||
-            selectionGenerationRef.current !== selectionGeneration
-          ) {
-            return;
-          }
+          if (!ownsReconciliation()) return;
           try {
             const fresh = await api.listMessages(sessionId);
-            if (
-              sessionIdRef.current !== sessionId ||
-              selectionGenerationRef.current !== selectionGeneration
-            ) {
+            if (!ownsReconciliation()) return;
+            const resolved = applyFresh
+              ? applyFresh(fresh)
+              : Boolean(assistantId && terminalMessage(fresh, assistantId));
+            if (!applyFresh) {
+              setMessages((previous) => reconcileMessages(previous, fresh));
+            }
+            if (resolved) {
+              if (assistantId) {
+                markAssistantResolved(sessionId, assistantId);
+              }
               return;
             }
-            setMessages((previous) => reconcileMessages(previous, fresh));
-            if (terminalMessage(fresh, assistantId)) {
+            if (!ownsReconciliation()) {
+              return;
+            }
+            if (assistantId && terminalMessage(fresh, assistantId)) {
               markAssistantResolved(sessionId, assistantId);
               return;
             }
@@ -540,7 +582,12 @@ export function ChatApp() {
           if (terminalMessage(msgs, assistantId)) {
             markAssistantResolved(id, assistantId);
           } else {
-            scheduleReconciliation(id, assistantId, generation);
+            scheduleReconciliation(
+              id,
+              assistantId,
+              generation,
+              turnGenerationRef.current,
+            );
           }
         }
         setDocuments(docs);
@@ -1285,6 +1332,7 @@ export function ChatApp() {
       setStreamingText("");
       setStreamMaterialized(false);
       setLiveSteps([]);
+      clearReconciliationTimers();
       const turnGeneration = ++turnGenerationRef.current;
       const selectionGeneration = selectionGenerationRef.current;
       let sessionId = activeId;
@@ -1316,6 +1364,12 @@ export function ChatApp() {
       const assistantCreatedAt = new Date(
         userCreatedAt.getTime() + 1,
       ).toISOString();
+      const temporaryAssistantId = `tmp-assistant-${optimisticUser.id.slice(4)}`;
+      const knownMessageIds = new Set(
+        messagesRef.current
+          .filter((message) => message.sessionId === sessionId)
+          .map((message) => message.id),
+      );
       setStreamingStartedAt(assistantCreatedAt);
       setMessages((prev) => [...prev, optimisticUser]);
 
@@ -1332,10 +1386,63 @@ export function ChatApp() {
         turnGenerationRef.current === turnGeneration &&
         selectionGenerationRef.current === selectionGeneration &&
         sessionIdRef.current === sessionId;
+      const applyFresh = (fresh: Message[]): boolean => {
+        if (!ownsTurn()) return false;
+        const newRows = fresh.filter(
+          (message) => !knownMessageIds.has(message.id),
+        );
+        const durableUserId =
+          metadata?.userMessageId ??
+          newRows.find((message) => message.role === "user")?.id ??
+          null;
+        const durableAssistantId =
+          metadata?.assistantMessageId ??
+          newRows.find((message) => message.role === "assistant")?.id ??
+          null;
+        if (!metadata && durableAssistantId) {
+          metadata = {
+            userMessageId: durableUserId,
+            assistantMessageId: durableAssistantId,
+          };
+          trackPendingAssistant(sessionId, durableAssistantId);
+        }
+        setMessages((previous) => {
+          let adopted = previous;
+          if (durableUserId) {
+            adopted = replaceTemporaryMessageId(
+              adopted,
+              optimisticUser.id,
+              durableUserId,
+            );
+          }
+          if (durableAssistantId) {
+            adopted = replaceTemporaryMessageId(
+              adopted,
+              temporaryAssistantId,
+              durableAssistantId,
+            );
+          }
+          const removeIds = new Set<string>();
+          if (metadata || durableUserId) removeIds.add(optimisticUser.id);
+          return reconcileMessages(adopted, fresh, removeIds);
+        });
+        if (
+          durableAssistantId &&
+          terminalMessage(fresh, durableAssistantId)
+        ) {
+          markAssistantResolved(sessionId, durableAssistantId);
+          return true;
+        }
+        return false;
+      };
 
       const finalize = async (
         outcome: "complete" | "cancelled" | "error",
-        info: { accepted: boolean; persistenceFailed: boolean },
+        info: {
+          accepted: boolean;
+          persistenceFailed: boolean;
+          definitePreAcceptance?: boolean;
+        },
       ) => {
         if (finalized) return;
         finalized = true;
@@ -1352,7 +1459,7 @@ export function ChatApp() {
           const fallback: Message = {
             id:
               metadata?.assistantMessageId ??
-              `tmp-assistant-${optimisticUser.id.slice(4)}`,
+              temporaryAssistantId,
             sessionId,
             userId: "me",
             role: "assistant",
@@ -1366,15 +1473,15 @@ export function ChatApp() {
           setMessages((previous) => {
             const durableUserId = metadata?.userMessageId;
             const withDurableUserId = durableUserId
-              ? previous.map((message) =>
-                  message.id === optimisticUser.id
-                    ? { ...message, id: durableUserId }
-                    : message,
+              ? replaceTemporaryMessageId(
+                  previous,
+                  optimisticUser.id,
+                  durableUserId,
                 )
               : previous;
             return reconcileMessages(withDurableUserId, [fallback]);
           });
-        } else if (!info.accepted) {
+        } else if (info.definitePreAcceptance === true) {
           setMessages((previous) =>
             previous.filter((message) => message.id !== optimisticUser.id),
           );
@@ -1382,28 +1489,17 @@ export function ChatApp() {
         setStreamMaterialized(true);
 
         let reconciliationAmbiguous = false;
-        if (metadata || bufferedText || bufferedSteps.length > 0) {
+        if (info.definitePreAcceptance !== true || hasFallback) {
           try {
             const fresh = await api.listMessages(sessionId);
             if (!ownsTurn()) return;
-            setMessages((previous) =>
-              reconcileMessages(
-                previous,
-                fresh,
-                new Set([optimisticUser.id]),
-              ),
-            );
-            if (
-              metadata &&
-              terminalMessage(fresh, metadata.assistantMessageId)
-            ) {
-              markAssistantResolved(sessionId, metadata.assistantMessageId);
-            } else if (metadata) {
-              reconciliationAmbiguous = true;
-            }
+            reconciliationAmbiguous = !applyFresh(fresh);
             setInspectorVersion((value) => value + 1);
           } catch {
-            reconciliationAmbiguous = metadata !== null;
+            if (!ownsTurn()) return;
+            reconciliationAmbiguous =
+              info.definitePreAcceptance !== true &&
+              !info.persistenceFailed;
           }
         }
 
@@ -1414,15 +1510,13 @@ export function ChatApp() {
         setStreamMaterialized(false);
         streamingRef.current = false;
         abortRef.current = null;
-        if (
-          metadata &&
-          reconciliationAmbiguous &&
-          !info.persistenceFailed
-        ) {
+        if (reconciliationAmbiguous && !info.persistenceFailed) {
           scheduleReconciliation(
             sessionId,
-            metadata.assistantMessageId,
+            metadata?.assistantMessageId ?? null,
             selectionGeneration,
+            turnGeneration,
+            applyFresh,
           );
         }
         // A slash command can change the session's model or system prompt on the
@@ -1453,10 +1547,10 @@ export function ChatApp() {
             if (!ownsTurn() || !value.userMessageId) return;
             const durableUserId = value.userMessageId;
             setMessages((previous) =>
-              previous.map((message) =>
-                message.id === optimisticUser.id
-                  ? { ...message, id: durableUserId }
-                  : message,
+              replaceTemporaryMessageId(
+                previous,
+                optimisticUser.id,
+                durableUserId,
               ),
             );
           },
@@ -1472,22 +1566,28 @@ export function ChatApp() {
             void finalize("complete", {
               accepted: true,
               persistenceFailed: false,
+              definitePreAcceptance: false,
             }),
           onError: (msg, info) => {
             if (ownsTurn()) setError(msg);
             void finalize("error", info);
           },
           // Stop button: reconcile with the server's cancelled message.
-          onAbort: () =>
-            void finalize("cancelled", {
-              accepted: metadata !== null,
-              persistenceFailed: false,
-            }),
+          onAbort: (info) =>
+            void finalize(
+              "cancelled",
+              info ?? {
+                accepted: metadata !== null,
+                persistenceFailed: false,
+                definitePreAcceptance: false,
+              },
+            ),
         },
       );
     },
     [
       activeId,
+      clearReconciliationTimers,
       ensureSession,
       markAssistantResolved,
       params,

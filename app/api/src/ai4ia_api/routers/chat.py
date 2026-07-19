@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 import secrets
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -271,22 +271,70 @@ def _local_reply_response(
     stream: bool,
     *,
     user_message_id: str | None,
+    assistant_persisted: bool = True,
 ):
     """Uniform response for a locally-produced reply (command / agent notice).
 
-    The reply is already durable before this helper is called. Streaming clients
-    receive its durable row ids before the content delta and ``[DONE]``.
+    Durable replies expose their row ids before content. Intentionally suppressed
+    command replies fail explicitly without claiming an assistant row exists.
     """
     if not stream:
         return {"sessionId": session_id, "message": assistant}
 
     async def gen():
+        if not assistant_persisted:
+            payload = {
+                "error": "The command result was superseded before it could be saved.",
+                "persistenceSuppressed": True,
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+            return
         yield _stream_metadata(user_message_id, assistant.id)
         chunk = {"choices": [{"delta": {"content": assistant.content}}]}
         yield f"data: {json.dumps(chunk)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+async def _stream_with_placeholder(
+    *,
+    repo: SessionRepository,
+    user_id: str,
+    assistant: Message,
+    events: AsyncGenerator[str, None],
+) -> AsyncGenerator[str, None]:
+    """Own placeholder persistence within the response iterator lifecycle."""
+    placeholder_persisted = False
+    try:
+        write = asyncio.create_task(repo.add_message(user_id, assistant))
+        try:
+            await asyncio.shield(write)
+            placeholder_persisted = True
+        except asyncio.CancelledError:
+            try:
+                await write
+                placeholder_persisted = True
+            except Exception:  # noqa: BLE001 - no row exists to finalize
+                logger.exception(
+                    "Failed to persist assistant placeholder %s", assistant.id
+                )
+            raise
+        except Exception:  # noqa: BLE001 - headers are already committed
+            logger.exception("Failed to persist assistant placeholder %s", assistant.id)
+            payload = {
+                "error": "The reply could not be initialized.",
+                "persistenceFailed": True,
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+            return
+        async for event in events:
+            yield event
+    finally:
+        await events.aclose()
+        if placeholder_persisted and assistant.status is MessageStatus.streaming:
+            assistant.status = MessageStatus.cancelled
+            await _persist_terminal_assistant(repo, user_id, assistant)
 
 
 # Live activity + final answer for an agentic (tool-using) turn. The turn's tool
@@ -313,7 +361,7 @@ async def _agentic_stream(
     extra_usage: list[TokenUsage] | None = None,
     fallback: Callable[[], Awaitable[tuple[str, TokenUsage]]] | None = None,
     get_attachments: Callable[[], list[MessageAttachment]] | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     queue: asyncio.Queue = asyncio.Queue()
     sentinel = object()
 
@@ -810,6 +858,7 @@ async def chat(
         # validated above. (A /tool command was already routed above.)
         if parsed.is_command:
             command_users = []
+            command_assistants: list[Message] = []
             assistant = await execute_command(
                 parsed=parsed,
                 session=session,
@@ -821,12 +870,14 @@ async def chat(
                 summarizer=summarizer,
                 gateway=gateway,
                 on_user_message=command_users.append,
+                on_assistant_message=command_assistants.append,
             )
             return _local_reply_response(
                 body.sessionId,
                 assistant,
                 body.stream,
                 user_message_id=command_users[-1].id if command_users else None,
+                assistant_persisted=bool(command_assistants),
             )
 
     policy = await resolve_conversation_policy(
@@ -1395,8 +1446,6 @@ async def chat(
                 model=deployment.deploymentName,
                 agent=agent_name,
             )
-            await repo.add_message(user.internal_user_id, placeholder)
-
             def _run(on_step: Callable[[AgentStep], Awaitable[None]]):
                 return run_agent_turn(
                     deployment=deployment.deploymentName,
@@ -1413,22 +1462,27 @@ async def chat(
                 )
 
             return StreamingResponse(
-                _agentic_stream(
-                    assistant=placeholder,
-                    run=_run,
+                _stream_with_placeholder(
                     repo=repo,
-                    memory=memory,
-                    metering=metering,
-                    user=user,
-                    session_id=body.sessionId,
-                    model_id=model_id,
-                    deployment=deployment,
-                    agent_name=agent_name,
-                    correlation_id=correlation_id,
-                    content_for_model=content_for_model,
-                    user_message_id=user_msg.id,
-                    extra_usage=usage_sink,  # live list: sub-turn usage lands during the run
-                    get_attachments=lambda: [*image_sink, *video_sink, *doc_sink],
+                    user_id=user.internal_user_id,
+                    assistant=placeholder,
+                    events=_agentic_stream(
+                        assistant=placeholder,
+                        run=_run,
+                        repo=repo,
+                        memory=memory,
+                        metering=metering,
+                        user=user,
+                        session_id=body.sessionId,
+                        model_id=model_id,
+                        deployment=deployment,
+                        agent_name=agent_name,
+                        correlation_id=correlation_id,
+                        content_for_model=content_for_model,
+                        user_message_id=user_msg.id,
+                        extra_usage=usage_sink,
+                        get_attachments=lambda: [*image_sink, *video_sink, *doc_sink],
+                    ),
                 ),
                 media_type="text/event-stream",
             )
@@ -1712,8 +1766,6 @@ async def chat(
         model=deployment.deploymentName,
         agent=agent_name,
     )
-    await repo.add_message(user.internal_user_id, assistant)
-
     async def event_stream():
         parts: list[str] = []
         final = MessageStatus.complete
@@ -1825,7 +1877,15 @@ async def chat(
                     )
                 )
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        _stream_with_placeholder(
+            repo=repo,
+            user_id=user.internal_user_id,
+            assistant=assistant,
+            events=event_stream(),
+        ),
+        media_type="text/event-stream",
+    )
 
 
 def _extract_text(result: dict) -> str:

@@ -80,6 +80,7 @@ async def execute_command(
     summarizer: SummarizationService | None = None,
     gateway: "ModelGatewayClient | None" = None,
     on_user_message: Callable[[Message], None] | None = None,
+    on_assistant_message: Callable[[Message], None] | None = None,
 ) -> Message:
     """Run the parsed command, persist its effects, and return the reply message."""
     command = parsed.command
@@ -161,6 +162,8 @@ async def execute_command(
             return assistant
     else:
         await repo.add_message(user_id, assistant)
+    if on_assistant_message is not None:
+        on_assistant_message(assistant)
     return assistant
 
 

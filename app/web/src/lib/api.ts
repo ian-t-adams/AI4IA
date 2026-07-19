@@ -731,7 +731,11 @@ export interface StreamHandlers {
   onDone: () => void;
   onError: (
     message: string,
-    info: { accepted: boolean; persistenceFailed: boolean },
+    info: {
+      accepted: boolean;
+      persistenceFailed: boolean;
+      definitePreAcceptance?: boolean;
+    },
   ) => void;
   onMetadata: (metadata: {
     userMessageId: string | null;
@@ -743,7 +747,11 @@ export interface StreamHandlers {
   onStep?: (step: ActivityStep) => void;
   // Called when the caller aborts the stream (e.g. Stop button). Lets the UI
   // reconcile with the server, which persists a `cancelled` assistant message.
-  onAbort?: () => void;
+  onAbort?: (info?: {
+    accepted: boolean;
+    persistenceFailed: boolean;
+    definitePreAcceptance?: boolean;
+  }) => void;
 }
 
 // Streams a chat completion. Returns an abort function the caller can invoke
@@ -776,6 +784,7 @@ export function streamChat(
         handlers.onError(`${resp.status}: ${detail}`, {
           accepted: false,
           persistenceFailed: false,
+          definitePreAcceptance: resp.status >= 400 && resp.status < 500,
         });
         return;
       }
@@ -797,6 +806,7 @@ export function streamChat(
               handlers.onError("Stream completed without message metadata.", {
                 accepted: false,
                 persistenceFailed: false,
+                definitePreAcceptance: false,
               });
               return;
             }
@@ -816,6 +826,7 @@ export function streamChat(
                 handlers.onError("Stream returned invalid message metadata.", {
                   accepted: false,
                   persistenceFailed: false,
+                  definitePreAcceptance: false,
                 });
                 return;
               }
@@ -827,6 +838,7 @@ export function streamChat(
               handlers.onError(String(obj.error), {
                 accepted: sawMetadata,
                 persistenceFailed: obj.persistenceFailed === true,
+                definitePreAcceptance: false,
               });
               return;
             }
@@ -849,16 +861,22 @@ export function streamChat(
         handlers.onError("Stream ended unexpectedly.", {
           accepted: sawMetadata,
           persistenceFailed: false,
+          definitePreAcceptance: false,
         });
       }
     } catch (err) {
       if ((err as Error).name === "AbortError") {
-        handlers.onAbort?.();
+        handlers.onAbort?.({
+          accepted: sawMetadata,
+          persistenceFailed: false,
+          definitePreAcceptance: false,
+        });
         return;
       }
       handlers.onError((err as Error).message, {
         accepted: sawMetadata,
         persistenceFailed: false,
+        definitePreAcceptance: false,
       });
     }
   })();

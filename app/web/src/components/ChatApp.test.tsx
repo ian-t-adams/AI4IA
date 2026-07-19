@@ -572,6 +572,7 @@ describe("ChatApp stream reconciliation", () => {
       handlers().onError("429: rate limited", {
         accepted: false,
         persistenceFailed: false,
+        definitePreAcceptance: true,
       });
     });
     await waitFor(() =>
@@ -579,6 +580,29 @@ describe("ChatApp stream reconciliation", () => {
     );
     expect(screen.queryByText("hello from draft")).toBeNull();
     expect(screen.getByText("429: rate limited")).toBeInTheDocument();
+  });
+
+  it("retains the optimistic user and reconciles after an ambiguous 5xx", async () => {
+    mocks.listMessages.mockResolvedValue([]);
+    const handlers = captureStreamHandlers();
+    const user = userEvent.setup();
+    const view = render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    act(() => {
+      handlers().onError("503: upstream reset", {
+        accepted: false,
+        persistenceFailed: false,
+        definitePreAcceptance: false,
+      });
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send draft message" })).toBeEnabled(),
+    );
+    expect(screen.getByText("hello from draft")).toBeInTheDocument();
+    expect(screen.getByText("503: upstream reset")).toBeInTheDocument();
+    expect(mocks.streamChat).toHaveBeenCalledTimes(1);
+    view.unmount();
   });
 
   it("materializes the exact-id fallback before unlocking and keeps it through a stale snapshot", async () => {
@@ -665,6 +689,92 @@ describe("ChatApp stream reconciliation", () => {
       await screen.findByText("Stream completed without message metadata."),
     ).toBeInTheDocument();
     expect(mocks.streamChat).toHaveBeenCalledTimes(2);
+  });
+
+  it("adopts durable IDs from history after an accepted no-metadata stream", async () => {
+    mocks.listMessages
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        chatMessage("accepted-user", "user", "hello from draft"),
+        chatMessage("accepted-assistant", "assistant", "", "streaming"),
+      ])
+      .mockResolvedValueOnce([
+        chatMessage("accepted-user", "user", "hello from draft"),
+        chatMessage(
+          "accepted-assistant",
+          "assistant",
+          "Authoritative recovered reply",
+        ),
+      ]);
+    const handlers = captureStreamHandlers();
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    act(() => {
+      handlers().onDelta("Buffered without metadata");
+      handlers().onError("Stream ended unexpectedly.", {
+        accepted: false,
+        persistenceFailed: false,
+        definitePreAcceptance: false,
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("Buffered without metadata")).toHaveAttribute(
+        "data-message-id",
+        "accepted-assistant",
+      ),
+    );
+    expect(screen.getAllByText("Buffered without metadata")).toHaveLength(1);
+    expect(screen.getByText("hello from draft")).toHaveAttribute(
+      "data-message-id",
+      "accepted-user",
+    );
+    expect(document.querySelector('[data-message-id^="tmp-"]')).toBeNull();
+    expect(await screen.findByText("Authoritative recovered reply")).toHaveAttribute(
+      "data-message-id",
+      "accepted-assistant",
+    );
+    expect(mocks.streamChat).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a suppressed command honest without inventing assistant metadata", async () => {
+    mocks.listMessages
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        chatMessage("summary-user", "user", "hello from draft"),
+      ]);
+    const handlers = captureStreamHandlers();
+    const user = userEvent.setup();
+    const view = render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    act(() => {
+      handlers().onError(
+        "The command result was superseded before it could be saved.",
+        {
+          accepted: false,
+          persistenceFailed: false,
+          definitePreAcceptance: false,
+        },
+      );
+    });
+
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-message-id="summary-user"]'),
+      ).toHaveTextContent("hello from draft"),
+    );
+    expect(
+      screen.getByText(
+        "The command result was superseded before it could be saved.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      document.querySelector('[data-message-id^="tmp-assistant-"]'),
+    ).toBeNull();
+    view.unmount();
   });
 
   it("deduplicates same-id rows and retains only finalized activity", async () => {
@@ -768,8 +878,72 @@ describe("ChatApp stream reconciliation", () => {
     );
   });
 
-  it("cancels bounded reconciliation work when unmounted", async () => {
-    mocks.listMessages.mockResolvedValue([]);
+  it("ignores an in-flight old-turn poll after the next same-session turn starts", async () => {
+    let resolveOldPoll!: (messages: ReturnType<typeof chatMessage>[]) => void;
+    const handlers: StreamHandlers[] = [];
+    mocks.streamChat.mockImplementation(
+      (_input: unknown, nextHandlers: StreamHandlers) => {
+        handlers.push(nextHandlers);
+        return vi.fn();
+      },
+    );
+    mocks.listMessages
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        chatMessage("user-1", "user", "hello from draft"),
+        chatMessage("assistant-1", "assistant", "", "streaming"),
+      ])
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveOldPoll = resolve;
+          }),
+      );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    act(() => {
+      handlers[0].onMetadata({
+        userMessageId: "user-1",
+        assistantMessageId: "assistant-1",
+      });
+      handlers[0].onDelta("First fallback");
+      handlers[0].onDone();
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send draft message" })).toBeEnabled(),
+    );
+    await waitFor(
+      () => expect(mocks.listMessages).toHaveBeenCalledTimes(3),
+      { timeout: 1000 },
+    );
+
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    expect(handlers).toHaveLength(2);
+    await act(async () => {
+      resolveOldPoll([
+        chatMessage("user-1", "user", "hello from draft"),
+        chatMessage("assistant-1", "assistant", "Old poll must be ignored"),
+      ]);
+      await Promise.resolve();
+    });
+    expect(screen.queryByText("Old poll must be ignored")).toBeNull();
+    expect(screen.getByText("First fallback")).toBeInTheDocument();
+    expect(mocks.streamChat).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores an in-flight reconciliation result after unmount", async () => {
+    let resolvePoll!: (messages: ReturnType<typeof chatMessage>[]) => void;
+    mocks.listMessages
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolvePoll = resolve;
+          }),
+      );
     const handlers = captureStreamHandlers();
     const user = userEvent.setup();
     const view = render(<ChatApp />);
@@ -786,9 +960,17 @@ describe("ChatApp stream reconciliation", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Send draft message" })).toBeEnabled(),
     );
-    const callsBeforeUnmount = mocks.listMessages.mock.calls.length;
+    await waitFor(
+      () => expect(mocks.listMessages).toHaveBeenCalledTimes(3),
+      { timeout: 1000 },
+    );
     view.unmount();
-    await new Promise((resolve) => window.setTimeout(resolve, 300));
-    expect(mocks.listMessages).toHaveBeenCalledTimes(callsBeforeUnmount);
+    await act(async () => {
+      resolvePoll([
+        chatMessage("assistant-1", "assistant", "Must not merge after unmount"),
+      ]);
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    });
+    expect(mocks.listMessages).toHaveBeenCalledTimes(3);
   });
 });

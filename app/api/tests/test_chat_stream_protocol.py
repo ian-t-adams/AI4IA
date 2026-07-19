@@ -11,7 +11,7 @@ from ai4ia_api.auth.base import AuthenticatedUser
 from ai4ia_api.catalog import DeploymentOption
 from ai4ia_api.gateway.client import ModelGatewayError
 from ai4ia_api.routers import chat as chat_router
-from ai4ia_api.routers.chat import _agentic_stream
+from ai4ia_api.routers.chat import _agentic_stream, _stream_with_placeholder
 from ai4ia_api.sessions.models import Message, MessageRole, MessageStatus
 
 
@@ -129,6 +129,41 @@ def test_agentic_and_local_streams_emit_durable_ids_first(client, monkeypatch):
     assert events.index("add:assistant") < events.index("done")
 
 
+def test_superseded_summary_stream_has_no_assistant_metadata_or_done(client, monkeypatch):
+    session_id = _create_session(client)
+    for content in (
+        "first real user turn with enough detail to summarize",
+        "second real user turn with additional context for the summary",
+    ):
+        response = client.post(
+            "/api/chat",
+            json={"sessionId": session_id, "content": content, "stream": False},
+        )
+        assert response.status_code == 200
+
+    async def suppress_reply(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(
+        client.app.state.session_repo,
+        "add_message_if_summary_version",
+        suppress_reply,
+    )
+    response = client.post(
+        "/api/chat",
+        json={"sessionId": session_id, "content": "/summarize", "stream": True},
+    )
+    payloads = _sse_payloads(response.text)
+
+    assert len(payloads) == 1
+    assert json.loads(payloads[0]) == {
+        "error": "The command result was superseded before it could be saved.",
+        "persistenceSuppressed": True,
+    }
+    assert "[DONE]" not in payloads
+    assert "metadata" not in payloads[0]
+
+
 def test_persistence_failure_is_explicit_and_never_reports_done(client, monkeypatch):
     session_id = _create_session(client)
     repo = client.app.state.session_repo
@@ -235,6 +270,111 @@ async def test_agentic_stream_close_persists_cancelled_state():
     )
     assert "metadata" in await anext(stream)
     await stream.aclose()
+    assert repo.persisted[-1].status is MessageStatus.cancelled
+
+
+@pytest.mark.asyncio
+async def test_unstarted_stream_does_not_persist_placeholder():
+    class Repo:
+        def __init__(self) -> None:
+            self.added: list[Message] = []
+
+        async def add_message(self, _user_id, message):
+            self.added.append(message)
+            return message
+
+    async def body():
+        yield "data: never\n\n"
+
+    repo = Repo()
+    assistant = Message(
+        sessionId="session",
+        userId="user",
+        role=MessageRole.assistant,
+        status=MessageStatus.streaming,
+    )
+    stream = _stream_with_placeholder(
+        repo=repo,  # type: ignore[arg-type]
+        user_id="user",
+        assistant=assistant,
+        events=body(),
+    )
+    await stream.aclose()
+    assert repo.added == []
+
+
+@pytest.mark.asyncio
+async def test_placeholder_failure_is_an_explicit_stream_error():
+    class Repo:
+        async def add_message(self, _user_id, _message):
+            raise RuntimeError("store unavailable")
+
+    async def body():
+        yield "data: never\n\n"
+
+    assistant = Message(
+        sessionId="session",
+        userId="user",
+        role=MessageRole.assistant,
+        status=MessageStatus.streaming,
+    )
+    stream = _stream_with_placeholder(
+        repo=Repo(),  # type: ignore[arg-type]
+        user_id="user",
+        assistant=assistant,
+        events=body(),
+    )
+    payload = json.loads((await anext(stream)).removeprefix("data: "))
+    assert payload == {
+        "error": "The reply could not be initialized.",
+        "persistenceFailed": True,
+    }
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_before_first_event_finalizes_owned_placeholder():
+    class Repo:
+        def __init__(self) -> None:
+            self.added: list[Message] = []
+            self.persisted: list[Message] = []
+
+        async def add_message(self, _user_id, message):
+            self.added.append(message.model_copy(deep=True))
+            return message
+
+        async def upsert_message(self, _user_id, message):
+            self.persisted.append(message.model_copy(deep=True))
+            return message
+
+    body_started = asyncio.Event()
+
+    async def body():
+        body_started.set()
+        await asyncio.sleep(60)
+        yield "data: never\n\n"
+
+    repo = Repo()
+    assistant = Message(
+        sessionId="session",
+        userId="user",
+        role=MessageRole.assistant,
+        status=MessageStatus.streaming,
+    )
+    stream = _stream_with_placeholder(
+        repo=repo,  # type: ignore[arg-type]
+        user_id="user",
+        assistant=assistant,
+        events=body(),
+    )
+    first_event = asyncio.create_task(anext(stream))
+    await body_started.wait()
+    first_event.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_event
+
+    assert repo.added[-1].status is MessageStatus.streaming
     assert repo.persisted[-1].status is MessageStatus.cancelled
 
 
