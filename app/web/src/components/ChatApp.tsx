@@ -486,11 +486,16 @@ export function ChatApp() {
   // racing to create its OWN session, under different model/prompt/agent/
   // tools/docs, that resolves after an earlier (differently-configured)
   // candidate already activated -- and let the later, mismatched caller
-  // supersede rather than silently inherit config it never asked for. Only
-  // ever consulted while sessionIdRef.current is non-null (activation is a
-  // one-shot event per generation prior to that), so this never second-
-  // guesses an already-established, in-use conversation -- only the narrow
-  // window where two brand-new candidate sessions are still racing.
+  // supersede rather than silently inherit config it never asked for. This
+  // key mismatch alone is NOT sufficient to gate supersession, though: it
+  // only tells you the candidate is configured differently, not whether the
+  // currently-active session has already been genuinely used. That's what
+  // currentSessionInUse and consumedSessionIdRef/activeSessionConsumed (see
+  // their declarations, consulted together in ensureSession's
+  // settingsMismatch) are for -- together they ensure this never
+  // second-guesses an already-established, in-use-or-consumed conversation
+  // -- only the narrow window where two brand-new, still-unconsumed
+  // candidate sessions are racing.
   const activeIntentKeyRef = useRef<string | null>(null);
   // The sequence number (see the creatingRef comment) of whichever entry
   // most recently activated -- set synchronously in the SAME activation
@@ -504,6 +509,28 @@ export function ChatApp() {
   // activeIntentKeyRef on navigation for the same reason: a new selection
   // generation has nothing legitimate left to compare against.
   const activeActivationSequenceRef = useRef(0);
+  // Records the id of whichever session most recently had REAL content
+  // committed to it: a send()'s stream actually starting, a completed
+  // upload, a voice-turn persist, or a full selectSession() navigation to
+  // an existing conversation. Unlike streamingSessionIdRef/uploadTargetsRef
+  // (which only signal "in use" for as long as that activity is literally
+  // still in flight, and stop the instant it ends) this is never cleared
+  // back once set for a given id -- it simply stops matching
+  // sessionIdRef.current the moment a genuinely DIFFERENT session becomes
+  // active, and createSession() never reissues an id, so no explicit reset
+  // is ever needed. This closes the window where currentSessionInUse's
+  // real-time signal has already vanished -- the instant a stream/upload/
+  // persist finishes, or before one has even started for a silently-viewed
+  // pre-existing conversation -- while the session's real, user-visible
+  // content stays fully displayed: settingsMismatch (see ensureSession)
+  // must never be allowed to swap sessionIdRef.current/activeId away from
+  // such a session merely because nothing HAPPENS to be actively streaming
+  // at that exact instant, since the mismatch-supersession path only ever
+  // patches the id pointer -- it never reloads messages/documents the way
+  // selectSession's full transition does -- and would otherwise leave a
+  // stale, already-displayed transcript visible under a new, unrelated
+  // session header.
+  const consumedSessionIdRef = useRef<string | null>(null);
   const selectionGenerationRef = useRef(0);
   const modelMutationGenerationRef = useRef(0);
   const capabilityGenerationRef = useRef(0);
@@ -631,6 +658,11 @@ export function ChatApp() {
         // in the library and stay available to the agent regardless.
         setLibraryDocs([]);
         setSessions(all);
+        // A completed, generation-gated navigation to a real, existing
+        // conversation is immediately "committed" -- see consumedSessionIdRef
+        // -- even before the user sends anything new in it, since msgs/docs
+        // are already genuinely loaded and displayed.
+        consumedSessionIdRef.current = id;
         const s = all.find((x) => x.id === id);
         if (s) {
           if (s.model) setSelectedModel(s.model);
@@ -1012,6 +1044,28 @@ export function ChatApp() {
           Array.from(uploadTargetsRef.current.values()).some(
             (target) => target.sessionId === sessionIdRef.current,
           ));
+      // currentSessionInUse only ever reflects activity literally still IN
+      // FLIGHT at this exact instant -- it goes false again the moment a
+      // stream/upload finishes, even though the session's real content stays
+      // fully displayed. consumedSessionIdRef (see its declaration) is the
+      // STICKY counterpart: once ANY real content has ever been committed to
+      // sessionIdRef.current -- a finished or still-running send, a
+      // finished or still-running upload, a voice-turn persist, or a full
+      // selectSession() navigation -- it must stay protected from
+      // settingsMismatch for as long as it remains the active session,
+      // regardless of whether something happens to be actively streaming at
+      // the exact moment a differently-keyed competitor's mismatch check
+      // runs. Without this, a late-resolving, differently-keyed creation
+      // could supersede a session the instant its stream/upload/persist
+      // completes (or before one has even started for a silently-viewed
+      // pre-existing conversation), silently patching activeId/
+      // sessionIdRef.current to a new session while the old one's real,
+      // already-displayed transcript stays on screen -- the mismatch path
+      // never reloads messages/documents the way selectSession's full
+      // transition does.
+      const activeSessionConsumed =
+        sessionIdRef.current !== null &&
+        sessionIdRef.current === consumedSessionIdRef.current;
       // At most one *eligible* caller sharing this entry ever gets to
       // attempt a cross-key mismatch supersession -- see the
       // mismatchClaimed comment on creatingRef. Gated on eligibleToActivate,
@@ -1054,6 +1108,7 @@ export function ChatApp() {
         canClaimMismatch &&
         !noSessionActiveYet &&
         !currentSessionInUse &&
+        !activeSessionConsumed &&
         activeIntentKeyRef.current !== intentKey &&
         entry.sequence > activeActivationSequenceRef.current;
       if (eligibleToActivate && (noSessionActiveYet || settingsMismatch)) {
@@ -1158,6 +1213,11 @@ export function ChatApp() {
         }
         const sid = target.sessionId ?? await ensureSession();
         target.sessionId = sid;
+        // A queued upload targeting this session is real, user-visible
+        // activity -- see consumedSessionIdRef -- so it must stick even
+        // after the upload finishes and uploadTargetsRef's real-time entry
+        // for it is gone.
+        consumedSessionIdRef.current = sid;
         setUploads((current) =>
           current.map((item) =>
             item.id === uploadId ? { ...item, sessionId: sid } : item,
@@ -1327,6 +1387,14 @@ export function ChatApp() {
     ) => {
       if (turns.length === 0) return;
       const capturedGeneration = selectionGenerationRef.current;
+      // The append itself is never aborted -- see the comment on this
+      // function's declaration -- so once turns.length > 0 is confirmed,
+      // real backend content for sessionId WILL be committed regardless of
+      // any later discard. Mark it consumed synchronously, before the
+      // await, so no differently-keyed competitor's mismatch check can ever
+      // observe a window where this session looks unconsumed merely
+      // because the append hasn't resolved yet.
+      consumedSessionIdRef.current = sessionId;
       const isCurrent = () =>
         isCurrentSessionGeneration(
           sessionId,
@@ -1772,6 +1840,12 @@ export function ChatApp() {
       // streamingRef.current, which was already true before this call had
       // any session id at all.
       streamingSessionIdRef.current = sessionId;
+      // The optimistic user message below is about to become real,
+      // user-visible content for this session -- mark it consumed (see
+      // consumedSessionIdRef) so it stays protected from settingsMismatch
+      // even after this stream finishes and streamingSessionIdRef's
+      // real-time signal for it goes away again.
+      consumedSessionIdRef.current = sessionId;
 
       const userCreatedAt = new Date();
       const optimisticUser: Message = {

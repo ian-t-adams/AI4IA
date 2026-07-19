@@ -1749,6 +1749,271 @@ describe("ChatApp uploads", () => {
     expect(mocks.streamChat).toHaveBeenCalledTimes(1);
   });
 
+  // Regression (voice acceptance round 17, HIGH): currentSessionInUse only
+  // ever protects a session for as long as something is LITERALLY still
+  // streaming/uploading into it -- it goes false again the instant that
+  // finishes, even though the session's real, already-committed content
+  // stays fully displayed. A completed voice persist never touches
+  // streamingSessionIdRef/uploadTargetsRef at all, so before this round's
+  // fix a later-resolving, differently-keyed creation could still supersede
+  // the session hours after voice's real content had already been saved and
+  // shown, flipping the header/sidebar to a new, unrelated session while
+  // the just-persisted transcript stayed on screen underneath it.
+  // consumedSessionIdRef/activeSessionConsumed close that gap by staying
+  // sticky once real content has ever been committed, independent of
+  // whether anything is actively in flight at the moment a competitor
+  // resolves.
+  it("keeps a session active after voice has fully persisted real content to it, against a later-resolving, differently-keyed send() creation", async () => {
+    const resolvers: Array<() => void> = [];
+    const created = [session("A"), session("B")];
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          const value = created[resolvers.length];
+          resolvers.push(() => resolve(value));
+        }),
+    );
+    mocks.appendVoiceTurns.mockResolvedValueOnce([
+      {
+        id: "m1",
+        sessionId: "A",
+        userId: "u1",
+        role: "user",
+        content: "Hello from voice",
+        status: "complete",
+        model: null,
+        agent: null,
+        createdAt: "",
+        source: "voice",
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    // Voice starts creating a session under the current (blank) settings.
+    const voiceCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+      persistConversation: (
+        sessionId: string,
+        conversationId: string,
+        turns: { role: "user" | "assistant"; text: string }[],
+        isStillValid: () => boolean,
+      ) => Promise<void>;
+    };
+    let voiceResult: Promise<string> | undefined;
+    act(() => {
+      voiceResult = voiceCall.ensureSession(() => true);
+    });
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+
+    // The user edits the draft system prompt and sends a real message --
+    // send()'s own ensureSession() call, under genuinely different
+    // settings, fires its own concurrent creation rather than sharing
+    // voice's.
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.type(screen.getByLabelText("System prompt"), "Send prompt");
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(2));
+
+    // Voice's own creation resolves first -- nothing is active yet, so
+    // this is a trivial noSessionActiveYet activation.
+    await act(async () => {
+      resolvers[0]();
+      await voiceResult;
+    });
+    expect(await voiceResult).toBe("A");
+    expect(
+      await screen.findByText("Session A", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+
+    // Voice's turn is now FULLY persisted -- real, saved backend content --
+    // well before send's differently-keyed creation resolves. Nothing is
+    // currently streaming or uploading at this instant, so only the new,
+    // sticky protection can save this case.
+    await act(async () => {
+      await voiceCall.persistConversation(
+        "A",
+        "conversation-1",
+        [{ role: "user", text: "Hello from voice" }],
+        () => true,
+      );
+    });
+    expect(await screen.findByText("Hello from voice")).toBeInTheDocument();
+
+    // send()'s differently-keyed creation resolves NOW, long after voice's
+    // persist has already fully landed.
+    await act(async () => {
+      resolvers[1]();
+    });
+
+    // send() must have proceeded into "A" -- the session that's genuinely
+    // already established and holds voice's saved turn -- never into an
+    // orphaned "B" that nothing shows.
+    await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+    expect(mocks.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "A" }),
+      expect.anything(),
+    );
+    expect(
+      screen.getByText("Session A", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Session B", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).not.toBeInTheDocument();
+    // Voice's real, previously-saved content must still be visible.
+    expect(screen.getByText("Hello from voice")).toBeInTheDocument();
+  });
+
+  // Regression (voice acceptance round 17, HIGH): finalize() clears
+  // streamingSessionIdRef.current -- the ONLY thing currentSessionInUse
+  // depended on -- essentially at its very start, well BEFORE awaiting
+  // api.listMessages() and committing the final reconciled transcript.
+  // Before this round's fix, a differently-keyed creation resolving inside
+  // that exact async gap would see currentSessionInUse already false (and
+  // nothing else protecting the session), win the mismatch, and silently
+  // flip activeId to the new, unrelated session while send()'s own
+  // finalize() was still mid-flight -- landing its reconciled content under
+  // a UI nominally showing something else. consumedSessionIdRef is set
+  // synchronously alongside streamingSessionIdRef, before any await, so it
+  // keeps protecting the session through this entire window.
+  it("keeps a real send()'s session active against a later, differently-keyed creation resolving inside finalize()'s async gap", async () => {
+    const resolvers: Array<() => void> = [];
+    const created = [session("SEND"), session("VOICE")];
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          const value = created[resolvers.length];
+          resolvers.push(() => resolve(value));
+        }),
+    );
+    let resolveListMessages!: (
+      value: Awaited<ReturnType<typeof mocks.listMessages>>,
+    ) => void;
+    mocks.listMessages.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveListMessages = resolve;
+        }),
+    );
+    // finalize()'s trailing refreshSessions() re-fetches the session list
+    // for its title lookup; include the newly-created sessions so the
+    // header's title doesn't fall back to "Untitled" once that lands.
+    mocks.listSessions.mockResolvedValue(created);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    // send() starts creating a session FIRST, under the current (blank)
+    // settings -- this is entry #1, the lower activation sequence number.
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(1));
+
+    // Only AFTER send()'s own creation is already in flight does the user
+    // edit settings and voice starts its own, later, differently-keyed
+    // creation -- entry #2, a HIGHER activation sequence number than
+    // send's. This ordering matters: the pre-existing round-15 guard
+    // (`entry.sequence > activeActivationSequenceRef.current`) alone
+    // already blocks any LOWER-sequence (earlier-created) challenger from
+    // ever superseding a HIGHER-sequence active session, regardless of
+    // consumedSessionIdRef. To actually exercise this round's new sticky
+    // protection in isolation, the challenger must be the one created
+    // later (and thus hold the higher sequence) while still losing the
+    // race to be the one that actually activates first.
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.type(screen.getByLabelText("System prompt"), "Voice prompt");
+    const voiceCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let voiceResult: Promise<string> | undefined;
+    act(() => {
+      voiceResult = voiceCall.ensureSession(() => true);
+    });
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(2));
+
+    // send()'s own creation (entry #1, lower sequence) resolves first,
+    // activates, and begins streaming.
+    await act(async () => {
+      resolvers[0]();
+    });
+    await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+    expect(mocks.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "SEND" }),
+      expect.anything(),
+    );
+
+    // The assistant's response completes: onDone fires finalize(), which
+    // synchronously clears streamingSessionIdRef.current before awaiting
+    // listMessages (held open by resolveListMessages above).
+    const handlers = mocks.streamChat.mock.calls.at(-1)![1] as {
+      onDone: () => void;
+    };
+    act(() => {
+      handlers.onDone();
+    });
+
+    // Voice's differently-keyed creation (entry #2, HIGHER sequence than
+    // send's already-active entry) resolves NOW, inside finalize()'s async
+    // gap -- after streamingSessionIdRef.current was cleared but before
+    // listMessages resolves and the final content commits. Without this
+    // round's fix, nothing else would stop it: currentSessionInUse is
+    // already false and the sequence check passes (2 > 1).
+    await act(async () => {
+      resolvers[1]();
+      await voiceResult;
+    });
+
+    // Voice's own call must fall back to "SEND" -- the session that's
+    // genuinely already established and mid-finalize -- never its own
+    // orphaned "VOICE" session.
+    expect(await voiceResult).toBe("SEND");
+    expect(
+      screen.getByText("Session SEND", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Session VOICE", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).not.toBeInTheDocument();
+
+    // Let finalize()'s listMessages resolve and its reconciled content
+    // land -- it must land under "SEND", the session actually still shown.
+    await act(async () => {
+      resolveListMessages([
+        {
+          id: "assistant-1",
+          sessionId: "SEND",
+          userId: "assistant",
+          role: "assistant",
+          content: "Final assistant reply",
+          status: "complete",
+          model: "gpt-5.2",
+          agent: null,
+          createdAt: "",
+        },
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(await screen.findByText("Final assistant reply")).toBeInTheDocument();
+    expect(
+      screen.getByText("Session SEND", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+  });
+
   // Regression (voice acceptance round 13, HIGH): a hung createSession()
   // network call (dropped connection, backend stall) previously stayed
   // cached in creatingRef forever -- a later Retry (after voice's own
