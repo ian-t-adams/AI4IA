@@ -57,14 +57,14 @@ flowchart TB
   API --> Search["Azure AI Search<br/>(optional retrieval)"]
   API --> CU["Content Understanding"]
   API --> Mon["Azure Monitor / App Insights"]
-  API --> Proxy["SimpleL7Proxy<br/>queue + delayed requeue"]
-  Proxy --> APIM["APIM<br/>catalog routing + MI"]
-  API -. "Realtime relay" .-> APIM
+  API -->|"proxy-ingress key"| Proxy["SimpleL7Proxy<br/>queue + delayed requeue"]
+  Proxy -->|"model-API key"| APIM["Shared apim-mcp<br/>Basic v2 + scoped keys + MI"]
+  API -. "realtime key" .-> APIM
+  API -. "official MCP key" .-> APIM
   APIM --> EUS2["Foundry<br/>East US 2"]
   APIM --> SWC["Foundry<br/>Sweden Central"]
   APIM --> WUS["Foundry<br/>West US"]
-  API --> MCPGW["MCP APIM<br/>front door"]
-  MCPGW --> Toolbox["Foundry toolbox<br/>(official MCP)"]
+  APIM --> Toolbox["Curated upstream<br/>MCP servers"]
   API -. "SSRF-guarded" .-> BYO["User BYO<br/>MCP servers"]
           </pre>
           <figcaption>If a diagram does not render, its Mermaid source is shown above and also lives in <span class="mono">docs/architecture.md</span>.</figcaption>
@@ -85,8 +85,8 @@ flowchart LR
     ProxyCA["ca-proxy · SimpleL7Proxy"]
   end
   subgraph Gateways["API Management"]
-    Apim["apim · model gateway"]
-    ApimMcp["apim-mcp · MCP gateway"]
+    Apim["apim · Consumption rollback<br/>(inactive, no traffic)"]
+    ApimMcp["apim-mcp · shared model/realtime/MCP gateway"]
     Apic["API Center · tool catalog"]
   end
   subgraph Compute["Container Apps env + registry"]
@@ -115,10 +115,10 @@ flowchart LR
     Amw["Monitor workspace"]
   end
   WebCA --> ApiCA
-  ApiCA --> ProxyCA --> Apim --> AI
-  ApiCA -. "Voice Live WS relay" .-> Apim
-  ApiCA --> ApimMcp --> AI
+  ApiCA --> ProxyCA --> ApimMcp --> AI
+  ApiCA -. "azure_openai + speech_voice_live<br/>realtime WS (distinct keys)" .-> ApimMcp
   ApimMcp -. inventory .-> Apic
+  ApimMcp -. "inactive rollback plane" .-> Apim
   ApiCA --> Data
   ApiCA --> Sec
   ApiCA --> Obs
@@ -131,9 +131,10 @@ flowchart LR
     <section style="padding-top:6px">
       <div class="container">
         <h2 class="section-title">3 · Identity &amp; RBAC</h2>
-        <p class="section-sub">Azure service data planes use managed identities and scoped roles. Two independently
-          scoped APIM subscription keys protect the API-to-proxy/realtime and proxy-to-model hops and remain Container
-          App secrets. The API identity is the most privileged; see
+        <p class="section-sub">Azure service data planes use managed identities and scoped roles. Three
+          independently scoped APIM subscription keys separate the proxy-ingress (FastAPI to proxy),
+          proxy-to-model, and realtime (FastAPI to APIM) hops, plus an optional fourth for Speech Voice
+          Live, and all remain Container App secrets. The API identity is the most privileged; see
           <a href="requirements.html">Requirements → Permissions</a> for the full map.</p>
         <figure class="diagram">
           <pre class="mermaid">
@@ -150,6 +151,7 @@ flowchart LR
   idproxy -->|"App Config Data Reader"| Ac
   idapi -->|"AcrPull"| Acr
   apim["APIM (system MI)"] -->|"OpenAI User + Cognitive Services User"| Foundry["Foundry accounts"]
+  apim -->|"Cognitive Services User + Foundry User"| SpeechAcct["Selected AIServices account<br/>(Speech Voice Live)"]
           </pre>
         </figure>
       </div>
@@ -167,7 +169,7 @@ flowchart TB
   Turn["Chat turn executor<br/>(per-turn budget + approvals)"]
   Turn --> Official["Official plane (trusted, pre-approved)"]
   Turn --> Byo["BYO plane (untrusted, approval-gated)"]
-  Official --> ApimMcp["MCP APIM front door<br/>(Basic v2 + subscription key)"]
+  Official --> ApimMcp["Shared apim-mcp APIM<br/>(Basic v2 + MCP-only product key)"]
   ApimMcp --> Curated["Curated upstream MCP servers<br/>(infra/mcp-servers.json)"]
   Byo -. "SSRF guard (DNS-rebind re-check)" .-> UserSrv["Per-user MCP servers"]
   UserSrv --> Kv["Per-user secrets in Key Vault"]

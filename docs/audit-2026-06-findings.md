@@ -280,6 +280,18 @@ liveness/readiness/startup probes. Result: ACA falls back to default TCP checks 
 revision can take traffic before the app reports ready. `infra/modules/api.bicep`,
 `web.bicep`, `gateway.bicep`.
 
+**Update (AI gateway/proxy routing audit):** `gateway.bicep`'s proxy container app
+already carries explicit Startup/Liveness/Readiness HTTP probes (`/startup`,
+`/liveness`, `/readiness`) as of this audit — that part of the finding is stale.
+`api.bicep`'s `apiApp` container was still missing probes; fixed by wiring HTTP
+Liveness/Readiness probes to the existing unauthenticated `/health/live` and
+`/health/ready` routes (verified no auth dependency or middleware gates them, so ACA's
+credential-less probe requests won't 401-loop the revision). No Startup probe was
+added for the API — ACA's documented per-type default (TCP on the ingress port,
+`failureThreshold: 240`) is sufficient since the app has no separate warm-up endpoint.
+`web.bicep` was out of this audit's assigned scope and **remains open** — same fix
+pattern applies there whenever it's picked up.
+
 ### 6.2 `[NEW]` `MEDIUM` — Foundry local (key) auth left enabled
 
 `infra/modules/foundry.bicep:15` defaults `disableLocalAuth = false`, and

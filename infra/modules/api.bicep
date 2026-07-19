@@ -752,6 +752,39 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
             memory: '1Gi'
           }
           env: apiEnv
+          // Wired to the app's own unauthenticated FastAPI probes
+          // (ai4ia_api/routers/health.py). No Startup probe is defined here;
+          // Container Apps applies its documented TCP-based default startup
+          // probe on the ingress port when a type is omitted, which is
+          // sufficient since the app has no separate warm-up endpoint.
+          probes: [
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/health/live'
+                port: 8080
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 10
+              periodSeconds: 30
+              timeoutSeconds: 3
+              failureThreshold: 3
+              successThreshold: 1
+            }
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/health/ready'
+                port: 8080
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              timeoutSeconds: 3
+              failureThreshold: 3
+              successThreshold: 1
+            }
+          ]
         }
       ]
       scale: {

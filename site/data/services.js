@@ -120,7 +120,7 @@ window.AI4IA_SERVICES = [
   {
     key: "apicenter", name: "API Center (private tool catalog)", azureType: "Microsoft.ApiCenter/services",
     group: "Gateway", icon: "📇", module: "apicenter.bicep", resourcePattern: "apic-ai4ia-*",
-    summary: "Inventories the 'official' MCP servers already fronted by the MCP APIM so they are discoverable and " +
+    summary: "Inventories the 'official' MCP servers already fronted by the shared APIM so they are discoverable and " +
       "governable as one private tool catalog — the same URLs Foundry agents can discover, with no second auth path.",
     identity: "n/a (populated by scripts/provision-private-tool-catalog.py)",
     docs: [["Azure API Center", "https://learn.microsoft.com/azure/api-center/overview"]],
