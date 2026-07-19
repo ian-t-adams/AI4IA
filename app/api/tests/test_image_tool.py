@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import uuid
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -83,8 +85,16 @@ def test_handler_generates_persists_sinks_and_meters(client):
     assert out["status"] == "generated"
     artifact_id = out["artifact_id"]
     assert out["model"] == "gpt-image-2"
-    # The base64 pixels never come back through the tool result (8 KB cap).
-    assert "b64" not in str(out).lower()
+    # The base64 pixels never come back through the tool result (8 KB cap): no
+    # known image-payload key carries the encoded pixels, and the actual
+    # encoded payload never appears in any value. (A prior
+    # `"b64" not in str(out).lower()` substring check over the whole dict was
+    # flaky: artifact_id is a random `uuid4().hex` string, and "b64" is
+    # itself a valid 3-hex-digit substring - e.g. "...7db646..." - that turns
+    # up by chance in roughly 1 of every ~140 random ids.)
+    forbidden_payload_keys = {"b64_json", "b64", "images_b64", "image_b64", "data"}
+    assert not forbidden_payload_keys & out.keys()
+    assert all(TINY_PNG_B64 not in str(value) for value in out.values())
 
     # A media reference was appended for the chat router to attach.
     assert len(sink) == 1
@@ -100,6 +110,36 @@ def test_handler_generates_persists_sinks_and_meters(client):
     # The call was metered into the usage ledger (rate/budget windows see it).
     summary = client.get("/api/usage", headers=headers).json()
     assert summary["totalRequests"] >= 1
+
+
+def test_handler_result_has_no_payload_leak_even_when_artifact_id_contains_b64(client):
+    """Regression: a CI run failed because a random `artifact_id` happened to
+    contain "b64" as a substring (observed: "7db646..."), tripping a prior
+    `"b64" not in str(out).lower()` check over the whole result dict.
+    `uuid4().hex` is lowercase hex (``0-9a-f``), and "b64" is itself a valid
+    3-hex-digit sequence, so it turns up by chance in roughly 1 of every ~140
+    random ids - this was never a real payload leak. Pin the reproduction so
+    the check can't silently regress to a whole-dict substring scan.
+    """
+    headers = {"X-Dev-User": "ian"}
+    uid = _internal_id(client, headers)
+    sink: list[MessageAttachment] = []
+    _, handlers = _build_capability(client, uid, sink)
+    handler = handlers[GENERATE_IMAGE_TOOL_NAME]
+
+    colliding_id = uuid.UUID(hex="7db646aaaaaaaaaaaaaaaaaaaaaaaaaa")
+    with patch("ai4ia_api.images.capability.uuid4", return_value=colliding_id):
+        out = asyncio.run(
+            handler({"prompt": "a red bird", "model": "gpt-image-2"}, ToolContext())
+        )
+
+    assert out["status"] == "generated"
+    assert out["artifact_id"] == colliding_id.hex
+    assert "b64" in out["artifact_id"]  # confirms this reproduces the collision
+    # The precise, non-flaky check: no payload key, no leaked pixel value.
+    forbidden_payload_keys = {"b64_json", "b64", "images_b64", "image_b64", "data"}
+    assert not forbidden_payload_keys & out.keys()
+    assert all(TINY_PNG_B64 not in str(value) for value in out.values())
 
 
 def test_handler_blocks_disabled_user(client):
