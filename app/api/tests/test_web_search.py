@@ -16,6 +16,7 @@ error mapping a fake SDK client); no network and no real key.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -261,7 +262,7 @@ async def test_image_search_happy_path_passes_filters():
 
 
 async def test_browse_happy_path_is_fenced_and_metered():
-    _, handlers, _, _, met = _caps(nonce="zz")
+    _, handlers, client, _, met = _caps(nonce="zz")
     res = await handlers[BROWSE_TOOL_NAME]({"url": "https://a.example/1"}, ctx=None)
     assert "error" not in res
     assert res["url"] == "https://a.example/1"
@@ -270,6 +271,58 @@ async def test_browse_happy_path_is_fenced_and_metered():
     assert "page body text" in res["content"]
     assert "untrusted" in res["note"]
     assert len(met.calls) == 1
+    # Cache-miss URLs must still be fetched: "fallback" only live-crawls when the
+    # URL isn't already indexed, so previously-cached URLs are unaffected while a
+    # URL the model needs to actually read no longer silently returns nothing.
+    assert client.calls[0]["live_crawl"] == "fallback"
+
+
+# --------------------------------------------------------------------------- #
+# Browse pending crawl (retry_after): must never be reported as fake success.
+# --------------------------------------------------------------------------- #
+async def test_browse_pending_crawl_is_not_reported_as_fake_success():
+    page = {
+        "url": "https://a.example/1",
+        "title": None,
+        "content": None,
+        "retry_after": 5.0,
+    }
+    _, handlers, client, _, met = _caps(FakeWebClient(page=page), nonce="zz")
+    res = await handlers[BROWSE_TOOL_NAME]({"url": "https://a.example/1"}, ctx=None)
+    assert "error" not in res
+    # No fenced (fake) content for a page that has not actually been fetched yet.
+    assert "content" not in res
+    assert "BEGIN RESULTS" not in str(res)
+    assert res["pending"] is True
+    assert res["retry_after_seconds"] == 5
+    assert "not ready" in res["note"] or "not been crawled" in res["note"]
+    # A crawl was genuinely (and billably) triggered, so it is still metered.
+    assert len(met.calls) == 1
+
+
+async def test_browse_pending_wait_floors_to_at_least_one_second():
+    page = {"url": "https://a.example/1", "title": None, "content": None, "retry_after": 0.0}
+    _, handlers, *_ = _caps(FakeWebClient(page=page))
+    res = await handlers[BROWSE_TOOL_NAME]({"url": "https://a.example/1"}, ctx=None)
+    assert res["pending"] is True
+    assert res["retry_after_seconds"] == 1
+
+
+async def test_browse_with_explicit_none_retry_after_is_unaffected():
+    # Confirms the pending branch is keyed off retry_after specifically, not off
+    # empty title/content — an explicit `retry_after: None` alongside real content
+    # takes the normal fenced-content path unchanged.
+    page = {
+        "url": "https://a.example/1",
+        "title": "Real Page",
+        "content": "real content",
+        "retry_after": None,
+    }
+    _, handlers, *_ = _caps(FakeWebClient(page=page))
+    res = await handlers[BROWSE_TOOL_NAME]({"url": "https://a.example/1"}, ctx=None)
+    assert "pending" not in res
+    assert "content" in res
+    assert "real content" in res["content"]
 
 
 # --------------------------------------------------------------------------- #
@@ -446,6 +499,96 @@ async def test_wrapper_normalizes_web_results():
     client = WebSearchClient(_settings(), sdk_client=_FakeSdkClient(web=_web))
     rows = await client.web_search("q", max_results=5)
     assert rows == [{"title": "T", "url": "https://u", "content": "C"}]
+
+
+# --------------------------------------------------------------------------- #
+# Wrapper (client.py): retry_after is preserved, never silently discarded, for
+# an in-progress on-demand crawl (the SDK's BrowseResponse.retryAfter field).
+# --------------------------------------------------------------------------- #
+async def test_wrapper_browse_preserves_retry_after_for_pending_crawl():
+    async def _browse(url, **kw):
+        # Per the SDK, title/content are not populated while a crawl is pending.
+        return SimpleNamespace(url=url, title=None, content=None, retryAfter="7")
+
+    client = WebSearchClient(_settings(), sdk_client=_FakeSdkClient(browse=_browse))
+    page = await client.browse("https://a.example/1", live_crawl="fallback")
+    assert page["title"] is None
+    assert page["content"] is None
+    assert page["retry_after"] == 7.0
+
+
+async def test_wrapper_browse_preserves_retry_after_for_iso8601_pending_crawl():
+    # The real Web IQ SDK reports BrowseResponse.retryAfter as an ISO-8601
+    # timestamp (e.g. "2026-04-15T05:52:10Z"), not a bare delta-seconds count.
+    # This must parse to a positive delay, not silently fall through to None
+    # (which would make the capability layer treat a pending crawl as "no wait
+    # needed" and fence the empty title/content as a fake successful fetch).
+    iso_retry_after = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+    async def _browse(url, **kw):
+        return SimpleNamespace(url=url, title=None, content=None, retryAfter=iso_retry_after)
+
+    client = WebSearchClient(_settings(), sdk_client=_FakeSdkClient(browse=_browse))
+    page = await client.browse("https://a.example/1", live_crawl="fallback")
+    assert page["title"] is None
+    assert page["content"] is None
+    assert page["retry_after"] is not None
+    assert 0.0 < page["retry_after"] <= 35.0
+
+
+async def test_wrapper_browse_retry_after_absent_when_content_ready():
+    async def _browse(url, **kw):
+        return SimpleNamespace(url=url, title="T", content="C", retryAfter=None)
+
+    client = WebSearchClient(_settings(), sdk_client=_FakeSdkClient(browse=_browse))
+    page = await client.browse("https://a.example/1")
+    assert page["content"] == "C"
+    assert page["retry_after"] is None
+
+
+async def test_wrapper_browse_ignores_unparseable_retry_after():
+    async def _browse(url, **kw):
+        return SimpleNamespace(url=url, title=None, content=None, retryAfter="garbage")
+
+    client = WebSearchClient(_settings(), sdk_client=_FakeSdkClient(browse=_browse))
+    page = await client.browse("https://a.example/1", live_crawl="fallback")
+    # Unparseable is treated the same as absent (None), never a crash or a made-up
+    # wait time; the capability layer still must not treat this as a fetched page
+    # since title/content are None (a separate, pre-existing "empty page" case).
+    assert page["retry_after"] is None
+
+
+async def test_iso8601_retry_after_is_honest_pending_end_to_end():
+    # Full-stack regression for the real SDK's ISO-8601 retryAfter shape: a fake
+    # low-level SDK response carrying that exact shape is fed through the REAL
+    # WebSearchClient.browse() (client.py) and then the REAL browse tool handler
+    # (capability.py) -- not a FakeWebClient stand-in for either layer. Before the
+    # fix, parse_retry_after returned None for this shape, so client.py dropped
+    # retry_after entirely and capability.py fenced the empty title/content as a
+    # fake successful "(untitled)" fetch. This proves the pending branch is now
+    # taken end-to-end for the actual wire format, not just for a synthetic
+    # already-parsed float.
+    iso_retry_after = (datetime.now(timezone.utc) + timedelta(seconds=42)).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+    async def _browse(url, **kw):
+        return SimpleNamespace(url=url, title=None, content=None, retryAfter=iso_retry_after)
+
+    real_client = WebSearchClient(_settings(), sdk_client=_FakeSdkClient(browse=_browse))
+    _, handlers, _, _, met = _caps(real_client, nonce="zz")
+    res = await handlers[BROWSE_TOOL_NAME]({"url": "https://a.example/1"}, ctx=None)
+    assert "error" not in res
+    assert "content" not in res
+    assert "BEGIN RESULTS" not in str(res)
+    assert res["pending"] is True
+    assert isinstance(res["retry_after_seconds"], int)
+    assert 0 < res["retry_after_seconds"] <= 45
+    assert "not ready" in res["note"] or "not been crawled" in res["note"]
+    # A crawl was genuinely (and billably) triggered, so it is still metered.
+    assert len(met.calls) == 1
 
 
 @pytest.mark.parametrize(

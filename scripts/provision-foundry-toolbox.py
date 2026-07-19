@@ -8,7 +8,11 @@ definition a new environment reproduces after infrastructure deploy.
 
 What it does
 ------------
-1. Loads + validates foundry/toolbox.manifest.json.
+1. Loads + validates foundry/toolbox.manifest.json: hand-written structural checks (name
+   pattern, at-most-one-unnamed-tool, ...) plus strict JSON Schema validation against
+   foundry/toolbox.manifest.schema.json (required nested fields per tool type, cardinality,
+   unknown-property rejection) when the optional ``jsonschema`` package is installed -- it ships
+   with the ``foundry`` extra, and ``--create`` refuses to run without it.
 2. Resolves the primary project endpoint (``--project-endpoint`` or the
    ``AZURE_FOUNDRY_PROJECT_ENDPOINT`` azd output).
 3. Prints the *plan*: the tools it will create, the toolbox **consumer** MCP URL, and a
@@ -60,19 +64,80 @@ _TYPE_TO_MODEL = {
     "openapi": "OpenApiToolboxTool",
     "toolbox_search_preview": "ToolboxSearchPreviewToolboxTool",
     "mcp": "MCPToolboxTool",
+    "a2a_preview": "A2APreviewToolboxTool",
+    "fabric_iq_preview": "FabricIQPreviewToolboxTool",
+    "reminder_preview": "ReminderPreviewToolboxTool",
+    "work_iq_preview": "WorkIQPreviewToolboxTool",
 }
 _ALLOWED_TOOL_TYPES = set(_TYPE_TO_MODEL)
 # camelCase manifest keys -> snake_case payload keys (only the ones that differ).
 _CAMEL_TO_SNAKE = {
     "serverLabel": "server_label",
     "serverUrl": "server_url",
+    "connectorId": "connector_id",
     "requireApproval": "require_approval",
     "projectConnectionId": "project_connection_id",
     "azureAiSearch": "azure_ai_search",
     "indexName": "index_name",
+    "indexAssetId": "index_asset_id",
+    "queryType": "query_type",
+    "topK": "top_k",
     "customSearchConfiguration": "custom_search_configuration",
     "instanceName": "instance_name",
+    "vectorStoreIds": "vector_store_ids",
+    "browserAutomationPreview": "browser_automation_preview",
+    "fileIds": "file_ids",
+    "memoryLimit": "memory_limit",
+    "networkPolicy": "network_policy",
+    "allowedDomains": "allowed_domains",
+    "securityScheme": "security_scheme",
+    "defaultParams": "default_params",
+    # round 7: common ToolConfig + newly-modeled per-type fields.
+    "toolConfigs": "tool_configs",
+    "additionalSearchText": "additional_search_text",
+    "userLocation": "user_location",
+    "searchContextSize": "search_context_size",
+    "maxNumResults": "max_num_results",
+    "rankingOptions": "ranking_options",
+    "scoreThreshold": "score_threshold",
+    "hybridSearch": "hybrid_search",
+    "embeddingWeight": "embedding_weight",
+    "textWeight": "text_weight",
+    "serverDescription": "server_description",
+    "allowedTools": "allowed_tools",
+    "deferLoading": "defer_loading",
+    "toolNames": "tool_names",
+    "readOnly": "read_only",
+    "baseUrl": "base_url",
+    "agentCardPath": "agent_card_path",
+    "sendCredentialsForAgentCard": "send_credentials_for_agent_card",
 }
+# `indexAssetId` -> `index_asset_id` (azure-ai-projects 2.3.0 AISearchIndexResource.index_asset_id)
+# IS mapped above as a documented, schema-enforced mutually-exclusive alternative to
+# indexName+projectConnectionId, even though no current Microsoft Learn doc for the Azure AI
+# Search tool demonstrates it (see foundry/toolbox.manifest.schema.json's azureAiSearch.indexes
+# description and docs/foundry-toolbox.md).
+# Manifest keys whose VALUE is an opaque, externally-authored payload that must be copied
+# verbatim -- never key-rewritten -- even though _convert_keys() otherwise recurses through
+# every nested dict/list. Keyed by the (parent key, key) pair so only the specific nesting we
+# mean is treated as opaque (a "spec" key appearing somewhere unrelated is unaffected).
+# `openapi.spec` is an arbitrary OpenAPI/JSON-Schema document describing someone else's API: its
+# property/schema names (e.g. a request parameter genuinely named `topK`) are that API's
+# contract, not AI4IA toolbox manifest config, so snake-casing them would silently corrupt the
+# spec the model calls against.
+_OPAQUE_NESTED_KEYS = {("openapi", "spec")}
+
+# Manifest keys whose VALUE is a map with caller-defined, arbitrary keys (tool names, or the `*`
+# catch-all) that must survive _convert_keys() verbatim -- never looked up in
+# _CAMEL_TO_SNAKE -- even though the map's own VALUES are still AI4IA-shaped config objects that
+# must keep being recursed into and snake_cased. This differs from _OPAQUE_NESTED_KEYS (which
+# stops recursion entirely because the whole subtree is someone else's document): here the keys
+# are opaque but each value (a ToolConfig: `pin`/`additionalSearchText`) is not. Without this, a
+# tool literally named e.g. `topK` -- which collides with an unrelated, real _CAMEL_TO_SNAKE entry
+# used for Azure AI Search's `indexes[].topK` -- would be silently renamed to `top_k`, making the
+# config apply to a nonexistent tool instead of the one actually named `topK`
+# (azure-ai-projects 2.3.0's ToolboxTool.tool_configs: "keys are tool names or `*`").
+_ARBITRARY_KEYED_MAP_FIELDS = {"toolConfigs"}
 
 
 # --------------------------------------------------------------------------------------
@@ -83,18 +148,53 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _require_array_or_absent(manifest: dict[str, Any], key: str, errors: list[str]) -> list[Any]:
+    """Return ``manifest[key]``, defaulting to ``[]`` only when the key is genuinely absent.
+
+    A bare ``manifest.get(key) or []`` looks equivalent but is not: it coerces ANY *falsy* value
+    actually present in the manifest (JSON ``null``, ``{}``, ``""``, ``false``, ``0``) into an
+    empty list *before* an ``isinstance`` check ever runs -- so ``{"tools": null}`` or
+    ``{"skills": {}}`` silently validated as "no tools/skills" instead of being reported as the
+    malformed manifest it is (round-12 finding: this let a schema-rejectable manifest pass the
+    no-``jsonschema`` fallback path and exit 0). Checking key presence (``key not in manifest``)
+    rather than the retrieved value's truthiness keeps "absent" (default to ``[]``, no error) and
+    "present but the wrong type -- including a present-but-falsy wrong type" (report an error)
+    distinguishable, which a truthiness check can never do since ``None``/absent are otherwise
+    indistinguishable via ``.get()``.
+    """
+    if key not in manifest:
+        return []
+    value = manifest[key]
+    if not isinstance(value, list):
+        errors.append(f"`{key}` must be a JSON array, got {type(value).__name__}.")
+        return []
+    return value
+
+
 def validate_manifest(manifest: dict[str, Any]) -> list[str]:
-    """Return a list of human-readable validation errors (empty => valid to provision)."""
+    """Return a list of human-readable validation errors (empty => valid to provision).
+
+    Type-safe by construction: a malformed root shape (not a JSON object, or `tools`/`skills`/
+    `connections` not arrays, or a non-object tool entry) produces a clean error here instead of
+    an ``AttributeError``/``TypeError``. This matters because ``main()`` runs the strict,
+    inherently type-safe ``validate_manifest_schema()`` (below) *first* and short-circuits on any
+    schema error -- but this function must still be safe to call on its own (e.g. when the
+    optional ``jsonschema`` dependency is not installed and it is the only check that runs).
+    """
     errors: list[str] = []
+    if not isinstance(manifest, dict):
+        errors.append(f"manifest must be a JSON object, got {type(manifest).__name__}.")
+        return errors
+
     name = manifest.get("name")
     if not isinstance(name, str) or not _SLUG_RE.match(name):
         errors.append("`name` must be a lowercase slug matching ^[a-z][a-z0-9-]{0,38}[a-z0-9]$ (2-40 chars, starts with a letter).")
     if not manifest.get("description"):
         errors.append("`description` is required and must be non-empty.")
 
-    tools = manifest.get("tools") or []
-    skills = manifest.get("skills") or []
-    connections = manifest.get("connections") or []
+    tools = _require_array_or_absent(manifest, "tools", errors)
+    skills = _require_array_or_absent(manifest, "skills", errors)
+    connections = _require_array_or_absent(manifest, "connections", errors)
     if not (tools or skills or connections):
         errors.append(
             "manifest is inert: add at least one of `tools`, `skills`, or `connections` "
@@ -103,6 +203,9 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
 
     unnamed = 0
     for i, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            errors.append(f"tools[{i}] must be a JSON object, got {type(tool).__name__}.")
+            continue
         ttype = tool.get("type")
         if ttype not in _ALLOWED_TOOL_TYPES:
             errors.append(f"tools[{i}].type '{ttype}' is not one of {sorted(_ALLOWED_TOOL_TYPES)}.")
@@ -115,19 +218,88 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
             f"{unnamed} tools have no identifier; the service allows at most ONE tool total without "
             "a `name` (or `serverLabel` for mcp) -- give every other tool a unique `name`."
         )
+
+    # Type-safe by construction, same as the `tools[]` loop above: without this, a malformed
+    # entry (`skills: [null]`, a non-object connection, a missing/blank/non-string `name`) sails
+    # through here with zero errors -- `skills`/`connections` were never per-entry validated -- and
+    # then crashes downstream the first time something actually subscripts the entry: `main()`'s
+    # dry-run summary print (`s["name"] for s in manifest.get("skills") or []`) and
+    # `to_azd_yaml()`'s `s["name"]`/`c["name"]` renders both assume every entry is a dict with a
+    # usable `name`. This is the ONLY check that runs when the optional `jsonschema` dependency is
+    # not installed (see this function's docstring), so it must catch these shapes itself rather
+    # than relying on `foundry/toolbox.manifest.schema.json`.
+    for i, skill in enumerate(skills):
+        if not isinstance(skill, dict):
+            errors.append(f"skills[{i}] must be a JSON object, got {type(skill).__name__}.")
+            continue
+        skill_name = skill.get("name")
+        if not isinstance(skill_name, str) or not skill_name:
+            errors.append(f"skills[{i}].name is required and must be a non-empty string.")
+        version = skill.get("version")
+        if version is not None and not isinstance(version, str):
+            errors.append(f"skills[{i}].version must be a string if present, got {type(version).__name__}.")
+
+    for i, conn in enumerate(connections):
+        if not isinstance(conn, dict):
+            errors.append(f"connections[{i}] must be a JSON object, got {type(conn).__name__}.")
+            continue
+        conn_name = conn.get("name")
+        if not isinstance(conn_name, str) or not conn_name:
+            errors.append(f"connections[{i}].name is required and must be a non-empty string.")
+
     return errors
+
+
+_MANIFEST_SCHEMA_PATH = REPO_ROOT / "foundry" / "toolbox.manifest.schema.json"
+
+
+def validate_manifest_schema(manifest: dict[str, Any]) -> list[str] | None:
+    """Validate ``manifest`` against foundry/toolbox.manifest.schema.json.
+
+    Returns ``None`` if the optional ``jsonschema`` dependency is not installed (callers decide
+    how strict to be about that -- see ``main()``: ``--create`` requires it, the dependency-free
+    dry run only best-effort validates). Otherwise returns a list of human-readable error strings
+    (empty => schema-valid). This is the strict, per-tool-type structural check (required nested
+    fields, cardinality, no unknown properties) that ``validate_manifest`` above does not cover;
+    CI's separate `check-jsonschema` step lints the same schema but the provisioner did not use
+    to apply it itself before constructing SDK models.
+    """
+    try:
+        import jsonschema
+    except ImportError:
+        return None
+    schema = json.loads(_MANIFEST_SCHEMA_PATH.read_text(encoding="utf-8"))
+    validator = jsonschema.Draft7Validator(schema)
+    errors = sorted(validator.iter_errors(manifest), key=lambda e: list(e.path))
+    return [f"{'/'.join(str(p) for p in e.path) or '<root>'}: {e.message}" for e in errors]
 
 
 def _to_snake(key: str) -> str:
     return _CAMEL_TO_SNAKE.get(key, key)
 
 
-def _convert_keys(value: Any) -> Any:
-    """Recursively rewrite camelCase manifest keys to the API's snake_case."""
+def _convert_keys(value: Any, *, parent_key: str | None = None) -> Any:
+    """Recursively rewrite camelCase manifest keys to the API's snake_case.
+
+    ``(parent_key, key)`` pairs in ``_OPAQUE_NESTED_KEYS`` (currently just ``openapi.spec``) are
+    copied verbatim -- not recursed into -- so an externally-authored payload's own property
+    names are never mistaken for AI4IA manifest keys and rewritten (see ``_OPAQUE_NESTED_KEYS``).
+
+    ``parent_key`` values in ``_ARBITRARY_KEYED_MAP_FIELDS`` (currently just ``toolConfigs``) get
+    a different treatment: the map's own keys are copied verbatim (they are caller-defined tool
+    names, not manifest schema keys), but -- unlike ``_OPAQUE_NESTED_KEYS`` -- each value is still
+    recursed into and snake_cased, since ``ToolConfig`` fields like ``additionalSearchText`` are
+    real AI4IA manifest keys (see ``_ARBITRARY_KEYED_MAP_FIELDS``).
+    """
     if isinstance(value, dict):
-        return {_to_snake(k): _convert_keys(v) for k, v in value.items()}
+        if parent_key in _ARBITRARY_KEYED_MAP_FIELDS:
+            return {k: _convert_keys(v, parent_key=None) for k, v in value.items()}
+        return {
+            _to_snake(k): (v if (parent_key, k) in _OPAQUE_NESTED_KEYS else _convert_keys(v, parent_key=k))
+            for k, v in value.items()
+        }
     if isinstance(value, list):
-        return [_convert_keys(v) for v in value]
+        return [_convert_keys(v, parent_key=parent_key) for v in value]
     return value
 
 
@@ -215,12 +387,21 @@ def resolve_project_endpoint(arg: str | None) -> str:
 # Live path (isolated Azure SDK import; requires the optional `foundry` dependency group)
 # --------------------------------------------------------------------------------------
 def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
-    """Create a toolbox version via azure-ai-projects. Imported lazily so dry runs need no SDK.
+    """Create a toolbox version via azure-ai-projects and activate it as the default version.
 
-    Uses the real SDK surface: ``client.toolboxes.create_version(name, *, tools=[<typed
-    ToolboxTool subclasses>], description, skills=[ToolboxSkillReference], policies=ToolboxPolicies)``.
-    Each manifest tool maps to its discriminated model class (``_TYPE_TO_MODEL``); type-specific
-    fields are passed through (snake_cased) best-effort.
+    Imported lazily so dry runs need no SDK. Uses the real SDK surface: ``client.toolboxes.
+    create_version(name, *, tools=[<typed ToolboxTool subclasses>], description,
+    skills=[ToolboxSkillReference], policies=ToolboxPolicies)``. Each manifest tool maps to its
+    discriminated model class (``_TYPE_TO_MODEL``); type-specific fields (including nested
+    objects such as ``azure_ai_search.indexes[]`` or ``browser_automation_preview.connection``)
+    are recursively snake_cased and passed through as constructor kwargs.
+
+    ``create_version`` only adds an immutable version -- it does NOT change which version the
+    toolbox's MCP endpoint actually serves (``ToolboxObject.default_version`` is a separate
+    pointer that is fixed at creation and does not auto-advance). So every successful call here
+    also explicitly activates the new version via ``toolboxes.update(name,
+    default_version=<new version>)``, otherwise consumers would keep being served the old
+    ``default_version`` forever after the first `--create`.
     """
     try:
         from azure.ai.projects import AIProjectClient
@@ -229,7 +410,7 @@ def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
     except ImportError as exc:  # pragma: no cover - exercised only on live provisioning
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.3.0 azure-identity'
         ) from exc
 
     project = AIProjectClient(endpoint=project_endpoint, credential=DefaultAzureCredential())
@@ -243,7 +424,11 @@ def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
                 f"(creatable types: {sorted(_ALLOWED_TOOL_TYPES)})."
             )
         model_cls = getattr(m, cls_name)
-        fields = {_to_snake(k): v for k, v in tool.items() if k != "type"}
+        # Recursive conversion matters here: nested config (azure_ai_search.indexes[].index_name,
+        # browser_automation_preview.connection.project_connection_id, ...) must also be
+        # snake_cased, or the SDK's typed nested models silently deserialize those fields as None
+        # instead of raising (see docs/foundry-toolbox.md's SDK-shape note).
+        fields = {k: v for k, v in _convert_keys(tool).items() if k != "type"}
         tools.append(model_cls(**fields))
 
     kwargs: dict[str, Any] = {"tools": tools, "description": manifest.get("description", "")}
@@ -258,7 +443,18 @@ def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
         kwargs["policies"] = m.ToolboxPolicies(
             rai_config=m.RaiConfig(rai_policy_name=manifest["raiPolicyName"])
         )
-    return project.toolboxes.create_version(manifest["name"], **kwargs)
+    result = project.toolboxes.create_version(manifest["name"], **kwargs)
+
+    version = getattr(result, "version", None)
+    if not version:
+        raise SystemExit(
+            f"toolboxes.create_version('{manifest['name']}') returned no usable `version` "
+            f"(got: {version!r} on {result!r}); refusing to skip activation silently. Inspect the "
+            "SDK response and activate the correct version manually via "
+            "`project.toolboxes.update(name, default_version=...)`."
+        )
+    project.toolboxes.update(manifest["name"], default_version=version)
+    return result
 
 
 # --------------------------------------------------------------------------------------
@@ -276,6 +472,46 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"Manifest not found: {args.manifest}")
     manifest = load_manifest(args.manifest)
 
+    # Schema validation runs FIRST: a JSON Schema validator never raises on a malformed shape (a
+    # root array, `tools: [null]`, a non-object tool entry, etc. all produce clean validation
+    # errors, never a crash), so running it before the handwritten `validate_manifest()` below
+    # guarantees a confirmed-malformed manifest is reported cleanly and stops here -- we never
+    # reach `validate_manifest()`'s `.get()` calls on a shape it cannot safely process. (Round-10
+    # finding: the old order let `validate_manifest()` run first and crash with an unhandled
+    # AttributeError/TypeError on exactly these shapes.) `validate_manifest()` is *also* hardened
+    # with isinstance() guards (see its docstring) as a fallback for when the optional
+    # `jsonschema` dependency below is not installed and it is the only check that runs.
+    schema_errors = validate_manifest_schema(manifest)
+    errors: list[str] = []
+    schema_unavailable_msg: str | None = None
+    if schema_errors is None:
+        if args.create:
+            errors.append(
+                "jsonschema is not installed; --create requires strict schema validation before "
+                "SDK construction. Install the optional provisioning group: "
+                'uv pip install -e "app/api[foundry]"   # or: pip install jsonschema'
+            )
+        else:
+            schema_unavailable_msg = (
+                "(jsonschema not installed -- skipping strict schema validation; only the "
+                "hand-written checks below ran. Install it, or use --create's `foundry` extra, "
+                "for full validation.)"
+            )
+    else:
+        errors.extend(f"schema: {e}" for e in schema_errors)
+
+    if errors:
+        print("Manifest is not ready to provision:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        return 1
+    if schema_unavailable_msg:
+        print(schema_unavailable_msg, file=sys.stderr)
+
+    # Strict, per-tool-type schema validation already ran above; this hand-written pass adds the
+    # checks the schema does not express (at-most-one-unnamed-tool cardinality across the whole
+    # manifest, etc.) -- applied here, before any SDK construction, not just linted separately in
+    # CI.
     errors = validate_manifest(manifest)
     if errors:
         print("Manifest is not ready to provision:", file=sys.stderr)
@@ -307,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
 
     result = create_toolbox(manifest, endpoint)
     version = getattr(result, "version", "?")
-    print(f"\nCreated toolbox '{manifest['name']}' version {version} (first version becomes default).")
+    print(f"\nCreated toolbox '{manifest['name']}' version {version} and activated it as the default version.")
     return 0
 
 
