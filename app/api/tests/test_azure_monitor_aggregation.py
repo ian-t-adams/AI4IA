@@ -25,6 +25,17 @@ is rejected outright regardless of granularity. These tests pin that
 merges the results back in the caller's original order without duplicating or
 dropping any metric, and still makes exactly one call for panels whose
 metrics already share a single aggregation (the common case, unchanged).
+
+Third: Azure Monitor can also return an overall HTTP 200 for a call where one
+*specific* metric's own query failed (its ``errorCode``/``errorMessage`` on
+the raw response) -- a failure the SDK's public ``query_resources`` wrapper
+silently discards while building its friendly ``Metric`` model, leaving that
+metric indistinguishable from legitimate no-data-yet. These tests pin that
+``AzureMonitorQuerier`` recovers the per-metric error via the ``cls``
+callback side channel (see the module docstring on
+:mod:`ai4ia_api.metrics.azure_monitor`) and surfaces a short, safe reason
+without leaking the metric's own free-form ``errorMessage``, while leaving
+healthy sibling metrics -- in the same group or a different one -- unaffected.
 """
 from __future__ import annotations
 
@@ -123,8 +134,41 @@ class _PartiallyFailingClient:
         pass
 
 
+@dataclass
+class _MetricErrorAwareClient:
+    """Stands in for ``MetricsClient.query_resources`` when a test needs to
+    simulate Azure Monitor returning an overall HTTP 200 for a call where one
+    *specific* metric's own query failed (its ``errorCode``/``errorMessage``)
+    -- proving ``AzureMonitorQuerier.query`` recovers that per-metric failure
+    via the ``cls`` callback side channel instead of silently treating it as
+    no-data. Mirrors the real SDK: when the caller passes ``cls=``, it is
+    invoked synchronously with a fake raw ``MetricResultsResponse``-shaped
+    object (see the module docstring) before the unchanged friendly result is
+    returned, keyed by aggregation like ``_PerAggregationRecordingClient``."""
+
+    results_by_aggregation: dict[Any, list[_FakeResourceResult]]
+    raw_responses_by_aggregation: dict[Any, Any] = field(default_factory=dict)
+    calls: list[dict[str, Any]] = field(default_factory=list)
+
+    async def query_resources(self, **kwargs: Any):
+        self.calls.append(kwargs)
+        (aggregation,) = kwargs["aggregations"]
+        cls = kwargs.get("cls")
+        if cls is not None and aggregation in self.raw_responses_by_aggregation:
+            cls(None, self.raw_responses_by_aggregation[aggregation], {})
+        return self.results_by_aggregation.get(aggregation, [])
+
+    async def close(self) -> None:
+        pass
+
+
 def _querier_with(
-    client: _RecordingClient | _PerAggregationRecordingClient | _PartiallyFailingClient,
+    client: (
+        _RecordingClient
+        | _PerAggregationRecordingClient
+        | _PartiallyFailingClient
+        | _MetricErrorAwareClient
+    ),
 ) -> AzureMonitorQuerier:
     """Build a real ``AzureMonitorQuerier`` (no network calls at
     construction time -- credential/client creation is lazy) and swap in a
@@ -450,3 +494,158 @@ async def test_one_failing_aggregation_group_keeps_other_groups_data_and_reports
     assert "subscriptions" not in failed.error
     assert "secret" not in failed.error
     assert "DocumentDB" not in failed.error
+
+
+def test_extract_metric_errors_ignores_success_and_tolerates_missing_shape():
+    """Direct unit coverage for the ``cls``-callback error-extraction helper:
+    Azure's documented ``errorCode="Success"`` (and no error code at all)
+    must never be treated as a failure, and a missing/malformed raw response
+    must degrade to no errors rather than raising -- this is a best-effort
+    secondary signal, not something that should ever break the primary query
+    path if the SDK's internal shape is absent or unexpected."""
+    from types import SimpleNamespace
+
+    from ai4ia_api.metrics.azure_monitor import _extract_metric_errors
+
+    assert _extract_metric_errors(None) == []
+    assert _extract_metric_errors(SimpleNamespace()) == []
+    assert _extract_metric_errors(SimpleNamespace(values_property=[])) == []
+
+    healthy = SimpleNamespace(
+        values_property=[
+            SimpleNamespace(
+                value=[
+                    SimpleNamespace(name=SimpleNamespace(value="Foo"), error_code="Success"),
+                    SimpleNamespace(name=SimpleNamespace(value="Bar"), error_code=None),
+                ]
+            )
+        ]
+    )
+    assert _extract_metric_errors(healthy) == []
+
+    failing = SimpleNamespace(
+        values_property=[
+            SimpleNamespace(
+                value=[
+                    SimpleNamespace(
+                        name=SimpleNamespace(value="Baz"),
+                        error_code="BadRequest",
+                        error_message="leaky detail that must never surface",
+                    ),
+                ]
+            )
+        ]
+    )
+    assert _extract_metric_errors(failing) == [("Baz", "metric query failed (BadRequest)")]
+
+
+async def test_metric_own_errorcode_recovered_via_cls_callback_even_on_http_200():
+    """Production-adjacent gap: Azure Monitor can return an overall HTTP 200
+    for an aggregation group while one *specific* metric within it failed its
+    own query (e.g. an unsupported filter/dimension for just that metric).
+    That failure only ever surfaces as the metric's own
+    ``errorCode``/``errorMessage`` on the raw response -- fields the SDK's
+    public ``query_resources`` wrapper silently discards while building its
+    friendly ``Metric`` model, so without recovering them the caller could
+    only see an indistinguishable ``value=None`` alongside legitimate
+    no-data-yet. Pins that ``AzureMonitorQuerier`` recovers the per-metric
+    error via the raw response captured through the ``cls`` callback: the
+    failing metric resolves to ``value=None`` with a short, safe reason
+    (never the raw ``errorMessage``, which can echo request details back),
+    a healthy sibling metric in the *same* aggregation group resolves
+    normally and unaffected, and a wholly separate, wholly successful
+    aggregation group in the same panel is unaffected too."""
+    from types import SimpleNamespace
+
+    from azure.monitor.querymetrics import MetricAggregationType
+
+    container_spec = next(s for s in PANEL_SPECS if s.key == "containerApp")
+    requests = list(container_spec.metrics)
+    assert {r.aggregation for r in requests} == {"total", "average"}
+
+    fake_result_total = [
+        _FakeResourceResult(
+            metrics=[
+                _FakeMetric(
+                    name="Requests",
+                    timeseries=[_FakeTimeSeries(data=[_FakeDataPoint(total=10.0)])],
+                ),
+                # RestartCount's own query failed; the friendly model carries
+                # no data for it, matching what the real SDK's conversion
+                # would build for a metric whose data never arrived.
+                _FakeMetric(name="RestartCount", timeseries=[]),
+            ]
+        )
+    ]
+    fake_result_average = [
+        _FakeResourceResult(
+            metrics=[
+                _FakeMetric(
+                    name="ResponseTime",
+                    timeseries=[_FakeTimeSeries(data=[_FakeDataPoint(average=120.0)])],
+                ),
+                _FakeMetric(
+                    name="Replicas",
+                    timeseries=[_FakeTimeSeries(data=[_FakeDataPoint(average=3.0)])],
+                ),
+            ]
+        )
+    ]
+
+    # Fake raw ``MetricResultsResponse`` for the "total" call only: mirrors
+    # the real internal model's shape (``values_property`` -> one entry per
+    # requested resource -> ``.value`` -> list of metrics, each with
+    # ``.name.value`` and ``.error_code``/``.error_message``). RestartCount's
+    # ``errorMessage`` deliberately embeds request-identifying text a safe
+    # reason must never surface.
+    raw_total = SimpleNamespace(
+        values_property=[
+            SimpleNamespace(
+                value=[
+                    SimpleNamespace(
+                        name=SimpleNamespace(value="Requests"),
+                        error_code="Success",
+                        error_message=None,
+                    ),
+                    SimpleNamespace(
+                        name=SimpleNamespace(value="RestartCount"),
+                        error_code="BadRequest",
+                        error_message="filter 'env eq prod-secret-tenant' invalid for RestartCount",
+                    ),
+                ]
+            )
+        ]
+    )
+
+    client = _MetricErrorAwareClient(
+        results_by_aggregation={
+            MetricAggregationType.TOTAL: fake_result_total,
+            MetricAggregationType.AVERAGE: fake_result_average,
+        },
+        raw_responses_by_aggregation={MetricAggregationType.TOTAL: raw_total},
+    )
+    querier = _querier_with(client)
+
+    points = await querier.query(
+        "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/containerApps/a",
+        requests,
+        window_minutes=60,
+        granularity_minutes=5,
+    )
+
+    by_name = {p.name: p for p in points}
+    # The metric whose own query failed resolves to a null value with a
+    # short, safe reason -- never the raw, request-echoing errorMessage.
+    restart_count = by_name["RestartCount"]
+    assert restart_count.value is None
+    assert restart_count.error == "metric query failed (BadRequest)"
+    assert "prod-secret-tenant" not in restart_count.error
+    assert "filter" not in restart_count.error
+    # A healthy sibling metric in the *same* aggregation group is unaffected.
+    assert by_name["Requests"].value == 10.0
+    assert by_name["Requests"].error is None
+    # A wholly separate, wholly successful aggregation group is unaffected.
+    assert by_name["ResponseTime"].value == 120.0
+    assert by_name["ResponseTime"].error is None
+    assert by_name["Replicas"].value == 3.0
+    assert by_name["Replicas"].error is None

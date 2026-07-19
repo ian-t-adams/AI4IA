@@ -17,6 +17,7 @@ Key-Vault-backed secrets + per-turn execution are a later sub-phase).
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime, timezone
 from enum import Enum
@@ -210,6 +211,36 @@ def namespaced_tool_name(server_name: str, tool_name: str) -> str:
 def is_mcp_tool_name(name: str) -> bool:
     """True if ``name`` is a namespaced MCP tool (``mcp:<server>/<tool>``)."""
     return name.startswith(f"{TOOL_NAME_PREFIX}:")
+
+
+_ALIAS_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_ALIAS_HASH_LEN = 16
+_ALIAS_SLUG_LEN = 24
+
+
+def tool_alias(server_name: str, tool_name: str) -> str:
+    """A deterministic, provider-safe alias for one ``(server, tool)`` pair.
+
+    Remote MCP tool names are supplied by the server operator, not authored or
+    reviewed by us, and are not guaranteed to satisfy the ``[A-Za-z0-9_-]{1,64}``
+    charset that OpenAI/Azure function names -- and our own log/telemetry
+    fields -- require (see ``agents.tools.is_safe_tool_name``). The governed
+    name from :func:`namespaced_tool_name` (``mcp:<server>/<tool>``) is a
+    durable, user-facing contract (persisted tool attachments, the tool
+    catalog) and must keep that shape.
+
+    This alias is a second, purely runtime-computed identifier used only for
+    the model-facing function-schema name and for structured logs/telemetry
+    (see ``mcp_execution.build_mcp_tool_definitions``): it is never persisted,
+    so it is cheaply recomputed identically every turn. Collision resistance
+    comes entirely from a 64-bit hash of the *raw* ``(server_name, tool_name)``
+    pair -- the human-readable slug is cosmetic only and may legitimately
+    collide, so callers combining aliases across tools must still check for a
+    duplicate rather than assume uniqueness from the slug alone.
+    """
+    digest = hashlib.sha256(f"{server_name}\x00{tool_name}".encode()).hexdigest()[:_ALIAS_HASH_LEN]
+    slug = _ALIAS_UNSAFE_RE.sub("_", server_name).strip("_")[:_ALIAS_SLUG_LEN] or "srv"
+    return f"mcp_{slug}_{digest}"
 
 
 def effective_tool_approval(server: UserMcpServer, tool_name: str) -> McpToolApproval:

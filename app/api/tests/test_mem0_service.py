@@ -3,8 +3,10 @@
 A fake ``AsyncMemory`` (injected through the ``factory`` callable) lets these run
 without the ``mem0`` library or any database, covering: the result mapping,
 best-effort swallowing, the scoping asymmetry (filters dict on search/get_all vs
-top-level kwargs on add/delete_all), forget counts, lazy single build + retry,
-the config-dict shape, endpoint normalization, and factory backend selection.
+top-level kwargs on add), forget counts (including multi-pass convergence and
+failure propagation -- forget never delegates to mem0's own swallowed/capped
+delete_all), lazy single build + retry, the config-dict shape, endpoint
+normalization, and factory backend selection.
 """
 from __future__ import annotations
 
@@ -35,7 +37,6 @@ class FakeAsyncMemory:
         self.add_calls: list[dict] = []
         self.get_all_calls: list[dict] = []
         self.get_calls: list[str] = []
-        self.delete_calls: list[dict] = []
         self.delete_by_id_calls: list[dict] = []
 
     async def search(self, query, *, top_k=20, filters=None, threshold=None, **kwargs):
@@ -57,18 +58,19 @@ class FakeAsyncMemory:
             # keys server-side (not just user_id/agent_id/run_id) -- so a
             # document-scoped listing only ever returns that document's rows.
             results = [r for r in results if (r.get("metadata") or {}).get("document_id") == doc_id]
-        return {"results": results}
+        # Mirrors a real backend's top_k cap, so tests can exercise the
+        # multi-pass _forget_by_filter loop (a scope bigger than one page).
+        return {"results": results[:top_k]}
 
     async def get(self, memory_id):
         self.get_calls.append(memory_id)
         return self._get_results.get(memory_id)
 
-    async def delete_all(self, user_id=None, agent_id=None, run_id=None):
-        self.delete_calls.append({"user_id": user_id, "run_id": run_id})
-        return {"message": "ok"}
-
     async def delete(self, memory_id=None):
         self.delete_by_id_calls.append({"memory_id": memory_id})
+        # Mirrors a real backend: a successful delete call actually removes
+        # the row, so a subsequent get_all() no longer returns it.
+        self._get_all_results = [r for r in self._get_all_results if r.get("id") != memory_id]
         return {"message": "ok"}
 
 
@@ -182,8 +184,12 @@ async def test_forget_user_counts_then_deletes():
     n = await svc.forget_user("u1")
     assert n == 3
     assert mem.get_all_calls[0]["filters"] == {"user_id": "u1"}
-    # delete_all uses TOP-LEVEL kwargs (scoping asymmetry), not a filters dict.
-    assert mem.delete_calls[0] == {"user_id": "u1", "run_id": None}
+    # No longer delegates to mem0's own delete_all -- explicit per-id delete.
+    assert mem.delete_by_id_calls == [
+        {"memory_id": 1},
+        {"memory_id": 2},
+        {"memory_id": 3},
+    ]
 
 
 async def test_forget_session_scopes_by_run_id():
@@ -192,7 +198,7 @@ async def test_forget_session_scopes_by_run_id():
     n = await svc.forget_session("u1", "s9")
     assert n == 1
     assert mem.get_all_calls[0]["filters"] == {"user_id": "u1", "run_id": "s9"}
-    assert mem.delete_calls[0] == {"user_id": "u1", "run_id": "s9"}
+    assert mem.delete_by_id_calls == [{"memory_id": 1}]
 
 
 async def test_forget_propagates_errors():
@@ -202,6 +208,102 @@ async def test_forget_propagates_errors():
 
     svc = _service(Boom())
     with pytest.raises(RuntimeError):
+        await svc.forget_user("u1")
+
+
+# --- round 12 HIGH acceptance finding: forget_user/forget_session used to
+# delegate to mem0's own delete_all(), which internally lists via
+# vector_store.list(filters) with NO limit at all -- silently falling back to
+# the pgvector store's own default top_k of 100, wholly unrelated to our
+# _FORGET_LIST_CAP -- then deletes via asyncio.gather(return_exceptions=True)
+# and unconditionally returns a success message even when some deletes
+# failed (only a warning is logged). A "successful" forget_user on an account
+# with >100 memories therefore silently left most of them intact and
+# recallable, and any individual delete failure was invisible to the caller.
+# Fixed by _forget_by_filter: explicit list-then-delete-by-id in verified,
+# re-queried passes, with any failure propagating rather than being
+# swallowed, and MemoryScanIncompleteError raised if the scope never
+# converges to empty. ---
+
+
+async def test_forget_user_deletes_more_than_a_single_backend_page():
+    # More than mem0's own internal delete_all() page size (100, from
+    # pgvector's default top_k) and more than one _FORGET_LIST_CAP page size
+    # apart -- proving the whole scope converges across multiple list+delete
+    # passes rather than being silently capped like the old delete_all path.
+    total = _FORGET_LIST_CAP + 250
+    mem = FakeAsyncMemory(
+        get_all_results=[{"id": f"m{i}"} for i in range(total)]
+    )
+    svc = _service(mem)
+    n = await svc.forget_user("u1")
+    assert n == total
+    assert len(mem.delete_by_id_calls) == total
+    # Converged: nothing left to list for this user.
+    assert mem._get_all_results == []
+    # More than one page was required to enumerate the full scope.
+    assert len(mem.get_all_calls) >= 2
+
+
+async def test_forget_session_propagates_individual_delete_failures():
+    # One of several matching memories fails to delete -- must raise, not
+    # report a "successful" count that leaves it (and anything after it in
+    # the pass) behind, unlike mem0's delete_all which only logs a warning.
+    class FlakyDelete(FakeAsyncMemory):
+        async def delete(self, memory_id=None):
+            if memory_id == "bad":
+                raise RuntimeError("delete failed")
+            return await super().delete(memory_id=memory_id)
+
+    mem = FlakyDelete(
+        get_all_results=[{"id": "ok1"}, {"id": "bad"}, {"id": "ok2"}]
+    )
+    svc = _service(mem)
+    with pytest.raises(RuntimeError, match="delete failed"):
+        await svc.forget_session("u1", "s1")
+    # The failure surfaced instead of being swallowed; whatever succeeded
+    # before the failure is reflected in the delete calls (no double-counting
+    # or silently-reported success).
+    assert {c["memory_id"] for c in mem.delete_by_id_calls} <= {"ok1", "bad", "ok2"}
+
+
+async def test_forget_user_raises_on_no_progress_between_passes():
+    # Every pass sees the same number of "remaining" memories (e.g. writes
+    # landing in the same scope as fast as they're deleted, or a backend
+    # whose delete() silently no-ops) -- must fail closed rather than loop
+    # forever or report a false success.
+    class NoProgress(FakeAsyncMemory):
+        async def delete(self, memory_id=None):
+            self.delete_by_id_calls.append({"memory_id": memory_id})
+            # Deliberately do NOT remove from _get_all_results, simulating a
+            # delete that "succeeds" without taking effect.
+            return {"message": "ok"}
+
+    mem = NoProgress(get_all_results=[{"id": 1}, {"id": 2}])
+    svc = _service(mem)
+    with pytest.raises(MemoryScanIncompleteError):
+        await svc.forget_user("u1")
+
+
+async def test_forget_user_raises_when_passes_exhausted_with_remainder():
+    # A scope that keeps shrinking (so "no progress" never fires) but never
+    # quite reaches empty within the pass budget must still fail closed
+    # rather than return a count while memories remain.
+    class OneShort(FakeAsyncMemory):
+        async def delete(self, memory_id=None):
+            self.delete_by_id_calls.append({"memory_id": memory_id})
+            # Remove the target, but always leave one extra straggler behind
+            # so the listing never becomes empty.
+            self._get_all_results = [
+                r for r in self._get_all_results if r.get("id") != memory_id
+            ]
+            if not self._get_all_results:
+                self._get_all_results = [{"id": "straggler"}]
+            return {"message": "ok"}
+
+    mem = OneShort(get_all_results=[{"id": f"m{i}"} for i in range(5)])
+    svc = _service(mem)
+    with pytest.raises(MemoryScanIncompleteError):
         await svc.forget_user("u1")
 
 

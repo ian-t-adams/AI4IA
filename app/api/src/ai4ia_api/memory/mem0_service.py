@@ -26,8 +26,15 @@ Key behaviors / design notes:
   not removable by ``forget_session`` (by construction).
 
 - **Scoping asymmetry.** ``mem0`` takes ``user_id``/``run_id`` as top-level
-  kwargs on ``add``/``delete_all`` but requires a ``filters`` dict on
-  ``search``/``get_all`` (top-level entity kwargs are rejected). Handled here.
+  kwargs on ``add`` but requires a ``filters`` dict on ``search``/``get_all``
+  (top-level entity kwargs are rejected). Handled here.
+
+- **No ``delete_all``.** mem0's own ``AsyncMemory.delete_all`` lists matches
+  via the vector store's default page size (100 for pgvector, not our
+  ``_FORGET_LIST_CAP``) and swallows per-id delete failures, unconditionally
+  reporting success. Every erase path here instead lists-then-deletes by id
+  itself, with failures propagating naturally -- see ``_forget_by_filter``
+  and ``_forget_document``.
 
 ``mem0`` is imported lazily (only when the backend is built) so the app and
 tests run without it; tests inject a fake ``AsyncMemory`` via the ``factory``.
@@ -53,23 +60,42 @@ logger = logging.getLogger(__name__)
 # keeps the reported number honest at personal/demo scale without unbounded IO.
 _FORGET_LIST_CAP = 1000
 
+# Bounded escape hatch for _forget_by_filter's re-query loop below. One pass
+# already covers up to _FORGET_LIST_CAP memories, so this only matters for a
+# scope larger than that (rare) or if writes keep landing in the same scope
+# concurrently with the forget (rarer still) -- either way, an unbounded loop
+# is not acceptable, so it fails closed once this many passes haven't reached
+# an empty listing.
+_FORGET_MAX_PASSES = 20
+
 
 class MemoryScanIncompleteError(RuntimeError):
-    """Raised when a document-scoped memory operation cannot verify it saw
-    every one of the target document's memories.
+    """Raised when a forget/erase operation cannot verify it saw (and removed)
+    every matching memory, so it aborts rather than reporting a possibly-
+    partial "N forgotten" count.
 
-    mem0's ``get_all`` accepts arbitrary custom filter keys (not just the
-    built-in ``user_id``/``agent_id``/``run_id``) that its pgvector-backed
-    store translates into an exact-match payload condition, so listing can
-    (and does) pin both ``user_id`` *and* our custom ``document_id`` metadata
-    key server-side -- this is not a whole-user scan. There is still no
-    pagination cursor, only a ``top_k`` cap, so if a *single document* itself
-    has at least ``_FORGET_LIST_CAP`` tagged memories the listing may be
-    truncated and some could sit beyond the cap, unseen. Raising here (instead
-    of reporting a possibly-partial "N forgotten" count) keeps the caller from
-    treating the document as fully erased when stray memories may remain
-    recallable. A user's *other*, unrelated memories -- however many -- never
-    factor into this cap, since the listing itself excludes them.
+    Two call sites raise this:
+
+    - ``_forget_document`` (single pass): mem0's ``get_all`` accepts arbitrary
+      custom filter keys (not just the built-in ``user_id``/``agent_id``/
+      ``run_id``) that its pgvector-backed store translates into an
+      exact-match payload condition, so a document-scoped listing pins both
+      ``user_id`` *and* our custom ``document_id`` metadata key server-side --
+      this is not a whole-user scan. There is still no pagination cursor, only
+      a ``top_k`` cap, so if a *single document* itself has at least
+      ``_FORGET_LIST_CAP`` tagged memories the listing may be truncated with
+      some sitting beyond the cap, unseen. A user's *other*, unrelated
+      memories -- however many -- never factor into this cap, since the
+      listing itself excludes them.
+
+    - ``_forget_by_filter`` (multi-pass, used by ``forget_user``/
+      ``forget_session``): raised if a re-query still sees as many (or more)
+      remaining matches as the previous pass -- no progress, e.g. writes
+      landing in the same scope as fast as they're deleted -- or if the scope
+      still isn't empty after ``_FORGET_MAX_PASSES`` passes.
+
+    Either way, raising keeps the caller from treating the scope as fully
+    erased when memories may remain recallable.
     """
 
 
@@ -385,34 +411,85 @@ class Mem0MemoryService:
         return stored
 
     async def forget_user(self, user_id: str) -> int:
-        """Erase all of a user's memories (NOT swallowed — explicit deletion).
+        """Erase all of a user's memories (NOT swallowed — explicit per-id deletion).
 
-        The returned count is capped at ``_FORGET_LIST_CAP`` (the enumeration
-        bound); ``delete_all`` still erases every matching row regardless.
+        See ``_forget_by_filter`` for why this no longer delegates to mem0's
+        own ``delete_all``.
         """
         mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
-        listing = await self._call(
-            lambda: mem.get_all(filters={"user_id": user_id}, top_k=_FORGET_LIST_CAP),
-            self._op_timeout_s,
-        )
-        count = len(_results(listing))
-        await self._call(lambda: mem.delete_all(user_id=user_id), self._op_timeout_s)
-        return count
+        return await self._forget_by_filter(mem, {"user_id": user_id})
 
     async def forget_session(self, user_id: str, session_id: str) -> int:
-        """Erase a user's memories for one session (NOT swallowed)."""
-        filters = {"user_id": user_id, "run_id": session_id}
+        """Erase a user's memories for one session (NOT swallowed — explicit per-id deletion).
+
+        See ``_forget_by_filter`` for why this no longer delegates to mem0's
+        own ``delete_all``.
+        """
         mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
-        listing = await self._call(
-            lambda: mem.get_all(filters=filters, top_k=_FORGET_LIST_CAP),
-            self._op_timeout_s,
+        return await self._forget_by_filter(
+            mem, {"user_id": user_id, "run_id": session_id}
         )
-        count = len(_results(listing))
-        await self._call(
-            lambda: mem.delete_all(user_id=user_id, run_id=session_id),
-            self._op_timeout_s,
+
+    async def _forget_by_filter(self, mem: Any, filters: dict[str, Any]) -> int:
+        """Enumerate and delete, by id, every memory matching ``filters``.
+
+        Does **not** use mem0's own ``delete_all`` — reading mem0's source
+        confirms it internally calls ``vector_store.list(filters)`` with no
+        ``top_k`` at all, so the *store's* own default (100 for the pgvector
+        backend) silently applies rather than our ``_FORGET_LIST_CAP``, and
+        it deletes the listed rows via
+        ``asyncio.gather(..., return_exceptions=True)`` then
+        **unconditionally** returns ``{"message": "...successfully!"}`` even
+        when some of those per-id deletes failed (it only logs a warning). A
+        caller of ``delete_all`` therefore has no way to know a "successful"
+        call left rows behind, whether from truncation past the first ~100 or
+        from swallowed per-id failures.
+
+        Instead: list up to ``_FORGET_LIST_CAP`` matches, delete each
+        individually with any failure propagated (never swallowed here
+        either), then re-query the same filter and repeat until the listing
+        comes back empty — so a scope with more than ``_FORGET_LIST_CAP``
+        matches still converges to a verified-empty state across multiple
+        passes rather than silently stopping after one page. Bounded by
+        ``_FORGET_MAX_PASSES``: if the remaining count hasn't strictly
+        decreased between two passes (no progress — e.g. writes landing in
+        the same scope as fast as we delete, or a backend whose ``delete``
+        appears to succeed without taking effect) or the pass budget is
+        exhausted while memories still remain, this raises
+        ``MemoryScanIncompleteError`` rather than returning a count while the
+        scope is not actually empty.
+        """
+        total_deleted = 0
+        previous_remaining: int | None = None
+        for pass_num in range(_FORGET_MAX_PASSES):
+            listing = await self._call(
+                lambda: mem.get_all(filters=filters, top_k=_FORGET_LIST_CAP),
+                self._op_timeout_s,
+            )
+            results = _results(listing)
+            if not results:
+                return total_deleted
+            if previous_remaining is not None and len(results) >= previous_remaining:
+                raise MemoryScanIncompleteError(
+                    f"forget made no progress after {total_deleted} deletion(s) "
+                    f"across {pass_num} pass(es); {len(results)} matching "
+                    "memories still remain -- aborting rather than reporting "
+                    "success with residuals"
+                )
+            previous_remaining = len(results)
+            for item in results:
+                mem_id = item.get("id")
+                if mem_id is None:
+                    continue
+                await self._call(
+                    lambda i=mem_id: mem.delete(memory_id=i), self._op_timeout_s
+                )
+                total_deleted += 1
+        raise MemoryScanIncompleteError(
+            f"forget did not converge to zero remaining memories after "
+            f"{_FORGET_MAX_PASSES} passes ({total_deleted} deletion(s) so "
+            "far) -- aborting rather than reporting success with residuals"
         )
-        return count
 
     async def forget_document(self, user_id: str, document_id: str) -> int:
         """Erase a user's memories saved from one document (NOT swallowed).

@@ -24,6 +24,7 @@ from ai4ia_api.agents.mcp_servers import (
     UserMcpServerUpdate,
     discovered_tool_to_spec,
     namespaced_tool_name,
+    tool_alias,
 )
 from ai4ia_api.agents.mcp_store import InMemoryUserMcpServerStore
 from ai4ia_api.agents.mcp_service import McpServerService
@@ -64,6 +65,54 @@ def _create(name="weather", **over):
 
 def test_namespaced_tool_name():
     assert namespaced_tool_name("weather", "get_forecast") == "mcp:weather/get_forecast"
+
+
+# --- Provider-safe tool alias (deterministic, collision-resistant) -----------
+
+
+def test_tool_alias_is_deterministic():
+    assert tool_alias("weather", "get_forecast") == tool_alias("weather", "get_forecast")
+
+
+def test_tool_alias_differs_for_different_tools_on_same_server():
+    assert tool_alias("weather", "get_forecast") != tool_alias("weather", "get_alerts")
+
+
+def test_tool_alias_differs_for_same_tool_on_different_servers():
+    assert tool_alias("weather", "get_forecast") != tool_alias("radar", "get_forecast")
+
+
+@pytest.mark.parametrize(
+    "server_name,tool_name",
+    [
+        ("weather", "get_forecast"),
+        ("weather", "Get.The Forecast/Now"),  # dots, spaces, slashes: not control chars
+        ("weather", "获取天气"),  # unicode
+        ("weather", "a" * 500),  # pathological length
+        ("my-server.v2", "tool"),
+        ("s", ""),  # degenerate empty tool name
+    ],
+)
+def test_tool_alias_is_always_provider_safe(server_name, tool_name):
+    from ai4ia_api.agents.tools import is_safe_tool_name
+
+    alias = tool_alias(server_name, tool_name)
+    assert is_safe_tool_name(alias)
+    assert 1 <= len(alias) <= 64
+    assert alias.startswith("mcp_")
+
+
+def test_tool_alias_never_contains_raw_tool_name_content():
+    # A raw tool name embedding something log-hostile must never survive into the
+    # alias verbatim -- the alias is a fixed-charset hash-derived identifier.
+    hostile = "forecast\nSpoofedEvent=admin_login outcome=ok"
+    alias = tool_alias("weather", hostile)
+    assert "\n" in hostile
+    assert "\n" not in alias
+    assert "SpoofedEvent" not in alias
+    from ai4ia_api.agents.tools import is_safe_tool_name
+
+    assert is_safe_tool_name(alias)
 
 
 def test_discovered_tool_to_spec_untrusted_requires_approval():

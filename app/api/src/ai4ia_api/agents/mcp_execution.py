@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol
 
@@ -47,6 +47,7 @@ from .mcp_servers import (
     discovered_tool_to_spec,
     is_mcp_tool_name,
     namespaced_tool_name,
+    tool_alias,
     tool_requires_approval,
 )
 from .ssrf import Resolver, SsrfError, validate_public_https_url
@@ -133,6 +134,7 @@ def _make_handler(
     server: UserMcpServer,
     tool: DiscoveredTool,
     *,
+    alias: str,
     secrets: SecretResolver,
     connector: McpConnector,
     resolver: Resolver | None,
@@ -140,7 +142,15 @@ def _make_handler(
     max_calls: int,
     health: HealthReporter | None = None,
 ):
-    """Build the async handler for one (server, tool), closure-bound to one endpoint."""
+    """Build the async handler for one (server, tool), closure-bound to one endpoint.
+
+    ``alias`` is the provider-safe, deterministic identifier for this tool (see
+    :func:`~ai4ia_api.agents.mcp_servers.tool_alias`) — it is what reaches
+    observability output. The *raw* ``tool.name`` advertised by the remote server
+    is used only for the actual outbound ``tools/call`` dispatch, so a hostile or
+    malformed remote name can dispatch correctly but can never forge a log or
+    telemetry line.
+    """
     endpoint = server.endpoint
     tool_name = tool.name
 
@@ -178,7 +188,7 @@ def _make_handler(
                 event=obs.EVENT_TOOL_CALL,
                 server=server.name,
                 host=server.host,
-                tool=tool_name,
+                tool=alias,
                 outcome=obs.OUTCOME_ERROR,
                 latency_ms=timer.ms,
                 detail=str(exc),
@@ -193,7 +203,7 @@ def _make_handler(
             event=obs.EVENT_TOOL_CALL,
             server=server.name,
             host=server.host,
-            tool=tool_name,
+            tool=alias,
             outcome=obs.OUTCOME_TOOL_ERROR if result.is_error else obs.OUTCOME_OK,
             latency_ms=timer.ms,
         )
@@ -218,10 +228,19 @@ def build_mcp_tool_definitions(
 
     Only tools whose namespaced name is in ``attached_tool_names`` AND owned by the
     caller (present in ``servers``' cached ``discoveredTools``) are built — so the
-    merged executor advertises exactly what the agent attached, nothing more. Names
-    are de-duplicated defensively so a malformed server record can never raise on
-    double registration. ``budget`` is shared across all returned handlers to cap
-    total MCP calls for the turn.
+    merged executor advertises exactly what the agent attached, nothing more. That
+    attachment/ownership check is keyed by the durable, persisted governance name
+    (:func:`~ai4ia_api.agents.mcp_servers.namespaced_tool_name`), which never
+    changes shape. The *registered* :class:`ToolSpec` name — what the model's
+    function-calling schema advertises, and the identifier that reaches
+    ``ctx.approvals`` and MCP observability/telemetry — is instead the
+    provider-safe deterministic alias (:func:`~ai4ia_api.agents.mcp_servers.tool_alias`):
+    a remote server's raw tool name is never trusted as a schema/log-safe
+    identifier, only as the dispatch argument inside the one handler that calls it.
+    Aliases are de-duplicated separately from governance names (a 64-bit hash
+    collision is astronomically unlikely but is rejected outright, never silently
+    overwritten, if it ever occurs). ``budget`` is shared across all returned
+    handlers to cap total MCP calls for the turn.
 
     A **quarantined** server is skipped wholesale (its tools are not built, so the
     model never sees them and the turn does not pay its connect timeout) until the
@@ -232,6 +251,7 @@ def build_mcp_tool_definitions(
         return []
     defs: list[ToolDefinition] = []
     seen: set[str] = set()
+    seen_aliases: set[str] = set()
     for server in servers:
         if is_quarantined(server, now=now):
             obs.emit_skip(
@@ -245,13 +265,22 @@ def build_mcp_tool_definitions(
             if name not in attached or name in seen:
                 continue
             seen.add(name)
+            alias = tool_alias(server.name, tool.name)
+            if alias in seen_aliases:
+                logger.warning(
+                    "mcp tool alias collision; tool skipped for this turn",
+                    extra={"server": server.name},
+                )
+                continue
+            seen_aliases.add(alias)
             defs.append(
                 ToolDefinition(
-                    spec=discovered_tool_to_spec(server, tool),
+                    spec=replace(discovered_tool_to_spec(server, tool), name=alias),
                     parameters=tool.inputSchema or dict(_EMPTY_OBJECT_SCHEMA),
                     handler=_make_handler(
                         server,
                         tool,
+                        alias=alias,
                         secrets=secrets,
                         connector=connector,
                         resolver=resolver,
@@ -267,13 +296,15 @@ def build_mcp_tool_definitions(
 def auto_approved_tool_names(
     servers: Sequence[UserMcpServer], attached_tool_names: Collection[str]
 ) -> frozenset[str]:
-    """Attached MCP tool names that run WITHOUT a human-approval gate.
+    """Attached MCP tool **aliases** that run WITHOUT a human-approval gate.
 
     A tool is pre-approved when :func:`~ai4ia_api.agents.mcp_servers.tool_requires_approval`
     is false for it — i.e. its server is ``trusted`` (and the tool is not overridden
-    to ``always``), or the tool is explicitly overridden to ``never``. These go into
-    ``ToolContext.approvals`` so the runtime skips the approval gate for exactly
-    those; every other attached MCP tool stays approval-gated.
+    to ``always``), or the tool is explicitly overridden to ``never``. The
+    attachment/ownership check is keyed by the governance name (unchanged, durable
+    contract), but the returned set contains each matched tool's alias, since that
+    is the identifier :func:`build_mcp_tool_definitions` registers and the runtime
+    compares ``ctx.approvals`` against.
     """
     attached = {n for n in attached_tool_names if is_mcp_tool_name(n)}
     out: set[str] = set()
@@ -281,7 +312,7 @@ def auto_approved_tool_names(
         for tool in server.discoveredTools:
             name = namespaced_tool_name(server.name, tool.name)
             if name in attached and not tool_requires_approval(server, tool.name):
-                out.add(name)
+                out.add(tool_alias(server.name, tool.name))
     return frozenset(out)
 
 

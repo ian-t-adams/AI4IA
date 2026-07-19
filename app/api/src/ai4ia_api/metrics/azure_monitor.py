@@ -21,19 +21,30 @@ per distinct aggregation and the results are merged back in the caller's
 order. Panels whose metrics already share one aggregation still make exactly
 one request.
 
-If one aggregation group's request fails (e.g. Azure Monitor rejects that
-specific combination), the other groups' already-fetched data is kept rather
-than discarded: only the failed group's metrics resolve to a null value
-carrying a short, safe ``error`` reason (see :class:`~.models.MetricPoint`),
-so the caller can tell a genuine per-metric failure apart from legitimate
-no-data-yet and mark the panel ``partial`` instead of silently reporting
-``ok`` with holes in it. The SDK's public ``query_resources`` wrapper discards
-Azure Monitor's own per-metric ``errorCode``/``errorMessage`` fields before
-returning (they only survive on the private, undocumented raw operation), so
-the failure signal used here is the HTTP-level exception raised for the whole
-group's request instead -- coarser than per-metric, but accurate for every
-panel in this module since each aggregation group is at most a couple of
-metrics.
+If one aggregation group's request fails outright (e.g. a transport error or
+an HTTP-level rejection of the whole call), the other groups' already-fetched
+data is kept rather than discarded: only the failed group's metrics resolve
+to a null value carrying a short, safe ``error`` reason (see
+:class:`~.models.MetricPoint`), so the caller can tell a genuine failure apart
+from legitimate no-data-yet and mark the panel ``partial``/``unavailable``
+instead of silently reporting ``ok`` with holes in it.
+
+Azure Monitor can also return an overall HTTP 200 where one *specific* metric
+within an otherwise-successful group failed its own query (a mismatched
+filter, an unsupported dimension, etc.) -- that failure only ever surfaces as
+the metric's own ``errorCode``/``errorMessage``, and the SDK's public
+``query_resources`` wrapper silently discards both fields while converting
+the response into its "friendly" ``MetricsQueryResult``/``Metric`` models.
+To recover them without losing that friendly conversion (still used for the
+actual values, unchanged), ``query_resources`` is called with a standard
+azure-core ``cls`` callback (see
+``azure.core.pipeline.policies.CustomHookPolicy`` and the ``ClsType`` pattern
+common to every autorest-generated operation): the callback is handed the
+same fully-typed, already-deserialized internal
+``azure.monitor.querymetrics.models._models.MetricResultsResponse`` the SDK
+always builds before its friendly conversion runs, and returns it unchanged
+so that conversion proceeds exactly as it does today -- it is a read-only
+side channel, not a replacement for the existing value-extraction path.
 """
 from __future__ import annotations
 
@@ -96,6 +107,47 @@ def _safe_error_reason(exc: Exception) -> str:
     return "query failed"
 
 
+def _safe_metric_error_reason(error_code: str) -> str:
+    """A short, bounded, non-leaky description of a single metric's own
+    query failure (Azure Monitor's per-metric ``errorCode``, e.g.
+    ``"BadRequest"``).
+
+    Mirrors :func:`_safe_error_reason`'s reasoning: only the short machine
+    code is surfaced, never ``errorMessage``, which is free-form and can
+    echo request details (resource id, filter, etc.) back to the caller.
+    """
+    return f"metric query failed ({error_code})"
+
+
+def _extract_metric_errors(raw_response: object) -> list[tuple[str, str]]:
+    """Pull each metric's own ``errorCode``/``errorMessage`` out of the raw,
+    fully-typed ``MetricResultsResponse`` captured via the ``cls`` callback
+    in :meth:`AzureMonitorQuerier.query` (see the module docstring).
+
+    Returns ``(metric_name, safe_reason)`` pairs only for metrics whose own
+    query failed (``errorCode`` present and not ``"Success"``) even though
+    the overall HTTP call succeeded. Tolerates a missing/empty/unexpected
+    shape by returning no errors rather than raising -- this is a
+    best-effort secondary signal, never a replacement for the primary value
+    extraction or the whole-request failure handling.
+    """
+    values = getattr(raw_response, "values_property", None) or []
+    if not values:
+        return []
+    metrics = getattr(values[0], "value", None) or []
+    errors: list[tuple[str, str]] = []
+    for metric in metrics:
+        code = getattr(metric, "error_code", None)
+        if not code or code == "Success":
+            continue
+        name_obj = getattr(metric, "name", None)
+        name = getattr(name_obj, "value", name_obj)
+        if not name:
+            continue
+        errors.append((str(name), _safe_metric_error_reason(code)))
+    return errors
+
+
 class AzureMonitorQuerier:
     """Concrete querier over Azure Monitor's batch metrics data plane."""
 
@@ -155,7 +207,18 @@ class AzureMonitorQuerier:
         # that group resolves to an explicit error instead of an
         # indistinguishable null.
         group_errors: dict[str, str] = {}
+        # A group can also come back HTTP 200 with one specific metric's own
+        # query failed (see the module docstring); captured per-metric via
+        # the `cls` callback below, keyed the same way as `resolved` so it
+        # never gets confused with a different aggregation of the same name.
+        metric_errors: dict[tuple[str, str], str] = {}
         for aggregation, group_requests in groups.items():
+            raw_capture: dict[str, object] = {}
+
+            def _capture_raw(_pipeline_response, deserialized, _headers, _sink=raw_capture):
+                _sink["value"] = deserialized
+                return deserialized
+
             try:
                 results = await self._client.query_resources(
                     resource_ids=[resource_id],
@@ -164,6 +227,7 @@ class AzureMonitorQuerier:
                     timespan=timedelta(minutes=window_minutes),
                     granularity=timedelta(minutes=granularity_minutes),
                     aggregations=[agg_map[aggregation]],
+                    cls=_capture_raw,
                 )
             except HttpResponseError as exc:
                 group_errors[aggregation] = _safe_error_reason(exc)
@@ -171,18 +235,21 @@ class AzureMonitorQuerier:
             metrics = results[0].metrics if results else []
             for metric in metrics:
                 resolved[(str(metric.name), aggregation)] = metric
+            for name, reason in _extract_metric_errors(raw_capture.get("value")):
+                metric_errors[(name, aggregation)] = reason
 
         return [
             self._resolve(
                 req,
                 resolved.get((req.name, req.aggregation)),
-                group_errors.get(req.aggregation),
+                metric_errors.get((req.name, req.aggregation))
+                or group_errors.get(req.aggregation),
             )
             for req in requests
         ]
 
     @staticmethod
-    def _resolve(req: MetricRequest, metric, group_error: str | None = None) -> MetricPoint:
+    def _resolve(req: MetricRequest, metric, error: str | None = None) -> MetricPoint:
         value: float | None = None
         unit = req.unit
         if metric is not None:
@@ -205,7 +272,7 @@ class AzureMonitorQuerier:
             aggregation=req.aggregation,
             value=value,
             unit=unit,
-            error=group_error if value is None else None,
+            error=error if value is None else None,
         )
 
     async def close(self) -> None:

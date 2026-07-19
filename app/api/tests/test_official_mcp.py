@@ -27,6 +27,7 @@ from ai4ia_api.agents.mcp_servers import (
     McpAuthMode,
     McpTransport,
     UserMcpServer,
+    tool_alias,
 )
 from ai4ia_api.agents.official_mcp_service import (
     OFFICIAL_USER_ID,
@@ -364,14 +365,14 @@ async def test_official_plane_wins_name_collision():
     )
     assert built is not None
     _registry, executor, ctx = built
-    defn = executor.get("mcp:dup/go")
+    defn = executor.get(tool_alias("dup", "go"))
     assert defn is not None
     out = await defn.handler({}, ctx)
     assert out["content"] == "official"  # earlier (official) plane won
     assert off_conn.tool_calls and byo_conn.tool_calls == []
     _ep, _t, _a, auth = off_conn.tool_calls[0]
     assert auth.mode is McpAuthMode.apim_subscription and auth.secret == "APIM-KEY"
-    assert "mcp:dup/go" in ctx.approvals  # trusted official tool is auto-approved
+    assert tool_alias("dup", "go") in ctx.approvals  # trusted official tool is auto-approved
 
 
 async def test_multi_plane_unions_distinct_tools_and_approvals():
@@ -386,10 +387,10 @@ async def test_multi_plane_unions_distinct_tools_and_approvals():
     )
     assert built is not None
     _registry, executor, ctx = built
-    assert executor.get("mcp:official-srv/go") is not None
-    assert executor.get("mcp:byo-srv/do") is not None
+    assert executor.get(tool_alias("official-srv", "go")) is not None
+    assert executor.get(tool_alias("byo-srv", "do")) is not None
     # Only the trusted official tool is auto-approved; the BYO one stays gated.
-    assert ctx.approvals == frozenset({"mcp:official-srv/go"})
+    assert ctx.approvals == frozenset({tool_alias("official-srv", "go")})
 
 
 async def test_shared_budget_caps_total_calls_across_planes():
@@ -407,9 +408,9 @@ async def test_shared_budget_caps_total_calls_across_planes():
     )
     assert built is not None
     _registry, executor, ctx = built
-    await executor.get("mcp:aaa/go").handler({}, ctx)  # consumes the single shared call
+    await executor.get(tool_alias("aaa", "go")).handler({}, ctx)  # consumes the single shared call
     with pytest.raises(ToolExecutionError):
-        await executor.get("mcp:bbb/go").handler({}, ctx)  # budget shared across planes
+        await executor.get(tool_alias("bbb", "go")).handler({}, ctx)  # budget shared across planes
     assert conn_a.tool_calls and conn_b.tool_calls == []
 
 

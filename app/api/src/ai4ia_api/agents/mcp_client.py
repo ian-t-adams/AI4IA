@@ -20,6 +20,7 @@ a remote tool through the exact same registry/redaction machinery as the built-i
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -42,6 +43,18 @@ PROTOCOL_VERSION = "2025-06-18"
 _CLIENT_INFO = {"name": "ai4ia", "version": "1.0"}
 _DEFAULT_TIMEOUT_S = 15.0
 _DEFAULT_MAX_BYTES = 2_000_000
+
+# A discovered tool's *name* comes from the remote MCP server, not from code we
+# author or review, yet it goes on to become part of a governed tool name
+# (``mcp:<server>/<tool>``, used for durable attachment references), the
+# OpenAI/Azure-facing function-schema alias, and structured logs/telemetry
+# (see ``mcp_servers.tool_alias``). Rejecting a name containing a raw ASCII
+# control character (newlines/CR foremost) at discovery -- before it is ever
+# persisted on the server record -- closes off log/activity forgery at the
+# source, rather than relying solely on downstream redaction/aliasing to
+# neutralize it every time the name is used. Realistic tool names (spaces,
+# dots, unicode) are otherwise left alone.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 @dataclass(frozen=True)
@@ -346,13 +359,21 @@ class HttpxMcpConnector:
             if not isinstance(raw, dict):
                 continue
             name = raw.get("name")
-            if not isinstance(name, str) or not name.strip():
+            if not isinstance(name, str):
+                continue
+            name = name.strip()[:MAX_TOOL_NAME_LEN]
+            # Bounded input validation at discovery: a name that is empty
+            # after stripping, or carries a raw control character (embedded
+            # newline/CR foremost), is never persisted as a discovered tool --
+            # see _CONTROL_CHARS_RE above for why this matters and what is
+            # still allowed.
+            if not name or _CONTROL_CHARS_RE.search(name):
                 continue
             description = raw.get("description")
             schema = raw.get("inputSchema")
             tools.append(
                 DiscoveredTool(
-                    name=name.strip()[:MAX_TOOL_NAME_LEN],
+                    name=name,
                     description=(description or "")[:MAX_TOOL_DESCRIPTION_LEN]
                     if isinstance(description, str)
                     else "",
