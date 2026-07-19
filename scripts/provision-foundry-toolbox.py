@@ -64,6 +64,10 @@ _TYPE_TO_MODEL = {
     "openapi": "OpenApiToolboxTool",
     "toolbox_search_preview": "ToolboxSearchPreviewToolboxTool",
     "mcp": "MCPToolboxTool",
+    "a2a_preview": "A2APreviewToolboxTool",
+    "fabric_iq_preview": "FabricIQPreviewToolboxTool",
+    "reminder_preview": "ReminderPreviewToolboxTool",
+    "work_iq_preview": "WorkIQPreviewToolboxTool",
 }
 _ALLOWED_TOOL_TYPES = set(_TYPE_TO_MODEL)
 # camelCase manifest keys -> snake_case payload keys (only the ones that differ).
@@ -75,6 +79,7 @@ _CAMEL_TO_SNAKE = {
     "projectConnectionId": "project_connection_id",
     "azureAiSearch": "azure_ai_search",
     "indexName": "index_name",
+    "indexAssetId": "index_asset_id",
     "queryType": "query_type",
     "topK": "top_k",
     "customSearchConfiguration": "custom_search_configuration",
@@ -87,12 +92,31 @@ _CAMEL_TO_SNAKE = {
     "allowedDomains": "allowed_domains",
     "securityScheme": "security_scheme",
     "defaultParams": "default_params",
+    # round 7: common ToolConfig + newly-modeled per-type fields.
+    "toolConfigs": "tool_configs",
+    "additionalSearchText": "additional_search_text",
+    "userLocation": "user_location",
+    "searchContextSize": "search_context_size",
+    "maxNumResults": "max_num_results",
+    "rankingOptions": "ranking_options",
+    "scoreThreshold": "score_threshold",
+    "hybridSearch": "hybrid_search",
+    "embeddingWeight": "embedding_weight",
+    "textWeight": "text_weight",
+    "serverDescription": "server_description",
+    "allowedTools": "allowed_tools",
+    "deferLoading": "defer_loading",
+    "toolNames": "tool_names",
+    "readOnly": "read_only",
+    "baseUrl": "base_url",
+    "agentCardPath": "agent_card_path",
+    "sendCredentialsForAgentCard": "send_credentials_for_agent_card",
 }
-# NOTE: no "indexAssetId" entry. azure-ai-projects' AISearchIndexResource.index_asset_id
-# exists on the SDK model, but no current Microsoft Learn doc for the Azure AI Search tool
-# documents it as a supported alternative to indexName+projectConnectionId (both of which
-# ARE documented as Required); the manifest schema does not accept indexAssetId either, so
-# this table intentionally has no mapping for it (see docs/foundry-toolbox.md).
+# `indexAssetId` -> `index_asset_id` (azure-ai-projects 2.3.0 AISearchIndexResource.index_asset_id)
+# IS mapped above as a documented, schema-enforced mutually-exclusive alternative to
+# indexName+projectConnectionId, even though no current Microsoft Learn doc for the Azure AI
+# Search tool demonstrates it (see foundry/toolbox.manifest.schema.json's azureAiSearch.indexes
+# description and docs/foundry-toolbox.md).
 # Manifest keys whose VALUE is an opaque, externally-authored payload that must be copied
 # verbatim -- never key-rewritten -- even though _convert_keys() otherwise recurses through
 # every nested dict/list. Keyed by the (parent key, key) pair so only the specific nesting we

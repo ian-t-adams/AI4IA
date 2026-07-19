@@ -409,10 +409,9 @@ def test_schema_rejects_root_level_azure_ai_search_fields_and_bare_browser_autom
 
 
 def test_schema_rejects_azure_ai_search_empty_incomplete_or_multiple_indexes():
-    # A tool with no indexes, an index entry missing either required field, an index using
-    # the undocumented indexAssetId in place of them, or more than one index is inert,
-    # unprovisionable, or unsupported by the SDK; the schema must reject all of these
-    # instead of silently accepting them.
+    # A tool with no indexes, an index entry missing either required field, or more than one
+    # index is inert, unprovisionable, or unsupported by the SDK; the schema must reject all
+    # of these instead of silently accepting them.
     jsonschema = pytest.importorskip("jsonschema")
     schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
 
@@ -453,26 +452,10 @@ def test_schema_rejects_azure_ai_search_empty_incomplete_or_multiple_indexes():
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(missing_project_connection_id, schema)
 
-    # indexAssetId is a real field on the SDK's AISearchIndexResource model, but it appears
-    # in no current Microsoft Learn doc for this tool as a documented alternative to
-    # indexName+projectConnectionId. Modeling an undocumented field as a validated
-    # alternative would be a product guess, not a grounded fix -- the schema must reject it.
-    index_asset_id = {
-        **_valid_manifest(),
-        "tools": [
-            {
-                "type": "azure_ai_search",
-                "name": "x",
-                "azureAiSearch": {"indexes": [{"indexAssetId": "asset-1"}]},
-            }
-        ],
-    }
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(index_asset_id, schema)
-
     # azure-ai-projects' AzureAISearchToolResource.indexes docstring: "There can be a maximum
     # of 1 index resource attached to the agent." A second index is not a richer config, it's
     # unrepresentable -- the SDK constructor accepts the list but the service only honors one.
+    # This holds for indexAssetId-shaped entries too, not just indexName+projectConnectionId.
     two_indexes = {
         **_valid_manifest(),
         "tools": [
@@ -490,6 +473,112 @@ def test_schema_rejects_azure_ai_search_empty_incomplete_or_multiple_indexes():
     }
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(two_indexes, schema)
+
+    two_index_asset_ids = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "azure_ai_search",
+                "name": "x",
+                "azureAiSearch": {"indexes": [{"indexAssetId": "asset-1"}, {"indexAssetId": "asset-2"}]},
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(two_index_asset_ids, schema)
+
+
+def test_schema_azure_ai_search_index_asset_id_is_mutually_exclusive_with_index_name():
+    # Round 7 (reversing round 6): `indexAssetId` (azure-ai-projects 2.3.0's
+    # AISearchIndexResource.index_asset_id) is now modeled as a documented, schema-enforced
+    # mutually-exclusive ALTERNATIVE to indexName+projectConnectionId, per explicit product
+    # direction -- even though no current Microsoft Learn doc for this tool demonstrates it
+    # (see foundry/toolbox.manifest.schema.json's azureAiSearch.indexes description and
+    # docs/foundry-toolbox.md). Exactly one of the two shapes must be present per index; both
+    # together, or neither, must still fail.
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    index_asset_id_alone = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "azure_ai_search",
+                "name": "x",
+                "azureAiSearch": {"indexes": [{"indexAssetId": "asset-1"}]},
+            }
+        ],
+    }
+    jsonschema.validate(index_asset_id_alone, schema)  # must NOT raise
+
+    # The shared optional fields (queryType/topK/filter) are still allowed alongside indexAssetId.
+    index_asset_id_with_optional_fields = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "azure_ai_search",
+                "name": "x",
+                "azureAiSearch": {"indexes": [{"indexAssetId": "asset-1", "topK": 5, "queryType": "vector"}]},
+            }
+        ],
+    }
+    jsonschema.validate(index_asset_id_with_optional_fields, schema)  # must NOT raise
+
+    # Both shapes on the same index entry is not a richer config -- it is an unresolvable/
+    # contradictory reference the SDK has no defined behavior for. Must still be rejected.
+    both_together = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "azure_ai_search",
+                "name": "x",
+                "azureAiSearch": {
+                    "indexes": [
+                        {"indexAssetId": "asset-1", "indexName": "docs", "projectConnectionId": "search-conn"}
+                    ]
+                },
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(both_together, schema)
+
+    both_together_partial = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "azure_ai_search",
+                "name": "x",
+                "azureAiSearch": {"indexes": [{"indexAssetId": "asset-1", "indexName": "docs"}]},
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(both_together_partial, schema)
+
+    neither = {
+        **_valid_manifest(),
+        "tools": [
+            {"type": "azure_ai_search", "name": "x", "azureAiSearch": {"indexes": [{"topK": 5}]}},
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(neither, schema)
+
+
+def test_provisioner_constructs_azure_ai_search_index_asset_id_against_real_sdk(monkeypatch):
+    # Schema acceptance alone doesn't prove the provisioner maps indexAssetId to the SDK's
+    # actual constructor kwarg; construct it against the real locked SDK model.
+    m = pytest.importorskip("azure.ai.projects.models")
+    tool = {
+        "type": "azure_ai_search",
+        "name": "x",
+        "azureAiSearch": {"indexes": [{"indexAssetId": "asset-1", "topK": 5}]},
+    }
+    fields = {k: v for k, v in _tb._convert_keys(tool).items() if k != "type"}
+    built = m.AzureAISearchToolboxTool(**fields)
+    assert built.azure_ai_search["indexes"][0]["index_asset_id"] == "asset-1"
+    assert built.azure_ai_search["indexes"][0]["top_k"] == 5
 
 
 def test_schema_rejects_openapi_missing_required_nested_fields_and_bad_auth():
@@ -967,6 +1056,592 @@ def test_main_accepts_schema_valid_manifest_in_dry_run(tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert "dry run" in captured.out
+
+
+# ----------------- round 7: new SDK 2.3.0 toolbox types --------------------------------
+# a2a_preview, fabric_iq_preview, work_iq_preview, reminder_preview were newly added to
+# azure-ai-projects 2.3.0's toolbox model set but omitted from _TYPE_TO_MODEL / the schema /
+# the example manifest before this round. Each gets a schema positive+negative case AND a
+# real-SDK construction check (both directions matter: the schema alone doesn't prove the
+# provisioner's camelCase mapping actually reaches the SDK constructor).
+def test_schema_and_sdk_accept_a2a_preview_via_project_connection_id_or_base_url():
+    # A2APreviewToolboxTool requires ONE of project_connection_id / base_url; both
+    # individually-valid forms must validate AND construct against the real locked SDK.
+    jsonschema = pytest.importorskip("jsonschema")
+    m = pytest.importorskip("azure.ai.projects.models")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    via_connection = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "a2a_preview",
+                "name": "a2a",
+                "projectConnectionId": "a2a-conn",
+                "agentCardPath": "/.well-known/agent-card.json",
+            }
+        ],
+    }
+    jsonschema.validate(via_connection, schema)  # must not raise
+    fields = {k: v for k, v in _tb._convert_keys(via_connection["tools"][0]).items() if k != "type"}
+    built = m.A2APreviewToolboxTool(**fields)
+    assert built.project_connection_id == "a2a-conn"
+    assert built.agent_card_path == "/.well-known/agent-card.json"
+
+    via_base_url = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "a2a_preview",
+                "name": "a2a",
+                "baseUrl": "https://agent.example.com",
+                "sendCredentialsForAgentCard": True,
+            }
+        ],
+    }
+    jsonschema.validate(via_base_url, schema)  # must not raise
+    fields = {k: v for k, v in _tb._convert_keys(via_base_url["tools"][0]).items() if k != "type"}
+    built = m.A2APreviewToolboxTool(**fields)
+    assert built.base_url == "https://agent.example.com"
+    assert built.send_credentials_for_agent_card is True
+
+
+def test_schema_and_sdk_reject_a2a_preview_missing_connection_and_foreign_fields():
+    jsonschema = pytest.importorskip("jsonschema")
+    m = pytest.importorskip("azure.ai.projects.models")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    neither = {**_valid_manifest(), "tools": [{"type": "a2a_preview", "name": "a2a"}]}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(neither, schema)
+
+    # serverLabel belongs to mcp/fabric_iq_preview, not a2a_preview; the schema's per-type
+    # exclusion list AND the real SDK constructor must both reject it.
+    with_foreign_field = {
+        **_valid_manifest(),
+        "tools": [
+            {"type": "a2a_preview", "name": "a2a", "projectConnectionId": "a2a-conn", "serverLabel": "nope"}
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(with_foreign_field, schema)
+    fields = {k: v for k, v in _tb._convert_keys(with_foreign_field["tools"][0]).items() if k != "type"}
+    with pytest.raises(TypeError):
+        m.A2APreviewToolboxTool(**fields)
+
+
+def test_schema_and_sdk_accept_fabric_iq_preview_and_reject_missing_connection():
+    # FabricIQPreviewToolboxTool requires project_connection_id; server_label/server_url/
+    # require_approval are optional and SHARED field names with mcp (unlike work_iq_preview,
+    # which excludes them entirely -- see next test).
+    jsonschema = pytest.importorskip("jsonschema")
+    m = pytest.importorskip("azure.ai.projects.models")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    good = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "fabric_iq_preview",
+                "name": "fabric",
+                "projectConnectionId": "fabric-conn",
+                "serverLabel": "fabric-iq",
+                "requireApproval": "never",
+            }
+        ],
+    }
+    jsonschema.validate(good, schema)  # must not raise
+    fields = {k: v for k, v in _tb._convert_keys(good["tools"][0]).items() if k != "type"}
+    built = m.FabricIQPreviewToolboxTool(**fields)
+    assert built.project_connection_id == "fabric-conn"
+    assert built.server_label == "fabric-iq"
+    assert built.require_approval == "never"
+
+    missing_connection = {
+        **_valid_manifest(),
+        "tools": [{"type": "fabric_iq_preview", "name": "fabric", "serverLabel": "fabric-iq"}],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing_connection, schema)
+
+    # allowedTools/deferLoading are mcp-only, NOT accepted by fabric_iq_preview (unlike
+    # serverLabel/serverUrl/requireApproval, which fabric_iq_preview shares with mcp).
+    with_mcp_only_field = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "fabric_iq_preview",
+                "name": "fabric",
+                "projectConnectionId": "fabric-conn",
+                "allowedTools": ["x"],
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(with_mcp_only_field, schema)
+    fields = {k: v for k, v in _tb._convert_keys(with_mcp_only_field["tools"][0]).items() if k != "type"}
+    with pytest.raises(TypeError):
+        m.FabricIQPreviewToolboxTool(**fields)
+
+
+def test_schema_and_sdk_accept_work_iq_preview_and_reject_extra_fields():
+    # WorkIQPreviewToolboxTool has exactly ONE field: project_connection_id. Unlike
+    # fabric_iq_preview, server_label/server_url/require_approval are NOT accepted either.
+    jsonschema = pytest.importorskip("jsonschema")
+    m = pytest.importorskip("azure.ai.projects.models")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    good = {
+        **_valid_manifest(),
+        "tools": [{"type": "work_iq_preview", "name": "work", "projectConnectionId": "work-conn"}],
+    }
+    jsonschema.validate(good, schema)  # must not raise
+    fields = {k: v for k, v in _tb._convert_keys(good["tools"][0]).items() if k != "type"}
+    built = m.WorkIQPreviewToolboxTool(**fields)
+    assert built.project_connection_id == "work-conn"
+
+    missing_connection = {**_valid_manifest(), "tools": [{"type": "work_iq_preview", "name": "work"}]}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing_connection, schema)
+
+    with_server_label = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "work_iq_preview",
+                "name": "work",
+                "projectConnectionId": "work-conn",
+                "serverLabel": "not-allowed-here",
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(with_server_label, schema)
+    fields = {k: v for k, v in _tb._convert_keys(with_server_label["tools"][0]).items() if k != "type"}
+    with pytest.raises(TypeError):
+        m.WorkIQPreviewToolboxTool(**fields)
+
+
+def test_schema_and_sdk_accept_reminder_preview_with_no_type_specific_fields():
+    # ReminderPreviewToolboxTool carries no tool-specific fields at all (only the common
+    # type/name/description/toolConfigs); it must still validate and construct cleanly, and a
+    # type-specific field belonging to another type must be rejected both ways.
+    jsonschema = pytest.importorskip("jsonschema")
+    m = pytest.importorskip("azure.ai.projects.models")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    good = {**_valid_manifest(), "tools": [{"type": "reminder_preview", "name": "reminder"}]}
+    jsonschema.validate(good, schema)  # must not raise
+    fields = {k: v for k, v in _tb._convert_keys(good["tools"][0]).items() if k != "type"}
+    built = m.ReminderPreviewToolboxTool(**fields)
+    assert built.type == "reminder_preview"
+
+    with_foreign_field = {
+        **_valid_manifest(),
+        "tools": [{"type": "reminder_preview", "name": "reminder", "projectConnectionId": "x"}],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(with_foreign_field, schema)
+    fields = {k: v for k, v in _tb._convert_keys(with_foreign_field["tools"][0]).items() if k != "type"}
+    with pytest.raises(TypeError):
+        m.ReminderPreviewToolboxTool(**fields)
+
+
+# ----------------- round 7: requireApproval / allowedTools / toolConfigs strict shapes ---
+def test_schema_require_approval_accepts_literals_and_object_form_rejects_bogus_shapes():
+    # requireApproval must be exactly one of: the literal "always", the literal "never", or an
+    # object with an "always" and/or "never" key holding an mcpToolFilter (toolNames/readOnly).
+    # Anything else (a bogus literal, an empty object, an unknown object key) must be rejected.
+    jsonschema = pytest.importorskip("jsonschema")
+    m = pytest.importorskip("azure.ai.projects.models")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    def mcp_tool(require_approval):
+        return {
+            **_valid_manifest(),
+            "tools": [
+                {
+                    "type": "mcp",
+                    "serverLabel": "x",
+                    "serverUrl": "https://x/mcp",
+                    "requireApproval": require_approval,
+                }
+            ],
+        }
+
+    for literal in ("always", "never"):
+        manifest = mcp_tool(literal)
+        jsonschema.validate(manifest, schema)  # must not raise
+        fields = {k: v for k, v in _tb._convert_keys(manifest["tools"][0]).items() if k != "type"}
+        assert m.MCPToolboxTool(**fields).require_approval == literal
+
+    object_form = mcp_tool({"never": {"toolNames": ["search_docs"], "readOnly": True}})
+    jsonschema.validate(object_form, schema)  # must not raise
+    fields = {k: v for k, v in _tb._convert_keys(object_form["tools"][0]).items() if k != "type"}
+    built = m.MCPToolboxTool(**fields)
+    assert built.require_approval == {"never": {"tool_names": ["search_docs"], "read_only": True}}
+
+    both_keys = mcp_tool({"always": {"toolNames": ["a"]}, "never": {"readOnly": True}})
+    jsonschema.validate(both_keys, schema)  # must not raise: always+never together is valid
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(mcp_tool("sometimes"), schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(mcp_tool({}), schema)  # minProperties: 1
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(mcp_tool({"maybe": {"toolNames": ["a"]}}), schema)  # unknown key
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(mcp_tool({"always": "not-an-object"}), schema)
+
+
+def test_schema_allowed_tools_accepts_array_or_filter_object_rejects_bogus_shapes():
+    # allowedTools is either a plain non-empty array of tool-name strings, or an mcpToolFilter
+    # object (toolNames/readOnly) restricting which discovered tools are auto-approved for
+    # loading -- distinct from, and independent of, requireApproval's own filter shape.
+    jsonschema = pytest.importorskip("jsonschema")
+    m = pytest.importorskip("azure.ai.projects.models")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    def mcp_tool(allowed_tools):
+        return {
+            **_valid_manifest(),
+            "tools": [
+                {"type": "mcp", "serverLabel": "x", "serverUrl": "https://x/mcp", "allowedTools": allowed_tools}
+            ],
+        }
+
+    array_form = mcp_tool(["search_docs", "get_doc"])
+    jsonschema.validate(array_form, schema)  # must not raise
+    fields = {k: v for k, v in _tb._convert_keys(array_form["tools"][0]).items() if k != "type"}
+    assert m.MCPToolboxTool(**fields).allowed_tools == ["search_docs", "get_doc"]
+
+    object_form = mcp_tool({"toolNames": ["search_docs"], "readOnly": True})
+    jsonschema.validate(object_form, schema)  # must not raise
+    fields = {k: v for k, v in _tb._convert_keys(object_form["tools"][0]).items() if k != "type"}
+    assert m.MCPToolboxTool(**fields).allowed_tools == {"tool_names": ["search_docs"], "read_only": True}
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(mcp_tool([]), schema)  # minItems: 1
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(mcp_tool([1, 2]), schema)  # array items must be strings
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(mcp_tool({"bogusKey": True}), schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(mcp_tool({}), schema)  # minProperties: 1
+
+
+def test_schema_tool_configs_accepts_pin_and_additional_search_text_rejects_unknown_keys():
+    # toolConfigs (common to every tool type -- ToolConfig: pin + additional_search_text,
+    # keyed by tool name or "*" for the catch-all default) must accept both known sub-fields
+    # and reject an unrecognized one under a tool-name key.
+    jsonschema = pytest.importorskip("jsonschema")
+    m = pytest.importorskip("azure.ai.projects.models")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    good = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "web_search",
+                "name": "web",
+                "toolConfigs": {"*": {"pin": False}, "web": {"pin": True, "additionalSearchText": "extra context"}},
+            }
+        ],
+    }
+    jsonschema.validate(good, schema)  # must not raise
+    fields = {k: v for k, v in _tb._convert_keys(good["tools"][0]).items() if k != "type"}
+    built = m.WebSearchToolboxTool(**fields)
+    assert built.tool_configs == {
+        "*": {"pin": False},
+        "web": {"pin": True, "additional_search_text": "extra context"},
+    }
+
+    bad = {
+        **_valid_manifest(),
+        "tools": [{"type": "web_search", "name": "web", "toolConfigs": {"web": {"bogusKey": 1}}}],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+
+# ----------------- round 7: web_search / file_search new optional fields ----------------
+def test_schema_web_search_accepts_filters_user_location_search_context_size():
+    # web_search's filters (allowedDomains-only) is a DIFFERENT shape from file_search's
+    # comparison/compound filter tree (see next test) even though both are named "filters" --
+    # each type's shape must be enforced independently, not just "some object accepted".
+    jsonschema = pytest.importorskip("jsonschema")
+    m = pytest.importorskip("azure.ai.projects.models")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    good = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "web_search",
+                "name": "web",
+                "filters": {"allowedDomains": ["learn.microsoft.com"]},
+                "userLocation": {"country": "US", "city": "Redmond", "region": "Washington"},
+                "searchContextSize": "medium",
+            }
+        ],
+    }
+    jsonschema.validate(good, schema)  # must not raise
+    fields = {k: v for k, v in _tb._convert_keys(good["tools"][0]).items() if k != "type"}
+    built = m.WebSearchToolboxTool(**fields)
+    assert built.filters == {"allowed_domains": ["learn.microsoft.com"]}
+    assert built.user_location["country"] == "US"
+    assert built.search_context_size == "medium"
+
+    # file_search's comparison-filter shape ({"type": "eq", ...}) must NOT validate as
+    # web_search's filters (which only accepts allowedDomains).
+    wrong_filter_shape = {
+        **_valid_manifest(),
+        "tools": [
+            {"type": "web_search", "name": "web", "filters": {"type": "eq", "key": "language", "value": "en"}}
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(wrong_filter_shape, schema)
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            {
+                **_valid_manifest(),
+                "tools": [{"type": "web_search", "name": "web", "searchContextSize": "extreme"}],
+            },
+            schema,
+        )  # not a member of the low/medium/high enum
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            {
+                **_valid_manifest(),
+                # "type" is SDK-auto-set on WebSearchUserLocation and not caller-settable.
+                "tools": [{"type": "web_search", "name": "web", "userLocation": {"type": "approximate"}}],
+            },
+            schema,
+        )
+
+    # These fields are web_search-only; another type carrying them must be rejected.
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            {**_valid_manifest(), "tools": [{"type": "file_search", "name": "fs", "searchContextSize": "low"}]},
+            schema,
+        )
+
+
+def test_schema_file_search_accepts_max_num_results_ranking_options_and_filters():
+    jsonschema = pytest.importorskip("jsonschema")
+    m = pytest.importorskip("azure.ai.projects.models")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    good = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "file_search",
+                "name": "fs",
+                "vectorStoreIds": ["vs1"],
+                "maxNumResults": 10,
+                "rankingOptions": {
+                    "ranker": "auto",
+                    "scoreThreshold": 0.5,
+                    "hybridSearch": {"embeddingWeight": 0.6, "textWeight": 0.4},
+                },
+                "filters": {
+                    "type": "and",
+                    "filters": [
+                        {"type": "eq", "key": "language", "value": "en"},
+                        {"type": "eq", "key": "docType", "value": "runbook"},
+                    ],
+                },
+            }
+        ],
+    }
+    jsonschema.validate(good, schema)  # must not raise
+    fields = {k: v for k, v in _tb._convert_keys(good["tools"][0]).items() if k != "type"}
+    built = m.FileSearchToolboxTool(**fields)
+    assert built.max_num_results == 10
+    assert built.ranking_options["hybrid_search"] == {"embedding_weight": 0.6, "text_weight": 0.4}
+    assert built.filters["filters"][0] == {"type": "eq", "key": "language", "value": "en"}
+
+    for bad_max in (0, 51):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(
+                {
+                    **_valid_manifest(),
+                    "tools": [{"type": "file_search", "name": "fs", "maxNumResults": bad_max}],
+                },
+                schema,
+            )
+
+    incomplete_hybrid_search = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "file_search",
+                "name": "fs",
+                "rankingOptions": {"hybridSearch": {"embeddingWeight": 0.6}},
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(incomplete_hybrid_search, schema)
+
+    # web_search's allowedDomains-only filters shape must NOT validate as file_search's
+    # comparison/compound filter tree.
+    wrong_filter_shape = {
+        **_valid_manifest(),
+        "tools": [
+            {"type": "file_search", "name": "fs", "filters": {"allowedDomains": ["learn.microsoft.com"]}}
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(wrong_filter_shape, schema)
+
+
+# ----------------- round 7: mcp new optional fields + documented secret exclusions ------
+def test_schema_and_sdk_accept_mcp_server_description_and_defer_loading():
+    jsonschema = pytest.importorskip("jsonschema")
+    m = pytest.importorskip("azure.ai.projects.models")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    good = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "mcp",
+                "serverLabel": "x",
+                "serverUrl": "https://x/mcp",
+                "serverDescription": "Internal knowledge-base MCP server.",
+                "deferLoading": True,
+            }
+        ],
+    }
+    jsonschema.validate(good, schema)  # must not raise
+    fields = {k: v for k, v in _tb._convert_keys(good["tools"][0]).items() if k != "type"}
+    built = m.MCPToolboxTool(**fields)
+    assert built.server_description == "Internal knowledge-base MCP server."
+    assert built.defer_loading is True
+
+
+def test_schema_rejects_mcp_authorization_and_headers_as_documented_secrets():
+    # MCPToolboxTool.authorization / .headers are real, SDK-constructible fields (verified
+    # against the locked SDK) but carry literal credential material for the upstream MCP
+    # server, so AI4IA deliberately never models them in the manifest schema (AGENTS.md "no
+    # secret sprawl" -- see docs/foundry-toolbox.md and the reflection parity test below,
+    # which pins this as an intentional exclusion rather than an accidental gap).
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    with_authorization = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "mcp",
+                "serverLabel": "x",
+                "serverUrl": "https://x/mcp",
+                "authorization": {"type": "bearer", "token": "shh"},
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(with_authorization, schema)
+
+    with_headers = {
+        **_valid_manifest(),
+        "tools": [
+            {"type": "mcp", "serverLabel": "x", "serverUrl": "https://x/mcp", "headers": {"X-Api-Key": "shh"}}
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(with_headers, schema)
+
+
+# ----------------- round 7: reflection-driven SDK field/type parity ---------------------
+# The coordinator's explicit ask: rather than hand-verifying each new field individually
+# (which silently drifts whenever the SDK adds/renames a field or type), enumerate every real
+# azure.ai.projects.models.*ToolboxTool subclass via reflection and prove (1) every SDK
+# toolbox type has a manifest "type" mapped to it in _TYPE_TO_MODEL, and (2) every field the
+# SDK constructor accepts for that type has camelCase coverage in _CAMEL_TO_SNAKE (or is
+# camelCase-identical, e.g. "container"/"filters"/"openapi") or is an explicitly documented
+# secret exclusion -- so a field is never silently unmapped.
+#
+# Reflection mechanism note: inspect.signature(cls.__init__) returns a generic
+# (*args, **kwargs) for these generated SDK model classes (the real parameter list only
+# exists as an @overload-decorated stub for IDE ergonomics), and typing.get_type_hints()
+# fails with NameError on the class's unresolved forward-reference annotation strings.
+# cls.__annotations__ (the raw, unresolved dict) DOES carry the real per-class field names,
+# but is not inherited -- each class in the MRO only contributes fields it newly declares --
+# so the full field set requires walking cls.__mro__ and merging.
+def _sdk_declared_fields(cls) -> set:
+    fields: dict = {}
+    for base in reversed(cls.__mro__):
+        fields.update(getattr(base, "__annotations__", {}))
+    fields.pop("_calculated", None)  # SDK-internal bookkeeping, not a manifest field.
+    fields.pop("__mapping__", None)  # ditto (MutableMapping backing store).
+    return set(fields)
+
+
+def _snake_to_camel(name: str) -> str:
+    head, *rest = name.split("_")
+    return head + "".join(part.title() for part in rest)
+
+
+# Fields azure-ai-projects 2.3.0 genuinely accepts but AI4IA deliberately never models in the
+# committed manifest schema because they carry literal secret material (AGENTS.md "no secret
+# sprawl"): MCPToolboxTool.authorization (bearer/API-key credentials for the upstream MCP
+# server) and .headers (arbitrary, possibly-secret HTTP headers). See docs/foundry-toolbox.md
+# and test_schema_rejects_mcp_authorization_and_headers_as_documented_secrets above.
+_DOCUMENTED_SECRET_EXCLUSIONS = {"MCPToolboxTool": {"authorization", "headers"}}
+# Fields common to every ToolboxTool subclass, already covered generically by
+# test_every_allowed_type_maps_to_a_model_class / test_plan_tools_camel_to_snake /
+# test_schema_tool_configs_accepts_pin_and_additional_search_text_rejects_unknown_keys, and
+# intentionally excluded from the per-type comparison below.
+_COMMON_TOOLBOX_FIELDS = {"type", "name", "description", "tool_configs"}
+
+
+def test_reflection_driven_parity_covers_every_sdk_toolbox_type_and_field():
+    pytest.importorskip("azure.ai.projects")
+    from azure.ai.projects import models as m
+
+    sdk_toolbox_classes: dict[str, type] = {}
+    for class_name in dir(m):
+        if not class_name.endswith("ToolboxTool") or class_name == "ToolboxTool":
+            continue
+        obj = getattr(m, class_name)
+        if isinstance(obj, type):
+            sdk_toolbox_classes[class_name] = obj
+    assert len(sdk_toolbox_classes) >= 12, (
+        f"expected at least the 12 known toolbox types via reflection, found: {sorted(sdk_toolbox_classes)}"
+    )
+
+    modeled_classes = set(_tb._TYPE_TO_MODEL.values())
+    assert set(sdk_toolbox_classes) == modeled_classes, (
+        "SDK toolbox classes and _TYPE_TO_MODEL have drifted -- "
+        f"SDK-only (missing from _TYPE_TO_MODEL): {set(sdk_toolbox_classes) - modeled_classes}; "
+        f"manifest-only (stale entries, no longer in SDK): {modeled_classes - set(sdk_toolbox_classes)}"
+    )
+
+    for class_name, cls in sdk_toolbox_classes.items():
+        own_fields = _sdk_declared_fields(cls) - _COMMON_TOOLBOX_FIELDS
+        secret_exclusions = _DOCUMENTED_SECRET_EXCLUSIONS.get(class_name, set())
+        stale_exclusions = secret_exclusions - own_fields
+        assert not stale_exclusions, (
+            f"{class_name}: documented secret exclusion(s) no longer exist on the SDK class "
+            f"(update _DOCUMENTED_SECRET_EXCLUSIONS): {stale_exclusions}"
+        )
+
+        uncovered = [
+            field
+            for field in sorted(own_fields - secret_exclusions)
+            if _snake_to_camel(field) not in _tb._CAMEL_TO_SNAKE and _snake_to_camel(field) != field
+        ]
+        assert not uncovered, (
+            f"{class_name}: SDK field(s) with no camelCase mapping in _CAMEL_TO_SNAKE and no "
+            f"documented secret exclusion -- add a schema property + _CAMEL_TO_SNAKE entry, or "
+            f"an explicit, justified _DOCUMENTED_SECRET_EXCLUSIONS entry: {uncovered}"
+        )
 
 
 # ----------------------------------- skills -------------------------------------------

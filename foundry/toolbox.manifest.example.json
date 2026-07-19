@@ -1,6 +1,6 @@
 {
   "$schema": "./toolbox.manifest.schema.json",
-  "_comment": "POPULATED REFERENCE manifest showing the tools AI4IA can place in a toolbox via azure-ai-projects. This is an EXAMPLE only (the canonical live toolbox is foundry/toolbox.manifest.json). To use it, copy this over toolbox.manifest.json (or pass --manifest foundry/toolbox.manifest.example.json), prune the tools you do not want, create the referenced connections, then run scripts/provision-foundry-toolbox.py. Every tool listed here is consumed through the official-MCP APIM front door once the toolbox is registered in infra/mcp-servers.json. Note: computer_use and bing_custom_search are agent-level tools with no toolbox equivalent in the SDK, so they are not toolbox tools. The service allows at most one unnamed tool total, so every tool here has a `name` (or `serverLabel` for the `mcp` tool). All tools are Azure public preview.",
+  "_comment": "POPULATED REFERENCE manifest showing every azure-ai-projects 2.3.0 toolbox tool type AI4IA can place in a toolbox (all 12: web_search, azure_ai_search, code_interpreter, browser_automation_preview, file_search, openapi, mcp, toolbox_search_preview, a2a_preview, fabric_iq_preview, work_iq_preview, reminder_preview), each with at least one populated example. This is an EXAMPLE only (the canonical live toolbox is foundry/toolbox.manifest.json). To use it, copy this over toolbox.manifest.json (or pass --manifest foundry/toolbox.manifest.example.json), prune the tools you do not want, create the referenced connections, then run scripts/provision-foundry-toolbox.py. Every tool listed here is consumed through the official-MCP APIM front door once the toolbox is registered in infra/mcp-servers.json. Note: computer_use and bing_custom_search are agent-level tools with no toolbox equivalent in the SDK, so they are not toolbox tools. The service allows at most one unnamed tool total, so every tool here has a `name` (or `serverLabel` for `mcp` tools). Tool types whose name ends in `_preview` (browser_automation_preview, toolbox_search_preview, a2a_preview, fabric_iq_preview, work_iq_preview, reminder_preview) are Azure public preview; the rest are generally available.",
   "name": "ai4ia-toolbox",
   "description": "AI4IA shared Foundry toolbox (populated reference). Groups grounding, code execution, browsing, and tool search behind one APIM-fronted MCP endpoint.",
   "raiPolicyName": "ai4ia-annotate-only",
@@ -16,13 +16,31 @@
     },
     {
       "name": "ai4ia-bing-custom-search"
+    },
+    {
+      "name": "ai4ia-a2a-agent"
+    },
+    {
+      "name": "ai4ia-fabric-iq"
+    },
+    {
+      "name": "ai4ia-work-iq"
     }
   ],
   "tools": [
     {
       "type": "web_search",
       "name": "web-search",
-      "description": "Grounded public web search. Connectionless."
+      "description": "Grounded public web search. Connectionless. Demonstrates the optional filters/userLocation/searchContextSize fields (SDK 2.3.0's WebSearchToolboxTool); all three are independent of customSearchConfiguration (see web-search-custom below).",
+      "filters": {
+        "allowedDomains": ["learn.microsoft.com", "azure.microsoft.com"]
+      },
+      "userLocation": {
+        "country": "US",
+        "city": "Redmond",
+        "region": "Washington"
+      },
+      "searchContextSize": "medium"
     },
     {
       "type": "web_search",
@@ -36,12 +54,25 @@
     {
       "type": "azure_ai_search",
       "name": "ai4ia-rag",
-      "description": "RAG over the AI4IA AI Search index. Requires the 'ai4ia-search' project connection. Shape is azureAiSearch.indexes[] (SDK 2.3.0's AzureAISearchToolResource), not root-level indexName/projectConnectionId.",
+      "description": "RAG over the AI4IA AI Search index. Requires the 'ai4ia-search' project connection. Shape is azureAiSearch.indexes[] (SDK 2.3.0's AzureAISearchToolResource), not root-level indexName/projectConnectionId. indexName and projectConnectionId are required together (see ai4ia-rag-by-asset below for the indexAssetId alternative); the two shapes are mutually exclusive per index entry.",
       "azureAiSearch": {
         "indexes": [
           {
             "indexName": "ai4ia-docs",
             "projectConnectionId": "ai4ia-search"
+          }
+        ]
+      }
+    },
+    {
+      "type": "azure_ai_search",
+      "name": "ai4ia-rag-by-asset",
+      "description": "Alternative azure_ai_search shape: reference an already-registered AI Search index ASSET by ID instead of indexName+projectConnectionId (azure-ai-projects 2.3.0's AISearchIndexResource.index_asset_id). Mutually exclusive with indexName/projectConnectionId on the same index entry; exactly one index per tool either way. Modeled per explicit product direction -- Microsoft's published 'Configure tool parameters' guide only documents the indexName+projectConnectionId form, so confirm the expected asset-id format against your Foundry project before relying on this in production (see docs/foundry-toolbox.md).",
+      "azureAiSearch": {
+        "indexes": [
+          {
+            "indexAssetId": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/ai4ia-rg/providers/Microsoft.MachineLearningServices/workspaces/ai4ia-project/indexes/ai4ia-docs-index/versions/1",
+            "topK": 5
           }
         ]
       }
@@ -77,8 +108,20 @@
     {
       "type": "file_search",
       "name": "file-search",
-      "description": "Search files attached to the toolbox via a vector store. Connectionless once files are attached.",
-      "vectorStoreIds": ["ai4ia-docs-vs"]
+      "description": "Search files attached to the toolbox via a vector store. Connectionless once files are attached. Demonstrates maxNumResults/rankingOptions/filters (SDK 2.3.0's FileSearchToolboxTool); filters here is a compound (and) tree of comparison filters over vector-store file metadata, distinct from web_search's allowed-domains filters shape.",
+      "vectorStoreIds": ["ai4ia-docs-vs"],
+      "maxNumResults": 10,
+      "rankingOptions": {
+        "ranker": "auto",
+        "scoreThreshold": 0.5
+      },
+      "filters": {
+        "type": "and",
+        "filters": [
+          { "type": "eq", "key": "language", "value": "en" },
+          { "type": "eq", "key": "docType", "value": "runbook" }
+        ]
+      }
     },
     {
       "type": "openapi",
@@ -114,9 +157,60 @@
       "requireApproval": "always"
     },
     {
+      "type": "mcp",
+      "serverLabel": "example-mcp-advanced",
+      "description": "Second mcp example demonstrating serverDescription/allowedTools/deferLoading/toolConfigs and the object form of requireApproval (SDK 2.3.0's MCPToolRequireApproval), as an alternative to the literal 'always'/'never' shown above. requireApproval here allows the read-only 'search_docs' tool without approval while still gating everything else via the toolbox default.",
+      "serverUrl": "https://example-mcp-advanced.contoso.com/mcp",
+      "projectConnectionId": "ai4ia-mcp-upstream",
+      "serverDescription": "Internal knowledge-base MCP server exposing search and lookup tools.",
+      "allowedTools": ["search_docs", "get_doc", "list_spaces"],
+      "deferLoading": true,
+      "requireApproval": {
+        "never": {
+          "toolNames": ["search_docs"],
+          "readOnly": true
+        }
+      },
+      "toolConfigs": {
+        "search_docs": {
+          "pin": true,
+          "additionalSearchText": "internal documentation knowledge base search"
+        },
+        "*": {
+          "pin": false
+        }
+      }
+    },
+    {
       "type": "toolbox_search_preview",
       "name": "tool-search",
       "description": "Tool search: lets the model pick from a large tool set. Add so the toolbox self-describes its tools."
+    },
+    {
+      "type": "a2a_preview",
+      "name": "a2a-agent",
+      "description": "Delegate to a remote Agent-to-Agent (A2A) protocol agent (azure-ai-projects 2.3.0's A2APreviewToolboxTool). Requires the 'ai4ia-a2a-agent' project connection, which stores the remote agent's endpoint and auth -- this is Microsoft's documented approach. One of projectConnectionId or baseUrl is required; use baseUrl+agentCardPath instead (with sendCredentialsForAgentCard) for a self-contained, connectionless call to an anonymous agent.",
+      "projectConnectionId": "ai4ia-a2a-agent",
+      "agentCardPath": "/.well-known/agent-card.json"
+    },
+    {
+      "type": "fabric_iq_preview",
+      "name": "fabric-iq",
+      "description": "Ground responses in a Microsoft Fabric IQ knowledge source (azure-ai-projects 2.3.0's FabricIQPreviewToolboxTool). Requires the 'ai4ia-fabric-iq' project connection. serverLabel/serverUrl/requireApproval are optional here (shared field names with mcp); serverUrl defaults to the connection's own URL when omitted.",
+      "projectConnectionId": "ai4ia-fabric-iq",
+      "serverLabel": "fabric-iq",
+      "requireApproval": "never"
+    },
+    {
+      "type": "work_iq_preview",
+      "name": "work-iq",
+      "description": "Ground responses in Microsoft 365 Work IQ (azure-ai-projects 2.3.0's WorkIQPreviewToolboxTool). Requires the 'ai4ia-work-iq' project connection; this is the tool's only field.",
+      "projectConnectionId": "ai4ia-work-iq"
+    },
+    {
+      "type": "reminder_preview",
+      "name": "reminder",
+      "description": "Lets the model schedule reminders for the caller (azure-ai-projects 2.3.0's ReminderPreviewToolboxTool). No type-specific fields or connection required."
     }
   ],
   "skills": [

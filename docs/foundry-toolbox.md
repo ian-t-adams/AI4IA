@@ -130,28 +130,47 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 
 | `type` | Purpose | Key manifest fields | Notes |
 | --- | --- | --- | --- |
-| `web_search` | Grounded web search | `name`, `description`, `customSearchConfiguration` (optional) | Connectionless by default. `customSearchConfiguration` (SDK 2.3.0's `WebSearchConfiguration`) scopes search to a Bing Custom Search instance instead of the general web; its `projectConnectionId` and `instanceName` are **both required together** when present (the SDK model has no default for either). |
-| `azure_ai_search` | RAG over an AI Search index | `azureAiSearch.indexes[].indexName`, `.projectConnectionId` | Nested shape (SDK 2.3.0's `AzureAISearchToolResource`); do **not** put `indexName`/`projectConnectionId` at the tool root -- the SDK constructor silently ignores them there (no error, fields just deserialize to `None`). At most one index per tool today. `indexName` and `projectConnectionId` are **both required together**: Microsoft's Azure AI Search tool "Configure tool parameters" doc lists both as Required with no documented alternative. The SDK model also exposes an `index_asset_id` field, but no current Microsoft Learn doc for this tool documents it as a supported substitute, so AI4IA intentionally does not accept `indexAssetId` here -- using an index name/connection pair that doesn't resolve, or an undocumented identifier field, would fail at provisioning or query time with no clear signal why. |
+| `web_search` | Grounded web search | `name`, `description`, `filters`/`userLocation`/`searchContextSize` (optional), `customSearchConfiguration` (optional) | Connectionless by default. `filters.allowedDomains` scopes results to specific domains; `userLocation` (`country`/`region`/`city`/`timezone`, all optional strings -- the SDK auto-sets its own internal `type` discriminator, so do not set one) biases results toward a locale; `searchContextSize` is one of `low`/`medium`/`high`. `customSearchConfiguration` (SDK 2.3.0's `WebSearchConfiguration`) independently scopes search to a Bing Custom Search instance instead of the general web; its `projectConnectionId` and `instanceName` are **both required together** when present (the SDK model has no default for either). |
+| `azure_ai_search` | RAG over an AI Search index | `azureAiSearch.indexes[]`: either `indexAssetId` alone, or `indexName` + `projectConnectionId` together | Nested shape (SDK 2.3.0's `AzureAISearchToolResource`); do **not** put these fields at the tool root -- the SDK constructor silently ignores them there (no error, fields just deserialize to `None`). Exactly one index per tool. `indexName` + `projectConnectionId` (Microsoft's documented "Configure tool parameters" form) and `indexAssetId` (a direct reference to an already-registered index asset -- also a real SDK 2.3.0 `AISearchIndexResource` field, though no current Microsoft Learn doc for this tool shows it as an alternative) are **mutually exclusive**: the schema rejects an index entry that sets both, or neither. |
 | `code_interpreter` | Sandboxed Python | `container` (optional) | Foundry-managed sandbox (distinct from AI4IA's existing direct Responses-API code interpreter). `container`, if set, is either an **existing container ID** (string; a pre-registered container resource) or a nested `{"type": "auto", ...}` object (SDK 2.3.0's `AutoCodeInterpreterToolParam`) for the managed sandbox with custom `fileIds`/`memoryLimit`/`networkPolicy`. Omit it entirely for the plain default sandbox. `networkPolicy` (SDK 2.3.0's `ContainerNetworkPolicyParam`) restricts sandbox outbound network access: `{"type": "disabled"}` or `{"type": "allowlist", "allowedDomains": [...]}` (non-empty). The SDK's allowlist variant also supports `domainSecrets` (a literal secret **value** injected per allowed domain); AI4IA intentionally does not expose that field here -- this manifest is committed to source control, so a per-domain secret value has no safe home in it (see AGENTS.md's "no secret sprawl" rule). |
-| `file_search` | Search uploaded files | `vectorStoreIds` | Connectionless once files are attached. If set, must be non-empty (an empty list is inert). |
+| `file_search` | Search uploaded files | `vectorStoreIds`, `maxNumResults`/`rankingOptions`/`filters` (all optional) | Connectionless once files are attached. `vectorStoreIds`, if set, must be non-empty (an empty list is inert). `maxNumResults` is an integer 1-50. `rankingOptions.ranker` is `auto` or `default-2024-11-15`; `.scoreThreshold` is 0-1; `.hybridSearch`, if present, requires both `embeddingWeight` and `textWeight` (0-1 each). `filters` is a comparison (`type`/`key`/`value`, one of `eq`/`ne`/`gt`/`gte`/`lt`/`lte`/`in`/`nin`) or compound (`type`: `and`/`or` plus nested `filters[]`) tree over vector-store file metadata -- a **different shape** from `web_search.filters` above despite the shared name; each type's shape is independently schema-enforced. |
 | `browser_automation_preview` | Drive a hosted browser | `browserAutomationPreview.connection.projectConnectionId` | Nested shape (SDK 2.3.0's `BrowserAutomationToolParameters`). The connection must be a **Playwright Workspace** connection, not a plain API connection. Preview; heavier isolation review recommended. |
 | `openapi` | Call an OpenAPI-described API | `openapi` (nested `name`, `spec`, `auth`) | Wraps a REST API as a tool; `auth.type` is `anonymous`, `project_connection` (needs `auth.securityScheme.projectConnectionId`), or `managed_identity` (needs `auth.securityScheme.audience`). `spec` is passed through **byte-for-byte unmodified** -- its property names describe someone else's API and are never snake_cased, so a JSON-schema property genuinely named e.g. `topK` is never corrupted into `top_k`. |
 | `toolbox_search_preview` | **Tool search** — let the model pick tools from a large set | none | Add this so the toolbox self-describes its tools to the model. |
-| `mcp` | Nest another MCP server as a tool | `serverLabel`, one of `serverUrl`/`connectorId`, `requireApproval`, `projectConnectionId` | Lets the toolbox aggregate upstream MCP servers. Identified by `serverLabel`. Unlike `azure_ai_search`/`browser_automation_preview`, `mcp`'s `projectConnectionId` genuinely is a tool-root field in the SDK. There is no BYO-container-image tool type; if you need to run genuinely custom execution logic, wrap it in your own server and expose it as an `mcp` tool instead of trying to pass a custom image to `code_interpreter.container`. The SDK's `mcp` model also exposes `authorization` (an OAuth bearer token) and `headers` (which can carry auth material); AI4IA does not expose either for the same secret-sprawl reason as `networkPolicy.domainSecrets` above -- put credentials in the referenced project connection instead. |
+| `mcp` | Nest another MCP server as a tool | `serverLabel`, one of `serverUrl`/`connectorId`, `requireApproval`, `projectConnectionId`, `serverDescription`/`allowedTools`/`deferLoading` (optional) | Lets the toolbox aggregate upstream MCP servers. Identified by `serverLabel`. Unlike `azure_ai_search`/`browser_automation_preview`, `mcp`'s `projectConnectionId` genuinely is a tool-root field in the SDK. `requireApproval` is the literal `"always"`/`"never"`, or an object with `always`/`never` keys each holding a tool filter (`toolNames`/`readOnly`); an empty object is rejected. `allowedTools` is either a non-empty array of tool-name strings or that same tool-filter shape, restricting which discovered upstream tools are exposed. `serverDescription` is free text surfaced to the model; `deferLoading` (boolean) defers fetching the server's tool list until first use. There is no BYO-container-image tool type; if you need to run genuinely custom execution logic, wrap it in your own server and expose it as an `mcp` tool instead of trying to pass a custom image to `code_interpreter.container`. The SDK's `mcp` model also exposes `authorization` (an OAuth bearer token) and `headers` (which can carry auth material); AI4IA does not expose either for the same secret-sprawl reason as `networkPolicy.domainSecrets` above -- put credentials in the referenced project connection instead. |
+| `a2a_preview` | Delegate to a remote Agent-to-Agent (A2A) protocol agent | one of `projectConnectionId`/`baseUrl`, `agentCardPath`/`sendCredentialsForAgentCard` (optional) | SDK 2.3.0's `A2APreviewToolboxTool` -- the **inbound** direction (AI4IA's toolbox *calling out* to someone else's A2A agent), the inverse of the "Routines and Agent-to-Agent (A2A)" section below (AI4IA *exposing* its own agent as an A2A endpoint for others to call). Use `projectConnectionId` to delegate through a project connection storing the remote agent's endpoint and auth (Microsoft's documented approach), or `baseUrl` (+ optional `agentCardPath`, `sendCredentialsForAgentCard`) for a self-contained, connectionless call to an anonymous agent. Exactly one of `projectConnectionId`/`baseUrl` is required; fields specific to other tool types (e.g. `serverLabel`, `requireApproval`) are rejected. |
+| `fabric_iq_preview` | Ground responses in a Microsoft Fabric IQ knowledge source | `projectConnectionId` (required), `serverLabel`/`serverUrl`/`requireApproval` (optional) | SDK 2.3.0's `FabricIQPreviewToolboxTool`. Shares the `serverLabel`/`serverUrl`/`requireApproval` field *names* with `mcp`, but not `allowedTools`/`serverDescription`/`deferLoading` (those are mcp-only and rejected here). |
+| `work_iq_preview` | Ground responses in Microsoft 365 Work IQ | `projectConnectionId` (required; the tool's only field) | SDK 2.3.0's `WorkIQPreviewToolboxTool`. Unlike `fabric_iq_preview`, does **not** accept `serverLabel`/`serverUrl`/`requireApproval` or any other field. |
+| `reminder_preview` | Let the model schedule reminders for the caller | none | SDK 2.3.0's `ReminderPreviewToolboxTool`. No type-specific fields or connection required -- only the common `name`/`description`/`toolConfigs` below. |
 
-> **Deliberate gaps (not modeled, by design):** beyond `indexAssetId`/`domainSecrets`/`mcp.authorization`/`mcp.headers`
-> above, the schema also does not expose `web_search.filters`/`.userLocation`/`.searchContextSize`,
-> `file_search.maxNumResults`/`.rankingOptions`/`.filters`, or the generic per-tool `toolConfigs`
-> (`pin`/`additionalSearchText`) -- all real fields on the corresponding SDK 2.3.0 models, but none
-> of them were being silently mapped by `scripts/provision-foundry-toolbox.py` before this round, so
-> leaving them unsupported is a scope decision, not a fix for a drift bug. Add them (schema + example
-> + provisioner mapping + tests) in a follow-up if a real use case needs them.
+> **`toolConfigs` (every tool type):** an optional map from tool name (or `"*"` for the
+> catch-all default) to `{"pin": <bool>, "additionalSearchText": <string>}` (SDK 2.3.0's common
+> `ToolConfig`) -- `pin` keeps a tool always loaded/visible; `additionalSearchText` adds extra text
+> the model uses when `toolbox_search_preview` picks tools. Unknown keys under a `toolConfigs`
+> entry are rejected.
+
+> **Deliberate gaps (not modeled, by design -- genuine secrets only):** `code_interpreter`'s
+> `container.networkPolicy.domainSecrets` (a literal secret **value** per allowed domain) and
+> `mcp.authorization`/`mcp.headers` (credential material for the upstream MCP server) are real,
+> SDK-constructible fields that AI4IA deliberately never models in this committed manifest schema
+> (AGENTS.md "no secret sprawl") -- put credentials in a project connection instead. Every other
+> field the SDK's toolbox tool models accept -- including `indexAssetId`,
+> `web_search.filters`/`.userLocation`/`.searchContextSize`,
+> `file_search.maxNumResults`/`.rankingOptions`/`.filters`,
+> `mcp.serverDescription`/`.allowedTools`/`.deferLoading`, and the common `toolConfigs` -- is
+> modeled and schema-enforced as of this round. `app/api/tests/test_foundry_toolbox.py`'s
+> reflection-driven parity test enumerates every `azure.ai.projects.models.*ToolboxTool` subclass
+> via the real locked SDK (walking `__mro__`-merged `__annotations__`, since
+> `inspect.signature`/`typing.get_type_hints` don't resolve on these generated model classes) and
+> fails if a future SDK field or type is left uncovered.
 
 > **Available vs. deployed:** this table is every tool type the schema/provisioning script
-> support. The live canonical `ai4ia-toolbox` (`foundry/toolbox.manifest.json`) currently uses
-> only three: `web_search`, `code_interpreter`, and `toolbox_search_preview`. See
-> `foundry/toolbox.manifest.example.json` for one of each type, populated as a starting point for
-> adding more.
+> support (12 as of azure-ai-projects 2.3.0). The live canonical `ai4ia-toolbox`
+> (`foundry/toolbox.manifest.json`) currently uses only three: `web_search`, `code_interpreter`,
+> and `toolbox_search_preview`. See `foundry/toolbox.manifest.example.json` for a populated
+> reference covering all 12 types (16 tools total, including both the
+> `indexName`+`projectConnectionId` and `indexAssetId` forms of `azure_ai_search`) as a starting
+> point for adding more.
 
 > **Not toolbox tools:** `computer_use` and `bing_custom_search` exist only as *agent-level* tools
 > in the SDK (`ComputerUsePreviewTool` / `BingCustomSearchPreviewTool`) with no `*ToolboxTool`
@@ -163,15 +182,18 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 
 > **Nested shapes are enforced, not just documented:** `foundry/toolbox.manifest.schema.json` sets
 > `additionalProperties: false` on every tool and has a strict per-`type` branch (required nested
-> fields, cardinality, and which fields are legal for that type) for **all eight** tool types --
+> fields, cardinality, and which fields are legal for that type) for **all twelve** tool types --
 > not just `azure_ai_search`/`browser_automation_preview`. For example: `azure_ai_search` requires
-> `azureAiSearch.indexes[]` (>= 1 entry, both `indexName` AND `projectConnectionId` on that entry)
-> and rejects root-level `indexName`/`projectConnectionId`; `code_interpreter.container.networkPolicy`
-> requires `allowedDomains` (non-empty) when `type` is `allowlist`; `browser_automation_preview`
-> requires `browserAutomationPreview.connection`; `mcp` requires `serverLabel` plus one of
+> exactly one `azureAiSearch.indexes[]` entry with either `indexAssetId` alone or `indexName` AND
+> `projectConnectionId` together (mutually exclusive) and rejects root-level `indexName`/
+> `projectConnectionId`; `code_interpreter.container.networkPolicy` requires `allowedDomains`
+> (non-empty) when `type` is `allowlist`; `browser_automation_preview` requires
+> `browserAutomationPreview.connection`; `mcp` requires `serverLabel` plus one of
 > `serverUrl`/`connectorId`; `openapi` requires `openapi.name`/`.spec`/`.auth` and enforces `auth`'s
-> per-type nested fields. `scripts/provision-foundry-toolbox.py` **applies this
-> schema itself** (via the optional `jsonschema` dependency, which ships with the `foundry` extra)
+> per-type nested fields; `a2a_preview` requires one of `projectConnectionId`/`baseUrl`;
+> `fabric_iq_preview`/`work_iq_preview` require `projectConnectionId`.
+> `scripts/provision-foundry-toolbox.py` **applies this schema itself** (via the optional
+> `jsonschema` dependency, which ships with the `foundry` extra)
 > before constructing any SDK model -- not just via CI's separate `check-jsonschema` lint step. `--create`
 > refuses to run at all if `jsonschema` isn't installed; the dependency-free dry run best-effort
 > validates when it happens to be available and otherwise only runs the hand-written structural checks.
@@ -184,9 +206,11 @@ Add a `description` to every tool — the model uses it for tool selection, whic
 when `toolbox_search_preview` is present.
 
 **Copy-paste starting point:** `foundry/toolbox.manifest.example.json` is a populated reference
-manifest with one of each toolbox tool (plus three connections -- Search, MCP-upstream, and
-Playwright Workspace for browser automation -- and a bound skill), all uniquely identified (by
-`name`, or `serverLabel` for the `mcp` tool).
+manifest covering all 12 toolbox tool types (16 tools total -- `web_search`, `azure_ai_search`,
+and `mcp` each appear twice, to show both of their alternative shapes -- plus seven connections:
+Search, MCP-upstream, Playwright Workspace for browser automation, Bing Custom Search, and one
+each for the A2A/Fabric IQ/Work IQ examples, and a bound skill), all uniquely identified (by
+`name`, or `serverLabel` for `mcp` tools).
 The shipped `foundry/toolbox.manifest.json` is the canonical `ai4ia-toolbox` definition; edit it (or
 the example, passing `--manifest foundry/toolbox.manifest.example.json`), prune what you don't need,
 create any referenced connections, then run `provision-foundry-toolbox.py`. The script creates the toolbox via
@@ -356,7 +380,20 @@ scaffold and the APIM-fronting commands are shipped and tested.
   portable mcp-servers.json entry shape (`foundryToolbox: true`, no hardcoded URL), the azd YAML,
   and SKILL.md parse/validate. `jsonschema`-guarded tests assert the projected entry validates
   against `infra/mcp-servers.schema.json` (the load-bearing cross-seam guarantee) and that the
-  manifests match `toolbox.manifest.schema.json`.
+  manifests match `toolbox.manifest.schema.json`, including strict per-type positive/negative
+  cases for every one of the 12 tool types (required fields, cardinality, and cross-type field
+  pollution -- a field belonging to one type showing up on another).
+- `azure.ai.projects`-gated tests (`pytest.importorskip`, skipped if the optional dependency isn't
+  installed) go one step further than schema shape: they construct REAL SDK
+  `azure.ai.projects.models.*ToolboxTool` instances from the example manifest and from targeted
+  per-field cases, so a manifest the schema accepts is also proven to reach the SDK constructor's
+  actual kwargs (this is what silently broke before -- an unrecognized kwarg the SDK just dropped,
+  producing `None` fields with no exception). A reflection-driven parity test in the same file
+  enumerates every `*ToolboxTool` subclass the installed SDK actually exposes (merging
+  `__annotations__` across each class's `__mro__`, since `inspect.signature`/
+  `typing.get_type_hints` don't resolve on these generated model classes) and fails the build if a
+  future SDK type or field has no `_TYPE_TO_MODEL`/`_CAMEL_TO_SNAKE` coverage and no explicit,
+  documented secret exclusion.
 - `infra-validate` runs `check-jsonschema` on `foundry/toolbox.manifest.json`, the populated
   `foundry/toolbox.manifest.example.json`, and the routine + A2A example manifests, and builds
   `infra/main.bicep` (which compiles `apicenter.bicep`).
