@@ -2837,6 +2837,93 @@ describe("ChatApp uploads", () => {
     ).toBeInTheDocument();
   });
 
+  // Regression (voice acceptance round 19, HIGH): round 18 only marked
+  // consumedSessionIdRef.current from the activation branch. A caller that
+  // instead falls through to the shared-entry/settings-mismatch FALLBACK --
+  // e.g. a second waiter joining an already-activated, same-key entry --
+  // returned its id bare, unmarked, from that path. send()/runUpload() still
+  // mark it themselves right after their own `await ensureSession()` call
+  // returns, but that is at least one more microtask hop after
+  // ensureSession()'s own activating waiter completes its activation in the
+  // SAME back-to-back flush -- exactly the gap a differently-keyed, later
+  // creation resolving in that same flush can land in and illegitimately
+  // supersede, per the same class of race round 18 closed for activation.
+  it("marks a shared-entry fallback consumer's session consumed atomically inside ensureSession(), before a later, differently-keyed creation resolving back-to-back can supersede it", async () => {
+    const resolvers: Array<() => void> = [];
+    const created = [session("SHARED"), session("LATE")];
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          const value = created[resolvers.length];
+          resolvers.push(() => resolve(value));
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await screen.findByText("New conversation", { selector: "strong" });
+
+    // Voice's own call registers FIRST against entry #1 (blank settings).
+    const voiceOptions = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let voiceResult!: Promise<string>;
+    act(() => {
+      voiceResult = voiceOptions.ensureSession(() => true);
+    });
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(1));
+
+    // send() joins the SAME entry (identical settings/generation -- no new
+    // creation) -- it registers SECOND against entry #1.
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+
+    // Only now does settings change and a differently-keyed, LATER voice
+    // call start its own, separate entry #2.
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.type(screen.getByLabelText("System prompt"), "Later prompt");
+    const lateOptions = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let lateResult!: Promise<string>;
+    act(() => {
+      lateResult = lateOptions.ensureSession(() => true);
+    });
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(2));
+
+    // Resolve BOTH underlying creations back-to-back -- no separating await
+    // -- so entry #1's two waiters (voice, then send) and entry #2's own
+    // waiter all settle within the same flush. Voice (registered first)
+    // activates; send (registered second, same key) falls through to the
+    // FALLBACK path -- this round's fix. Entry #2's later, differently-keyed
+    // continuation must not supersede once it does.
+    await act(async () => {
+      resolvers[0]();
+      resolvers[1]();
+      await voiceResult;
+      await lateResult;
+      await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+    });
+
+    expect(mocks.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "SHARED" }),
+      expect.anything(),
+    );
+    expect(await voiceResult).toBe("SHARED");
+    // The later, differently-keyed intent must fall back to the already-
+    // active "SHARED" session -- never activate its own unseen "LATE" one.
+    expect(await lateResult).toBe("SHARED");
+    expect(
+      screen.getByText("Session SHARED", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Session LATE", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
   it("fences delayed slash finalize after navigation, edits, rename, and a newer send", async () => {
     const model = (id: string, displayName: string) => ({
       id,

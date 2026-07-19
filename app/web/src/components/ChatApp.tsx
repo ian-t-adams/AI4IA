@@ -109,6 +109,7 @@ type SessionCreationEntry = {
   sequence: number;
   controller: AbortController;
   mismatchClaimed: boolean;
+  consumerClaimed: boolean;
   waiters: Set<symbol>;
 };
 
@@ -1215,9 +1216,17 @@ export function ChatApp() {
           sequence: ++sessionIntentSequenceRef.current,
           controller,
           mismatchClaimed: false,
+          consumerClaimed: false,
           waiters: new Set(),
         };
         creatingRef.current = entry;
+      }
+      // A send/upload waiter commits to this entry synchronously, before its
+      // promise can settle. Whichever same-key waiter activates the entry can
+      // therefore protect the resulting session even if a voice waiter resumes
+      // first and a different entry resumes before this consumer's continuation.
+      if (!isStillWanted) {
+        entry.consumerClaimed = true;
       }
       // Mints a fresh identity for this call among the entry's current
       // waiters for the whole span it's awaiting the race below, regardless
@@ -1377,6 +1386,9 @@ export function ChatApp() {
         sessionIdRef.current = id;
         activeIntentKeyRef.current = intentKey;
         activeActivationSequenceRef.current = entry.sequence;
+        if (entry.consumerClaimed) {
+          consumedSessionIdRef.current = id;
+        }
         setActiveId(id);
         // See markConsumedIfOwning above: marked in this SAME synchronous
         // block, atomically with activation. Voice's own initial call
