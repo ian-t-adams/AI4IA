@@ -15,7 +15,14 @@ registry (defense in depth on top of schema-time filtering). Argument/result
 content is only ever credential-redacted (``redact_obj``) before it lands on the
 in-process ``AgentStep`` trace, and free-text log lines never include it at all —
 only the tool name and fixed, bounded status/reason strings reach logs or the
-user-facing activity view (see ``agents.activity``).
+user-facing activity view (see ``agents.activity``). The tool "name" itself is
+model-supplied and unvalidated at call time, so it is never trusted as log-safe
+free text either: only a name already known to be a synthetic capability or a
+registered registry tool is ever surfaced in a step/log/telemetry event; any
+other value (hallucinated or adversarially crafted by the model) is replaced
+with the fixed sentinel ``"unknown_tool"`` before it can reach any persisted or
+logged surface. Dispatch decisions themselves (authorization, execution,
+denial-looping) still use the raw name so real tool calls are routed correctly.
 The real Microsoft Agent Framework / Foundry toolbox / MCP can later replace the
 :class:`~ai4ia_api.agents.tool_exec.ToolExecutor` behind this same loop.
 """
@@ -195,6 +202,15 @@ async def run_agent_turn(
             fn = call.get("function") or {}
             name = fn.get("name") or ""
             raw_args = fn.get("arguments") or "{}"
+            # `name` is model-supplied and unvalidated at this point -- it must
+            # never reach logs, telemetry, or the persisted/live activity trace
+            # verbatim (an attacker-influenced completion could otherwise smuggle
+            # arbitrary free text into those surfaces under the guise of a "tool
+            # name"). `safe_name` is the only value used for anything surfaced;
+            # dispatch below keeps using the raw `name` so real authorization/
+            # execution routes correctly. Once a name is known (registered as a
+            # synthetic handler or in the tool registry) `safe_name == name`.
+            safe_name = name if (name in handlers or registry.get(name) is not None) else "unknown_tool"
 
             tool_calls_used += 1
             if tool_calls_used > _MAX_TOOL_CALLS:
@@ -204,7 +220,7 @@ async def run_agent_turn(
                         {"error": {"type": "budget_exceeded", "message": "tool budget exhausted"}},
                     )
                 )
-                await record(AgentStep(kind="tool_error", tool=name, detail="budget_exceeded"))
+                await record(AgentStep(kind="tool_error", tool=safe_name, detail="budget_exceeded"))
                 force_final = True
                 continue
 
@@ -219,13 +235,13 @@ async def run_agent_turn(
                         {"error": {"type": "invalid_arguments", "message": redact(str(exc))}},
                     )
                 )
-                await record(AgentStep(kind="tool_error", tool=name, detail="invalid_arguments"))
+                await record(AgentStep(kind="tool_error", tool=safe_name, detail="invalid_arguments"))
                 continue
 
             # Emit a pre-execution marker so the UI can show "running X" live. It
             # is NOT persisted (only the finalized result/denied/error step is).
             await record(
-                AgentStep(kind="tool_start", tool=name, arguments=redact_obj(parsed)),
+                AgentStep(kind="tool_start", tool=safe_name, arguments=redact_obj(parsed)),
                 persist=False,
             )
 
@@ -246,12 +262,12 @@ async def run_agent_turn(
                     await record(
                         AgentStep(
                             kind="tool_error",
-                            tool=name,
+                            tool=safe_name,
                             arguments=redact_obj(parsed),
                             detail="execution_error",
                         )
                     )
-                    logger.warning("agent delegate error: tool=%s", name)
+                    logger.warning("agent delegate error: tool=%s", safe_name)
                     continue
                 convo.append(
                     {
@@ -263,12 +279,12 @@ async def run_agent_turn(
                 await record(
                     AgentStep(
                         kind="delegate",
-                        tool=name,
+                        tool=safe_name,
                         arguments=redact_obj(parsed),
                         result=redact_obj(raw_result),
                     )
                 )
-                logger.info("agent delegated: tool=%s", name)
+                logger.info("agent delegated: tool=%s", safe_name)
                 continue
 
             decision = registry.authorize(
@@ -282,7 +298,7 @@ async def run_agent_turn(
                 emit_custom_event(
                     "tool_authorization",
                     {
-                        "tool": name,
+                        "tool": safe_name,
                         "source": "agent_runtime",
                         "outcome": "denied",
                         "reason": reason,
@@ -295,8 +311,8 @@ async def run_agent_turn(
                         {"error": {"type": "authorization_denied", "message": reason}},
                     )
                 )
-                await record(AgentStep(kind="tool_denied", tool=name, detail=reason))
-                logger.info("agent tool denied: tool=%s reason=%s", name, reason)
+                await record(AgentStep(kind="tool_denied", tool=safe_name, detail=reason))
+                logger.info("agent tool denied: tool=%s reason=%s", safe_name, reason)
                 # A second denial of the same tool means the model is looping;
                 # cut tools off so the next call must produce a final answer.
                 if name in denied_once:
@@ -311,7 +327,7 @@ async def run_agent_turn(
                 emit_custom_event(
                     "tool_authorization",
                     {
-                        "tool": name,
+                        "tool": safe_name,
                         "source": "agent_runtime",
                         "outcome": "validation_error",
                         "latencyMs": int((time.monotonic() - started) * 1000),
@@ -326,7 +342,7 @@ async def run_agent_turn(
                 await record(
                     AgentStep(
                         kind="tool_error",
-                        tool=name,
+                        tool=safe_name,
                         arguments=redact_obj(parsed),
                         detail="validation_error",
                     )
@@ -336,7 +352,7 @@ async def run_agent_turn(
                 emit_custom_event(
                     "tool_authorization",
                     {
-                        "tool": name,
+                        "tool": safe_name,
                         "source": "agent_runtime",
                         "outcome": "execution_error",
                         "latencyMs": int((time.monotonic() - started) * 1000),
@@ -351,12 +367,12 @@ async def run_agent_turn(
                 await record(
                     AgentStep(
                         kind="tool_error",
-                        tool=name,
+                        tool=safe_name,
                         arguments=redact_obj(parsed),
                         detail="execution_error",
                     )
                 )
-                logger.warning("agent tool error: tool=%s", name)
+                logger.warning("agent tool error: tool=%s", safe_name)
                 continue
 
             convo.append(
@@ -369,7 +385,7 @@ async def run_agent_turn(
             emit_custom_event(
                 "tool_authorization",
                 {
-                    "tool": name,
+                    "tool": safe_name,
                     "source": "agent_runtime",
                     "outcome": "approved" if name in ctx.approvals else "ok",
                     "latencyMs": int((time.monotonic() - started) * 1000),
@@ -378,12 +394,12 @@ async def run_agent_turn(
             await record(
                 AgentStep(
                     kind="tool_result",
-                    tool=name,
+                    tool=safe_name,
                     arguments=redact_obj(parsed),
                     result=redact_obj(raw_result),
                 )
             )
-            logger.info("agent tool ran: tool=%s", name)
+            logger.info("agent tool ran: tool=%s", safe_name)
 
         if force_final:
             schema = []  # disable tools so the next call yields a natural answer

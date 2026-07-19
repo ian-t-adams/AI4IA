@@ -72,7 +72,7 @@ PANEL_SPECS: tuple[_PanelSpec, ...] = (
         id_attr="metrics_cosmos_resource_id",
         metrics=(
             MetricRequest(name="TotalRequestUnits", label="Request Units", aggregation="total", unit="RU"),
-            MetricRequest(name="TotalRequests", label="Requests", aggregation="total"),
+            MetricRequest(name="TotalRequests", label="Requests", aggregation="count"),
             MetricRequest(
                 name="ServiceAvailability",
                 label="Availability",
@@ -84,6 +84,9 @@ PANEL_SPECS: tuple[_PanelSpec, ...] = (
         # and TotalRequestUnits support down to 1 minute); querying all three
         # together at the service default of 5 minutes is rejected by Azure
         # Monitor: "BadRequest: ... only support common time grain 01:00:00".
+        # Separately, TotalRequests only supports the Count aggregation (not
+        # Total/Average/Maximum) -- Azure Monitor rejects any other requested
+        # aggregation for that metric name with its own 400 BadRequest.
         granularity_minutes=60,
     ),
     _PanelSpec(

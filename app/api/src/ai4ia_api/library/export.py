@@ -94,9 +94,12 @@ class DocumentExportService:
             doc = await self._library.get_document(user_id, document_id)
         except DocumentNotFoundError:
             return None, {"error": f"No document found with id '{document_id}'."}
-        except Exception:  # noqa: BLE001 - degrade, never propagate
+        except Exception as exc:  # noqa: BLE001 - degrade, never propagate
             logger.warning(
-                "export gate load failed user=%s id=%s", user_id, document_id, exc_info=True
+                "export gate load failed user=%s id=%s error_type=%s",
+                user_id,
+                document_id,
+                type(exc).__name__,
             )
             return None, {"error": "Could not access that document right now."}
         if doc.status != DocumentStatus.ready:
@@ -148,10 +151,13 @@ class DocumentExportService:
         data = body.encode("utf-8")
         try:
             await self._blob.put(path, data, content_type or "text/markdown")
-        except Exception:  # noqa: BLE001 - degrade, never propagate
+        except Exception as exc:  # noqa: BLE001 - degrade, never propagate
             logger.warning(
-                "export blob write failed user=%s id=%s n=%s",
-                user_id, document_id, n, exc_info=True,
+                "export blob write failed user=%s id=%s n=%s error_type=%s",
+                user_id,
+                document_id,
+                n,
+                type(exc).__name__,
             )
             return {"error": "Could not save the adjusted document right now."}
 
@@ -167,9 +173,11 @@ class DocumentExportService:
         async def _delete_blob(target: str) -> None:
             try:
                 await self._blob.delete_prefix(target)
-            except Exception:  # noqa: BLE001 - best-effort cleanup
+            except Exception as exc:  # noqa: BLE001 - best-effort cleanup
                 logger.warning(
-                    "orphan version cleanup failed path=%s", _log_safe_path(target), exc_info=True
+                    "orphan version cleanup failed path=%s error_type=%s",
+                    _log_safe_path(target),
+                    type(exc).__name__,
                 )
 
         # Re-read + append under the manifest's own update path so we never blindly
@@ -192,7 +200,7 @@ class DocumentExportService:
             # uniquely-pathed attempt blob. Safe to delete without a confirm-read.
             await _delete_blob(path)
             return {"error": "Could not record the adjusted document right now."}
-        except Exception:  # noqa: BLE001 - degrade, never propagate
+        except Exception as exc:  # noqa: BLE001 - degrade, never propagate
             # Genuinely ambiguous: the client observed a failure but cannot
             # tell whether the write committed server-side before it did (a
             # dropped connection or timeout can lose the ack after Cosmos
@@ -202,14 +210,20 @@ class DocumentExportService:
             # not guaranteed to reflect it, so re-reading here could observe
             # stale data and delete a blob the manifest now legitimately
             # references. Never delete synchronously in this branch: retain
-            # the attempt blob and leave it for a delayed, out-of-band
-            # reconciliation/GC pass once consistency has had time to
-            # converge. Residual gap: no such sweep is wired up yet, so an
-            # ambiguous-failure blob is an orphan until one exists.
+            # the attempt blob. RESIDUAL GAP: no delayed reconciliation/GC
+            # job exists yet to clean up a blob that turns out to be a true
+            # orphan (write did not commit) -- this call site only guarantees
+            # it never deletes a possibly-committed blob, not that orphans
+            # get cleaned up. Do not describe this as "reconciled".
             logger.warning(
-                "export manifest update failed ambiguously; blob retained for "
-                "reconciliation user=%s id=%s n=%s path=%s",
-                user_id, document_id, n, _log_safe_path(path), exc_info=True,
+                "export manifest update failed ambiguously; blob retained "
+                "(no reconciliation job exists yet) user=%s id=%s n=%s "
+                "path=%s error_type=%s",
+                user_id,
+                document_id,
+                n,
+                _log_safe_path(path),
+                type(exc).__name__,
             )
             return {"error": "Could not record the adjusted document right now."}
 
@@ -258,10 +272,13 @@ class DocumentExportService:
             data = await self._blob.get(version.path)
         except BlobNotFoundError:
             return {"error": f"No content stored for version {n}."}
-        except Exception:  # noqa: BLE001 - degrade, never propagate
+        except Exception as exc:  # noqa: BLE001 - degrade, never propagate
             logger.warning(
-                "version read failed user=%s id=%s n=%s",
-                user_id, document_id, n, exc_info=True,
+                "version read failed user=%s id=%s n=%s error_type=%s",
+                user_id,
+                document_id,
+                n,
+                type(exc).__name__,
             )
             return {"error": "Could not read that version right now."}
         return {

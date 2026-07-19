@@ -7,10 +7,8 @@ no network."""
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from ai4ia_api.auth.base import AuthCredentials
@@ -58,18 +56,6 @@ def _uid(client: TestClient, sub: str | None = None) -> str:
     provider = client.app.state.auth_provider
     user = asyncio.run(provider.authenticate(AuthCredentials(headers=headers)))
     return user.internal_user_id
-
-
-async def _auth_user(client: TestClient, sub: str | None = None):
-    headers = {"X-Dev-User": sub} if sub else {}
-    provider = client.app.state.auth_provider
-    return await provider.authenticate(AuthCredentials(headers=headers))
-
-
-async def _gather_race(*coros):
-    """asyncio.gather must be awaited from inside a running loop; this
-    lets callers drive it with a single asyncio.run(...)."""
-    return await asyncio.gather(*coros)
 
 
 async def _seed(
@@ -397,78 +383,5 @@ def test_delete_document_502_when_store_cannot_erase_by_document():
         assert resp.status_code == 502, resp.text
         refreshed = asyncio.run(c.app.state.document_library.get_document(uid, doc.id))
         assert refreshed.id == doc.id
-    finally:
-        c.__exit__(None, None, None)
-
-
-# --- round 6 HIGH acceptance finding: save-vs-delete tombstone fence ---
-
-
-def test_save_to_memory_self_compensates_when_concurrent_delete_wins_race():
-    """Round 6 HIGH: save_document_to_memory's initial get_document can
-    succeed, then -- while its own memory write is still in flight -- a
-    concurrent delete_document call can tombstone, forget, and hard-delete
-    the very same document to completion before the save's post-write
-    recheck ever runs. Without a fence the save would report a false 201 for
-    memories that are, by the time the response is sent, already permanently
-    unreachable via any future forget-by-document_id call (the manifest --
-    and thus the only retryable handle for a document-scoped erase -- is
-    already gone).
-
-    Drives the router handlers directly (bypassing HTTP/DI, matching
-    test_session_concurrency.py's add_message-vs-delete_session tests) so
-    the interleaving is deterministic: an explicit gate forces
-    delete_document to run to full completion strictly between save's own
-    memory write landing and its post-write recheck.
-    """
-    from ai4ia_api.library.repository import DocumentNotFoundError
-    from ai4ia_api.routers import library as library_router
-
-    c = _client()
-    try:
-        uid = _uid(c)
-        doc = asyncio.run(_seed(c, uid=uid, parsed=None))
-        user = asyncio.run(_auth_user(c))
-        fake_request = SimpleNamespace(app=c.app)
-
-        memory = c.app.state.memory
-        real_remember = memory.remember_document
-        delete_done = asyncio.Event()
-
-        async def remember_then_wait_for_delete(*args, **kwargs):
-            saved = await real_remember(*args, **kwargs)
-            # Force the concurrent delete_document below to run to full
-            # completion here, strictly between this save's memory write
-            # landing and its own post-write recheck.
-            await asyncio.wait_for(delete_done.wait(), timeout=5)
-            return saved
-
-        memory.remember_document = remember_then_wait_for_delete  # type: ignore[assignment]
-
-        async def run_delete():
-            await library_router.delete_document(
-                document_id=doc.id, request=fake_request, user=user
-            )
-            delete_done.set()
-
-        async def run_save():
-            try:
-                return await library_router.save_document_to_memory(
-                    document_id=doc.id, request=fake_request, user=user
-                )
-            except HTTPException as exc:
-                return exc
-
-        save_result, _ = asyncio.run(_gather_race(run_save(), run_delete()))
-
-        assert isinstance(save_result, HTTPException), save_result
-        assert save_result.status_code == 404
-
-        # Self-compensation must have actually forgotten what this save just
-        # wrote -- nothing recallable -- and the manifest stays gone (the
-        # delete, not the save, owns removing it).
-        assert asyncio.run(memory.recall(uid, "anything")) == []
-        with pytest.raises(DocumentNotFoundError):
-            asyncio.run(c.app.state.document_library.get_document(uid, doc.id))
     finally:
         c.__exit__(None, None, None)

@@ -70,25 +70,6 @@ class DocumentLibraryRepository(Protocol):
         require_status: DocumentStatus | None = None,
     ) -> UserDocument: ...
 
-    # Durable tombstone (mirrors sessions.repository's delete-fence pattern):
-    # CAS the document into "deleting" *before* any memory-forget/manifest
-    # removal starts. Idempotent (a second call against an
-    # already-tombstoned document is a no-op, not an error) so a duplicate
-    # delete request never fails. Once visible, get_document treats the
-    # document as not-found, which is what makes this a fence: it rejects
-    # save_document_to_memory's own read (whether the initial load or a
-    # post-write recheck) from the moment the tombstone lands, independent
-    # of how far the manifest's own removal has progressed.
-    async def mark_deleting(self, user_id: str, document_id: str) -> None: ...
-
-    # Reverts an in-progress mark_deleting tombstone when a delete attempt
-    # aborts before finishing (e.g. the memory-forget step failed) so the
-    # document goes back to being a normal, fully visible, retryable handle
-    # rather than staying invisible behind a tombstone that nothing will
-    # ever finish removing. Idempotent/best-effort: a no-op if the document
-    # is already gone or was never tombstoned.
-    async def clear_deleting(self, user_id: str, document_id: str) -> None: ...
-
     async def delete_document(self, user_id: str, document_id: str) -> None: ...
 
     async def find_by_dedupe_key(

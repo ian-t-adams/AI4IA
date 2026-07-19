@@ -79,27 +79,10 @@ class CosmosDocumentLibraryRepository:
         doc = self._from_document(item)
         if doc.userId != user_id:
             raise DocumentNotFoundError(document_id)
-        if doc.deletingAt is not None:
-            # delete_document has durably tombstoned this document (CAS'd
-            # before memory-forget/manifest removal started). Treating it as
-            # not-found here is what makes the tombstone an effective fence:
-            # save_document_to_memory's initial load and its post-write
-            # recheck both go through this method, so a save racing a delete
-            # is rejected from the moment the tombstone is visible -- not
-            # only once the manifest row is eventually removed.
-            raise DocumentNotFoundError(document_id)
         return doc
 
     async def list_documents(self, user_id: str) -> list[UserDocument]:
-        # Exclude documents mark_deleting has tombstoned: delete_document
-        # forgets memory and hard-deletes the manifest in the same call, so
-        # the window is normally brief, but a concurrent listing must not
-        # show a document that is (or was just) being deleted.
-        query = (
-            "SELECT * FROM c WHERE c.userId = @uid "
-            "AND (NOT IS_DEFINED(c.deletingAt) OR IS_NULL(c.deletingAt)) "
-            "ORDER BY c.createdAt DESC"
-        )
+        query = "SELECT * FROM c WHERE c.userId = @uid ORDER BY c.createdAt DESC"
         params = [{"name": "@uid", "value": user_id}]
         return [
             self._from_document(item)
@@ -281,95 +264,6 @@ class CosmosDocumentLibraryRepository:
             await self._docs.delete_item(item=document_id, partition_key=user_id)
         except CosmosResourceNotFoundError:
             return  # idempotent
-
-    async def mark_deleting(self, user_id: str, document_id: str) -> None:
-        """CAS the document into a durable ``deletingAt`` tombstone before any
-        memory-forget/manifest-removal starts. Idempotent: an already-gone or
-        already-tombstoned document (a concurrent duplicate delete call) is
-        treated as success, not an error, so a retried delete request never
-        fails. See ``get_document``'s tombstone check for how this becomes
-        the fence that closes the delete-vs-save-to-memory race: once this
-        patch is visible, every read used by ``save_document_to_memory``
-        (its initial load and its post-write recheck) is rejected.
-        """
-        from azure.core import MatchConditions
-        from azure.cosmos.exceptions import (
-            CosmosAccessConditionFailedError,
-            CosmosResourceNotFoundError,
-        )
-
-        for _attempt in range(3):
-            try:
-                raw = await self._docs.read_item(
-                    item=document_id, partition_key=user_id
-                )
-            except CosmosResourceNotFoundError:
-                return  # already gone
-            if raw.get("userId") != user_id:
-                return  # not this caller's document to tombstone
-            if raw.get("deletingAt") is not None:
-                return  # already tombstoned, by this or an earlier call
-            try:
-                await self._docs.patch_item(
-                    item=document_id,
-                    partition_key=user_id,
-                    patch_operations=[
-                        {
-                            "op": "set",
-                            "path": "/deletingAt",
-                            "value": datetime.now(timezone.utc)
-                            .isoformat()
-                            .replace("+00:00", "Z"),
-                        },
-                    ],
-                    etag=raw.get("_etag"),
-                    match_condition=MatchConditions.IfNotModified,
-                )
-                return
-            except CosmosResourceNotFoundError:
-                return  # deleted between the read and the patch
-            except CosmosAccessConditionFailedError:
-                continue  # concurrent modify -- reread and retry
-        raise DocumentConflictError(document_id)
-
-    async def clear_deleting(self, user_id: str, document_id: str) -> None:
-        """Revert an in-progress ``mark_deleting`` tombstone. Called when a
-        ``delete_document`` attempt aborts (e.g. the memory-forget step
-        failed) so the document goes back to being a normal, fully visible,
-        retryable handle instead of staying invisible behind a tombstone
-        that nothing will ever finish removing. Idempotent/best-effort: a
-        document that is already gone (a concurrent duplicate delete
-        finished first) or was never tombstoned is a no-op, not an error.
-        """
-        from azure.core import MatchConditions
-        from azure.cosmos.exceptions import (
-            CosmosAccessConditionFailedError,
-            CosmosResourceNotFoundError,
-        )
-
-        for _attempt in range(3):
-            try:
-                raw = await self._docs.read_item(
-                    item=document_id, partition_key=user_id
-                )
-            except CosmosResourceNotFoundError:
-                return  # already gone -- nothing to revert
-            if raw.get("userId") != user_id or raw.get("deletingAt") is None:
-                return  # not currently tombstoned
-            try:
-                await self._docs.patch_item(
-                    item=document_id,
-                    partition_key=user_id,
-                    patch_operations=[{"op": "remove", "path": "/deletingAt"}],
-                    etag=raw.get("_etag"),
-                    match_condition=MatchConditions.IfNotModified,
-                )
-                return
-            except CosmosResourceNotFoundError:
-                return  # deleted between the read and the patch
-            except CosmosAccessConditionFailedError:
-                continue  # concurrent modify -- reread and retry
-        raise DocumentConflictError(document_id)
 
     async def find_by_dedupe_key(
         self, user_id: str, content_hash: str, analyzer_id: str | None

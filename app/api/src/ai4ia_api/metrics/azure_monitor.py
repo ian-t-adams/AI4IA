@@ -83,6 +83,7 @@ class AzureMonitorQuerier:
             "average": MetricAggregationType.AVERAGE,
             "total": MetricAggregationType.TOTAL,
             "maximum": MetricAggregationType.MAXIMUM,
+            "count": MetricAggregationType.COUNT,
         }
         namespace = _metric_namespace(resource_id)
         aggregations = sorted({r.aggregation for r in requests})

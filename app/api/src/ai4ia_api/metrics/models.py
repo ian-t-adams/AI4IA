@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 PanelStatus = Literal["ok", "unavailable"]
-Aggregation = Literal["average", "total", "maximum"]
+Aggregation = Literal["average", "total", "maximum", "count"]
 
 
 def _now() -> datetime:

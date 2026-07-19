@@ -652,3 +652,102 @@ async def test_delegate_log_never_includes_argument_content(caplog):
     assert len(delegated_records) == 1
     assert delegated_records[0].getMessage() == "agent delegated: tool=delegate_to_agent"
     assert all(marker not in r.getMessage() for r in caplog.records)
+
+
+async def test_unknown_tool_name_replaced_with_sentinel_in_denied_step_and_log(caplog):
+    """Regression: the raw ``name`` read from the model's tool_call (before any
+    registry/handler check) was used directly in ``AgentStep``, ``logger``, and
+    ``emit_custom_event`` calls. A hallucinated or adversarially-crafted tool
+    name -- never registered as a synthetic handler or in the tool registry --
+    must never reach any of those surfaces verbatim; only the fixed
+    ``"unknown_tool"`` sentinel may. This name is unknown, so it is denied with
+    ``DenyReason.unknown_tool`` (never dispatched)."""
+    registry, executor = build_tools()
+    hostile_name = (
+        "sk-hostile-secret-toolname\n"
+        "INFO ai4ia_api.agents.runtime agent tool ran: tool=admin_backdoor"
+    )
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", hostile_name, "{}"),
+            _assistant_text("Sorry, I can't do that."),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        result = await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=["calculator"],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+        )
+    denied_step = next(s for s in result.steps if s.kind == "tool_denied")
+    assert denied_step.tool == "unknown_tool"
+    denied_records = [r for r in caplog.records if "agent tool denied" in r.getMessage()]
+    assert len(denied_records) == 1
+    assert denied_records[0].getMessage() == "agent tool denied: tool=unknown_tool reason=unknown_tool"
+    # The raw hallucinated name (and its embedded forged log line) never
+    # reaches any log record or persisted step.
+    assert all(hostile_name not in r.getMessage() for r in caplog.records)
+    assert all("admin_backdoor" not in r.getMessage() for r in caplog.records)
+    assert all(s.tool != hostile_name for s in result.steps)
+
+
+async def test_unknown_tool_name_replaced_with_sentinel_in_live_tool_start():
+    """Same guarantee as above, but for the pre-execution ``tool_start``
+    marker, which fires (live-only, via ``on_step``) before either the
+    synthetic-handler or registry check runs -- the earliest point an
+    unvalidated name could leak."""
+    registry, executor = build_tools()
+    hostile_name = "totally made up tool the model hallucinated"
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", hostile_name, "{}"),
+            _assistant_text("Sorry, I can't do that."),
+        ]
+    )
+    emitted: list[tuple[str, str | None]] = []
+
+    async def on_step(step):
+        emitted.append((step.kind, step.tool))
+
+    await run_agent_turn(
+        deployment="dep",
+        messages=_messages(),
+        tool_names=["calculator"],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+        on_step=on_step,
+    )
+    starts = [tool for kind, tool in emitted if kind == "tool_start"]
+    assert starts == ["unknown_tool"]
+    assert hostile_name not in starts
+
+
+async def test_known_tool_name_is_unaffected_by_sentinel_mapping():
+    """A registered tool's name must pass through unchanged (``safe_name ==
+    name``) -- the sentinel only ever replaces names that are neither a
+    synthetic handler nor a registered tool."""
+    registry, executor = build_tools()
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "calculator", json.dumps({"expression": "6*7"})),
+            _assistant_text("42."),
+        ]
+    )
+    result = await run_agent_turn(
+        deployment="dep",
+        messages=_messages(),
+        tool_names=["calculator"],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+    )
+    tool_step = next(s for s in result.steps if s.kind == "tool_result")
+    assert tool_step.tool == "calculator"
+

@@ -258,14 +258,6 @@ class UserDocument(BaseModel):
     annotations: list[DocumentAnnotation] = Field(default_factory=list)
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
-    # Durable tombstone set by delete_document before memory-forget/manifest
-    # removal (mirrors sessions.models.Session.deletingAt): get_document
-    # treats a non-None value as not-found, which fences save_document_to_memory
-    # from writing new memories once a delete has started, closing the window
-    # where a save's read-then-write could otherwise race past a delete that
-    # has already forgotten this document's memories. None means "not being
-    # deleted".
-    deletingAt: datetime | None = None
     _etag: str | None = PrivateAttr(default=None)
 
     def touch(self) -> None:

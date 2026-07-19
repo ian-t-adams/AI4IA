@@ -568,6 +568,12 @@ async def delete_document(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> None:
+    """Delete a document and cascade-forget any memories it contributed.
+
+    Forgets memory before deleting the manifest (see the comment below) so a
+    failed forget aborts the delete instead of losing the only retryable
+    handle. See :func:`save_document_to_memory` for the residual save-vs-delete
+    race this ordering narrows but does not close."""
     repo = _library(request)
     uid = user.internal_user_id
     try:
@@ -577,16 +583,6 @@ async def delete_document(
     if not require_owner(uid, doc):
         # Never reveal another user's document via delete.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-
-    # Durable tombstone BEFORE memory-forget/manifest removal starts: closes
-    # the race where a concurrent save_document_to_memory call could read
-    # the manifest, pause, and write a "successful" memory save *after* this
-    # delete has already forgotten the document's memories, orphaning that
-    # save. get_document (used by both save_document_to_memory's initial
-    # load and its post-write recheck) treats a tombstoned document as
-    # not-found from the moment this patch is visible, independent of how
-    # far the rest of this delete has actually progressed.
-    await repo.mark_deleting(uid, document_id)
 
     # Forget anything this document contributed to the owner's durable memory
     # (save-to-memory) BEFORE deleting the manifest, and let a failure abort
@@ -610,22 +606,6 @@ async def delete_document(
                 document_id,
                 exc_info=True,
             )
-            # The delete is aborting, so the tombstone set above must be
-            # reverted -- otherwise the document would stay permanently
-            # invisible even though the manifest itself was never touched,
-            # breaking the "abort leaves a fully usable, retryable document"
-            # contract this same abort path guarantees. Best-effort: a
-            # failure here must not mask the real 502 below.
-            try:
-                await repo.clear_deleting(uid, document_id)
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "failed to revert delete tombstone user=%s id=%s after "
-                    "aborted memory-forget",
-                    uid,
-                    document_id,
-                    exc_info=True,
-                )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Could not update memory right now; document was not deleted.",
@@ -717,7 +697,22 @@ async def save_document_to_memory(
     library itself isn't queried. Flag-gated by the library (404 when document
     understanding is off) and by memory (409 when memory is disabled); owner-only
     and ``ready``-status-gated, mirroring the read/delete gates. Memory failures
-    surface (502) because the user explicitly asked to save."""
+    surface (502) because the user explicitly asked to save.
+
+    RESIDUAL GAP (not fixed here): this reads the document, then writes to
+    memory; it does not re-check that the document hasn't been deleted (and
+    its memories forgotten by :func:`delete_document`) in between. A save
+    racing a concurrent delete can therefore recreate memories for a document
+    that no longer exists, with no manifest left to retry a forget against.
+    An earlier revision attempted to close this with a post-write recheck
+    that self-compensated by forgetting what it just saved; that was reverted
+    because a single post-write read is not a durable fence against a
+    concurrent writer on another replica -- it narrowed the window without
+    closing it, while adding real complexity. Closing this properly needs a
+    document-level mutual-exclusion/versioning primitive (e.g. a CAS'd
+    in-progress marker checked by both save and delete) or serializing
+    save/delete through the same transactional boundary; neither exists
+    today. Tracked as a known architectural limitation."""
     started = time.monotonic()
     repo = _library(request)
     uid = user.internal_user_id
@@ -764,35 +759,6 @@ async def save_document_to_memory(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Could not save to memory right now.",
         )
-
-    # Post-write recheck: the initial get_document above could have raced a
-    # concurrent delete_document that tombstones, forgets, and hard-deletes
-    # the manifest entirely within the gap between that read and this write
-    # landing (e.g. while _document_memory_items was reading excerpts, or
-    # while memory.remember_document was in flight). get_document treats a
-    # tombstoned-or-gone document as not-found, so seeing that here means
-    # this save just wrote memories for a document that is being (or was
-    # just) deleted -- self-compensate by forgetting them again rather than
-    # reporting a false success the caller would have no reason to distrust.
-    try:
-        await repo.get_document(uid, document_id)
-    except DocumentNotFoundError:
-        try:
-            await memory.forget_document(uid, document_id)
-        except Exception:  # noqa: BLE001 - best-effort; the delete's own
-            # forget_document call (or a future retry of it) remains the
-            # authoritative cleanup path if this compensation also fails.
-            logger.warning(
-                "save-to-memory compensating forget failed user=%s id=%s",
-                uid,
-                document_id,
-                exc_info=True,
-            )
-        emit_memory_operation("save", "compensated", "document_library", started)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-        )
-
     logger.info("save-to-memory user=%s id=%s saved=%s", uid, document_id, saved)
     emit_memory_operation("save", "ok", "document_library", started, count=saved)
     return SaveToMemoryResult(saved=saved)
