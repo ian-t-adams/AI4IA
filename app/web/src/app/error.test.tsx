@@ -22,7 +22,12 @@ afterEach(() => {
 
 describe("Error boundary", () => {
   it("reports a content-free render error (code + hasDigest only, never the message) and shows a retry action", () => {
-    const error = Object.assign(new Error("boom, credentials: Basic YWxpY2U6cGFzc3dvcmQ="), {
+    // The message text is intentionally hostile-shaped (mimics a credential
+    // leaking into an Error message) using a low-entropy repeated-character
+    // placeholder, not a realistic-looking secret, to prove the reported
+    // event never carries it (only `code`/`hasDigest` are sent, asserted
+    // below).
+    const error = Object.assign(new Error(`boom, credentials: Basic ${"z".repeat(12)}`), {
       digest: "abc123",
     });
     const reset = vi.fn();

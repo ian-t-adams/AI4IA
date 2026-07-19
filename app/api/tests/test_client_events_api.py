@@ -27,15 +27,20 @@ from ai4ia_api import logging_setup
 from ai4ia_api.auth.base import AuthError
 
 # Adversarial corpus reused across the hostile-input tests below. Mirrors
-# clientTelemetry.test.ts's hostile `code` fixtures. Intentionally
-# low-entropy, synthetic placeholders (never realistic-looking secrets) so
-# they read clearly as test data, not real credentials.
+# clientTelemetry.test.ts's hostile `code` fixtures. `_PLACEHOLDER_TOKEN`
+# stands in for an opaque bearer/basic-auth token in the encoded/nested
+# shapes: it is a repeated character (near-zero Shannon entropy), never a
+# realistic-looking credential, so these fixtures can't be mistaken for a
+# real leaked secret by entropy-based scanners -- only the *shape* (scheme +
+# opaque token, in various encodings/nestings) matters for what these tests
+# prove.
+_PLACEHOLDER_TOKEN = "z" * 12
 _HOSTILE_STRINGS = [
-    "Authorization: Basic YWxpY2U6cGFzc3dvcmQ=",
-    "Authorization%3A%20Basic%20YWxpY2U6cGFzc3dvcmQ%3D",
-    "Basic%2520YWxpY2U6cGFzc3dvcmQ%253D",  # double percent-encoded
-    '{"Authorization":"Basic YWxpY2U6cGFzc3dvcmQ="}',
-    'Authorization: Basic "YWxpY2U6cGFzc3dvcmQ=',  # unterminated quote
+    f"Authorization: Basic {_PLACEHOLDER_TOKEN}",
+    f"Authorization%3A%20Basic%20{_PLACEHOLDER_TOKEN}",
+    f"Basic%2520{_PLACEHOLDER_TOKEN}%253D",  # double percent-encoded
+    f'{{"Authorization":"Basic {_PLACEHOLDER_TOKEN}"}}',
+    f'Authorization: Basic "{_PLACEHOLDER_TOKEN}',  # unterminated quote
     "TypeError\x00\x01 with control chars",
     "TypeError'; DROP TABLE users;--",
     "a" * 5000,
@@ -155,7 +160,7 @@ def test_rejects_non_boolean_has_digest(client, monkeypatch):
     )
     resp = client.post(
         "/api/client-events",
-        json={"event": "render_error", "hasDigest": "Authorization: Basic YWxpY2U="},
+        json={"event": "render_error", "hasDigest": f"Authorization: Basic {_PLACEHOLDER_TOKEN}"},
     )
     assert resp.status_code == 422
     assert captured == []
@@ -223,7 +228,7 @@ def test_deeply_nested_extra_field_is_rejected_regardless_of_internal_structure(
             "authDetails": {
                 "Authorization": {
                     "scheme": "Basic",
-                    "credential": "YWxpY2U6cGFzc3dvcmQ=",
+                    "value": _PLACEHOLDER_TOKEN,
                     "nested": {"again": ["Bearer", "z" * 60]},
                 }
             },
@@ -488,7 +493,7 @@ def test_report_lands_in_real_logger_without_keyerror(client, monkeypatch):
             "/api/client-events",
             json={
                 "event": "window_error",
-                "code": "Authorization: Basic YWxpY2U=",  # hostile, still <=40 chars
+                "code": f"Authorization: Basic {_PLACEHOLDER_TOKEN}",  # hostile, still <=40 chars
                 "severity": "warning",
                 "hasDigest": True,
             },

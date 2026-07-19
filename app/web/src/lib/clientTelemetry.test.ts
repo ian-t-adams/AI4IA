@@ -82,12 +82,18 @@ describe("reportClientEvent", () => {
     // is what "arbitrary strings never enter logs" means under the new
     // design -- guaranteed by construction, not by pattern-matching a
     // blocklist that a previous version of this file kept losing to.
+    // A repeated-character placeholder standing in for an opaque bearer/
+    // basic-auth token below: near-zero Shannon entropy, so these fixtures
+    // read as obvious test data (never a realistic-looking secret) to both
+    // humans and entropy-based secret scanners. Only the *shape* (scheme +
+    // opaque token, in various encodings/nestings) matters for this test.
+    const placeholderToken = "z".repeat(12);
     const hostileCodes = [
-      "Authorization: Basic YWxpY2U6cGFzc3dvcmQ=",
-      "Authorization%3A%20Basic%20YWxpY2U6cGFzc3dvcmQ%3D",
-      "Basic%2520YWxpY2U6cGFzc3dvcmQ%253D", // double percent-encoded
-      '{"Authorization":"Basic YWxpY2U6cGFzc3dvcmQ="}',
-      'Authorization: Basic "YWxpY2U6cGFzc3dvcmQ=', // unterminated quote
+      `Authorization: Basic ${placeholderToken}`,
+      `Authorization%3A%20Basic%20${placeholderToken}`,
+      `Basic%2520${placeholderToken}%253D`, // double percent-encoded
+      `{"Authorization":"Basic ${placeholderToken}"}`,
+      `Authorization: Basic "${placeholderToken}`, // unterminated quote
       "TypeError\u0000\u0001 with control chars",
       "TypeError'; DROP TABLE users;--",
       "a".repeat(5000),
@@ -166,9 +172,11 @@ describe("installGlobalClientTelemetry", () => {
     // This stands in for a real error whose message/stack might carry a
     // credential, URL, or other sensitive text -- the assertions below prove
     // none of it can reach the reported body no matter what the underlying
-    // error says, because there is no field left that could carry it.
+    // error says, because there is no field left that could carry it. The
+    // repeated-character token is a low-entropy placeholder, not a
+    // realistic-looking secret.
     const hostileText =
-      "Authorization: Basic YWxpY2U6cGFzc3dvcmQ= while loading https://internal.example.test/admin?token=abc123";
+      `Authorization: Basic ${"z".repeat(12)} while loading https://internal.example.test/admin?token=abc123`;
 
     window.dispatchEvent(
       new ErrorEvent("error", { error: new TypeError(hostileText), message: hostileText }),
@@ -182,7 +190,7 @@ describe("installGlobalClientTelemetry", () => {
       hasDigest: false,
     });
     expect(JSON.stringify(errorBody)).not.toContain("Authorization");
-    expect(JSON.stringify(errorBody)).not.toContain("YWxpY2U6cGFzc3dvcmQ");
+    expect(JSON.stringify(errorBody)).not.toContain("z".repeat(12));
     expect(JSON.stringify(errorBody)).not.toContain("token=abc123");
 
     const reason = new RangeError(hostileText);
