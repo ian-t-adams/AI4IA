@@ -3074,4 +3074,133 @@ describe("ChatApp uploads", () => {
     await user.click(screen.getByRole("tab", { name: "Model" }));
     expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-new");
   });
+
+  // Same-session edits must also beat a slash command's late settings refresh.
+  it("fences a same-session slash finalize against a model change, a system-prompt edit, and a rename made while it awaits, with no navigation involved", async () => {
+    const model = (id: string, displayName: string) => ({
+      id,
+      displayName,
+      category: "chat",
+      format: "openai",
+      conversational: true,
+      contextWindow: 128000,
+      maxOutputTokens: 32000,
+      options: [],
+    });
+    mocks.listModels.mockResolvedValue({
+      models: [model("gpt-5.2", "GPT-5.2"), model("gpt-new", "GPT New")],
+    });
+    const current = new Map([["A", session("A")]]);
+    mocks.listSessions.mockImplementation(async () => [...current.values()]);
+    mocks.updateSession.mockImplementation(
+      async (id: string, value: Record<string, unknown>) => {
+        const updated = { ...current.get(id)!, ...value };
+        current.set(id, updated);
+        return updated;
+      },
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await screen.findByText("Session A", {
+      selector: ".chat-header .editable-session-title-text",
+    });
+
+    let resolveStaleList!: (value: ReturnType<typeof session>[]) => void;
+    const staleList = new Promise<ReturnType<typeof session>[]>((resolve) => {
+      resolveStaleList = resolve;
+    });
+    mocks.listMessages.mockResolvedValueOnce([
+      {
+        id: "slash-user",
+        sessionId: "A",
+        userId: "u1",
+        role: "user",
+        content: "/settings",
+        status: "complete",
+        model: "gpt-5.2",
+        agent: null,
+        createdAt: "",
+      },
+      {
+        id: "slash-assistant",
+        sessionId: "A",
+        userId: "assistant",
+        role: "assistant",
+        content: "Old command reply",
+        status: "complete",
+        model: "gpt-5.2",
+        agent: null,
+        createdAt: "",
+      },
+    ]);
+    mocks.listSessions.mockImplementationOnce(() => staleList);
+
+    await user.click(screen.getByRole("button", { name: "Send slash command" }));
+    const oldHandlers = mocks.streamChat.mock.calls.at(-1)![1] as {
+      onMetadata: (value: {
+        userMessageId: string | null;
+        assistantMessageId: string;
+      }) => void;
+      onDelta: (text: string) => void;
+      onDone: () => void;
+    };
+    act(() => {
+      oldHandlers.onMetadata({
+        userMessageId: "slash-user",
+        assistantMessageId: "slash-assistant",
+      });
+      oldHandlers.onDelta("Old command reply");
+      oldHandlers.onDone();
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send draft message" })).toBeEnabled(),
+    );
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Model" }),
+      "gpt-new",
+    );
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    const prompt = await screen.findByRole("textbox", { name: "System prompt" });
+    await user.clear(prompt);
+    await user.type(prompt, "Fresh prompt");
+
+    const header = document.querySelector(".chat-header");
+    expect(header).not.toBeNull();
+    await user.click(within(header as HTMLElement).getByRole("button", { name: "Rename" }));
+    const titleInput = within(header as HTMLElement).getByRole("textbox", {
+      name: "Conversation title",
+    });
+    await user.clear(titleInput);
+    await user.type(titleInput, "Renamed A");
+    await user.click(within(header as HTMLElement).getByRole("button", { name: "Save" }));
+    await screen.findByText("Renamed A", {
+      selector: ".chat-header .editable-session-title-text",
+    });
+
+    await act(async () => {
+      resolveStaleList([
+        {
+          ...session("A"),
+          title: "Stale A",
+          model: "gpt-5.2",
+          systemPrompt: "Stale prompt",
+        },
+      ]);
+      await Promise.resolve();
+    });
+
+    expect(
+      screen.getByText("Renamed A", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Stale A")).toBeNull();
+    expect(screen.getByRole("textbox", { name: "System prompt" })).toHaveValue(
+      "Fresh prompt",
+    );
+    await user.click(screen.getByRole("tab", { name: "Model" }));
+    expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-new");
+  });
 });

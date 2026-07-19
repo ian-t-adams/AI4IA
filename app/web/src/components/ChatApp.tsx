@@ -2787,6 +2787,9 @@ export function ChatApp() {
             systemPromptMutationGenerationRef.current += 1;
             setSystemPrompt(value);
           }}
+          onSystemPromptDraftChange={() => {
+            systemPromptMutationGenerationRef.current += 1;
+          }}
           draftDefaults={draftDefaults}
           onDraftDefaultsChange={setDraftDefaults}
           onSessionUpdated={(updated) => {
