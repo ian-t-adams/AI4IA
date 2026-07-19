@@ -7,8 +7,8 @@
 > **Acceptance dependency:** PR #191 must not merge until PR #189 contains and
 > merges privacy-hardening commit `c351131`, which removes
 > prompt/query/tool-argument content from user-facing activity and ordinary agent
-> INFO logs. The fix exists on the reviewed #189 head
-> `c351131c7802ba6041011067e94c48a09ed864e7` but is not on `main` or deployed.
+> INFO logs. The fix is retained at reviewed #189 head
+> `c71b6e172778835f4ac37a053853b85fe819383f` but is not on `main` or deployed.
 >
 > **Governance risk:** `main` currently has **no branch protection and no repository
 > ruleset**. A direct push can bypass every CI workflow and review. The owner should
@@ -80,18 +80,21 @@ those invariants or the documented CI commands, so it intentionally leaves
 
 ## Parallel implementation work
 
-PRs #185 and #187 are merged to `main`; the remaining entries are open. A merged
-repository change is still not evidence of deployment.
+PRs #185 and #187 are merged to `main`; the remaining entries are open. The open
+PR commit summaries and changed-file sets were reviewed through **2026-07-19
+02:48:08 UTC**. Each listed head means "reviewed through this commit"; later commits
+are not covered until this snapshot is explicitly refreshed. A merged repository
+change is still not evidence of deployment.
 
-| PR | Reviewed head | Category | Proposed/remediated work | Status used by this report |
+| PR | Reviewed-through head | Category | Proposed/remediated work | Status used by this report |
 | --- | --- | --- | --- | --- |
-| #184 | `8744ee23c73f` | Foundry Toolbox and WebIQ | WebIQ browse live-crawl/pending-retry handling, official MCP fail-closed catalog checks, Toolbox example/provisioning/doc corrections | Open; do not claim merged/deployed |
+| #184 | `4070269beca1` | Foundry Toolbox and WebIQ | WebIQ browse live-crawl/pending-retry handling, official MCP fail-closed catalog checks, Toolbox SDK/schema/provisioning corrections | Open; reviewed through listed head, not deployed |
 | #185 | merge `18fd952e91d9` | Gateway/proxy and API health | Confirms routing invariant, separates credential wording, constant-time proxy auth comparison, and API health probes | Merged to `main`; deployment not established |
-| #186 | `b0a8dc033750` | Chat rendering reliability | Preserves streamed assistant content when post-stream reconciliation fails | Open; not claimed as current failure behavior |
+| #186 | `bf66deb29def` | Chat rendering reliability | Per-turn local reconciliation plus streamed-reply/race protection | Open; reviewed through listed head, not on `main` or deployed |
 | #187 | merge `fd22072e29c9` | CI/Docker | PR-time API/web image builds plus Docker/CI hygiene | Merged to `main`; Docker jobs exist but are not protected required checks |
-| #188 | `76038f945600` | Voice lifecycle and TTS | Input/playback lifecycle, stop/retry/session locking, and TTS behavior fixes | Open; user docs describe intent without claiming these fixes shipped |
-| #189 | `c351131c7802` | API reliability and privacy | Ownership, race, persistence, metrics, explicit failures, and metadata-only activity/log privacy hardening | Open; required privacy commit exists but is unmerged, so PR #191 remains blocked on #189 merging |
-| #190 | `ea67ecd1693b` | Web UX and help | Accessibility, advanced-setting/tool help, client telemetry, modal/focus, and UI consistency | Open; tooltip/help improvements are not described as current `main` |
+| #188 | `409ac91be679` | Voice lifecycle and TTS | Input/playback/session lifecycle, race cleanup, navigation locking, accessibility, and TTS fixes | Open; reviewed through listed head, not on `main` or deployed |
+| #189 | `c71b6e172778` | API reliability and privacy | Ownership, race, persistence, metrics, explicit failures, metadata-only activity/log privacy, and hostile-input coverage | Open; required `c351131` privacy fix is retained but unmerged, so PR #191 remains blocked on #189 merging |
+| #190 | `d3bd4a4b155a` | Web UX and help | Accessibility, advanced-setting/tool help, client telemetry/privacy, modal/focus, and UI consistency | Open; reviewed through listed head, not on `main` or deployed |
 
 Because these branches can evolve, merge owners should refresh this table and rerun
 the validation matrix after each PR merges. Resolve overlapping documentation

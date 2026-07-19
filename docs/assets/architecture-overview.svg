@@ -97,10 +97,10 @@
   <path class="flow" d="M610 605 L930 605" stroke="#F7630C" marker-end="url(#arrow-orange)"/>
   <text class="label" x="835" y="575">MCP-only APIM key</text>
   <path class="flow" d="M1090 605 L1200 535" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
-  <path class="flow" d="M610 285 L1010 675 L1200 675" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
-  <text class="label" x="1095" y="652">owned canonical records</text>
-  <path class="flow" d="M610 300 L970 815 L1200 815" stroke="#5C2D91" stroke-dasharray="8 6" marker-end="url(#arrow-purple)"/>
-  <text class="label" x="1095" y="792">rebuildable derivatives</text>
+  <path class="flow" d="M610 285 L650 705 L1140 705 L1200 675" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
+  <text class="label" x="1030" y="690">owned canonical records</text>
+  <path class="flow" d="M610 300 L660 720 L1140 720 L1140 815 L1200 815" stroke="#5C2D91" stroke-dasharray="8 6" marker-end="url(#arrow-purple)"/>
+  <text class="label" x="810" y="705">rebuildable derivatives</text>
   <path class="flow" d="M485 600 L520 795" stroke="#1E1E1E" marker-end="url(#arrow-black)"/>
   <path class="flow" d="M580 600 L910 795" stroke="#1E1E1E" stroke-dasharray="8 6" marker-end="url(#arrow-black)"/>
 
