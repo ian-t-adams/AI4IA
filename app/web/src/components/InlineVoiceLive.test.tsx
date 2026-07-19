@@ -770,20 +770,27 @@ describe("inline Voice Live chat", () => {
   // a still-current attempt's *late success* can clear a timeout-driven
   // error. This proves the other supersession path -- the user explicitly
   // discarding -- works identically once a timeout has already fired, and
-  // that the abandoned save's eventual (never-cancelled) resolution can
-  // never resurrect the error/lock state or duplicate content for that
-  // now-superseded attempt. A one-shot "settled" latch would have made
-  // finish()'s *first* call (the timeout) permanent, but here the risk runs
-  // the other way: discard must remain the last word even though finish()
-  // stays reentrant for late completions.
-  it("lets the user discard after the bounded timeout fires, and the abandoned save's later resolution does not resurrect the error or duplicate the turn", async () => {
+  // that the abandoned save's eventual (never-cancelled) outcome can never
+  // resurrect the error/lock state for that now-superseded attempt.
+  //
+  // A late *success* can't actually discriminate this: discardPersistence()
+  // already sets saving=false/persistenceError=null/persisted=true directly,
+  // and finish()'s success branch sets those exact same terminal values --
+  // so a version of finish() with the attemptId-currency gate deleted
+  // entirely would still make this test pass, since every value it touches
+  // was already pinned to the identical value by discard. A late *failure*
+  // does discriminate: only a correctly-gated finish() suppresses it as a
+  // no-op; a version missing the gate would call setPersistenceError() with
+  // the late error's real message, visibly resurrecting the error UI the
+  // user already escaped.
+  it("lets the user discard after the bounded timeout fires, and the abandoned save's later failure does not resurrect the error", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    let resolvePersist: (() => void) | undefined;
+    let rejectPersist: ((error: Error) => void) | undefined;
     const persist = vi.fn(
       () =>
-        new Promise<void>((resolve) => {
-          resolvePersist = resolve;
+        new Promise<void>((_resolve, reject) => {
+          rejectPersist = reject;
         }),
     );
     controller = makeController({
@@ -832,18 +839,22 @@ describe("inline Voice Live chat", () => {
       screen.getByRole("button", { name: "Start live voice conversation" }),
     ).toBeEnabled();
 
-    // The abandoned save -- never actually cancelled -- now finally
-    // resolves in the background. It must be a complete no-op: no error or
-    // lock resurrection, and no duplicate/late content injected into a UI
-    // the user has already moved past.
+    // The abandoned save -- never actually cancelled -- now finally fails in
+    // the background (e.g. the same request the timeout gave up waiting on
+    // eventually surfaces a real network/server error).
+    const lateError = new Error("Late background failure after discard");
     await act(async () => {
-      resolvePersist?.();
+      rejectPersist?.(lateError);
       for (let i = 0; i < 20; i += 1) {
         await Promise.resolve();
       }
     });
 
+    // Still exactly the discarded state: a superseded attempt's late
+    // failure must not resurrect any error/lock state, whether the
+    // timeout's own message or the late error's real one.
     expect(screen.getByText("Voice Live ready")).toBeInTheDocument();
+    expect(screen.queryByText(lateError.message)).toBeNull();
     expect(
       screen.queryByText(
         "Saving the voice transcript is taking too long. Retry, or stop waiting to continue.",
@@ -852,8 +863,8 @@ describe("inline Voice Live chat", () => {
     expect(screen.queryByRole("button", { name: "Stop waiting" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Retry saving" })).toBeNull();
 
-    // Nothing about the discard-then-late-resolution sequence should trap
-    // the user: a brand new conversation can start immediately.
+    // Nothing about the discard-then-late-failure sequence should trap the
+    // user: a brand new conversation can start immediately.
     await user.click(
       screen.getByRole("button", { name: "Start live voice conversation" }),
     );
