@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import * as api from "@/lib/api";
 import type { ModelEntry } from "@/lib/types";
+import { HelpTooltip } from "./HelpTooltip";
 import { useTheme } from "./ThemeProvider";
-import { useModalFocus } from "./useModalFocus";
+import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 
 const SIZES = ["1024x1024", "1024x1536", "1536x1024", "auto"];
 const QUALITIES = ["auto", "low", "medium", "high"];
@@ -31,7 +32,8 @@ export function ImageStudioPanel({
   models: ModelEntry[];
   onClose: () => void;
 }) {
-  const modal = useModalFocus(onClose);
+  const modalRef = useModalFocus();
+  const onModalKeyDown = useModalKeyDown(onClose);
   const { setBackground } = useTheme();
 
   const imageModels = useMemo(
@@ -91,8 +93,8 @@ export function ImageStudioPanel({
 
   return (
     <div
-      ref={modal.ref}
-      onKeyDown={modal.onKeyDown}
+      ref={modalRef}
+      onKeyDown={onModalKeyDown}
       role="dialog"
       aria-label="Imagery studio"
       aria-modal="true"
@@ -170,8 +172,20 @@ export function ImageStudioPanel({
                   ))}
                 </select>
               </label>
-              <label style={{ fontSize: "0.78em", color: "var(--fg-muted)" }}>
-                Size
+              {/* Not a <label>: the <select> already carries its own aria-label,
+                  and nesting the HelpTooltip's button inside a <label> that also
+                  wraps the <select> would leave two labelable elements under one
+                  label, so a click on the "Size" text could ambiguously activate
+                  either one instead of reliably focusing the select. */}
+              <div style={{ fontSize: "0.78em", color: "var(--fg-muted)" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  Size
+                  <HelpTooltip label="Image size" size="sm">
+                    Square (1024×1024) suits most images. Use 1024×1536 for a tall,
+                    portrait composition or 1536×1024 for a wide, landscape one.
+                    &ldquo;auto&rdquo; lets the model pick a size based on your prompt.
+                  </HelpTooltip>
+                </span>
                 <select
                   aria-label="Image size"
                   value={size}
@@ -184,9 +198,17 @@ export function ImageStudioPanel({
                     </option>
                   ))}
                 </select>
-              </label>
-              <label style={{ fontSize: "0.78em", color: "var(--fg-muted)" }}>
-                Quality
+              </div>
+              <div style={{ fontSize: "0.78em", color: "var(--fg-muted)" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  Quality
+                  <HelpTooltip label="Image quality" size="sm">
+                    Higher quality produces sharper, more detailed images but costs more
+                    and takes longer to generate. Lower quality is faster and cheaper for
+                    quick drafts. &ldquo;auto&rdquo; lets the provider balance quality
+                    against cost automatically.
+                  </HelpTooltip>
+                </span>
                 <select
                   aria-label="Image quality"
                   value={quality}
@@ -199,7 +221,7 @@ export function ImageStudioPanel({
                     </option>
                   ))}
                 </select>
-              </label>
+              </div>
               <button
                 type="button"
                 onClick={generate}

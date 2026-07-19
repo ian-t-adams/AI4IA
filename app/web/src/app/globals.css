@@ -496,6 +496,15 @@ button:disabled {
   gap: 6px;
 }
 
+.tool-list-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
 .inspector-list li,
 .tool-row {
   display: flex;
@@ -592,6 +601,29 @@ button:disabled {
   padding: 0;
   font-size: 0.75rem;
   font-weight: 700;
+}
+
+.help-trigger-sm {
+  width: 18px;
+  height: 18px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  flex: 0 0 auto;
+  position: relative;
+}
+
+.help-trigger-sm::before {
+  /* Expands the effective (invisible) hit target to the WCAG 2.2 AA
+     minimum of 24x24 without visually enlarging the 18px glyph, so dense
+     rows (status pills, per-item badges, checkbox lists) don't look
+     bloated but the trigger is still comfortably tappable. */
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
 }
 
 .help-content {

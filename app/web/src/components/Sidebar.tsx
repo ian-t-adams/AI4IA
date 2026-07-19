@@ -7,7 +7,7 @@ import { DOCS_INDEX_URL, STATUS_URL } from "@/lib/docs";
 import { AdminLink } from "./AdminLink";
 import { UserMenu } from "./UserMenu";
 import { useMediaQuery } from "./useMediaQuery";
-import { useModalFocus } from "./useModalFocus";
+import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 import { EditableSessionTitle } from "./EditableSessionTitle";
 
 export function Sidebar({
@@ -41,11 +41,8 @@ export function Sidebar({
   disabledReason?: string;
 }) {
   const mobileDrawer = useMediaQuery("(max-width: 720px)") && Boolean(onCollapse);
-  const drawerFocus = useModalFocus<HTMLElement>(
-    onCollapse ?? (() => {}),
-    mobileDrawer,
-    openerRef,
-  );
+  const drawerFocusRef = useModalFocus<HTMLElement>(mobileDrawer, openerRef);
+  const onDrawerKeyDown = useModalKeyDown<HTMLElement>(onCollapse ?? (() => {}), mobileDrawer);
   // Shared id for the visible lock-reason hint below, referenced via
   // aria-describedby by every control this component soft-disables so
   // screen reader users get the same recovery guidance sighted users see
@@ -55,8 +52,8 @@ export function Sidebar({
   const describedBy = disabled && disabledReason ? lockHintId : undefined;
   return (
     <nav
-      ref={drawerFocus.ref}
-      onKeyDown={drawerFocus.onKeyDown}
+      ref={drawerFocusRef}
+      onKeyDown={onDrawerKeyDown}
       className="session-sidebar"
       role={mobileDrawer ? "dialog" : "navigation"}
       aria-modal={mobileDrawer ? true : undefined}

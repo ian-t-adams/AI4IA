@@ -22,6 +22,15 @@ import uuid
 TELEMETRY_LOGGER_NAME = "ai4ia_api.telemetry"
 
 _telemetry_logger = logging.getLogger(TELEMETRY_LOGGER_NAME)
+# Explicit level (not inherited): this logger has no handlers of its own until
+# configure_telemetry() attaches one, but ``.info()`` calls in emit_custom_event
+# are no-ops whenever the *effective* level filters them out. Effective level is
+# inherited from the root logger otherwise, so raising AI4IA_LOG_LEVEL to WARNING
+# in production (a normal way to cut stdout noise) would silently drop every
+# customEvent -- callers still see success (emit_custom_event never raises) with
+# no telemetry ever reaching Application Insights. Pin this logger to INFO so its
+# effective level is independent of the root/stdout verbosity setting.
+_telemetry_logger.setLevel(logging.INFO)
 _telemetry_configured = False
 
 _correlation_id: contextvars.ContextVar[str] = contextvars.ContextVar(

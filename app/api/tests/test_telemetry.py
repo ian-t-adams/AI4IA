@@ -63,6 +63,49 @@ def test_emit_custom_event_noop_when_disabled(monkeypatch):
     assert records == []
 
 
+def test_telemetry_logger_stays_at_info_when_root_level_is_raised(monkeypatch):
+    """Regression for MEDIUM-1: the telemetry logger had no explicit level of
+    its own, so its *effective* level was inherited from the root logger.
+    Raising ``AI4IA_LOG_LEVEL`` to WARNING in production -- a normal way to
+    cut stdout noise -- silently dropped every customEvent: callers still saw
+    success (``emit_custom_event`` never raises) while nothing reached
+    Application Insights. Drives the real ``configure_logging`` entry point
+    (the same one ``main.py`` calls with ``settings.log_level``) with the
+    root logger genuinely at WARNING, then exercises the real logger with a
+    capture handler (no mock) so a future regression that removes the
+    explicit ``setLevel`` can't hide behind one."""
+    root = logging.getLogger()
+    original_level = root.level
+    original_handlers = list(root.handlers)
+    records: list[logging.LogRecord] = []
+    try:
+        logging_setup.configure_logging("WARNING")
+        assert root.level == logging.WARNING
+
+        monkeypatch.setattr(logging_setup, "_telemetry_configured", True)
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = _Capture()
+        logging_setup._telemetry_logger.addHandler(handler)
+        try:
+            # The crux of the fix: effective level must stay INFO even
+            # though root is now WARNING.
+            assert logging_setup._telemetry_logger.isEnabledFor(logging.INFO)
+            logging_setup.emit_custom_event("chat_completion", {"model": "gpt-x"})
+        finally:
+            logging_setup._telemetry_logger.removeHandler(handler)
+    finally:
+        root.setLevel(original_level)
+        root.handlers.clear()
+        root.handlers.extend(original_handlers)
+
+    assert len(records) == 1
+    assert records[0].model == "gpt-x"
+
+
 def test_annotate_current_span_noop_when_disabled(monkeypatch):
     monkeypatch.setattr(logging_setup, "_telemetry_configured", False)
     # No active span / no SDK: must be a silent no-op.

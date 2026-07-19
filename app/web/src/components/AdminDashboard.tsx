@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
+import { HelpTooltip } from "./HelpTooltip";
 import {
   type AdminUsageSummary,
   type AdminUserRow,
@@ -293,12 +294,22 @@ function UserCell({
 }) {
   const visibleName = identified ? displayName?.trim() : "";
   const visibleEmail = identified ? email : null;
-  // Full hash (and email in identified mode) stay available on hover; the hash is the stable key.
-  const tooltip = visibleEmail ? `${userId}\n${visibleEmail}` : userId;
+  // The table always shows a shortened id (and, in identified mode, a name);
+  // the untruncated id is otherwise unreachable without page source. A
+  // hover-only title (even paired with tabIndex) never surfaces on keyboard
+  // focus in any browser, so disclose it via the same focus/click/hover
+  // affordance used elsewhere instead.
+  const idHint = shortUserId(userId);
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 1 }} title={tooltip}>
-      <span style={{ fontFamily: visibleName ? "inherit" : "monospace" }}>
-        {userLabel(visibleName, userId)}
+    <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+        <span style={{ fontFamily: visibleName ? "inherit" : "monospace" }}>
+          {userLabel(visibleName, userId)}
+        </span>
+        <HelpTooltip label={`full id for ${idHint}`} size="sm">
+          Full id: {userId}
+          {visibleEmail ? `, email: ${visibleEmail}` : null}
+        </HelpTooltip>
       </span>
       {visibleName ? (
         <span style={{ fontFamily: "monospace", fontSize: "0.82em", color: "var(--fg-muted)" }}>
@@ -736,6 +747,7 @@ export function AdminDashboard() {
 
   useEffect(() => {
     if (phase !== "ready") return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch-on-filter-change; setState only runs after `load`'s awaited requests settle, not synchronously
     void load(days, identifyUsers);
     return () => loadAbortRef.current?.abort();
   }, [phase, days, identifyUsers, load]);
@@ -765,21 +777,33 @@ export function AdminDashboard() {
     <Shell>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
         <h1 style={{ fontSize: "1.3em", margin: 0, flex: 1 }}>Usage dashboard</h1>
-        <label
-          style={{ ...muted, display: "flex", alignItems: "center", gap: 6 }}
-          title="Off keeps user rows hash-only for demos and screen-shares."
-        >
+        <span style={{ ...muted, display: "flex", alignItems: "center", gap: 4 }}>
           <input
             type="checkbox"
+            id="admin-identify-users"
             checked={identifyUsers}
             onChange={(e) => setIdentifyUsers(e.target.checked)}
-            aria-label="Show real identities"
           />
-          Show real identities
-        </label>
-        <label style={muted} htmlFor="admin-window">
-          Window
-        </label>
+          <label htmlFor="admin-identify-users">Show real identities</label>
+          <HelpTooltip label="Show real identities" size="sm">
+            On resolves each user&apos;s hashed id to their real display name and
+            email (an extra directory lookup per row) and sends that to your
+            browser. Off never fetches or sends that PII — rows stay hash-only,
+            which is safer for demos, screen-shares, or recordings. This
+            preference is remembered on this device only.
+          </HelpTooltip>
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <label style={muted} htmlFor="admin-window">
+            Window
+          </label>
+          <HelpTooltip label="Window" size="sm">
+            How far back to aggregate usage. Wider windows take longer to load
+            and are more likely to hit the per-window record cap, which
+            silently turns totals into a lower bound (watch for the ⚠ banner
+            below).
+          </HelpTooltip>
+        </span>
         <select
           id="admin-window"
           value={days}
@@ -814,7 +838,9 @@ export function AdminDashboard() {
       {data.truncated ? (
         <div style={{ ...card, marginBottom: 16 }}>
           <span style={muted}>
-            ⚠ Results were capped for this window — totals are a lower bound.
+            ⚠ This window has more usage records than the dashboard aggregates
+            at once, so results were capped — totals below are a lower bound,
+            not the true total. Pick a shorter window for exact numbers.
           </span>
         </div>
       ) : null}
