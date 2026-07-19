@@ -77,7 +77,6 @@ _CAMEL_TO_SNAKE = {
     "indexName": "index_name",
     "queryType": "query_type",
     "topK": "top_k",
-    "indexAssetId": "index_asset_id",
     "customSearchConfiguration": "custom_search_configuration",
     "instanceName": "instance_name",
     "vectorStoreIds": "vector_store_ids",
@@ -85,9 +84,15 @@ _CAMEL_TO_SNAKE = {
     "fileIds": "file_ids",
     "memoryLimit": "memory_limit",
     "networkPolicy": "network_policy",
+    "allowedDomains": "allowed_domains",
     "securityScheme": "security_scheme",
     "defaultParams": "default_params",
 }
+# NOTE: no "indexAssetId" entry. azure-ai-projects' AISearchIndexResource.index_asset_id
+# exists on the SDK model, but no current Microsoft Learn doc for the Azure AI Search tool
+# documents it as a supported alternative to indexName+projectConnectionId (both of which
+# ARE documented as Required); the manifest schema does not accept indexAssetId either, so
+# this table intentionally has no mapping for it (see docs/foundry-toolbox.md).
 # Manifest keys whose VALUE is an opaque, externally-authored payload that must be copied
 # verbatim -- never key-rewritten -- even though _convert_keys() otherwise recurses through
 # every nested dict/list. Keyed by the (parent key, key) pair so only the specific nesting we

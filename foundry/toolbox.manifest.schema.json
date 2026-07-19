@@ -80,18 +80,28 @@
                 "maxItems": 1,
                 "items": {
                   "type": "object",
+                  "description": "Microsoft's Azure AI Search tool 'Configure tool parameters' guide lists project_connection_id and index_name as BOTH Required, with no documented alternative; the SDK model also exposes an index_asset_id field, but it appears in no current Microsoft Learn doc as a supported substitute, so AI4IA does not accept it here (an unresolved-resource footgun otherwise) -- see docs/foundry-toolbox.md.",
                   "additionalProperties": false,
-                  "required": ["indexName"],
+                  "required": ["indexName", "projectConnectionId"],
                   "properties": {
                     "indexName": { "type": "string", "minLength": 1 },
                     "projectConnectionId": { "type": "string", "minLength": 1 },
                     "queryType": { "type": "string" },
                     "topK": { "type": "integer" },
-                    "filter": { "type": "string" },
-                    "indexAssetId": { "type": "string" }
+                    "filter": { "type": "string" }
                   }
                 }
               }
+            }
+          },
+          "customSearchConfiguration": {
+            "type": "object",
+            "description": "Optional grounding-with-Bing-custom-search config for web_search tools, mirroring azure-ai-projects 2.3.0's WebSearchConfiguration. Both fields are Required on that SDK model (no defaults, unlike azure_ai_search's index fields). Omit `customSearchConfiguration` entirely to use the tool's default (non-custom) grounded web search.",
+            "additionalProperties": false,
+            "required": ["projectConnectionId", "instanceName"],
+            "properties": {
+              "projectConnectionId": { "type": "string", "minLength": 1 },
+              "instanceName": { "type": "string", "minLength": 1 }
             }
           },
           "browserAutomationPreview": {
@@ -122,7 +132,34 @@
                 "properties": {
                   "type": { "const": "auto" },
                   "fileIds": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-                  "memoryLimit": { "type": "string", "enum": ["1g", "4g", "16g", "64g"] }
+                  "memoryLimit": { "type": "string", "enum": ["1g", "4g", "16g", "64g"] },
+                  "networkPolicy": {
+                    "type": "object",
+                    "description": "Optional outbound network policy, mirroring azure-ai-projects 2.3.0's ContainerNetworkPolicyParam (disabled | allowlist). The SDK's allowlist variant also supports `domainSecrets` (per-domain literal secret values injected into the sandbox); AI4IA intentionally does NOT expose that field here because this manifest is committed to source control -- see docs/foundry-toolbox.md's secrets policy.",
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["type"],
+                        "properties": {
+                          "type": { "const": "disabled" }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["type", "allowedDomains"],
+                        "properties": {
+                          "type": { "const": "allowlist" },
+                          "allowedDomains": {
+                            "type": "array",
+                            "items": { "type": "string", "minLength": 1 },
+                            "minItems": 1
+                          }
+                        }
+                      }
+                    ]
+                  }
                 }
               }
             ]
@@ -270,6 +307,7 @@
               "not": {
                 "anyOf": [
                   { "required": ["indexName"] },
+                  { "required": ["customSearchConfiguration"] },
                   { "required": ["browserAutomationPreview"] },
                   { "required": ["container"] },
                   { "required": ["vectorStoreIds"] },
@@ -292,6 +330,7 @@
               "not": {
                 "anyOf": [
                   { "required": ["azureAiSearch"] },
+                  { "required": ["customSearchConfiguration"] },
                   { "required": ["browserAutomationPreview"] },
                   { "required": ["vectorStoreIds"] },
                   { "required": ["openapi"] },
@@ -313,6 +352,7 @@
               "not": {
                 "anyOf": [
                   { "required": ["azureAiSearch"] },
+                  { "required": ["customSearchConfiguration"] },
                   { "required": ["browserAutomationPreview"] },
                   { "required": ["container"] },
                   { "required": ["openapi"] },
@@ -335,6 +375,7 @@
               "not": {
                 "anyOf": [
                   { "required": ["azureAiSearch"] },
+                  { "required": ["customSearchConfiguration"] },
                   { "required": ["container"] },
                   { "required": ["vectorStoreIds"] },
                   { "required": ["openapi"] },
@@ -357,6 +398,7 @@
               "not": {
                 "anyOf": [
                   { "required": ["azureAiSearch"] },
+                  { "required": ["customSearchConfiguration"] },
                   { "required": ["browserAutomationPreview"] },
                   { "required": ["container"] },
                   { "required": ["vectorStoreIds"] },
@@ -378,6 +420,7 @@
               "not": {
                 "anyOf": [
                   { "required": ["azureAiSearch"] },
+                  { "required": ["customSearchConfiguration"] },
                   { "required": ["browserAutomationPreview"] },
                   { "required": ["container"] },
                   { "required": ["vectorStoreIds"] },
@@ -402,6 +445,7 @@
               "not": {
                 "anyOf": [
                   { "required": ["azureAiSearch"] },
+                  { "required": ["customSearchConfiguration"] },
                   { "required": ["browserAutomationPreview"] },
                   { "required": ["container"] },
                   { "required": ["vectorStoreIds"] },

@@ -13,6 +13,9 @@
     },
     {
       "name": "ai4ia-browser-automation"
+    },
+    {
+      "name": "ai4ia-bing-custom-search"
     }
   ],
   "tools": [
@@ -20,6 +23,15 @@
       "type": "web_search",
       "name": "web-search",
       "description": "Grounded public web search. Connectionless."
+    },
+    {
+      "type": "web_search",
+      "name": "web-search-custom",
+      "description": "Grounded web search scoped to a Bing Custom Search instance instead of the general web. customSearchConfiguration is optional (SDK 2.3.0's WebSearchConfiguration); both nested fields are required together when present. Requires the 'ai4ia-bing-custom-search' project connection.",
+      "customSearchConfiguration": {
+        "projectConnectionId": "ai4ia-bing-custom-search",
+        "instanceName": "ai4ia-custom-search"
+      }
     },
     {
       "type": "azure_ai_search",
@@ -42,8 +54,15 @@
     {
       "type": "code_interpreter",
       "name": "code-interpreter-custom-limits",
-      "description": "Foundry-managed sandbox with custom resource limits (nested auto object). NOT a custom/BYO container image: `container` as a string means an EXISTING container ID, and the object form only supports the auto/managed sandbox (fileIds/memoryLimit), never an arbitrary image reference. For genuinely custom execution logic, run your own server and add it as an `mcp` tool instead (see the `mcp` example below).",
-      "container": { "type": "auto", "memoryLimit": "4g" }
+      "description": "Foundry-managed sandbox with custom resource limits and a restricted outbound network policy (nested auto object). NOT a custom/BYO container image: `container` as a string means an EXISTING container ID, and the object form only supports the auto/managed sandbox (fileIds/memoryLimit/networkPolicy), never an arbitrary image reference. For genuinely custom execution logic, run your own server and add it as an `mcp` tool instead (see the `mcp` example below). networkPolicy.allowlist here restricts sandbox egress to PyPI (SDK 2.3.0's ContainerNetworkPolicyParam); the SDK also supports a `domainSecrets` list on the allowlist variant, but that is a literal secret value per domain, so it is intentionally not modeled in this manifest schema (this file is committed to source control).",
+      "container": {
+        "type": "auto",
+        "memoryLimit": "4g",
+        "networkPolicy": {
+          "type": "allowlist",
+          "allowedDomains": ["pypi.org", "files.pythonhosted.org"]
+        }
+      }
     },
     {
       "type": "browser_automation_preview",

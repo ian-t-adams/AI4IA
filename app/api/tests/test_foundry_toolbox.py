@@ -172,13 +172,19 @@ def test_example_manifest_is_populated_valid_and_schema_valid():
     # both a default and a custom code_interpreter are present (the custom one is named)
     ci = [t for t in manifest["tools"] if t["type"] == "code_interpreter"]
     assert any("name" in t for t in ci) and len(ci) >= 2
+    # both a default (connectionless) and a custom-search-scoped web_search are present.
+    ws = [t for t in manifest["tools"] if t["type"] == "web_search"]
+    assert len(ws) >= 2
+    assert any("customSearchConfiguration" not in t for t in ws)
+    assert any("customSearchConfiguration" in t for t in ws)
     # mcp tools are identified by serverLabel, not name (per the "one unnamed tool" rule).
     mcp = next(t for t in manifest["tools"] if t["type"] == "mcp")
     assert mcp.get("serverLabel") and not mcp.get("name")
     # Every projectConnectionId reference must resolve to a declared connection so the example
-    # is actually self-consistent (not just individually schema-valid fields). azure_ai_search
-    # and browser_automation_preview nest their connection reference (see SDK-shape note above);
-    # checking only the tool root here would silently stop covering them.
+    # is actually self-consistent (not just individually schema-valid fields). azure_ai_search,
+    # browser_automation_preview, and web_search's customSearchConfiguration each nest their
+    # connection reference (see SDK-shape note above); checking only the tool root here would
+    # silently stop covering them.
     conn_names = {c["name"] for c in manifest["connections"]}
     for t in manifest["tools"]:
         if t.get("projectConnectionId"):
@@ -189,6 +195,8 @@ def test_example_manifest_is_populated_valid_and_schema_valid():
                     assert idx["projectConnectionId"] in conn_names
         if t.get("browserAutomationPreview"):
             assert t["browserAutomationPreview"]["connection"]["projectConnectionId"] in conn_names
+        if t.get("customSearchConfiguration"):
+            assert t["customSearchConfiguration"]["projectConnectionId"] in conn_names
     jsonschema = pytest.importorskip("jsonschema")
     schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
     jsonschema.validate(manifest, schema)
@@ -263,6 +271,46 @@ def test_plan_tools_recursively_converts_nested_azure_ai_search_and_browser_auto
     browser = next(t for t in planned if t["type"] == "browser_automation_preview")
     assert "browserAutomationPreview" not in browser
     assert browser["browser_automation_preview"]["connection"]["project_connection_id"] == "browser-conn"
+
+
+def test_plan_tools_snake_cases_web_search_custom_search_configuration_and_network_policy_domains():
+    # Direct regression guard for the exact silent-corruption risk found in round 6: these SDK
+    # "Model" classes accept raw dict kwargs for nested fields WITHOUT validating key names at
+    # construction time (confirmed empirically), so a camelCase key missing from
+    # _CAMEL_TO_SNAKE would not raise -- it would silently persist as the wrong wire key and the
+    # service would just never see it. allowedDomains was the gap (added alongside
+    # customSearchConfiguration/networkPolicy schema support); pin both conversions here as a
+    # pure dict-level check, independent of the optional azure-ai-projects dependency.
+    manifest = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "web_search",
+                "name": "custom-web-search",
+                "customSearchConfiguration": {"projectConnectionId": "bing-conn", "instanceName": "inst"},
+            },
+            {
+                "type": "code_interpreter",
+                "name": "restricted-ci",
+                "container": {
+                    "type": "auto",
+                    "networkPolicy": {"type": "allowlist", "allowedDomains": ["pypi.org"]},
+                },
+            },
+        ],
+    }
+    planned = _tb.plan_tools(manifest)
+
+    web_search = next(t for t in planned if t["type"] == "web_search")
+    assert "customSearchConfiguration" not in web_search
+    csc = web_search["custom_search_configuration"]
+    assert csc == {"project_connection_id": "bing-conn", "instance_name": "inst"}
+
+    ci = next(t for t in planned if t["type"] == "code_interpreter")
+    assert "networkPolicy" not in ci["container"]
+    policy = ci["container"]["network_policy"]
+    assert "allowedDomains" not in policy
+    assert policy == {"type": "allowlist", "allowed_domains": ["pypi.org"]}
 
 
 def test_plan_tools_preserves_opaque_openapi_spec_keys_but_still_converts_auth():
@@ -361,9 +409,10 @@ def test_schema_rejects_root_level_azure_ai_search_fields_and_bare_browser_autom
 
 
 def test_schema_rejects_azure_ai_search_empty_incomplete_or_multiple_indexes():
-    # A tool with no indexes, an index entry missing the required indexName, or more than
-    # one index is inert, unprovisionable, or unsupported by the SDK; the schema must reject
-    # all three instead of silently accepting them.
+    # A tool with no indexes, an index entry missing either required field, an index using
+    # the undocumented indexAssetId in place of them, or more than one index is inert,
+    # unprovisionable, or unsupported by the SDK; the schema must reject all of these
+    # instead of silently accepting them.
     jsonschema = pytest.importorskip("jsonschema")
     schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
 
@@ -386,6 +435,40 @@ def test_schema_rejects_azure_ai_search_empty_incomplete_or_multiple_indexes():
     }
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(missing_index_name, schema)
+
+    # Round 6: indexName and projectConnectionId are BOTH Required per Microsoft's Azure AI
+    # Search tool "Configure tool parameters" doc -- indexName alone (no connection to
+    # resolve it against) used to validate but produces an unresolved-resource failure at
+    # provisioning time. The schema must reject this direction too, not just the reverse.
+    missing_project_connection_id = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "azure_ai_search",
+                "name": "x",
+                "azureAiSearch": {"indexes": [{"indexName": "docs"}]},
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing_project_connection_id, schema)
+
+    # indexAssetId is a real field on the SDK's AISearchIndexResource model, but it appears
+    # in no current Microsoft Learn doc for this tool as a documented alternative to
+    # indexName+projectConnectionId. Modeling an undocumented field as a validated
+    # alternative would be a product guess, not a grounded fix -- the schema must reject it.
+    index_asset_id = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "azure_ai_search",
+                "name": "x",
+                "azureAiSearch": {"indexes": [{"indexAssetId": "asset-1"}]},
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(index_asset_id, schema)
 
     # azure-ai-projects' AzureAISearchToolResource.indexes docstring: "There can be a maximum
     # of 1 index resource attached to the agent." A second index is not a richer config, it's
@@ -519,6 +602,154 @@ def test_schema_rejects_unknown_tool_property_and_cross_type_field_pollution():
         jsonschema.validate(cross_type_pollution, schema)
 
 
+def test_schema_accepts_web_search_custom_search_configuration_and_rejects_incomplete_or_misplaced():
+    # Round 6 finding: azure-ai-projects 2.3.0's WebSearchToolboxTool.custom_search_configuration
+    # (WebSearchConfiguration: project_connection_id + instance_name, both Required with no SDK
+    # default) was already snake_cased by the provisioner's _CAMEL_TO_SNAKE table, but the schema
+    # rejected it outright -- a manifest the provisioner could actually construct was unusable.
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    good = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "web_search",
+                "name": "x",
+                "customSearchConfiguration": {
+                    "projectConnectionId": "bing-custom-conn",
+                    "instanceName": "my-custom-search",
+                },
+            }
+        ],
+    }
+    jsonschema.validate(good, schema)  # must not raise
+
+    missing_instance_name = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "web_search",
+                "name": "x",
+                "customSearchConfiguration": {"projectConnectionId": "bing-custom-conn"},
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing_instance_name, schema)
+
+    missing_project_connection_id = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "web_search",
+                "name": "x",
+                "customSearchConfiguration": {"instanceName": "my-custom-search"},
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing_project_connection_id, schema)
+
+    # customSearchConfiguration is web_search-only; every other type's if/then branch must
+    # reject it too, the same cross-type-pollution guard as azureAiSearch/container/etc.
+    on_wrong_type = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "code_interpreter",
+                "name": "x",
+                "customSearchConfiguration": {
+                    "projectConnectionId": "bing-custom-conn",
+                    "instanceName": "my-custom-search",
+                },
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(on_wrong_type, schema)
+
+
+def test_schema_accepts_code_interpreter_network_policy_and_rejects_incomplete_or_secret_fields():
+    # Round 6 finding: azure-ai-projects 2.3.0's AutoCodeInterpreterToolParam.network_policy
+    # (ContainerNetworkPolicyParam: disabled | allowlist) was already snake_cased by the
+    # provisioner, but the schema rejected `container.networkPolicy` outright.
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    disabled = {
+        **_valid_manifest(),
+        "tools": [
+            {"type": "code_interpreter", "name": "x", "container": {"type": "auto", "networkPolicy": {"type": "disabled"}}}
+        ],
+    }
+    jsonschema.validate(disabled, schema)  # must not raise
+
+    allowlist = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "code_interpreter",
+                "name": "x",
+                "container": {
+                    "type": "auto",
+                    "networkPolicy": {"type": "allowlist", "allowedDomains": ["pypi.org"]},
+                },
+            }
+        ],
+    }
+    jsonschema.validate(allowlist, schema)  # must not raise
+
+    allowlist_missing_domains = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "code_interpreter",
+                "name": "x",
+                "container": {"type": "auto", "networkPolicy": {"type": "allowlist"}},
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(allowlist_missing_domains, schema)
+
+    allowlist_empty_domains = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "code_interpreter",
+                "name": "x",
+                "container": {"type": "auto", "networkPolicy": {"type": "allowlist", "allowedDomains": []}},
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(allowlist_empty_domains, schema)
+
+    # domainSecrets carries a literal secret VALUE per domain (azure-ai-projects 2.3.0's
+    # ContainerNetworkPolicyDomainSecretParam.value); this manifest is committed to source
+    # control, so the schema must never accept it (AGENTS.md "no secret sprawl").
+    with_domain_secrets = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "code_interpreter",
+                "name": "x",
+                "container": {
+                    "type": "auto",
+                    "networkPolicy": {
+                        "type": "allowlist",
+                        "allowedDomains": ["pypi.org"],
+                        "domainSecrets": [{"domain": "pypi.org", "name": "token", "value": "shh"}],
+                    },
+                },
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(with_domain_secrets, schema)
+
+
 # ----------------- live-SDK guard: real model construction (gated, optional dep) ------
 def _install_fake_ai_project_client(monkeypatch, *, returned_version, captured):
     """Patch azure.ai.projects.AIProjectClient / azure.identity.DefaultAzureCredential with
@@ -578,6 +809,21 @@ def test_create_toolbox_constructs_real_sdk_models_with_nested_fields_populated(
     conn = browser_tool.browser_automation_preview.connection
     assert conn is not None
     assert conn.project_connection_id == "ai4ia-browser-automation"
+
+    # customSearchConfiguration (round 6): must reach WebSearchToolboxTool.custom_search_configuration
+    # as a real WebSearchConfiguration, not a raw dict, with both required fields populated.
+    web_search_tools = [t for t in tools if isinstance(t, m.WebSearchToolboxTool)]
+    custom_web_search = next(t for t in web_search_tools if t.custom_search_configuration is not None)
+    assert custom_web_search.custom_search_configuration.project_connection_id == "ai4ia-bing-custom-search"
+    assert custom_web_search.custom_search_configuration.instance_name == "ai4ia-custom-search"
+
+    # container.networkPolicy (round 6): must reach AutoCodeInterpreterToolParam.network_policy
+    # with allowedDomains correctly snake_cased to allowed_domains (the exact silent-corruption
+    # risk this round's fix closes -- see test_plan_tools_snake_cases_... above).
+    ci_tools = [t for t in tools if isinstance(t, m.CodeInterpreterToolboxTool)]
+    custom_ci = next(t for t in ci_tools if t.container is not None)
+    assert custom_ci.container.network_policy.type == "allowlist"
+    assert custom_ci.container.network_policy.allowed_domains == ["pypi.org", "files.pythonhosted.org"]
 
     # openapi.spec (OpenApiFunctionDefinition.spec: dict[str, Any]) must reach the real SDK
     # model completely unconverted, even though it sits next to auth's SDK-known nested shape.
