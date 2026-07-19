@@ -100,7 +100,20 @@ function reconcileMessages(
   fresh: Message[],
   removeIds: ReadonlySet<string> = new Set(),
 ): Message[] {
-  const byId = new Map(fresh.map((message) => [message.id, message]));
+  const previousById = new Map(previous.map((message) => [message.id, message]));
+  const byId = new Map<string, Message>(
+    fresh.map((message) => {
+      const existing = previousById.get(message.id);
+      if (
+        existing &&
+        existing.status !== "streaming" &&
+        message.status === "streaming"
+      ) {
+        return [message.id, existing] as [string, Message];
+      }
+      return [message.id, message] as [string, Message];
+    }),
+  );
   for (const message of previous) {
     if (!removeIds.has(message.id) && !byId.has(message.id)) {
       byId.set(message.id, message);
@@ -112,6 +125,37 @@ function reconcileMessages(
       left.id.localeCompare(right.id),
   );
 }
+
+function replaceTemporaryMessageId(
+  messages: Message[],
+  temporaryId: string,
+  durableId: string,
+): Message[] {
+  const temporary = messages.find((message) => message.id === temporaryId);
+  if (!temporary) return messages;
+  const durable = messages.find((message) => message.id === durableId);
+  const replacement =
+    durable?.role === "assistant" &&
+    durable.status === "streaming" &&
+    temporary.status !== "streaming"
+      ? { ...temporary, id: durableId }
+      : (durable ?? { ...temporary, id: durableId });
+  return [
+    ...messages.filter(
+      (message) => message.id !== temporaryId && message.id !== durableId,
+    ),
+    replacement,
+  ];
+}
+
+function terminalMessage(messages: Message[], id: string): boolean {
+  const message = messages.find((candidate) => candidate.id === id);
+  return Boolean(message && message.status !== "streaming");
+}
+
+const RECONCILIATION_DELAYS_MS = [250, 750, 1500] as const;
+const UNKNOWN_STREAM_OUTCOME =
+  "Outcome unknown; refresh or leave and reselect the conversation to reconcile.";
 
 function getProviderDefaultVoice(provider: VoiceProvider): string {
   const voices = provider.capabilities.voices.options as readonly string[];
@@ -270,6 +314,7 @@ export function ChatApp() {
 
   const [streaming, setStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState("");
+  const [streamMaterialized, setStreamMaterialized] = useState(false);
   const [streamingStartedAt, setStreamingStartedAt] = useState<string | null>(
     null,
   );
@@ -307,16 +352,126 @@ export function ChatApp() {
   // when an upload is quickly followed by a send.
   const sessionIdRef = useRef<string | null>(null);
   const selectionGenerationRef = useRef(0);
+  const turnGenerationRef = useRef(0);
+  const reconciliationTimersRef = useRef(new Set<number>());
+  const pendingAssistantIdsRef = useRef(new Map<string, Set<string>>());
   const modelMutationGenerationRef = useRef(0);
   const capabilityGenerationRef = useRef(0);
   const voiceNavigationLockedRef = useRef(false);
   const voiceActiveRef = useRef(false);
   const voiceStopRef = useRef<() => void>(() => {});
+  const mountedRef = useRef(true);
   const sidebarOpenerRef = useRef<HTMLButtonElement>(null);
   const sidebarReturnFocusRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     sessionIdRef.current = activeId;
   }, [activeId]);
+
+  const clearReconciliationTimers = useCallback(() => {
+    for (const timer of reconciliationTimersRef.current) {
+      window.clearTimeout(timer);
+    }
+    reconciliationTimersRef.current.clear();
+  }, []);
+
+  const markAssistantResolved = useCallback(
+    (sessionId: string, assistantId: string) => {
+      const pending = pendingAssistantIdsRef.current.get(sessionId);
+      pending?.delete(assistantId);
+      if (pending?.size === 0) pendingAssistantIdsRef.current.delete(sessionId);
+    },
+    [],
+  );
+
+  const trackPendingAssistant = useCallback(
+    (sessionId: string, assistantId: string) => {
+      const tracked = pendingAssistantIdsRef.current;
+      let pending = tracked.get(sessionId);
+      if (!pending) {
+        if (tracked.size >= 20) {
+          const oldestSession = tracked.keys().next().value;
+          if (oldestSession) tracked.delete(oldestSession);
+        }
+        pending = new Set<string>();
+        tracked.set(sessionId, pending);
+      }
+      pending.add(assistantId);
+      if (pending.size > 8) {
+        const oldestAssistant = pending.values().next().value;
+        if (oldestAssistant) pending.delete(oldestAssistant);
+      }
+    },
+    [],
+  );
+
+  const scheduleReconciliation = useCallback(
+    (
+      sessionId: string,
+      assistantId: string | null,
+      selectionGeneration: number,
+      turnGeneration: number,
+      applyFresh?: (fresh: Message[]) => boolean,
+    ) => {
+      const ownsReconciliation = () =>
+        mountedRef.current &&
+        sessionIdRef.current === sessionId &&
+        selectionGenerationRef.current === selectionGeneration &&
+        turnGenerationRef.current === turnGeneration;
+      const runAttempt = (attempt: number) => {
+        if (
+          attempt >= RECONCILIATION_DELAYS_MS.length ||
+          !ownsReconciliation()
+        ) {
+          return;
+        }
+        const timer = window.setTimeout(async () => {
+          reconciliationTimersRef.current.delete(timer);
+          if (!ownsReconciliation()) return;
+          try {
+            const fresh = await api.listMessages(sessionId);
+            if (!ownsReconciliation()) return;
+            const resolved = applyFresh
+              ? applyFresh(fresh)
+              : Boolean(assistantId && terminalMessage(fresh, assistantId));
+            if (!applyFresh) {
+              setMessages((previous) => reconcileMessages(previous, fresh));
+            }
+            if (resolved) {
+              if (assistantId) {
+                markAssistantResolved(sessionId, assistantId);
+              }
+              return;
+            }
+            if (!ownsReconciliation()) {
+              return;
+            }
+            if (assistantId && terminalMessage(fresh, assistantId)) {
+              markAssistantResolved(sessionId, assistantId);
+              return;
+            }
+          } catch {
+            // A later bounded attempt may recover from a transient history failure.
+          }
+          runAttempt(attempt + 1);
+        }, RECONCILIATION_DELAYS_MS[attempt]);
+        reconciliationTimersRef.current.add(timer);
+      };
+      runAttempt(0);
+    },
+    [markAssistantResolved],
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const pendingAssistantIds = pendingAssistantIdsRef.current;
+    return () => {
+      mountedRef.current = false;
+      turnGenerationRef.current += 1;
+      abortRef.current?.();
+      clearReconciliationTimers();
+      pendingAssistantIds.clear();
+    };
+  }, [clearReconciliationTimers]);
 
   const loadAttachmentCapabilities = useCallback(async () => {
     const generation = ++capabilityGenerationRef.current;
@@ -402,6 +557,7 @@ export function ChatApp() {
       if (id !== sessionIdRef.current && voiceActiveRef.current) {
         voiceStopRef.current();
       }
+      clearReconciliationTimers();
       const generation = ++selectionGenerationRef.current;
       sessionIdRef.current = id;
       setActiveId(id);
@@ -413,7 +569,25 @@ export function ChatApp() {
           api.listDocuments(id).catch(() => [] as DocumentSummary[]),
         ]);
         if (generation !== selectionGenerationRef.current) return;
-        setMessages(msgs);
+        setMessages((previous) =>
+          reconcileMessages(
+            previous.filter((message) => message.sessionId === id),
+            msgs,
+          ),
+        );
+        const pending = pendingAssistantIdsRef.current.get(id);
+        for (const assistantId of pending ?? []) {
+          if (terminalMessage(msgs, assistantId)) {
+            markAssistantResolved(id, assistantId);
+          } else {
+            scheduleReconciliation(
+              id,
+              assistantId,
+              generation,
+              turnGenerationRef.current,
+            );
+          }
+        }
         setDocuments(docs);
         // Library chips are a transient per-view confirmation; the docs persist
         // in the library and stay available to the agent regardless.
@@ -450,7 +624,12 @@ export function ChatApp() {
         setError((e as Error).message);
       }
     },
-    [libraryEnabled],
+    [
+      clearReconciliationTimers,
+      libraryEnabled,
+      markAssistantResolved,
+      scheduleReconciliation,
+    ],
   );
 
   const newChat = useCallback(() => {
@@ -460,6 +639,7 @@ export function ChatApp() {
       return;
     }
     if (voiceActiveRef.current) voiceStopRef.current();
+    clearReconciliationTimers();
     selectionGenerationRef.current += 1;
     sessionIdRef.current = null;
     setActiveId(null);
@@ -474,9 +654,10 @@ export function ChatApp() {
       libraryDocumentIds: [],
     });
     setStreamingText("");
+    setStreamMaterialized(false);
     setStreamingStartedAt(null);
     setError(null);
-  }, [models]);
+  }, [clearReconciliationTimers, models]);
 
   const refreshAgents = useCallback(async () => {
     try {
@@ -506,6 +687,7 @@ export function ChatApp() {
       if (id === activeId && voiceActiveRef.current) voiceStopRef.current();
       try {
         await api.deleteSession(id);
+        pendingAssistantIdsRef.current.delete(id);
         if (id === activeId) newChat();
         await refreshSessions();
       } catch (e) {
@@ -1146,7 +1328,11 @@ export function ChatApp() {
       streamingRef.current = true;
       setStreaming(true);
       setStreamingText("");
+      setStreamMaterialized(false);
       setLiveSteps([]);
+      clearReconciliationTimers();
+      const turnGeneration = ++turnGenerationRef.current;
+      const selectionGeneration = selectionGenerationRef.current;
       let sessionId = activeId;
 
       // Lazily create a session on the first message (shared with uploads).
@@ -1173,32 +1359,154 @@ export function ChatApp() {
         agent: null,
         createdAt: userCreatedAt.toISOString(),
       };
-      setStreamingStartedAt(
-        new Date(userCreatedAt.getTime() + 1).toISOString(),
-      );
+      const assistantCreatedAt = new Date(
+        userCreatedAt.getTime() + 1,
+      ).toISOString();
+      const temporaryAssistantId = `tmp-assistant-${optimisticUser.id.slice(4)}`;
+      setStreamingStartedAt(assistantCreatedAt);
       setMessages((prev) => [...prev, optimisticUser]);
 
       const isCommand = content.trimStart().startsWith("/");
-      const finalize = async () => {
-        streamingRef.current = false;
-        setStreaming(false);
-        abortRef.current = null;
-        try {
-          const fresh = await api.listMessages(sessionId!);
-          setMessages((previous) =>
-            reconcileMessages(
-              previous,
-              fresh,
-              new Set([optimisticUser.id]),
-            ),
+      let metadata: {
+        userMessageId: string | null;
+        assistantMessageId: string;
+      } | null = null;
+      let bufferedText = "";
+      let bufferedSteps: ActivityStep[] = [];
+      let finalized = false;
+      const ownsTurn = () =>
+        mountedRef.current &&
+        turnGenerationRef.current === turnGeneration &&
+        selectionGenerationRef.current === selectionGeneration &&
+        sessionIdRef.current === sessionId;
+      const applyFresh = (fresh: Message[]): boolean => {
+        if (!ownsTurn()) return false;
+        const acceptedMetadata = metadata;
+        if (!acceptedMetadata) return false;
+        const durableUserId = acceptedMetadata.userMessageId;
+        const durableAssistantId = acceptedMetadata.assistantMessageId;
+        setMessages((previous) => {
+          let adopted = previous;
+          if (durableUserId) {
+            adopted = replaceTemporaryMessageId(
+              adopted,
+              optimisticUser.id,
+              durableUserId,
+            );
+          }
+          if (durableAssistantId) {
+            adopted = replaceTemporaryMessageId(
+              adopted,
+              temporaryAssistantId,
+              durableAssistantId,
+            );
+          }
+          return reconcileMessages(
+            adopted,
+            fresh,
+            new Set([optimisticUser.id]),
           );
-          setInspectorVersion((value) => value + 1);
-        } catch {
-          /* keep optimistic view */
+        });
+        if (
+          durableAssistantId &&
+          terminalMessage(fresh, durableAssistantId)
+        ) {
+          markAssistantResolved(sessionId, durableAssistantId);
+          return true;
         }
+        return false;
+      };
+
+      const finalize = async (
+        outcome: "complete" | "cancelled" | "error",
+        info: {
+          accepted: boolean;
+          persistenceFailed: boolean;
+          definitePreAcceptance?: boolean;
+        },
+      ) => {
+        if (finalized) return;
+        finalized = true;
+        if (!ownsTurn()) return;
+
+        const finalizedSteps = bufferedSteps.filter(
+          (step) => step.kind !== "tool_start",
+        );
+        const hasFallback =
+          metadata !== null ||
+          bufferedText.length > 0 ||
+          finalizedSteps.length > 0;
+        if (hasFallback) {
+          const fallback: Message = {
+            id:
+              metadata?.assistantMessageId ??
+              temporaryAssistantId,
+            sessionId,
+            userId: "me",
+            role: "assistant",
+            content: bufferedText,
+            status: outcome,
+            model: selectedModel,
+            agent: null,
+            createdAt: assistantCreatedAt,
+            steps: finalizedSteps.length > 0 ? finalizedSteps : null,
+          };
+          setMessages((previous) => {
+            const durableUserId = metadata?.userMessageId;
+            const withDurableUserId = durableUserId
+              ? replaceTemporaryMessageId(
+                  previous,
+                  optimisticUser.id,
+                  durableUserId,
+                )
+              : previous;
+            const existingAssistant = withDurableUserId.find(
+              (message) => message.id === fallback.id,
+            );
+            if (
+              existingAssistant &&
+              existingAssistant.status !== "streaming"
+            ) {
+              return withDurableUserId;
+            }
+            return reconcileMessages(withDurableUserId, [fallback]);
+          });
+        } else if (info.definitePreAcceptance === true) {
+          setMessages((previous) =>
+            previous.filter((message) => message.id !== optimisticUser.id),
+          );
+        }
+        setStreamMaterialized(true);
+
+        let reconciliationAmbiguous = false;
+        if (metadata) {
+          try {
+            const fresh = await api.listMessages(sessionId);
+            if (!ownsTurn()) return;
+            reconciliationAmbiguous = !applyFresh(fresh);
+            setInspectorVersion((value) => value + 1);
+          } catch {
+            if (!ownsTurn()) return;
+            reconciliationAmbiguous = !info.persistenceFailed;
+          }
+        }
+
         setStreamingText("");
         setStreamingStartedAt(null);
         setLiveSteps([]);
+        setStreaming(false);
+        setStreamMaterialized(false);
+        streamingRef.current = false;
+        abortRef.current = null;
+        if (reconciliationAmbiguous && !info.persistenceFailed) {
+          scheduleReconciliation(
+            sessionId,
+            metadata?.assistantMessageId ?? null,
+            selectionGeneration,
+            turnGeneration,
+            applyFresh,
+          );
+        }
         // A slash command can change the session's model or system prompt on the
         // server; re-sync the controls so the change holds for the next turn.
         if (isCommand) {
@@ -1221,19 +1529,71 @@ export function ChatApp() {
       abortRef.current = api.streamChat(
         { sessionId, content, model: selectedModel, params },
         {
-          onDelta: (t) => setStreamingText((prev) => prev + t),
-          onStep: (step) => setLiveSteps((prev) => [...prev, step]),
-          onDone: () => void finalize(),
-          onError: (msg) => {
-            setError(msg);
-            void finalize();
+          onMetadata: (value) => {
+            metadata = value;
+            trackPendingAssistant(sessionId, value.assistantMessageId);
+            if (!ownsTurn() || !value.userMessageId) return;
+            const durableUserId = value.userMessageId;
+            setMessages((previous) =>
+              replaceTemporaryMessageId(
+                previous,
+                optimisticUser.id,
+                durableUserId,
+              ),
+            );
+          },
+          onDelta: (text) => {
+            bufferedText += text;
+            if (ownsTurn()) setStreamingText(bufferedText);
+          },
+          onStep: (step) => {
+            bufferedSteps = [...bufferedSteps, step];
+            if (ownsTurn()) setLiveSteps(bufferedSteps);
+          },
+          onDone: () =>
+            void finalize("complete", {
+              accepted: true,
+              persistenceFailed: false,
+              definitePreAcceptance: false,
+            }),
+          onError: (msg, info) => {
+            if (ownsTurn()) {
+              setError(
+                metadata === null && info.definitePreAcceptance !== true
+                  ? `${msg} ${UNKNOWN_STREAM_OUTCOME}`
+                  : msg,
+              );
+            }
+            void finalize("error", info);
           },
           // Stop button: reconcile with the server's cancelled message.
-          onAbort: () => void finalize(),
+          onAbort: (info) => {
+            if (ownsTurn() && metadata === null) {
+              setError(UNKNOWN_STREAM_OUTCOME);
+            }
+            void finalize(
+              "cancelled",
+              info ?? {
+                accepted: metadata !== null,
+                persistenceFailed: false,
+                definitePreAcceptance: false,
+              },
+            );
+          },
         },
       );
     },
-    [activeId, selectedModel, params, refreshSessions, ensureSession],
+    [
+      activeId,
+      clearReconciliationTimers,
+      ensureSession,
+      markAssistantResolved,
+      params,
+      refreshSessions,
+      scheduleReconciliation,
+      selectedModel,
+      trackPendingAssistant,
+    ],
   );
 
   const stop = useCallback(() => {
@@ -1255,7 +1615,7 @@ export function ChatApp() {
         source: m.source,
         steps: m.steps,
       }));
-    if (streaming) {
+    if (streaming && !streamMaterialized) {
       base.push({
         id: "streaming",
         role: "assistant",
@@ -1276,6 +1636,7 @@ export function ChatApp() {
   }, [
     messages,
     streaming,
+    streamMaterialized,
     streamingText,
     streamingStartedAt,
     liveSteps,
