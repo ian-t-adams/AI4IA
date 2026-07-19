@@ -411,13 +411,16 @@ describe("ChatApp uploads", () => {
     expect(mocks.updateSession).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Send draft message" }));
     await waitFor(() =>
-      expect(mocks.createSession).toHaveBeenCalledWith({
-        model: "gpt-5.2",
-        systemPrompt: "Draft prompt",
-        agentName: "researcher",
-        toolOverrides: { added: ["calculator"], removed: [] },
-        libraryDocumentIds: ["doc-1"],
-      }),
+      expect(mocks.createSession).toHaveBeenCalledWith(
+        {
+          model: "gpt-5.2",
+          systemPrompt: "Draft prompt",
+          agentName: "researcher",
+          toolOverrides: { added: ["calculator"], removed: [] },
+          libraryDocumentIds: ["doc-1"],
+        },
+        expect.any(AbortSignal),
+      ),
     );
     expect(mocks.createSession).toHaveBeenCalledTimes(1);
   });
@@ -869,9 +872,12 @@ describe("ChatApp stream reconciliation", () => {
       handlers().onDelta("Short buffered fallback");
     });
     await act(async () => {
-      await mocks.voiceOptions!.persistConversation("A", "conversation", [
-        { role: "assistant", text: "Authoritative concurrent answer" },
-      ]);
+      await mocks.voiceOptions!.persistConversation(
+        "A",
+        "conversation",
+        [{ role: "assistant", text: "Authoritative concurrent answer" }],
+        () => true,
+      );
     });
     const authoritative = await screen.findByText(
       "Authoritative concurrent answer",
@@ -904,9 +910,12 @@ describe("ChatApp stream reconciliation", () => {
     render(<ChatApp />);
     await user.click(await screen.findByRole("button", { name: "Session A" }));
     await act(async () => {
-      await mocks.voiceOptions!.persistConversation("A", "conversation", [
-        { role: "assistant", text: "Finished voice answer" },
-      ]);
+      await mocks.voiceOptions!.persistConversation(
+        "A",
+        "conversation",
+        [{ role: "assistant", text: "Finished voice answer" }],
+        () => true,
+      );
     });
     expect(await screen.findByText("Finished voice answer")).toHaveAttribute(
       "data-message-id",

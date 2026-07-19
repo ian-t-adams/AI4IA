@@ -593,6 +593,10 @@ export function ChatApp() {
   const reconciliationTimersRef = useRef(new Set<number>());
   const pendingAssistantIdsRef = useRef(new Map<string, Set<string>>());
   const modelMutationGenerationRef = useRef(0);
+  const systemPromptMutationGenerationRef = useRef(0);
+  // Full-list fetches and local list mutations share this generation so an
+  // older response can never roll the sidebar back.
+  const sessionListGenerationRef = useRef(0);
   const capabilityGenerationRef = useRef(0);
   const voiceNavigationLockedRef = useRef(false);
   const voiceActiveRef = useRef(false);
@@ -732,6 +736,7 @@ export function ChatApp() {
       // best-effort. Loading them separately means a backing-store outage on one
       // can't blank the other. (Previously a single Promise.all meant a sessions
       // 500 rejected the whole load and left the model picker empty.)
+      const initialSessionListGeneration = ++sessionListGenerationRef.current;
       await Promise.allSettled([
         api.listModels().then(
           (catalog) => {
@@ -741,7 +746,10 @@ export function ChatApp() {
           (e) => setError((e as Error).message),
         ),
         api.listSessions().then(
-          (sess) => setSessions(sess),
+          (sess) => {
+            if (sessionListGenerationRef.current !== initialSessionListGeneration) return;
+            setSessions(sess);
+          },
           (e) =>
             setError(
               (prev) =>
@@ -776,9 +784,17 @@ export function ChatApp() {
     };
   }, [voiceLiveConfig.enabled]);
 
-  const refreshSessions = useCallback(async () => {
+  const refreshSessions = useCallback(async (
+    isStillCurrent: () => boolean = () => true,
+  ) => {
+    const myGeneration = ++sessionListGenerationRef.current;
     try {
-      setSessions(await api.listSessions());
+      const all = await api.listSessions();
+      if (
+        sessionListGenerationRef.current !== myGeneration ||
+        !isStillCurrent()
+      ) return;
+      setSessions(all);
     } catch {
       /* non-fatal */
     }
@@ -813,6 +829,7 @@ export function ChatApp() {
       activeActivationSequenceRef.current = 0;
       setActiveId(id);
       setError(null);
+      const mySessionListGeneration = ++sessionListGenerationRef.current;
       try {
         const [msgs, all, docs] = await Promise.all([
           api.listMessages(id),
@@ -843,7 +860,17 @@ export function ChatApp() {
         // Library chips are a transient per-view confirmation; the docs persist
         // in the library and stay available to the agent regardless.
         setLibraryDocs([]);
-        setSessions(all);
+        // Independently gated from the navigation-generation check above: a
+        // differently-sourced session-list fetch (refreshSessions(), another
+        // selectSession(), or finalize()'s slash-command reconciliation) may
+        // have been issued AFTER this one and could still resolve first or
+        // last -- see sessionListGenerationRef. Applying this response
+        // anyway once it's no longer the latest-issued fetch would roll the
+        // sidebar back over a create/delete/rename that already landed from
+        // that newer fetch.
+        if (sessionListGenerationRef.current === mySessionListGeneration) {
+          setSessions(all);
+        }
         // A completed, generation-gated navigation to a real, existing
         // conversation is immediately "committed" -- see consumedSessionIdRef
         // -- even before the user sends anything new in it, since msgs/docs
@@ -971,6 +998,7 @@ export function ChatApp() {
 
   const renameSession = useCallback(async (id: string, title: string) => {
     const updated = await api.updateSession(id, { title });
+    sessionListGenerationRef.current += 1;
     setSessions((current) =>
       current.map((session) => (session.id === updated.id ? updated : session)),
     );
@@ -980,6 +1008,7 @@ export function ChatApp() {
     async (modelId: string) => {
       const capturedSession = sessionIdRef.current;
       const generation = ++modelMutationGenerationRef.current;
+      sessionListGenerationRef.current += 1;
       setSelectedModel(modelId);
       if (capturedSession) {
         try {
@@ -989,7 +1018,15 @@ export function ChatApp() {
             currentSession: () => sessionIdRef.current,
             currentGeneration: () => modelMutationGenerationRef.current,
             operation: () => api.updateSession(capturedSession, { model: modelId }),
-            commit: () => setInspectorVersion((value) => value + 1),
+            commit: (updated) => {
+              sessionListGenerationRef.current += 1;
+              setSessions((current) =>
+                current.map((session) =>
+                  session.id === updated.id ? updated : session,
+                ),
+              );
+              setInspectorVersion((value) => value + 1);
+            },
           });
         } catch {
           /* non-fatal */
@@ -1103,7 +1140,37 @@ export function ChatApp() {
   // promise again.
   const ensureSession = useCallback(
     async (isStillWanted?: () => boolean): Promise<string> => {
-      if (sessionIdRef.current) return sessionIdRef.current;
+      // ANY session id this call hands back to a caller that never supplies
+      // isStillWanted (send()/runUpload(), the only two direct callers) is,
+      // by construction, about to be immediately consumed for real content
+      // the instant this call returns -- see consumedSessionIdRef. Marking
+      // it here, atomically, covers EVERY return path below (the early
+      // existing-session return immediately below, the standard activation
+      // branch, and the shared-entry/settings-mismatch fallback) -- not
+      // just activation. Each of send()/runUpload() also marks
+      // consumedSessionIdRef themselves right after their own `await
+      // ensureSession()` resumes, but that resumption is always at least
+      // one further microtask hop after this function's own `return`
+      // actually executes (an `await` never resumes synchronously with the
+      // promise it awaits settling). A differently-keyed, higher-sequence
+      // competitor's own concurrently-resolving ensureSession() call can
+      // land exactly in that hop and legitimately supersede a session this
+      // caller has already committed to using, if this function itself left
+      // it unmarked. This was already closed for the activation branch in
+      // round 18; the early-return and fallback paths reopened the same
+      // class of gap since they returned bare values with no marking of
+      // their own. Voice's own initial call (isStillWanted supplied) is
+      // deliberately excluded everywhere here, for the same reason
+      // documented at the activation branch below.
+      const markConsumedIfOwning = (resolvedId: string): string => {
+        if (!isStillWanted) {
+          consumedSessionIdRef.current = resolvedId;
+        }
+        return resolvedId;
+      };
+      if (sessionIdRef.current) {
+        return markConsumedIfOwning(sessionIdRef.current);
+      }
       const capturedGeneration = selectionGenerationRef.current;
       const intentKey = computeSessionIntentKey(capturedGeneration);
       let entry = creatingRef.current;
@@ -1130,6 +1197,7 @@ export function ChatApp() {
             },
             controller.signal,
           );
+          sessionListGenerationRef.current += 1;
           setSessions((prev) => [created, ...prev]);
           return created.id;
         })().finally(() => {
@@ -1309,34 +1377,18 @@ export function ChatApp() {
         sessionIdRef.current = id;
         activeIntentKeyRef.current = intentKey;
         activeActivationSequenceRef.current = entry.sequence;
-        // A caller that never supplies isStillWanted -- send()/runUpload(),
-        // the only two direct callers in the codebase -- is, by
-        // construction, about to immediately consume this session for real
-        // content the instant this call returns. Mark it consumed in this
-        // SAME synchronous block, atomically with activation, rather than
-        // leaving that external caller to do so itself after its own
-        // `await ensureSession()` resumes: that resumption is always at
-        // least one more microtask hop away (an `await` yields even for an
-        // already-resolved promise), and a differently-keyed, higher-
-        // sequence competitor's OWN concurrently-resolving ensureSession()
-        // call can land exactly in that hop -- seeing activeSessionConsumed
-        // still false and legitimately (by the settingsMismatch rules
-        // above) superseding this session before this caller ever gets a
-        // chance to mark it consumed externally, leaving it to stream/
-        // upload into a session the UI no longer shows as active. Voice's
-        // own initial call (which DOES supply isStillWanted) deliberately
-        // does NOT get marked here: it only obtains a session id to start
-        // the realtime connection, its real content lands later via a
-        // separate persistVoiceConversation() call that marks consumption
-        // itself, and it must stay supersedable by a genuinely later,
+        setActiveId(id);
+        // See markConsumedIfOwning above: marked in this SAME synchronous
+        // block, atomically with activation. Voice's own initial call
+        // (which DOES supply isStillWanted) deliberately does NOT get
+        // marked here: it only obtains a session id to start the realtime
+        // connection, its real content lands later via a separate
+        // persistVoiceConversation() call that marks consumption itself,
+        // and it must stay supersedable by a genuinely later,
         // differently-keyed send/upload in the meantime -- see the
         // "streams a real send()... superseding a concurrent voice-shaped
         // session" test, which this must not break.
-        if (!isStillWanted) {
-          consumedSessionIdRef.current = id;
-        }
-        setActiveId(id);
-        return id;
+        return markConsumedIfOwning(id);
       }
       // A *different*, concurrently-running intent -- its own creatingRef
       // entry, since it had different settings and/or a different selection
@@ -1360,8 +1412,16 @@ export function ChatApp() {
       // whatever id comes back once it's no longer wanted. If nothing has
       // activated at all yet (this call's own activation was declined and
       // no other intent has settled either), fall back to this creation's
-      // own id exactly as before.
-      return sessionIdRef.current ?? id;
+      // own id exactly as before. A send/upload caller reaching this branch
+      // (this entry either shares the SAME key as whatever already
+      // activated -- e.g. it joined a voice-first shared creation that
+      // already won activation under identical settings -- or lost a
+      // cross-key race to something else) is, exactly like the activation
+      // branch above, about to immediately consume whichever id comes back
+      // for real content: mark it via markConsumedIfOwning too, or the
+      // exact same microtask-gap supersession race closed above reopens
+      // here instead, via this fallback path.
+      return markConsumedIfOwning(sessionIdRef.current ?? id);
     },
     [computeSessionIntentKey, draftDefaults, selectedModel, systemPrompt],
   );
@@ -1480,6 +1540,7 @@ export function ChatApp() {
             ...prev.filter((item) => item.id !== result.document.id),
             result.document,
           ]);
+          sessionListGenerationRef.current += 1;
           setSessions((current) =>
             current.map((item) =>
               item.id === result.session.id ? result.session : item,
@@ -1607,6 +1668,10 @@ export function ChatApp() {
     ) => {
       if (turns.length === 0) return;
       const capturedGeneration = selectionGenerationRef.current;
+      if (
+        sessionIdRef.current !== sessionId ||
+        !isStillValid()
+      ) return;
       // The append itself is never aborted -- see the comment on this
       // function's declaration -- so once turns.length > 0 is confirmed,
       // real backend content for sessionId WILL be committed regardless of
@@ -1943,6 +2008,7 @@ export function ChatApp() {
           sessionIdRef.current !== capturedSession ||
           selectionGenerationRef.current !== generation
         ) return;
+        sessionListGenerationRef.current += 1;
         setSessions((current) =>
           current.map((item) => (item.id === updated.id ? updated : item)),
         );
@@ -2105,6 +2171,8 @@ export function ChatApp() {
       let finalized = false;
       const ownsTurn = () =>
         mountedRef.current &&
+        sendGenerationRef.current === mySendGeneration &&
+        selectionGenerationRef.current === mySelectionGeneration &&
         turnGenerationRef.current === turnGeneration &&
         selectionGenerationRef.current === selectionGeneration &&
         sessionIdRef.current === sessionId;
@@ -2226,6 +2294,9 @@ export function ChatApp() {
         setStreaming(false);
         setStreamMaterialized(false);
         streamingRef.current = false;
+        if (streamingSessionIdRef.current === sessionId) {
+          streamingSessionIdRef.current = null;
+        }
         abortRef.current = null;
         if (reconciliationAmbiguous && !info.persistenceFailed) {
           scheduleReconciliation(
@@ -2239,24 +2310,47 @@ export function ChatApp() {
         // A slash command can change the session's model or system prompt on the
         // server; re-sync the controls so the change holds for the next turn.
         if (isCommand) {
+          // Captured before the listSessions() await below, alongside
+          // stillCurrent's inputs: model/systemPrompt can each be mutated
+          // independently (changeModel(), or ConversationInspector's
+          // onSessionUpdated after its own patch()) while this call is in
+          // flight. Gating on these -- in addition to stillCurrent() --
+          // lets a direct edit to either field made during the await win
+          // over this command's now-stale server value for that field
+          // specifically, without discarding the other field's legitimate
+          // reconciliation just because one of the two was touched.
+          const myModelGeneration = modelMutationGenerationRef.current;
+          const mySystemPromptGeneration = systemPromptMutationGenerationRef.current;
+          const mySessionListGeneration = ++sessionListGenerationRef.current;
           try {
             const all = await api.listSessions();
-            setSessions(all);
+            // Independently gated from stillCurrent(): a differently-
+            // sourced session-list fetch (refreshSessions(), selectSession(),
+            // or the initial load) may have been issued after this one --
+            // see sessionListGenerationRef. Applying this response once it's
+            // no longer the latest-issued fetch would roll the sidebar back
+            // over a create/delete/rename that already landed from that
+            // newer fetch.
+            if (
+              ownsTurn() &&
+              sessionListGenerationRef.current === mySessionListGeneration
+            ) {
+              setSessions(all);
+            }
             const s = all.find((x) => x.id === sessionId);
-            // The session list refresh above is always safe (a plain global
-            // re-fetch), but applying ITS model/systemPrompt to the shared
-            // controls is not: only do so if nothing newer has since taken
-            // over the model/systemPrompt controls this session's own
-            // command was meant to update.
-            if (s && stillCurrent()) {
-              if (s.model) setSelectedModel(s.model);
-              setSystemPrompt(s.systemPrompt ?? "");
+            if (s && ownsTurn()) {
+              if (s.model && modelMutationGenerationRef.current === myModelGeneration) {
+                setSelectedModel(s.model);
+              }
+              if (systemPromptMutationGenerationRef.current === mySystemPromptGeneration) {
+                setSystemPrompt(s.systemPrompt ?? "");
+              }
             }
           } catch {
             /* non-fatal */
           }
         } else {
-          void refreshSessions();
+          void refreshSessions(ownsTurn);
         }
       };
 
@@ -2677,14 +2771,24 @@ export function ChatApp() {
           params={params}
           onParamsChange={setParams}
           systemPrompt={systemPrompt}
-          onSystemPromptChange={setSystemPrompt}
+          onSystemPromptChange={(value) => {
+            systemPromptMutationGenerationRef.current += 1;
+            setSystemPrompt(value);
+          }}
           draftDefaults={draftDefaults}
           onDraftDefaultsChange={setDraftDefaults}
           onSessionUpdated={(updated) => {
             if (updated.id !== sessionIdRef.current) return;
+            sessionListGenerationRef.current += 1;
             setSessions((current) =>
               current.map((session) => (session.id === updated.id ? updated : session)),
             );
+            if (updated.model && updated.model !== selectedModel) {
+              modelMutationGenerationRef.current += 1;
+            }
+            if ((updated.systemPrompt ?? "") !== systemPrompt) {
+              systemPromptMutationGenerationRef.current += 1;
+            }
             setSystemPrompt(updated.systemPrompt ?? "");
             if (updated.model) setSelectedModel(updated.model);
           }}

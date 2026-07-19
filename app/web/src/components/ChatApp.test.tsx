@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -71,6 +71,17 @@ vi.mock("./Composer", () => ({
         onClick={() => onSend("hello from draft")}
       >
         Send draft message
+      </button>
+      <button type="button" onClick={() => onSend("/settings")}>
+        Send slash command
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          void onUpload(new File(["a"], "a.pdf", { type: "application/pdf" }))
+        }
+      >
+        Queue one upload
       </button>
       <button
         type="button"
@@ -193,7 +204,7 @@ beforeEach(() => {
     ...session("C"),
     ...value,
   }));
-  mocks.streamChat.mockResolvedValue(undefined);
+  mocks.streamChat.mockReturnValue(vi.fn());
   mocks.associateLibraryDocument.mockImplementation(
     async (sessionId: string, documentId: string) => ({
       ...session(sessionId),
@@ -1956,9 +1967,19 @@ describe("ChatApp uploads", () => {
     // synchronously clears streamingSessionIdRef.current before awaiting
     // listMessages (held open by resolveListMessages above).
     const handlers = mocks.streamChat.mock.calls.at(-1)![1] as {
+      onMetadata: (value: {
+        userMessageId: string | null;
+        assistantMessageId: string;
+      }) => void;
+      onDelta: (text: string) => void;
       onDone: () => void;
     };
     act(() => {
+      handlers.onMetadata({
+        userMessageId: "user-1",
+        assistantMessageId: "assistant-1",
+      });
+      handlers.onDelta("Final assistant reply");
       handlers.onDone();
     });
 
@@ -2656,5 +2677,314 @@ describe("ChatApp uploads", () => {
         selector: ".chat-header .editable-session-title-text",
       }),
     ).toBeInTheDocument();
+  });
+
+  it("atomically owns a voice-first shared creation through send, a late unrelated creation, and upload", async () => {
+    const created = [session("SHARED"), session("LATE")];
+    const resolvers: Array<() => void> = [];
+    mocks.listSessions.mockResolvedValue([]);
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          const value = created[resolvers.length];
+          resolvers.push(() => resolve(value));
+        }),
+    );
+    mocks.uploadLibraryDocument.mockResolvedValue(
+      libraryDocument("doc-shared", "a.pdf"),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await screen.findByText("New conversation", { selector: "strong" });
+
+    const firstVoiceOptions = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let firstVoice!: Promise<string>;
+    act(() => {
+      firstVoice = firstVoiceOptions.ensureSession(() => true);
+    });
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.type(screen.getByLabelText("System prompt"), "Later voice");
+    const lateVoiceOptions = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let lateVoice!: Promise<string>;
+    act(() => {
+      lateVoice = lateVoiceOptions.ensureSession(() => true);
+    });
+    expect(mocks.createSession).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      resolvers[0]();
+      await firstVoice;
+      await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+    });
+    expect(await firstVoice).toBe("SHARED");
+    expect(mocks.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "SHARED" }),
+      expect.anything(),
+    );
+
+    await act(async () => {
+      resolvers[1]();
+      await lateVoice;
+    });
+    expect(await lateVoice).toBe("SHARED");
+    expect(
+      screen.getByText("Session SHARED", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+
+    mocks.listSessions.mockResolvedValue(created);
+    const handlers = mocks.streamChat.mock.calls.at(-1)![1] as {
+      onMetadata: (value: {
+        userMessageId: string | null;
+        assistantMessageId: string;
+      }) => void;
+      onDelta: (text: string) => void;
+      onDone: () => void;
+    };
+    act(() => {
+      handlers.onMetadata({
+        userMessageId: "shared-user",
+        assistantMessageId: "shared-assistant",
+      });
+      handlers.onDelta("Shared reply");
+      handlers.onDone();
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send draft message" })).toBeEnabled(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Queue one upload" }));
+    await waitFor(() =>
+      expect(mocks.associateLibraryDocument).toHaveBeenCalledWith(
+        "SHARED",
+        "doc-shared",
+      ),
+    );
+    expect(mocks.createSession).toHaveBeenCalledTimes(2);
+    expect(
+      screen.getByText("Session SHARED", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("claims an early existing session for upload before a late creation's next microtask", async () => {
+    const created = [session("ACTIVE"), session("LATE")];
+    const resolvers: Array<() => void> = [];
+    mocks.listSessions.mockResolvedValue([]);
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          const value = created[resolvers.length];
+          resolvers.push(() => resolve(value));
+        }),
+    );
+    mocks.uploadLibraryDocument.mockResolvedValue(
+      libraryDocument("doc-active", "a.pdf"),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await screen.findByText("New conversation", { selector: "strong" });
+
+    const activeVoiceOptions = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let activeVoice!: Promise<string>;
+    act(() => {
+      activeVoice = activeVoiceOptions.ensureSession(() => true);
+    });
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.type(screen.getByLabelText("System prompt"), "Late settings");
+    const lateVoiceOptions = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let lateVoice!: Promise<string>;
+    act(() => {
+      lateVoice = lateVoiceOptions.ensureSession(() => true);
+    });
+
+    await act(async () => {
+      resolvers[0]();
+      await activeVoice;
+    });
+    expect(await activeVoice).toBe("ACTIVE");
+
+    await user.click(screen.getByRole("button", { name: "Queue one upload" }));
+    await act(async () => {
+      resolvers[1]();
+      await lateVoice;
+    });
+
+    expect(await lateVoice).toBe("ACTIVE");
+    await waitFor(() =>
+      expect(mocks.associateLibraryDocument).toHaveBeenCalledWith(
+        "ACTIVE",
+        "doc-active",
+      ),
+    );
+    expect(
+      screen.getByText("Session ACTIVE", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("fences delayed slash finalize after navigation, edits, rename, and a newer send", async () => {
+    const model = (id: string, displayName: string) => ({
+      id,
+      displayName,
+      category: "chat",
+      format: "openai",
+      conversational: true,
+      contextWindow: 128000,
+      maxOutputTokens: 32000,
+      options: [],
+    });
+    mocks.listModels.mockResolvedValue({
+      models: [model("gpt-5.2", "GPT-5.2"), model("gpt-new", "GPT New")],
+    });
+    const current = new Map([
+      ["A", session("A")],
+      ["B", session("B")],
+    ]);
+    mocks.listSessions.mockImplementation(async () => [...current.values()]);
+    mocks.updateSession.mockImplementation(
+      async (id: string, value: Record<string, unknown>) => {
+        const updated = { ...current.get(id)!, ...value };
+        current.set(id, updated);
+        return updated;
+      },
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await screen.findByText("Session A", {
+      selector: ".chat-header .editable-session-title-text",
+    });
+
+    let resolveOldList!: (value: ReturnType<typeof session>[]) => void;
+    const oldList = new Promise<ReturnType<typeof session>[]>((resolve) => {
+      resolveOldList = resolve;
+    });
+    mocks.listMessages.mockResolvedValueOnce([
+      {
+        id: "slash-user",
+        sessionId: "A",
+        userId: "u1",
+        role: "user",
+        content: "/settings",
+        status: "complete",
+        model: "gpt-5.2",
+        agent: null,
+        createdAt: "",
+      },
+      {
+        id: "slash-assistant",
+        sessionId: "A",
+        userId: "assistant",
+        role: "assistant",
+        content: "Old command reply",
+        status: "complete",
+        model: "gpt-5.2",
+        agent: null,
+        createdAt: "",
+      },
+    ]);
+    mocks.listSessions.mockImplementationOnce(() => oldList);
+
+    await user.click(screen.getByRole("button", { name: "Send slash command" }));
+    const oldHandlers = mocks.streamChat.mock.calls.at(-1)![1] as {
+      onMetadata: (value: {
+        userMessageId: string | null;
+        assistantMessageId: string;
+      }) => void;
+      onDelta: (text: string) => void;
+      onDone: () => void;
+    };
+    act(() => {
+      oldHandlers.onMetadata({
+        userMessageId: "slash-user",
+        assistantMessageId: "slash-assistant",
+      });
+      oldHandlers.onDelta("Old command reply");
+      oldHandlers.onDone();
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send draft message" })).toBeEnabled(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Session B" }));
+    await screen.findByText("Session B", {
+      selector: ".chat-header .editable-session-title-text",
+    });
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Model" }),
+      "gpt-new",
+    );
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    const prompt = await screen.findByRole("textbox", { name: "System prompt" });
+    await user.clear(prompt);
+    await user.type(prompt, "Fresh prompt");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(current.get("B")).toMatchObject({
+        model: "gpt-new",
+        systemPrompt: "Fresh prompt",
+      }),
+    );
+
+    const header = document.querySelector(".chat-header");
+    expect(header).not.toBeNull();
+    await user.click(within(header as HTMLElement).getByRole("button", { name: "Rename" }));
+    const titleInput = within(header as HTMLElement).getByRole("textbox", {
+      name: "Conversation title",
+    });
+    await user.clear(titleInput);
+    await user.type(titleInput, "Renamed B");
+    await user.click(within(header as HTMLElement).getByRole("button", { name: "Save" }));
+    await screen.findByText("Renamed B", {
+      selector: ".chat-header .editable-session-title-text",
+    });
+
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    const newHandlers = mocks.streamChat.mock.calls.at(-1)![1] as {
+      onDelta: (text: string) => void;
+    };
+    act(() => newHandlers.onDelta("Newer B answer"));
+    expect(await screen.findByText("Newer B answer")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveOldList([
+        { ...session("A"), title: "Stale A", model: "gpt-5.2" },
+        {
+          ...session("B"),
+          title: "Stale B",
+          model: "gpt-5.2",
+          systemPrompt: "Stale prompt",
+        },
+      ]);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Newer B answer")).toBeInTheDocument();
+    expect(
+      screen.getByText("Renamed B", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Stale B")).toBeNull();
+    expect(screen.getByRole("textbox", { name: "System prompt" })).toHaveValue(
+      "Fresh prompt",
+    );
+    await user.click(screen.getByRole("tab", { name: "Model" }));
+    expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-new");
   });
 });
