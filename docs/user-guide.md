@@ -25,9 +25,12 @@ and tool safety; the web app is the user interface.
 - Treat cited document snippets and tool output as grounded context, not as
   permission to skip review.
 - Temperature and Top P currently remain visible even when the selected model does
-  not support them. The API clamps or normalizes accepted values and strips/ignores
-  unsupported values for GPT-5 and o-series requests. UI help is explanatory only;
-  control visibility does not grant a model capability or override server policy.
+  not support them. The UI bounds Temperature to 0-2 and Top P to 0-1; for compatible
+  models, the API forwards those values unchanged. The UI and API cap output tokens
+  to the selected catalog model's published maximum. For GPT-5 and o-series
+  deployments, the gateway strips unsupported sampling fields and translates the
+  output-token field to the model's accepted shape. Control visibility does not
+  grant a model capability or override server policy.
 
 ## Agents and workflows
 
@@ -53,11 +56,10 @@ chain-of-thought: it may contain only the step type, tool name, and coarse outco
 never hidden reasoning, credentials, arguments/results, prompts or queries, audio,
 or transcripts.
 
-That privacy contract depends on the hardening assigned to PR #189. Until that fix
-is merged and deployed, current activity details and agent INFO logs may retain
-ordinary prompt/query argument text even after secret redaction. Treat those
-surfaces as potentially sensitive; the accepted fix must remove argument content,
-not classify it as safe.
+That privacy contract is implemented by open PR #189 commit `c351131`, but is not
+yet on `main`. Until #189 is merged and deployed, current activity details and
+agent INFO logs may retain ordinary prompt/query argument text even after secret
+redaction. Treat those surfaces as potentially sensitive.
 
 ## Documents and media
 

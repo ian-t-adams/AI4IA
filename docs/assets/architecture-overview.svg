@@ -38,8 +38,8 @@
   <text class="box" x="485" y="238"><tspan x="485">FastAPI</tspan><tspan x="485" dy="20">identity, sessions, routing,</tspan><tspan x="485" dy="20">persistence and metering</tspan></text>
   <rect class="leaf" x="360" y="350" width="250" height="100" stroke="#107C10" fill="#DFF6DD"/>
   <text class="box" x="485" y="378"><tspan x="485">Agent + tool runtime</tspan><tspan x="485" dy="20">budgets, approvals,</tspan><tspan x="485" dy="20">execution-time rechecks</tspan></text>
-  <rect class="leaf" x="360" y="500" width="250" height="100" stroke="#107C10" fill="#DFF6DD"/>
-  <text class="box" x="485" y="528"><tspan x="485">Server-authoritative policy</tspan><tspan x="485" dy="20">feature gates, ownership,</tspan><tspan x="485" dy="20">redaction and safe activity</tspan></text>
+  <rect class="leaf" x="360" y="480" width="250" height="140" stroke="#107C10" fill="#DFF6DD"/>
+  <text class="box" x="485" y="508"><tspan x="485">Server-authoritative policy</tspan><tspan x="485" dy="20">feature gates + ownership</tspan><tspan x="485" dy="20">target safe activity</tspan><tspan x="485" dy="20">pending PR #189</tspan></text>
 
   <rect class="container" x="690" y="130" width="430" height="560" stroke="#F7630C"/>
   <text class="section" x="905" y="173">Gateway and credential boundaries</text>
@@ -47,17 +47,19 @@
   <text class="box" x="810" y="238"><tspan x="810">SimpleL7Proxy</tspan><tspan x="810" dy="20">HTTP/SSE queue</tspan><tspan x="810" dy="20">+ delayed requeue</tspan></text>
   <rect class="leaf" x="930" y="210" width="160" height="100" stroke="#F7630C" fill="#FFF4CE"/>
   <text class="box" x="1010" y="238"><tspan x="1010">Model APIM API</tspan><tspan x="1010" dy="20">catalog routing</tspan><tspan x="1010" dy="20">+ regional failover</tspan></text>
-  <rect class="leaf" x="930" y="360" width="160" height="110" stroke="#F7630C" fill="#FFF4CE"/>
-  <text class="box" x="1010" y="388"><tspan x="1010">Realtime APIM APIs</tspan><tspan x="1010" dy="20">/openai/realtime</tspan><tspan x="1010" dy="20">optional Speech API</tspan></text>
-  <rect class="leaf" x="930" y="530" width="160" height="100" stroke="#F7630C" fill="#FFF4CE"/>
-  <text class="box" x="1010" y="558"><tspan x="1010">Official MCP APIM</tspan><tspan x="1010" dy="20">MCP-only product</tspan><tspan x="1010" dy="20">+ managed identity</tspan></text>
+  <rect class="leaf" x="930" y="340" width="160" height="80" stroke="#F7630C" fill="#FFF4CE"/>
+  <text class="box" x="1010" y="362"><tspan x="1010">Azure OpenAI realtime</tspan><tspan x="1010" dy="18">/openai/realtime</tspan><tspan x="1010" dy="18">key 3 at ingress</tspan></text>
+  <rect class="leaf" x="930" y="450" width="160" height="80" stroke="#F7630C" fill="#FFF4CE"/>
+  <text class="box" x="1010" y="472"><tspan x="1010">Speech Voice Live APIM</tspan><tspan x="1010" dy="18">/speech/voice-live</tspan><tspan x="1010" dy="18">key 4 at ingress</tspan></text>
+  <rect class="leaf" x="930" y="560" width="160" height="90" stroke="#F7630C" fill="#FFF4CE"/>
+  <text class="box" x="1010" y="584"><tspan x="1010">Official MCP APIM</tspan><tspan x="1010" dy="18">MCP-only product</tspan><tspan x="1010" dy="18">+ managed identity</tspan></text>
 
   <rect class="container" x="1160" y="130" width="400" height="760" stroke="#5C2D91"/>
   <text class="section" x="1360" y="173">AI, data, and service planes</text>
   <rect class="leaf" x="1200" y="210" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
   <text class="box" x="1360" y="238"><tspan x="1360">Microsoft Foundry deployments</tspan><tspan x="1360" dy="20">multi-model, multi-region</tspan><tspan x="1360" dy="20">APIM managed identity</tspan></text>
   <rect class="leaf" x="1200" y="350" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
-  <text class="box" x="1360" y="378"><tspan x="1360">AIServices Voice Live</tspan><tspan x="1360" dy="20">optional, default-off</tspan><tspan x="1360" dy="20">scoped MI + fourth key</tspan></text>
+  <text class="box" x="1360" y="378"><tspan x="1360">AIServices Voice Live</tspan><tspan x="1360" dy="20">optional, default-off</tspan><tspan x="1360" dy="20">APIM managed identity</tspan></text>
   <rect class="leaf" x="1200" y="490" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
   <text class="box" x="1360" y="518"><tspan x="1360">Curated MCP + Foundry Toolbox</tspan><tspan x="1360" dy="20">WebIQ is a separate</tspan><tspan x="1360" dy="20">server-side capability</tspan></text>
   <rect class="leaf" x="1200" y="630" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
@@ -84,14 +86,17 @@
   <text class="label" x="910" y="330"><tspan x="910">2. model-only</tspan><tspan x="910" dy="17">APIM key</tspan></text>
   <path class="flow" d="M1090 255 L1200 255" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
   <text class="label" x="1145" y="220">managed identity</text>
-  <path class="flow" d="M610 270 L770 270 L930 415" stroke="#F7630C" stroke-dasharray="8 6" marker-end="url(#arrow-orange)"/>
-  <text class="label" x="815" y="350"><tspan x="815">3. realtime-only APIM key</tspan><tspan x="815" dy="17">(SimpleL7Proxy bypass)</tspan></text>
-  <path class="flow" d="M1090 395 L1200 285" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
-  <path class="flow" d="M1090 415 L1200 395" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
-  <text class="label" x="1145" y="448"><tspan x="1145">optional fourth key</tspan><tspan x="1145" dy="17">+ managed identity</tspan></text>
-  <path class="flow" d="M610 400 L770 400 L930 580" stroke="#F7630C" marker-end="url(#arrow-orange)"/>
-  <text class="label" x="835" y="520">MCP-only APIM key</text>
-  <path class="flow" d="M1090 580 L1200 535" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
+  <path class="flow" d="M610 275 L680 380 L930 380" stroke="#F7630C" stroke-dasharray="8 6" marker-end="url(#arrow-orange)"/>
+  <text class="label" x="800" y="335"><tspan x="800">3. realtime-only APIM key</tspan><tspan x="800" dy="17">(SimpleL7Proxy bypass)</tspan></text>
+  <path class="flow" d="M610 290 L670 490 L930 490" stroke="#F7630C" stroke-dasharray="8 6" marker-end="url(#arrow-orange)"/>
+  <text class="label" x="800" y="445"><tspan x="800">4. optional Speech APIM key</tspan><tspan x="800" dy="17">(SimpleL7Proxy bypass)</tspan></text>
+  <path class="flow" d="M1090 380 L1160 290 L1200 290" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
+  <text class="label" x="1145" y="315"><tspan x="1145">key stripped</tspan><tspan x="1145" dy="17">managed identity</tspan></text>
+  <path class="flow" d="M1090 490 L1160 395 L1200 395" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
+  <text class="label" x="1145" y="438"><tspan x="1145">key stripped</tspan><tspan x="1145" dy="17">managed identity</tspan></text>
+  <path class="flow" d="M610 605 L930 605" stroke="#F7630C" marker-end="url(#arrow-orange)"/>
+  <text class="label" x="835" y="575">MCP-only APIM key</text>
+  <path class="flow" d="M1090 605 L1200 535" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
   <path class="flow" d="M610 285 L1010 675 L1200 675" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
   <text class="label" x="1095" y="652">owned canonical records</text>
   <path class="flow" d="M610 300 L970 815 L1200 815" stroke="#5C2D91" stroke-dasharray="8 6" marker-end="url(#arrow-purple)"/>
@@ -101,5 +106,5 @@
 
   <rect class="container" x="40" y="730" width="240" height="160" stroke="#1E1E1E"/>
   <text x="60" y="758" font-size="14" font-weight="600">Credential rule</text>
-  <text x="60" y="785" font-size="14"><tspan x="60">1 FastAPI -&gt; proxy</tspan><tspan x="60" dy="20">2 proxy -&gt; model APIM</tspan><tspan x="60" dy="20">3 FastAPI -&gt; realtime APIM</tspan><tspan x="60" dy="28" font-weight="600">Never reuse these values.</tspan></text>
+  <text x="60" y="775" font-size="12"><tspan x="60">1 FastAPI -&gt; proxy</tspan><tspan x="60" dy="18">2 proxy -&gt; model APIM</tspan><tspan x="60" dy="18">3 FastAPI -&gt; realtime APIM</tspan><tspan x="60" dy="18">4 FastAPI -&gt; Speech APIM</tspan><tspan x="60" dy="26" font-weight="600">APIM strips keys; uses MI.</tspan></text>
 </svg>

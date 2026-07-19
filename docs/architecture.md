@@ -60,7 +60,8 @@ flowchart LR
   A["FastAPI API<br/>application boundary"]
   P["SimpleL7Proxy<br/>HTTP/SSE only"]
   G["Model APIM API"]
-  R["Realtime APIM API"]
+  R["Azure OpenAI realtime APIM API"]
+  V["Speech Voice Live APIM API<br/>(optional)"]
   M["Official MCP APIM product"]
   F["Foundry deployments"]
   S["AIServices Voice Live<br/>(optional)"]
@@ -74,9 +75,10 @@ flowchart LR
   A -->|"S7P-KEY: proxy-ingress key"| P
   P -->|"Ocp-Apim-Subscription-Key:<br/>model-only key"| G
   G -->|"managed identity"| F
-  A -. "realtime-only APIM key" .-> R
-  R -->|"managed identity"| F
-  R -. "optional fourth key + MI" .-> S
+  A -. "3: realtime-only APIM key<br/>(bypasses SimpleL7Proxy)" .-> R
+  R -->|"strip subscription key;<br/>managed identity"| F
+  A -. "4: optional Speech APIM key<br/>(bypasses SimpleL7Proxy)" .-> V
+  V -->|"strip subscription key;<br/>managed identity"| S
   A -->|"MCP-only APIM key"| M
   M --> T
   A --> C
@@ -93,9 +95,11 @@ flowchart LR
 | Speech Voice Live key (optional) | FastAPI only when enabled | FastAPI relay -> `/speech/voice-live/realtime` | Separate default-off API and subscription; distinct from all three core keys |
 | Official MCP subscription key | FastAPI official MCP service | FastAPI -> official MCP APIM product | MCP APIs only; cannot invoke model/realtime APIs |
 
-APIM uses managed identity for Foundry and approved AIServices backends. User
-tokens and gateway keys do not flow to Foundry. Browser-supplied internal identity
-headers are not authoritative.
+Each APIM API validates its own scoped subscription at ingress, removes the
+subscription-key header before the backend hop, and uses managed identity for
+Foundry or the approved AIServices backend. User tokens and gateway keys therefore
+do not flow downstream. Browser-supplied internal identity headers are not
+authoritative.
 
 ### Compatible HTTP/SSE lifecycle
 
@@ -127,6 +131,8 @@ optional `speech_voice_live` provider is implemented but default-off and has a
 separate APIM API/key and account-scoped managed-identity path. Its production
 enablement remains subject to the operator gates in
 [`runbooks/feature-enablement.md`](./runbooks/feature-enablement.md).
+FastAPI presents key 3 only to the Azure OpenAI realtime APIM API and optional key
+4 only to the Speech Voice Live APIM API; neither key crosses the APIM boundary.
 Turn-based transcription and text-to-speech remain compatible HTTP calls and use
 the normal SimpleL7Proxy path.
 
@@ -161,7 +167,9 @@ The in-process agent runtime receives only server-approved tool schemas. Per tur
 3. The registry rechecks scopes, approvals, ownership, host policy, and SSRF rules.
 4. Tool errors and denials become structured outcomes the model can handle; call
    budgets and orchestration depth bound fan-out.
-5. The assistant answer, usage, artifacts, and safe activity trace are persisted.
+5. The assistant answer, usage, artifacts, and activity trace are persisted.
+   Metadata-only activity is the target state in PR #189; current `main` can still
+   persist prompt/query details.
 
 BYO MCP servers are untrusted and approval-gated. DNS/public-HTTPS validation is
 performed again when a request runs to resist DNS rebinding. Official MCP servers
@@ -175,16 +183,16 @@ The required activity contract is **not chain-of-thought**: user-facing activity
 and ordinary INFO telemetry contain only structured step kind, coarse outcome,
 tool name, and non-content metadata. They must never contain raw or summarized
 arguments/results, prompts or queries, credentials, hidden reasoning, audio, or
-transcripts. Live steps are announced while a turn runs; finalized safe steps are
-stored with the assistant message.
+transcripts. Live steps are announced while a turn runs; finalized metadata-only
+steps are the target stored form after PR #189 merges.
 
-That contract is an acceptance dependency on the privacy-hardening change assigned
-to PR #189. Current `main` does not yet satisfy it: `agents/activity.py` allowlists
-argument text including `prompt`, and `agents/runtime.py` writes redacted parsed
-arguments at INFO; secret redaction does not remove ordinary prompt/query content.
-Until the #189 fix is merged and deployed, treat activity details and agent INFO
-logs as potentially containing user content and restrict access accordingly. The
-remediation must remove argument content rather than redefine it as safe.
+That contract is implemented on the open PR #189 branch by commit `c351131`, which
+sources optional detail only from fixed runtime reason/category strings and removes
+parsed arguments from INFO logs. Current `main` does not yet contain that commit:
+`agents/activity.py` still allowlists argument text including `prompt`, and
+`agents/runtime.py` still writes redacted parsed arguments at INFO. Until #189 is
+merged and deployed, treat activity details and agent INFO logs as potentially
+containing user content and restrict access accordingly.
 
 ## Failure behavior
 

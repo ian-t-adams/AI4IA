@@ -5,17 +5,19 @@
 > deployment status; it does **not** claim that any repository change is deployed.
 >
 > **Acceptance dependency:** PR #191 must not merge until PR #189 contains and
-> merges the privacy-hardening commit that removes prompt/query/tool-argument
-> content from user-facing activity and ordinary agent INFO logs. That fix is not
-> present at the reviewed #189 head `3cf05f35c387`. Current secret redaction alone
-> does not remove ordinary user content.
+> merges privacy-hardening commit `c351131`, which removes
+> prompt/query/tool-argument content from user-facing activity and ordinary agent
+> INFO logs. The fix exists on the reviewed #189 head
+> `c351131c7802ba6041011067e94c48a09ed864e7` but is not on `main` or deployed.
 >
 > **Governance risk:** `main` currently has **no branch protection and no repository
 > ruleset**. A direct push can bypass every CI workflow and review. The owner should
-> add a minimal ruleset requiring a pull request, one approving review, dismissal of
-> stale approvals, conversation resolution, and the required checks listed under
-> [Owner actions](#owner-actions). This audit deliberately did not change live
-> repository settings.
+> first add always-emitted aggregate checks that run on every PR and report explicit
+> no-op success when path-scoped work does not apply. Only those unconditional
+> aggregates—not conditional job names—should become required checks, alongside a
+> pull request, one approving review, stale-approval dismissal, conversation
+> resolution, and force-push/deletion protection. This audit deliberately did not
+> change live repository settings.
 
 ## Scope and method
 
@@ -53,7 +55,7 @@ The audit confirmed these load-bearing facts:
 | Enforcement | FastAPI owns auth, user normalization, ownership, feature gates, entitlements, tools, persistence, and metering |
 | Tool safety | Registration and execution checks, approvals, bounded calls, public-HTTPS/SSRF validation, scoped secrets, and structured failures |
 | Activity visibility target | Structured step kind, tool name, and coarse outcome only; never hidden reasoning, arguments/results, credentials, prompts/queries, audio, or transcripts |
-| Current activity/privacy gap | `agents/activity.py` allowlists argument text including `prompt`, while `agents/runtime.py` logs redacted parsed arguments at INFO; PR #191 depends on the #189 fix that removes this content |
+| Current activity/privacy gap | Current `main` allowlists argument text including `prompt` and logs redacted parsed arguments at INFO; open PR #189 commit `c351131` removes both, and PR #191 depends on that commit merging |
 | Native Azure paths | Content Understanding, Monitor, Key Vault, Storage, Cosmos, and AI Search use their native data/control planes rather than pretending to be model traffic |
 
 ## Documentation findings and remediation
@@ -88,7 +90,7 @@ repository change is still not evidence of deployment.
 | #186 | `b0a8dc033750` | Chat rendering reliability | Preserves streamed assistant content when post-stream reconciliation fails | Open; not claimed as current failure behavior |
 | #187 | merge `fd22072e29c9` | CI/Docker | PR-time API/web image builds plus Docker/CI hygiene | Merged to `main`; Docker jobs exist but are not protected required checks |
 | #188 | `76038f945600` | Voice lifecycle and TTS | Input/playback lifecycle, stop/retry/session locking, and TTS behavior fixes | Open; user docs describe intent without claiming these fixes shipped |
-| #189 | `3cf05f35c387` | API reliability and privacy | Ownership, race, persistence, metrics, explicit failures, plus assigned activity/log privacy hardening | Open; reviewed head lacks the required privacy commit, so PR #191 is blocked on its addition and merge |
+| #189 | `c351131c7802` | API reliability and privacy | Ownership, race, persistence, metrics, explicit failures, and metadata-only activity/log privacy hardening | Open; required privacy commit exists but is unmerged, so PR #191 remains blocked on #189 merging |
 | #190 | `ea67ecd1693b` | Web UX and help | Accessibility, advanced-setting/tool help, client telemetry, modal/focus, and UI consistency | Open; tooltip/help improvements are not described as current `main` |
 
 Because these branches can evolve, merge owners should refresh this table and rerun
@@ -151,6 +153,7 @@ build/tests, quality, CodeQL, security scans, and PR-time Docker image builds.
 | Gap | Impact | Current mitigation |
 | --- | --- | --- |
 | No `main` ruleset or branch protection | Reviews and checks can be bypassed | Owner action required; audit did not mutate live settings |
+| `app-ci`, `infra-validate`, and `docker-build` are path-filtered | Requiring their conditional job contexts directly would deadlock docs-only and other out-of-scope PRs because those contexts are never emitted | Add always-emitted aggregate/no-op-success contexts first, then require only those unconditional aggregates |
 | Open PRs #184, #186, and #188-#190 | Proposed fixes are not guaranteed on `main` or deployed | Status is explicit; merge and validate independently |
 | Activity and INFO logs can contain ordinary prompt/query argument text | User content can reach persisted activity or telemetry despite secret redaction | Block PR #191 on the corresponding #189 privacy-hardening commit; restrict activity/log access until it is deployed |
 | No evidence in this audit of production deployment parity | Repository truth may lead the live revision | Use inventory, revision SHA, smoke tests, and approved what-if before claiming parity |
@@ -166,8 +169,9 @@ build/tests, quality, CodeQL, security scans, and PR-time Docker image builds.
 | Priority | Owner action | Exit evidence |
 | --- | --- | --- |
 | P0 | Add a `main` ruleset requiring pull requests, one approving review, stale-approval dismissal, conversation resolution, and blocked force-push/deletion | Ruleset visible through GitHub API/UI and a test PR cannot merge without requirements |
-| P0 | Require both `app-ci` jobs (`web`, `api`), `infra-validate / bicep-lint-build`, every `quality` job, the two blocking `security-scan` jobs, both CodeQL language analyses, and the API/web Docker build jobs after confirming their contexts are stable | Ruleset lists the exact job contexts and a test PR cannot merge when one is absent/failing |
-| P0 | Add and merge the #189 privacy-hardening commit that removes prompt/query/tool-argument content from activity details and ordinary INFO logs before accepting PR #191 | Tests prove activity and INFO telemetry contain metadata only; #189 merged SHA is recorded here |
+| P0 | Add always-emitted aggregate checks for application, infrastructure, container, quality, and security validation; each aggregate must run on every PR and report explicit no-op success when its path-scoped jobs do not apply. The container aggregate must include web image, API image, and `dockerignore context boundary` results | Docs-only and representative scoped PRs all emit the same aggregate contexts; applicable child failures make the aggregate fail |
+| P0 | Require only those unconditional aggregate contexts after a dry run proves they are always emitted; do not directly require conditional `app-ci`, `infra-validate`, or `docker-build` job names | Ruleset lists only unconditional aggregate contexts and both docs-only and scoped test PRs remain mergeable when green |
+| P0 | Merge PR #189 privacy-hardening commit `c351131` before accepting PR #191 | Tests prove activity and INFO telemetry contain metadata only; #189 merged SHA is recorded here |
 | P0 | Merge the remaining implementation PRs only after each branch is rebased, conflicts are resolved, and its stated validation is rerun | Merged SHA plus green required checks; report table updated |
 | P1 | Reconcile #184 documentation hunks against this architecture/audit instead of reintroducing stale wording | Final merged docs preserve the credential, privacy-dependency, and status tables |
 | P1 | Record the deployed API/web/proxy revision SHAs and run approved post-deploy smoke tests | Revision inventory and timestamped smoke result |
