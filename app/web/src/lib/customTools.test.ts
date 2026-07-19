@@ -8,6 +8,7 @@ import {
   isMcpToolName,
   isQuarantined,
   mcpEndpointError,
+  MCP_TOOL_APPROVALS,
   mcpSecretError,
   mcpServerNameError,
   namespacedToolName,
@@ -282,6 +283,27 @@ describe("per-tool approval", () => {
     const tools = attachableMcpTools(servers);
     expect(tools[0]).toMatchObject({ toolName: "forecast", requiresApproval: false, approval: "never" });
     expect(tools[1]).toMatchObject({ toolName: "alerts", requiresApproval: true, approval: "default" });
+  });
+});
+
+describe("MCP_TOOL_APPROVALS copy", () => {
+  it("does not promise a per-use approval prompt for 'always' (chat has none)", () => {
+    const always = MCP_TOOL_APPROVALS.find((a) => a.value === "always");
+    expect(always).toBeDefined();
+    // Must not claim the model/user is prompted for approval on each use.
+    expect(always?.hint).not.toMatch(/prompt for approval/i);
+    expect(always?.hint).not.toMatch(/on every use/i);
+    // Accurately reflects that the tool is dropped from the model-facing
+    // schema rather than gated behind a live in-chat approval step.
+    expect(always?.hint).toMatch(/no live approval prompt/i);
+    expect(always?.hint).toMatch(/left out of what the model can call/i);
+  });
+
+  it("does not promise a per-use prompt for 'default' or 'never' either", () => {
+    for (const value of ["default", "never"] as const) {
+      const option = MCP_TOOL_APPROVALS.find((a) => a.value === value);
+      expect(option?.hint).not.toMatch(/prompt/i);
+    }
   });
 });
 

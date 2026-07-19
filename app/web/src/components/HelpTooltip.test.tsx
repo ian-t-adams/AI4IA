@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -64,6 +65,68 @@ describe("HelpTooltip", () => {
     // concern, so it must propagate normally to the enclosing dialog.
     await user.keyboard("{Escape}");
     expect(onDialogKeyDown).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes on Escape when opened via hover, even though the trigger never received focus", async () => {
+    const user = userEvent.setup();
+    render(<HelpTooltip label="Hover">Some help text.</HelpTooltip>);
+    const trigger = screen.getByRole("button", { name: "Help: Hover" });
+    await user.hover(trigger);
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    expect(trigger).not.toHaveFocus();
+    // Escape is dispatched to document.activeElement (document.body here,
+    // since hover never focuses anything) -- the old trigger-only onKeyDown
+    // could never see this keypress.
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("closes a click-pinned tooltip on Escape after Tab has moved focus to the next field", async () => {
+    const user = userEvent.setup();
+    render(
+      <div>
+        <HelpTooltip label="Pinned">Some help text.</HelpTooltip>
+        <button type="button">Next field</button>
+      </div>,
+    );
+    const trigger = screen.getByRole("button", { name: "Help: Pinned" });
+    await user.click(trigger);
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Next field" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("stops Escape from also closing a real containing dialog's window keydown listener", async () => {
+    // Mirrors how ImageStudioPanel/MediaPlayer actually close on Escape
+    // (window.addEventListener("keydown", ...), bubble phase) -- distinct
+    // from the React onKeyDown ancestor case above, so this proves the
+    // document-capture fix wins against that real-world pattern too.
+    const user = userEvent.setup();
+    const onDialogClose = vi.fn();
+    function DialogLike() {
+      useEffect(() => {
+        const onKey = (event: KeyboardEvent) => {
+          if (event.key === "Escape") onDialogClose();
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      }, []);
+      return <HelpTooltip label="InDialog">Some help text.</HelpTooltip>;
+    }
+    render(<DialogLike />);
+    const trigger = screen.getByRole("button", { name: "Help: InDialog" });
+    await user.hover(trigger);
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(onDialogClose).not.toHaveBeenCalled();
+
+    // Once closed, Escape must reach the real dialog listener again.
+    await user.keyboard("{Escape}");
+    expect(onDialogClose).toHaveBeenCalledTimes(1);
   });
 
   it("applies the compact trigger class when size is sm, and the default class otherwise", () => {

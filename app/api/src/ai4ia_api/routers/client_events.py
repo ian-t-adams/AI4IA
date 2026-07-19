@@ -96,9 +96,15 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
         "[redacted-token]",
     ),
     (
+        # The optional (?:scheme\s+)? group consumes an HTTP auth scheme word
+        # (e.g. "Authorization: Basic <credential>") together with the
+        # credential that follows it, as ONE match. Without it, `[^\s"&,]+`
+        # alone greedily stops at the first whitespace and matches just the
+        # scheme word -- redacting "Basic"/"Bearer" while leaving the actual
+        # credential completely untouched afterward.
         re.compile(
             r"\b(authorization|bearer|token|api[_-]?key|secret|password|access[_-]?key|sas)"
-            r"\b\s*[:=]\s*\"?[^\s\"&,]+",
+            r"\b\s*[:=]\s*\"?(?:(?:basic|bearer|digest|negotiate|ntlm|oauth)\s+)?[^\s\"&,]+",
             re.IGNORECASE,
         ),
         r"\1=[redacted]",
@@ -136,6 +142,40 @@ _RATE_LIMIT_PER_MINUTE = 20
 _RATE_WINDOW_SECONDS = 60.0
 _hits: dict[str, deque[float]] = {}
 
+# The per-call prune above only removes *timestamps inside* the current user's
+# deque -- it never removes the dict *entry* itself, so a long-running process
+# accumulates one entry per distinct user_id ever seen, forever, even once every
+# one of them has been inactive for hours (unbounded memory growth). Sweep
+# periodically (not on every call, to keep the common hot path O(1)) to drop
+# entries for users inactive longer than the rate window, and hard-cap the dict
+# as a backstop so a burst of distinct users between sweeps still can't grow
+# this unbounded.
+_SWEEP_INTERVAL_SECONDS = 300.0
+_MAX_TRACKED_USERS = 10_000
+_last_sweep = 0.0
+
+
+def _sweep_stale_users(now: float) -> None:
+    """Drop ``_hits`` entries for users inactive longer than the rate window,
+    then enforce ``_MAX_TRACKED_USERS`` by evicting the least-recently-active
+    entries first (oldest ``window[-1]`` = least recently active)."""
+    global _last_sweep
+    stale = [
+        user_id
+        for user_id, window in _hits.items()
+        if not window or now - window[-1] > _RATE_WINDOW_SECONDS
+    ]
+    for user_id in stale:
+        del _hits[user_id]
+    overflow = len(_hits) - _MAX_TRACKED_USERS
+    if overflow > 0:
+        # Every surviving window is non-empty here (empties were removed
+        # above), so window[-1] is always the user's most recent activity.
+        by_recency = sorted(_hits.items(), key=lambda item: item[1][-1])
+        for user_id, _window in by_recency[:overflow]:
+            del _hits[user_id]
+    _last_sweep = now
+
 
 def _rate_limited(user_id: str) -> bool:
     now = time.monotonic()
@@ -143,9 +183,16 @@ def _rate_limited(user_id: str) -> bool:
     while window and now - window[0] > _RATE_WINDOW_SECONDS:
         window.popleft()
     if len(window) >= _RATE_LIMIT_PER_MINUTE:
-        return True
-    window.append(now)
-    return False
+        limited = True
+    else:
+        window.append(now)
+        limited = False
+    # This function has no `await`, so it runs atomically w.r.t. other
+    # coroutines on the event loop -- concurrent requests can't interleave the
+    # sweep with another user's window mutation.
+    if now - _last_sweep > _SWEEP_INTERVAL_SECONDS:
+        _sweep_stale_users(now)
+    return limited
 
 
 class ClientEventReport(BaseModel):

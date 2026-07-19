@@ -144,7 +144,10 @@ export const MCP_TOOL_APPROVALS: { value: McpToolApproval; label: string; hint: 
   {
     value: "always",
     label: "Always require approval",
-    hint: "Prompt for approval on every use, even on a trusted server.",
+    hint:
+      "Chat has no live approval prompt, so this tool is simply left out of " +
+      "what the model can call — even on a trusted server — until you pick " +
+      "a different option here.",
   },
   {
     value: "never",

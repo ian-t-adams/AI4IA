@@ -63,7 +63,9 @@ describe("WorkflowBuilder", () => {
     expect(screen.queryByText("Helps with quick tasks.")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Help: About workflow steps" }));
-    expect(screen.getByRole("tooltip")).toHaveTextContent(/its own model call/i);
+    const stepsTooltip = screen.getByRole("tooltip");
+    expect(stepsTooltip).toHaveTextContent(/up to three/i);
+    expect(stepsTooltip).toHaveTextContent(/truncated to 8,000 characters/i);
   });
 
   it("explains why Run is disabled when no model is picked, without relying on a disabled-button title", async () => {

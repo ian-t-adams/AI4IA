@@ -112,6 +112,69 @@ describe("reportClientEvent", () => {
       expect(body.message).toBe("Authorization=[redacted] rejected");
     });
 
+    // Regression coverage for the HIGH finding: the auth-header pattern used
+    // to match only the scheme word ("Basic"/"Bearer") when it preceded a
+    // credential, because `[^\s"&,]+` stops at the first whitespace -- so
+    // "Authorization: Basic <credential>" redacted "Basic" but left the
+    // credential itself sitting in plain text right after it. The fix wraps
+    // an optional scheme-word group around the value so scheme + credential
+    // are consumed as a single match. Covered for both schemes, and both a
+    // short and a long (24+ char) credential since the long case would also
+    // be eligible for the separate generic long-opaque-token catch-all --
+    // proving the auth-header pattern (which runs first) fully owns it.
+    const basicShortCred = "b".repeat(12);
+    const basicLongCred = "c".repeat(40);
+    const bearerShortCred = "d".repeat(12);
+    const bearerLongCred = "e".repeat(40);
+
+    it("redacts 'Authorization: Basic <credential>' for a short credential", async () => {
+      const { reportClientEvent } = await freshModule();
+
+      reportClientEvent("unhandled_error", {
+        message: `Authorization: Basic ${basicShortCred} failed`,
+      });
+      const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+      expect(body.message).not.toContain(basicShortCred);
+      expect(body.message).not.toContain("Basic");
+      expect(body.message).toBe("Authorization=[redacted] failed");
+    });
+
+    it("redacts 'Authorization: Basic <credential>' for a long (24+ char) credential", async () => {
+      const { reportClientEvent } = await freshModule();
+
+      reportClientEvent("unhandled_error", {
+        message: `Authorization: Basic ${basicLongCred} failed`,
+      });
+      const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+      expect(body.message).not.toContain(basicLongCred);
+      expect(body.message).not.toContain("Basic");
+      expect(body.message).toBe("Authorization=[redacted] failed");
+    });
+
+    it("redacts 'Authorization: Bearer <credential>' for a short credential", async () => {
+      const { reportClientEvent } = await freshModule();
+
+      reportClientEvent("unhandled_error", {
+        message: `Authorization: Bearer ${bearerShortCred} failed`,
+      });
+      const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+      expect(body.message).not.toContain(bearerShortCred);
+      expect(body.message).not.toContain("Bearer");
+      expect(body.message).toBe("Authorization=[redacted] failed");
+    });
+
+    it("redacts 'Authorization: Bearer <credential>' for a long (24+ char) credential", async () => {
+      const { reportClientEvent } = await freshModule();
+
+      reportClientEvent("unhandled_error", {
+        message: `Authorization: Bearer ${bearerLongCred} failed`,
+      });
+      const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+      expect(body.message).not.toContain(bearerLongCred);
+      expect(body.message).not.toContain("Bearer");
+      expect(body.message).toBe("Authorization=[redacted] failed");
+    });
+
     it("redacts an entire URL, including its query string", async () => {
       const { reportClientEvent } = await freshModule();
       reportClientEvent("unhandled_error", {

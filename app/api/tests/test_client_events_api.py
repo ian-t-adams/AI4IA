@@ -4,6 +4,8 @@ asserting the customEvents contract)."""
 from __future__ import annotations
 
 import logging
+import threading
+from collections import deque
 
 from ai4ia_api import logging_setup
 from ai4ia_api.auth.base import AuthError
@@ -105,6 +107,116 @@ def test_per_user_rate_limit_drops_without_erroring(client, monkeypatch):
     )
     assert other.status_code == 202
     assert len(captured) == mod._RATE_LIMIT_PER_MINUTE + 1
+
+
+def test_sweep_stale_users_evicts_only_inactive_entries():
+    """Regression for MEDIUM-2: the per-call prune in `_rate_limited` only
+    removed timestamps *inside* a user's own window deque -- it never removed
+    the dict entry itself, so a long-running process accumulated one entry
+    per distinct user ever seen, forever, even once every one of them had
+    been inactive for hours. Exercises `_sweep_stale_users` directly with
+    hand-built windows so "stale" vs "active" is deterministic rather than
+    depending on wall-clock timing."""
+    import ai4ia_api.routers.client_events as mod
+
+    now = 1_000_000.0
+    mod._hits.clear()
+    mod._hits.update(
+        {
+            "stale-boundary": deque([now - mod._RATE_WINDOW_SECONDS - 0.01]),
+            "stale-old": deque([now - mod._RATE_WINDOW_SECONDS - 500]),
+            "active": deque([now - 1.0]),
+            "empty-window": deque(),
+        }
+    )
+    try:
+        mod._sweep_stale_users(now)
+        assert set(mod._hits) == {"active"}
+        assert mod._last_sweep == now
+    finally:
+        mod._hits.clear()
+
+
+def test_sweep_stale_users_caps_total_tracked_users_by_recency(monkeypatch):
+    """Regression for MEDIUM-2's backstop: even if a burst of distinct users
+    all show up between sweeps (all still within the rate window, so none of
+    them are individually "stale"), the dict must not grow past
+    `_MAX_TRACKED_USERS` -- the least-recently-active entries are evicted
+    first."""
+    import ai4ia_api.routers.client_events as mod
+
+    monkeypatch.setattr(mod, "_MAX_TRACKED_USERS", 3)
+    now = 1_000_000.0
+    mod._hits.clear()
+    mod._hits.update(
+        {
+            "oldest": deque([now - 40]),
+            "middle": deque([now - 30]),
+            "newer": deque([now - 20]),
+            "newest": deque([now - 10]),
+        }
+    )
+    try:
+        mod._sweep_stale_users(now)
+        assert set(mod._hits) == {"middle", "newer", "newest"}
+    finally:
+        mod._hits.clear()
+
+
+def test_rate_limited_periodic_sweep_bounds_hit_dict_across_many_users(monkeypatch):
+    """Integration-level companion to the two sweep tests above: drives the
+    real caller (`_rate_limited`) across many distinct, one-shot users with a
+    controllable clock and asserts `_hits` stays capped instead of growing
+    linearly with the number of distinct users ever seen."""
+    import ai4ia_api.routers.client_events as mod
+
+    monkeypatch.setattr(mod, "_hits", {})
+    monkeypatch.setattr(mod, "_last_sweep", 0.0)
+    monkeypatch.setattr(mod, "_SWEEP_INTERVAL_SECONDS", 1.0)
+    monkeypatch.setattr(mod, "_RATE_WINDOW_SECONDS", 1.0)
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["now"])
+
+    for i in range(500):
+        clock["now"] += 2.0  # past both the rate window and the sweep interval
+        mod._rate_limited(f"user-{i}")
+
+    # Every prior user is stale by the time the next call's sweep fires, so
+    # the dict never accumulates more than the current caller's own entry.
+    assert len(mod._hits) <= 2
+
+
+def test_rate_limited_is_safe_under_concurrent_calls(monkeypatch):
+    """Concurrency check for MEDIUM-2's fix: `_rate_limited` has no `await`
+    point so it's atomic within a single asyncio worker by construction, but
+    the CPython GIL only guarantees individual bytecode-level atomicity, not
+    an entire read-modify-write dict+deque sequence. Drives it from real OS
+    threads with overlapping user ids to prove the eviction/cap logic doesn't
+    corrupt shared state or raise under genuinely concurrent access."""
+    import ai4ia_api.routers.client_events as mod
+
+    monkeypatch.setattr(mod, "_hits", {})
+    monkeypatch.setattr(mod, "_MAX_TRACKED_USERS", 50)
+    monkeypatch.setattr(mod, "_last_sweep", 0.0)
+    errors: list[Exception] = []
+
+    def _worker(worker_id: int) -> None:
+        try:
+            for i in range(200):
+                mod._rate_limited(f"user-{worker_id}-{i % 5}")
+        except Exception as exc:  # pragma: no cover - assertion below also fails
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker, args=(w,)) for w in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert errors == []
+    assert all(not t.is_alive() for t in threads)
+    assert len(mod._hits) <= mod._MAX_TRACKED_USERS
 
 
 def test_rate_limit_resets_after_window_elapses(client, monkeypatch):
@@ -216,6 +328,30 @@ def test_sanitize_redacts_hostile_message_content():
     assert (
         _sanitize(f"token {long_opaque_run} invalid") == "token [redacted-token] invalid"
     )
+
+
+def test_sanitize_redacts_auth_scheme_word_together_with_its_credential():
+    """Regression for the HIGH finding: the auth-header pattern's value group
+    (``[^\\s"&,]+``) stops at the first whitespace, so before the fix it
+    matched -- and redacted -- only the scheme word ("Basic"/"Bearer") while
+    leaving the credential that followed it completely untouched in plain
+    text. The fix wraps an optional scheme-word group around the value so the
+    scheme and its credential are consumed as a single match. Covered for
+    both schemes and both a short and a long (24+ char) credential, since the
+    long case is also eligible for the separate generic long-opaque-token
+    catch-all -- proving the auth-header pattern (which runs first) fully
+    owns it rather than a later pattern happening to clean up what it
+    missed."""
+    fixtures = {
+        "Basic": ("b" * 12, "c" * 40),
+        "Bearer": ("d" * 12, "e" * 40),
+    }
+    for scheme, (short_cred, long_cred) in fixtures.items():
+        for credential in (short_cred, long_cred):
+            result = _sanitize(f"Authorization: {scheme} {credential} failed")
+            assert result == "Authorization=[redacted] failed"
+            assert scheme not in result
+            assert credential not in result
 
 
 def test_sanitize_does_not_let_content_survive_for_userid_correlation():

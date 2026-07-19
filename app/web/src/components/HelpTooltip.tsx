@@ -84,13 +84,31 @@ export function HelpTooltip({
         pinnedRef.current = false;
       }
     };
+    // Document-level + capture phase (not the trigger's own onKeyDown) so
+    // Escape closes the tooltip no matter which element currently has focus:
+    // a hover-opened tooltip never focuses the trigger, and a pinned tooltip
+    // stays open after Tab moves focus to the next field. Capture fires
+    // before any bubble-phase listener a containing dialog attaches to
+    // window/document (e.g. ImageStudioPanel, MediaPlayer), so
+    // stopPropagation() here reliably keeps this keypress from also closing
+    // that dialog. Only registered while open, and removed on close/unmount,
+    // so a closed tooltip never intercepts Escape meant for its ancestor.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setOpen(false);
+      setPinned(false);
+      pinnedRef.current = false;
+    };
     window.addEventListener("scroll", reposition, true);
     window.addEventListener("resize", reposition);
     document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", onKeyDown, true);
     return () => {
       window.removeEventListener("scroll", reposition, true);
       window.removeEventListener("resize", reposition);
       document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", onKeyDown, true);
     };
   }, [open, updatePosition]);
   useLayoutEffect(() => {
@@ -127,19 +145,6 @@ export function HelpTooltip({
         onFocus={show}
         onBlur={() => {
           if (!pinnedRef.current) setOpen(false);
-        }}
-        onKeyDown={(event) => {
-          // Only consume Escape while the tooltip is actually open, and stop
-          // it from bubbling in that case -- otherwise a tooltip nested
-          // inside a modal/drawer would also close that enclosing surface on
-          // the same keypress. When the tooltip isn't open, let Escape pass
-          // through untouched so the enclosing dialog can still handle it.
-          if (event.key === "Escape" && open) {
-            event.stopPropagation();
-            setOpen(false);
-            setPinned(false);
-            pinnedRef.current = false;
-          }
         }}
       >
         ?

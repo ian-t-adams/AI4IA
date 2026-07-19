@@ -399,10 +399,13 @@ export function WorkflowBuilder({
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={labelStyle}>Steps ({form.steps.length}/{MAX_STEPS})</span>
               <HelpTooltip label="About workflow steps" size="sm">
-                Steps run in order, each as its own model call — every extra step adds latency
-                and cost. Only the immediately prior step&apos;s output is passed forward via
-                {" "}
-                {"{previous}"}, not the full conversation history.
+                Steps run in order. Each is at least one model call, but a step whose agent
+                uses tools can take up to three (an initial tool-calling attempt, a follow-up
+                with the tool result, and a forced final answer if it keeps requesting tools)
+                — every extra step and tool call adds latency and cost. Only the immediately
+                prior step&apos;s output is passed forward via {" "}
+                {"{previous}"}, truncated to 8,000 characters — not the full conversation
+                history.
               </HelpTooltip>
             </span>
             <button onClick={addStep} disabled={form.steps.length >= MAX_STEPS} style={ghostBtn}>

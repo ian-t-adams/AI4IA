@@ -75,7 +75,13 @@ const MAX_REPORTS_PER_PAGE_LOAD = 20;
 const REDACTIONS: Array<[RegExp, string]> = [
   [/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[redacted-token]"],
   [
-    /\b(authorization|bearer|token|api[_-]?key|secret|password|access[_-]?key|sas)\b\s*[:=]\s*"?[^\s"&,]+/gi,
+    // The optional (?:scheme\s+)? group consumes an HTTP auth scheme word
+    // (e.g. "Authorization: Basic <credential>") together with the
+    // credential that follows it, as ONE match. Without it, `[^\s"&,]+`
+    // alone greedily stops at the first whitespace and matches just the
+    // scheme word -- redacting "Basic"/"Bearer" while leaving the actual
+    // credential completely untouched afterward.
+    /\b(authorization|bearer|token|api[_-]?key|secret|password|access[_-]?key|sas)\b\s*[:=]\s*"?(?:(?:basic|bearer|digest|negotiate|ntlm|oauth)\s+)?[^\s"&,]+/gi,
     "$1=[redacted]",
   ],
   [/https?:\/\/\S+/gi, "[redacted-url]"],
