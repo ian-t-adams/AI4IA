@@ -302,7 +302,14 @@ export function ChatApp() {
   const streamingRef = useRef(false);
   // Holds an in-flight lazy session-creation promise so a rapid send + upload
   // (or two uploads) share a single session instead of racing to create two.
-  const creatingRef = useRef<Promise<string> | null>(null);
+  // Keyed by an "intent" fingerprint (see ensureSession) of the exact
+  // model/systemPrompt/agent/tools/docs the in-flight request was built from,
+  // so a caller whose own current settings have since diverged (e.g. after
+  // Stop waiting + New chat resets them) never silently reuses a stale
+  // creation made under different settings -- it fires its own instead.
+  const creatingRef = useRef<{ intentKey: string; promise: Promise<string> } | null>(
+    null,
+  );
   // Synchronous mirror of activeId so ensureSession sees a just-created session
   // immediately (before the setActiveId state flush), preventing a double create
   // when an upload is quickly followed by a send.
@@ -587,30 +594,64 @@ export function ChatApp() {
   // once, using only the first caller's answer) would let a later, still-
   // valid caller's "yes" be silently discarded just because it happened to
   // share the same in-flight creation as an earlier caller's "no".
+  //
+  // Sharing is further gated by an "intent" fingerprint of the exact payload
+  // this call would send to api.createSession. Without it, a caller whose
+  // settings changed *after* an earlier creation started (e.g. Voice Live
+  // begins creating a session, the user hits Stop waiting + New chat which
+  // resets model/systemPrompt/agent/tools/docs, then sends a fresh message)
+  // would silently reuse that stale in-flight promise -- binding the new,
+  // differently-configured send to a session actually created with the OLD
+  // settings, since both callers would otherwise await the identical network
+  // request. A caller only reuses the cached entry when its own current
+  // settings would produce an identical request; otherwise it fires its own
+  // and installs its own entry, without clobbering a different still-in-
+  // flight generation that may belong to another still-valid caller.
   const ensureSession = useCallback(
     async (isStillWanted?: () => boolean): Promise<string> => {
       if (sessionIdRef.current) return sessionIdRef.current;
       const capturedGeneration = selectionGenerationRef.current;
-      let creation = creatingRef.current;
-      if (!creation) {
-        creation = (async () => {
-          try {
-            const created = await api.createSession({
-              model: selectedModel,
-              systemPrompt: systemPrompt || null,
-              agentName: draftDefaults.agentName,
-              toolOverrides: draftDefaults.toolOverrides,
-              libraryDocumentIds: draftDefaults.libraryDocumentIds,
-            });
-            setSessions((prev) => [created, ...prev]);
-            return created.id;
-          } finally {
+      const intentKey = JSON.stringify({
+        model: selectedModel,
+        systemPrompt: systemPrompt || null,
+        agentName: draftDefaults.agentName,
+        toolOverrides: draftDefaults.toolOverrides,
+        libraryDocumentIds: draftDefaults.libraryDocumentIds,
+      });
+      let entry = creatingRef.current;
+      if (!entry || entry.intentKey !== intentKey) {
+        // The identity-safe cleanup below is registered via `.finally()`
+        // (a separately-invoked callback, run once the request settles)
+        // rather than a `try/finally` inside the async IIFE itself: the
+        // latter's `finally` block is part of the SAME function that is
+        // immediately invoked to produce `creation`, which trips
+        // TypeScript's definite-assignment analysis ("used before being
+        // assigned") even though it only actually runs well after this
+        // statement has returned. `.finally()`'s callback is merely
+        // registered here, not invoked synchronously, so it can safely
+        // close over `creation` once assigned.
+        const creation: Promise<string> = (async () => {
+          const created = await api.createSession({
+            model: selectedModel,
+            systemPrompt: systemPrompt || null,
+            agentName: draftDefaults.agentName,
+            toolOverrides: draftDefaults.toolOverrides,
+            libraryDocumentIds: draftDefaults.libraryDocumentIds,
+          });
+          setSessions((prev) => [created, ...prev]);
+          return created.id;
+        })().finally(() => {
+          // Identity-safe: only clear the slot if it still points at THIS
+          // creation. A differently-scoped caller may already have
+          // installed its own newer entry while this one was in flight.
+          if (creatingRef.current?.promise === creation) {
             creatingRef.current = null;
           }
-        })();
-        creatingRef.current = creation;
+        });
+        entry = { intentKey, promise: creation };
+        creatingRef.current = entry;
       }
-      const id = await creation;
+      const id = await entry.promise;
       const stillCurrentSelection =
         selectionGenerationRef.current === capturedGeneration &&
         !sessionIdRef.current;

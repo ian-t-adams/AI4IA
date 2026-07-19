@@ -988,4 +988,80 @@ describe("ChatApp uploads", () => {
 
     expect(screen.queryByText("Stale voice turn")).not.toBeInTheDocument();
   });
+
+  // Regression (independent re-review, HIGH 2): creatingRef only ever
+  // deduplicated the underlying network call by presence -- any caller that
+  // reused an in-flight creatingRef promise got a session built from
+  // whatever model/systemPrompt/agent/tools/docs the FIRST caller's settings
+  // happened to be at the time, even if a LATER caller's own current
+  // settings had since diverged (e.g. after Stop waiting + New chat resets
+  // them, or the user just edits the draft again). This test drives the
+  // *real* ensureSession callback ChatApp passes into the (mocked)
+  // useInlineVoiceLive hook, changing the real system prompt via the real
+  // (unmocked) ConversationInspector between two calls, to prove a caller
+  // whose settings have diverged from an in-flight creation fires its own
+  // request instead of silently inheriting the stale one.
+  it("fires its own session creation instead of reusing an in-flight one when the caller's settings have since diverged", async () => {
+    const resolvers: Array<() => void> = [];
+    mocks.createSession.mockImplementation(
+      (value: object) =>
+        new Promise((resolve) => {
+          resolvers.push(() => resolve({ ...session("C"), ...value }));
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    // Switch the real inspector to its Instructions tab and set a draft
+    // system prompt -- while still in "new chat" (no session yet), this
+    // writes straight through to ChatApp's systemPrompt state.
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    const promptBox = screen.getByLabelText("System prompt");
+    await user.type(promptBox, "Prompt A");
+
+    const firstCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let firstResult: Promise<string> | undefined;
+    act(() => {
+      firstResult = firstCall.ensureSession(() => true);
+    });
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+    expect(mocks.createSession).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ systemPrompt: "Prompt A" }),
+    );
+
+    // Before that creation resolves, the caller's settings diverge -- change
+    // the draft system prompt to a different value while still in "new
+    // chat", exactly as would happen after Stop waiting + New chat, or a
+    // plain draft edit.
+    await user.clear(promptBox);
+    await user.type(promptBox, "Prompt B");
+
+    const secondCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let secondResult: Promise<string> | undefined;
+    act(() => {
+      secondResult = secondCall.ensureSession(() => true);
+    });
+
+    // The second, differently-configured caller must fire its own request
+    // rather than silently reusing the first's in-flight (and now stale)
+    // creation.
+    expect(mocks.createSession).toHaveBeenCalledTimes(2);
+    expect(mocks.createSession).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ systemPrompt: "Prompt B" }),
+    );
+
+    await act(async () => {
+      resolvers.forEach((resolve) => resolve());
+      await Promise.all([firstResult, secondResult]);
+    });
+  });
 });

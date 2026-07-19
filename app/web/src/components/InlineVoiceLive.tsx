@@ -316,17 +316,25 @@ export function useInlineVoiceLive({
     setPersistenceError(null);
     setSaving(true);
 
-    // settled + finish() guard so whichever happens first — the real
-    // request completing, or the timeout firing — is the only one that acts.
-    // The underlying fetch chain is not aborted (no AbortSignal is plumbed
-    // through ensureSession/persistConversation); this only bounds how long
-    // the UI can be stuck waiting on it, and a late real completion after a
-    // timeout is safely ignored via `settled`.
+    // finish() is intentionally reentrant, gated on attemptId currency
+    // rather than a one-shot "settled" latch. The underlying fetch chain is
+    // not aborted (no AbortSignal is plumbed through ensureSession/
+    // persistConversation), so if the PERSIST_TIMEOUT_MS timeout wins the
+    // race and reports an error first, the real request keeps running in the
+    // background. When it later completes for real, a still-current (not
+    // superseded) attempt must let that real outcome correct the UI --
+    // clearing a timeout-driven error and marking the turns persisted on
+    // late success, or replacing the timeout message with the real failure
+    // on late failure -- otherwise the UI would stay permanently
+    // locked/erroring even though the data safely landed durably. Only an
+    // attempt actually superseded by discardPersistence() or a newer
+    // persist() cycle (attemptIdRef no longer matching) is suppressed.
+    // clearTimeout() and the persistenceRef/sessionPromiseRef identity
+    // checks below are unconditional and idempotent, so calling finish() a
+    // second time for the same still-current attempt is safe, and the outer
+    // Promise's own resolve() is a no-op once already settled.
     const request = new Promise<void>((resolve) => {
-      let settled = false;
       const finish = (error: Error | null) => {
-        if (settled) return;
-        settled = true;
         clearTimeout(timeoutId);
         if (persistenceRef.current === request) persistenceRef.current = null;
         if (attemptIdRef.current !== attemptId) {

@@ -684,6 +684,88 @@ describe("inline Voice Live chat", () => {
     vi.useRealTimers();
   });
 
+  // Regression: timing out only means the UI gave up *waiting* to report a
+  // diagnosable state -- the underlying save is never aborted (no
+  // AbortSignal is wired through ensureSession/persistConversation), so it
+  // can still complete afterward. A prior "settled" latch in finish() made
+  // that first (timeout) call permanent, silently discarding a later real
+  // outcome for the SAME still-current attempt: a save that truly succeeded
+  // slowly left the user staring at a permanent error/lock with no way to
+  // know their data was actually safe. finish() must stay reentrant and gate
+  // only on attempt currency, not on "have I already reported once."
+  it("clears a timeout-driven persistence error once the underlying save actually completes for the same attempt", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    let resolvePersist: (() => void) | undefined;
+    const persist = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePersist = resolve;
+        }),
+    );
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "Slow but successful turn",
+          pending: false,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    const { rerender } = render(<Harness persist={persist} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+    controller = makeController();
+    rerender(<Harness persist={persist} />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+
+    // Same timeout-driven error state as the test above.
+    expect(
+      screen.getByText(
+        "Saving the voice transcript is taking too long. Retry, or stop waiting to continue.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry saving" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Stop waiting" })).toBeEnabled();
+
+    // The real save -- never cancelled, just slow -- now finally resolves.
+    // Flush a generous number of microtask ticks (the promise chain hops
+    // through persistConversation -> the session .then() -> finish()) so the
+    // late completion has every chance to be applied before asserting.
+    await act(async () => {
+      resolvePersist?.();
+      for (let i = 0; i < 20; i += 1) {
+        await Promise.resolve();
+      }
+    });
+
+    expect(
+      screen.queryByText(
+        "Saving the voice transcript is taking too long. Retry, or stop waiting to continue.",
+      ),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry saving" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop waiting" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Start live voice conversation" }),
+    ).toBeEnabled();
+    // The turn the timeout almost lost track of actually landed, exactly
+    // once -- not silently dropped and not duplicated.
+    expect(screen.getByText("Slow but successful turn")).toBeInTheDocument();
+
+    vi.useRealTimers();
+  });
+
   // Regression: discardPersistence() is the user's explicit escape hatch for
   // a stuck/failed save. It must unlock the UI synchronously — it cannot
   // wait on the network request it is abandoning.
