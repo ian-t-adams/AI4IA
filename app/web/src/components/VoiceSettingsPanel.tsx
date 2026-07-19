@@ -104,6 +104,7 @@ export function VoiceSettingsPanel({
 }: VoiceSettingsPanelProps) {
   const idPrefix = useId();
   const isSpeechProvider = provider === "speech_voice_live";
+  const selectedProvider = providers.find((entry) => entry.id === provider);
   const speechProvider = isSpeechVoiceProvider(activeProvider) ? activeProvider : undefined;
   const voiceOptions: readonly string[] = activeProvider.capabilities.voices.options;
   const localeOptions: readonly string[] = speechProvider?.capabilities.locale?.options ?? [];
@@ -135,22 +136,26 @@ export function VoiceSettingsPanel({
           padding: 10,
         }}
       >
-        <label style={FIELD_STYLE} htmlFor={`${idPrefix}-provider`}>
-          Provider
+        <div style={FIELD_STYLE}>
+          <label htmlFor={`${idPrefix}-provider`}>Provider</label>
           <select
             id={`${idPrefix}-provider`}
+            aria-describedby={`${idPrefix}-provider-description`}
             value={provider}
             disabled={locked}
             onChange={(e) => onProviderChange(e.target.value as VoiceProviderId)}
             style={CONTROL_STYLE}
           >
             {providers.map((entry) => (
-              <option key={entry.id} value={entry.id} title={entry.description}>
+              <option key={entry.id} value={entry.id}>
                 {entry.displayLabel}
               </option>
             ))}
           </select>
-        </label>
+          <span id={`${idPrefix}-provider-description`} style={{ maxWidth: 260 }}>
+            {selectedProvider?.description}
+          </span>
+        </div>
 
         {isSpeechProvider ? (
           <>
