@@ -5,10 +5,20 @@
   "description": "Declarative definition of the single Foundry Agent Service toolbox that AI4IA fronts through the official-MCP APIM (see docs/foundry-toolbox.md). scripts/provision-foundry-toolbox.py reads this file and calls project.toolboxes.create_version(name, tools=[typed ToolboxTool models], description, skills, policies). The checked-in foundry/toolbox.manifest.json is the CANONICAL definition of the live ai4ia-toolbox that a new tenant reproduces 1:1. Fields mirror the Foundry toolbox declarative contract; camelCase keys here map to the API's snake_case (the script translates).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "description", "tools", "skills", "connections"],
+  "required": [
+    "name",
+    "description",
+    "tools",
+    "skills",
+    "connections"
+  ],
   "properties": {
-    "$schema": { "type": "string" },
-    "_comment": { "type": "string" },
+    "$schema": {
+      "type": "string"
+    },
+    "_comment": {
+      "type": "string"
+    },
     "name": {
       "type": "string",
       "description": "Toolbox name (also the {toolbox_name} path segment in the MCP endpoint, and the mcp-servers.json entry name). Lowercase slug; pattern matches infra/mcp-servers.schema.json so the projected catalog entry is always valid.",
@@ -31,9 +41,14 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name"],
+        "required": [
+          "name"
+        ],
         "properties": {
-          "name": { "type": "string", "minLength": 1 }
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },
@@ -42,7 +57,10 @@
       "description": "Connectionless built-in tools and MCP tools to include. The service allows at most ONE tool total to omit `name`; give every other tool a unique `name`. Add a `description` to every tool to help model tool selection.",
       "items": {
         "type": "object",
-        "required": ["type"],
+        "additionalProperties": false,
+        "required": [
+          "type"
+        ],
         "properties": {
           "type": {
             "type": "string",
@@ -55,7 +73,11 @@
               "browser_automation_preview",
               "openapi",
               "toolbox_search_preview",
-              "mcp"
+              "mcp",
+              "a2a_preview",
+              "fabric_iq_preview",
+              "reminder_preview",
+              "work_iq_preview"
             ]
           },
           "name": {
@@ -65,8 +87,1962 @@
           "description": {
             "type": "string",
             "description": "Optional tool description used by the model for tool selection."
+          },
+          "toolConfigs": {
+            "type": "object",
+            "description": "Optional per-tool visibility/search-tuning overrides (azure-ai-projects 2.3.0's base ToolboxTool.tool_configs dict[str, ToolConfig]). Keyed by the referenced tool's `name` (or `serverLabel` for mcp-family tools), or '*' as a catch-all default. Common to every tool type.",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pin": {
+                  "type": "boolean",
+                  "description": "Pin this tool so it is always available to the model regardless of selection heuristics."
+                },
+                "additionalSearchText": {
+                  "type": "string",
+                  "description": "Extra text blended into tool-selection search/ranking for this tool."
+                }
+              }
+            }
+          },
+          "maxNumResults": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "file_search only: caps the number of results returned per query (azure-ai-projects 2.3.0's FileSearchToolboxTool.max_num_results; SDK docstring bounds it to 1-50)."
+          },
+          "rankingOptions": {
+            "type": "object",
+            "description": "file_search only: result ranking tuning (azure-ai-projects 2.3.0's RankingOptions).",
+            "additionalProperties": false,
+            "properties": {
+              "ranker": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "default-2024-11-15"
+                ],
+                "description": "Ranker version (RankerVersionType). Omit to use the service default."
+              },
+              "scoreThreshold": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "Minimum relevance score (0-1) a result must meet to be returned."
+              },
+              "hybridSearch": {
+                "type": "object",
+                "description": "Blend of vector/keyword search (azure-ai-projects 2.3.0's HybridSearchOptions). Both weights are Required on that SDK model when the object is present.",
+                "additionalProperties": false,
+                "required": [
+                  "embeddingWeight",
+                  "textWeight"
+                ],
+                "properties": {
+                  "embeddingWeight": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "textWeight": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  }
+                }
+              }
+            }
+          },
+          "filters": {
+            "description": "Shape depends on tool type: file_search uses a comparison/compound filter tree (azure-ai-projects 2.3.0's ComparisonFilter/CompoundFilter over vector-store file metadata); web_search uses a simple allowed-domains object (WebSearchToolFilters). The exact per-type shape is enforced below; this base declaration only requires a JSON object.",
+            "type": "object"
+          },
+          "userLocation": {
+            "type": "object",
+            "description": "web_search only: approximate caller location used to localize search results (azure-ai-projects 2.3.0's WebSearchApproximateLocation). The SDK always sets `type` to the literal 'approximate' internally; it is not a settable field here.",
+            "additionalProperties": false,
+            "properties": {
+              "country": {
+                "type": "string",
+                "minLength": 1
+              },
+              "region": {
+                "type": "string",
+                "minLength": 1
+              },
+              "city": {
+                "type": "string",
+                "minLength": 1
+              },
+              "timezone": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "searchContextSize": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "description": "web_search only: how much search context the model is given per call (azure-ai-projects 2.3.0's WebSearchToolboxTool.search_context_size). Defaults to 'medium' when omitted."
+          },
+          "serverDescription": {
+            "type": "string",
+            "minLength": 1,
+            "description": "mcp only: optional human-readable description of the target MCP server (azure-ai-projects 2.3.0's MCPToolboxTool.server_description)."
+          },
+          "allowedTools": {
+            "description": "mcp only: restricts which of the server's tools are exposed (azure-ai-projects 2.3.0's MCPToolboxTool.allowed_tools). Either a plain allow-list of tool names, or an MCPToolFilter object.",
+            "oneOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1
+              },
+              {
+                "$ref": "#/definitions/mcpToolFilter"
+              }
+            ]
+          },
+          "deferLoading": {
+            "type": "boolean",
+            "description": "mcp only: defers loading/listing the server's tools until first referenced, instead of eagerly at toolbox-attach time (azure-ai-projects 2.3.0's MCPToolboxTool.defer_loading)."
+          },
+          "baseUrl": {
+            "type": "string",
+            "minLength": 1,
+            "description": "a2a_preview only: the remote agent's base URL (azure-ai-projects 2.3.0's A2APreviewToolboxTool.base_url). One of `baseUrl` or `projectConnectionId` is required; Microsoft's documented A2A walkthrough uses `projectConnectionId` (a project connection storing the endpoint + auth) -- prefer that where possible."
+          },
+          "agentCardPath": {
+            "type": "string",
+            "minLength": 1,
+            "description": "a2a_preview only: path to the agent's card document, relative to `baseUrl` (azure-ai-projects 2.3.0's A2APreviewToolboxTool.agent_card_path). Defaults to '/.well-known/agent-card.json' when omitted."
+          },
+          "sendCredentialsForAgentCard": {
+            "type": "boolean",
+            "description": "a2a_preview only: whether to send the connection's credentials when fetching the agent card itself (azure-ai-projects 2.3.0's A2APreviewToolboxTool.send_credentials_for_agent_card). Defaults to false."
+          },
+          "azureAiSearch": {
+            "type": "object",
+            "description": "Required nested config for azure_ai_search tools, mirroring azure-ai-projects 2.3.0's AzureAISearchToolResource. Do NOT put indexName/projectConnectionId at the tool root; the SDK constructor silently drops them there.",
+            "additionalProperties": false,
+            "required": [
+              "indexes"
+            ],
+            "properties": {
+              "indexes": {
+                "type": "array",
+                "description": "The SDK currently supports at most one index per azure_ai_search tool (azure-ai-projects AzureAISearchToolResource.indexes docstring: 'maximum of 1 index resource').",
+                "minItems": 1,
+                "maxItems": 1,
+                "items": {
+                  "type": "object",
+                  "description": "Microsoft's Azure AI Search tool 'Configure tool parameters' guide lists project_connection_id and index_name as BOTH Required, with no documented alternative. The SDK model (azure-ai-projects 2.3.0 AISearchIndexResource) also exposes an index_asset_id field with no corroborating Microsoft Learn example; it is modeled here as a documented, mutually-exclusive alternative to indexName+projectConnectionId per explicit product direction, not because Learn docs demonstrate it -- see docs/foundry-toolbox.md.",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "indexAssetId"
+                      ],
+                      "properties": {
+                        "indexAssetId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "queryType": {
+                          "type": "string"
+                        },
+                        "topK": {
+                          "type": "integer"
+                        },
+                        "filter": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "indexName",
+                        "projectConnectionId"
+                      ],
+                      "properties": {
+                        "indexName": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "projectConnectionId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "queryType": {
+                          "type": "string"
+                        },
+                        "topK": {
+                          "type": "integer"
+                        },
+                        "filter": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "customSearchConfiguration": {
+            "type": "object",
+            "description": "Optional grounding-with-Bing-custom-search config for web_search tools, mirroring azure-ai-projects 2.3.0's WebSearchConfiguration. Both fields are Required on that SDK model (no defaults, unlike azure_ai_search's index fields). Omit `customSearchConfiguration` entirely to use the tool's default (non-custom) grounded web search.",
+            "additionalProperties": false,
+            "required": [
+              "projectConnectionId",
+              "instanceName"
+            ],
+            "properties": {
+              "projectConnectionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "instanceName": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "browserAutomationPreview": {
+            "type": "object",
+            "description": "Required nested config for browser_automation_preview tools, mirroring azure-ai-projects 2.3.0's BrowserAutomationToolParameters.",
+            "additionalProperties": false,
+            "required": [
+              "connection"
+            ],
+            "properties": {
+              "connection": {
+                "type": "object",
+                "description": "Playwright Workspace project connection (not a plain API connection).",
+                "additionalProperties": false,
+                "required": [
+                  "projectConnectionId"
+                ],
+                "properties": {
+                  "projectConnectionId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          },
+          "container": {
+            "description": "Optional code_interpreter execution target, mirroring azure-ai-projects 2.3.0's CodeInterpreterToolboxTool.container: an EXISTING container ID (string -- a pre-registered container resource, NOT an image reference), or the Foundry-managed auto/managed-sandbox object (AutoCodeInterpreterToolParam) with optional resource limits. Omit entirely for the plain managed sandbox. There is no toolbox-level way to run a custom/BYO container image; for genuinely custom execution logic, expose it as your own server and add it as an `mcp` tool instead.",
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "auto"
+                  },
+                  "fileIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "memoryLimit": {
+                    "type": "string",
+                    "enum": [
+                      "1g",
+                      "4g",
+                      "16g",
+                      "64g"
+                    ]
+                  },
+                  "networkPolicy": {
+                    "type": "object",
+                    "description": "Optional outbound network policy, mirroring azure-ai-projects 2.3.0's ContainerNetworkPolicyParam (disabled | allowlist). The SDK's allowlist variant also supports `domainSecrets` (per-domain literal secret values injected into the sandbox); AI4IA intentionally does NOT expose that field here because this manifest is committed to source control -- see docs/foundry-toolbox.md's secrets policy.",
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "type"
+                        ],
+                        "properties": {
+                          "type": {
+                            "const": "disabled"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "type",
+                          "allowedDomains"
+                        ],
+                        "properties": {
+                          "type": {
+                            "const": "allowlist"
+                          },
+                          "allowedDomains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "minItems": 1
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "vectorStoreIds": {
+            "type": "array",
+            "description": "Required-if-present vector store IDs to search (azure-ai-projects 2.3.0's FileSearchToolboxTool.vector_store_ids). The SDK allows omitting it, but a file_search tool with an empty list is inert, so if present it must be non-empty.",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "openapi": {
+            "type": "object",
+            "description": "Required nested function definition for openapi tools, mirroring azure-ai-projects 2.3.0's OpenApiFunctionDefinition. `spec` is an arbitrary, externally-authored OpenAPI document; scripts/provision-foundry-toolbox.py passes its contents through UNMODIFIED (property names inside spec are never rewritten, so e.g. a JSON-schema property genuinely named `topK` survives as `topK`). `additionalProperties: false` here deliberately rejects `functions`: OpenApiFunctionDefinition.functions is declared `rest_field(visibility=[\"read\"])` in the locked SDK -- it is server-populated (extracted from `spec`) and is stripped from every request body by `ToolboxesOperations.create_version()`'s `exclude_readonly=True` JSON encoding, so accepting it as a caller-settable manifest field would be a silently-inert, success-shaped no-op rather than a real configuration knob.",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "spec",
+              "auth"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The function name the model calls (OpenApiFunctionDefinition.name)."
+              },
+              "description": {
+                "type": "string"
+              },
+              "spec": {
+                "type": "object",
+                "minProperties": 1,
+                "description": "Opaque OpenAPI 3.x document. NOT validated or key-rewritten by this schema/script -- authored and owned by the API being described."
+              },
+              "auth": {
+                "type": "object",
+                "description": "OpenApiAuthDetails, matching azure-ai-projects 2.3.0's discriminated auth models exactly (each branch is fully closed -- no extra/credential-like keys of any kind, per type, are accepted): OpenApiAnonymousAuthDetails takes ONLY `type` (the SDK constructor has no other parameter at all, so e.g. a stray `securityScheme` or `token` alongside `anonymous` is rejected, not silently ignored); OpenApiProjectConnectionAuthDetails/OpenApiManagedAuthDetails each require a `securityScheme` object holding exactly the one field their SDK security-scheme class defines (`projectConnectionId` / `audience` respectively) and nothing else.",
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "required": [
+                      "type"
+                    ],
+                    "properties": {
+                      "type": {
+                        "const": "anonymous"
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "required": [
+                      "type",
+                      "securityScheme"
+                    ],
+                    "properties": {
+                      "type": {
+                        "const": "project_connection"
+                      },
+                      "securityScheme": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "projectConnectionId"
+                        ],
+                        "properties": {
+                          "projectConnectionId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "required": [
+                      "type",
+                      "securityScheme"
+                    ],
+                    "properties": {
+                      "type": {
+                        "const": "managed_identity"
+                      },
+                      "securityScheme": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "audience"
+                        ],
+                        "properties": {
+                          "audience": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              "defaultParams": {
+                "type": "array",
+                "description": "OpenAPI spec parameter names that use the caller-provided defaults instead of model-chosen values.",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "serverLabel": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Required identifier for mcp tools (used to identify the tool in tool calls; also what satisfies the 'at most one unnamed tool' rule for mcp, in place of `name`). Also an optional field on fabric_iq_preview."
+          },
+          "serverUrl": {
+            "type": "string",
+            "minLength": 1,
+            "description": "mcp tool target URL (one of `serverUrl`/`connectorId` required). Also an optional field on fabric_iq_preview (defaults to the connection's own URL when omitted there)."
+          },
+          "connectorId": {
+            "type": "string",
+            "enum": [
+              "connector_dropbox",
+              "connector_gmail",
+              "connector_googlecalendar",
+              "connector_googledrive",
+              "connector_microsoftteams",
+              "connector_outlookcalendar",
+              "connector_outlookemail",
+              "connector_sharepoint"
+            ],
+            "description": "mcp tool built-in service connector (alternative to `serverUrl`). One of `serverUrl` or `connectorId` is required."
+          },
+          "projectConnectionId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Tool-root project connection, genuinely a top-level SDK field (unlike azure_ai_search/browser_automation_preview, which nest it) for: mcp (optional), a2a_preview (one of projectConnectionId/baseUrl required), fabric_iq_preview (required), work_iq_preview (required, and the only field that type accepts)."
+          },
+          "requireApproval": {
+            "description": "Tool-call approval policy for mcp / fabric_iq_preview tools: the literal 'always'/'never', or a per-tool-name MCPToolRequireApproval object with independent 'always'/'never' MCPToolFilter buckets (azure-ai-projects 2.3.0). Defaults to 'always' when omitted.",
+            "oneOf": [
+              {
+                "const": "always"
+              },
+              {
+                "const": "never"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "minProperties": 1,
+                "properties": {
+                  "always": {
+                    "$ref": "#/definitions/mcpToolFilter"
+                  },
+                  "never": {
+                    "$ref": "#/definitions/mcpToolFilter"
+                  }
+                }
+              }
+            ]
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "web_search"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "azureAiSearch"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "browserAutomationPreview"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "vectorStoreIds"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "maxNumResults"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "rankingOptions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "openapi"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverLabel"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "connectorId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "projectConnectionId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "requireApproval"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverDescription"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "allowedTools"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "deferLoading"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "baseUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "agentCardPath"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sendCredentialsForAgentCard"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "filters": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "azure-ai-projects 2.3.0's WebSearchToolFilters.",
+                  "properties": {
+                    "allowedDomains": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "azure_ai_search"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "azureAiSearch"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "customSearchConfiguration"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "browserAutomationPreview"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "vectorStoreIds"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "maxNumResults"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "rankingOptions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "filters"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "openapi"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverLabel"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "connectorId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "projectConnectionId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "requireApproval"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverDescription"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "allowedTools"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "deferLoading"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "baseUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "agentCardPath"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sendCredentialsForAgentCard"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "userLocation"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "searchContextSize"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "indexName"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "code_interpreter"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "azureAiSearch"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "customSearchConfiguration"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "browserAutomationPreview"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "vectorStoreIds"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "maxNumResults"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "rankingOptions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "filters"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "openapi"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverLabel"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "connectorId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "projectConnectionId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "requireApproval"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverDescription"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "allowedTools"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "deferLoading"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "baseUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "agentCardPath"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sendCredentialsForAgentCard"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "userLocation"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "searchContextSize"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "file_search"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "azureAiSearch"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "customSearchConfiguration"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "browserAutomationPreview"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "openapi"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverLabel"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "connectorId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "projectConnectionId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "requireApproval"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverDescription"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "allowedTools"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "deferLoading"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "baseUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "agentCardPath"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sendCredentialsForAgentCard"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "userLocation"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "searchContextSize"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "filters": {
+                  "$ref": "#/definitions/fileSearchFilter"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "browser_automation_preview"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "browserAutomationPreview"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "azureAiSearch"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "customSearchConfiguration"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "vectorStoreIds"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "maxNumResults"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "rankingOptions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "filters"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "openapi"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverLabel"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "connectorId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "projectConnectionId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "requireApproval"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverDescription"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "allowedTools"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "deferLoading"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "baseUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "agentCardPath"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sendCredentialsForAgentCard"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "userLocation"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "searchContextSize"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "openapi"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "openapi"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "azureAiSearch"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "customSearchConfiguration"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "browserAutomationPreview"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "vectorStoreIds"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "maxNumResults"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "rankingOptions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "filters"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverLabel"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "connectorId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "projectConnectionId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "requireApproval"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverDescription"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "allowedTools"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "deferLoading"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "baseUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "agentCardPath"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sendCredentialsForAgentCard"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "userLocation"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "searchContextSize"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "toolbox_search_preview"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "azureAiSearch"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "customSearchConfiguration"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "browserAutomationPreview"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "vectorStoreIds"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "maxNumResults"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "rankingOptions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "filters"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "openapi"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverLabel"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "connectorId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "projectConnectionId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "requireApproval"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverDescription"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "allowedTools"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "deferLoading"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "baseUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "agentCardPath"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sendCredentialsForAgentCard"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "userLocation"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "searchContextSize"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "mcp"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "serverLabel"
+              ],
+              "anyOf": [
+                {
+                  "required": [
+                    "serverUrl"
+                  ]
+                },
+                {
+                  "required": [
+                    "connectorId"
+                  ]
+                }
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "azureAiSearch"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "customSearchConfiguration"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "browserAutomationPreview"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "vectorStoreIds"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "maxNumResults"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "rankingOptions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "filters"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "openapi"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "baseUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "agentCardPath"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sendCredentialsForAgentCard"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "userLocation"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "searchContextSize"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "a2a_preview"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "anyOf": [
+                {
+                  "required": [
+                    "projectConnectionId"
+                  ]
+                },
+                {
+                  "required": [
+                    "baseUrl"
+                  ]
+                }
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "azureAiSearch"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "customSearchConfiguration"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "browserAutomationPreview"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "vectorStoreIds"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "maxNumResults"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "rankingOptions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "filters"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "openapi"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverLabel"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "connectorId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "requireApproval"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverDescription"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "allowedTools"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "deferLoading"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "userLocation"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "searchContextSize"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "fabric_iq_preview"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "projectConnectionId"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "azureAiSearch"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "customSearchConfiguration"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "browserAutomationPreview"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "vectorStoreIds"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "maxNumResults"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "rankingOptions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "filters"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "openapi"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "connectorId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverDescription"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "allowedTools"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "deferLoading"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "baseUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "agentCardPath"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sendCredentialsForAgentCard"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "userLocation"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "searchContextSize"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "work_iq_preview"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "projectConnectionId"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "azureAiSearch"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "customSearchConfiguration"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "browserAutomationPreview"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "vectorStoreIds"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "maxNumResults"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "rankingOptions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "filters"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "openapi"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverLabel"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "connectorId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "requireApproval"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverDescription"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "allowedTools"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "deferLoading"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "baseUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "agentCardPath"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sendCredentialsForAgentCard"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "userLocation"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "searchContextSize"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "reminder_preview"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "azureAiSearch"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "customSearchConfiguration"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "browserAutomationPreview"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "container"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "vectorStoreIds"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "maxNumResults"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "rankingOptions"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "filters"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "openapi"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverLabel"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "connectorId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "projectConnectionId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "requireApproval"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "serverDescription"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "allowedTools"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "deferLoading"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "baseUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "agentCardPath"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sendCredentialsForAgentCard"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "userLocation"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "searchContextSize"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ]
       }
     },
     "skills": {
@@ -75,15 +2051,133 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name"],
+        "required": [
+          "name"
+        ],
         "properties": {
-          "name": { "type": "string", "minLength": 1 },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
           "version": {
             "type": "string",
             "description": "Optional skill version to pin (string). Omit to use the skill's default version."
           }
         }
       }
+    }
+  },
+  "definitions": {
+    "mcpToolFilter": {
+      "type": "object",
+      "description": "azure-ai-projects 2.3.0's MCPToolFilter: an allow-list of tool names and/or a read-only-only restriction.",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "toolNames": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "readOnly": {
+          "type": "boolean"
+        }
+      }
+    },
+    "comparisonFilter": {
+      "type": "object",
+      "description": "azure-ai-projects 2.3.0's ComparisonFilter: a single metadata comparison.",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "key",
+        "value"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "eq",
+            "ne",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "in",
+            "nin"
+          ]
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "compoundFilter": {
+      "type": "object",
+      "description": "azure-ai-projects 2.3.0's CompoundFilter: a boolean combination of nested filters.",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "filters"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "and",
+            "or"
+          ]
+        },
+        "filters": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/fileSearchFilter"
+          }
+        }
+      }
+    },
+    "fileSearchFilter": {
+      "description": "file_search `filters`: either a single comparison or a compound (and/or) tree of filters.",
+      "oneOf": [
+        {
+          "$ref": "#/definitions/comparisonFilter"
+        },
+        {
+          "$ref": "#/definitions/compoundFilter"
+        }
+      ]
     }
   }
 }
