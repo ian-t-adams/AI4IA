@@ -42,9 +42,43 @@ npm run build --if-present
 
 Package scripts currently resolve to `eslint .`, `vitest run`, and `next build`. Local dev uses `npm run dev`. Prefer `npm ci` over `npm install` when validating reproducibility.
 
+`app/web/Dockerfile`'s `FROM node:22-alpine` must track this same version
+deliberately (see the comment above that line). A Dependabot major-version bump
+to `node:26-alpine` was merged the same day `package.json`'s `engines.node` was
+widened to `>=22.0.0 <27` — but that widening only stopped the manifest
+contradicting the image; it was not evidence of an actual Node 26 requirement.
+No CI job exercised the built image at that Node version, and every runtime
+dependency (`next`, `typescript`, `vitest`) is satisfied by any Node 22.x.
+Reverted to `node:22-alpine` on audit; see the parallel Python incident below.
+
+`engines.node` is `>=22.13.0 <23`, not the wider `>=22.0.0`: the direct
+devDependencies `eslint@10.6.0` and `jsdom@29.1.1` both publish
+`engines.node: "^20.19.0 || ^22.13.0 || >=24"`, so Node 22.0.0–22.12.x
+satisfies a naive `>=22.0.0` floor but not their actual 22.x requirement.
+CI's `actions/setup-node@...` with `node-version: "22"` always resolves to
+the latest 22.x release (well above 22.13.0), so this has no CI/runtime
+impact today — it only makes the manifest's stated floor match what the
+declared dependencies actually require.
+
+`npm ci` also prints benign `npm warn ERESOLVE overriding peer dependency`
+warnings for `eslint-config-next`'s bundled `eslint-plugin-import` /
+`eslint-plugin-jsx-a11y` / `eslint-plugin-react` — their published peer ranges
+still cap at `eslint@^9`/`^9.7` as of this writing, and no compatible release
+exists yet. Install still exits 0, npm dedupes everything to the single
+`eslint@10.6.0` actually installed, and lint/test/build are unaffected. This is
+tracked upstream noise, not a local misconfiguration — do not downgrade eslint
+or add overrides to silence it.
+
 ### API (`app/api` plus repo-root catalog checks)
 
-CI uses Python 3.12. In `app/api` it installs:
+CI uses Python 3.12. `app/api/Dockerfile`'s `FROM python:3.12-slim` must track this
+same version deliberately (see the comment above that line) — a June 2026
+Dependabot major-version bump to `python:3.14-slim` went unreviewed for weeks
+(no CI job exercised the built image, and nothing else in the repo asserted the
+two stay in sync) before it was traced to azure-cosmos/aiohttp `DeprecationWarning`
+noise in production logs. `app/web`'s Node base drifted the same way (see the Web
+section above) — both are now pinned back to the CI-tested majors. In `app/api`
+it installs:
 
 ```powershell
 python -m pip install --upgrade pip
@@ -69,6 +103,26 @@ pytest -q
 
 This repo has `app/api/uv.lock`; if using `uv` locally, sync the dev extra and run the same tools through `uv run`, but treat the workflow commands above as authoritative.
 
+### Docker image builds
+
+`docker-build` actually builds (never pushes) the `app/web` and `app/api` container images on any PR/push touching `app/web/**` or `app/api/**`, so a broken/renamed base image tag or an install failure specific to the pinned Node/Python version fails CI instead of only surfacing at `azd deploy`. It is separate from `quality`'s `hadolint` job, which only lints Dockerfile syntax and never resolves an image or installs anything:
+
+```powershell
+docker buildx build --file app/web/Dockerfile --load app/web
+docker buildx build --file app/api/Dockerfile --load app/api
+docker run --rm <api-image> python -c "import ai4ia_api.main"
+```
+
+`proxy/Dockerfile` (vendored SimpleL7Proxy) is intentionally out of scope for `docker-build` to avoid touching the gateway build path; it is still linted by `quality`'s `hadolint` job and its binary is compiled/tested by `quality`'s `proxy-dotnet` job. azd owns the real build-and-push path at deploy time (see `azure.yaml`, `deploy.yml`).
+
+`docker-build`'s `dockerignore-context` job builds separate, throwaway probe images from `app/web/.dockerignore` and `app/api/.dockerignore` plus synthetic root- and nested-depth dotenv files to prove secrets are excluded from the Docker build context recursively (Docker's `.dockerignore` matching is not recursive by default the way Git's `.gitignore` is — a pattern needs an explicit `**/` prefix to match at every depth) while committed `.env.example` files still survive:
+
+```powershell
+python -m unittest scripts.tests.test_dockerignore_context
+```
+
+Both `.dockerignore` files use `**/.env*` / `!**/.env.example` for exactly this reason; do not narrow either back to an unanchored `.env*` without re-running this test.
+
 ### Infra, manifests, and operational quality
 
 `infra-validate` runs:
@@ -91,7 +145,9 @@ python scripts/validate-feature-prereqs.py
 bicep build infra/main.bicep --stdout > /dev/null
 ```
 
-`quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on `scripts`, hadolint on `app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile`, the proxy .NET build/auth tests, `python3 -m yamllint -c .yamllint .`, and a docs-catalog drift gate (`python scripts/gen-docs-catalog.py --check`) that keeps `site/data/docs.js` in sync with `site/data/docs.manifest.json`. `security-scan` runs Trivy filesystem/config scans and gitleaks.
+`infra-validate` installs a pinned standalone Bicep CLI release (`BICEP_VERSION` env var in the workflow, matching the `ACTIONLINT_VERSION`/`HADOLINT_VERSION` pattern used elsewhere — never `releases/latest`, for reproducibility). Locally, if you don't have the standalone `bicep` CLI but already have Azure CLI, `az bicep build --file infra/main.bicep --stdout` produces equivalent output.
+
+`quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on `scripts`, hadolint on `app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile`, the proxy .NET build/auth tests, `python3 -m yamllint -c .yamllint .`, a docs-catalog drift gate (`python scripts/gen-docs-catalog.py --check`) that keeps `site/data/docs.js` in sync with `site/data/docs.manifest.json`, and stdlib-only unit tests for operator scripts not already covered by `app-ci`/`infra-validate` (currently `python3 -m unittest scripts.tests.test_voice_live_canary`, covering `scripts/voice-live-canary.py`'s URL/redaction safety rules). `security-scan` runs Trivy filesystem/config scans and gitleaks.
 
 The vendored proxy plus AI4IA auth guard tests use .NET 10:
 
