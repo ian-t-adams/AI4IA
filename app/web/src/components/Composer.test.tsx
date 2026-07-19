@@ -221,6 +221,69 @@ describe("Composer", () => {
     expect(screen.queryByText("Voice settings")).toBeNull();
   });
 
+  // Regression: starting Voice Live could leave a user stuck in the chat with
+  // no way to stop it, because the button's disabled condition OR'd in
+  // saving/saveBlocked from a *previous* cycle regardless of whether the
+  // *current* cycle was actively connecting/live. Stop must always be
+  // reachable while active, no matter what a prior cycle's save state is.
+  it("keeps Stop enabled and correctly labeled while connecting even if a previous cycle's save is stuck", async () => {
+    const stop = vi.fn();
+    const { user } = setup({
+      voiceLive: {
+        active: true,
+        supported: true,
+        connecting: true,
+        ending: false,
+        saving: true,
+        saveBlocked: true,
+        retrying: false,
+        start: vi.fn(),
+        stop,
+      },
+    });
+    const button = screen.getByRole("button", { name: "Stop live voice conversation" });
+    expect(button).toBeEnabled();
+    await user.click(button);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps Stop enabled while live even if a previous cycle's save is stuck", async () => {
+    const stop = vi.fn();
+    setup({
+      voiceLive: {
+        active: true,
+        supported: true,
+        connecting: false,
+        ending: false,
+        saving: true,
+        saveBlocked: true,
+        retrying: false,
+        start: vi.fn(),
+        stop,
+      },
+    });
+    expect(screen.getByRole("button", { name: "Stop live voice conversation" })).toBeEnabled();
+  });
+
+  it("disables the mic action for a blocked/saving previous cycle only while not active", () => {
+    setup({
+      voiceLive: {
+        active: false,
+        supported: true,
+        connecting: false,
+        ending: false,
+        saving: false,
+        saveBlocked: true,
+        retrying: false,
+        start: vi.fn(),
+        stop: vi.fn(),
+      },
+    });
+    expect(
+      screen.getByRole("button", { name: "Retry saving the voice transcript below" }),
+    ).toBeDisabled();
+  });
+
   it("uploads multiple selected files sequentially", async () => {
       let releaseFirst!: () => void;
       const first = new Promise<void>((resolve) => {

@@ -110,6 +110,7 @@ function props(sessionId: string | null = "s1") {
     onParamsChange: vi.fn(),
     systemPrompt: "",
     onSystemPromptChange: vi.fn(),
+    onSystemPromptDraftChange: vi.fn(),
     draftDefaults,
     onDraftDefaultsChange: vi.fn(),
     onSessionUpdated: vi.fn(),

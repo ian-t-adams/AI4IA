@@ -182,6 +182,12 @@ button:disabled {
   font-size: 0.78rem;
 }
 
+.editable-session-title-text[aria-disabled="true"],
+.editable-session-title-trigger[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .editable-session-title.compact .editable-session-title-trigger {
   color: var(--sidebar-muted);
 }
@@ -232,7 +238,7 @@ button:disabled {
   line-height: 1.25;
 }
 
-.sidebar-utility-action:hover:not(:disabled),
+.sidebar-utility-action:hover:not(:disabled):not([aria-disabled="true"]),
 .sidebar-utility-action:focus-visible {
   background: rgba(255, 255, 255, 0.1);
 }

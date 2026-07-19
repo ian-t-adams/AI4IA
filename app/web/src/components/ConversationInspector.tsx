@@ -98,6 +98,7 @@ export function ConversationInspector({
   onParamsChange,
   systemPrompt,
   onSystemPromptChange,
+  onSystemPromptDraftChange,
   draftDefaults,
   onDraftDefaultsChange,
   onSessionUpdated,
@@ -118,6 +119,7 @@ export function ConversationInspector({
   onParamsChange: (params: ChatParams) => void;
   systemPrompt: string;
   onSystemPromptChange: (value: string) => void;
+  onSystemPromptDraftChange: () => void;
   draftDefaults: ConversationDraftDefaults;
   onDraftDefaultsChange: (value: ConversationDraftDefaults) => void;
   onSessionUpdated: (session: Session) => void;
@@ -622,7 +624,10 @@ export function ConversationInspector({
                   rows={8}
                   value={promptDraft}
                   placeholder="Optional conversation instructions"
-                  onChange={(event) => setPromptDraft(event.target.value)}
+                  onChange={(event) => {
+                    setPromptDraft(event.target.value);
+                    onSystemPromptDraftChange();
+                  }}
                 />
                 <div className="inspector-actions">
                   <button
