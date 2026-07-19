@@ -46,6 +46,7 @@ from .library.factory import build_document_library
 from .library.ingest_factory import build_document_ingestor, build_document_retrieval
 from .library.compute_factory import build_document_compute
 from .memory.factory import build_memory_service
+from .memory.mem0_service import MemoryEraseUnsupportedError
 from .logging_setup import (
     annotate_current_span,
     configure_logging,
@@ -485,6 +486,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def _session_not_found(_request: Request, _exc: SessionNotFoundError):
         return error_response(
             status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+        )
+
+    # mem0's destructive paths fail closed rather than perform an unverifiable
+    # partial delete. This is an intrinsic backend limitation, not a transient
+    # outage, so report 501 and leave every record/manifest retryable.
+    @app.exception_handler(MemoryEraseUnsupportedError)
+    async def _memory_erase_unsupported(
+        _request: Request, _exc: MemoryEraseUnsupportedError
+    ):
+        logger.warning("Memory erase unsupported by configured backend")
+        return error_response(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Memory deletion is not supported by the configured memory backend",
+            code="memory_deletion_unsupported",
         )
 
     # Map unhandled Azure data-plane failures (Cosmos/Blob connectivity, throttling,

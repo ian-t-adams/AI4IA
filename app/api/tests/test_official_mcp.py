@@ -17,6 +17,7 @@ network or live server:
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -373,6 +374,69 @@ async def test_official_plane_wins_name_collision():
     _ep, _t, _a, auth = off_conn.tool_calls[0]
     assert auth.mode is McpAuthMode.apim_subscription and auth.secret == "APIM-KEY"
     assert tool_alias("dup", "go") in ctx.approvals  # trusted official tool is auto-approved
+
+
+async def test_quarantined_official_does_not_auto_approve_byo_collision():
+    official = _byo_server("dup", trusted=True, tools=[_tool("go")])
+    official.quarantinedUntil = datetime.now(timezone.utc) + timedelta(minutes=5)
+    official.consecutiveFailures = 3
+    byo = _byo_server("dup", trusted=False, tools=[_tool("go")])
+
+    built = build_mcp_turn_tools_multi(
+        planes=[
+            McpPlane(
+                servers=[official],
+                secrets=_Secrets(),
+                connector=FakeMcpConnector(),
+                plane_id="official",
+            ),
+            McpPlane(
+                servers=[byo],
+                secrets=_Secrets(),
+                connector=FakeMcpConnector(),
+            ),
+        ],
+        attached_tool_names=["mcp:dup/go"],
+    )
+
+    assert built is not None
+    _registry, executor, ctx = built
+    byo_alias = tool_alias("dup", "go")
+    official_alias = tool_alias("dup", "go", plane="official")
+    assert executor.get(byo_alias) is not None
+    assert executor.get(official_alias) is None
+    assert byo_alias not in ctx.approvals
+    assert ctx.tool_aliases == {"mcp:dup/go": byo_alias}
+
+
+def test_duplicate_named_plane_is_rejected_without_merging_approvals():
+    first = _byo_server("first", trusted=False, tools=[_tool("go")])
+    second = _byo_server("second", trusted=True, tools=[_tool("go")])
+    built = build_mcp_turn_tools_multi(
+        planes=[
+            McpPlane(
+                servers=[first],
+                secrets=_Secrets(),
+                connector=FakeMcpConnector(),
+                plane_id="official",
+            ),
+            McpPlane(
+                servers=[second],
+                secrets=_Secrets(),
+                connector=FakeMcpConnector(),
+                plane_id="official",
+            ),
+        ],
+        attached_tool_names=["mcp:first/go", "mcp:second/go"],
+    )
+
+    assert built is not None
+    _registry, executor, ctx = built
+    first_alias = tool_alias("first", "go", plane="official")
+    second_alias = tool_alias("second", "go", plane="official")
+    assert executor.get(first_alias) is not None
+    assert executor.get(second_alias) is None
+    assert second_alias not in ctx.approvals
 
 
 async def test_multi_plane_unions_distinct_tools_and_approvals():

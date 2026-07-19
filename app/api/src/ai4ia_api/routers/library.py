@@ -33,6 +33,7 @@ from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..entitlements.service import EntitlementService
 from ..logging_setup import emit_custom_event
+from ..memory.mem0_service import MemoryEraseUnsupportedError
 from ..memory.telemetry import emit_memory_operation
 from ..content_understanding.models import is_valid_analyzer_id
 from ..library.access import (
@@ -594,10 +595,16 @@ async def delete_document(
     # best-effort blob/chunk purge below (recall is user-visible; a missing
     # blob/index entry is not). Mirrors the explicit 11E-3 forget endpoint
     # (memory.forget_document), which surfaces the same failures as 502.
+    # A backend that cannot verify document-scoped hard deletion raises before
+    # mutating anything. Keep the manifest/blob intact so the owner retains a
+    # retryable handle instead of leaving orphaned, recallable memory.
     memory = getattr(request.app.state, "memory", None)
     if memory is not None and getattr(memory, "enabled", False):
         try:
             forgotten = await memory.forget_document(uid, document_id)
+        except MemoryEraseUnsupportedError:
+            # The global handler maps this intrinsic limitation to 501.
+            raise
         except Exception:  # noqa: BLE001 - surface so the delete stays retryable
             logger.warning(
                 "delete-cascaded memory-forget failed user=%s id=%s; aborting "
@@ -699,6 +706,10 @@ async def save_document_to_memory(
     and ``ready``-status-gated, mirroring the read/delete gates. Memory failures
     surface (502) because the user explicitly asked to save.
 
+    A backend that cannot verify the idempotent pre-delete fails before adding
+    replacement memories. For mem0 this is surfaced as 501 via
+    :class:`~ai4ia_api.memory.mem0_service.MemoryEraseUnsupportedError`.
+
     RESIDUAL GAP (not fixed here): this reads the document, then writes to
     memory; it does not re-check that the document hasn't been deleted (and
     its memories forgotten by :func:`delete_document`) in between. A save
@@ -750,6 +761,9 @@ async def save_document_to_memory(
         saved = await memory.remember_document(
             uid, items=items, session_id=None, document_id=document_id
         )
+    except MemoryEraseUnsupportedError:
+        # Preserve the typed 501 mapping rather than implying a transient 502.
+        raise
     except Exception:  # noqa: BLE001 - surface a transient memory failure, don't 500
         logger.warning(
             "save-to-memory failed user=%s id=%s", uid, document_id, exc_info=True
@@ -780,9 +794,11 @@ async def forget_document_from_memory(
     memories intact. Flag-gated by the library (404 when document understanding
     is off) and by memory (409 when memory is disabled); owner-only. Unlike save
     there is no ``ready``-status gate — a document whose memories were saved
-    earlier can be forgotten regardless of its current status. Idempotent: a
-    document with nothing saved forgets ``0``. Memory failures surface (502)
-    because the user explicitly asked to forget."""
+    earlier can be forgotten regardless of its current status. Memory failures
+    surface (502) because the user explicitly asked to forget.
+
+    A backend that cannot verify document-scoped hard deletion fails before
+    mutation; mem0 surfaces that intrinsic limitation as 501."""
     started = time.monotonic()
     repo = _library(request)
     uid = user.internal_user_id
@@ -805,6 +821,9 @@ async def forget_document_from_memory(
 
     try:
         forgotten = await memory.forget_document(uid, document_id)
+    except MemoryEraseUnsupportedError:
+        # Preserve the typed 501 mapping rather than implying a transient 502.
+        raise
     except Exception:  # noqa: BLE001 - surface a transient memory failure, don't 500
         logger.warning(
             "forget-from-memory failed user=%s id=%s", uid, document_id, exc_info=True
@@ -992,28 +1011,61 @@ async def revoke_document_share(
     document returns a generic 404."""
     repo = _library(request)
     uid = user.internal_user_id
-    try:
-        doc = await repo.get_document(uid, document_id)
-    except DocumentNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    if not require_owner(uid, doc):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-
     principal = normalize_principal(email)
-    if principal and principal in doc.acl:
-        doc.acl = [e for e in doc.acl if e != principal]
+    if not principal:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="A grantee email is required.",
+        )
+
+    # Always perform an ETag-conditional replace, even when the first snapshot
+    # does not contain the grantee. Returning that stale snapshot as success
+    # could race with a concurrent grant. Conflicts are reloaded and retried;
+    # after the accepted write, re-read and verify the current ACL is absent.
+    for _attempt in range(3):
+        try:
+            doc = await repo.get_document(uid, document_id)
+        except DocumentNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+            )
+        if not require_owner(uid, doc):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+            )
+
+        was_present = principal in doc.acl
+        if was_present:
+            doc.acl = [entry for entry in doc.acl if entry != principal]
         doc.touch()
         try:
-            doc = await repo.update_document(doc)
+            await repo.update_document(doc)
         except DocumentNotFoundError:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-        except DocumentConflictError:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Document changed concurrently; reload and try again.",
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
             )
-        logger.info("share-revoke user=%s id=%s", uid, document_id)
-    return ShareState.of(doc)
+        except DocumentConflictError:
+            continue
+
+        try:
+            current = await repo.get_document(uid, document_id)
+        except DocumentNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+            )
+        if not require_owner(uid, current):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+            )
+        if principal not in current.acl:
+            if was_present:
+                logger.info("share-revoke user=%s id=%s", uid, document_id)
+            return ShareState.of(current)
+
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Document changed concurrently; reload and try again.",
+    )
 
 
 # --- annotations ---

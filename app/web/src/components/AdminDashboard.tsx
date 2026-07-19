@@ -495,8 +495,15 @@ function ResourcePanels({ panels }: { panels: ResourcePanel[] }) {
                   <li key={m.name} style={{ display: "flex", justifyContent: "space-between", fontSize: "0.85em", padding: "2px 0" }}>
                     <span style={muted}>{m.label}</span>
                     {m.error ? (
-                      <span style={{ color: "var(--danger)" }} title={m.error}>
-                        Unavailable
+                      <span
+                        style={{ color: "var(--danger)" }}
+                        title={
+                          m.errorCode
+                            ? `${m.errorCode}${m.errorMessage ? `: ${m.errorMessage}` : ""}`
+                            : m.error
+                        }
+                      >
+                        Unavailable{m.errorCode ? ` (${m.errorCode})` : ""}
                       </span>
                     ) : (
                       <span>

@@ -237,6 +237,8 @@ describe("AdminDashboard new analytics panels", () => {
               aggregation: "count",
               value: null,
               error: "metric query failed (BadRequest)",
+              errorCode: "BadRequest",
+              errorMessage: "Aggregation is unsupported.",
             },
           ],
         },
@@ -254,9 +256,12 @@ describe("AdminDashboard new analytics panels", () => {
     // The failed metric is marked unavailable inline (never a bare "—"
     // indistinguishable from legitimate no-data yet), and its safe reason is
     // only in the tooltip, never rendered as visible body text.
-    const unavailableLabel = within(panel).getByText("Unavailable");
+    const unavailableLabel = within(panel).getByText("Unavailable (BadRequest)");
     expect(unavailableLabel).toHaveStyle({ color: "var(--danger)" });
-    expect(unavailableLabel).toHaveAttribute("title", "metric query failed (BadRequest)");
+    expect(unavailableLabel).toHaveAttribute(
+      "title",
+      "BadRequest: Aggregation is unsupported.",
+    );
 
     // The panel-level partial note surfaces the safe, human-readable detail.
     expect(within(panel).getByText(/^Partial/)).toBeInTheDocument();

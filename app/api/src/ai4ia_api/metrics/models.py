@@ -37,6 +37,11 @@ class MetricPoint(BaseModel):
     # value and legitimate no-data-yet: callers must not conflate "nothing
     # happened" with "something broke".
     error: str | None = None
+    # Azure Monitor may return HTTP 200 while one metric carries its own
+    # errorCode/errorMessage. Preserve those fields separately so admin clients
+    # can distinguish a service rejection from legitimate no-data.
+    errorCode: str | None = None
+    errorMessage: str | None = None
 
 
 class ResourcePanel(BaseModel):

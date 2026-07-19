@@ -23,6 +23,7 @@ from ai4ia_api.agents.mcp_servers import (
     UserMcpServerCreate,
     UserMcpServerUpdate,
     discovered_tool_to_spec,
+    is_valid_remote_tool_name,
     namespaced_tool_name,
     tool_alias,
 )
@@ -89,6 +90,7 @@ def test_tool_alias_differs_for_same_tool_on_different_servers():
         ("weather", "Get.The Forecast/Now"),  # dots, spaces, slashes: not control chars
         ("weather", "获取天气"),  # unicode
         ("weather", "a" * 500),  # pathological length
+        ("weather", "\ud800"),  # aliases stay safe even for rejected legacy data
         ("my-server.v2", "tool"),
         ("s", ""),  # degenerate empty tool name
     ],
@@ -113,6 +115,29 @@ def test_tool_alias_never_contains_raw_tool_name_content():
     from ai4ia_api.agents.tools import is_safe_tool_name
 
     assert is_safe_tool_name(alias)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        "   ",
+        "bad\nname",
+        "bad\u200bformat",
+        "\ud800",
+        "x" * 129,
+    ],
+)
+def test_invalid_remote_tool_names_are_rejected(name):
+    assert not is_valid_remote_tool_name(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["weather.get", "namespace/tool", "获取天气", " tool with spaces "],
+)
+def test_valid_remote_tool_names_are_preserved(name):
+    assert is_valid_remote_tool_name(name)
 
 
 def test_discovered_tool_to_spec_untrusted_requires_approval():
@@ -443,7 +468,7 @@ async def test_test_connection_failure_records_last_error():
     with pytest.raises(McpConnectionError):
         await svc.test("u1", "weather")
     stored = await svc.get("u1", "weather")
-    assert stored.lastError == "down"
+    assert stored.lastError == "connection_error"
 
 
 
@@ -523,7 +548,7 @@ async def test_record_health_failure_persists_and_quarantines():
     stored = await svc.get("u1", "weather")
     assert stored.consecutiveFailures == QUARANTINE_THRESHOLD
     assert is_quarantined(stored) is True
-    assert stored.lastHealthError and "connection refused" in stored.lastHealthError
+    assert stored.lastHealthError == "execution_error"
 
 
 async def test_record_health_healthy_is_write_free():

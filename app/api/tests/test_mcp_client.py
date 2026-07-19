@@ -19,6 +19,7 @@ from ai4ia_api.agents.mcp_client import (
     _PinnedHttpsTransport,
 )
 from ai4ia_api.agents.mcp_servers import (
+    MAX_TOOL_NAME_LEN,
     MAX_TOOLS_PER_SERVER,
     McpAuthMode,
     McpConnectionError,
@@ -229,6 +230,28 @@ async def test_discover_keeps_tool_names_with_dots_slashes_and_unicode():
         "获取天气",
         "get forecast",
     ]
+    assert [t.raw_name for t in discovered] == [t.name for t in discovered]
+
+
+def test_parse_tools_preserves_exact_raw_and_drops_each_invalid_name():
+    accepted = "  weather.get/forecast 获取  "
+    payload = _tools_result(
+        [
+            {"name": "good"},
+            {"name": "bad\nname"},
+            {"name": "bad\u200bformat"},
+            {"name": "\ud800"},
+            {"name": "x" * (MAX_TOOL_NAME_LEN + 1)},
+            {"name": accepted},
+            {"name": "good"},  # duplicate is rejected, not overwritten
+        ]
+    )
+
+    tools = HttpxMcpConnector._parse_tools(payload)
+
+    assert [tool.name for tool in tools] == ["good", accepted]
+    assert tools[1].rawName == accepted
+    assert tools[1].raw_name == accepted
 
 
 async def test_malformed_tools_result_raises():

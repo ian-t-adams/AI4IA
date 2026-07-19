@@ -119,23 +119,33 @@ def _safe_metric_error_reason(error_code: str) -> str:
     return f"metric query failed ({error_code})"
 
 
-def _extract_metric_errors(raw_response: object) -> list[tuple[str, str]]:
+def _safe_metric_error_message(value: object) -> str | None:
+    """Normalize and bound Azure's per-metric error message for admin output."""
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    if not text:
+        return None
+    return text[:512]
+
+
+def _extract_metric_errors(
+    raw_response: object,
+) -> list[tuple[str, str, str | None]]:
     """Pull each metric's own ``errorCode``/``errorMessage`` out of the raw,
     fully-typed ``MetricResultsResponse`` captured via the ``cls`` callback
     in :meth:`AzureMonitorQuerier.query` (see the module docstring).
 
-    Returns ``(metric_name, safe_reason)`` pairs only for metrics whose own
-    query failed (``errorCode`` present and not ``"Success"``) even though
-    the overall HTTP call succeeded. Tolerates a missing/empty/unexpected
-    shape by returning no errors rather than raising -- this is a
-    best-effort secondary signal, never a replacement for the primary value
-    extraction or the whole-request failure handling.
+    Returns ``(metric_name, error_code, bounded_error_message)`` tuples only
+    for metrics whose own query failed even though the overall HTTP call
+    succeeded. Tolerates a missing/empty/unexpected shape by returning no
+    errors rather than raising.
     """
     values = getattr(raw_response, "values_property", None) or []
     if not values:
         return []
     metrics = getattr(values[0], "value", None) or []
-    errors: list[tuple[str, str]] = []
+    errors: list[tuple[str, str, str | None]] = []
     for metric in metrics:
         code = getattr(metric, "error_code", None)
         if not code or code == "Success":
@@ -144,7 +154,13 @@ def _extract_metric_errors(raw_response: object) -> list[tuple[str, str]]:
         name = getattr(name_obj, "value", name_obj)
         if not name:
             continue
-        errors.append((str(name), _safe_metric_error_reason(code)))
+        errors.append(
+            (
+                str(name),
+                str(code),
+                _safe_metric_error_message(getattr(metric, "error_message", None)),
+            )
+        )
     return errors
 
 
@@ -168,7 +184,6 @@ class AzureMonitorQuerier:
         window_minutes: int,
         granularity_minutes: int,
     ) -> list[MetricPoint]:
-        from azure.core.exceptions import HttpResponseError
         from azure.monitor.querymetrics import MetricAggregationType
 
         agg_map = {
@@ -211,7 +226,7 @@ class AzureMonitorQuerier:
         # query failed (see the module docstring); captured per-metric via
         # the `cls` callback below, keyed the same way as `resolved` so it
         # never gets confused with a different aggregation of the same name.
-        metric_errors: dict[tuple[str, str], str] = {}
+        metric_errors: dict[tuple[str, str], tuple[str, str | None]] = {}
         for aggregation, group_requests in groups.items():
             raw_capture: dict[str, object] = {}
 
@@ -229,30 +244,48 @@ class AzureMonitorQuerier:
                     aggregations=[agg_map[aggregation]],
                     cls=_capture_raw,
                 )
-            except HttpResponseError as exc:
+            except Exception as exc:  # one transport/service failure must not discard siblings
                 group_errors[aggregation] = _safe_error_reason(exc)
                 continue
             metrics = results[0].metrics if results else []
             for metric in metrics:
                 resolved[(str(metric.name), aggregation)] = metric
-            for name, reason in _extract_metric_errors(raw_capture.get("value")):
-                metric_errors[(name, aggregation)] = reason
+            for name, code, message in _extract_metric_errors(
+                raw_capture.get("value")
+            ):
+                metric_errors[(name, aggregation)] = (code, message)
 
-        return [
-            self._resolve(
-                req,
-                resolved.get((req.name, req.aggregation)),
-                metric_errors.get((req.name, req.aggregation))
-                or group_errors.get(req.aggregation),
+        points: list[MetricPoint] = []
+        for req in requests:
+            metric_error = metric_errors.get((req.name, req.aggregation))
+            group_error = group_errors.get(req.aggregation)
+            points.append(
+                self._resolve(
+                    req,
+                    resolved.get((req.name, req.aggregation)),
+                    (
+                        _safe_metric_error_reason(metric_error[0])
+                        if metric_error
+                        else group_error
+                    ),
+                    error_code=metric_error[0] if metric_error else None,
+                    error_message=metric_error[1] if metric_error else None,
+                )
             )
-            for req in requests
-        ]
+        return points
 
     @staticmethod
-    def _resolve(req: MetricRequest, metric, error: str | None = None) -> MetricPoint:
+    def _resolve(
+        req: MetricRequest,
+        metric,
+        error: str | None = None,
+        *,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> MetricPoint:
         value: float | None = None
         unit = req.unit
-        if metric is not None:
+        if metric is not None and error is None:
             if getattr(metric, "unit", None):
                 unit = str(metric.unit)
             series = getattr(metric, "timeseries", None) or []
@@ -272,7 +305,9 @@ class AzureMonitorQuerier:
             aggregation=req.aggregation,
             value=value,
             unit=unit,
-            error=error if value is None else None,
+            error=error,
+            errorCode=error_code,
+            errorMessage=error_message,
         )
 
     async def close(self) -> None:

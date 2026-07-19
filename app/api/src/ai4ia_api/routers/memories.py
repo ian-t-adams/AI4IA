@@ -54,7 +54,9 @@ async def list_memories(
     emit_memory_operation("list", "ok", "api", started, count=len(records))
     return MemoryListResponse(
         status="ok",
-        supportsDelete=hasattr(memory, "delete_memory"),
+        supportsDelete=bool(
+            getattr(memory, "supports_delete", hasattr(memory, "delete_memory"))
+        ),
         items=[
             MemoryItem(
                 id=record.id,

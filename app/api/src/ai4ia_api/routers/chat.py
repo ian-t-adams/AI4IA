@@ -1379,6 +1379,7 @@ async def chat(
                             servers=official_servers,
                             secrets=official_mcp_service,
                             connector=official_mcp_service.connector,
+                            plane_id="official",
                             resolver=official_mcp_service.resolver,
                             health=official_mcp_service,
                         )

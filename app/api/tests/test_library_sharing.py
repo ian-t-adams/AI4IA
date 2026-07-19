@@ -349,3 +349,47 @@ def test_revoke_share_document_modified_concurrently_is_409(client):
     )
     resp = client.delete(f"/api/library/documents/{doc.id}/shares/bob@example.com")
     assert resp.status_code == 409
+
+
+class _MissingReadRacesGrantRepo:
+    """First revoke read omits the grantee, then a concurrent grant lands."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._raced = False
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def get_document(self, user_id, document_id):
+        snapshot = await self._inner.get_document(user_id, document_id)
+        if not self._raced:
+            self._raced = True
+            current = await self._inner.get_document(user_id, document_id)
+            current.visibility = Visibility.shared
+            current.acl = [*current.acl, "bob@example.com"]
+            await self._inner.update_document(current)
+        return snapshot
+
+
+def test_revoke_retries_stale_missing_grantee_and_verifies_absence(client):
+    owner = _uid(client)
+    doc = _seed(
+        client,
+        userId=owner,
+        filename="race.pdf",
+        visibility=Visibility.shared,
+        acl=[],
+    )
+    inner = client.app.state.document_library
+    client.app.state.document_library = _MissingReadRacesGrantRepo(inner)
+
+    resp = client.delete(
+        f"/api/library/documents/{doc.id}/shares/bob@example.com"
+    )
+
+    assert resp.status_code == 200
+    assert "bob@example.com" not in resp.json()["grantees"]
+    current = client.get(f"/api/library/documents/{doc.id}/shares")
+    assert current.status_code == 200
+    assert "bob@example.com" not in current.json()["grantees"]

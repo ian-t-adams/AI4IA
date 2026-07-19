@@ -128,7 +128,8 @@ async def run_agent_turn(
     a structured tool result rather than crashing the turn.
     """
     convo: list[dict[str, Any]] = [dict(m) for m in messages]
-    real_schema = executor.schema_for(tool_names, registry=registry, ctx=ctx)
+    resolved_tool_names = [ctx.tool_aliases.get(name, name) for name in tool_names]
+    real_schema = executor.schema_for(resolved_tool_names, registry=registry, ctx=ctx)
     handlers: dict[str, Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]] = (
         dict(extra_handlers) if extra_handlers else {}
     )

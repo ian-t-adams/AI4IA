@@ -496,6 +496,56 @@ async def test_one_failing_aggregation_group_keeps_other_groups_data_and_reports
     assert "DocumentDB" not in failed.error
 
 
+async def test_transport_failure_isolated_to_its_aggregation_group():
+    """A non-HTTP SDK/transport exception must not discard successful groups."""
+    from azure.monitor.querymetrics import MetricAggregationType
+
+    requests = list(next(s for s in PANEL_SPECS if s.key == "containerApp").metrics)
+    client = _PartiallyFailingClient(
+        results_by_aggregation={
+            MetricAggregationType.TOTAL: [
+                _FakeResourceResult(
+                    metrics=[
+                        _FakeMetric(
+                            name="Requests",
+                            timeseries=[
+                                _FakeTimeSeries(data=[_FakeDataPoint(total=8.0)])
+                            ],
+                        ),
+                        _FakeMetric(
+                            name="RestartCount",
+                            timeseries=[
+                                _FakeTimeSeries(data=[_FakeDataPoint(total=1.0)])
+                            ],
+                        ),
+                    ]
+                )
+            ]
+        },
+        failing_aggregations={
+            MetricAggregationType.AVERAGE: RuntimeError(
+                "socket detail must not surface"
+            )
+        },
+    )
+
+    points = await _querier_with(client).query(
+        "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/containerApps/a",
+        requests,
+        window_minutes=60,
+        granularity_minutes=5,
+    )
+
+    by_name = {point.name: point for point in points}
+    assert by_name["Requests"].value == 8.0
+    assert by_name["RestartCount"].value == 1.0
+    assert by_name["ResponseTime"].error == "query failed"
+    assert by_name["Replicas"].error == "query failed"
+    assert all(
+        "socket detail" not in (point.error or "") for point in points
+    )
+
+
 def test_extract_metric_errors_ignores_success_and_tolerates_missing_shape():
     """Direct unit coverage for the ``cls``-callback error-extraction helper:
     Azure's documented ``errorCode="Success"`` (and no error code at all)
@@ -536,7 +586,9 @@ def test_extract_metric_errors_ignores_success_and_tolerates_missing_shape():
             )
         ]
     )
-    assert _extract_metric_errors(failing) == [("Baz", "metric query failed (BadRequest)")]
+    assert _extract_metric_errors(failing) == [
+        ("Baz", "BadRequest", "leaky detail that must never surface")
+    ]
 
 
 async def test_metric_own_errorcode_recovered_via_cls_callback_even_on_http_200():
@@ -550,8 +602,8 @@ async def test_metric_own_errorcode_recovered_via_cls_callback_even_on_http_200(
     only see an indistinguishable ``value=None`` alongside legitimate
     no-data-yet. Pins that ``AzureMonitorQuerier`` recovers the per-metric
     error via the raw response captured through the ``cls`` callback: the
-    failing metric resolves to ``value=None`` with a short, safe reason
-    (never the raw ``errorMessage``, which can echo request details back),
+    failing metric resolves to ``value=None`` with a short, safe summary while
+    preserving Azure's separate ``errorCode``/``errorMessage`` fields,
     a healthy sibling metric in the *same* aggregation group resolves
     normally and unaffected, and a wholly separate, wholly successful
     aggregation group in the same panel is unaffected too."""
@@ -596,8 +648,7 @@ async def test_metric_own_errorcode_recovered_via_cls_callback_even_on_http_200(
     # the real internal model's shape (``values_property`` -> one entry per
     # requested resource -> ``.value`` -> list of metrics, each with
     # ``.name.value`` and ``.error_code``/``.error_message``). RestartCount's
-    # ``errorMessage`` deliberately embeds request-identifying text a safe
-    # reason must never surface.
+    # ``errorMessage`` is preserved separately from the safe summary.
     raw_total = SimpleNamespace(
         values_property=[
             SimpleNamespace(
@@ -634,13 +685,16 @@ async def test_metric_own_errorcode_recovered_via_cls_callback_even_on_http_200(
     )
 
     by_name = {p.name: p for p in points}
-    # The metric whose own query failed resolves to a null value with a
-    # short, safe reason -- never the raw, request-echoing errorMessage.
+    # The metric whose own query failed resolves to a null value with a short,
+    # safe summary and preserves Azure's supported per-metric error fields.
     restart_count = by_name["RestartCount"]
     assert restart_count.value is None
     assert restart_count.error == "metric query failed (BadRequest)"
-    assert "prod-secret-tenant" not in restart_count.error
-    assert "filter" not in restart_count.error
+    assert restart_count.errorCode == "BadRequest"
+    assert (
+        restart_count.errorMessage
+        == "filter 'env eq prod-secret-tenant' invalid for RestartCount"
+    )
     # A healthy sibling metric in the *same* aggregation group is unaffected.
     assert by_name["Requests"].value == 10.0
     assert by_name["Requests"].error is None

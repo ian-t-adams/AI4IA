@@ -11,8 +11,10 @@ Key behaviors / design notes:
   creates its table in ``__init__``, and the LLM/embedder clients are sync. The
   whole ``mem0`` object is therefore built once, under a lock, inside
   ``asyncio.to_thread`` (``warmup`` or first use), mirroring the custom store's
-  lazy ``ensure_ready``. A build failure degrades to "no memory" and is retried
-  on the next call (``forget`` is the exception — it surfaces failures).
+  lazy ``ensure_ready``. A build failure degrades to "no memory" for
+  ``recall``/``remember`` and is retried on the next call. The destructive
+  ``forget_*`` paths never reach this build at all -- see "No verified
+  hard-delete" below.
 
 - **Non-blocking calls, bounded.** ``AsyncMemory`` runs its sync providers via
   ``asyncio.to_thread``. We wrap each call in a timeout (so a slow gateway can't
@@ -21,20 +23,37 @@ Key behaviors / design notes:
   concurrency can cause "database is locked").
 
 - **Scoping policy.** ``remember`` maps ``session_id -> run_id`` so recall is
-  user-global (memories span sessions) while ``forget_session`` can target one
-  session. A memory written with ``session_id=None`` is user-scoped only and is
-  not removable by ``forget_session`` (by construction).
+  user-global (memories span sessions) while ``forget_session`` is *scoped* to
+  one session by design (see "No verified hard-delete" below for why it
+  currently fails closed rather than acting on that scope). A memory written
+  with ``session_id=None`` is user-scoped only and would not be removable by
+  ``forget_session`` (by construction) if forgetting were supported.
 
 - **Scoping asymmetry.** ``mem0`` takes ``user_id``/``run_id`` as top-level
   kwargs on ``add`` but requires a ``filters`` dict on ``search``/``get_all``
   (top-level entity kwargs are rejected). Handled here.
 
-- **No ``delete_all``.** mem0's own ``AsyncMemory.delete_all`` lists matches
-  via the vector store's default page size (100 for pgvector, not our
-  ``_FORGET_LIST_CAP``) and swallows per-id delete failures, unconditionally
-  reporting success. Every erase path here instead lists-then-deletes by id
-  itself, with failures propagating naturally -- see ``_forget_by_filter``
-  and ``_forget_document``.
+- **No verified hard-delete.** mem0's own ``AsyncMemory.delete_all`` lists
+  matches via the vector store's default page size (100 for pgvector, not a
+  cap we control) and swallows per-id delete failures, unconditionally
+  reporting success. An earlier revision of this module replaced that with
+  application-level list-then-delete-by-id, re-querying until the scope
+  converged to empty. That approach was reverted (round 11 acceptance):
+  mem0 2.0.12 (pinned) also keeps a full plaintext copy of every added/
+  updated/deleted memory in its own ``history`` store (see
+  ``history_db_path`` below) that vector-store deletion never touches, and
+  provides no cross-replica write fencing, so a multi-pass scan-then-delete
+  can only ever observe *this* replica's view between passes -- a concurrent
+  write landing in the same scope from another replica during the scan is
+  indistinguishable from "no progress" or a spurious "converged to empty".
+  Neither gap can be closed by more application-level scanning, so every
+  destructive operation (single-memory delete, ``forget_user``/
+  ``forget_session``/``forget_document``, and the idempotent pre-delete
+  inside ``remember_document``) now fails closed with
+  :class:`MemoryEraseUnsupportedError` *before* touching mem0 at all, rather
+  than reporting a possibly-partial or falsely-successful erase. This is
+  scoped to mem0's own destructive-delete surface; it does not affect
+  recall/remember (best-effort, unchanged) or any other memory backend.
 
 ``mem0`` is imported lazily (only when the backend is built) so the app and
 tests run without it; tests inject a fake ``AsyncMemory`` via the ``factory``.
@@ -47,7 +66,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, NoReturn
 
 from .formatting import format_memory_context
 from .models import MemoryRecord
@@ -55,48 +74,48 @@ from .telemetry import emit_memory_operation
 
 logger = logging.getLogger(__name__)
 
-# Upper bound on how many memories we enumerate to report a forget() count.
-# delete_all() itself returns no count, so we list-then-delete; a generous cap
-# keeps the reported number honest at personal/demo scale without unbounded IO.
+# Upper bound on how many memories a single get_all() listing returns.
+# Only list_memories() uses this now -- the forget_* paths below fail closed
+# without listing anything at all; see MemoryEraseUnsupportedError.
 _FORGET_LIST_CAP = 1000
 
-# Bounded escape hatch for _forget_by_filter's re-query loop below. One pass
-# already covers up to _FORGET_LIST_CAP memories, so this only matters for a
-# scope larger than that (rare) or if writes keep landing in the same scope
-# concurrently with the forget (rarer still) -- either way, an unbounded loop
-# is not acceptable, so it fails closed once this many passes haven't reached
-# an empty listing.
-_FORGET_MAX_PASSES = 20
 
+class MemoryEraseUnsupportedError(RuntimeError):
+    """Raised instead of performing any mem0 destructive mutation.
 
-class MemoryScanIncompleteError(RuntimeError):
-    """Raised when a forget/erase operation cannot verify it saw (and removed)
-    every matching memory, so it aborts rather than reporting a possibly-
-    partial "N forgotten" count.
+    The API layer maps this intrinsic backend limitation to ``501 Not
+    Implemented`` and leaves existing records untouched.
 
-    Two call sites raise this:
+    mem0 2.0.12 (pinned) cannot honestly satisfy hard-forget semantics, for
+    two independent reasons that no amount of application-level
+    list-then-delete logic can close:
 
-    - ``_forget_document`` (single pass): mem0's ``get_all`` accepts arbitrary
-      custom filter keys (not just the built-in ``user_id``/``agent_id``/
-      ``run_id``) that its pgvector-backed store translates into an
-      exact-match payload condition, so a document-scoped listing pins both
-      ``user_id`` *and* our custom ``document_id`` metadata key server-side --
-      this is not a whole-user scan. There is still no pagination cursor, only
-      a ``top_k`` cap, so if a *single document* itself has at least
-      ``_FORGET_LIST_CAP`` tagged memories the listing may be truncated with
-      some sitting beyond the cap, unseen. A user's *other*, unrelated
-      memories -- however many -- never factor into this cap, since the
-      listing itself excludes them.
+    1. mem0 keeps a full plaintext copy of every added/updated/deleted
+       memory in its own internal ``history`` store (see
+       ``history_db_path`` in :func:`build_mem0_config`); deleting rows from
+       the vector store never touches it.
+    2. mem0 provides no cross-replica write fencing, so a multi-pass
+       "list until empty" scan can only observe the *calling replica's own*
+       view between passes -- a write landing in the same scope from a
+       different API replica during the scan is indistinguishable from "no
+       progress" or a false "converged to empty".
 
-    - ``_forget_by_filter`` (multi-pass, used by ``forget_user``/
-      ``forget_session``): raised if a re-query still sees as many (or more)
-      remaining matches as the previous pass -- no progress, e.g. writes
-      landing in the same scope as fast as they're deleted -- or if the scope
-      still isn't empty after ``_FORGET_MAX_PASSES`` passes.
-
-    Either way, raising keeps the caller from treating the scope as fully
-    erased when memories may remain recallable.
+    ``delete_memory``, ``forget_user``, ``forget_session``,
+    ``forget_document``, and the idempotent pre-delete previously performed
+    by ``remember_document`` (when ``document_id`` is given) therefore raise
+    this immediately, before any call to mem0. A single vector-store delete
+    is no more honest than a batch delete: the plaintext history row remains.
     """
+
+
+def _raise_erase_unsupported(*, user_id: str, scope: str) -> NoReturn:
+    """Fail closed for a destructive mem0 operation -- see
+    :class:`MemoryEraseUnsupportedError`. Never touches mem0."""
+    raise MemoryEraseUnsupportedError(
+        f"mem0 cannot verify a hard-forget for user {user_id!r} "
+        f"(scope={scope}); refusing to mutate rather than risk a partial "
+        "or falsely-successful erase"
+    )
 
 
 @dataclass
@@ -185,6 +204,7 @@ class Mem0MemoryService:
     """Per-user semantic memory backed by the real ``mem0`` library."""
 
     enabled = True
+    supports_delete = False
 
     def __init__(
         self,
@@ -387,20 +407,25 @@ class Mem0MemoryService:
         verbatim, not an utterance to distill. Returns how many items were
         stored.
 
-        When ``document_id`` is given the excerpts are tagged with it
-        (``metadata``) and any prior generation for that document is removed
-        first, so a re-save is idempotent rather than duplicating."""
+        ``document_id`` is unsupported: re-saving a document used to forget
+        the prior generation first for an idempotent replace, but that
+        forget cannot be verified against this backend (see
+        :class:`MemoryEraseUnsupportedError`), so passing a ``document_id``
+        with non-empty ``items`` raises immediately instead of silently
+        duplicating memories on every re-save. Called with no ``items``
+        this still returns ``0`` without touching mem0, matching prior
+        behavior for an empty document."""
         texts = [t.strip() for t in items if t and t.strip()]
         if not texts:
             return 0
+        if document_id is not None:
+            _raise_erase_unsupported(
+                user_id=user_id, scope=f"document:{document_id} (replace)"
+            )
         add_kwargs: dict[str, Any] = {"user_id": user_id, "infer": False}
         if session_id:
             add_kwargs["run_id"] = session_id
-        if document_id is not None:
-            add_kwargs["metadata"] = {"document_id": document_id}
         mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
-        if document_id is not None:
-            await self._forget_document(mem, user_id, document_id)
         stored = 0
         for text in texts:
             await self._call(
@@ -411,97 +436,25 @@ class Mem0MemoryService:
         return stored
 
     async def forget_user(self, user_id: str) -> int:
-        """Erase all of a user's memories (NOT swallowed — explicit per-id deletion).
+        """Not supported -- see :class:`MemoryEraseUnsupportedError`.
 
-        See ``_forget_by_filter`` for why this no longer delegates to mem0's
-        own ``delete_all``.
-        """
-        mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
-        return await self._forget_by_filter(mem, {"user_id": user_id})
+        Raises immediately without touching mem0 (no client build, no list,
+        no delete)."""
+        _raise_erase_unsupported(user_id=user_id, scope="user")
 
     async def forget_session(self, user_id: str, session_id: str) -> int:
-        """Erase a user's memories for one session (NOT swallowed — explicit per-id deletion).
+        """Not supported -- see :class:`MemoryEraseUnsupportedError`.
 
-        See ``_forget_by_filter`` for why this no longer delegates to mem0's
-        own ``delete_all``.
-        """
-        mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
-        return await self._forget_by_filter(
-            mem, {"user_id": user_id, "run_id": session_id}
-        )
-
-    async def _forget_by_filter(self, mem: Any, filters: dict[str, Any]) -> int:
-        """Enumerate and delete, by id, every memory matching ``filters``.
-
-        Does **not** use mem0's own ``delete_all`` — reading mem0's source
-        confirms it internally calls ``vector_store.list(filters)`` with no
-        ``top_k`` at all, so the *store's* own default (100 for the pgvector
-        backend) silently applies rather than our ``_FORGET_LIST_CAP``, and
-        it deletes the listed rows via
-        ``asyncio.gather(..., return_exceptions=True)`` then
-        **unconditionally** returns ``{"message": "...successfully!"}`` even
-        when some of those per-id deletes failed (it only logs a warning). A
-        caller of ``delete_all`` therefore has no way to know a "successful"
-        call left rows behind, whether from truncation past the first ~100 or
-        from swallowed per-id failures.
-
-        Instead: list up to ``_FORGET_LIST_CAP`` matches, delete each
-        individually with any failure propagated (never swallowed here
-        either), then re-query the same filter and repeat until the listing
-        comes back empty — so a scope with more than ``_FORGET_LIST_CAP``
-        matches still converges to a verified-empty state across multiple
-        passes rather than silently stopping after one page. Bounded by
-        ``_FORGET_MAX_PASSES``: if the remaining count hasn't strictly
-        decreased between two passes (no progress — e.g. writes landing in
-        the same scope as fast as we delete, or a backend whose ``delete``
-        appears to succeed without taking effect) or the pass budget is
-        exhausted while memories still remain, this raises
-        ``MemoryScanIncompleteError`` rather than returning a count while the
-        scope is not actually empty.
-        """
-        total_deleted = 0
-        previous_remaining: int | None = None
-        for pass_num in range(_FORGET_MAX_PASSES):
-            listing = await self._call(
-                lambda: mem.get_all(filters=filters, top_k=_FORGET_LIST_CAP),
-                self._op_timeout_s,
-            )
-            results = _results(listing)
-            if not results:
-                return total_deleted
-            if previous_remaining is not None and len(results) >= previous_remaining:
-                raise MemoryScanIncompleteError(
-                    f"forget made no progress after {total_deleted} deletion(s) "
-                    f"across {pass_num} pass(es); {len(results)} matching "
-                    "memories still remain -- aborting rather than reporting "
-                    "success with residuals"
-                )
-            previous_remaining = len(results)
-            for item in results:
-                mem_id = item.get("id")
-                if mem_id is None:
-                    continue
-                await self._call(
-                    lambda i=mem_id: mem.delete(memory_id=i), self._op_timeout_s
-                )
-                total_deleted += 1
-        raise MemoryScanIncompleteError(
-            f"forget did not converge to zero remaining memories after "
-            f"{_FORGET_MAX_PASSES} passes ({total_deleted} deletion(s) so "
-            "far) -- aborting rather than reporting success with residuals"
-        )
+        Raises immediately without touching mem0 (no client build, no list,
+        no delete)."""
+        _raise_erase_unsupported(user_id=user_id, scope=f"session:{session_id}")
 
     async def forget_document(self, user_id: str, document_id: str) -> int:
-        """Erase a user's memories saved from one document (NOT swallowed).
+        """Not supported -- see :class:`MemoryEraseUnsupportedError`.
 
-        mem0's ``delete_all`` only scopes by entity (user/run), not by custom
-        metadata, so document-scoped deletion instead lists memories filtered
-        by both ``user_id`` and ``document_id`` and removes by id the ones
-        whose ``metadata.document_id`` matches. Raises
-        :class:`MemoryScanIncompleteError` rather than under-reporting if that
-        listing may have been truncated -- see ``_forget_document``."""
-        mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
-        return await self._forget_document(mem, user_id, document_id)
+        Raises immediately without touching mem0 (no client build, no list,
+        no delete)."""
+        _raise_erase_unsupported(user_id=user_id, scope=f"document:{document_id}")
 
     async def list_memories(self, user_id: str, *, limit: int = 100) -> list[MemoryRecord]:
         mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
@@ -543,70 +496,14 @@ class Mem0MemoryService:
         return records
 
     async def delete_memory(self, user_id: str, memory_id: str) -> bool:
-        """Delete one memory by id, verifying ownership first.
+        """Not supported -- see :class:`MemoryEraseUnsupportedError`.
 
-        Uses a direct ``get(memory_id)`` lookup rather than listing the user's
-        memories (unlike the bulk ``forget_*`` paths): a listing is bounded by
-        ``_FORGET_LIST_CAP`` and would report "not found" for a memory that
-        exists but falls outside that enumeration once a user has more than
-        the cap, silently failing legitimate deletes at scale.
+        Raises before even looking up the record. Ownership lookup followed by
+        vector deletion would still leave mem0's plaintext history copy intact,
+        so returning either ``False`` or success would misrepresent hard-delete
+        semantics.
         """
-        mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
-        item = await self._call(lambda: mem.get(memory_id), self._op_timeout_s)
-        if item is None or str(item.get("user_id")) != user_id:
-            return False
-        await self._call(lambda: mem.delete(memory_id=memory_id), self._op_timeout_s)
-        return True
-
-    async def _forget_document(self, mem: Any, user_id: str, document_id: str) -> int:
-        """List the user's memories *for this document* and delete by id
-        those tagged with ``document_id``. Shared by the idempotent re-save
-        and the explicit forget-by-document path; failures propagate
-        (explicit deletion).
-
-        The listing is pinned to both ``user_id`` and ``document_id`` server
-        side (mem0's pgvector store matches arbitrary metadata keys, not just
-        the built-in entity filters), so the ``_FORGET_LIST_CAP`` bound below
-        applies to how many memories *this document* has -- not how many the
-        user has in total. A user with thousands of memories spread across
-        many small documents is unaffected; only a single document with an
-        implausibly large number of tagged memories can trip the cap.
-
-        Raises :class:`MemoryScanIncompleteError` instead of returning a
-        possibly-partial count when the listing hits ``_FORGET_LIST_CAP`` --
-        see that class's docstring for why completeness cannot otherwise be
-        verified against this backend. The local ``document_id`` re-check
-        below is retained as defense-in-depth in case a given backend/fake
-        ignores the server-side filter and returns unrelated memories.
-        """
-        listing = await self._call(
-            lambda: mem.get_all(
-                filters={"user_id": user_id, "document_id": document_id},
-                top_k=_FORGET_LIST_CAP,
-            ),
-            self._op_timeout_s,
-        )
-        results = _results(listing)
-        if len(results) >= _FORGET_LIST_CAP:
-            raise MemoryScanIncompleteError(
-                f"cannot verify a complete memory scan for document "
-                f"{document_id} (matching memory count >= {_FORGET_LIST_CAP}); "
-                "erase aborted rather than risk leaving stray memories "
-                "recallable"
-            )
-        deleted = 0
-        for item in results:
-            metadata = item.get("metadata") or {}
-            if metadata.get("document_id") != document_id:
-                continue
-            mem_id = item.get("id")
-            if mem_id is None:
-                continue
-            await self._call(
-                lambda i=mem_id: mem.delete(memory_id=i), self._op_timeout_s
-            )
-            deleted += 1
-        return deleted
+        _raise_erase_unsupported(user_id=user_id, scope=f"memory:{memory_id}")
 
     def format_context(self, records: list[MemoryRecord]) -> str | None:
         """Render recalled records as a capped, untrusted-labelled context block."""

@@ -183,6 +183,8 @@ export interface MetricPoint {
   // reason -- see ai4ia_api.metrics.models.MetricPoint). None covers both a
   // resolved value and legitimate no-data-yet.
   error?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
 }
 
 export interface ResourcePanel {
