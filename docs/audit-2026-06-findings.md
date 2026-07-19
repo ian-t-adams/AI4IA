@@ -140,6 +140,34 @@ changes:
 This is exactly the "prose instead of fact" pattern `brutal-audit.md` warns about,
 re-emerging in a doc the runtime bumps forgot to update.
 
+> **Fixed (#187, follow-up round):** `app/web/Dockerfile` reverted to
+> `node:22-alpine` and `engines.node` narrowed back to `">=22.0.0 <23"` — no
+> runtime dependency (`next`, `typescript`, `eslint`, `vitest`) required Node 26;
+> the original widening was manifest hygiene only, not a technical need. The
+> README claim about `engines.node` "failing early" was also independently
+> wrong (no `.npmrc`/`engine-strict` exists in this repo, so it only prints
+> `npm warn EBADENGINE` and installs anyway) and has been corrected alongside
+> the version fix. See the parallel `python:3.14-slim` incident in §9.
+>
+> **Further corrected (#187, fifth follow-up round):** `>=22.0.0 <23` was
+> itself still technically false — `eslint@10.6.0` and `jsdom@29.1.1` (direct
+> devDependencies) both require `^22.13.0` within the 22.x line (confirmed via
+> `npm view eslint@10.6.0 jsdom@29.1.1 engines --json`), so Node 22.0.0–22.12.x
+> satisfied the manifest's floor but not those packages' actual requirement.
+> `engines.node` is now `">=22.13.0 <23"`; `package-lock.json`'s mirrored root
+> `engines` entry was updated to match. No CI/runtime impact — `setup-node`
+> with `node-version: "22"` always resolves to the latest 22.x. A related but
+> separate gap was fixed the same round: both `app/web/.dockerignore` and
+> `app/api/.dockerignore` used unanchored `.env*` patterns, which (unlike
+> Git's recursive-by-default `.gitignore` matching) only exclude dotenv files
+> at the build-context root — a nested `.env` could be invisible to
+> `git status` yet still land in an image via `COPY . .` / `mode=max` cache.
+> Both files now use `**/.env*` / `!**/.env.example`, with a new
+> `scripts/tests/test_dockerignore_context.py` (wired into a
+> `dockerignore-context` job in `docker-build.yml`) that builds real probe
+> images to prove root- and nested-depth secrets are excluded while examples
+> survive.
+
 ### 3.5 `[NEW]` `LOW` — API reference is Swagger-only
 
 The API ships FastAPI's `/api/docs`, but there is no narrative API reference or
@@ -280,6 +308,18 @@ liveness/readiness/startup probes. Result: ACA falls back to default TCP checks 
 revision can take traffic before the app reports ready. `infra/modules/api.bicep`,
 `web.bicep`, `gateway.bicep`.
 
+**Update (AI gateway/proxy routing audit):** `gateway.bicep`'s proxy container app
+already carries explicit Startup/Liveness/Readiness HTTP probes (`/startup`,
+`/liveness`, `/readiness`) as of this audit — that part of the finding is stale.
+`api.bicep`'s `apiApp` container was still missing probes; fixed by wiring HTTP
+Liveness/Readiness probes to the existing unauthenticated `/health/live` and
+`/health/ready` routes (verified no auth dependency or middleware gates them, so ACA's
+credential-less probe requests won't 401-loop the revision). No Startup probe was
+added for the API — ACA's documented per-type default (TCP on the ingress port,
+`failureThreshold: 240`) is sufficient since the app has no separate warm-up endpoint.
+`web.bicep` was out of this audit's assigned scope and **remains open** — same fix
+pattern applies there whenever it's picked up.
+
 ### 6.2 `[NEW]` `MEDIUM` — Foundry local (key) auth left enabled
 
 `infra/modules/foundry.bicep:15` defaults `disableLocalAuth = false`, and
@@ -328,12 +368,21 @@ CI/CD is in good shape post-hardening: every `uses:` is SHA-pinned, jobs have
   a config list would read better. Not a leak.
 
 > **Already tracked (not re-flagged):** "no PR-time `docker build` of either
-> Dockerfile" is in `brutal-audit.md`'s **Known open items**. The
-> `eslint-config-next` / eslint-10 block once listed alongside it is now **resolved**
-> (#124 native flat-config rework + #132 eslint 10), so it is no longer an open item.
+> Dockerfile" was in `brutal-audit.md`'s **Known open items** and is now **fixed**
+> (`.github/workflows/docker-build.yml`, #187). The `eslint-config-next` /
+> eslint-10 block once listed alongside it is also **resolved** (#124 native
+> flat-config rework + #132 eslint 10), though `npm ci` still prints benign
+> `ERESOLVE overriding peer dependency` warnings for `eslint-config-next`'s
+> bundled plugins (their published peer ranges cap at `eslint@^9`/`^9.7` as of
+> this writing — install still exits 0 and lint/build/test are unaffected).
 > The CI-vs-image runtime skew (CI Node 22 / Python 3.12 vs `node:26` / `python:3.14`)
-> is a direct consequence of that same no-PR-docker-build gap (the Python 3.14 bump
-> was instead validated via `uv pip compile`). See §9.
+> was a direct consequence of that same no-PR-docker-build gap (the Python 3.14 bump
+> was instead validated via `uv pip compile`); #187 now build-validates both images
+> on every PR. **Update:** the skew itself is also now fixed, not just detectable —
+> both `app/web/Dockerfile` (`node:26-alpine` → `node:22-alpine`) and
+> `app/api/Dockerfile` (`python:3.14-slim` → `python:3.12-slim`) were reverted to
+> the CI-tested majors after confirming neither had a genuine dependency
+> requirement for the newer major. See §9.
 
 ---
 
@@ -364,8 +413,9 @@ These are real, but `docs/brutal-audit.md` already records them as **fixed**,
 
 | Item | Status in brutal-audit |
 | --- | --- |
-| No PR-time `docker build` of either Dockerfile | **Known open item** |
-| `eslint-config-next` `^16` / eslint 9→10 block | **Resolved** (#124/#132) |
+| No PR-time `docker build` of either Dockerfile | **Fixed** (#187) |
+| `eslint-config-next` `^16` / eslint 9→10 block | **Resolved** (#124/#132); benign `npm ci` peer-warning noise from bundled plugins remains, tracked as harmless upstream noise |
+| CI-vs-image runtime skew (`node:26-alpine` / `python:3.14-slim` vs CI's Node 22 / Python 3.12) | **Fixed** (#187) — both Dockerfiles reverted to the CI-tested majors; neither had a genuine dependency requirement for the newer one |
 | `style-src 'unsafe-inline'` in CSP | **Deliberate** documented relaxation (#101) |
 | Gateway proxy `minReplicas:0` cold-start | **Accepted** cost tradeoff |
 | Cosmos PITR / KV purge protection / Postgres HA | **Deferred** cost/reliability decision |
