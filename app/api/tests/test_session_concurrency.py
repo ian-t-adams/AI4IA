@@ -532,10 +532,10 @@ async def test_cosmos_delete_session_translates_concurrent_delete_to_not_found()
 
 
 class _SucceedingSessions:
-    """Fake ``sessions`` container where reads and the final delete both
-    succeed normally -- isolates the child-container race (below) from the
-    session's own concurrent-delete race, which is already covered by
-    ``_ConcurrentlyDeletedSessions`` above."""
+    """Fake ``sessions`` container where reads, the tombstone CAS ``patch``,
+    and the final delete all succeed normally -- isolates the child-container
+    race (below) from the session's own concurrent-delete race, which is
+    already covered by ``_ConcurrentlyDeletedSessions`` above."""
 
     def __init__(self, session: Session) -> None:
         self.item = {**session.model_dump(mode="json"), "_etag": "e1"}
@@ -543,6 +543,13 @@ class _SucceedingSessions:
 
     async def read_item(self, *, item, partition_key):
         return dict(self.item)
+
+    async def patch_item(
+        self, *, item, partition_key, patch_operations, etag=None, match_condition=None
+    ):
+        for op in patch_operations:
+            self.item[op["path"].lstrip("/")] = op["value"]
+        self.item["_etag"] = "e2"
 
     async def delete_item(self, *, item, partition_key):
         self.deleted = True
@@ -553,18 +560,23 @@ class _RacedChildContainer:
     already gone by the time this container's own ``delete_item`` runs --
     every delete raises ``CosmosResourceNotFoundError``, exactly as Cosmos
     does for a real concurrent double-delete (e.g. a duplicate request, or a
-    racing single-item delete) landing in the query-then-delete gap."""
+    racing single-item delete) landing in the query-then-delete gap. Deleted
+    (albeit 404ing) ids stop being returned by later queries, matching a real
+    container so delete_session's bounded repeated sweep converges instead of
+    re-attempting the same already-gone rows every pass."""
 
     def __init__(self, ids: list[str]) -> None:
-        self._ids = ids
+        self._ids = list(ids)
         self.delete_attempts: list[str] = []
 
     async def query_items(self, *, query, parameters=None, partition_key=None):
-        for item_id in self._ids:
+        for item_id in list(self._ids):
             yield {"id": item_id}
 
     async def delete_item(self, *, item, partition_key):
         self.delete_attempts.append(item)
+        if item in self._ids:
+            self._ids.remove(item)
         raise CosmosResourceNotFoundError(message="deleted concurrently")
 
 
@@ -604,6 +616,226 @@ async def test_cosmos_clear_messages_tolerates_concurrently_deleted_messages():
     await repo.clear_messages("u1", session.id)  # must not raise
 
     assert messages.delete_attempts == ["m1"]
+
+
+async def test_cosmos_add_message_rejected_once_session_tombstoned_before_hard_delete():
+    """HIGH production-shape finding: a hard-delete-parent-first fence has no
+    durability -- if delete_session is interrupted after removing the parent
+    but before finishing the cascade, a retry can never resume (ownership
+    fails against an already-gone parent), and there is no fence at all
+    between the tombstone-equivalent moment and the parent's actual removal.
+    The fix CASes a durable ``deletingAt`` tombstone before any child
+    cleanup starts. This proves the fence is durable, not just a post-write
+    safety net: add_message's *pre-write* ownership check must already
+    reject a tombstoned-but-not-yet-hard-deleted session, so the write is
+    never even attempted."""
+    session = Session(userId="u1")
+    tombstoned = {
+        **session.model_dump(mode="json"),
+        "_etag": "e1",
+        "deletingAt": "2024-01-01T00:00:00Z",
+    }
+
+    class _TombstonedSessions:
+        async def read_item(self, *, item, partition_key):
+            return dict(tombstoned)
+
+    class _RecordingMessages:
+        def __init__(self) -> None:
+            self.items: dict[str, dict] = {}
+
+        async def create_item(self, body):
+            self.items[body["id"]] = body
+
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _TombstonedSessions()
+    messages = _RecordingMessages()
+    repo._messages = messages
+
+    message = Message(sessionId=session.id, userId="u1", role=MessageRole.user, content="hi")
+    with pytest.raises(SessionNotFoundError):
+        await repo.add_message("u1", message)
+
+    assert messages.items == {}  # the write must never even be attempted
+
+
+async def test_cosmos_add_message_pre_write_check_races_tombstone_visibility():
+    """Cross-replica/stale-read shape: add_message's *pre-write* ownership
+    check can observe a stale replica that hasn't yet caught up to
+    delete_session's tombstone CAS, letting the write proceed even though
+    the session is already (durably) being deleted elsewhere. The
+    post-write recheck must still catch this once it observes the tombstone
+    (a later, consistent read) and self-compensate -- proving the fence
+    holds even when the pre-write check itself is raced by eventual-
+    consistency staleness, not only by literal deletion order."""
+    session = Session(userId="u1")
+
+    class _EventuallyConsistentSessions:
+        """First read (the pre-write check) returns a stale, not-yet-
+        tombstoned view; every read after that reflects the tombstone --
+        the minimal shape of a single stale-replica read followed by full
+        consistency."""
+
+        def __init__(self, session: Session) -> None:
+            self.stale_item = {**session.model_dump(mode="json"), "_etag": "e1"}
+            self.fresh_item = {**self.stale_item, "deletingAt": "2024-01-01T00:00:00Z"}
+            self.reads = 0
+
+        async def read_item(self, *, item, partition_key):
+            self.reads += 1
+            return dict(self.stale_item) if self.reads == 1 else dict(self.fresh_item)
+
+    class _RecordingMessages:
+        def __init__(self) -> None:
+            self.items: dict[str, dict] = {}
+            self.delete_attempts: list[str] = []
+
+        async def create_item(self, body):
+            self.items[body["id"]] = body
+
+        async def delete_item(self, *, item, partition_key):
+            self.delete_attempts.append(item)
+            if item not in self.items:
+                raise CosmosResourceNotFoundError(message="not found")
+            del self.items[item]
+
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _EventuallyConsistentSessions(session)
+    messages = _RecordingMessages()
+    repo._messages = messages
+
+    message = Message(sessionId=session.id, userId="u1", role=MessageRole.user, content="hi")
+    with pytest.raises(SessionNotFoundError):
+        await repo.add_message("u1", message)
+
+    assert message.id not in messages.items
+    assert messages.delete_attempts == [message.id]
+
+
+async def test_cosmos_delete_session_resumes_after_interrupted_sweep():
+    """HIGH production-shape finding: a hard-delete-parent-first design has
+    no resumability -- once a genuine (non-404) error interrupts the
+    children sweep, the parent is already gone, so a retry of delete_session
+    immediately fails SessionNotFoundError and can never finish the cascade,
+    leaving orphans behind forever. The tombstone fence fixes this: the
+    parent row is left untouched (only tombstoned) until the sweep finishes,
+    so an interrupted call's retry re-reads the still-present, already-
+    tombstoned session -- ownership still checkable, no re-CAS needed -- and
+    resumes the sweep to completion without changing the partition key or
+    ownership model."""
+    session = Session(userId="u1")
+
+    class _ToggleFailSessions:
+        def __init__(self, session: Session) -> None:
+            self.item = {**session.model_dump(mode="json"), "_etag": "e1"}
+            self.deleted = False
+
+        async def read_item(self, *, item, partition_key):
+            if self.deleted:
+                raise CosmosResourceNotFoundError(message="deleted concurrently")
+            return dict(self.item)
+
+        async def patch_item(
+            self, *, item, partition_key, patch_operations, etag=None, match_condition=None
+        ):
+            for op in patch_operations:
+                self.item[op["path"].lstrip("/")] = op["value"]
+            self.item["_etag"] = "e2"
+
+        async def delete_item(self, *, item, partition_key):
+            self.deleted = True
+
+    class _FlakyMessages:
+        """Fails the first delete attempt with a genuine transient error
+        (a dropped connection/timeout, not a 404 -- the "interrupted sweep"
+        shape), then behaves normally on any later call."""
+
+        def __init__(self, ids: list[str]) -> None:
+            self.items = {item_id: {"id": item_id} for item_id in ids}
+            self.fail_next = True
+
+        async def query_items(self, *, query, parameters=None, partition_key=None):
+            for item_id in list(self.items.keys()):
+                yield {"id": item_id}
+
+        async def delete_item(self, *, item, partition_key):
+            if self.fail_next:
+                self.fail_next = False
+                raise TimeoutError("transient network failure")
+            self.items.pop(item, None)
+
+    class _EmptyDocuments:
+        async def query_items(self, *, query, parameters=None, partition_key=None):
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+    sessions_fake = _ToggleFailSessions(session)
+    messages = _FlakyMessages(["m1"])
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = sessions_fake
+    repo._messages = messages
+    repo._documents = _EmptyDocuments()
+
+    with pytest.raises(TimeoutError):
+        await repo.delete_session("u1", session.id)
+
+    # The session must still exist (tombstoned, not hard-deleted) so a retry
+    # can resume -- unlike the old parent-deleted-first design, where this
+    # would now be gone and any retry would fail SessionNotFoundError.
+    assert sessions_fake.deleted is False
+    assert sessions_fake.item.get("deletingAt") is not None
+
+    await repo.delete_session("u1", session.id)  # retry resumes and completes
+
+    assert sessions_fake.deleted is True
+    assert messages.items == {}
+
+
+async def test_cosmos_delete_session_sweep_catches_child_appearing_on_later_pass():
+    """Idempotent/retriable-sweep requirement: a child row that only becomes
+    visible to the query on a later pass (e.g. replication lag, or a
+    child-writer's write landing between this call's first and second
+    query) must still be caught within the same delete_session call, not
+    left behind because the sweep only looked once."""
+    session = Session(userId="u1")
+
+    class _StragglerMessages:
+        """``m1`` isn't visible to query_items until the second pass --
+        simulating a child whose write is still landing/propagating when
+        the sweep's first pass runs."""
+
+        def __init__(self) -> None:
+            self.visible_ids: list[str] = []
+            self.delete_attempts: list[str] = []
+            self._queries = 0
+
+        async def query_items(self, *, query, parameters=None, partition_key=None):
+            self._queries += 1
+            if self._queries == 2:
+                self.visible_ids = ["m1"]
+            for item_id in list(self.visible_ids):
+                yield {"id": item_id}
+
+        async def delete_item(self, *, item, partition_key):
+            self.delete_attempts.append(item)
+            self.visible_ids.remove(item)
+
+    class _EmptyDocuments:
+        async def query_items(self, *, query, parameters=None, partition_key=None):
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+    session_fake = _SucceedingSessions(session)
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = session_fake
+    messages = _StragglerMessages()
+    repo._messages = messages
+    repo._documents = _EmptyDocuments()
+
+    await repo.delete_session("u1", session.id)
+
+    assert messages.delete_attempts == ["m1"]
+    assert session_fake.deleted is True
 
 
 class _LegacyDocSessions:
@@ -673,7 +905,8 @@ class _SessionsDeletedOnce:
     ``delete_item`` is called, after which every read raises 404 -- i.e., a
     consistent "does the session currently exist" view across multiple
     reads, unlike the simpler check-then-write fakes above which only model
-    a single race shape."""
+    a single race shape. ``patch_item`` supports delete_session's tombstone
+    CAS step (setting ``deletingAt`` without removing the item)."""
 
     def __init__(self, session: Session) -> None:
         self.item = {**session.model_dump(mode="json"), "_etag": "e1"}
@@ -683,6 +916,15 @@ class _SessionsDeletedOnce:
         if self.deleted:
             raise CosmosResourceNotFoundError(message="deleted concurrently")
         return dict(self.item)
+
+    async def patch_item(
+        self, *, item, partition_key, patch_operations, etag=None, match_condition=None
+    ):
+        if self.deleted:
+            raise CosmosResourceNotFoundError(message="deleted concurrently")
+        for op in patch_operations:
+            self.item[op["path"].lstrip("/")] = op["value"]
+        self.item["_etag"] = "e2"
 
     async def delete_item(self, *, item, partition_key):
         self.deleted = True

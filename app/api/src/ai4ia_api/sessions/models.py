@@ -236,6 +236,15 @@ class Session(BaseModel):
     summaryVersion: int = 0
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
+    # Durable delete tombstone: set (once, via CAS) by delete_session before
+    # any child cleanup starts, so ownership checks -- and therefore every
+    # child-writer's pre- and post-write recheck -- reject the session from
+    # the moment the tombstone is visible, not just once the parent row is
+    # gone. This makes delete_session resumable: an interrupted attempt can
+    # be retried and will find the still-present tombstoned session instead
+    # of failing not-found against an already-deleted parent. None means
+    # "not being deleted".
+    deletingAt: datetime | None = None
 
     @field_validator("toolOverrides", mode="before")
     @classmethod

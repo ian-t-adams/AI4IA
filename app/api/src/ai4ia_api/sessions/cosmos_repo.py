@@ -56,7 +56,17 @@ class CosmosSessionRepository:
             doc = await self._sessions.read_item(item=session_id, partition_key=user_id)
         except CosmosResourceNotFoundError as exc:
             raise SessionNotFoundError(session_id) from exc
-        return Session.model_validate(doc)
+        session = Session.model_validate(doc)
+        if session.deletingAt is not None:
+            # delete_session has durably tombstoned this session (CAS'd
+            # before any child cleanup started). Treating it as not-found
+            # here is what makes the tombstone an effective fence: every
+            # read, and every child-writer's pre- and post-write recheck,
+            # goes through this method, so a child create/update racing a
+            # delete is rejected from the moment the tombstone is visible --
+            # not only once the parent row is eventually removed.
+            raise SessionNotFoundError(session_id)
+        return session
 
     async def _patch_session_item(
         self,
@@ -365,60 +375,107 @@ class CosmosSessionRepository:
             [{"op": "set", "path": "/updatedAt", "value": updated_at}],
         )
 
+    async def _tombstone_session_for_delete(self, user_id: str, session_id: str) -> None:
+        """CAS the session into a durable ``deletingAt`` tombstone before any
+        child cleanup starts.
+
+        This is the fence that closes the concurrent-orphan race, and it is
+        durable/resumable, unlike hard-deleting the parent outright (the
+        previous design): ``_owned_session`` treats a tombstoned session as
+        not-found, so every read and every child-writer's pre- and post-write
+        recheck rejects the session from the moment the tombstone is visible
+        -- independent of whether the parent row has been hard-deleted yet.
+        If this whole call is interrupted after tombstoning but before the
+        sweep/hard-delete finish, a retry's raw read below still finds the
+        (still-present, still-owned) tombstoned session and resumes, instead
+        of failing not-found against an already-gone parent.
+        """
+        from azure.cosmos.exceptions import (
+            CosmosAccessConditionFailedError,
+            CosmosResourceNotFoundError,
+        )
+
+        for _attempt in range(3):
+            try:
+                raw = await self._sessions.read_item(item=session_id, partition_key=user_id)
+            except CosmosResourceNotFoundError as exc:
+                raise SessionNotFoundError(session_id) from exc
+            if raw.get("deletingAt") is not None:
+                return  # already tombstoned: a concurrent duplicate delete, or
+                # this same call resuming after an earlier interrupted attempt
+            try:
+                await self._patch_session_item(
+                    user_id,
+                    session_id,
+                    [
+                        {
+                            "op": "set",
+                            "path": "/deletingAt",
+                            "value": datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                        },
+                    ],
+                    etag=raw.get("_etag"),
+                )
+                return
+            except CosmosAccessConditionFailedError:
+                continue  # concurrent edit or concurrent tombstone -- reread and reassess
+        raise SessionConflictError(session_id)
+
     async def delete_session(self, user_id: str, session_id: str) -> None:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
-        await self._owned_session(user_id, session_id)
-        # Delete the parent FIRST -- this is the fence that closes a
-        # concurrent-orphan race. Every child-writer (add_message,
-        # add_message_if_summary_version, add_document, upsert_message)
-        # re-verifies the parent still exists immediately after its own
-        # write and self-compensates (deletes what it just wrote) if not.
-        # So a child write that races with this delete is always caught by
-        # ONE of two sides: if the child's write finishes before this
-        # delete, its post-write recheck runs after the delete and catches
-        # it directly; if the child's write finishes after this delete, the
-        # children-sweep below (which runs only once the parent is
-        # irrevocably gone) catches it. Deleting children before the parent
-        # (the previous order) left a window where a child could land
-        # strictly between the sweep's query snapshot and the parent
-        # delete, which neither side would ever catch -- a permanent
-        # orphan. Residual: if the sweep below hits a genuine non-404 error
-        # after the parent is gone, a retry of this call can no longer
-        # resume (there's nothing left to re-authenticate against); that
-        # narrow, rare exposure is accepted in exchange for closing the
-        # much more common orphan-creation race.
-        try:
-            await self._sessions.delete_item(item=session_id, partition_key=user_id)
-        except CosmosResourceNotFoundError as exc:
-            # Deleted concurrently (e.g. a duplicate request) — same outcome
-            # as never having existed for this call.
-            raise SessionNotFoundError(session_id) from exc
+        await self._tombstone_session_for_delete(user_id, session_id)
 
         query = "SELECT c.id FROM c WHERE c.sessionId = @sid"
         params = [{"name": "@sid", "value": session_id}]
-        async for doc in self._messages.query_items(
-            query=query, parameters=params, partition_key=session_id
-        ):
-            try:
-                await self._messages.delete_item(item=doc["id"], partition_key=session_id)
-            except CosmosResourceNotFoundError:
-                # Another concurrent delete/cascade (e.g. a duplicate request,
-                # a racing single-message delete, or a child-writer's own
-                # compensating delete) already removed this child between the
-                # query above and this call. The cascade's goal -- no
-                # messages left for this session -- already holds for this
-                # item, so treat it as done and keep going rather than
-                # surfacing a raw SDK error for a row that's already gone.
-                continue
-        # Cascade-delete uploaded documents (also partitioned by sessionId).
-        async for doc in self._documents.query_items(
-            query=query, parameters=params, partition_key=session_id
-        ):
-            try:
-                await self._documents.delete_item(item=doc["id"], partition_key=session_id)
-            except CosmosResourceNotFoundError:
-                continue  # same idempotent reasoning as the messages loop above
+        # Bounded, idempotent/retriable sweep: repeat the query-then-delete
+        # pass a fixed few times (not stopping at the first empty pass) so a
+        # child whose write is still landing or only now propagating into
+        # query results (e.g. replication lag, or a child-writer that raced
+        # past the tombstone's pre-write check and only now runs its own
+        # post-write self-compensation) is caught within this same call
+        # rather than requiring a separate resumed retry. Each pass
+        # re-queries current state and tolerates rows already gone (a
+        # concurrent duplicate delete, or a child-writer's own compensating
+        # delete), so repeating or resuming it from a fresh call is always
+        # safe.
+        for _pass in range(3):
+            async for doc in self._messages.query_items(
+                query=query, parameters=params, partition_key=session_id
+            ):
+                try:
+                    await self._messages.delete_item(item=doc["id"], partition_key=session_id)
+                except CosmosResourceNotFoundError:
+                    # Another concurrent delete/cascade (e.g. a duplicate
+                    # request, a racing single-message delete, or a
+                    # child-writer's own compensating delete) already removed
+                    # this child between the query above and this call. The
+                    # cascade's goal -- no messages left for this session --
+                    # already holds for this item, so treat it as done and
+                    # keep going rather than surfacing a raw SDK error for a
+                    # row that's already gone.
+                    continue
+            # Cascade-delete uploaded documents (also partitioned by sessionId).
+            async for doc in self._documents.query_items(
+                query=query, parameters=params, partition_key=session_id
+            ):
+                try:
+                    await self._documents.delete_item(item=doc["id"], partition_key=session_id)
+                except CosmosResourceNotFoundError:
+                    continue  # same idempotent reasoning as the messages loop above
+
+        try:
+            await self._sessions.delete_item(item=session_id, partition_key=user_id)
+        except CosmosResourceNotFoundError:
+            # Already gone: a concurrent duplicate delete_session call (or an
+            # earlier, interrupted attempt of this same call, now resumed)
+            # already finished the hard delete after this call's own
+            # tombstone read/CAS above proved ownership. The sweep above is
+            # idempotent, so the parent being gone now is this call's own
+            # goal achieved concurrently, not a not-found error.
+            pass
 
     async def add_message(self, user_id: str, message: Message) -> Message:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError

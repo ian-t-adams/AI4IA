@@ -263,22 +263,66 @@ def test_delete_document_succeeds_when_memory_disabled():
         c.__exit__(None, None, None)
 
 
-def test_delete_document_survives_memory_forget_failure(client):
-    # The manifest delete is the source of truth; a transient memory failure in
-    # the best-effort cascade must never block the delete.
-    from ai4ia_api.library.repository import DocumentNotFoundError
+def test_delete_document_aborts_when_memory_forget_fails():
+    """HIGH finding (round 5): the manifest delete used to proceed even when
+    the memory-forget cascade failed, silently leaving the document's saved
+    memories permanently recallable with no manifest left to retry the erase
+    against. The fix must erase memory FIRST and abort (502, manifest intact)
+    on failure, so the delete stays retryable instead of losing the handle."""
+    c = _client()
+    try:
+        uid = _uid(c)
+        doc = asyncio.run(_seed(c, uid=uid, parsed=None))
+        c.post(f"/api/library/documents/{doc.id}/memory")
 
-    uid = _uid(client)
-    doc = asyncio.run(_seed(client, uid=uid, parsed=None))
-    client.post(f"/api/library/documents/{doc.id}/memory")
+        async def boom(*args, **kwargs):
+            raise RuntimeError("memory down")
 
-    async def boom(*args, **kwargs):
-        raise RuntimeError("memory down")
+        c.app.state.memory.forget_document = boom  # type: ignore[assignment]
+        resp = c.delete(f"/api/library/documents/{doc.id}")
+        assert resp.status_code == 502, resp.text
 
-    client.app.state.memory.forget_document = boom  # type: ignore[assignment]
-    assert client.delete(f"/api/library/documents/{doc.id}").status_code == 204
-    with pytest.raises(DocumentNotFoundError):
-        asyncio.run(client.app.state.document_library.get_document(uid, doc.id))
+        # The manifest survives - the delete is retryable once memory recovers.
+        refreshed = asyncio.run(c.app.state.document_library.get_document(uid, doc.id))
+        assert refreshed.id == doc.id
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_delete_document_succeeds_after_memory_forget_recovers():
+    """Companion to the abort test: once the transient memory failure clears,
+    retrying the same delete call completes normally (manifest deleted, memory
+    forgotten) - proving the abort above genuinely preserved retryability
+    rather than leaving the document stuck."""
+    c = _client()
+    try:
+        uid = _uid(c)
+        doc = asyncio.run(_seed(c, uid=uid, parsed=None))
+        c.post(f"/api/library/documents/{doc.id}/memory")
+
+        real_forget = c.app.state.memory.forget_document
+        calls = {"n": 0}
+
+        async def flaky_once(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("memory down")
+            return await real_forget(*args, **kwargs)
+
+        c.app.state.memory.forget_document = flaky_once  # type: ignore[assignment]
+
+        first = c.delete(f"/api/library/documents/{doc.id}")
+        assert first.status_code == 502, first.text
+
+        second = c.delete(f"/api/library/documents/{doc.id}")
+        assert second.status_code == 204, second.text
+        assert asyncio.run(c.app.state.memory.recall(uid, "anything")) == []
+        from ai4ia_api.library.repository import DocumentNotFoundError
+
+        with pytest.raises(DocumentNotFoundError):
+            asyncio.run(c.app.state.document_library.get_document(uid, doc.id))
+    finally:
+        c.__exit__(None, None, None)
 
 
 # --- production defect: pgvector's erase_document cannot key on document_id ---
@@ -320,3 +364,24 @@ def test_forget_document_502_when_store_cannot_erase_by_document(client):
     doc = asyncio.run(_seed(client, uid=uid))
     resp = client.delete(f"/api/library/documents/{doc.id}/memory")
     assert resp.status_code == 502, resp.text
+
+
+def test_delete_document_502_when_store_cannot_erase_by_document():
+    """Same production defect, reached through the delete cascade: a backend
+    that cannot key an erase on document_id (pgvector today) must abort the
+    whole delete with 502 rather than removing the manifest while the
+    document's memories stay permanently recallable with no handle left to
+    retry against."""
+    c = _client()
+    try:
+        c.app.state.memory = MemoryService(
+            store=_NoDocumentEraseStore(), embedder=FakeEmbedder()
+        )
+        uid = _uid(c)
+        doc = asyncio.run(_seed(c, uid=uid, parsed=None))
+        resp = c.delete(f"/api/library/documents/{doc.id}")
+        assert resp.status_code == 502, resp.text
+        refreshed = asyncio.run(c.app.state.document_library.get_document(uid, doc.id))
+        assert refreshed.id == doc.id
+    finally:
+        c.__exit__(None, None, None)

@@ -9,6 +9,7 @@ injected (in-memory library + blob + a fake Code Interpreter); no network.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from ai4ia_api.code_interpreter.models import CodeInterpreterResult
 from ai4ia_api.library.blob_store import (
@@ -29,7 +30,7 @@ from ai4ia_api.library.compute_factory import build_document_compute
 from ai4ia_api.library.export import DocumentExportService
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
 from ai4ia_api.library.models import DocumentStatus, UserDocument
-from ai4ia_api.library.repository import DocumentNotFoundError
+from ai4ia_api.library.repository import DocumentConflictError, DocumentNotFoundError
 from ai4ia_api.library.retrieval import DocumentRetrievalService
 from tests.conftest import make_settings
 
@@ -503,9 +504,13 @@ async def test_export_orphan_blob_cleaned_when_doc_vanishes():
 
 
 async def test_export_orphan_blob_cleaned_on_generic_manifest_failure():
-    """A manifest write failure of *any* kind (not just a vanished document —
-    e.g. a transient Cosmos error) must also purge the version blob it just
-    wrote, so a flaky update never leaves an un-referenced artifact behind."""
+    """HIGH finding (round 5): a generic manifest-write failure (e.g. a
+    transient/dropped-connection Cosmos error) is ambiguous — the client
+    cannot tell whether the write committed server-side before the failure
+    was observed. The fix must never delete the version blob synchronously
+    in this branch, even in a case like this one where the write actually
+    never applied: without a trustworthy signal that it didn't, retaining
+    the blob for out-of-band reconciliation is the only safe choice."""
     blob = InMemoryBlobStore()
 
     class FlakyRepo(InMemoryDocumentLibraryRepository):
@@ -518,7 +523,8 @@ async def test_export_orphan_blob_cleaned_on_generic_manifest_failure():
 
     res = await export.export_version("u1", doc.id, content="adjusted", filename="new.md")
     assert "error" in res
-    assert await blob.delete_prefix(version_prefix("u1", doc.id, 1)) == 0
+    # Retained, not purged - an ambiguous failure must never delete synchronously.
+    assert await blob.delete_prefix(version_prefix("u1", doc.id, 1)) == 1
 
 
 async def test_export_ambiguous_failure_after_commit_preserves_winners_blob():
@@ -533,9 +539,10 @@ async def test_export_ambiguous_failure_after_commit_preserves_winners_blob():
     This repo reproduces exactly that shape: update_document really performs
     the write (delegating to the in-memory implementation) and only THEN
     raises, simulating "the commit landed, but the caller still observed a
-    failure". The fix must re-confirm via a fresh read before deleting: since
-    the path IS referenced by the (now-committed) manifest, cleanup must
-    leave the blob alone.
+    failure". Round-5 hardening: even a same-request confirm-read cannot
+    soundly resolve this (see the stale-read test below), so the fix simply
+    never deletes synchronously on an ambiguous failure — the blob must
+    survive regardless.
     """
     blob = InMemoryBlobStore()
 
@@ -556,46 +563,139 @@ async def test_export_ambiguous_failure_after_commit_preserves_winners_blob():
     refreshed = await library.get_document("u1", doc.id)
     assert refreshed.version_count == 1
     winner = refreshed.versions[0]
-    # ...so its blob must survive: the ambiguous-failure cleanup must not
+    # ...so its blob must survive: the ambiguous-failure path must not
     # delete a blob the manifest still references.
     data = await blob.get(winner.path)
     assert data == b"adjusted"
 
 
-async def test_export_cleanup_confirm_read_failure_preserves_blob():
-    """If the confirm-read itself fails (the manifest's true state cannot be
-    determined), the outcome is genuinely indeterminate: the cleanup must NOT
-    delete the blob (better to leave a possibly-orphaned artifact for
-    reconciliation/GC than to risk deleting a live, referenced one)."""
+async def test_export_ambiguous_failure_survives_stale_confirm_read():
+    """HIGH finding (round 5): the previous fix re-read the manifest to
+    confirm a path was unreferenced before deleting it on an ambiguous
+    failure. That confirm-read is itself unsound: under Cosmos Session
+    consistency, a read immediately following a write whose own ack this
+    same client already missed is NOT guaranteed to reflect that write, so
+    the confirm-read can return a stale (pre-commit) snapshot and cause the
+    exact corruption it was meant to prevent.
+
+    This repo commits the write (mirroring the shape above) and then makes
+    every subsequent get_document call return a stale snapshot with no
+    versions at all - the worst case a confirm-read could hit. The fix must
+    never perform that confirm-read for an ambiguous failure in the first
+    place: get_document is called exactly once (the initial readiness gate,
+    before the write is attempted), and the blob survives regardless of what
+    a later read would have (wrongly) shown."""
     blob = InMemoryBlobStore()
 
-    class ConfirmReadFailsRepo(InMemoryDocumentLibraryRepository):
+    class CommitThenStaleReadRepo(InMemoryDocumentLibraryRepository):
         def __init__(self) -> None:
             super().__init__()
-            self._get_calls = 0
+            self.get_calls = 0
 
         async def update_document(self, doc):
-            raise RuntimeError("transient failure")
+            await super().update_document(doc)
+            raise RuntimeError("ack never received after commit")
 
         async def get_document(self, user_id, document_id):
-            self._get_calls += 1
-            if self._get_calls == 1:
-                # The initial ownership/status gate read in _ready_doc must
-                # still succeed so export_version reaches the manifest write.
-                return await super().get_document(user_id, document_id)
-            # The cleanup's confirm-read fails: the true manifest state is
-            # unknowable, so deletion must be skipped.
-            raise RuntimeError("confirm-read also failed")
+            self.get_calls += 1
+            doc = await super().get_document(user_id, document_id)
+            if self.get_calls > 1:
+                # Worst-case stale read: doesn't show the commit that (per
+                # the real store) already landed.
+                return doc.model_copy(update={"versions": []})
+            return doc
 
-    library = ConfirmReadFailsRepo()
+    library = CommitThenStaleReadRepo()
     export = _export(library, blob, _settings())
     doc = await _seed_doc(library, blob)
 
     res = await export.export_version("u1", doc.id, content="adjusted", filename="new.md")
     assert "error" in res
-    # Indeterminate outcome: the version blob must be preserved, not deleted.
-    prefix = version_prefix("u1", doc.id, 1)
-    assert await blob.delete_prefix(prefix) == 1
+
+    # No confirm-read: get_document is called only for the initial gate.
+    assert library.get_calls == 1
+
+    # The real (non-stale) store state shows the version committed...
+    real_doc = library._docs["u1"][doc.id]
+    assert len(real_doc.versions) == 1
+    winner = real_doc.versions[0]
+    # ...and its blob must survive even though a confirm-read would have
+    # (wrongly) reported it as unreferenced.
+    data = await blob.get(winner.path)
+    assert data == b"adjusted"
+
+
+async def test_export_conflict_failure_deletes_only_this_attempts_blob():
+    """A DocumentConflictError (412 - etag moved because a concurrent writer
+    already committed a different version) is conclusive, not ambiguous:
+    Cosmos synchronously rejected *this* request body, so the manifest
+    cannot reference this attempt's uniquely-pathed blob. Unlike a generic
+    ambiguous failure, this must be deleted immediately WITHOUT a
+    confirm-read - proven by counting get_document calls rather than just
+    the outcome, since an in-memory fake that shares object references could
+    otherwise make a stale confirm-read coincidentally "look" correct."""
+    blob = InMemoryBlobStore()
+
+    class ConflictRepo(InMemoryDocumentLibraryRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.get_calls = 0
+
+        async def update_document(self, doc):
+            raise DocumentConflictError(doc.id)
+
+        async def get_document(self, user_id, document_id):
+            self.get_calls += 1
+            return await super().get_document(user_id, document_id)
+
+    library = ConflictRepo()
+    export = _export(library, blob, _settings())
+    doc = await _seed_doc(library, blob)
+
+    res = await export.export_version("u1", doc.id, content="adjusted", filename="new.md")
+    assert "error" in res
+    # Deleted immediately: no confirm-read (get_document is called only once,
+    # for the initial readiness gate before the write is even attempted).
+    assert library.get_calls == 1
+    assert await blob.delete_prefix(version_prefix("u1", doc.id, 1)) == 0
+
+
+async def test_export_ambiguous_failure_log_never_contains_filename(caplog):
+    """MEDIUM finding (round 5): export's cleanup-failure log embedded the
+    full blob path, whose final segment is the model/user-supplied export
+    filename - so a crafted or sensitive filename could land in Container
+    Apps / Log Analytics. This targets the exact site that leaked it: the
+    best-effort ``delete_prefix`` cleanup itself failing after a conclusive
+    rejection (a DocumentConflictError, so both old and new code attempt a
+    delete rather than a generic ambiguous failure, which never deletes at
+    all and so would trivially "pass" without exercising the fix). Captured
+    at INFO, not just WARNING, so a lower-severity leak can't slip through."""
+    sensitive_name = "super-secret-quarterly-plan-do-not-log.md"
+
+    class BoomOnDeleteBlobStore(InMemoryBlobStore):
+        async def delete_prefix(self, prefix: str) -> int:
+            raise RuntimeError("delete_prefix unavailable")
+
+    blob = BoomOnDeleteBlobStore()
+
+    class ConflictRepo(InMemoryDocumentLibraryRepository):
+        async def update_document(self, doc):
+            raise DocumentConflictError(doc.id)
+
+    library = ConflictRepo()
+    export = _export(library, blob, _settings())
+    doc = await _seed_doc(library, blob)
+
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.library.export"):
+        res = await export.export_version(
+            "u1", doc.id, content="adjusted", filename=sensitive_name
+        )
+    assert "error" in res
+    assert caplog.records, "expected the delete-failure path to log something"
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert sensitive_name not in joined
+    # The opaque id/token portion of the path is still fine to log.
+    assert doc.id in joined
 
 
 async def test_export_concurrent_race_does_not_delete_winners_blob():

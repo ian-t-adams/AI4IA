@@ -577,6 +577,41 @@ async def delete_document(
     if not require_owner(uid, doc):
         # Never reveal another user's document via delete.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    # Forget anything this document contributed to the owner's durable memory
+    # (save-to-memory) BEFORE deleting the manifest, and let a failure abort
+    # the delete instead of swallowing it. Once the manifest is gone there is
+    # no stable, retryable handle left to erase memories by document_id, so a
+    # document whose erase failed here would leave its content permanently
+    # recallable with no way to ever finish the job — the manifest delete is
+    # NOT a safe "source of truth" for this step the way it is for the
+    # best-effort blob/chunk purge below (recall is user-visible; a missing
+    # blob/index entry is not). Mirrors the explicit 11E-3 forget endpoint
+    # (memory.forget_document), which surfaces the same failures as 502.
+    memory = getattr(request.app.state, "memory", None)
+    if memory is not None and getattr(memory, "enabled", False):
+        try:
+            forgotten = await memory.forget_document(uid, document_id)
+        except Exception:  # noqa: BLE001 - surface so the delete stays retryable
+            logger.warning(
+                "delete-cascaded memory-forget failed user=%s id=%s; aborting "
+                "delete so the document remains a retryable handle",
+                uid,
+                document_id,
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Could not update memory right now; document was not deleted.",
+            )
+        if forgotten:
+            logger.info(
+                "delete cascaded memory-forget user=%s id=%s forgotten=%s",
+                uid,
+                document_id,
+                forgotten,
+            )
+
     await repo.delete_document(uid, document_id)
     # Cancel any in-flight enrich for this document, then best-effort purge of
     # blob artifacts + indexed chunks. The manifest delete is the source of truth;
@@ -586,33 +621,6 @@ async def delete_document(
     if ingestor is not None:
         await ingestor.cancel_enrich(uid, document_id)
         await ingestor.purge(uid, document_id)
-    # Complete the erase: also forget anything this document contributed to the
-    # owner's durable memory (save-to-memory). Delete already cascades
-    # to the document's other derived artifacts (blobs + indexed chunks above), so
-    # leaving its saved memories behind is the inconsistency; forgetting them here
-    # makes "delete" a complete erase with no derived trace left. Best-effort and
-    # idempotent, exactly like the purge: the manifest delete is the source of
-    # truth and a memory hiccup must never block the delete. No-op when memory is
-    # disabled or the document had nothing saved. Reuses the same machinery as the
-    # explicit 11E-3 forget endpoint (memory.forget_document).
-    memory = getattr(request.app.state, "memory", None)
-    if memory is not None and getattr(memory, "enabled", False):
-        try:
-            forgotten = await memory.forget_document(uid, document_id)
-            if forgotten:
-                logger.info(
-                    "delete cascaded memory-forget user=%s id=%s forgotten=%s",
-                    uid,
-                    document_id,
-                    forgotten,
-                )
-        except Exception:  # noqa: BLE001 - memory cleanup is best-effort
-            logger.warning(
-                "delete memory-forget failed user=%s id=%s",
-                uid,
-                document_id,
-                exc_info=True,
-            )
 
 
 class SaveToMemoryResult(BaseModel):

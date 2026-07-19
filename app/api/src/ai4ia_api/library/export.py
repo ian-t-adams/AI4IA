@@ -31,7 +31,11 @@ import secrets
 from ..config import Settings
 from .blob_store import BlobNotFoundError, BlobStore, version_path
 from .models import DocumentStatus, DocumentVersion, UserDocument
-from .repository import DocumentLibraryRepository, DocumentNotFoundError
+from .repository import (
+    DocumentConflictError,
+    DocumentLibraryRepository,
+    DocumentNotFoundError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +55,17 @@ def _safe_filename(name: str | None) -> str:
     base = (name or "export.md").replace("\\", "/").split("/")[-1]
     base = "".join(c for c in base if c.isprintable()).strip()
     return (base or "export.md")[:_NAME_LIMIT]
+
+
+def _log_safe_path(path: str) -> str:
+    """``path`` with its final segment stripped for safe logging.
+
+    ``version_path`` embeds the (sanitized but still model/user-supplied)
+    export filename as the last path segment. Everything before it is opaque
+    ids + a random attempt token, so logging the trimmed path lets an
+    operator locate the blob without persisting document content/filename
+    into Container Apps / Log Analytics."""
+    return path.rsplit("/", 1)[0] if "/" in path else path
 
 
 class DocumentExportService:
@@ -153,41 +168,9 @@ class DocumentExportService:
             try:
                 await self._blob.delete_prefix(target)
             except Exception:  # noqa: BLE001 - best-effort cleanup
-                logger.warning("orphan version cleanup failed path=%s", target, exc_info=True)
-
-        async def _cleanup_if_orphaned(target: str) -> None:
-            """Delete ``target`` only after confirming it is unreferenced.
-
-            A generic manifest-update failure (e.g. a dropped connection) is
-            ambiguous: the write may have actually committed server-side even
-            though the client never saw the ack. Blindly deleting here could
-            remove a blob the manifest now legitimately points to. So: re-read
-            the document and delete only when this exact path is confirmed
-            absent from its versions (or the document itself is now gone, so
-            nothing can reference it). If the confirm-read itself fails, leave
-            the blob in place for reconciliation/GC rather than risk deleting a
-            live, referenced artifact.
-            """
-            try:
-                current = await self._library.get_document(user_id, document_id)
-            except DocumentNotFoundError:
-                await _delete_blob(target)
-                return
-            except Exception:  # noqa: BLE001 - indeterminate; preserve for reconciliation
                 logger.warning(
-                    "export cleanup confirm-read failed user=%s id=%s path=%s; "
-                    "leaving blob for reconciliation",
-                    user_id, document_id, target, exc_info=True,
+                    "orphan version cleanup failed path=%s", _log_safe_path(target), exc_info=True
                 )
-                return
-            if any(v.path == target for v in current.versions):
-                logger.info(
-                    "export cleanup skipped: path is referenced by the manifest "
-                    "user=%s id=%s path=%s",
-                    user_id, document_id, target,
-                )
-                return
-            await _delete_blob(target)
 
         # Re-read + append under the manifest's own update path so we never blindly
         # overwrite a racing change; update_document raises on a vanished doc
@@ -201,15 +184,33 @@ class DocumentExportService:
             # written, so the blob is definitely unreferenced.
             await _delete_blob(path)
             return {"error": f"No document found with id '{document_id}'."}
+        except DocumentConflictError:
+            # A concurrent writer's commit already moved the etag past ours
+            # (412). Also conclusive - unlike a dropped connection, this is a
+            # synchronous, definitive server response to *this* request body:
+            # Cosmos rejected it, so the manifest cannot reference our
+            # uniquely-pathed attempt blob. Safe to delete without a confirm-read.
+            await _delete_blob(path)
+            return {"error": "Could not record the adjusted document right now."}
         except Exception:  # noqa: BLE001 - degrade, never propagate
+            # Genuinely ambiguous: the client observed a failure but cannot
+            # tell whether the write committed server-side before it did (a
+            # dropped connection or timeout can lose the ack after Cosmos
+            # already persisted the replace_item). A "confirm read" cannot
+            # soundly resolve this either - under Session consistency a single
+            # read after a write whose own ack the client already missed is
+            # not guaranteed to reflect it, so re-reading here could observe
+            # stale data and delete a blob the manifest now legitimately
+            # references. Never delete synchronously in this branch: retain
+            # the attempt blob and leave it for a delayed, out-of-band
+            # reconciliation/GC pass once consistency has had time to
+            # converge. Residual gap: no such sweep is wired up yet, so an
+            # ambiguous-failure blob is an orphan until one exists.
             logger.warning(
-                "export manifest update failed user=%s id=%s n=%s",
-                user_id, document_id, n, exc_info=True,
+                "export manifest update failed ambiguously; blob retained for "
+                "reconciliation user=%s id=%s n=%s path=%s",
+                user_id, document_id, n, _log_safe_path(path), exc_info=True,
             )
-            # Ambiguous outcome (may include a 412 conflict, itself conclusive,
-            # or a genuine network/timeout error, which is not): confirm before
-            # deleting rather than risk removing a committed version's blob.
-            await _cleanup_if_orphaned(path)
             return {"error": "Could not record the adjusted document right now."}
 
         return {
