@@ -124,21 +124,78 @@ Several optional improvements shipped alongside the triage:
 
 ## Known open items
 
-These are genuine debt, **not** accepted tradeoffs. Small, real, and worth a
-follow-up spike — documented here so they read as tracked, not forgotten.
+Both items originally tracked here are now resolved. Kept for the paper trail
+instead of being silently deleted.
 
-| Item | Why it matters | Where to look |
-| --- | --- | --- |
-| No PR CI job actually `docker build`s either Dockerfile. | The base-image bumps (#90/#91) and the original `engines.node` mismatch all slipped past PR CI because the Dockerfiles are only built in `deploy.yml` on push-to-main. A PR-time build-only image build would have caught the `EBADENGINE` drift before it reached `main`. | `.github/workflows/*.yml`, `deploy.yml` |
+**Fixed since this audit:** no PR CI job used to actually `docker build` either
+Dockerfile — the base-image bumps (#90/#91) and the original `engines.node`
+mismatch all slipped past PR CI because the Dockerfiles were only built in
+`deploy.yml` on push-to-main. `.github/workflows/docker-build.yml` (#187) now
+builds `app/web/Dockerfile` and `app/api/Dockerfile` (build-only, `push: false`)
+on every PR that touches `app/web/**` / `app/api/**`, with GHA layer caching and
+an API import smoke test. `proxy/Dockerfile` stays excluded by design — it's
+vendored SimpleL7Proxy (the gateway path) and is already covered by `hadolint`
+and the `proxy-dotnet` build/test job.
 
-**Resolved since this audit:** the `eslint-config-next` `^16` / `eslint` 9→10 knot (formerly listed here) is fixed — #124 reworked `eslint.config.mjs` onto config-next 16's native flat-config export (dropping the `@eslint/eslintrc` `FlatCompat` bridge), and #132 completed the eslint 9→10 bump. `eslint-config-next` is now `16.2.10` and `eslint` is `^10.6.0`.
+**Resolved since this audit:** the `eslint-config-next` `^16` / `eslint` 9→10 knot (formerly listed here) is fixed — #124 reworked `eslint.config.mjs` onto config-next 16's native flat-config export (dropping the `@eslint/eslintrc` `FlatCompat` bridge), and #132 completed the eslint 9→10 bump. `eslint-config-next` is now `16.2.10` and `eslint` is `^10.6.0`. Note: `npm ci` still prints benign `ERESOLVE overriding peer dependency` warnings for `eslint-config-next`'s bundled `eslint-plugin-import`/`eslint-plugin-jsx-a11y`/`eslint-plugin-react` — their published peer ranges still cap at `eslint@^9`/`^9.7` as of this writing (verified via `npm view <pkg> peerDependencies`, no newer release exists). Install still exits 0, everything dedupes to the single `eslint@10.6.0`, and lint/build/test are unaffected (0 errors, matching the pre-bump warning baseline). Not a regression and nothing to override locally — there is no published version of those plugins yet that declares an `eslint@10` peer.
+
+**Fixed since this audit:** the CI-vs-image runtime skew this doc's own table
+(rows for #91/#90 above) left in place is resolved. `app/api/Dockerfile`
+(`python:3.14-slim`) and `app/web/Dockerfile` (`node:26-alpine`) both drifted
+past what `app-ci.yml` actually tests (Python 3.12, Node 22), and — for the same
+no-PR-docker-build reason described in the first item above — nothing in PR CI
+caught it. The Python bump surfaced real `azure-cosmos`/`aiohttp` `DeprecationWarning` noise in
+production logs; the Node bump had no equivalent functional symptom, but
+`npm view next typescript eslint vitest engines` confirms none of them require
+Node 26, and #106's `engines.node` widening to `<27` was manifest hygiene ("stop
+contradicting the image") rather than a documented technical need. Both
+Dockerfiles are reverted to the CI-tested majors (#187): `python:3.12-slim` and
+`node:22-alpine`, with `package.json`'s `engines.node` narrowed back to
+`">=22.0.0 <23"`. Each Dockerfile now carries a comment tying its pinned version
+to `app-ci.yml`/AGENTS.md so a future Dependabot major bump has to be a
+deliberate, documented decision instead of a silent merge.
+
+**Fixed since this audit:** `">=22.0.0 <23"` (the previous fix, immediately
+above) was itself still technically false. `npm view eslint@10.6.0
+jsdom@29.1.1 engines --json` shows both direct devDependencies actually
+require `^22.13.0` within the 22.x line, not the wider `>=22.0.0` the
+manifest claimed — Node 22.0.0–22.12.x would satisfy `package.json` but not
+those packages' real floor. `engines.node` is now `">=22.13.0 <23"` (#187),
+with `package-lock.json`'s mirrored root `engines` entry updated to match by
+hand (a plain `npm install` was tried first and reverted — it additionally
+stripped unrelated `libc` metadata from several optional-dependency lockfile
+entries, evidently a bundled-npm-version artifact unrelated to this fix, so
+the lockfile's `engines` line was edited directly instead to keep the diff
+scoped). No CI/runtime impact: `setup-node` with `node-version: "22"` always
+resolves to the latest 22.x release, well above 22.13.0.
+
+**Fixed since this audit:** `app/web/.dockerignore` and `app/api/.dockerignore`
+both used unanchored `.env*` patterns (#187). Unlike Git's `.gitignore`,
+where a pattern like `.env*` without a leading `/` matches at any depth,
+Docker's `.dockerignore` only matches at the build-context root unless the
+pattern is explicitly prefixed with `**/`. A dotenv file nested in a
+subdirectory would therefore be invisible to `git status` (already
+gitignored recursively) yet still get copied into an image via `COPY . .` /
+`COPY src ./src` plus `cache-to: mode=max`. Both files now use `**/.env*` /
+`!**/.env.example`. Verified with a new regression test,
+`scripts/tests/test_dockerignore_context.py`, wired into a
+`dockerignore-context` job in `docker-build.yml`: it builds real, throwaway
+Docker images from each app's committed `.dockerignore` plus synthetic root-
+and nested-depth secret/example files, confirming secrets are excluded and
+`.env.example` survives at both depths (and confirming, before the fix, that
+nested secrets did leak — this is a real regression test, not a tautology).
 
 ## Bottom line
 
 The original audit backlog is cleared, and the Dependabot backlog is fully worked
 off — the last genuinely-blocked item (#92) shipped via #124 (native flat-config
 rework) and #132 (eslint 10). The two quick web-manifest fixes — `engines.node`
-honesty and the stale proxy doc-comments — shipped in #106. What remains is the
-PR-CI Docker-build gap, tracked above and not urgent — plus the one accepted cost
-tradeoff. That is a healthy steady state: explicit debt with owners and reasons,
-not silent rot.
+honesty and the stale proxy doc-comments — shipped in #106. The PR-CI Docker-build
+gap is now closed too (#187, see "Known open items"), and so is the CI-vs-image
+runtime skew it had been masking — both Dockerfiles are back on the CI-tested
+majors (#187, see "Known open items"). The `engines.node` floor is now
+precisely correct (`>=22.13.0`, not just `>=22.0.0`) and both `.dockerignore`
+files recursively exclude dotenv secrets at every depth, each backed by a
+regression test (#187). What remains is the one accepted cost tradeoff. That
+is a healthy steady state: explicit debt with owners and reasons, not silent
+rot.

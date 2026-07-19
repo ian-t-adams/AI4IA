@@ -35,8 +35,12 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install Bicep CLI
+        env:
+          BICEP_VERSION: 0.45.15
         run: |
-          curl -Lo bicep https://github.com/Azure/bicep/releases/latest/download/bicep-linux-x64
+          set -euo pipefail
+          curl -sSfLo bicep \
+            "https://github.com/Azure/bicep/releases/download/v${BICEP_VERSION}/bicep-linux-x64"
           chmod +x bicep
           sudo mv bicep /usr/local/bin/bicep
           bicep --version
