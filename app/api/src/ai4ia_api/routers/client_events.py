@@ -8,17 +8,39 @@ reports it. This router gives the browser a narrow, best-effort way to land
 a small, bounded set of client-observed failures in that SAME customEvents
 pipeline, instead of adding a new telemetry stack.
 
-Deliberately minimal, with two layers of content control:
+Content-free by construction, not by sanitization. Earlier versions of this
+endpoint accepted free-text ``message``/``route``/``component`` fields and
+ran them through a regex redaction pass (percent-decoding, JSON-unescaping,
+auth-scheme matching, etc.) before logging them. Across several review
+rounds that sanitizer kept getting bypassed by a new encoding/nesting/quoting
+shape (URL-encoded delimiters, doubly-encoded delimiters, JSON-nested
+credentials, unterminated quotes, standalone scheme+credential pairs...) --
+an unwinnable arms race, because the set of ways to obscure a substring from
+a regex is unbounded. The fix is to never accept free text at all:
+
+- ``event`` is a small fixed enum (:data:`ClientEventType`).
+- ``code`` is re-validated against a small fixed allowlist
+  (:data:`_KNOWN_CODES`) and coerced to ``"unknown"`` if it doesn't match --
+  never trusted/logged as free text, even though it's a string on the wire.
+- ``severity`` is a small fixed enum (``ClientEventSeverity``).
+- ``hasDigest`` is a plain boolean.
+- ``model_config = ConfigDict(extra="forbid")`` on :class:`ClientEventReport`
+  makes any *other* field a hard 422 rejection, so a modified/compromised
+  client cannot smuggle a ``message``/``route``/anything-else field past this
+  model no matter how it encodes it -- there is no sanitizer to bypass
+  because there is no free-text field left to sanitize.
+
+This also structurally resolves an earlier bug where a raw client
+``message`` was passed to the logger under the reserved ``"message"``
+``extra`` key, which ``logging.Logger.makeRecord`` rejects with a
+``KeyError`` that was previously swallowed, silently dropping every event
+that carried one: there is no longer any free-text content passed to the
+logger at all, so there's nothing left that could collide with a reserved
+``LogRecord`` attribute.
+
+Deliberately minimal:
 - No new telemetry SDK/dependency — reuses ``emit_custom_event`` exactly like
   chat completions, MCP tool calls, and document ingest already do.
-- No free-form payloads beyond a small event-type enum, a *stable, allowlisted*
-  ``code`` (e.g. ``"TypeError"``/``"NotAllowedError"``; never free text — see
-  ``_KNOWN_CODES``), and short, length-capped text fields. No stack traces, no
-  request/response bodies. Free-text fields (``message``/``route``/
-  ``component``) are independently redacted here (``_sanitize``) for common
-  secret/PII shapes (tokens, URLs, emails, GUIDs) — the browser
-  (``clientTelemetry.ts``) does the same, but a modified/compromised client
-  could skip that, so this is defense-in-depth, not the only layer.
 - No Cosmos write: this is ephemeral operational telemetry, not canonical
   domain data (see AGENTS.md "Cosmos is canonical" — this deliberately isn't
   that).
@@ -28,15 +50,13 @@ Deliberately minimal, with two layers of content control:
 """
 from __future__ import annotations
 
-import re
 import threading
 import time
 from collections import deque
 from typing import Literal
-from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Response, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
@@ -48,16 +68,23 @@ router = APIRouter(prefix="/api/client-events", tags=["client-events"])
 # here rather than accepting free-form event names from the browser.
 ClientEventType = Literal[
     "render_error",
-    "unhandled_error",
+    "window_error",
     "unhandled_rejection",
     "media_playback_error",
     "microphone_error",
 ]
 
+# Mirrors the browser's ClientEventSeverity (clientTelemetry.ts — keep in
+# sync). Every current caller reports "error"; the other values exist so a
+# future non-fatal event has somewhere to report without inventing a new
+# event kind.
+ClientEventSeverity = Literal["error", "warning", "info"]
+
 # Stable, non-sensitive error classification. Mirrors the browser's own
-# allowlist (clientTelemetry.ts's KNOWN_CODES — keep in sync); re-validated
-# here rather than trusted from the client. Anything outside this set is
-# normalized to "unknown" below, so this field can never carry free text.
+# allowlist (clientTelemetry.ts's KNOWN_CODES — keep in sync). Re-validated
+# here rather than trusted from the client: this field is a string on the
+# wire, but it is never treated as free text -- anything outside this set is
+# normalized to "unknown" below.
 _KNOWN_CODES = frozenset(
     {
         "Error",
@@ -82,171 +109,7 @@ _KNOWN_CODES = frozenset(
     }
 )
 
-_MAX_MESSAGE_LEN = 300
-_MAX_ROUTE_LEN = 200
-_MAX_COMPONENT_LEN = 100
 _MAX_CODE_LEN = 40
-
-# Defense-in-depth redaction for the free-text fields, applied before they
-# ever reach emit_custom_event/App Insights. Mirrors clientTelemetry.ts's
-# REDACTIONS list — keep the two in sync. Order matters: broader patterns
-# (JWTs, URLs) run before the generic long-opaque-token catch-all so a match
-# isn't partially double-redacted.
-_REDACTIONS: list[tuple[re.Pattern[str], str]] = [
-    (
-        re.compile(r"\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
-        "[redacted-token]",
-    ),
-    (
-        # The optional (?:scheme\s+)? group consumes an HTTP auth scheme word
-        # (e.g. "Authorization: Basic <credential>") together with the
-        # credential that follows it, as ONE match. Without it, `[^\s"&,]+`
-        # alone greedily stops at the first whitespace and matches just the
-        # scheme word -- redacting "Basic"/"Bearer" while leaving the actual
-        # credential completely untouched afterward.
-        #
-        # Two more shapes handled here (regression coverage for a follow-up
-        # review round): a leading/trailing `"?` around the label so a
-        # JSON-serialized key like `{"Authorization":"Basic <cred>"}` -- where
-        # a closing key-quote sits between the label and the `:` -- still
-        # matches and both quotes are consumed (not left dangling in the
-        # output); and a `"[^"]*"` alternative tried before the bare-token one
-        # so a *quoted* credential is matched as one atomic unit even when the
-        # scheme word right before it is unquoted, e.g.
-        # `Authorization: Basic "<cred>"` (previously the bare-token
-        # alternative excludes `"`, so backtracking gave up on the optional
-        # scheme-word match and matched only "Basic", leaving the quoted
-        # credential completely exposed).
-        #
-        # Three more shapes added in a later round: the quoted-value
-        # alternative now has an OPTIONAL closing quote, so a value whose
-        # closing quote is missing entirely is still consumed to the end of
-        # the string rather than falling through to the bare-token
-        # alternative (which excludes quote characters from its class and so
-        # cannot even start matching at an opening quote, previously leaving
-        # the whole thing unredacted); a bounded, single-level `{...}`
-        # alternative so a value that is itself a small JSON object is
-        # consumed as one atomic unit instead of the bare-token fallback
-        # matching only its opening brace and leaving whatever is nested
-        # inside fully exposed (deliberately one level deep, not truly
-        # recursive -- `re` can't balance nested braces, and the field
-        # length caps below bound how much nesting is realistic to worry
-        # about further); and `credential` is added to the label list so a
-        # bare, non-nested key of that name is caught on its own.
-        #
-        # `(?!\[redacted(?:-[a-z]+)?\])` immediately before the value
-        # guards against re-matching this pattern's OWN prior output on a
-        # later `_sanitize` pass (see MAX_SANITIZE_PASSES below): without
-        # it, a value of literal `[redacted]` -- exactly what got written
-        # here on a previous pass -- satisfies the bare-token alternative
-        # just like a real credential would, and if that previous pass's
-        # match happened to leave a legitimate leading quote in place (the
-        # standalone pattern below does this deliberately), THIS pattern's
-        # own optional leading `"?` can then wrongly reinterpret that quote
-        # as a JSON-key-closing quote and consume-and-drop it, corrupting
-        # already-correct output on the next pass.
-        re.compile(
-            r"\"?\b(authorization|bearer|token|api[_-]?key|secret|password|access[_-]?key|sas|credential)"
-            r"\b\"?\s*[:=]\s*(?:(?:basic|bearer|digest|negotiate|ntlm|oauth)\s+)?"
-            r"(?!\[redacted(?:-[a-z]+)?\])(?:\"[^\"]*\"?|\{[^{}]*\}|[^\s\"&,]+)",
-            re.IGNORECASE,
-        ),
-        r"\1=[redacted]",
-    ),
-    (
-        # Standalone scheme+credential with no "Authorization"/"token"-style
-        # label at all (e.g. bare `Bearer <cred>`, `Basic: <cred>`, a
-        # punctuation-adjacent `(Bearer "<cred>")`, or a JSON-nested
-        # `["Bearer <cred>"]`) -- distinct from the pattern above, which
-        # requires a label word before the scheme. `Basic`/`Digest`/
-        # `Negotiate`/`NTLM`/`OAuth` are never label words above, so without
-        # this they pass through untouched whenever they're not preceded by
-        # "Authorization:" et al. Gated on a `:`/`=`/quote signal (or,
-        # failing that, at least a 2+ char unquoted token after mandatory
-        # whitespace) so an incidental trailing punctuation mark isn't
-        # mistaken for a credential; this can still over-redact rare prose
-        # like "Bearer bonds", an accepted tradeoff for a security sanitizer
-        # where false negatives (a leaked credential) are far costlier than
-        # false positives (a little lost diagnostic text). Runs after the
-        # label-prefixed pattern above so the common "Authorization: Bearer
-        # xyz" case is fully consumed there first, leaving nothing here.
-        #
-        # Same optional-closing-quote and bounded single-level `{...}`
-        # alternatives as the label-prefixed pattern above, added in a later
-        # round for the same reasons: an unterminated quoted value is still
-        # consumed to the end of the string instead of leaking unmatched,
-        # and a small nested JSON object following the scheme word is
-        # consumed as one atomic unit instead of only its opening brace.
-        # Same anti-re-match guard as the label-prefixed pattern above,
-        # for the same reason (this pattern's own `word=[redacted]` output
-        # would otherwise look like a fresh standalone credential on the
-        # next pass).
-        re.compile(
-            r"\b(basic|bearer|digest|negotiate|ntlm|oauth)\b"
-            r"(?:\s*[:=]\s*(?!\[redacted(?:-[a-z]+)?\])(?:\"[^\"]*\"?|\{[^{}]*\}|[^\s\"&,]+)"
-            r"|\s+(?!\[redacted(?:-[a-z]+)?\])(?:\"[^\"]*\"?|\{[^{}]*\}|[^\s\"&,]{2,}))",
-            re.IGNORECASE,
-        ),
-        r"\1=[redacted]",
-    ),
-    (re.compile(r"https?://\S+", re.IGNORECASE), "[redacted-url]"),
-    (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "[redacted-email]"),
-    (
-        re.compile(
-            r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE
-        ),
-        "[redacted-id]",
-    ),
-    (re.compile(r"\b[A-Za-z0-9+/_-]{24,}\b"), "[redacted-token]"),
-]
-
-
-def _decode_percent_encoding(value: str) -> str:
-    """Decodes %XX percent-encoding so a redaction pattern that expects a
-    literal delimiter (":", "=", a space) isn't defeated by URL-encoding the
-    delimiter away -- e.g. "token%3Dsecret" or "Basic%20secret" have no
-    literal "="/space for the patterns above to match against. `unquote`
-    never raises (invalid sequences pass through unchanged by default), so
-    unlike the browser-side per-triple decoder this can safely operate on
-    the whole string in one call."""
-    return unquote(value)
-
-
-# Bounds how many decode-then-redact rounds `_sanitize` runs (see below).
-_MAX_SANITIZE_PASSES = 3
-
-
-def _sanitize(text: str) -> str:
-    """Strips control characters and redacts common secret/PII shapes
-    (bearer/API tokens, URLs with query strings, emails, GUIDs, other long
-    opaque tokens) from a free-text telemetry field. Best-effort, not a
-    guarantee against every possible leak shape — combined with the field
-    length caps and the browser-side sanitizer, this keeps the common,
-    high-risk shapes (credentials, PII, session/request ids) out of
-    Application Insights even if one layer is bypassed.
-
-    Runs as a bounded decode-then-redact loop, not a single linear pass: a
-    percent-encoded delimiter can itself be re-encoded a second time (e.g.
-    "%2520" decodes to "%20", which itself still needs a further decode pass
-    before it becomes a literal space), and the patterns above only
-    recognize a *literal* delimiter, so one decode pass alone can leave a
-    still-encoded credential unredacted. Each pass re-decodes, re-strips
-    control characters revealed by decoding (e.g. a decoded "%0A" newline),
-    and re-applies every pattern; the loop stops as soon as a pass produces
-    no further change -- the common, non-adversarial case exits after one
-    confirmatory pass. What is returned is always the result of that full
-    pipeline: the decoded-but-not-yet-redacted intermediate is never what
-    gets returned."""
-    result = text
-    for _ in range(_MAX_SANITIZE_PASSES):
-        candidate = re.sub(r"[\r\n\t]+", " ", _decode_percent_encoding(result))
-        for pattern, replacement in _REDACTIONS:
-            candidate = pattern.sub(replacement, candidate)
-        if candidate == result:
-            result = candidate
-            break
-        result = candidate
-    return result.strip()
 
 
 # Fixed-window per-user cap. In-memory/per-process is fine here — this is
@@ -335,14 +198,29 @@ def _rate_limited(user_id: str) -> bool:
 
 
 class ClientEventReport(BaseModel):
+    """Content-free, allowlisted telemetry payload -- see module docstring.
+
+    ``extra="forbid"`` is what actually keeps arbitrary/free-form content out
+    of this endpoint (not per-field validation alone): a modified/compromised
+    client cannot smuggle a ``message``, ``route``, or any other key past
+    this model no matter how it's encoded or nested -- Pydantic rejects the
+    whole request (422) before any handler code, including
+    ``emit_custom_event``, ever sees it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     event: ClientEventType
     # Stable classification (e.g. "TypeError"); defaults/normalizes to
-    # "unknown" rather than 422ing — this is best-effort metadata, not a
+    # "unknown" rather than 422ing -- this is best-effort metadata, not a
     # security control, so an unrecognized value is coerced, not rejected.
     code: str = Field("unknown", max_length=_MAX_CODE_LEN)
-    message: str = Field("", max_length=_MAX_MESSAGE_LEN)
-    route: str = Field("", max_length=_MAX_ROUTE_LEN)
-    component: str = Field("", max_length=_MAX_COMPONENT_LEN)
+    severity: ClientEventSeverity = "error"
+    # Whether Next.js attached a correlatable digest to a render error --
+    # NOT the digest value itself (a string), just its presence. There is no
+    # field anywhere in this model wide enough to carry the digest, a
+    # message, a URL, or any other free text.
+    hasDigest: bool = False
 
     @field_validator("code")
     @classmethod
@@ -364,20 +242,8 @@ async def report_client_event(
                 "source": "browser",
                 "event": body.event,
                 "code": body.code,
-                # NOTE: the attribute key is deliberately "clientMessage", not
-                # "message" — `logging.Logger.makeRecord` reserves "message"
-                # (and "asctime") on LogRecord and raises KeyError for any
-                # `extra` dict that reuses them. That raise was previously
-                # swallowed by emit_custom_event's blanket except-pass, so
-                # every report with a non-empty message silently vanished
-                # before reaching Application Insights, even though this
-                # endpoint still returned 202. See test_client_events_api.py's
-                # real-logger-path test, which exercises this without mocking
-                # emit_custom_event so a future regression can't hide the
-                # same way.
-                "clientMessage": _sanitize(body.message) or None,
-                "route": _sanitize(body.route) or None,
-                "component": _sanitize(body.component) or None,
+                "severity": body.severity,
+                "hasDigest": body.hasDigest,
                 "userId": user.internal_user_id,
             },
         )

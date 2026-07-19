@@ -1,15 +1,55 @@
-"""Client-events beacon: auth gating, validation bounds, rate limiting, and
-the ``emit_custom_event`` bridge (mirrors ``test_telemetry.py``'s style for
-asserting the customEvents contract)."""
+"""Client-events beacon: auth gating, the content-free allowlisted schema,
+rate limiting, and the ``emit_custom_event`` bridge (mirrors
+``test_telemetry.py``'s style for asserting the customEvents contract).
+
+Several review rounds found that a free-text telemetry field can always be
+adversarially encoded/nested/quoted to bypass regex-based redaction, so the
+schema itself no longer has a free-text field: ``event``/``code``/
+``severity`` are small fixed enums (``code`` normalizes anything unmatched to
+"unknown" instead of being trusted verbatim) and ``hasDigest`` is a plain
+boolean. ``ClientEventReport`` also sets ``extra="forbid"``, so any field
+outside that set -- named anything, containing anything, however deeply
+nested or encoded -- is rejected (422) before request handling even begins.
+The hostile-input tests below reuse the exact adversarial corpus that used to
+defeat the regex sanitizer, now aimed at the two remaining surfaces (an
+illegal extra field, and the one legal string field, ``code``), proving
+neither can carry that content into ``emit_custom_event``/the logger.
+"""
 from __future__ import annotations
 
 import logging
 import threading
 from collections import deque
 
+import pytest
+
 from ai4ia_api import logging_setup
 from ai4ia_api.auth.base import AuthError
-from ai4ia_api.routers.client_events import _sanitize
+
+# Adversarial corpus reused across the hostile-input tests below. Mirrors
+# clientTelemetry.test.ts's hostile `code` fixtures. Intentionally
+# low-entropy, synthetic placeholders (never realistic-looking secrets) so
+# they read clearly as test data, not real credentials.
+_HOSTILE_STRINGS = [
+    "Authorization: Basic YWxpY2U6cGFzc3dvcmQ=",
+    "Authorization%3A%20Basic%20YWxpY2U6cGFzc3dvcmQ%3D",
+    "Basic%2520YWxpY2U6cGFzc3dvcmQ%253D",  # double percent-encoded
+    '{"Authorization":"Basic YWxpY2U6cGFzc3dvcmQ="}',
+    'Authorization: Basic "YWxpY2U6cGFzc3dvcmQ=',  # unterminated quote
+    "TypeError\x00\x01 with control chars",
+    "TypeError'; DROP TABLE users;--",
+    "a" * 5000,
+    "https://example.test/reset?token=abc123",
+    "user@example.test leaked here",
+    "Bearer " + "z" * 40,
+]
+
+# Subset of the corpus above short enough to pass the `code` field's own
+# max_length -- used for the "normalizes to unknown" test, since a value that
+# exceeds max_length is rejected outright before normalization ever runs (see
+# test_overlong_code_value_is_rejected_outright, which covers that case
+# separately).
+_HOSTILE_STRINGS_WITHIN_CODE_LENGTH = [s for s in _HOSTILE_STRINGS if len(s) <= 40]
 
 
 class _RaisingAuth:
@@ -33,22 +73,36 @@ def test_accepts_minimal_valid_report(client, monkeypatch):
     )
     resp = client.post(
         "/api/client-events",
-        json={"event": "render_error", "message": "Boom", "route": "/", "component": "ChatApp"},
+        json={"event": "render_error", "code": "TypeError", "severity": "warning", "hasDigest": True},
         headers={"X-Dev-User": "alice"},
     )
     assert resp.status_code == 202
     assert len(captured) == 1
     name, attrs = captured[0]
     assert name == "client_event"
-    assert attrs["source"] == "browser"
-    assert attrs["event"] == "render_error"
-    # Deliberately not "message" -- see the real-logger-path regression test
-    # below for why that key collides with a reserved LogRecord attribute.
-    assert attrs["clientMessage"] == "Boom"
-    assert attrs["route"] == "/"
-    assert attrs["component"] == "ChatApp"
+    assert attrs == {
+        "source": "browser",
+        "event": "render_error",
+        "code": "TypeError",
+        "severity": "warning",
+        "hasDigest": True,
+        "userId": attrs["userId"],
+    }
     assert attrs["userId"]
+
+
+def test_defaults_apply_when_optional_fields_omitted(client, monkeypatch):
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.routers.client_events.emit_custom_event",
+        lambda name, attrs: captured.append((name, attrs)),
+    )
+    resp = client.post("/api/client-events", json={"event": "microphone_error"})
+    assert resp.status_code == 202
+    _, attrs = captured[0]
     assert attrs["code"] == "unknown"
+    assert attrs["severity"] == "error"
+    assert attrs["hasDigest"] is False
 
 
 def test_rejects_unknown_event_type(client, monkeypatch):
@@ -62,26 +116,137 @@ def test_rejects_unknown_event_type(client, monkeypatch):
     assert captured == []
 
 
-def test_rejects_oversized_message(client):
-    resp = client.post(
-        "/api/client-events",
-        json={"event": "render_error", "message": "x" * 301},
-    )
-    assert resp.status_code == 422
-
-
-def test_empty_optional_fields_become_none(client, monkeypatch):
+@pytest.mark.parametrize("hostile", _HOSTILE_STRINGS)
+def test_hostile_event_value_is_rejected(client, monkeypatch, hostile):
+    """`event` is a closed Literal -- any value outside the fixed enum is a
+    422, regardless of length, encoding, or nesting (Literal validation is a
+    plain equality check, not a length- or pattern-bounded one)."""
     captured: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "ai4ia_api.routers.client_events.emit_custom_event",
         lambda name, attrs: captured.append((name, attrs)),
     )
-    resp = client.post("/api/client-events", json={"event": "microphone_error"})
+    resp = client.post("/api/client-events", json={"event": hostile})
+    assert resp.status_code == 422
+    assert captured == []
+
+
+def test_rejects_invalid_severity_value(client, monkeypatch):
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.routers.client_events.emit_custom_event",
+        lambda name, attrs: captured.append((name, attrs)),
+    )
+    resp = client.post(
+        "/api/client-events", json={"event": "render_error", "severity": "catastrophic"}
+    )
+    assert resp.status_code == 422
+    assert captured == []
+
+
+def test_rejects_non_boolean_has_digest(client, monkeypatch):
+    """A free-text string smuggled into what should be a boolean field is
+    rejected by Pydantic's own type validation, never coerced to a string
+    and logged."""
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.routers.client_events.emit_custom_event",
+        lambda name, attrs: captured.append((name, attrs)),
+    )
+    resp = client.post(
+        "/api/client-events",
+        json={"event": "render_error", "hasDigest": "Authorization: Basic YWxpY2U="},
+    )
+    assert resp.status_code == 422
+    assert captured == []
+
+
+def test_overlong_code_value_is_rejected_outright(client, monkeypatch):
+    """A `code` value longer than the field's max_length is rejected before
+    normalization ever runs -- checked separately from the length-bounded
+    hostile corpus below, since Pydantic's `max_length` constraint runs
+    before the `@field_validator` that would otherwise normalize an
+    unrecognized value to "unknown"."""
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.routers.client_events.emit_custom_event",
+        lambda name, attrs: captured.append((name, attrs)),
+    )
+    resp = client.post(
+        "/api/client-events", json={"event": "render_error", "code": "x" * 5000}
+    )
+    assert resp.status_code == 422
+    assert captured == []
+
+
+@pytest.mark.parametrize("hostile", _HOSTILE_STRINGS)
+def test_unknown_extra_field_with_hostile_content_is_rejected_and_never_emitted(
+    client, monkeypatch, hostile
+):
+    """Regression for the fail-open regex-bypass findings across several
+    review rounds: instead of trying to pattern-match hostile content out of
+    a free-text field, the field itself no longer exists. Any extra field --
+    whatever it's named, however hostile or long its value -- is rejected
+    outright by `ClientEventReport`'s `extra="forbid"` before request
+    handling begins, proven here by feeding the identical adversarial corpus
+    that used to defeat the regex sanitizer, this time as an *illegal*
+    field."""
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.routers.client_events.emit_custom_event",
+        lambda name, attrs: captured.append((name, attrs)),
+    )
+    resp = client.post(
+        "/api/client-events", json={"event": "render_error", "message": hostile}
+    )
+    assert resp.status_code == 422
+    assert captured == []
+
+
+def test_deeply_nested_extra_field_is_rejected_regardless_of_internal_structure(
+    client, monkeypatch
+):
+    """Proves the forbid-extra guarantee doesn't depend on inspecting what's
+    *inside* an illegal field: an arbitrarily deep/nested credential-shaped
+    object under an extra key is rejected purely because the key itself
+    isn't part of the schema -- Pydantic never has to recurse into (or
+    pattern-match against) its contents, unlike the old regex sanitizer."""
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.routers.client_events.emit_custom_event",
+        lambda name, attrs: captured.append((name, attrs)),
+    )
+    resp = client.post(
+        "/api/client-events",
+        json={
+            "event": "render_error",
+            "authDetails": {
+                "Authorization": {
+                    "scheme": "Basic",
+                    "credential": "YWxpY2U6cGFzc3dvcmQ=",
+                    "nested": {"again": ["Bearer", "z" * 60]},
+                }
+            },
+        },
+    )
+    assert resp.status_code == 422
+    assert captured == []
+
+
+@pytest.mark.parametrize("hostile", _HOSTILE_STRINGS_WITHIN_CODE_LENGTH)
+def test_hostile_code_value_always_normalizes_to_unknown(client, monkeypatch, hostile):
+    """`code` is the one remaining string field, but it's a closed allowlist:
+    anything not an exact match becomes "unknown" regardless of encoding,
+    nesting, or control characters -- never forwarded verbatim to
+    `emit_custom_event`/the logger."""
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.routers.client_events.emit_custom_event",
+        lambda name, attrs: captured.append((name, attrs)),
+    )
+    resp = client.post("/api/client-events", json={"event": "render_error", "code": hostile})
     assert resp.status_code == 202
-    _, attrs = captured[0]
-    assert attrs["clientMessage"] is None
-    assert attrs["route"] is None
-    assert attrs["component"] is None
+    assert captured[0][1]["code"] == "unknown"
 
 
 def test_per_user_rate_limit_drops_without_erroring(client, monkeypatch):
@@ -92,18 +257,18 @@ def test_per_user_rate_limit_drops_without_erroring(client, monkeypatch):
     monkeypatch.setattr(mod, "emit_custom_event", lambda name, attrs: captured.append((name, attrs)))
     headers = {"X-Dev-User": "flooder"}
     for _ in range(mod._RATE_LIMIT_PER_MINUTE):
-        resp = client.post("/api/client-events", json={"event": "unhandled_error"}, headers=headers)
+        resp = client.post("/api/client-events", json={"event": "window_error"}, headers=headers)
         assert resp.status_code == 202
     assert len(captured) == mod._RATE_LIMIT_PER_MINUTE
 
     # One more within the same window is dropped silently, not an error.
-    over = client.post("/api/client-events", json={"event": "unhandled_error"}, headers=headers)
+    over = client.post("/api/client-events", json={"event": "window_error"}, headers=headers)
     assert over.status_code == 202
     assert len(captured) == mod._RATE_LIMIT_PER_MINUTE
 
     # A different user is unaffected by another user's window.
     other = client.post(
-        "/api/client-events", json={"event": "unhandled_error"}, headers={"X-Dev-User": "someone-else"}
+        "/api/client-events", json={"event": "window_error"}, headers={"X-Dev-User": "someone-else"}
     )
     assert other.status_code == 202
     assert len(captured) == mod._RATE_LIMIT_PER_MINUTE + 1
@@ -277,7 +442,7 @@ def test_rate_limit_resets_after_window_elapses(client, monkeypatch):
     monkeypatch.setattr(mod, "emit_custom_event", lambda name, attrs: captured.append((name, attrs)))
     headers = {"X-Dev-User": "flooder2"}
     for _ in range(mod._RATE_LIMIT_PER_MINUTE):
-        client.post("/api/client-events", json={"event": "unhandled_error"}, headers=headers)
+        client.post("/api/client-events", json={"event": "window_error"}, headers=headers)
     assert len(captured) == mod._RATE_LIMIT_PER_MINUTE
 
     # Simulate the window elapsing by rewinding the recorded hit timestamps.
@@ -285,21 +450,28 @@ def test_rate_limit_resets_after_window_elapses(client, monkeypatch):
         for i in range(len(window)):
             window[i] -= mod._RATE_WINDOW_SECONDS + 1
 
-    resp = client.post("/api/client-events", json={"event": "unhandled_error"}, headers=headers)
+    resp = client.post("/api/client-events", json={"event": "window_error"}, headers=headers)
     assert resp.status_code == 202
     assert len(captured) == mod._RATE_LIMIT_PER_MINUTE + 1
 
 
 def test_report_lands_in_real_logger_without_keyerror(client, monkeypatch):
-    """Regression test for the reserved-LogRecord-attribute bug (HIGH-1):
-    `Logger.makeRecord` raises `KeyError` if `extra` contains a "message" (or
-    "asctime") key, since those collide with attributes every LogRecord
-    already has. `client_events.py` used to pass the report's text under a
-    "message" key straight into `emit_custom_event`'s `attributes` dict, so
-    every report with non-empty text raised that KeyError -- silently
-    swallowed by `emit_custom_event`'s blanket except-pass, meaning the event
-    never reached Application Insights even though this endpoint still
-    returned 202. This exercises the REAL logger (no mocked
+    """Regression test for the original reserved-LogRecord-attribute bug
+    (HIGH-1): `Logger.makeRecord` raises `KeyError` if `extra` contains a
+    "message" (or "asctime") key, since those collide with attributes every
+    LogRecord already has. `client_events.py` used to pass the report's raw
+    text under a "message"-shaped key straight into `emit_custom_event`'s
+    `attributes` dict, so every report with non-empty text raised that
+    KeyError -- silently swallowed by `emit_custom_event`'s blanket
+    except-pass, meaning the event never reached Application Insights even
+    though this endpoint still returned 202.
+
+    That specific collision is now structurally impossible (there is no
+    free-text field left that could collide with a reserved attribute), but
+    this test remains valuable as a real-logger-path regression guard for the
+    endpoint as a whole, and additionally proves a hostile `code` value
+    normalizes to "unknown" all the way down to the actual LogRecord, not
+    just in a mocked capture list. Exercises the REAL logger (no mocked
     `emit_custom_event`) so a future regression can't hide behind a mock
     again."""
     monkeypatch.setattr(logging_setup, "_telemetry_configured", True)
@@ -315,11 +487,10 @@ def test_report_lands_in_real_logger_without_keyerror(client, monkeypatch):
         resp = client.post(
             "/api/client-events",
             json={
-                "event": "unhandled_error",
-                "message": "Something broke",
-                "route": "/chat",
-                "component": "ChatApp",
-                "code": "TypeError",
+                "event": "window_error",
+                "code": "Authorization: Basic YWxpY2U=",  # hostile, still <=40 chars
+                "severity": "warning",
+                "hasDigest": True,
             },
             headers={"X-Dev-User": "carol"},
         )
@@ -327,16 +498,21 @@ def test_report_lands_in_real_logger_without_keyerror(client, monkeypatch):
         logging_setup._telemetry_logger.removeHandler(handler)
 
     assert resp.status_code == 202
-    # The crux of the regression: previously this list stayed empty because
-    # the KeyError was raised (and swallowed) before the record was emitted.
+    # The crux of the original regression: previously this list stayed empty
+    # because the KeyError was raised (and swallowed) before the record was
+    # emitted.
     assert len(records) == 1
     rec = records[0]
     assert getattr(rec, "microsoft.custom_event.name") == "client_event"
-    assert rec.clientMessage == "Something broke"
-    assert rec.event == "unhandled_error"
-    assert rec.route == "/chat"
-    assert rec.component == "ChatApp"
-    assert rec.code == "TypeError"
+    assert rec.event == "window_error"
+    assert rec.code == "unknown"  # hostile input, normalized -- never logged verbatim
+    assert rec.severity == "warning"
+    assert rec.hasDigest is True
+    assert rec.userId
+    # None of the old free-text attributes exist on the record at all.
+    assert not hasattr(rec, "clientMessage")
+    assert not hasattr(rec, "route")
+    assert not hasattr(rec, "component")
 
 
 def test_code_passes_through_when_known_and_normalizes_when_not(client, monkeypatch):
@@ -345,225 +521,9 @@ def test_code_passes_through_when_known_and_normalizes_when_not(client, monkeypa
         "ai4ia_api.routers.client_events.emit_custom_event",
         lambda name, attrs: captured.append((name, attrs)),
     )
-    client.post("/api/client-events", json={"event": "unhandled_error", "code": "NotAllowedError"})
-    client.post("/api/client-events", json={"event": "unhandled_error", "code": "made_up_code"})
-    client.post("/api/client-events", json={"event": "unhandled_error"})
+    client.post("/api/client-events", json={"event": "window_error", "code": "NotAllowedError"})
+    client.post("/api/client-events", json={"event": "window_error", "code": "made_up_code"})
+    client.post("/api/client-events", json={"event": "window_error"})
 
     codes = [attrs["code"] for _, attrs in captured]
     assert codes == ["NotAllowedError", "unknown", "unknown"]
-
-
-def test_sanitize_redacts_hostile_message_content():
-    # Mirrors clientTelemetry.test.ts's "redaction of hostile message
-    # content" cases -- fixtures are intentionally low-entropy, repeated
-    # characters, never realistic-looking secrets.
-    long_opaque_run = "x" * 30
-    short_key_value = "y" * 20
-    assert (
-        _sanitize(f"Authorization: {short_key_value} rejected")
-        == "Authorization=[redacted] rejected"
-    )
-    assert (
-        _sanitize("Failed to fetch https://example.test/path?a=1&b=2")
-        == "Failed to fetch [redacted-url]"
-    )
-    assert (
-        _sanitize("User jane.doe@example.test not found")
-        == "User [redacted-email] not found"
-    )
-    assert (
-        _sanitize("session 11111111-2222-3333-4444-555555555555 crashed")
-        == "session [redacted-id] crashed"
-    )
-    assert (
-        _sanitize(f"token {long_opaque_run} invalid") == "token [redacted-token] invalid"
-    )
-
-
-def test_sanitize_redacts_auth_scheme_word_together_with_its_credential():
-    """Regression for the HIGH finding: the auth-header pattern's value group
-    (``[^\\s"&,]+``) stops at the first whitespace, so before the fix it
-    matched -- and redacted -- only the scheme word ("Basic"/"Bearer") while
-    leaving the credential that followed it completely untouched in plain
-    text. The fix wraps an optional scheme-word group around the value so the
-    scheme and its credential are consumed as a single match. Covered for
-    both schemes and both a short and a long (24+ char) credential, since the
-    long case is also eligible for the separate generic long-opaque-token
-    catch-all -- proving the auth-header pattern (which runs first) fully
-    owns it rather than a later pattern happening to clean up what it
-    missed."""
-    fixtures = {
-        "Basic": ("b" * 12, "c" * 40),
-        "Bearer": ("d" * 12, "e" * 40),
-    }
-    for scheme, (short_cred, long_cred) in fixtures.items():
-        for credential in (short_cred, long_cred):
-            result = _sanitize(f"Authorization: {scheme} {credential} failed")
-            assert result == "Authorization=[redacted] failed"
-            assert scheme not in result
-            assert credential not in result
-
-
-def test_sanitize_redacts_json_serialized_authorization_key():
-    """Regression for a follow-up acceptance round: a JSON-serialized key
-    like ``{"Authorization":"Basic <cred>"}`` has a closing key-quote sitting
-    directly between the label and the colon, which the prior fix's pattern
-    didn't account for and so left completely unmatched."""
-    cred = "f" * 16
-    result = _sanitize('{"Authorization":"Basic ' + cred + '"} rejected')
-    assert cred not in result
-    assert "Basic" not in result
-    assert "Authorization=[redacted]" in result
-
-
-def test_sanitize_redacts_quoted_credential_after_unquoted_scheme():
-    """Regression for a follow-up acceptance round: a quoted credential
-    following an *unquoted* scheme word (``Authorization: Basic "<cred>"``)
-    previously defeated the optional scheme-word group -- the old bare-token
-    alternative excludes `"`, so backtracking gave up on matching the scheme
-    word at all and redacted only "Basic", leaving the quoted credential
-    fully exposed."""
-    cred = "g" * 16
-    result = _sanitize(f'Authorization: Basic "{cred}" failed')
-    assert cred not in result
-    assert "Basic" not in result
-    assert result == "Authorization=[redacted] failed"
-
-
-def test_sanitize_redacts_standalone_scheme_and_credential_with_no_label():
-    """Regression for a follow-up acceptance round: bare scheme+credential
-    with no "Authorization"/"token" label at all -- e.g. `Basic: <cred>` or a
-    `Bearer` sitting in punctuation/JSON nesting -- previously passed through
-    completely untouched, since `Basic`/`Digest`/`Negotiate`/`NTLM`/`OAuth`
-    were never in the label-prefixed pattern's label list."""
-    basic_cred = "h" * 12
-    bearer_cred = "i" * 40
-    result_basic = _sanitize(f"Basic: {basic_cred} was rejected")
-    assert basic_cred not in result_basic
-    assert "Basic:" not in result_basic
-
-    result_bearer = _sanitize(f'request failed ("Bearer {bearer_cred}")')
-    # Unlike the label-prefixed pattern (which drops the scheme word
-    # entirely), the standalone pattern's replacement preserves the
-    # matched scheme word -- only the credential value after it is
-    # opaque -- so the correct assertion is that the scheme word is
-    # redacted together with its credential, not that it vanishes.
-    assert bearer_cred not in result_bearer
-    assert result_bearer == 'request failed ("Bearer=[redacted]")'
-
-
-def test_sanitize_leaves_trailing_scheme_word_alone_when_nothing_follows():
-    # "Bearer" here has no colon/equals and nothing follows it (just a
-    # trailing period), so there's no credential-shaped value for the
-    # standalone pattern to consume.
-    assert _sanitize("I love Bearer.") == "I love Bearer."
-
-
-def test_sanitize_does_not_let_content_survive_for_userid_correlation():
-    # The endpoint always tags the report with the authenticated user's id
-    # (see `attrs["userId"]` above) -- proving the message is fully scrubbed
-    # here is what keeps that user-tagged record from preserving hostile
-    # content against them.
-    long_opaque_run = "x" * 30
-    result = _sanitize(f"for jane.doe@example.test, token={long_opaque_run}")
-    assert "jane.doe@example.test" not in result
-    assert long_opaque_run not in result
-
-
-def test_report_endpoint_sanitizes_before_emitting(client, monkeypatch):
-    captured: list[tuple[str, dict]] = []
-    monkeypatch.setattr(
-        "ai4ia_api.routers.client_events.emit_custom_event",
-        lambda name, attrs: captured.append((name, attrs)),
-    )
-    resp = client.post(
-        "/api/client-events",
-        json={
-            "event": "unhandled_error",
-            "message": "User jane.doe@example.test not found",
-            "route": "/x?token=" + "y" * 20,
-        },
-    )
-    assert resp.status_code == 202
-    _, attrs = captured[0]
-    assert attrs["clientMessage"] == "User [redacted-email] not found"
-    assert "jane.doe@example.test" not in attrs["route"]
-
-
-# Regression coverage for a follow-up acceptance round: naive delimiter-
-# matching is defeated by percent-encoding the delimiter away, by a
-# credential value that is itself a small nested JSON object, or by an
-# unterminated quote -- each previously let the real credential straight
-# through. `_sanitize` now runs a bounded decode-then-redact loop
-# (_MAX_SANITIZE_PASSES) specifically to close these gaps; the browser
-# (clientTelemetry.ts's `sanitize`) mirrors this exactly -- see the
-# matching tests there.
-
-
-def test_sanitize_redacts_standalone_scheme_credential_joined_by_encoded_space():
-    cred = "z" * 20
-    result = _sanitize(f"Basic%20{cred} rejected")
-    assert cred not in result
-    assert "%20" not in result
-    assert result == "Basic=[redacted] rejected"
-
-
-def test_sanitize_redacts_labeled_pair_joined_by_encoded_equals_sign():
-    cred = "z" * 20
-    result = _sanitize(f"token%3D{cred} invalid")
-    assert cred not in result
-    assert "%3D" not in result
-    assert result == "token=[redacted] invalid"
-
-
-def test_sanitize_redacts_double_percent_encoded_delimiter_after_two_passes():
-    """"%2520" decodes to "%20" on the first pass, which itself only becomes
-    a literal space on a second pass -- proving the loop actually iterates
-    rather than decoding once and giving up."""
-    cred = "z" * 20
-    result = _sanitize(f"Basic%2520{cred} rejected")
-    assert cred not in result
-    assert "%20" not in result
-    assert "%2520" not in result
-    assert result == "Basic=[redacted] rejected"
-
-
-def test_sanitize_redacts_credential_value_that_is_itself_a_nested_json_object():
-    cred = "z" * 20
-    result = _sanitize(f'Authorization: {{"scheme":"Basic","credential":"{cred}"}} rejected')
-    assert cred not in result
-    assert result == "Authorization=[redacted] rejected"
-
-
-def test_sanitize_redacts_unterminated_missing_closing_quote_credential():
-    cred = "z" * 20
-    result = _sanitize(f'Authorization: "{cred}')
-    assert cred not in result
-    assert result == "Authorization=[redacted]"
-
-
-def test_sanitize_never_leaves_decoded_but_unredacted_intermediate():
-    """A message combining several bypass shapes at once; the assertion is
-    strong -- no raw credential material and no residual percent-encoding
-    survive, which is only possible if every pass's decode step is followed
-    by a redaction step before anything is returned."""
-    cred = "z" * 20
-    result = _sanitize(f"Basic%20{cred} and token%3D{cred}2 both failed")
-    assert cred not in result
-    assert "%20" not in result
-    assert "%3D" not in result
-
-
-def test_sanitize_does_not_corrupt_already_redacted_quoted_credential_on_later_pass():
-    """Regression for a bug introduced while adding the iterative loop above:
-    once the standalone pattern redacts ``("Bearer <cred>")`` down to
-    ``("Bearer=[redacted]")`` on pass one, pass two must not let the
-    label-prefixed pattern re-match its own ``Bearer=[redacted]`` output and
-    swallow the legitimately-preserved leading quote (it optionally consumes
-    one, for the unrelated JSON-key-quoting case). Uses "Bearer"
-    specifically -- the one word that is both a standalone scheme AND a
-    label -- since that dual role is exactly what let the label-prefixed
-    pattern misfire on the second pass."""
-    cred = "z" * 20
-    result = _sanitize(f'request failed ("Bearer {cred}")')
-    assert result == 'request failed ("Bearer=[redacted]")'

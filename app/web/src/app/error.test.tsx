@@ -21,21 +21,33 @@ afterEach(() => {
 });
 
 describe("Error boundary", () => {
-  it("reports the render error to the telemetry bridge and shows a retry action", () => {
-    const error = Object.assign(new Error("boom"), { digest: "abc123" });
+  it("reports a content-free render error (code + hasDigest only, never the message) and shows a retry action", () => {
+    const error = Object.assign(new Error("boom, credentials: Basic YWxpY2U6cGFzc3dvcmQ="), {
+      digest: "abc123",
+    });
     const reset = vi.fn();
 
     render(<ErrorBoundary error={error} reset={reset} />);
 
     expect(mocks.reportClientEvent).toHaveBeenCalledWith("render_error", {
-      message: "boom",
       code: "Error",
-      route: expect.any(String),
+      hasDigest: true,
     });
     expect(screen.getByRole("alert")).toBeInTheDocument();
     expect(screen.getByText(/Digest: abc123/)).toBeInTheDocument();
 
     screen.getByRole("button", { name: /retry/i }).click();
     expect(reset).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports hasDigest: false when Next.js did not attach a digest", () => {
+    const error = new TypeError("boom");
+    render(<ErrorBoundary error={error} reset={vi.fn()} />);
+
+    expect(mocks.reportClientEvent).toHaveBeenCalledWith("render_error", {
+      code: "TypeError",
+      hasDigest: false,
+    });
+    expect(screen.queryByText(/Digest:/)).not.toBeInTheDocument();
   });
 });
