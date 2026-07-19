@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatApp } from "./ChatApp";
+import type { Session } from "@/lib/types";
 
 const mocks = vi.hoisted(() => ({
   listModels: vi.fn(),
@@ -139,7 +140,7 @@ vi.mock("./StudioPanel", () => ({
   ),
 }));
 
-const session = (id: string) => ({
+const session = (id: string): Session => ({
   id,
   userId: "u1",
   title: `Session ${id}`,

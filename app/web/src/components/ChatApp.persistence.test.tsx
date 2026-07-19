@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
       sessionId: string,
       conversationId: string,
       turns: { role: "user" | "assistant"; text: string }[],
+      isStillValid: () => boolean,
     ) => Promise<void>;
   },
 }));
