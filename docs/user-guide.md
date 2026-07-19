@@ -24,6 +24,13 @@ and tool safety; the web app is the user interface.
   sessions.
 - Treat cited document snippets and tool output as grounded context, not as
   permission to skip review.
+- Temperature and Top P currently remain visible even when the selected model does
+  not support them. The UI bounds Temperature to 0-2 and Top P to 0-1; for compatible
+  models, the API forwards those values unchanged. The UI and API cap output tokens
+  to the selected catalog model's published maximum. For GPT-5 and o-series
+  deployments, the gateway strips unsupported sampling fields and translates the
+  output-token field to the model's accepted shape. Control visibility does not
+  grant a model capability or override server policy.
 
 ## Agents and workflows
 
@@ -39,6 +46,15 @@ and tool safety; the web app is the user interface.
   conversation-level tool changes; the API authorizes every call again at execution.
 - Tool rows state whether a capability is available in typed chat, Voice Live, or
   both. Typed-only tools are never silently advertised to Voice Live.
+
+### Agent activity
+
+Tool-using turns show live activity such as searching, reading, running a tool,
+being blocked, or encountering an error. Completed turns retain a collapsed,
+activity list. The required contract is an execution trace, **not**
+chain-of-thought: it may contain only the step type, validated tool alias/name,
+fixed reason category, and coarse outcome—never hidden reasoning,
+credentials, arguments/results, prompts or queries, audio, or transcripts.
 
 ## Documents and media
 
@@ -75,7 +91,9 @@ stale id remains in an older session record.
 
 ## Voice
 
-- Turn-based speech uses the normal API path.
+- Turn-based transcription and text-to-speech use compatible HTTP calls on the
+  normal `FastAPI -> SimpleL7Proxy -> APIM -> Foundry` path. The **Play** control
+  synthesizes an assistant message independently of any Voice Live connection.
 - Voice Live uses a browser WebSocket directly to the API ingress because the
   Next.js proxy does not proxy WebSockets.
 - The API still enforces auth, Origin checks, entitlements, metering, deployment
@@ -111,6 +129,12 @@ stale id remains in an older session record.
   finalized voice turn needs saving. Denied microphone access or a gateway failure
   leaves the session list unchanged; use the inline **Retry** action after fixing
   connectivity. This holds for both providers.
+- **Stop** tears down capture and the socket independently of transcript
+  persistence. If saving finalized voice turns fails, use **Retry** or **Discard**;
+  a persistence error does not keep the microphone live or trap navigation.
+- If the browser reports that the microphone track ended/became muted, or its audio
+  processing context cannot recover, Voice Live closes completely and asks you to
+  reconnect instead of remaining silently "live."
 
 If Voice Live controls are hidden, the feature is disabled for that environment. If
 only the provider selector is hidden, only the default provider is configured.
@@ -128,6 +152,11 @@ document summaries to memory. The inspector lists memories owned by the current
 user and supports confirmed, item-labelled deletion with pending/error/retry state
 when the configured backend can verify and delete an owned record. There is no
 global consent/toggle yet.
+
+The mem0 backend currently reports deletion as unsupported because its pinned SDK
+cannot prove hard deletion. Delete controls stay unavailable, erase APIs fail
+closed, and `/forget` explicitly says that no memories were deleted; it never
+reports a success-shaped result for an unverifiable operation.
 
 The Usage section reports known token/cost subtotals and request coverage when some
 providers omit usage. `Unknown` is shown instead of zero when every request is
@@ -171,6 +200,9 @@ App (requests, response time, replicas, restarts), Cosmos DB, Azure AI Search, a
 PostgreSQL (CPU, storage, connections). Each tile degrades to unavailable when its Azure resource id, the
 `azure-monitor-query` SDK, or the API identity's Monitoring Reader permission is
 missing; a `—` cell means no data for that metric, not an error.
+The whole Cosmos panel uses the common one-hour grain required by
+`ServiceAvailability`. Metrics with incompatible aggregations are split into
+separate calls so one unsupported combination cannot invalidate the whole panel.
 
 Operations and Security panels query the existing Log Analytics workspace with
 fixed bounded KQL. Every panel names its source, source timestamp, lag, and
@@ -206,8 +238,9 @@ the current proxy exports stable queryable events.
 | Feature controls are missing | The web feature flag is off or the API feature is disabled. |
 | A library route returns disabled/not found | Document understanding is not enabled or prerequisites failed startup validation. |
 | A document does not appear in chat | It is not `ready`, not accessible to you, or retrieval is capped for the turn. |
-| Voice Live reports that the gateway or realtime service is unavailable | The active provider's APIM WebSocket API, its scoped key, or its upstream backend (Foundry for Azure OpenAI, the AIServices account for Azure Speech) is unavailable. Retry after gateway health is restored; each provider's API and key are independent, so one provider's outage does not necessarily affect the other. |
+| Voice Live reports that the gateway or realtime service is unavailable | The active provider's APIM WebSocket API, its scoped key, or its upstream backend (Foundry for Azure OpenAI, the Azure AI Services account for Azure Speech) is unavailable. Retry after gateway health is restored; each provider's API and key are independent, so one provider's outage does not necessarily affect the other. |
 | Voice Live fails before opening the socket | API public URL, Origin allowlist, browser microphone permission, or auth is misconfigured. |
+| Voice Live was connected but stopped hearing me | The browser muted or ended the microphone track, or audio processing could not recover. The app now closes the session and shows a reconnect message; confirm OS/browser input state before retrying. |
 | Azure Speech is not offered as a provider | The operator has not enabled it (`AI4IA_SPEECH_VOICE_LIVE_ENABLED` off, or it is not in the server's voice provider allowlist). Azure OpenAI remains available. |
 | A provider/model change appears not to apply | Voice settings intentionally affect the next connection. Stop and reconnect; the current socket is never silently replaced. |
 | Azure OpenAI Voice Live fails while other paths work | The UI now reports bounded protocol/close details for operator correlation, but that alone does not prove an Azure OpenAI upstream cause. Report the time, provider/model, and safe correlation/error shown; do not paste tokens, audio, transcripts, prompts, or tool data. |

@@ -75,10 +75,10 @@ CI uses Python 3.12. `app/api/Dockerfile`'s `FROM python:3.12-slim` must track t
 same version deliberately (see the comment above that line) — a June 2026
 Dependabot major-version bump to `python:3.14-slim` went unreviewed for weeks
 (no CI job exercised the built image, and nothing else in the repo asserted the
-two stay in sync) before it was traced to azure-cosmos/aiohttp `DeprecationWarning`
-noise in production logs. `app/web`'s Node base drifted the same way (see the Web
-section above) — both are now pinned back to the CI-tested majors. In `app/api`
-it installs:
+two stay in sync). Production `azure-cosmos`/`aiohttp` warning reports prompted the
+review, but the audit did not establish that Python 3.14 caused those warnings.
+`app/web`'s Node base drifted the same way (see the Web section above) — both are
+now pinned back to the CI-tested majors. In `app/api` it installs:
 
 ```powershell
 python -m pip install --upgrade pip

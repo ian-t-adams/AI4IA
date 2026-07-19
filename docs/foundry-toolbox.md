@@ -34,6 +34,17 @@ code**.
 This is the maximal "through the proxy + APIM" outcome with minimal surface: one catalog
 entry, one RBAC grant, one feature flag.
 
+### Foundry web search is not WebIQ
+
+The Toolbox `web_search` tool and AI4IA's WebIQ integration are independent
+capabilities. WebIQ is built directly into the FastAPI agent runtime as five
+feature-gated tools (`web_search`, `news_search`, `video_search`, `image_search`,
+and `browse_url`) using `AI4IA_WEB_SEARCH_ENABLED` plus API-key or managed-identity
+auth. Its bounded results are fenced as untrusted model context. Enabling the
+Foundry Toolbox does not enable WebIQ, and disabling WebIQ does not remove the
+Toolbox's own `web_search`. Current implementation/remediation status is tracked in
+the [`platform audit`](./platform-audit.md).
+
 ## Why this approach
 
 - **Reuse, don't rebuild.** The app is a custom in-process agent runtime; tools are the

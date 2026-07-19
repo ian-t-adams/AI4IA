@@ -144,8 +144,9 @@ and the `proxy-dotnet` build/test job.
 (`python:3.14-slim`) and `app/web/Dockerfile` (`node:26-alpine`) both drifted
 past what `app-ci.yml` actually tests (Python 3.12, Node 22), and — for the same
 no-PR-docker-build reason described in the first item above — nothing in PR CI
-caught it. The Python bump surfaced real `azure-cosmos`/`aiohttp` `DeprecationWarning` noise in
-production logs; the Node bump had no equivalent functional symptom, but
+caught it. Production `azure-cosmos`/`aiohttp` `DeprecationWarning` noise prompted
+the follow-up, but the audit did not establish that the Python bump caused those
+warnings. The supported reason for reverting was the untested CI/runtime skew;
 `npm view next typescript eslint vitest engines` confirms none of them require
 Node 26, and #106's `engines.node` widening to `<27` was manifest hygiene ("stop
 contradicting the image") rather than a documented technical need. Both
