@@ -404,11 +404,13 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
             checked={form.trusted}
             onChange={(e) => setForm((f) => ({ ...f, trusted: e.target.checked }))}
           />
-          Trusted — its tools run without per-use approval
+          Trusted — its default-posture tools become callable
         </label>
         <p style={{ ...labelStyle, marginTop: -8 }}>
-          Leave off (recommended) and each tool call requires approval. Only trust a
-          server you fully control.
+          Chat has no live approval prompt: leave this off (recommended) and
+          tools without a Never override stay unavailable, not merely
+          slower. Only trust a server you fully control, or pre-approve
+          individual tools below.
         </p>
 
         <label style={checkRow}>

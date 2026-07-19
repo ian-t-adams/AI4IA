@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   approvalPosture,
   attachableMcpTools,
+  attachableToolApprovalPosture,
   effectiveToolApproval,
   healthBadge,
   healthStatus,
@@ -254,7 +255,14 @@ describe("per-tool approval", () => {
     const p = toolApprovalPosture(s, "forecast");
     expect(p.posture).toBe("always");
     expect(p.requiresApproval).toBe(true);
+    // Label consistently as "Unavailable" (not a live per-use prompt), and
+    // don't let it imply trusting the server would fix it — only changing
+    // the override itself does.
+    expect(p.label).toMatch(/unavailable/i);
     expect(p.label).toMatch(/always/i);
+    expect(p.detail).toMatch(/no live approval prompt/i);
+    expect(p.detail).toMatch(/even on a trusted server/i);
+    expect(p.detail).not.toMatch(/on each use/i);
   });
 
   it("honors a `never` override even on an untrusted server", () => {
@@ -300,6 +308,19 @@ describe("per-tool approval", () => {
     const tools = attachableMcpTools(servers);
     expect(tools[0]).toMatchObject({ toolName: "forecast", requiresApproval: false, approval: "never" });
     expect(tools[1]).toMatchObject({ toolName: "alerts", requiresApproval: true, approval: "default" });
+  });
+
+  it("gives attachableToolApprovalPosture the same label/detail as toolApprovalPosture, without a fake server object", () => {
+    const s = makeServer({
+      trusted: true,
+      toolApprovals: { forecast: "always" },
+      discoveredTools: [{ name: "forecast", description: "", inputSchema: {} }],
+    });
+    const [tool] = attachableMcpTools([s]);
+    const fromTool = attachableToolApprovalPosture(tool);
+    const fromServer = toolApprovalPosture(s, "forecast");
+    expect(fromTool).toEqual(fromServer);
+    expect(fromTool.label).toMatch(/unavailable/i);
   });
 });
 

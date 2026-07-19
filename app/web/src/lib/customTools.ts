@@ -285,6 +285,35 @@ export function toolRequiresApproval(
   return !server.trusted;
 }
 
+// Shared badge-copy core for a resolved posture, so a server+toolName pair
+// (toolApprovalPosture) and an already-projected AttachableMcpTool
+// (attachableToolApprovalPosture, below) render identical label/detail text.
+function describeToolApprovalPosture(
+  posture: McpToolApproval,
+  requiresApproval: boolean,
+  host: string,
+): ApprovalPosture & { posture: McpToolApproval } {
+  const scopeDetail = `External tool; network access limited to ${host}.`;
+  let label: string;
+  let detail = scopeDetail;
+  if (posture === "always") {
+    label = "Unavailable — approval set to Always";
+    detail =
+      `${scopeDetail} Chat has no live approval prompt, so this tool is ` +
+      "left out of what the model can call — even on a trusted server — " +
+      "until this override is changed away from Always (set it to Never, " +
+      "or to Default on a trusted server).";
+  } else if (posture === "never") label = "Pre-approved — runs without approval";
+  else if (requiresApproval) {
+    label = "Unavailable until trusted";
+    detail =
+      `${scopeDetail} Chat has no live approval prompt, so this tool is ` +
+      "left out of what the model can call unless the server is trusted, " +
+      "or this tool's approval is set to Never.";
+  } else label = "Trusted — runs without approval";
+  return { posture, requiresApproval, label, detail };
+}
+
 // Compact, badge-ready posture for a single discovered tool: the resolved
 // approval requirement plus a short label/detail describing why.
 export function toolApprovalPosture(
@@ -293,24 +322,7 @@ export function toolApprovalPosture(
 ): ApprovalPosture & { posture: McpToolApproval } {
   const posture = effectiveToolApproval(server, toolName);
   const requiresApproval = toolRequiresApproval(server, toolName);
-  const scopeDetail = `External tool; network access limited to ${server.host}.`;
-  let label: string;
-  let detail = scopeDetail;
-  if (posture === "always") label = "Always requires approval";
-  else if (posture === "never") label = "Pre-approved — runs without approval";
-  else if (requiresApproval) {
-    label = "Unavailable until trusted";
-    detail =
-      `${scopeDetail} Chat has no live approval prompt, so this tool is ` +
-      "left out of what the model can call unless the server is trusted, " +
-      "or this tool's approval is set to Never.";
-  } else label = "Trusted — runs without approval";
-  return {
-    posture,
-    requiresApproval,
-    label,
-    detail,
-  };
+  return describeToolApprovalPosture(posture, requiresApproval, server.host);
 }
 
 // --- Health / quarantine (mirror mcp_health) -------------------------------
@@ -410,14 +422,26 @@ export interface AttachableMcpTool {
   trusted: boolean;
   enabled: boolean;
   host: string;
-  // Resolved per-tool approval requirement + posture (mirrors the runtime gate),
-  // so the agent builder can show whether attaching the tool will prompt.
+  // Resolved per-tool approval requirement + posture (mirrors the runtime gate).
+  // Chat has no live approval prompt: `requiresApproval: true` means the tool
+  // is left out of what the model can call, not that attaching it will ask
+  // for a per-use approval.
   requiresApproval: boolean;
   approval: McpToolApproval;
   // True when the tool comes from the curated **official** plane (APIM-fronted),
   // not a user's own BYO server. Drives the read-only "official" badge and lets
   // the picker show both planes in one list.
   official: boolean;
+}
+
+// Same label/detail as toolApprovalPosture, but for a tool that's already
+// been flattened into an AttachableMcpTool (e.g. the agent builder's per-tool
+// checkbox list) — reuses the values it already carries instead of
+// reconstructing a fake server object just to re-derive them.
+export function attachableToolApprovalPosture(
+  t: Pick<AttachableMcpTool, "approval" | "requiresApproval" | "host">,
+): ApprovalPosture & { posture: McpToolApproval } {
+  return describeToolApprovalPosture(t.approval, t.requiresApproval, t.host);
 }
 
 // Groups a list of servers into their attachable MCP tools (namespaced), skipping

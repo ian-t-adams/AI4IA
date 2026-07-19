@@ -15,6 +15,7 @@ import {
 import {
   approvalPosture,
   attachableMcpTools,
+  attachableToolApprovalPosture,
   healthBadge,
   isMcpToolName,
   parseMcpToolName,
@@ -492,6 +493,7 @@ export function AgentBuilder({
                   )}
                   {g.tools.map((t) => {
                     const mcpInputId = `ag-mcp-${t.namespacedName}`;
+                    const approval = attachableToolApprovalPosture(t);
                     return (
                       <span key={t.namespacedName} style={checkRow}>
                         <input
@@ -513,13 +515,20 @@ export function AgentBuilder({
                           }}
                         >
                           {t.requiresApproval
-                            ? t.approval === "always"
-                              ? "· approval (forced)"
-                              : "· approval"
+                            ? "· unavailable"
                             : t.approval === "never"
                               ? "· pre-approved"
                               : "· auto"}
                         </span>
+                        {/* Chat has no live approval prompt, so an unavailable
+                            tool needs its exact enabling path spelled out
+                            (differs for an "always" override vs. an
+                            untrusted server) — not just a status word. */}
+                        {t.requiresApproval && (
+                          <HelpTooltip label={`${t.toolName} approval`} size="sm">
+                            {approval.detail}
+                          </HelpTooltip>
+                        )}
                       </span>
                     );
                   })}

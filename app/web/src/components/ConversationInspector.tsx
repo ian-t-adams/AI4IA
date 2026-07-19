@@ -705,15 +705,17 @@ export function ConversationInspector({
                   <strong>effective</strong> right now. Then its{" "}
                   <strong>source</strong> and <strong>ownership</strong>; its{" "}
                   <strong>risk</strong> tier (safe, external, or destructive); whether
-                  it needs <strong>approval</strong> for each use; its{" "}
-                  <strong>scopes</strong> (specific permissions it can exercise); and
+                  it <strong>needs approval</strong> — chat has no live approval
+                  prompt, so this means the tool is unavailable, not merely
+                  slower; its <strong>scopes</strong> (specific permissions it can
+                  exercise); and
                   whether it&apos;s <strong>typed</strong> (schema-validated inputs) or{" "}
                   <strong>voice</strong>-capable (works during a Voice Live call).
                 </HelpTooltip>
               </div>
             ) : null}
             <div className="tool-list">
-              {toolEntries.map((tool) => {
+              {toolEntries.map((tool, index) => {
                 const inherited = sessionId
                   ? snapshot?.tools.inherited.includes(tool.name) ?? false
                   : draftInheritedTools.includes(tool.name);
@@ -731,9 +733,15 @@ export function ConversationInspector({
                   ? snapshot?.tools.removed.includes(tool.name) ?? false
                   : draftDefaults.toolOverrides.removed.includes(tool.name);
                 const lockedOut = tool.available && !tool.selectable && !inherited;
-                const toolInputId = `tool-input-${tool.name}`;
-                const toolStatusId = `tool-status-${tool.name}`;
-                const toolLockedId = `tool-locked-${tool.name}`;
+                // Index-based, not name-based: aria-describedby (like all
+                // IDREFS attributes) is a whitespace-separated token list, so
+                // an id built from a raw tool name containing a space (e.g. a
+                // discovered tool literally named "foo bar") would silently
+                // split into two bogus tokens and break the association.
+                // A per-render index is always whitespace-free and unique.
+                const toolInputId = `tool-input-${index}`;
+                const toolStatusId = `tool-status-${index}`;
+                const toolLockedId = `tool-locked-${index}`;
                 return (
                   // A <label> can only own one interactive control; nesting the
                   // HelpTooltip's own button inside it (as before) folded "Help:

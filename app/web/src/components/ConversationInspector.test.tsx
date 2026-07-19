@@ -589,6 +589,42 @@ describe("ConversationInspector", () => {
     );
   });
 
+  it("computes a correct accessible description for a discovered tool whose name contains whitespace", async () => {
+    mocks.listTools.mockResolvedValue([
+      {
+        name: "foo bar",
+        label: "Foo Bar",
+        description: "A discovered MCP tool with a space in its name.",
+        source: "mcp",
+        risk: "external",
+        requiresApproval: true,
+        scopes: [],
+        available: true,
+        selectable: false,
+        detail: null,
+        ownership: "user",
+        typed: true,
+        voice: false,
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<ConversationInspector {...props()} />);
+    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    const checkbox = await screen.findByRole("checkbox", { name: "Foo Bar" });
+
+    // Regression test: ids built from the raw tool name (e.g.
+    // `tool-status-foo bar`) get silently split into two bogus IDREF tokens
+    // by aria-describedby's whitespace-separated-list semantics, so no
+    // element resolves and the computed accessible description goes empty —
+    // even though a naive `.toContain()` check on the raw attribute string
+    // wouldn't catch it (both sides are built from the same template
+    // literal, so containment holds regardless of whitespace). Ids must be
+    // generated independent of the tool name (e.g. by row index) so this
+    // keeps resolving correctly no matter what a discovered tool is named.
+    expect(checkbox).toHaveAccessibleDescription(/external/);
+    expect(checkbox).toHaveAccessibleDescription(/Can't enable from here/);
+  });
+
   it("explains the tool list's dot-joined columns via a glossary tooltip", async () => {
     mocks.listTools.mockResolvedValue([
       {
