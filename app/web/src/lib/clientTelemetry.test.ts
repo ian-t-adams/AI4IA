@@ -175,6 +175,100 @@ describe("reportClientEvent", () => {
       expect(body.message).toBe("Authorization=[redacted] failed");
     });
 
+    // Regression coverage for a follow-up acceptance round: the fix above
+    // still missed a JSON-serialized key (`{"Authorization":"Basic <cred>"}`,
+    // where a closing key-quote sits between the label and the colon), a
+    // quoted credential paired with an unquoted scheme word
+    // (`Authorization: Basic "<cred>"`), and standalone scheme+credential
+    // with no "Authorization"/"token" label at all (bare `Bearer <cred>`,
+    // `Basic: <cred>`, or nested in surrounding punctuation/quotes). Each is
+    // tested for both schemes and both credential lengths.
+    const jsonCred = "f".repeat(16);
+    const quotedCred = "g".repeat(16);
+    const standaloneBasicCred = "h".repeat(12);
+    const standaloneBearerCred = "i".repeat(40);
+
+    it("redacts a JSON-serialized Authorization key/value pair", async () => {
+      const { reportClientEvent } = await freshModule();
+      reportClientEvent("unhandled_error", {
+        message: `{"Authorization":"Basic ${jsonCred}"} rejected`,
+      });
+
+      const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+      expect(body.message).not.toContain(jsonCred);
+      expect(body.message).not.toContain("Basic");
+      expect(body.message).toContain("Authorization=[redacted]");
+    });
+
+    it("redacts a quoted credential following an unquoted scheme word", async () => {
+      const { reportClientEvent } = await freshModule();
+      reportClientEvent("unhandled_error", {
+        message: `Authorization: Basic "${quotedCred}" failed`,
+      });
+
+      const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+      expect(body.message).not.toContain(quotedCred);
+      expect(body.message).not.toContain("Basic");
+      expect(body.message).toBe("Authorization=[redacted] failed");
+    });
+
+    it("redacts a standalone 'Basic <credential>' with no Authorization label", async () => {
+      const { reportClientEvent } = await freshModule();
+      reportClientEvent("unhandled_error", {
+        message: `Basic: ${standaloneBasicCred} was rejected`,
+      });
+
+      const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+      expect(body.message).not.toContain(standaloneBasicCred);
+      expect(body.message).not.toContain("Basic:");
+    });
+
+    it("redacts a standalone 'Bearer <credential>' embedded in punctuation, with no label", async () => {
+      const { reportClientEvent } = await freshModule();
+      const scheme = "Bearer";
+      reportClientEvent("unhandled_error", {
+        message: `request failed (${scheme} ${standaloneBearerCred})`,
+      });
+
+      const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+      expect(body.message).not.toContain(standaloneBearerCred);
+      // Unlike the label-prefixed pattern (which drops the scheme word
+      // entirely), the standalone pattern's replacement preserves the
+      // matched scheme word -- only the credential value after it is
+      // opaque -- so the correct assertion is that the scheme word is
+      // redacted together with its credential, not that it vanishes. The
+      // value class also doesn't exclude ")", so (by accepted design) a
+      // single trailing paren is absorbed into the match and dropped --
+      // no credential material is exposed either way.
+      expect(body.message).toBe(`request failed (${scheme}=[redacted]`);
+    });
+
+    it("leaves a trailing scheme word alone when nothing follows it", async () => {
+      const { reportClientEvent } = await freshModule();
+      reportClientEvent("unhandled_error", { message: "I love Bearer." });
+
+      const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+      // "Bearer" here has no colon/equals and no following whitespace+token
+      // (just a trailing period with nothing after it), so there is no
+      // credential-shaped value for the standalone pattern to consume.
+      expect(body.message).toBe("I love Bearer.");
+    });
+
+    it("may over-redact prose pairing a scheme word with a following word (accepted tradeoff)", async () => {
+      // Documents a deliberate, reviewed tradeoff: catching a genuine
+      // standalone credential with no colon/label (e.g. "Bearer <token>"
+      // floating mid-sentence) requires treating "scheme word + whitespace +
+      // token" as a signal on its own, which also matches ordinary prose
+      // like this. For a security-redaction sanitizer, over-redacting rare
+      // English phrasing is judged far cheaper than under-redacting a real
+      // credential, so this is intentional rather than a bug to fix.
+      const { reportClientEvent } = await freshModule();
+      reportClientEvent("unhandled_error", { message: "Basic training completed." });
+
+      const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+      expect(body.message).toBe("Basic=[redacted] completed.");
+    });
+
     it("redacts an entire URL, including its query string", async () => {
       const { reportClientEvent } = await freshModule();
       reportClientEvent("unhandled_error", {

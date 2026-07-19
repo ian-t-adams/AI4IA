@@ -135,11 +135,15 @@ describe("namespaced tool names", () => {
 });
 
 describe("approvalPosture", () => {
-  it("requires approval for untrusted servers and scopes egress to the host", () => {
+  it("is unavailable (no live prompt) for untrusted servers, and scopes egress to the host", () => {
     const p = approvalPosture({ trusted: false, host: "api.example.com" });
     expect(p.requiresApproval).toBe(true);
-    expect(p.label).toMatch(/approval/i);
+    // Must not imply a live in-chat approval prompt exists.
+    expect(p.label).not.toMatch(/on each use/i);
+    expect(p.label).not.toMatch(/prompt/i);
     expect(p.detail).toContain("api.example.com");
+    expect(p.detail).toMatch(/no live approval prompt/i);
+    expect(p.detail).toMatch(/left out of what the model can call/i);
   });
 
   it("runs without approval for trusted servers", () => {
@@ -262,6 +266,19 @@ describe("per-tool approval", () => {
     expect(p.label).toMatch(/pre-approved/i);
   });
 
+  it("resolves the default posture on an untrusted server as unavailable, not a per-use prompt", () => {
+    const s = makeServer({ trusted: false });
+    const p = toolApprovalPosture(s, "forecast");
+    expect(p.posture).toBe("default");
+    expect(p.requiresApproval).toBe(true);
+    // No prompt exists at call time — the tool is simply omitted from the
+    // model's schema, so the copy must not claim a per-use approval step.
+    expect(p.label).not.toMatch(/on each use/i);
+    expect(p.label).not.toMatch(/prompt/i);
+    expect(p.detail).toMatch(/no live approval prompt/i);
+    expect(p.detail).toMatch(/left out of what the model can call/i);
+  });
+
   it("only overrides the named tool", () => {
     const s = makeServer({ trusted: false, toolApprovals: { forecast: "never" } });
     expect(toolRequiresApproval(s, "forecast")).toBe(false);
@@ -299,11 +316,19 @@ describe("MCP_TOOL_APPROVALS copy", () => {
     expect(always?.hint).toMatch(/left out of what the model can call/i);
   });
 
-  it("does not promise a per-use prompt for 'default' or 'never' either", () => {
-    for (const value of ["default", "never"] as const) {
-      const option = MCP_TOOL_APPROVALS.find((a) => a.value === value);
-      expect(option?.hint).not.toMatch(/prompt/i);
-    }
+  it("does not promise a per-use prompt for 'default' either (chat has none)", () => {
+    const def = MCP_TOOL_APPROVALS.find((a) => a.value === "default");
+    expect(def).toBeDefined();
+    expect(def?.hint).not.toMatch(/prompt for approval/i);
+    expect(def?.hint).not.toMatch(/on every use/i);
+    expect(def?.hint).not.toMatch(/on each use/i);
+    expect(def?.hint).toMatch(/no live approval prompt/i);
+    expect(def?.hint).toMatch(/left out of what the model can call/i);
+  });
+
+  it("does not promise a per-use prompt for 'never' either", () => {
+    const option = MCP_TOOL_APPROVALS.find((a) => a.value === "never");
+    expect(option?.hint).not.toMatch(/prompt/i);
   });
 });
 

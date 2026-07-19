@@ -63,7 +63,7 @@ describe("McpServerBuilder", () => {
     // (MCP_TOOL_APPROVALS[].hint) was previously computed but never rendered.
     await user.click(screen.getByRole("button", { name: /Approval option: Default/ }));
     expect(screen.getByRole("tooltip")).toHaveTextContent(
-      /approval required unless the server is trusted/i,
+      /no live approval prompt/i,
     );
 
     // The resolved outcome pill explains *why* in terms of network scope.

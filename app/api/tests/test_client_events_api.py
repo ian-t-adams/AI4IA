@@ -137,30 +137,80 @@ def test_sweep_stale_users_evicts_only_inactive_entries():
         mod._hits.clear()
 
 
-def test_sweep_stale_users_caps_total_tracked_users_by_recency(monkeypatch):
-    """Regression for MEDIUM-2's backstop: even if a burst of distinct users
-    all show up between sweeps (all still within the rate window, so none of
-    them are individually "stale"), the dict must not grow past
-    `_MAX_TRACKED_USERS` -- the least-recently-active entries are evicted
-    first."""
+def test_rate_limited_enforces_hard_cap_on_every_insertion(monkeypatch):
+    """Regression for MEDIUM-1: the old design only enforced
+    `_MAX_TRACKED_USERS` inside the periodic sweep, so a burst of distinct
+    users arriving between sweeps could transiently exceed the cap before the
+    next sweep ran. The fix enforces the cap on every insertion in
+    `_rate_limited` itself. Uses a frozen (near-frozen) clock so every one of
+    the ten users is still "active" when the next arrives -- proving the
+    eviction is driven by the insertion-time cap, not by staleness."""
     import ai4ia_api.routers.client_events as mod
 
+    monkeypatch.setattr(mod, "_hits", {})
     monkeypatch.setattr(mod, "_MAX_TRACKED_USERS", 3)
-    now = 1_000_000.0
-    mod._hits.clear()
-    mod._hits.update(
-        {
-            "oldest": deque([now - 40]),
-            "middle": deque([now - 30]),
-            "newer": deque([now - 20]),
-            "newest": deque([now - 10]),
-        }
-    )
-    try:
-        mod._sweep_stale_users(now)
-        assert set(mod._hits) == {"middle", "newer", "newest"}
-    finally:
-        mod._hits.clear()
+    monkeypatch.setattr(mod, "_last_sweep", 0.0)
+    # A sweep interval far longer than the whole test keeps the periodic
+    # sweep from ever firing, isolating this test to the insert-time cap path.
+    monkeypatch.setattr(mod, "_SWEEP_INTERVAL_SECONDS", 1_000.0)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["now"])
+
+    for i in range(10):
+        clock["now"] += 0.01  # negligible elapsed time -- nobody goes stale
+        mod._rate_limited(f"user-{i}")
+        # The cap must hold after *every single* insertion, not just once at
+        # the end -- this is the crux of "enforce cap on every insertion".
+        assert len(mod._hits) <= 3
+
+    # LRU eviction: the three most-recently-inserted users survive.
+    assert set(mod._hits) == {"user-7", "user-8", "user-9"}
+
+
+def test_concurrent_sweep_and_insert_does_not_corrupt_state(monkeypatch):
+    """Regression for MEDIUM-1's other half: `_sweep_stale_users` iterates
+    `_hits.items()` while a concurrent insert from another thread mutates the
+    same dict -- without a shared lock this either raises `RuntimeError:
+    dictionary changed size during iteration` or silently corrupts state.
+    Drives a dedicated "sweeper" thread calling `_sweep_stale_users` in a
+    tight loop alongside several "inserter" threads concurrently calling
+    `_rate_limited` with distinct, never-repeating user ids, so the sweeper
+    is racing against genuine dict mutation for the whole test."""
+    import ai4ia_api.routers.client_events as mod
+
+    monkeypatch.setattr(mod, "_hits", {})
+    monkeypatch.setattr(mod, "_last_sweep", 0.0)
+    monkeypatch.setattr(mod, "_MAX_TRACKED_USERS", 1_000)
+    errors: list[Exception] = []
+    stop = threading.Event()
+
+    def _sweeper() -> None:
+        try:
+            while not stop.is_set():
+                mod._sweep_stale_users(mod.time.monotonic())
+        except Exception as exc:  # pragma: no cover - assertion below also fails
+            errors.append(exc)
+
+    def _inserter(worker_id: int) -> None:
+        try:
+            for i in range(300):
+                mod._rate_limited(f"sweep-race-{worker_id}-{i}")
+        except Exception as exc:  # pragma: no cover - assertion below also fails
+            errors.append(exc)
+
+    sweeper_thread = threading.Thread(target=_sweeper)
+    sweeper_thread.start()
+    inserters = [threading.Thread(target=_inserter, args=(w,)) for w in range(6)]
+    for t in inserters:
+        t.start()
+    for t in inserters:
+        t.join(timeout=10)
+    stop.set()
+    sweeper_thread.join(timeout=10)
+
+    assert errors == []
+    assert not sweeper_thread.is_alive()
+    assert all(not t.is_alive() for t in inserters)
 
 
 def test_rate_limited_periodic_sweep_bounds_hit_dict_across_many_users(monkeypatch):
@@ -352,6 +402,61 @@ def test_sanitize_redacts_auth_scheme_word_together_with_its_credential():
             assert result == "Authorization=[redacted] failed"
             assert scheme not in result
             assert credential not in result
+
+
+def test_sanitize_redacts_json_serialized_authorization_key():
+    """Regression for a follow-up acceptance round: a JSON-serialized key
+    like ``{"Authorization":"Basic <cred>"}`` has a closing key-quote sitting
+    directly between the label and the colon, which the prior fix's pattern
+    didn't account for and so left completely unmatched."""
+    cred = "f" * 16
+    result = _sanitize('{"Authorization":"Basic ' + cred + '"} rejected')
+    assert cred not in result
+    assert "Basic" not in result
+    assert "Authorization=[redacted]" in result
+
+
+def test_sanitize_redacts_quoted_credential_after_unquoted_scheme():
+    """Regression for a follow-up acceptance round: a quoted credential
+    following an *unquoted* scheme word (``Authorization: Basic "<cred>"``)
+    previously defeated the optional scheme-word group -- the old bare-token
+    alternative excludes `"`, so backtracking gave up on matching the scheme
+    word at all and redacted only "Basic", leaving the quoted credential
+    fully exposed."""
+    cred = "g" * 16
+    result = _sanitize(f'Authorization: Basic "{cred}" failed')
+    assert cred not in result
+    assert "Basic" not in result
+    assert result == "Authorization=[redacted] failed"
+
+
+def test_sanitize_redacts_standalone_scheme_and_credential_with_no_label():
+    """Regression for a follow-up acceptance round: bare scheme+credential
+    with no "Authorization"/"token" label at all -- e.g. `Basic: <cred>` or a
+    `Bearer` sitting in punctuation/JSON nesting -- previously passed through
+    completely untouched, since `Basic`/`Digest`/`Negotiate`/`NTLM`/`OAuth`
+    were never in the label-prefixed pattern's label list."""
+    basic_cred = "h" * 12
+    bearer_cred = "i" * 40
+    result_basic = _sanitize(f"Basic: {basic_cred} was rejected")
+    assert basic_cred not in result_basic
+    assert "Basic:" not in result_basic
+
+    result_bearer = _sanitize(f'request failed ("Bearer {bearer_cred}")')
+    # Unlike the label-prefixed pattern (which drops the scheme word
+    # entirely), the standalone pattern's replacement preserves the
+    # matched scheme word -- only the credential value after it is
+    # opaque -- so the correct assertion is that the scheme word is
+    # redacted together with its credential, not that it vanishes.
+    assert bearer_cred not in result_bearer
+    assert result_bearer == 'request failed ("Bearer=[redacted]")'
+
+
+def test_sanitize_leaves_trailing_scheme_word_alone_when_nothing_follows():
+    # "Bearer" here has no colon/equals and nothing follows it (just a
+    # trailing period), so there's no credential-shaped value for the
+    # standalone pattern to consume.
+    assert _sanitize("I love Bearer.") == "I love Bearer."
 
 
 def test_sanitize_does_not_let_content_survive_for_userid_correlation():

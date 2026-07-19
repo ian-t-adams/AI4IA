@@ -139,7 +139,10 @@ export const MCP_TOOL_APPROVALS: { value: McpToolApproval; label: string; hint: 
   {
     value: "default",
     label: "Default (inherit server)",
-    hint: "Approval required unless the server is trusted.",
+    hint:
+      "Chat has no live approval prompt, so on an untrusted server this " +
+      "tool is left out of what the model can call. Mark the server " +
+      "trusted, or set this override to Never, to make it available.",
   },
   {
     value: "always",
@@ -239,17 +242,21 @@ export function approvalPosture(server: {
   trusted: boolean;
   host: string;
 }): ApprovalPosture {
+  const scopeDetail = `External tool; network access limited to ${server.host}.`;
   if (server.trusted) {
     return {
       requiresApproval: false,
       label: "Trusted — runs without approval",
-      detail: `External tool; network access limited to ${server.host}.`,
+      detail: scopeDetail,
     };
   }
   return {
     requiresApproval: true,
-    label: "Requires approval on each use",
-    detail: `External tool; network access limited to ${server.host}.`,
+    label: "Unavailable until trusted",
+    detail:
+      `${scopeDetail} Chat has no live approval prompt, so these tools are ` +
+      "left out of what the model can call until the server is trusted, or " +
+      "a tool is individually pre-approved below.",
   };
 }
 
@@ -286,16 +293,23 @@ export function toolApprovalPosture(
 ): ApprovalPosture & { posture: McpToolApproval } {
   const posture = effectiveToolApproval(server, toolName);
   const requiresApproval = toolRequiresApproval(server, toolName);
+  const scopeDetail = `External tool; network access limited to ${server.host}.`;
   let label: string;
+  let detail = scopeDetail;
   if (posture === "always") label = "Always requires approval";
   else if (posture === "never") label = "Pre-approved — runs without approval";
-  else if (requiresApproval) label = "Requires approval on each use";
-  else label = "Trusted — runs without approval";
+  else if (requiresApproval) {
+    label = "Unavailable until trusted";
+    detail =
+      `${scopeDetail} Chat has no live approval prompt, so this tool is ` +
+      "left out of what the model can call unless the server is trusted, " +
+      "or this tool's approval is set to Never.";
+  } else label = "Trusted — runs without approval";
   return {
     posture,
     requiresApproval,
     label,
-    detail: `External tool; network access limited to ${server.host}.`,
+    detail,
   };
 }
 

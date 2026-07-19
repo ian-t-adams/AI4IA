@@ -81,7 +81,36 @@ const REDACTIONS: Array<[RegExp, string]> = [
     // alone greedily stops at the first whitespace and matches just the
     // scheme word -- redacting "Basic"/"Bearer" while leaving the actual
     // credential completely untouched afterward.
-    /\b(authorization|bearer|token|api[_-]?key|secret|password|access[_-]?key|sas)\b\s*[:=]\s*"?(?:(?:basic|bearer|digest|negotiate|ntlm|oauth)\s+)?[^\s"&,]+/gi,
+    //
+    // Two more shapes handled here (regression coverage for a follow-up
+    // review round): a leading/trailing `"?` around the label so a
+    // JSON-serialized key like `{"Authorization":"Basic <cred>"}` -- where a
+    // closing key-quote sits between the label and the `:` -- still matches
+    // and both quotes are consumed (not left dangling in the output); and a
+    // `"[^"]*"` alternative tried before the bare-token one so a *quoted*
+    // credential is matched as one atomic unit even when the scheme word
+    // right before it is unquoted, e.g. `Authorization: Basic "<cred>"`
+    // (previously the bare-token alternative excludes `"`, so backtracking
+    // gave up on the optional scheme-word match and matched only "Basic",
+    // leaving the quoted credential completely exposed).
+    /"?\b(authorization|bearer|token|api[_-]?key|secret|password|access[_-]?key|sas)\b"?\s*[:=]\s*(?:(?:basic|bearer|digest|negotiate|ntlm|oauth)\s+)?(?:"[^"]*"|[^\s"&,]+)/gi,
+    "$1=[redacted]",
+  ],
+  [
+    // Standalone scheme+credential with no "Authorization"/"token"-style
+    // label at all (e.g. bare `Bearer <cred>`, `Basic: <cred>`, a
+    // punctuation-adjacent `(Bearer "<cred>")`, or a JSON-nested
+    // `["Bearer <cred>"]`) -- distinct from the pattern above, which requires
+    // a label word before the scheme. `Basic`/`Digest`/`Negotiate`/`NTLM`/
+    // `OAuth` are never label words above, so without this they pass through
+    // untouched whenever they're not preceded by "Authorization:" et al.
+    // Gated on a `:`/`=`/quote signal (or, failing that, at least a 2+ char
+    // unquoted token after mandatory whitespace) so an incidental trailing
+    // punctuation mark isn't mistaken for a credential; this can still
+    // over-redact rare prose like "Bearer bonds", an accepted tradeoff for a
+    // security sanitizer where false negatives (a leaked credential) are far
+    // costlier than false positives (a little lost diagnostic text).
+    /\b(basic|bearer|digest|negotiate|ntlm|oauth)\b(?:\s*[:=]\s*(?:"[^"]*"|[^\s"&,]+)|\s+(?:"[^"]*"|[^\s"&,]{2,}))/gi,
     "$1=[redacted]",
   ],
   [/https?:\/\/\S+/gi, "[redacted-url]"],

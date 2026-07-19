@@ -29,6 +29,7 @@ Deliberately minimal, with two layers of content control:
 from __future__ import annotations
 
 import re
+import threading
 import time
 from collections import deque
 from typing import Literal
@@ -102,9 +103,48 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
         # alone greedily stops at the first whitespace and matches just the
         # scheme word -- redacting "Basic"/"Bearer" while leaving the actual
         # credential completely untouched afterward.
+        #
+        # Two more shapes handled here (regression coverage for a follow-up
+        # review round): a leading/trailing `"?` around the label so a
+        # JSON-serialized key like `{"Authorization":"Basic <cred>"}` -- where
+        # a closing key-quote sits between the label and the `:` -- still
+        # matches and both quotes are consumed (not left dangling in the
+        # output); and a `"[^"]*"` alternative tried before the bare-token one
+        # so a *quoted* credential is matched as one atomic unit even when the
+        # scheme word right before it is unquoted, e.g.
+        # `Authorization: Basic "<cred>"` (previously the bare-token
+        # alternative excludes `"`, so backtracking gave up on the optional
+        # scheme-word match and matched only "Basic", leaving the quoted
+        # credential completely exposed).
         re.compile(
-            r"\b(authorization|bearer|token|api[_-]?key|secret|password|access[_-]?key|sas)"
-            r"\b\s*[:=]\s*\"?(?:(?:basic|bearer|digest|negotiate|ntlm|oauth)\s+)?[^\s\"&,]+",
+            r"\"?\b(authorization|bearer|token|api[_-]?key|secret|password|access[_-]?key|sas)"
+            r"\b\"?\s*[:=]\s*(?:(?:basic|bearer|digest|negotiate|ntlm|oauth)\s+)?"
+            r"(?:\"[^\"]*\"|[^\s\"&,]+)",
+            re.IGNORECASE,
+        ),
+        r"\1=[redacted]",
+    ),
+    (
+        # Standalone scheme+credential with no "Authorization"/"token"-style
+        # label at all (e.g. bare `Bearer <cred>`, `Basic: <cred>`, a
+        # punctuation-adjacent `(Bearer "<cred>")`, or a JSON-nested
+        # `["Bearer <cred>"]`) -- distinct from the pattern above, which
+        # requires a label word before the scheme. `Basic`/`Digest`/
+        # `Negotiate`/`NTLM`/`OAuth` are never label words above, so without
+        # this they pass through untouched whenever they're not preceded by
+        # "Authorization:" et al. Gated on a `:`/`=`/quote signal (or,
+        # failing that, at least a 2+ char unquoted token after mandatory
+        # whitespace) so an incidental trailing punctuation mark isn't
+        # mistaken for a credential; this can still over-redact rare prose
+        # like "Bearer bonds", an accepted tradeoff for a security sanitizer
+        # where false negatives (a leaked credential) are far costlier than
+        # false positives (a little lost diagnostic text). Runs after the
+        # label-prefixed pattern above so the common "Authorization: Bearer
+        # xyz" case is fully consumed there first, leaving nothing here.
+        re.compile(
+            r"\b(basic|bearer|digest|negotiate|ntlm|oauth)\b"
+            r"(?:\s*[:=]\s*(?:\"[^\"]*\"|[^\s\"&,]+)"
+            r"|\s+(?:\"[^\"]*\"|[^\s\"&,]{2,}))",
             re.IGNORECASE,
         ),
         r"\1=[redacted]",
@@ -141,57 +181,82 @@ def _sanitize(text: str) -> str:
 _RATE_LIMIT_PER_MINUTE = 20
 _RATE_WINDOW_SECONDS = 60.0
 _hits: dict[str, deque[float]] = {}
+_hits_lock = threading.RLock()
 
 # The per-call prune above only removes *timestamps inside* the current user's
 # deque -- it never removes the dict *entry* itself, so a long-running process
 # accumulates one entry per distinct user_id ever seen, forever, even once every
 # one of them has been inactive for hours (unbounded memory growth). Sweep
-# periodically (not on every call, to keep the common hot path O(1)) to drop
-# entries for users inactive longer than the rate window, and hard-cap the dict
-# as a backstop so a burst of distinct users between sweeps still can't grow
-# this unbounded.
+# periodically (not on every call, to keep the common hot path cheap) to drop
+# entries for users inactive longer than the rate window. The hard cap on
+# total tracked users is enforced on every insertion in `_rate_limited` itself
+# (see below) rather than only here, so a burst of distinct new users between
+# sweeps can never transiently exceed `_MAX_TRACKED_USERS`.
 _SWEEP_INTERVAL_SECONDS = 300.0
 _MAX_TRACKED_USERS = 10_000
 _last_sweep = 0.0
 
 
 def _sweep_stale_users(now: float) -> None:
-    """Drop ``_hits`` entries for users inactive longer than the rate window,
-    then enforce ``_MAX_TRACKED_USERS`` by evicting the least-recently-active
-    entries first (oldest ``window[-1]`` = least recently active)."""
+    """Drops ``_hits`` entries for users inactive longer than the rate
+    window. Locks independently (reentrant, so it's also safe to call from
+    inside ``_rate_limited`` while that function already holds the lock) so
+    it can run correctly whether triggered periodically from a live request
+    or driven directly -- e.g. by a separate scheduler/thread, or a test
+    simulating one -- without requiring the caller to already hold the lock."""
     global _last_sweep
-    stale = [
-        user_id
-        for user_id, window in _hits.items()
-        if not window or now - window[-1] > _RATE_WINDOW_SECONDS
-    ]
-    for user_id in stale:
-        del _hits[user_id]
-    overflow = len(_hits) - _MAX_TRACKED_USERS
-    if overflow > 0:
-        # Every surviving window is non-empty here (empties were removed
-        # above), so window[-1] is always the user's most recent activity.
-        by_recency = sorted(_hits.items(), key=lambda item: item[1][-1])
-        for user_id, _window in by_recency[:overflow]:
+    with _hits_lock:
+        stale = [
+            user_id
+            for user_id, window in _hits.items()
+            if not window or now - window[-1] > _RATE_WINDOW_SECONDS
+        ]
+        for user_id in stale:
             del _hits[user_id]
-    _last_sweep = now
+        _last_sweep = now
 
 
 def _rate_limited(user_id: str) -> bool:
+    """Thread-safe fixed-window rate check with an LRU-bounded ``_hits``.
+
+    All read-modify-write access to the shared ``_hits``/``_last_sweep``
+    state is under one lock: `dict.items()` iteration in `_sweep_stale_users`
+    would otherwise race with concurrent mutation from another thread (this
+    endpoint is `async def`, but the underlying dict is also exercised
+    directly, concurrently, by tests, and could in principle be driven from a
+    worker thread), and the previous unlocked design only enforced
+    `_MAX_TRACKED_USERS` inside the periodic sweep, so a burst of concurrent
+    distinct users between sweeps could transiently exceed the cap.
+    """
     now = time.monotonic()
-    window = _hits.setdefault(user_id, deque())
-    while window and now - window[0] > _RATE_WINDOW_SECONDS:
-        window.popleft()
-    if len(window) >= _RATE_LIMIT_PER_MINUTE:
-        limited = True
-    else:
-        window.append(now)
-        limited = False
-    # This function has no `await`, so it runs atomically w.r.t. other
-    # coroutines on the event loop -- concurrent requests can't interleave the
-    # sweep with another user's window mutation.
-    if now - _last_sweep > _SWEEP_INTERVAL_SECONDS:
-        _sweep_stale_users(now)
+    with _hits_lock:
+        window = _hits.pop(user_id, None)
+        if window is None:
+            # A brand-new user_id: enforce the hard cap on *every* insertion
+            # (not just periodically in _sweep_stale_users), evicting the
+            # least-recently-touched entry first if already at capacity.
+            # Every existing/touched user_id is re-inserted at the end of
+            # `_hits` below, so plain dict insertion order already doubles as
+            # LRU order here -- the front of the dict is always the entry
+            # least recently touched.
+            if len(_hits) >= _MAX_TRACKED_USERS:
+                oldest = next(iter(_hits), None)
+                if oldest is not None:
+                    del _hits[oldest]
+            window = deque()
+        while window and now - window[0] > _RATE_WINDOW_SECONDS:
+            window.popleft()
+        if len(window) >= _RATE_LIMIT_PER_MINUTE:
+            limited = True
+        else:
+            window.append(now)
+            limited = False
+        # Re-insert at the end (the most-recently-touched position) whether
+        # or not this call appended a timestamp, so LRU order reflects
+        # activity, not just successful (non-rate-limited) calls.
+        _hits[user_id] = window
+        if now - _last_sweep > _SWEEP_INTERVAL_SECONDS:
+            _sweep_stale_users(now)
     return limited
 
 
