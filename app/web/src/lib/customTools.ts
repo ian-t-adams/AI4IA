@@ -135,14 +135,20 @@ export const MCP_AUTH_MODES: { value: McpAuthMode; label: string; hint: string }
 
 // Per-tool approval options for the builder select. `default` inherits the server
 // posture; `always`/`never` override it. Mirrors the backend McpToolApproval enum.
+// `default` and `never` are the two options a user might read as "this will make
+// the tool work" — so their hints call out that they only ever clear the
+// *approval* gate, not a separately disabled or quarantined server (see
+// McpBlockingState below). `always` never claims to help, so it needs no caveat.
 export const MCP_TOOL_APPROVALS: { value: McpToolApproval; label: string; hint: string }[] = [
   {
     value: "default",
     label: "Default (inherit server)",
     hint:
       "Chat has no live approval prompt, so on an untrusted server this " +
-      "tool is left out of what the model can call. Mark the server " +
-      "trusted, or set this override to Never, to make it available.",
+      "tool is left out of what the model can call. Trusting the server, " +
+      "or setting this override to Never, clears that approval gate — but " +
+      "a server that's turned off or quarantined still blocks the tool " +
+      "either way.",
   },
   {
     value: "always",
@@ -155,7 +161,10 @@ export const MCP_TOOL_APPROVALS: { value: McpToolApproval; label: string; hint: 
   {
     value: "never",
     label: "Never require approval",
-    hint: "Pre-approve this tool, even on an untrusted server.",
+    hint:
+      "Clears the approval gate for this tool, even on an untrusted server " +
+      "— but a server that's turned off or quarantined still blocks it " +
+      "either way.",
   },
 ];
 
@@ -229,6 +238,17 @@ export function parseMcpToolName(
   return { server: rest.slice(0, slash), tool: rest.slice(slash + 1) };
 }
 
+// A hard block on a tool that exists independent of its approval posture: the
+// server itself is turned off, or automatically quarantined after repeated
+// connection failures. Either overrides trust/approval entirely — mirrors the
+// backend precedence exactly: mcp_servers.discovered_tool_to_spec sets
+// ToolSpec.enabled from server.enabled (checked first by tools.py authorize),
+// and mcp_execution.attached_tool_definitions skips a quarantined server
+// wholesale, before the per-tool approval gate is even consulted. Trusting the
+// server, or setting a tool's approval override to Never, only ever clears the
+// approval gate below — it cannot undo either of these.
+export type McpBlockingState = "disabled" | "quarantined" | null;
+
 // The approval posture the backend projects for a server's tools
 // (discovered_tool_to_spec): external risk, egress scoped to the host, and human
 // approval required on every use UNLESS the server is marked trusted.
@@ -241,8 +261,30 @@ export interface ApprovalPosture {
 export function approvalPosture(server: {
   trusted: boolean;
   host: string;
+  blocking?: McpBlockingState;
 }): ApprovalPosture {
   const scopeDetail = `External tool; network access limited to ${server.host}.`;
+  if (server.blocking === "disabled") {
+    return {
+      requiresApproval: true,
+      label: "Unavailable — server off",
+      detail:
+        `${scopeDetail} The server is turned off, so its tools can't be ` +
+        "called no matter their trust or approval setting. Turn the server " +
+        "back on to make them available again.",
+    };
+  }
+  if (server.blocking === "quarantined") {
+    return {
+      requiresApproval: true,
+      label: "Unavailable — quarantined",
+      detail:
+        `${scopeDetail} The server is quarantined after repeated connection ` +
+        "failures, so its tools can't be called no matter their trust or " +
+        "approval setting. It recovers automatically once the server " +
+        "reconnects successfully.",
+    };
+  }
   if (server.trusted) {
     return {
       requiresApproval: false,
@@ -256,7 +298,8 @@ export function approvalPosture(server: {
     detail:
       `${scopeDetail} Chat has no live approval prompt, so these tools are ` +
       "left out of what the model can call until the server is trusted, or " +
-      "a tool is individually pre-approved below.",
+      "a tool is individually pre-approved below. Trusting the server won't " +
+      "help if it's turned off or quarantined, though — those block it too.",
   };
 }
 
@@ -288,12 +331,39 @@ export function toolRequiresApproval(
 // Shared badge-copy core for a resolved posture, so a server+toolName pair
 // (toolApprovalPosture) and an already-projected AttachableMcpTool
 // (attachableToolApprovalPosture, below) render identical label/detail text.
+// `blocking`, when set, takes priority over the approval-derived label/detail
+// entirely — a disabled or quarantined server leaves the tool unavailable no
+// matter what its approval posture resolves to (see McpBlockingState).
 function describeToolApprovalPosture(
   posture: McpToolApproval,
   requiresApproval: boolean,
   host: string,
+  blocking: McpBlockingState = null,
 ): ApprovalPosture & { posture: McpToolApproval } {
   const scopeDetail = `External tool; network access limited to ${host}.`;
+  if (blocking === "disabled") {
+    return {
+      posture,
+      requiresApproval: true,
+      label: "Unavailable — server off",
+      detail:
+        `${scopeDetail} The server is turned off, so this tool can't be ` +
+        "called no matter its approval setting. Turn the server back on to " +
+        "make it available again.",
+    };
+  }
+  if (blocking === "quarantined") {
+    return {
+      posture,
+      requiresApproval: true,
+      label: "Unavailable — quarantined",
+      detail:
+        `${scopeDetail} The server is quarantined after repeated connection ` +
+        "failures, so this tool can't be called no matter its approval " +
+        "setting. It recovers automatically once the server reconnects " +
+        "successfully.",
+    };
+  }
   let label: string;
   let detail = scopeDetail;
   if (posture === "always") {
@@ -309,20 +379,32 @@ function describeToolApprovalPosture(
     detail =
       `${scopeDetail} Chat has no live approval prompt, so this tool is ` +
       "left out of what the model can call unless the server is trusted, " +
-      "or this tool's approval is set to Never.";
+      "or this tool's approval is set to Never. Neither helps if the " +
+      "server is turned off or quarantined, though — those block it too.";
   } else label = "Trusted — runs without approval";
   return { posture, requiresApproval, label, detail };
 }
 
 // Compact, badge-ready posture for a single discovered tool: the resolved
-// approval requirement plus a short label/detail describing why.
+// approval requirement plus a short label/detail describing why. `quarantined`
+// is passed separately (rather than re-derived here) since callers already
+// compute it once per server via isQuarantined/healthBadge for the health
+// badge, and server.enabled is read directly off the record.
 export function toolApprovalPosture(
-  server: { trusted: boolean; host: string; toolApprovals?: Record<string, McpToolApproval> | null },
+  server: {
+    trusted: boolean;
+    host: string;
+    enabled?: boolean;
+    toolApprovals?: Record<string, McpToolApproval> | null;
+  },
   toolName: string,
+  quarantined = false,
 ): ApprovalPosture & { posture: McpToolApproval } {
   const posture = effectiveToolApproval(server, toolName);
   const requiresApproval = toolRequiresApproval(server, toolName);
-  return describeToolApprovalPosture(posture, requiresApproval, server.host);
+  const blocking: McpBlockingState =
+    server.enabled === false ? "disabled" : quarantined ? "quarantined" : null;
+  return describeToolApprovalPosture(posture, requiresApproval, server.host, blocking);
 }
 
 // --- Health / quarantine (mirror mcp_health) -------------------------------
@@ -437,11 +519,16 @@ export interface AttachableMcpTool {
 // Same label/detail as toolApprovalPosture, but for a tool that's already
 // been flattened into an AttachableMcpTool (e.g. the agent builder's per-tool
 // checkbox list) — reuses the values it already carries instead of
-// reconstructing a fake server object just to re-derive them.
+// reconstructing a fake server object just to re-derive them. `quarantined` is
+// a separate argument (not a field on AttachableMcpTool) because it's a
+// per-server, not per-tool, health fact the caller already has from the one
+// healthBadge/isQuarantined lookup it makes per server group.
 export function attachableToolApprovalPosture(
-  t: Pick<AttachableMcpTool, "approval" | "requiresApproval" | "host">,
+  t: Pick<AttachableMcpTool, "approval" | "requiresApproval" | "host" | "enabled">,
+  quarantined = false,
 ): ApprovalPosture & { posture: McpToolApproval } {
-  return describeToolApprovalPosture(t.approval, t.requiresApproval, t.host);
+  const blocking: McpBlockingState = !t.enabled ? "disabled" : quarantined ? "quarantined" : null;
+  return describeToolApprovalPosture(t.approval, t.requiresApproval, t.host, blocking);
 }
 
 // Groups a list of servers into their attachable MCP tools (namespaced), skipping

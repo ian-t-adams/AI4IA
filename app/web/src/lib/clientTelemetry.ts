@@ -93,7 +93,34 @@ const REDACTIONS: Array<[RegExp, string]> = [
     // (previously the bare-token alternative excludes `"`, so backtracking
     // gave up on the optional scheme-word match and matched only "Basic",
     // leaving the quoted credential completely exposed).
-    /"?\b(authorization|bearer|token|api[_-]?key|secret|password|access[_-]?key|sas)\b"?\s*[:=]\s*(?:(?:basic|bearer|digest|negotiate|ntlm|oauth)\s+)?(?:"[^"]*"|[^\s"&,]+)/gi,
+    //
+    // Three more shapes added in a later round: the quoted-value alternative
+    // now has an OPTIONAL closing quote, so a value whose closing quote is
+    // missing entirely is still consumed to the end of the string rather
+    // than falling through to the bare-token alternative (which excludes
+    // quote characters from its class and so cannot even start matching at
+    // an opening quote, previously leaving the whole thing unredacted); a
+    // bounded, single-level `{...}` alternative so a value that is itself a
+    // small JSON object is consumed as one atomic unit instead of the
+    // bare-token fallback matching only its opening brace and leaving
+    // whatever is nested inside fully exposed (deliberately one level deep,
+    // not truly recursive -- RegExp can't balance nested braces, and the
+    // field length caps below bound how much nesting is realistic to worry
+    // about further); and `credential` is added to the label list so a
+    // bare, non-nested key of that name is caught on its own.
+    //
+    // `(?!\[redacted(?:-[a-z]+)?\])` immediately before the value guards
+    // against re-matching this pattern's OWN prior output on a later
+    // `sanitize` pass (see MAX_SANITIZE_PASSES below): without it, a value
+    // of literal `[redacted]` -- exactly what got written here on a
+    // previous pass -- satisfies the bare-token alternative just like a
+    // real credential would, and if that previous pass's match happened to
+    // leave a legitimate leading quote in place (the standalone pattern
+    // below does this deliberately), THIS pattern's own optional leading
+    // `"?` can then wrongly reinterpret that quote as a JSON-key-closing
+    // quote and consume-and-drop it, corrupting already-correct output on
+    // the next pass.
+    /"?\b(authorization|bearer|token|api[_-]?key|secret|password|access[_-]?key|sas|credential)\b"?\s*[:=]\s*(?:(?:basic|bearer|digest|negotiate|ntlm|oauth)\s+)?(?!\[redacted(?:-[a-z]+)?\])(?:"[^"]*"?|\{[^{}]*\}|[^\s"&,]+)/gi,
     "$1=[redacted]",
   ],
   [
@@ -110,7 +137,17 @@ const REDACTIONS: Array<[RegExp, string]> = [
     // over-redact rare prose like "Bearer bonds", an accepted tradeoff for a
     // security sanitizer where false negatives (a leaked credential) are far
     // costlier than false positives (a little lost diagnostic text).
-    /\b(basic|bearer|digest|negotiate|ntlm|oauth)\b(?:\s*[:=]\s*(?:"[^"]*"|[^\s"&,]+)|\s+(?:"[^"]*"|[^\s"&,]{2,}))/gi,
+    //
+    // Same optional-closing-quote and bounded single-level `{...}`
+    // alternatives as the label-prefixed pattern above, added in a later
+    // round for the same reasons: an unterminated quoted value is still
+    // consumed to the end of the string instead of leaking unmatched, and a
+    // small nested JSON object following the scheme word is consumed as one
+    // atomic unit instead of only its opening brace. Same anti-re-match
+    // guard as the label-prefixed pattern above, for the same reason (this
+    // pattern's own `word=[redacted]` output would otherwise look like a
+    // fresh standalone credential on the next pass).
+    /\b(basic|bearer|digest|negotiate|ntlm|oauth)\b(?:\s*[:=]\s*(?!\[redacted(?:-[a-z]+)?\])(?:"[^"]*"?|\{[^{}]*\}|[^\s"&,]+)|\s+(?!\[redacted(?:-[a-z]+)?\])(?:"[^"]*"?|\{[^{}]*\}|[^\s"&,]{2,}))/gi,
     "$1=[redacted]",
   ],
   [/https?:\/\/\S+/gi, "[redacted-url]"],
@@ -119,10 +156,53 @@ const REDACTIONS: Array<[RegExp, string]> = [
   [/\b[A-Za-z0-9+/_-]{24,}\b/g, "[redacted-token]"],
 ];
 
+// Safely decodes well-formed %XX percent-encoded triples so a redaction
+// pattern that expects a literal delimiter (":", "=", a space) isn't
+// defeated by URL-encoding the delimiter away -- e.g. "token%3Dsecret" or
+// "Basic%20secret" have no literal "="/space for the patterns above to
+// match against. Deliberately NOT `decodeURIComponent` on the whole string:
+// it throws for the ENTIRE input on a single malformed (or standalone
+// non-UTF-8-continuable) sequence, so one stray "%" elsewhere in an
+// otherwise-benign message could abort decoding of a genuinely-encoded
+// credential elsewhere in the same string. Decoding one `%XX` triple at a
+// time bounds a thrown error to just that triple (left as-is on failure)
+// and is sufficient for the single-byte ASCII delimiters this guards
+// against; it deliberately does not reassemble multi-byte percent-encoded
+// UTF-8 sequences, which isn't needed for that purpose.
+function decodePercentEncoding(value: string): string {
+  return value.replace(/%[0-9A-Fa-f]{2}/g, (match) => {
+    try {
+      return decodeURIComponent(match);
+    } catch {
+      return match;
+    }
+  });
+}
+
+// Bounds how many decode-then-redact rounds `sanitize` runs (see below).
+const MAX_SANITIZE_PASSES = 3;
+
 function sanitize(value: string): string {
-  let result = value.replace(/[\r\n\t]+/g, " ");
-  for (const [pattern, replacement] of REDACTIONS) {
-    result = result.replace(pattern, replacement);
+  // Runs as a bounded decode-then-redact loop, not a single linear pass: a
+  // percent-encoded delimiter can itself be re-encoded a second time (e.g.
+  // "%2520" decodes to "%20", which itself still needs a further decode
+  // pass before it becomes a literal space), and the patterns above only
+  // recognize a *literal* delimiter, so one decode pass alone can leave a
+  // still-encoded credential unredacted. Each pass re-decodes, re-strips
+  // control characters revealed by decoding (e.g. a decoded "%0A" newline),
+  // and re-applies every pattern; the loop stops as soon as a pass produces
+  // no further change -- the common, non-adversarial case exits after one
+  // confirmatory pass. What is returned is always the result of that full
+  // pipeline: the decoded-but-not-yet-redacted intermediate is never what
+  // gets returned.
+  let result = value;
+  for (let pass = 0; pass < MAX_SANITIZE_PASSES; pass++) {
+    let next = decodePercentEncoding(result).replace(/[\r\n\t]+/g, " ");
+    for (const [pattern, replacement] of REDACTIONS) {
+      next = next.replace(pattern, replacement);
+    }
+    if (next === result) return next.trim();
+    result = next;
   }
   return result.trim();
 }

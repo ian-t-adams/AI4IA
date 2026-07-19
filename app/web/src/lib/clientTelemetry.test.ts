@@ -325,6 +325,106 @@ describe("reportClientEvent", () => {
       expect(body.message).not.toContain(email);
       expect(body.message).not.toContain(longOpaqueRun);
     });
+
+    describe("URL-encoded, nested, and malformed-quote bypass resistance", () => {
+      // Regression coverage for a follow-up acceptance round: naive
+      // delimiter-matching is defeated by percent-encoding the delimiter
+      // away, by a credential value that is itself a small nested JSON
+      // object, or by an unterminated quote -- each previously let the real
+      // credential straight through. `sanitize` now runs a bounded
+      // decode-then-redact loop (MAX_SANITIZE_PASSES) specifically to close
+      // these gaps; the backend (client_events.py's `_sanitize`) mirrors
+      // this exactly -- see the matching tests there.
+      const cred = "z".repeat(20);
+
+      it("redacts a standalone scheme+credential joined by a URL-encoded space", async () => {
+        const { reportClientEvent } = await freshModule();
+        reportClientEvent("unhandled_error", { message: `Basic%20${cred} rejected` });
+
+        const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+        expect(body.message).not.toContain(cred);
+        expect(body.message).not.toContain("%20");
+        expect(body.message).toBe("Basic=[redacted] rejected");
+      });
+
+      it("redacts a labeled key/value pair joined by a URL-encoded equals sign", async () => {
+        const { reportClientEvent } = await freshModule();
+        reportClientEvent("unhandled_error", { message: `token%3D${cred} invalid` });
+
+        const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+        expect(body.message).not.toContain(cred);
+        expect(body.message).not.toContain("%3D");
+        expect(body.message).toBe("token=[redacted] invalid");
+      });
+
+      it("redacts a double-percent-encoded delimiter that only resolves after two decode passes", async () => {
+        // "%2520" decodes to "%20" on the first pass, which itself only
+        // becomes a literal space on a second pass -- proving the loop
+        // actually iterates rather than decoding once and giving up.
+        const { reportClientEvent } = await freshModule();
+        reportClientEvent("unhandled_error", { message: `Basic%2520${cred} rejected` });
+
+        const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+        expect(body.message).not.toContain(cred);
+        expect(body.message).not.toContain("%20");
+        expect(body.message).not.toContain("%2520");
+        expect(body.message).toBe("Basic=[redacted] rejected");
+      });
+
+      it("redacts a credential value that is itself a nested JSON object", async () => {
+        const { reportClientEvent } = await freshModule();
+        reportClientEvent("unhandled_error", {
+          message: `Authorization: {"scheme":"Basic","credential":"${cred}"} rejected`,
+        });
+
+        const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+        expect(body.message).not.toContain(cred);
+        expect(body.message).toBe("Authorization=[redacted] rejected");
+      });
+
+      it("redacts an unterminated (missing closing quote) credential value", async () => {
+        const { reportClientEvent } = await freshModule();
+        reportClientEvent("unhandled_error", { message: `Authorization: "${cred}` });
+
+        const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+        expect(body.message).not.toContain(cred);
+        expect(body.message).toBe("Authorization=[redacted]");
+      });
+
+      it("never leaves a decoded-but-unredacted intermediate in the reported message", async () => {
+        // A message combining several bypass shapes at once; the assertion
+        // is strong -- no raw credential material and no residual
+        // percent-encoding survive, which is only possible if every pass's
+        // decode step is followed by a redaction step before anything is
+        // returned.
+        const { reportClientEvent } = await freshModule();
+        reportClientEvent("unhandled_error", {
+          message: `Basic%20${cred} and token%3D${cred}2 both failed`,
+        });
+
+        const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+        expect(body.message).not.toContain(cred);
+        expect(body.message).not.toContain("%20");
+        expect(body.message).not.toContain("%3D");
+      });
+
+      it("does not corrupt an already-redacted quoted credential on a later loop pass", async () => {
+        // Regression for a bug introduced while adding the iterative loop
+        // above: once the standalone pattern redacts `("Bearer <cred>")`
+        // down to `("Bearer=[redacted]")` on pass one, pass two must not
+        // let the label-prefixed pattern re-match its own `Bearer=[redacted]`
+        // output and swallow the legitimately-preserved leading quote (it
+        // optionally consumes one, for the unrelated JSON-key-quoting case).
+        // Uses "Bearer" specifically -- the one word that is both a
+        // standalone scheme AND a label -- since that dual role is exactly
+        // what let the label-prefixed pattern misfire on the second pass.
+        const { reportClientEvent } = await freshModule();
+        reportClientEvent("unhandled_error", { message: `request failed ("Bearer ${cred}")` });
+
+        const body = JSON.parse(mocks.apiFetch.mock.calls[0][1].body);
+        expect(body.message).toBe('request failed ("Bearer=[redacted]")');
+      });
+    });
   });
 
   it("de-dupes identical (event, message) pairs within the same page load", async () => {

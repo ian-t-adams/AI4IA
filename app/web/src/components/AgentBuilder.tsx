@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import * as api from "@/lib/api";
+import { MODEL_CATEGORY_HELP } from "@/lib/modelHelp";
 import type { AgentSummary, ModelEntry, UserAgent } from "@/lib/types";
 import {
   ATTACHABLE_TOOLS,
@@ -116,6 +117,10 @@ export function AgentBuilder({
     () => models.find((m) => m.id === form.defaultModel) ?? null,
     [models, form.defaultModel],
   );
+  const modelNoteId = useId();
+  const modelCategoryHelp = selectedModel?.category
+    ? MODEL_CATEGORY_HELP[selectedModel.category]
+    : undefined;
   const linkOptions = useMemo(
     () => agents.filter((a) => a.name !== form.name),
     [agents, form.name],
@@ -397,6 +402,7 @@ export function AgentBuilder({
             value={form.defaultModel}
             onChange={(e) => setForm((f) => ({ ...f, defaultModel: e.target.value }))}
             style={inputStyle}
+            aria-describedby={modelCategoryHelp ? modelNoteId : undefined}
           >
             <option value="">Session default</option>
             {Object.entries(groupedModels).map(([category, entries]) => (
@@ -412,7 +418,7 @@ export function AgentBuilder({
               </optgroup>
             ))}
           </select>
-          <ModelCategoryNote category={selectedModel?.category} />
+          <ModelCategoryNote id={modelNoteId} category={selectedModel?.category} />
         </div>
 
         <fieldset style={fieldset}>
@@ -450,11 +456,16 @@ export function AgentBuilder({
                 tools appear here to attach.
               </p>
             )}
-            {mcpByServer.map((g) => {
-              const posture = approvalPosture({ trusted: g.trusted, host: g.host });
+            {mcpByServer.map((g, gi) => {
               const serverRec = mcpServerByName.get(g.serverName);
               const health = serverRec ? healthBadge(serverRec) : null;
               const quarantineMsg = serverRec ? quarantineReason(serverRec) : null;
+              const quarantined = health?.status === "quarantined";
+              const posture = approvalPosture({
+                trusted: g.trusted,
+                host: g.host,
+                blocking: !g.enabled ? "disabled" : quarantined ? "quarantined" : null,
+              });
               return (
                 <div key={g.serverName} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -491,9 +502,18 @@ export function AgentBuilder({
                       {quarantineMsg}
                     </p>
                   )}
-                  {g.tools.map((t) => {
-                    const mcpInputId = `ag-mcp-${t.namespacedName}`;
-                    const approval = attachableToolApprovalPosture(t);
+                  {g.tools.map((t, ti) => {
+                    // Index-based, not name-derived: a discovered tool name can
+                    // contain whitespace or (across servers/tools) collide, and
+                    // an id built from it wouldn't be a stable/unique DOM token.
+                    const mcpInputId = `ag-mcp-${gi}-${ti}`;
+                    // Folds in the server's disabled/quarantined state, not
+                    // just the tool's own approval override — a trusted or
+                    // pre-approved tool is still "unavailable" if its server
+                    // is off or quarantined, and the status word + tooltip
+                    // below must say so, not just the persistent posture
+                    // pill above.
+                    const approval = attachableToolApprovalPosture(t, quarantined);
                     return (
                       <span key={t.namespacedName} style={checkRow}>
                         <input
@@ -511,10 +531,10 @@ export function AgentBuilder({
                         <span
                           style={{
                             fontSize: "0.72em",
-                            color: t.requiresApproval ? "var(--fg-muted)" : "#15803d",
+                            color: approval.requiresApproval ? "var(--fg-muted)" : "#15803d",
                           }}
                         >
-                          {t.requiresApproval
+                          {approval.requiresApproval
                             ? "· unavailable"
                             : t.approval === "never"
                               ? "· pre-approved"
@@ -522,9 +542,10 @@ export function AgentBuilder({
                         </span>
                         {/* Chat has no live approval prompt, so an unavailable
                             tool needs its exact enabling path spelled out
-                            (differs for an "always" override vs. an
-                            untrusted server) — not just a status word. */}
-                        {t.requiresApproval && (
+                            (differs for an "always" override, an untrusted
+                            server, or a disabled/quarantined server) — not
+                            just a status word. */}
+                        {approval.requiresApproval && (
                           <HelpTooltip label={`${t.toolName} approval`} size="sm">
                             {approval.detail}
                           </HelpTooltip>
@@ -571,8 +592,11 @@ export function AgentBuilder({
           {linkOptions.length === 0 && (
             <p style={{ ...labelStyle, margin: 0 }}>No other agents to link.</p>
           )}
-          {linkOptions.map((a) => {
-            const linkInputId = `ag-link-${a.name}`;
+          {linkOptions.map((a, li) => {
+            // Index-based: an agent's @mention name is validated whitespace-free
+            // today, but deriving the id from it is still one data-shape change
+            // away from a collision — an index is unconditionally unique.
+            const linkInputId = `ag-link-${li}`;
             return (
               <span key={a.name} style={checkRow}>
                 <input

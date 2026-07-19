@@ -410,7 +410,9 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
           Chat has no live approval prompt: leave this off (recommended) and
           tools without a Never override stay unavailable, not merely
           slower. Only trust a server you fully control, or pre-approve
-          individual tools below.
+          individual tools below. Trusting it won&apos;t help while the
+          server is disabled or quarantined, though — either blocks every
+          tool regardless.
         </p>
 
         <label style={checkRow}>
@@ -470,9 +472,14 @@ function DiscoverySection({
     posture: McpToolApproval,
   ) => void;
 }) {
-  const posture = approvalPosture(server);
   const health = healthBadge(server);
   const quarantineMsg = quarantineReason(server);
+  const quarantined = health.status === "quarantined";
+  const posture = approvalPosture({
+    trusted: server.trusted,
+    host: server.host,
+    blocking: !server.enabled ? "disabled" : quarantined ? "quarantined" : null,
+  });
   return (
     <div style={fieldset}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -511,9 +518,12 @@ function DiscoverySection({
         </p>
       ) : (
         <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
-          {server.discoveredTools.map((t) => {
-            const tp = toolApprovalPosture(server, t.name);
+          {server.discoveredTools.map((t, ti) => {
+            const tp = toolApprovalPosture(server, t.name, quarantined);
             const approvalOption = MCP_TOOL_APPROVALS.find((a) => a.value === tp.posture);
+            // Index-based, not name-derived: a discovered tool name can contain
+            // whitespace or (in principle) repeat, so it isn't a safe/unique id.
+            const approvalSelectId = `approval-${server.name}-${ti}`;
             return (
               <li key={t.name} style={{ fontSize: "0.82em", display: "flex", flexDirection: "column", gap: 4 }}>
                 <div>
@@ -523,11 +533,11 @@ function DiscoverySection({
                   )}
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <label style={{ ...labelStyle, margin: 0 }} htmlFor={`approval-${t.name}`}>
+                  <label style={{ ...labelStyle, margin: 0 }} htmlFor={approvalSelectId}>
                     Approval
                   </label>
                   <select
-                    id={`approval-${t.name}`}
+                    id={approvalSelectId}
                     value={tp.posture}
                     disabled={busy}
                     onChange={(e) =>

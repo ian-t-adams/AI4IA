@@ -33,6 +33,7 @@ import threading
 import time
 from collections import deque
 from typing import Literal
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel, Field, field_validator
@@ -116,10 +117,38 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
         # alternative excludes `"`, so backtracking gave up on the optional
         # scheme-word match and matched only "Basic", leaving the quoted
         # credential completely exposed).
+        #
+        # Three more shapes added in a later round: the quoted-value
+        # alternative now has an OPTIONAL closing quote, so a value whose
+        # closing quote is missing entirely is still consumed to the end of
+        # the string rather than falling through to the bare-token
+        # alternative (which excludes quote characters from its class and so
+        # cannot even start matching at an opening quote, previously leaving
+        # the whole thing unredacted); a bounded, single-level `{...}`
+        # alternative so a value that is itself a small JSON object is
+        # consumed as one atomic unit instead of the bare-token fallback
+        # matching only its opening brace and leaving whatever is nested
+        # inside fully exposed (deliberately one level deep, not truly
+        # recursive -- `re` can't balance nested braces, and the field
+        # length caps below bound how much nesting is realistic to worry
+        # about further); and `credential` is added to the label list so a
+        # bare, non-nested key of that name is caught on its own.
+        #
+        # `(?!\[redacted(?:-[a-z]+)?\])` immediately before the value
+        # guards against re-matching this pattern's OWN prior output on a
+        # later `_sanitize` pass (see MAX_SANITIZE_PASSES below): without
+        # it, a value of literal `[redacted]` -- exactly what got written
+        # here on a previous pass -- satisfies the bare-token alternative
+        # just like a real credential would, and if that previous pass's
+        # match happened to leave a legitimate leading quote in place (the
+        # standalone pattern below does this deliberately), THIS pattern's
+        # own optional leading `"?` can then wrongly reinterpret that quote
+        # as a JSON-key-closing quote and consume-and-drop it, corrupting
+        # already-correct output on the next pass.
         re.compile(
-            r"\"?\b(authorization|bearer|token|api[_-]?key|secret|password|access[_-]?key|sas)"
+            r"\"?\b(authorization|bearer|token|api[_-]?key|secret|password|access[_-]?key|sas|credential)"
             r"\b\"?\s*[:=]\s*(?:(?:basic|bearer|digest|negotiate|ntlm|oauth)\s+)?"
-            r"(?:\"[^\"]*\"|[^\s\"&,]+)",
+            r"(?!\[redacted(?:-[a-z]+)?\])(?:\"[^\"]*\"?|\{[^{}]*\}|[^\s\"&,]+)",
             re.IGNORECASE,
         ),
         r"\1=[redacted]",
@@ -141,10 +170,21 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
         # false positives (a little lost diagnostic text). Runs after the
         # label-prefixed pattern above so the common "Authorization: Bearer
         # xyz" case is fully consumed there first, leaving nothing here.
+        #
+        # Same optional-closing-quote and bounded single-level `{...}`
+        # alternatives as the label-prefixed pattern above, added in a later
+        # round for the same reasons: an unterminated quoted value is still
+        # consumed to the end of the string instead of leaking unmatched,
+        # and a small nested JSON object following the scheme word is
+        # consumed as one atomic unit instead of only its opening brace.
+        # Same anti-re-match guard as the label-prefixed pattern above,
+        # for the same reason (this pattern's own `word=[redacted]` output
+        # would otherwise look like a fresh standalone credential on the
+        # next pass).
         re.compile(
             r"\b(basic|bearer|digest|negotiate|ntlm|oauth)\b"
-            r"(?:\s*[:=]\s*(?:\"[^\"]*\"|[^\s\"&,]+)"
-            r"|\s+(?:\"[^\"]*\"|[^\s\"&,]{2,}))",
+            r"(?:\s*[:=]\s*(?!\[redacted(?:-[a-z]+)?\])(?:\"[^\"]*\"?|\{[^{}]*\}|[^\s\"&,]+)"
+            r"|\s+(?!\[redacted(?:-[a-z]+)?\])(?:\"[^\"]*\"?|\{[^{}]*\}|[^\s\"&,]{2,}))",
             re.IGNORECASE,
         ),
         r"\1=[redacted]",
@@ -161,6 +201,21 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
+def _decode_percent_encoding(value: str) -> str:
+    """Decodes %XX percent-encoding so a redaction pattern that expects a
+    literal delimiter (":", "=", a space) isn't defeated by URL-encoding the
+    delimiter away -- e.g. "token%3Dsecret" or "Basic%20secret" have no
+    literal "="/space for the patterns above to match against. `unquote`
+    never raises (invalid sequences pass through unchanged by default), so
+    unlike the browser-side per-triple decoder this can safely operate on
+    the whole string in one call."""
+    return unquote(value)
+
+
+# Bounds how many decode-then-redact rounds `_sanitize` runs (see below).
+_MAX_SANITIZE_PASSES = 3
+
+
 def _sanitize(text: str) -> str:
     """Strips control characters and redacts common secret/PII shapes
     (bearer/API tokens, URLs with query strings, emails, GUIDs, other long
@@ -168,10 +223,29 @@ def _sanitize(text: str) -> str:
     guarantee against every possible leak shape — combined with the field
     length caps and the browser-side sanitizer, this keeps the common,
     high-risk shapes (credentials, PII, session/request ids) out of
-    Application Insights even if one layer is bypassed."""
-    result = re.sub(r"[\r\n\t]+", " ", text)
-    for pattern, replacement in _REDACTIONS:
-        result = pattern.sub(replacement, result)
+    Application Insights even if one layer is bypassed.
+
+    Runs as a bounded decode-then-redact loop, not a single linear pass: a
+    percent-encoded delimiter can itself be re-encoded a second time (e.g.
+    "%2520" decodes to "%20", which itself still needs a further decode pass
+    before it becomes a literal space), and the patterns above only
+    recognize a *literal* delimiter, so one decode pass alone can leave a
+    still-encoded credential unredacted. Each pass re-decodes, re-strips
+    control characters revealed by decoding (e.g. a decoded "%0A" newline),
+    and re-applies every pattern; the loop stops as soon as a pass produces
+    no further change -- the common, non-adversarial case exits after one
+    confirmatory pass. What is returned is always the result of that full
+    pipeline: the decoded-but-not-yet-redacted intermediate is never what
+    gets returned."""
+    result = text
+    for _ in range(_MAX_SANITIZE_PASSES):
+        candidate = re.sub(r"[\r\n\t]+", " ", _decode_percent_encoding(result))
+        for pattern, replacement in _REDACTIONS:
+            candidate = pattern.sub(replacement, candidate)
+        if candidate == result:
+            result = candidate
+            break
+        result = candidate
     return result.strip()
 
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { useId } from "react";
 import { MODEL_CATEGORY_HELP } from "@/lib/modelHelp";
 import type { ModelEntry } from "@/lib/types";
 
@@ -33,13 +34,22 @@ export function groupConversationalModels(
  * Plain-language what/when/tradeoffs for a model category, shown as visible
  * text (not just a hover title) so it's available to keyboard and
  * screen-reader users navigating a native <select>. Renders nothing for an
- * unselected or uncategorized model instead of a blank/broken block.
+ * unselected or uncategorized model instead of a blank/broken block. Accepts
+ * an `id` so a sibling <select> can wire `aria-describedby` to it — omit the
+ * id (or don't render this at all) rather than pointing at one that isn't
+ * there, which would leave a dangling, invalid IDREF.
  */
-export function ModelCategoryNote({ category }: { category: string | undefined }) {
+export function ModelCategoryNote({
+  category,
+  id,
+}: {
+  category: string | undefined;
+  id?: string;
+}) {
   const help = category ? MODEL_CATEGORY_HELP[category] : undefined;
   if (!help) return null;
   return (
-    <p style={{ fontSize: "0.78em", color: "var(--fg-muted)", margin: 0 }}>
+    <p id={id} style={{ fontSize: "0.78em", color: "var(--fg-muted)", margin: 0 }}>
       <strong>{help.label}.</strong> {help.what} {help.when} {help.tradeoffs}
     </p>
   );
@@ -61,6 +71,8 @@ export function ModelPicker({
   // surfaces/tools, not selected as a raw chat target.
   const grouped = groupConversationalModels(models);
   const selected = models.find((m) => m.id === value) ?? null;
+  const noteId = useId();
+  const categoryHelp = selected?.category ? MODEL_CATEGORY_HELP[selected.category] : undefined;
 
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -74,6 +86,7 @@ export function ModelPicker({
         // below renders inside this same wrapping <label>, and without this
         // the select's name-from-content would absorb that note's text too.
         aria-label="Model"
+        aria-describedby={categoryHelp ? noteId : undefined}
       >
         <option value="" disabled>
           Select a model…
@@ -91,7 +104,7 @@ export function ModelPicker({
           </optgroup>
         ))}
       </select>
-      <ModelCategoryNote category={selected?.category} />
+      <ModelCategoryNote id={noteId} category={selected?.category} />
     </label>
   );
 }

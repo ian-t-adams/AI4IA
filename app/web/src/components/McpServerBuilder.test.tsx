@@ -83,4 +83,31 @@ describe("McpServerBuilder", () => {
     await user.click(healthButton);
     expect(screen.getByRole("tooltip")).toHaveTextContent("Connection timed out.");
   });
+
+  it("keeps the per-tool approval select id unique and whitespace-safe even when discovered tool names collide and contain spaces", async () => {
+    // Regression test: the id used to be built from the tool's own name
+    // (`approval-${t.name}`), so two discovered tools sharing a name would
+    // render duplicate DOM ids — breaking the label/select association for
+    // every row after the first. Ids must now be index-based.
+    mocks.listMcpServers.mockResolvedValue([
+      {
+        ...SERVER,
+        discoveredTools: [
+          { name: "foo bar", description: "First", inputSchema: {} },
+          { name: "foo bar", description: "Second, same name", inputSchema: {} },
+        ],
+      },
+    ]);
+    render(<McpServerBuilder />);
+    await waitFor(() => expect(mocks.listMcpServers).toHaveBeenCalled());
+    await userEvent.setup().click(await screen.findByRole("button", { name: /Weather/ }));
+
+    const selects = await screen.findAllByRole("combobox", { name: "Approval" });
+    expect(selects).toHaveLength(2);
+    const ids = selects.map((s) => s.id);
+    expect(new Set(ids).size).toBe(2);
+    for (const id of ids) {
+      expect(id).not.toMatch(/\s/);
+    }
+  });
 });

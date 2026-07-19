@@ -202,6 +202,84 @@ describe("AgentBuilder", () => {
     expect(tooltip).toHaveTextContent(/unless the server is trusted/i);
   });
 
+  it("shows a trusted, never-overridden tool as unavailable (not auto) when its server is disabled", async () => {
+    // Regression test: the status word/tooltip used to be derived only from
+    // the tool's own approval override, so a disabled server's trusted,
+    // never-overridden tool incorrectly showed "· auto" — actively
+    // misleading, since it can't actually be called.
+    const user = userEvent.setup();
+    mocks.listMcpServers.mockResolvedValue([
+      { ...MCP_SERVER, trusted: true, enabled: false, toolApprovals: { forecast: "never" } },
+    ]);
+    render(
+      <AgentBuilder agents={[]} models={[]} customToolsEnabled onChanged={async () => {}} />,
+    );
+
+    const mcpGroup = await screen.findByRole("group", { name: /MCP tools/i });
+    const checkbox = within(mcpGroup).getByRole("checkbox", { name: "forecast" });
+    const row = checkbox.parentElement as HTMLElement;
+    expect(within(row).getByText("· unavailable")).toBeInTheDocument();
+    expect(within(row).queryByText("· auto")).not.toBeInTheDocument();
+    expect(within(row).queryByText("· pre-approved")).not.toBeInTheDocument();
+
+    await user.click(within(row).getByRole("button", { name: "Help: forecast approval" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/turned off/i);
+  });
+
+  it("shows a trusted tool as unavailable (not auto) when its server is quarantined", async () => {
+    const user = userEvent.setup();
+    mocks.listMcpServers.mockResolvedValue([
+      {
+        ...MCP_SERVER,
+        trusted: true,
+        consecutiveFailures: 5,
+        quarantinedUntil: new Date(Date.now() + 60_000).toISOString(),
+      },
+    ]);
+    render(
+      <AgentBuilder agents={[]} models={[]} customToolsEnabled onChanged={async () => {}} />,
+    );
+
+    const mcpGroup = await screen.findByRole("group", { name: /MCP tools/i });
+    const checkbox = within(mcpGroup).getByRole("checkbox", { name: "forecast" });
+    const row = checkbox.parentElement as HTMLElement;
+    expect(within(row).getByText("· unavailable")).toBeInTheDocument();
+
+    await user.click(within(row).getByRole("button", { name: "Help: forecast approval" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/quarantined/i);
+  });
+
+  it("keeps MCP checkbox ids unique and whitespace-safe even when discovered tool names collide and contain spaces", async () => {
+    // Regression test: ids used to be built from the tool's namespaced name
+    // (`ag-mcp-${namespacedName}`), so two tools sharing a name — or a name
+    // containing whitespace — could collide or produce a broken id/label
+    // association. Ids must now be index-based, independent of the name.
+    mocks.listMcpServers.mockResolvedValue([
+      {
+        ...MCP_SERVER,
+        discoveredTools: [
+          { name: "foo bar", description: "First", inputSchema: {} },
+          { name: "foo bar", description: "Second, same name", inputSchema: {} },
+        ],
+      },
+    ]);
+    render(
+      <AgentBuilder agents={[]} models={[]} customToolsEnabled onChanged={async () => {}} />,
+    );
+
+    const mcpGroup = await screen.findByRole("group", { name: /MCP tools/i });
+    const checkboxes = within(mcpGroup).getAllByRole("checkbox", { name: "foo bar" });
+    expect(checkboxes).toHaveLength(2);
+    const ids = checkboxes.map((c) => c.id);
+    expect(new Set(ids).size).toBe(2);
+    for (const id of ids) {
+      expect(id).not.toMatch(/\s/);
+    }
+    for (const checkbox of checkboxes) {
+      expect(checkbox).toHaveAccessibleName("foo bar");
+    }
+  });
+
   it("groups the preferred-model picker by category and explains the selected one", async () => {
     const user = userEvent.setup();
     const models: ModelEntry[] = [
@@ -246,10 +324,20 @@ describe("AgentBuilder", () => {
 
     // No category note until a real model is picked.
     expect(screen.queryByText(/Reasoning\./)).toBeNull();
+    expect(select).not.toHaveAttribute("aria-describedby");
 
     await user.selectOptions(select, "deep-thinker");
     expect(screen.getByText(/Reasoning\./)).toBeInTheDocument();
     expect(screen.getByText(/multi-step logic/)).toBeInTheDocument();
+
+    // The note must be programmatically associated with the select (not just
+    // visually adjacent), and the id it points to must resolve to a real,
+    // rendered element rather than a dangling IDREF.
+    const describedBy = select.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    const note = document.getElementById(describedBy as string);
+    expect(note).not.toBeNull();
+    expect(note).toHaveTextContent(/Reasoning\./);
   });
 
   it("describes the preferred-model default as a fallback, not an override", async () => {

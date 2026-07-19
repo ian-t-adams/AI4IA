@@ -114,4 +114,33 @@ describe("ModelPicker", () => {
     );
     expect(screen.queryByText(/Reasoning\./)).toBeNull();
   });
+
+  it("associates the category note with the select via aria-describedby, with no dangling reference when there's no note", () => {
+    const { container, rerender } = render(
+      <ModelPicker
+        value="reason"
+        onChange={vi.fn()}
+        models={[model({ id: "reason", displayName: "Deep Thinker", category: "reasoning" })]}
+      />,
+    );
+    const select = screen.getByRole("combobox", { name: "Model" });
+    const describedBy = select.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    // The id must resolve to a real element in the document (the note itself),
+    // not a dangling/broken IDREF a screen reader can't follow.
+    const note = container.querySelector(`#${describedBy}`);
+    expect(note).not.toBeNull();
+    expect(note).toHaveTextContent(/Reasoning\./);
+
+    // No curated help for this category -> no note element -> the select must
+    // not point aria-describedby at an id that doesn't exist in the DOM.
+    rerender(
+      <ModelPicker
+        value="plain"
+        onChange={vi.fn()}
+        models={[model({ id: "plain", displayName: "Plain", category: "unknown-category" })]}
+      />,
+    );
+    expect(select).not.toHaveAttribute("aria-describedby");
+  });
 });

@@ -488,3 +488,82 @@ def test_report_endpoint_sanitizes_before_emitting(client, monkeypatch):
     _, attrs = captured[0]
     assert attrs["clientMessage"] == "User [redacted-email] not found"
     assert "jane.doe@example.test" not in attrs["route"]
+
+
+# Regression coverage for a follow-up acceptance round: naive delimiter-
+# matching is defeated by percent-encoding the delimiter away, by a
+# credential value that is itself a small nested JSON object, or by an
+# unterminated quote -- each previously let the real credential straight
+# through. `_sanitize` now runs a bounded decode-then-redact loop
+# (_MAX_SANITIZE_PASSES) specifically to close these gaps; the browser
+# (clientTelemetry.ts's `sanitize`) mirrors this exactly -- see the
+# matching tests there.
+
+
+def test_sanitize_redacts_standalone_scheme_credential_joined_by_encoded_space():
+    cred = "z" * 20
+    result = _sanitize(f"Basic%20{cred} rejected")
+    assert cred not in result
+    assert "%20" not in result
+    assert result == "Basic=[redacted] rejected"
+
+
+def test_sanitize_redacts_labeled_pair_joined_by_encoded_equals_sign():
+    cred = "z" * 20
+    result = _sanitize(f"token%3D{cred} invalid")
+    assert cred not in result
+    assert "%3D" not in result
+    assert result == "token=[redacted] invalid"
+
+
+def test_sanitize_redacts_double_percent_encoded_delimiter_after_two_passes():
+    """"%2520" decodes to "%20" on the first pass, which itself only becomes
+    a literal space on a second pass -- proving the loop actually iterates
+    rather than decoding once and giving up."""
+    cred = "z" * 20
+    result = _sanitize(f"Basic%2520{cred} rejected")
+    assert cred not in result
+    assert "%20" not in result
+    assert "%2520" not in result
+    assert result == "Basic=[redacted] rejected"
+
+
+def test_sanitize_redacts_credential_value_that_is_itself_a_nested_json_object():
+    cred = "z" * 20
+    result = _sanitize(f'Authorization: {{"scheme":"Basic","credential":"{cred}"}} rejected')
+    assert cred not in result
+    assert result == "Authorization=[redacted] rejected"
+
+
+def test_sanitize_redacts_unterminated_missing_closing_quote_credential():
+    cred = "z" * 20
+    result = _sanitize(f'Authorization: "{cred}')
+    assert cred not in result
+    assert result == "Authorization=[redacted]"
+
+
+def test_sanitize_never_leaves_decoded_but_unredacted_intermediate():
+    """A message combining several bypass shapes at once; the assertion is
+    strong -- no raw credential material and no residual percent-encoding
+    survive, which is only possible if every pass's decode step is followed
+    by a redaction step before anything is returned."""
+    cred = "z" * 20
+    result = _sanitize(f"Basic%20{cred} and token%3D{cred}2 both failed")
+    assert cred not in result
+    assert "%20" not in result
+    assert "%3D" not in result
+
+
+def test_sanitize_does_not_corrupt_already_redacted_quoted_credential_on_later_pass():
+    """Regression for a bug introduced while adding the iterative loop above:
+    once the standalone pattern redacts ``("Bearer <cred>")`` down to
+    ``("Bearer=[redacted]")`` on pass one, pass two must not let the
+    label-prefixed pattern re-match its own ``Bearer=[redacted]`` output and
+    swallow the legitimately-preserved leading quote (it optionally consumes
+    one, for the unrelated JSON-key-quoting case). Uses "Bearer"
+    specifically -- the one word that is both a standalone scheme AND a
+    label -- since that dual role is exactly what let the label-prefixed
+    pattern misfire on the second pass."""
+    cred = "z" * 20
+    result = _sanitize(f'request failed ("Bearer {cred}")')
+    assert result == 'request failed ("Bearer=[redacted]")'

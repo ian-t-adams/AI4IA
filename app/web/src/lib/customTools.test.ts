@@ -153,6 +153,26 @@ describe("approvalPosture", () => {
     expect(p.label).toMatch(/trusted/i);
     expect(p.detail).toContain("api.example.com");
   });
+
+  it("is unavailable when the server is disabled, even if trusted", () => {
+    const p = approvalPosture({ trusted: true, host: "api.example.com", blocking: "disabled" });
+    expect(p.requiresApproval).toBe(true);
+    expect(p.label).toMatch(/unavailable/i);
+    expect(p.label).toMatch(/off/i);
+    expect(p.detail).toContain("api.example.com");
+    expect(p.detail).toMatch(/turned off/i);
+    // Trust is beside the point here — being off blocks it regardless.
+    expect(p.detail).toMatch(/no matter (their|its) trust or approval/i);
+  });
+
+  it("is unavailable when the server is quarantined, even if trusted", () => {
+    const p = approvalPosture({ trusted: true, host: "api.example.com", blocking: "quarantined" });
+    expect(p.requiresApproval).toBe(true);
+    expect(p.label).toMatch(/unavailable/i);
+    expect(p.label).toMatch(/quarantined/i);
+    expect(p.detail).toMatch(/quarantined/i);
+    expect(p.detail).toMatch(/recovers automatically/i);
+  });
 });
 
 function makeServer(overrides: Partial<UserMcpServer> = {}): UserMcpServer {
@@ -322,6 +342,52 @@ describe("per-tool approval", () => {
     expect(fromTool).toEqual(fromServer);
     expect(fromTool.label).toMatch(/unavailable/i);
   });
+
+  it("is unavailable when the server is disabled, even with a `never` override", () => {
+    const s = makeServer({ enabled: false, trusted: true, toolApprovals: { forecast: "never" } });
+    const p = toolApprovalPosture(s, "forecast");
+    expect(p.requiresApproval).toBe(true);
+    expect(p.label).toMatch(/unavailable/i);
+    expect(p.label).toMatch(/off/i);
+    expect(p.detail).toMatch(/turned off/i);
+  });
+
+  it("is unavailable when the server is quarantined, even with a `never` override", () => {
+    const s = makeServer({ trusted: false, toolApprovals: { forecast: "never" } });
+    const p = toolApprovalPosture(s, "forecast", /* quarantined */ true);
+    expect(p.requiresApproval).toBe(true);
+    expect(p.label).toMatch(/unavailable/i);
+    expect(p.label).toMatch(/quarantined/i);
+    expect(p.detail).toMatch(/quarantined/i);
+  });
+
+  it("threads the quarantined flag into attachableToolApprovalPosture identically to toolApprovalPosture", () => {
+    const s = makeServer({
+      trusted: true,
+      toolApprovals: { forecast: "always" },
+      discoveredTools: [{ name: "forecast", description: "", inputSchema: {} }],
+    });
+    const [tool] = attachableMcpTools([s]);
+    const fromTool = attachableToolApprovalPosture(tool, true);
+    const fromServer = toolApprovalPosture(s, "forecast", true);
+    expect(fromTool).toEqual(fromServer);
+    // Quarantine overrides even an `always` override's own "Unavailable" label.
+    expect(fromTool.label).toMatch(/quarantined/i);
+  });
+
+  it("attachableToolApprovalPosture reflects a disabled server via the tool's own `enabled` field", () => {
+    const s = makeServer({
+      enabled: false,
+      trusted: true,
+      discoveredTools: [{ name: "forecast", description: "", inputSchema: {} }],
+    });
+    const [tool] = attachableMcpTools([s]);
+    expect(tool.enabled).toBe(false);
+    const p = attachableToolApprovalPosture(tool);
+    expect(p.requiresApproval).toBe(true);
+    expect(p.label).toMatch(/unavailable/i);
+    expect(p.label).toMatch(/off/i);
+  });
 });
 
 describe("MCP_TOOL_APPROVALS copy", () => {
@@ -350,6 +416,17 @@ describe("MCP_TOOL_APPROVALS copy", () => {
   it("does not promise a per-use prompt for 'never' either", () => {
     const option = MCP_TOOL_APPROVALS.find((a) => a.value === "never");
     expect(option?.hint).not.toMatch(/prompt/i);
+  });
+
+  it("warns that 'default' and 'never' can't rescue a disabled or quarantined server", () => {
+    // These are the two options a user might read as "this will make the tool
+    // work" — so they must not overpromise when a server-level block applies.
+    const def = MCP_TOOL_APPROVALS.find((a) => a.value === "default");
+    const never = MCP_TOOL_APPROVALS.find((a) => a.value === "never");
+    for (const option of [def, never]) {
+      expect(option?.hint).toMatch(/turned off|disabled/i);
+      expect(option?.hint).toMatch(/quarantined/i);
+    }
   });
 });
 
