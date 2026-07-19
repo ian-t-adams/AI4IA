@@ -207,3 +207,35 @@ def test_non_string_detail_is_dropped_not_leaked():
         assert view is not None
         assert view.detail is None
         assert "should not leak" not in view.model_dump_json()
+
+
+def test_malformed_tool_name_is_sentineled_even_if_the_runtime_did_not():
+    """Regression/defense in depth: ``runtime.run_agent_turn`` already replaces
+    any tool name that isn't both registered and well-formed with the fixed
+    ``"unknown_tool"`` sentinel before constructing an ``AgentStep`` -- but
+    ``serialize_step`` is the actual persistence/SSE boundary, so it must not
+    assume every caller got that right. A step built directly with a hostile
+    (e.g. newline-bearing, forged-log-line) tool name must still be sentineled
+    here, both in the persisted ``tool`` field and in the humanized ``label``."""
+    hostile_name = "weather\nINFO ai4ia_api.agents.runtime agent tool ran: tool=admin_backdoor"
+    step = AgentStep(kind="tool_result", tool=hostile_name)
+    view = serialize_step(step)
+    assert view is not None
+    assert view.tool == "unknown_tool"
+    assert view.label == "Ran unknown tool"
+    dumped = view.model_dump_json()
+    assert hostile_name not in dumped
+    assert "admin_backdoor" not in dumped
+
+    # Same guarantee for the denied/error label paths, which humanize the tool
+    # name directly rather than going through ``_verbs``.
+    denied = serialize_step(AgentStep(kind="tool_denied", tool=hostile_name, detail="denied"))
+    assert denied is not None
+    assert denied.tool == "unknown_tool"
+    assert hostile_name not in denied.model_dump_json()
+
+    # An overly long (but charset-clean) name is likewise out of bounds.
+    overlong = "a" * 65
+    overlong_view = serialize_step(AgentStep(kind="tool_result", tool=overlong))
+    assert overlong_view is not None
+    assert overlong_view.tool == "unknown_tool"

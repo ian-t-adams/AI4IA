@@ -56,17 +56,20 @@ _FORGET_LIST_CAP = 1000
 
 class MemoryScanIncompleteError(RuntimeError):
     """Raised when a document-scoped memory operation cannot verify it saw
-    every one of the user's memories.
+    every one of the target document's memories.
 
-    mem0's ``get_all`` has no document-scoped filter (only entity-level
-    ``user_id``/``agent_id``/``run_id``) and no pagination cursor -- only a
-    ``top_k`` cap -- so document-scoped erase must list-then-filter
-    client-side. Once a user has at least ``_FORGET_LIST_CAP`` memories, the
-    listing may be truncated and some memories tagged with the target
-    ``document_id`` could sit beyond the cap, unseen. Raising here (instead of
-    reporting a possibly-partial "N forgotten" count) keeps the caller from
+    mem0's ``get_all`` accepts arbitrary custom filter keys (not just the
+    built-in ``user_id``/``agent_id``/``run_id``) that its pgvector-backed
+    store translates into an exact-match payload condition, so listing can
+    (and does) pin both ``user_id`` *and* our custom ``document_id`` metadata
+    key server-side -- this is not a whole-user scan. There is still no
+    pagination cursor, only a ``top_k`` cap, so if a *single document* itself
+    has at least ``_FORGET_LIST_CAP`` tagged memories the listing may be
+    truncated and some could sit beyond the cap, unseen. Raising here (instead
+    of reporting a possibly-partial "N forgotten" count) keeps the caller from
     treating the document as fully erased when stray memories may remain
-    recallable.
+    recallable. A user's *other*, unrelated memories -- however many -- never
+    factor into this cap, since the listing itself excludes them.
     """
 
 
@@ -415,8 +418,9 @@ class Mem0MemoryService:
         """Erase a user's memories saved from one document (NOT swallowed).
 
         mem0's ``delete_all`` only scopes by entity (user/run), not by custom
-        metadata, so document-scoped deletion lists the user's memories and
-        removes by id the ones whose ``metadata.document_id`` matches. Raises
+        metadata, so document-scoped deletion instead lists memories filtered
+        by both ``user_id`` and ``document_id`` and removes by id the ones
+        whose ``metadata.document_id`` matches. Raises
         :class:`MemoryScanIncompleteError` rather than under-reporting if that
         listing may have been truncated -- see ``_forget_document``."""
         mem = await asyncio.wait_for(self._ensure(), timeout=self._op_timeout_s)
@@ -478,24 +482,38 @@ class Mem0MemoryService:
         return True
 
     async def _forget_document(self, mem: Any, user_id: str, document_id: str) -> int:
-        """List the user's memories and delete by id those tagged with
-        ``document_id``. Shared by the idempotent re-save and the explicit
-        forget-by-document path; failures propagate (explicit deletion).
+        """List the user's memories *for this document* and delete by id
+        those tagged with ``document_id``. Shared by the idempotent re-save
+        and the explicit forget-by-document path; failures propagate
+        (explicit deletion).
+
+        The listing is pinned to both ``user_id`` and ``document_id`` server
+        side (mem0's pgvector store matches arbitrary metadata keys, not just
+        the built-in entity filters), so the ``_FORGET_LIST_CAP`` bound below
+        applies to how many memories *this document* has -- not how many the
+        user has in total. A user with thousands of memories spread across
+        many small documents is unaffected; only a single document with an
+        implausibly large number of tagged memories can trip the cap.
 
         Raises :class:`MemoryScanIncompleteError` instead of returning a
         possibly-partial count when the listing hits ``_FORGET_LIST_CAP`` --
         see that class's docstring for why completeness cannot otherwise be
-        verified against this backend.
+        verified against this backend. The local ``document_id`` re-check
+        below is retained as defense-in-depth in case a given backend/fake
+        ignores the server-side filter and returns unrelated memories.
         """
         listing = await self._call(
-            lambda: mem.get_all(filters={"user_id": user_id}, top_k=_FORGET_LIST_CAP),
+            lambda: mem.get_all(
+                filters={"user_id": user_id, "document_id": document_id},
+                top_k=_FORGET_LIST_CAP,
+            ),
             self._op_timeout_s,
         )
         results = _results(listing)
         if len(results) >= _FORGET_LIST_CAP:
             raise MemoryScanIncompleteError(
-                f"cannot verify a complete document-memory scan for user "
-                f"(memory count >= {_FORGET_LIST_CAP}); document {document_id} "
+                f"cannot verify a complete memory scan for document "
+                f"{document_id} (matching memory count >= {_FORGET_LIST_CAP}); "
                 "erase aborted rather than risk leaving stray memories "
                 "recallable"
             )

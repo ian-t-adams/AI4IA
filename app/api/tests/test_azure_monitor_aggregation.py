@@ -100,7 +100,32 @@ class _PerAggregationRecordingClient:
         pass
 
 
-def _querier_with(client: _RecordingClient | _PerAggregationRecordingClient) -> AzureMonitorQuerier:
+@dataclass
+class _PartiallyFailingClient:
+    """Stands in for ``MetricsClient.query_resources`` when a test needs one
+    aggregation group's request to genuinely fail (a real Azure Monitor
+    error) while another group in the same panel succeeds -- proving
+    ``AzureMonitorQuerier.query`` isolates the failure to that one group
+    instead of discarding data already fetched for the rest of the panel."""
+
+    results_by_aggregation: dict[Any, list[_FakeResourceResult]]
+    failing_aggregations: dict[Any, Exception]
+    calls: list[dict[str, Any]] = field(default_factory=list)
+
+    async def query_resources(self, **kwargs: Any):
+        self.calls.append(kwargs)
+        (aggregation,) = kwargs["aggregations"]
+        if aggregation in self.failing_aggregations:
+            raise self.failing_aggregations[aggregation]
+        return self.results_by_aggregation.get(aggregation, [])
+
+    async def close(self) -> None:
+        pass
+
+
+def _querier_with(
+    client: _RecordingClient | _PerAggregationRecordingClient | _PartiallyFailingClient,
+) -> AzureMonitorQuerier:
     """Build a real ``AzureMonitorQuerier`` (no network calls at
     construction time -- credential/client creation is lazy) and swap in a
     fake client so ``.query()`` never leaves the process."""
@@ -344,3 +369,84 @@ async def test_homogeneous_aggregation_panel_still_makes_one_call():
     assert len(client.calls) == 1
     assert len(client.calls[0]["metric_names"]) == len(requests)
     assert len(points) == len(requests)
+
+
+async def test_one_failing_aggregation_group_keeps_other_groups_data_and_reports_safe_error():
+    """Production incident: an admin diagnostics review found that a metric
+    whose Azure Monitor query genuinely failed and a metric with no data yet
+    both resolved to an indistinguishable ``value=None`` -- and, worse, one
+    aggregation group's request failing used to raise out of ``query()``
+    entirely, discarding the other groups' already-fetched data for the same
+    panel. Pins that: (1) a failing group's own metrics resolve to
+    ``value=None`` with a short, safe ``error`` reason (HTTP status + Azure's
+    short machine code only -- never the raw exception message, which can
+    echo the resource id/request back); (2) a different, succeeding group's
+    metrics in the *same panel* resolve normally, unaffected."""
+    from types import SimpleNamespace
+
+    from azure.core.exceptions import HttpResponseError
+    from azure.monitor.querymetrics import MetricAggregationType
+
+    cosmos_spec = next(s for s in PANEL_SPECS if s.key == "cosmos")
+    requests = list(cosmos_spec.metrics)
+    count_request = next(r for r in requests if r.aggregation == "count")
+
+    # A realistic Azure Monitor failure: HTTP 400/BadRequest. The message
+    # deliberately embeds request-identifying text a safe reason must never
+    # surface.
+    boom = HttpResponseError(
+        "Bad Request: /subscriptions/00000000/resourceGroups/rg/providers/"
+        "Microsoft.DocumentDB/databaseAccounts/prod-secret-db rejected"
+    )
+    boom.status_code = 400
+    boom.error = SimpleNamespace(code="BadRequest")
+
+    results_by_aggregation = {
+        MetricAggregationType.TOTAL: [
+            _FakeResourceResult(
+                metrics=[
+                    _FakeMetric(
+                        name="TotalRequestUnits",
+                        timeseries=[_FakeTimeSeries(data=[_FakeDataPoint(total=123.0)])],
+                    )
+                ]
+            )
+        ],
+        MetricAggregationType.AVERAGE: [
+            _FakeResourceResult(
+                metrics=[
+                    _FakeMetric(
+                        name="ServiceAvailability",
+                        timeseries=[_FakeTimeSeries(data=[_FakeDataPoint(average=99.9)])],
+                    )
+                ]
+            )
+        ],
+    }
+    client = _PartiallyFailingClient(
+        results_by_aggregation=results_by_aggregation,
+        failing_aggregations={MetricAggregationType.COUNT: boom},
+    )
+    querier = _querier_with(client)
+
+    points = await querier.query(
+        "/subscriptions/x/resourceGroups/rg/providers/Microsoft.DocumentDB/databaseAccounts/c",
+        requests,
+        window_minutes=60,
+        granularity_minutes=60,
+    )
+
+    by_name = {p.name: p for p in points}
+    # Succeeding groups are untouched by the other group's failure.
+    assert by_name["TotalRequestUnits"].value == 123.0
+    assert by_name["TotalRequestUnits"].error is None
+    assert by_name["ServiceAvailability"].value == 99.9
+    assert by_name["ServiceAvailability"].error is None
+    # The failing group's metric carries a short, safe reason instead of a
+    # silent null indistinguishable from legitimate no-data.
+    failed = by_name[count_request.name]
+    assert failed.value is None
+    assert failed.error == "HTTP 400 (BadRequest)"
+    assert "subscriptions" not in failed.error
+    assert "secret" not in failed.error
+    assert "DocumentDB" not in failed.error

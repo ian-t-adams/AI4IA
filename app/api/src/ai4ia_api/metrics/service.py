@@ -2,9 +2,12 @@
 
 Maps each configured ARM resource id to a small set of platform metrics and reads
 them from Azure Monitor. Best-effort by construction: a panel whose id is unset,
-whose SDK is missing, or whose query fails is returned as ``unavailable`` with a
-short reason — never an error. Panels light up as diagnostics/resource ids
-appear.
+whose SDK is missing, or whose query fails outright is returned as ``unavailable``
+with a short reason — never an error. A panel where only some requested metrics
+actually failed (see ``AzureMonitorQuerier``'s per-aggregation-group error
+handling) is returned as ``partial`` with the failing metrics named, instead of
+silently reporting ``ok`` alongside metrics that never had a chance to resolve.
+Panels light up as diagnostics/resource ids appear.
 """
 from __future__ import annotations
 
@@ -13,7 +16,7 @@ from dataclasses import dataclass
 
 from ..config import Settings
 from .azure_monitor import MetricsQuerier
-from .models import MetricRequest, ResourceMetricsReport, ResourcePanel
+from .models import MetricRequest, PanelStatus, ResourceMetricsReport, ResourcePanel
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +174,31 @@ class ResourceMetricsService:
             return ResourcePanel.unavailable(
                 spec.key, spec.display_name, "Metrics query failed."
             )
+        # Production incident: a metric whose query genuinely failed (Azure
+        # Monitor error) and a metric with no data yet both resolved to a bare
+        # null value, so this panel was reported "ok" either way -- there was
+        # no way to tell "nothing happened" from "something broke". Points
+        # that failed carry a safe ``error`` reason (see AzureMonitorQuerier);
+        # a panel with at least one but not all of those is "partial", and a
+        # panel where every point failed is "unavailable" rather than a
+        # falsely reassuring "ok".
+        errored = [p for p in points if p.error]
+        if errored and len(errored) == len(points):
+            reasons = sorted({p.error for p in errored if p.error})
+            return ResourcePanel.unavailable(
+                spec.key, spec.display_name, f"Metrics query failed: {'; '.join(reasons)}"
+            )
+        status: PanelStatus = "ok"
+        detail = None
+        if errored:
+            status = "partial"
+            labels = ", ".join(p.label for p in errored)
+            detail = f"Unavailable: {labels}."
         return ResourcePanel(
             key=spec.key,
             displayName=spec.display_name,
-            status="ok",
+            status=status,
+            detail=detail,
             metrics=points,
         )
 

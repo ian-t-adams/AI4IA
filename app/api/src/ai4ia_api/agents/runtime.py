@@ -17,12 +17,18 @@ in-process ``AgentStep`` trace, and free-text log lines never include it at all 
 only the tool name and fixed, bounded status/reason strings reach logs or the
 user-facing activity view (see ``agents.activity``). The tool "name" itself is
 model-supplied and unvalidated at call time, so it is never trusted as log-safe
-free text either: only a name already known to be a synthetic capability or a
-registered registry tool is ever surfaced in a step/log/telemetry event; any
-other value (hallucinated or adversarially crafted by the model) is replaced
-with the fixed sentinel ``"unknown_tool"`` before it can reach any persisted or
-logged surface. Dispatch decisions themselves (authorization, execution,
-denial-looping) still use the raw name so real tool calls are routed correctly.
+free text either: only a name that is BOTH known (a synthetic capability or a
+registered registry tool) AND matches a bounded, canonical charset
+(``tools.is_safe_tool_name``) is ever surfaced in a step/log/telemetry event.
+Registry/handler membership alone is not sufficient proof of safety — a tool
+name can originate from a source this codebase does not author or code-review
+(e.g. a name a remote MCP server advertises), so a name that is well-formed
+enough to dispatch but still adversarial (newlines, control characters) must be
+sentineled just the same as a wholly hallucinated one. Any disqualified value is
+replaced with the fixed sentinel ``"unknown_tool"`` before it can reach any
+persisted or logged surface. Dispatch decisions themselves (authorization,
+execution, denial-looping) still use the raw name so real tool calls — however
+they are named — are routed correctly.
 The real Microsoft Agent Framework / Foundry toolbox / MCP can later replace the
 :class:`~ai4ia_api.agents.tool_exec.ToolExecutor` behind this same loop.
 """
@@ -39,7 +45,7 @@ from ..gateway.client import ModelGatewayClient
 from ..usage.models import TokenUsage
 from ..logging_setup import emit_custom_event, emit_security_block
 from .tool_exec import ToolContext, ToolExecutor, ToolValidationError
-from .tools import ToolRegistry, redact, redact_obj
+from .tools import ToolRegistry, is_safe_tool_name, redact, redact_obj
 
 logger = logging.getLogger(__name__)
 
@@ -208,9 +214,13 @@ async def run_agent_turn(
             # arbitrary free text into those surfaces under the guise of a "tool
             # name"). `safe_name` is the only value used for anything surfaced;
             # dispatch below keeps using the raw `name` so real authorization/
-            # execution routes correctly. Once a name is known (registered as a
-            # synthetic handler or in the tool registry) `safe_name == name`.
-            safe_name = name if (name in handlers or registry.get(name) is not None) else "unknown_tool"
+            # execution routes correctly. Registered/handler membership alone is
+            # NOT sufficient: a dynamically-supplied name (e.g. MCP-discovered)
+            # could be genuinely dispatchable yet still contain newlines or other
+            # content crafted to forge a different log line, so the name must
+            # also match a bounded, canonical charset before it is trusted.
+            known = name in handlers or registry.get(name) is not None
+            safe_name = name if known and is_safe_tool_name(name) else "unknown_tool"
 
             tool_calls_used += 1
             if tool_calls_used > _MAX_TOOL_CALLS:

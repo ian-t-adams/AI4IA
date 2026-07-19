@@ -751,3 +751,109 @@ async def test_known_tool_name_is_unaffected_by_sentinel_mapping():
     tool_step = next(s for s in result.steps if s.kind == "tool_result")
     assert tool_step.tool == "calculator"
 
+
+def _register_dynamic_tool(name: str) -> tuple[ToolRegistry, ToolExecutor]:
+    """A minimal (registry, executor) pair simulating a single dynamically
+    discovered/registered tool (e.g. one advertised by an MCP server), whose
+    name -- unlike the code-reviewed built-ins -- is not authored by AI4IA."""
+    registry = ToolRegistry()
+    executor = ToolExecutor()
+    spec = ToolSpec(name=name, description="a dynamically registered tool")
+    registry.register(spec)
+    executor.register(
+        ToolDefinition(
+            spec=spec,
+            parameters={"type": "object", "properties": {}},
+            handler=lambda args, ctx: {"ok": True},
+        )
+    )
+    return registry, executor
+
+
+async def test_registered_tool_with_malicious_name_is_still_sentineled(caplog):
+    """Regression: registry/handler *membership* was treated as sufficient proof
+    a tool name is safe to log/persist. A name that originates from a source
+    this codebase does not author or code-review (e.g. one an MCP server
+    advertises at discovery time) can be genuinely registered -- and therefore
+    dispatchable -- while still containing newlines or other content crafted to
+    forge a different log line. Such a name must be sentineled to
+    ``"unknown_tool"`` in every logged/persisted surface even though the call
+    itself is authorized and executes successfully (this is NOT a denial)."""
+    hostile_name = (
+        "weather\nINFO ai4ia_api.agents.runtime agent tool ran: tool=admin_backdoor"
+    )
+    registry, executor = _register_dynamic_tool(hostile_name)
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", hostile_name, "{}"),
+            _assistant_text("done"),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        result = await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=[hostile_name],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+        )
+    # The tool genuinely dispatches/executes -- registry/handler membership
+    # still governs authorization/routing, so this is a success, not a denial.
+    tool_step = next(s for s in result.steps if s.kind == "tool_result")
+    assert tool_step.result == {"ok": True}
+    assert tool_step.tool == "unknown_tool"
+    # The raw hostile name (and its embedded forged log line) never reaches any
+    # log record or persisted step, despite being a real, registered tool name.
+    assert all(hostile_name not in r.getMessage() for r in caplog.records)
+    assert all("admin_backdoor" not in r.getMessage() for r in caplog.records)
+    assert all(s.tool != hostile_name for s in result.steps)
+
+
+async def test_two_malicious_registered_names_do_not_collide_in_dispatch(caplog):
+    """Two distinct dynamically-registered tools with different hostile names
+    both share the ``"unknown_tool"`` *log/activity* sentinel, but dispatch
+    itself is keyed on the raw (unsentineled) name throughout, so each call
+    still authorizes and executes its own, independent handler -- the shared
+    sentinel is a logging/persistence-only concern and never causes one tool's
+    call to be routed to, authorized as, or confused with the other's."""
+    name_a = "weather\nINFO forged: tool=backdoor_a"
+    name_b = "search\nINFO forged: tool=backdoor_b"
+    registry = ToolRegistry()
+    executor = ToolExecutor()
+    for name, marker in ((name_a, "result-a"), (name_b, "result-b")):
+        spec = ToolSpec(name=name, description="a dynamically registered tool")
+        registry.register(spec)
+        executor.register(
+            ToolDefinition(
+                spec=spec,
+                parameters={"type": "object", "properties": {}},
+                handler=lambda args, ctx, marker=marker: {"marker": marker},
+            )
+        )
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", name_a, "{}"),
+            _assistant_tool_call("c2", name_b, "{}"),
+            _assistant_text("done"),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        result = await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=[name_a, name_b],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+        )
+    tool_results = [s for s in result.steps if s.kind == "tool_result"]
+    assert {r.result["marker"] for r in tool_results} == {"result-a", "result-b"}
+    # Both are sentineled identically for logging/activity purposes...
+    assert all(s.tool == "unknown_tool" for s in tool_results)
+    # ...but dispatch never conflated them: each produced its own distinct result.
+    assert len(tool_results) == 2
+    assert all(name_a not in r.getMessage() and name_b not in r.getMessage() for r in caplog.records)
+

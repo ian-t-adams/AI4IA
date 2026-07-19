@@ -13,7 +13,10 @@ arguments. ``detail`` is sourced *only* from ``AgentStep.detail``, a fixed,
 bounded reason/category string the runtime itself sets for denial/error/final
 steps (e.g. ``"budget_exceeded"``, ``"missing_scope"``); it is never derived from
 tool arguments, since those can carry arbitrary user content (prompts, URLs,
-file paths) that must not be persisted or logged.
+file paths) that must not be persisted or logged. The tool name itself is
+re-validated against the same bounded, canonical charset the runtime enforces
+(belt-and-suspenders: this is the actual persistence/SSE boundary, so it must
+not blindly trust an already-sanitized value from its one current caller).
 """
 from __future__ import annotations
 
@@ -21,6 +24,7 @@ from typing import Any
 
 from ..sessions.models import ActivityStep
 from .runtime import AgentStep
+from .tools import is_safe_tool_name
 
 # tool name -> (present-progressive label for live, past-tense label for the trace)
 _TOOL_VERBS: dict[str, tuple[str, str]] = {
@@ -80,6 +84,11 @@ def serialize_step(step: AgentStep) -> ActivityStep | None:
     if kind == "final":
         return None
     tool = step.tool
+    if tool is not None and not is_safe_tool_name(tool):
+        # Defense in depth: the runtime already sentinels any tool name that
+        # isn't both registered and well-formed, but this is the actual
+        # persistence/SSE boundary, so it never trusts that unconditionally.
+        tool = "unknown_tool"
     present, past = _verbs(tool)
     if kind == "tool_start":
         label = present

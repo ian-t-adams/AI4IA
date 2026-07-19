@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-PanelStatus = Literal["ok", "unavailable"]
+PanelStatus = Literal["ok", "partial", "unavailable"]
 Aggregation = Literal["average", "total", "maximum", "count"]
 
 
@@ -31,13 +31,20 @@ class MetricPoint(BaseModel):
     aggregation: Aggregation
     value: float | None = None
     unit: str | None = None
+    # Set only when Azure Monitor's query for this metric's aggregation group
+    # actually failed (a short, bounded reason -- HTTP status/error code, never
+    # the raw exception text or request details). None covers both a resolved
+    # value and legitimate no-data-yet: callers must not conflate "nothing
+    # happened" with "something broke".
+    error: str | None = None
 
 
 class ResourcePanel(BaseModel):
     key: str  # "search" | "postgres" | "cosmos" | "containerApp"
     displayName: str
     status: PanelStatus = "unavailable"
-    # Why a panel is unavailable (not configured / SDK absent / query failed / disabled).
+    # Why a panel is unavailable/partial (not configured / SDK absent / query
+    # failed / disabled / some metrics errored).
     detail: str | None = None
     metrics: list[MetricPoint] = Field(default_factory=list)
 
@@ -53,7 +60,7 @@ class ResourceMetricsReport(BaseModel):
 
     @property
     def anyAvailable(self) -> bool:
-        return any(p.status == "ok" for p in self.panels)
+        return any(p.status in ("ok", "partial") for p in self.panels)
 
 
 OperationalPanelStatus = Literal["ok", "partial", "stale", "unavailable"]

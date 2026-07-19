@@ -100,3 +100,95 @@ async def test_non_cosmos_panels_keep_the_default_granularity():
         if spec.key == "cosmos":
             continue
         assert granularity == DEFAULT_GRANULARITY_MINUTES
+
+
+@dataclass
+class _ScriptedQuerier:
+    """Fake ``MetricsQuerier`` that returns caller-scripted points for the
+    one panel whose resource id contains ``target_marker`` (matched up by
+    metric name) and an all-``ok`` placeholder point for every other panel.
+    Lets a single panel's per-metric error state be driven directly, without
+    needing a real Azure Monitor/HTTP failure to reach this layer."""
+
+    target_marker: str
+    points_by_name: dict[str, MetricPoint]
+
+    async def query(
+        self,
+        resource_id: str,
+        requests: list[MetricRequest],
+        *,
+        window_minutes: int,
+        granularity_minutes: int,
+    ) -> list[MetricPoint]:
+        if self.target_marker in resource_id:
+            return [self.points_by_name[r.name] for r in requests]
+        return [
+            MetricPoint(name=r.name, label=r.label, aggregation=r.aggregation, value=1.0, unit=r.unit)
+            for r in requests
+        ]
+
+    async def close(self) -> None:
+        pass
+
+
+async def test_panel_reports_partial_status_when_only_some_metrics_error():
+    """Production incident: a metric whose Azure Monitor query genuinely
+    failed and a metric with no data yet both resolved to a bare null value,
+    so the panel was reported "ok" regardless -- there was no way to tell
+    "nothing happened" from "something broke". Pins that a panel with at
+    least one (but not all) errored metric is reported "partial", names the
+    failing metric in ``detail``, and that the still-resolved metrics'
+    values survive unchanged in the panel payload."""
+    cosmos_spec = next(s for s in PANEL_SPECS if s.key == "cosmos")
+    metrics = list(cosmos_spec.metrics)
+    failing = metrics[0]
+    points_by_name = {
+        m.name: MetricPoint(
+            name=m.name,
+            label=m.label,
+            aggregation=m.aggregation,
+            value=None if m.name == failing.name else 1.0,
+            error="HTTP 400 (BadRequest)" if m.name == failing.name else None,
+        )
+        for m in metrics
+    }
+    querier = _ScriptedQuerier(target_marker="databaseAccounts", points_by_name=points_by_name)
+    service = ResourceMetricsService(_settings_with_all_resource_ids(), querier=querier)
+
+    report = await service.resources()
+
+    cosmos_panel = next(p for p in report.panels if p.key == "cosmos")
+    assert cosmos_panel.status == "partial"
+    assert cosmos_panel.detail
+    assert failing.label in cosmos_panel.detail
+    by_name = {p.name: p for p in cosmos_panel.metrics}
+    for m in metrics:
+        if m.name == failing.name:
+            assert by_name[m.name].value is None
+        else:
+            assert by_name[m.name].value == 1.0
+    # Other panels are unaffected by Cosmos's per-metric failure.
+    assert all(p.status == "ok" for p in report.panels if p.key != "cosmos")
+
+
+async def test_panel_reports_unavailable_when_every_metric_errors():
+    """When every metric requested for a panel failed (every aggregation
+    group errored), the panel must be "unavailable" -- not "partial", which
+    implies some metrics did resolve -- with a safe, non-empty reason."""
+    cosmos_spec = next(s for s in PANEL_SPECS if s.key == "cosmos")
+    metrics = list(cosmos_spec.metrics)
+    points_by_name = {
+        m.name: MetricPoint(
+            name=m.name, label=m.label, aggregation=m.aggregation, value=None, error="HTTP 500"
+        )
+        for m in metrics
+    }
+    querier = _ScriptedQuerier(target_marker="databaseAccounts", points_by_name=points_by_name)
+    service = ResourceMetricsService(_settings_with_all_resource_ids(), querier=querier)
+
+    report = await service.resources()
+
+    cosmos_panel = next(p for p in report.panels if p.key == "cosmos")
+    assert cosmos_panel.status == "unavailable"
+    assert cosmos_panel.detail

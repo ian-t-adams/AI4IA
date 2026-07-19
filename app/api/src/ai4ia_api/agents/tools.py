@@ -178,3 +178,42 @@ def redact_obj(value: Any) -> Any:
     if isinstance(value, str):
         return redact(value)
     return value
+
+
+# --- Tool-name safety (defense against forged log/activity entries) ------------
+
+# A tool *name* can originate from a source this codebase does not author or
+# code-review (e.g. a name a remote MCP server advertises when its tools are
+# discovered/registered). Being registered -- a key in the executor's handler
+# map or a name known to this registry -- is proof the name is *dispatchable*,
+# but it is NOT proof the name is safe to place in a free-text log line or a
+# persisted activity record: nothing stops an untrusted registration from using
+# a name containing newlines or other content crafted to forge a different log
+# line. This bounded, canonical charset mirrors what OpenAI-style tool-calling
+# function names already require, so no legitimate built-in, synthetic, or
+# well-formed dynamic tool name is ever excluded by it.
+_SAFE_TOOL_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+# MCP tools use the pre-existing, already-canonical namespaced form
+# ``mcp:<server>/<tool>`` (see ``agents.mcp_servers.namespaced_tool_name``).
+# The ``<server>`` slug is validated against a safe, bounded charset when the
+# server is registered, but ``<tool>`` is supplied by the remote MCP server
+# itself the same way a bare tool name would be, so it is held to the same
+# bounded charset as any other dynamic name. A name that merely starts with
+# "mcp:" but doesn't otherwise match this shape (extra "/" segments, empty
+# components, control characters) is deliberately NOT matched here and falls
+# through to the sentinel, since it is not the well-formed name this codebase
+# itself would ever produce.
+_SAFE_MCP_TOOL_NAME_RE = re.compile(r"mcp:[A-Za-z0-9_.-]{1,32}/[A-Za-z0-9_-]{1,64}")
+
+
+def is_safe_tool_name(name: str) -> bool:
+    """Whether ``name`` is safe to surface verbatim in logs or persisted activity.
+
+    Independent of whether ``name`` is *registered*: a name can be genuinely
+    registered/dispatchable and still fail this check (e.g. a dynamically
+    discovered name that was never validated against a safe charset at
+    registration time). Callers should keep dispatching/authorizing on the raw
+    name regardless of this result -- it only gates what may be logged/persisted.
+    """
+    return bool(_SAFE_TOOL_NAME_RE.fullmatch(name) or _SAFE_MCP_TOOL_NAME_RE.fullmatch(name))

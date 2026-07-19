@@ -20,6 +20,20 @@ Count-only, Total-only, and Average-only metrics) is split into one request
 per distinct aggregation and the results are merged back in the caller's
 order. Panels whose metrics already share one aggregation still make exactly
 one request.
+
+If one aggregation group's request fails (e.g. Azure Monitor rejects that
+specific combination), the other groups' already-fetched data is kept rather
+than discarded: only the failed group's metrics resolve to a null value
+carrying a short, safe ``error`` reason (see :class:`~.models.MetricPoint`),
+so the caller can tell a genuine per-metric failure apart from legitimate
+no-data-yet and mark the panel ``partial`` instead of silently reporting
+``ok`` with holes in it. The SDK's public ``query_resources`` wrapper discards
+Azure Monitor's own per-metric ``errorCode``/``errorMessage`` fields before
+returning (they only survive on the private, undocumented raw operation), so
+the failure signal used here is the HTTP-level exception raised for the whole
+group's request instead -- coarser than per-metric, but accurate for every
+panel in this module since each aggregation group is at most a couple of
+metrics.
 """
 from __future__ import annotations
 
@@ -64,6 +78,24 @@ def _metric_namespace(resource_id: str) -> str:
     return f"{parts[0]}/{parts[1]}"
 
 
+def _safe_error_reason(exc: Exception) -> str:
+    """A short, bounded, non-leaky description of a failed metrics query.
+
+    Only the HTTP status and Azure's short machine error code (e.g.
+    ``"BadRequest"``) are used -- never the raw exception text or Azure's
+    free-form error message, either of which can echo back the request (the
+    resource id, metric namespace, etc.).
+    """
+    status_code = getattr(exc, "status_code", None)
+    error = getattr(exc, "error", None)
+    code = getattr(error, "code", None) if error is not None else None
+    if status_code and code:
+        return f"HTTP {status_code} ({code})"
+    if status_code:
+        return f"HTTP {status_code}"
+    return "query failed"
+
+
 class AzureMonitorQuerier:
     """Concrete querier over Azure Monitor's batch metrics data plane."""
 
@@ -84,6 +116,7 @@ class AzureMonitorQuerier:
         window_minutes: int,
         granularity_minutes: int,
     ) -> list[MetricPoint]:
+        from azure.core.exceptions import HttpResponseError
         from azure.monitor.querymetrics import MetricAggregationType
 
         agg_map = {
@@ -113,26 +146,43 @@ class AzureMonitorQuerier:
         # map merged across groups), so two requests that name the same metric
         # under different aggregations can never shadow one another.
         resolved: dict[tuple[str, str], object] = {}
+        # Production incident: one aggregation group failing (e.g. an Azure
+        # Monitor error specific to that request) used to raise out of this
+        # method entirely, discarding data already fetched for other groups in
+        # the same panel while the caller silently reported the whole panel
+        # "ok" with nulls standing in for the failure. Catch each group's own
+        # failure, keep going, and remember a safe reason so every metric in
+        # that group resolves to an explicit error instead of an
+        # indistinguishable null.
+        group_errors: dict[str, str] = {}
         for aggregation, group_requests in groups.items():
-            results = await self._client.query_resources(
-                resource_ids=[resource_id],
-                metric_namespace=namespace,
-                metric_names=[r.name for r in group_requests],
-                timespan=timedelta(minutes=window_minutes),
-                granularity=timedelta(minutes=granularity_minutes),
-                aggregations=[agg_map[aggregation]],
-            )
+            try:
+                results = await self._client.query_resources(
+                    resource_ids=[resource_id],
+                    metric_namespace=namespace,
+                    metric_names=[r.name for r in group_requests],
+                    timespan=timedelta(minutes=window_minutes),
+                    granularity=timedelta(minutes=granularity_minutes),
+                    aggregations=[agg_map[aggregation]],
+                )
+            except HttpResponseError as exc:
+                group_errors[aggregation] = _safe_error_reason(exc)
+                continue
             metrics = results[0].metrics if results else []
             for metric in metrics:
                 resolved[(str(metric.name), aggregation)] = metric
 
         return [
-            self._resolve(req, resolved.get((req.name, req.aggregation)))
+            self._resolve(
+                req,
+                resolved.get((req.name, req.aggregation)),
+                group_errors.get(req.aggregation),
+            )
             for req in requests
         ]
 
     @staticmethod
-    def _resolve(req: MetricRequest, metric) -> MetricPoint:
+    def _resolve(req: MetricRequest, metric, group_error: str | None = None) -> MetricPoint:
         value: float | None = None
         unit = req.unit
         if metric is not None:
@@ -155,6 +205,7 @@ class AzureMonitorQuerier:
             aggregation=req.aggregation,
             value=value,
             unit=unit,
+            error=group_error if value is None else None,
         )
 
     async def close(self) -> None:

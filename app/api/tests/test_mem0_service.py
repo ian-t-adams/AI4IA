@@ -50,7 +50,14 @@ class FakeAsyncMemory:
 
     async def get_all(self, *, filters=None, top_k=20, **kwargs):
         self.get_all_calls.append({"filters": filters, "top_k": top_k})
-        return {"results": list(self._get_all_results)}
+        results = list(self._get_all_results)
+        doc_id = (filters or {}).get("document_id")
+        if doc_id is not None:
+            # Mirrors mem0's pgvector store, which matches arbitrary metadata
+            # keys server-side (not just user_id/agent_id/run_id) -- so a
+            # document-scoped listing only ever returns that document's rows.
+            results = [r for r in results if (r.get("metadata") or {}).get("document_id") == doc_id]
+        return {"results": results}
 
     async def get(self, memory_id):
         self.get_calls.append(memory_id)
@@ -254,7 +261,7 @@ async def test_forget_document_deletes_only_matching_metadata():
     svc = _service(mem)
     n = await svc.forget_document("u1", "docA")
     assert n == 2
-    assert mem.get_all_calls[0]["filters"] == {"user_id": "u1"}
+    assert mem.get_all_calls[0]["filters"] == {"user_id": "u1", "document_id": "docA"}
     assert mem.delete_by_id_calls == [{"memory_id": "a1"}, {"memory_id": "a2"}]
 
 
@@ -269,17 +276,28 @@ async def test_forget_document_propagates_errors():
 
 
 # --- round 6 MEDIUM acceptance finding: mem0 forget/replace must not silently
-# under-scan. mem0's get_all() has no document-scoped filter and no pagination
-# cursor -- only a top_k cap -- so a user with >= _FORGET_LIST_CAP memories
-# could have stray document-tagged memories sitting beyond the enumerated
-# page. Reporting "N forgotten" in that case previously left the document's
-# memories fully recallable while every caller believed the erase (or
-# idempotent re-save's pre-delete) had fully succeeded. ---
+# under-scan. mem0's get_all() has no pagination cursor -- only a top_k cap --
+# so a *document* with >= _FORGET_LIST_CAP tagged memories could have stray
+# ones sitting beyond the enumerated page. Reporting "N forgotten" in that
+# case previously left the document's memories fully recallable while every
+# caller believed the erase (or idempotent re-save's pre-delete) had fully
+# succeeded. ---
+#
+# --- round 11 MEDIUM acceptance finding: the listing was scoped by user_id
+# only, so the cap fired based on a user's *total* memory count across every
+# document, not the target document's own count -- an active user with many
+# small documents could trip MemoryScanIncompleteError and be unable to
+# forget/re-save *any* single document, even though none of their documents
+# individually held anywhere near _FORGET_LIST_CAP memories. The listing now
+# also filters by document_id server-side (mem0's pgvector store matches
+# arbitrary metadata keys, not just user_id/agent_id/run_id), so the cap is
+# scoped to the target document alone. ---
 
 
 async def test_forget_document_raises_when_listing_hits_the_cap():
-    # Exactly _FORGET_LIST_CAP rows come back: the listing may have been
-    # truncated by mem0, so completeness cannot be verified.
+    # Exactly _FORGET_LIST_CAP rows for this one document come back: the
+    # document-scoped listing may have been truncated by mem0, so
+    # completeness cannot be verified.
     mem = FakeAsyncMemory(
         get_all_results=[
             {"id": f"m{i}", "metadata": {"document_id": "docA"}}
@@ -306,6 +324,52 @@ async def test_forget_document_below_cap_boundary_still_succeeds():
     n = await svc.forget_document("u1", "docA")
     assert n == _FORGET_LIST_CAP - 1
     assert len(mem.delete_by_id_calls) == _FORGET_LIST_CAP - 1
+
+
+async def test_forget_document_ignores_unrelated_memories_beyond_the_cap():
+    # Regression for the round-11 finding: 1,000 memories belong to OTHER
+    # documents (well past _FORGET_LIST_CAP on their own) plus 2 belong to
+    # the target document. Because the listing is scoped by document_id
+    # server-side, only the 2 matching rows are ever seen/counted, so the
+    # cap never fires and both are deleted -- proving the bound is per
+    # document, not per user.
+    unrelated = [
+        {"id": f"other{i}", "metadata": {"document_id": "docOther"}}
+        for i in range(_FORGET_LIST_CAP)
+    ]
+    target = [
+        {"id": "a1", "metadata": {"document_id": "docA"}},
+        {"id": "a2", "metadata": {"document_id": "docA"}},
+    ]
+    mem = FakeAsyncMemory(get_all_results=unrelated + target)
+    svc = _service(mem)
+    n = await svc.forget_document("u1", "docA")
+    assert n == 2
+    assert mem.get_all_calls[0]["filters"] == {"user_id": "u1", "document_id": "docA"}
+    assert mem.delete_by_id_calls == [{"memory_id": "a1"}, {"memory_id": "a2"}]
+
+
+async def test_forget_document_local_recheck_still_filters_a_permissive_backend():
+    # Defense-in-depth: if a backend/fake ignores the document_id filter
+    # (unlike mem0's real pgvector store) and returns every memory
+    # regardless of scoping, the existing local metadata re-check inside
+    # _forget_document must still ensure only matching rows get deleted.
+    class PermissiveFakeAsyncMemory(FakeAsyncMemory):
+        async def get_all(self, *, filters=None, top_k=20, **kwargs):
+            self.get_all_calls.append({"filters": filters, "top_k": top_k})
+            return {"results": list(self._get_all_results)}
+
+    mem = PermissiveFakeAsyncMemory(
+        get_all_results=[
+            {"id": "a1", "metadata": {"document_id": "docA"}},
+            {"id": "b1", "metadata": {"document_id": "docB"}},
+            {"id": "c1", "metadata": {}},
+        ]
+    )
+    svc = _service(mem)
+    n = await svc.forget_document("u1", "docA")
+    assert n == 1
+    assert mem.delete_by_id_calls == [{"memory_id": "a1"}]
 
 
 async def test_remember_document_raises_when_listing_hits_the_cap():
