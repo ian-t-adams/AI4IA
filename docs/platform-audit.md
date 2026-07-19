@@ -1,8 +1,8 @@
 # AI4IA Platform Audit
 
 > **Audit status (2026-07-19):** repository and PR review refreshed after all
-> accepted implementation work merged to `main` through
-> `13f2dd6cfdedfec4b898b61da3d08cab6ada02fe`. This report distinguishes
+> accepted audit work merged to `main` through
+> `815bb6ad78a6b117dd754bf315b4a055f295c1e2`. This report distinguishes
 > repository truth from runtime evidence; it does **not** claim that the merged
 > revisions are deployed.
 >
@@ -89,9 +89,10 @@ commits, not deployment revisions.
 | #188 | `13f2dd6` | Voice lifecycle and TTS | Capture/playback recovery, atomic session finalization, navigation escape, visible provider guidance, and content-free media-failure telemetry |
 | #189 | `55d4278` | API reliability and privacy | Ownership/concurrency fixes, safe session normalization, aggregation-aware metrics, fail-closed mem0 erase, deterministic MCP aliases, metadata-only activity/logs, and explicit failures |
 | #190 | `5c01b1e` | Web UX and help | Accessible advanced-setting/tool help, model grouping, modal/focus consistency, and content-free client-event telemetry |
+| #191 | `815bb6a` | Documentation and architecture | Published the evergreen audit, corrected architecture and operator guidance, and added synchronized editable/rendered system diagrams |
 | #192 | `299b520` | Chat rendering reliability | Persists terminal assistant state before stream completion and reconciles fallback messages without duplicate writes |
 
-The documentation branch includes each implementation merge before this snapshot.
+The published audit snapshot incorporated each implementation merge before publication.
 A merged repository change is still not evidence of deployment.
 
 ## Benefits
@@ -142,8 +143,9 @@ black text with explicit dimensions, unique element ids, and the rendered SVG
 Implementation PR final heads passed their full GitHub checks before merge,
 including web lint/test/build, API ruff/pyright/pytest, Bicep/schema validation,
 proxy .NET build/tests, quality, CodeQL, security scans, and PR-time Docker image
-builds. The documentation branch reruns applicable drift, link, schema, and diagram
-checks after every main integration.
+builds. The documentation workstream reran applicable drift, link, schema, and
+diagram checks after every main integration; the resulting `main` revision passed
+all post-merge workflows.
 
 ## Residual gaps
 
@@ -167,7 +169,6 @@ checks after every main integration.
 | P0 | Add a `main` ruleset requiring pull requests, one approving review, stale-approval dismissal, conversation resolution, and blocked force-push/deletion | Ruleset visible through GitHub API/UI and a test PR cannot merge without requirements |
 | P0 | Add always-emitted aggregate checks for application, infrastructure, container, quality, and security validation; each aggregate must run on every PR and report explicit no-op success when its path-scoped jobs do not apply. The container aggregate must include web image, API image, and `dockerignore context boundary` results | Docs-only and representative scoped PRs all emit the same aggregate contexts; applicable child failures make the aggregate fail |
 | P0 | Require only those unconditional aggregate contexts after a dry run proves they are always emitted; do not directly require conditional `app-ci`, `infra-validate`, or `docker-build` job names | Ruleset lists only unconditional aggregate contexts and both docs-only and scoped test PRs remain mergeable when green |
-| P0 | Merge PR #191 only after rebasing onto final `main`, validating generated docs/diagrams, and obtaining independent acceptance review | Merged SHA plus green checks; report snapshot matches final main |
 | P1 | Record the deployed API/web/proxy revision SHAs and run approved post-deploy smoke tests | Revision inventory and timestamped smoke result |
 | P1 | Decide whether Docker Dependabot updates should be limited to minor/patch or instead require explicit owner review for major runtime changes | Policy prevents another unreviewed runtime-major drift while preserving deliberate upgrades |
 | P1 | Keep Speech Voice Live disabled until all runbook gates close | Approved compiler/what-if/RBAC/audience/canary/manual evidence |
