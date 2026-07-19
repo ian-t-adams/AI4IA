@@ -2014,6 +2014,245 @@ describe("ChatApp uploads", () => {
     ).toBeInTheDocument();
   });
 
+  // Regression (voice acceptance round 18, HIGH): ensureSession()'s own
+  // activation block used to set only sessionIdRef.current synchronously;
+  // consumedSessionIdRef.current was marked externally by send()/
+  // runUpload() AFTER their own `await ensureSession()` call returned -- an
+  // additional microtask hop later than ensureSession()'s own internal
+  // activation (an `await` always yields at least once, even for an
+  // already-resolved promise). A differently-keyed, higher-sequence
+  // competitor's own ensureSession() continuation could land in exactly
+  // that gap: consumedSessionIdRef.current still read as unset, so it
+  // would legitimately (per the existing sequence-based supersession rule)
+  // win and switch sessionIdRef.current to its own session -- even though
+  // the original caller had already captured its own id and was about to
+  // stream into it. The UI would then show the new session while streaming
+  // silently continued, unseen, into the old one.
+  it("marks a send()'s session consumed atomically inside ensureSession(), before a later, differently-keyed voice creation resolving back-to-back can supersede it", async () => {
+    const resolvers: Array<() => void> = [];
+    const created = [session("SEND"), session("VOICE")];
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          const value = created[resolvers.length];
+          resolvers.push(() => resolve(value));
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    // send() starts creating a session FIRST, under the current (blank)
+    // settings -- this is entry #1, the lower activation sequence number.
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(1));
+
+    // Only AFTER send()'s own creation is already in flight does the user
+    // edit settings and voice starts its own, later, differently-keyed
+    // creation -- entry #2, a HIGHER activation sequence number than
+    // send's.
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.type(screen.getByLabelText("System prompt"), "Voice prompt");
+    const voiceCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let voiceResult: Promise<string> | undefined;
+    act(() => {
+      voiceResult = voiceCall.ensureSession(() => true);
+    });
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(2));
+
+    // Resolve BOTH underlying creations back-to-back -- no artificial
+    // synchronization point in between -- so send()'s own ensureSession()
+    // activation (entry #1) and voice's (entry #2) genuinely interleave hop
+    // by hop, with no external code running between them. send's own
+    // internal continuation (which, with this round's fix, now marks
+    // consumedSessionIdRef.current in the SAME synchronous block as
+    // activation) always completes one hop ahead of voice's corresponding
+    // hop, since it was resolved first.
+    await act(async () => {
+      resolvers[0]();
+      resolvers[1]();
+      await voiceResult;
+      await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+    });
+
+    // send() must have streamed into its own "SEND" session.
+    expect(mocks.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "SEND" }),
+      expect.anything(),
+    );
+    // Voice's own call must fall back to "SEND" -- never its own "VOICE".
+    expect(await voiceResult).toBe("SEND");
+    // Critically, the UI itself must still show "SEND" as active -- not
+    // silently flip to "VOICE" while streaming continues, unseen, into
+    // "SEND".
+    expect(
+      screen.getByText("Session SEND", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Session VOICE", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  // Regression (voice acceptance round 18, HIGH): finalize()'s very first
+  // lines clear streamingRef.current and call setStreaming(false)
+  // synchronously -- unlocking navigation and new sends -- well before its
+  // own `await api.listMessages()` resolves. Before this round's fix, once
+  // the user had since navigated away, this now-stale finalize's eventual,
+  // unconditional setMessages(reconcileMessages(...)) would still land the
+  // OLD session's reconciled content on top of whatever the newly-selected
+  // session's own, freshly-loaded messages the navigation had just shown --
+  // a session mix.
+  it("does not let a stale finalize()'s delayed listMessages() land on a different session the user has since navigated to", async () => {
+    let resolveListMessagesA!: (
+      value: Awaited<ReturnType<typeof mocks.listMessages>>,
+    ) => void;
+    mocks.listMessages.mockImplementation((sessionId: string) => {
+      if (sessionId === "A") {
+        return new Promise((resolve) => {
+          resolveListMessagesA = resolve;
+        });
+      }
+      return Promise.resolve([]);
+    });
+    const user = userEvent.setup();
+    render(<ChatApp />);
+
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    expect(
+      await screen.findByText("Session A", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+    expect(mocks.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "A" }),
+      expect.anything(),
+    );
+
+    // The assistant's response completes: onDone fires finalize(), which
+    // synchronously clears streamingRef.current -- unlocking navigation --
+    // before its own await api.listMessages("A") resolves (held open by
+    // resolveListMessagesA above).
+    const handlers = mocks.streamChat.mock.calls.at(-1)![1] as {
+      onDone: () => void;
+    };
+    act(() => {
+      handlers.onDone();
+    });
+
+    // While that stale finalize is still pending, the user navigates to
+    // the other real, pre-existing "Session B" -- streamingRef.current is
+    // already false, so nothing blocks it.
+    await user.click(screen.getByRole("button", { name: "Session B" }));
+    expect(
+      await screen.findByText("Session B", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+
+    // Session A's stale finalize() finally resolves its own listMessages
+    // call.
+    await act(async () => {
+      resolveListMessagesA([
+        {
+          id: "assistant-1",
+          sessionId: "A",
+          userId: "assistant",
+          role: "assistant",
+          content: "Final assistant reply for A",
+          status: "complete",
+          model: "gpt-5.2",
+          agent: null,
+          createdAt: "",
+        },
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // The UI must still show Session B, with none of session A's stale,
+    // late-arriving content -- no session mix.
+    expect(
+      screen.getByText("Session B", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Final assistant reply for A"),
+    ).not.toBeInTheDocument();
+  });
+
+  // Regression (voice acceptance round 18, HIGH -- companion to the
+  // navigation case above): the same stale, unlocked finalize() must also
+  // never clobber a genuinely NEWER send()'s still-live streaming text when
+  // no navigation happens at all -- just a second message sent into the
+  // same session while the first's finalize is still awaiting
+  // listMessages().
+  it("does not let a stale finalize()'s delayed listMessages() clear a newer send()'s still-live streaming text", async () => {
+    let resolveListMessages!: (
+      value: Awaited<ReturnType<typeof mocks.listMessages>>,
+    ) => void;
+    mocks.listMessages.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveListMessages = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await screen.findByText("Session A", {
+      selector: ".chat-header .editable-session-title-text",
+    });
+
+    // The first send streams and completes.
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+    const firstHandlers = mocks.streamChat.mock.calls.at(-1)![1] as {
+      onDone: () => void;
+    };
+    act(() => {
+      firstHandlers.onDone();
+    });
+    // finalize() has synchronously cleared streamingRef.current and is now
+    // awaiting its own (deliberately deferred) listMessages("A") call.
+
+    // A second, genuinely newer send starts and begins streaming real,
+    // visible live text while the first send's finalize is still pending.
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(2));
+    const secondHandlers = mocks.streamChat.mock.calls.at(-1)![1] as {
+      onDelta: (t: string) => void;
+    };
+    act(() => {
+      secondHandlers.onDelta("Newer live answer in progress");
+    });
+    expect(
+      await screen.findByText("Newer live answer in progress"),
+    ).toBeInTheDocument();
+
+    // The first send's stale finalize() now finally resolves.
+    await act(async () => {
+      resolveListMessages([]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // The second, genuinely newer send's still-live streaming text must
+    // survive untouched -- the stale finalize must not have cleared it.
+    expect(
+      screen.getByText("Newer live answer in progress"),
+    ).toBeInTheDocument();
+  });
+
   // Regression (voice acceptance round 13, HIGH): a hung createSession()
   // network call (dropped connection, backend stall) previously stayed
   // cached in creatingRef forever -- a later Retry (after voice's own

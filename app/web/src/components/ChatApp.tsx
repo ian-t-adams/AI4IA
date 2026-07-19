@@ -531,6 +531,18 @@ export function ChatApp() {
   // stale, already-displayed transcript visible under a new, unrelated
   // session header.
   const consumedSessionIdRef = useRef<string | null>(null);
+  // Monotonic token minted at the very start of every send() call, right
+  // where it claims streamingRef.current. finalize()'s first line clears
+  // streamingRef.current -- unlocking the app for a brand-new send() or a
+  // navigation -- well BEFORE its own await listMessages()/listSessions()
+  // calls resolve. A newer send() (same session or, via selectSession/
+  // newChat, a different one) can therefore start, stream, and even finish
+  // while an OLDER finalize() from a prior send() is still awaiting those
+  // calls in the background. Comparing this token after each such await
+  // lets a stale finalize() detect that a newer send() has since claimed
+  // the slot and skip every state mutation instead of unconditionally
+  // reconciling/clearing over it -- see the guard in send()'s finalize.
+  const sendGenerationRef = useRef(0);
   const selectionGenerationRef = useRef(0);
   const modelMutationGenerationRef = useRef(0);
   const capabilityGenerationRef = useRef(0);
@@ -1115,6 +1127,32 @@ export function ChatApp() {
         sessionIdRef.current = id;
         activeIntentKeyRef.current = intentKey;
         activeActivationSequenceRef.current = entry.sequence;
+        // A caller that never supplies isStillWanted -- send()/runUpload(),
+        // the only two direct callers in the codebase -- is, by
+        // construction, about to immediately consume this session for real
+        // content the instant this call returns. Mark it consumed in this
+        // SAME synchronous block, atomically with activation, rather than
+        // leaving that external caller to do so itself after its own
+        // `await ensureSession()` resumes: that resumption is always at
+        // least one more microtask hop away (an `await` yields even for an
+        // already-resolved promise), and a differently-keyed, higher-
+        // sequence competitor's OWN concurrently-resolving ensureSession()
+        // call can land exactly in that hop -- seeing activeSessionConsumed
+        // still false and legitimately (by the settingsMismatch rules
+        // above) superseding this session before this caller ever gets a
+        // chance to mark it consumed externally, leaving it to stream/
+        // upload into a session the UI no longer shows as active. Voice's
+        // own initial call (which DOES supply isStillWanted) deliberately
+        // does NOT get marked here: it only obtains a session id to start
+        // the realtime connection, its real content lands later via a
+        // separate persistVoiceConversation() call that marks consumption
+        // itself, and it must stay supersedable by a genuinely later,
+        // differently-keyed send/upload in the meantime -- see the
+        // "streams a real send()... superseding a concurrent voice-shaped
+        // session" test, which this must not break.
+        if (!isStillWanted) {
+          consumedSessionIdRef.current = id;
+        }
         setActiveId(id);
         return id;
       }
@@ -1816,6 +1854,11 @@ export function ChatApp() {
       // Claim the in-flight slot synchronously so a rapid second submit can't
       // create a duplicate session or start an overlapping stream.
       streamingRef.current = true;
+      // Captured once, synchronously, the instant this call claims the slot
+      // -- see the stillCurrent guard inside finalize() below for why both
+      // are needed.
+      const mySendGeneration = ++sendGenerationRef.current;
+      const mySelectionGeneration = selectionGenerationRef.current;
       setStreaming(true);
       setStreamingText("");
       setLiveSteps([]);
@@ -1876,22 +1919,40 @@ export function ChatApp() {
         }
         setStreaming(false);
         abortRef.current = null;
+        // The line above just reopened streamingRef.current -- a brand-new
+        // send() (same session, or a different one after a navigation) can
+        // start, stream, and even finish while THIS finalize is still
+        // awaiting listMessages/listSessions below. Re-derive "is this
+        // finalize's own send/session/selection still the current one"
+        // fresh before each state mutation rather than once up front, since
+        // a newer send or a navigation can land in the gap between any two
+        // of these awaits -- a stale finalize must never reconcile/clear
+        // over content it no longer owns, or clobber a newer send's still-
+        // live streaming text.
+        const stillCurrent = () =>
+          sendGenerationRef.current === mySendGeneration &&
+          sessionIdRef.current === sessionId &&
+          selectionGenerationRef.current === mySelectionGeneration;
         try {
           const fresh = await api.listMessages(sessionId!);
-          setMessages((previous) =>
-            reconcileMessages(
-              previous,
-              fresh,
-              new Set([optimisticUser.id]),
-            ),
-          );
-          setInspectorVersion((value) => value + 1);
+          if (stillCurrent()) {
+            setMessages((previous) =>
+              reconcileMessages(
+                previous,
+                fresh,
+                new Set([optimisticUser.id]),
+              ),
+            );
+            setInspectorVersion((value) => value + 1);
+          }
         } catch {
           /* keep optimistic view */
         }
-        setStreamingText("");
-        setStreamingStartedAt(null);
-        setLiveSteps([]);
+        if (stillCurrent()) {
+          setStreamingText("");
+          setStreamingStartedAt(null);
+          setLiveSteps([]);
+        }
         // A slash command can change the session's model or system prompt on the
         // server; re-sync the controls so the change holds for the next turn.
         if (isCommand) {
@@ -1899,7 +1960,12 @@ export function ChatApp() {
             const all = await api.listSessions();
             setSessions(all);
             const s = all.find((x) => x.id === sessionId);
-            if (s) {
+            // The session list refresh above is always safe (a plain global
+            // re-fetch), but applying ITS model/systemPrompt to the shared
+            // controls is not: only do so if nothing newer has since taken
+            // over the model/systemPrompt controls this session's own
+            // command was meant to update.
+            if (s && stillCurrent()) {
               if (s.model) setSelectedModel(s.model);
               setSystemPrompt(s.systemPrompt ?? "");
             }
