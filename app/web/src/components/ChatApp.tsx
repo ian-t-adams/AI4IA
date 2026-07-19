@@ -619,6 +619,20 @@ export function ChatApp() {
   // would produce an identical request; otherwise it fires its own and
   // installs its own entry, without clobbering a different still-in-flight
   // generation that may belong to another still-valid caller.
+  //
+  // Because differently-keyed intents install *separate* creatingRef
+  // entries, two genuinely different callers (e.g. Voice Live creating
+  // under one set of settings while a text send/upload creates under
+  // another, both concurrently) can each have their own in-flight
+  // createSession() call outstanding at once. Whichever one resolves first
+  // activates its session as above; the return value below guarantees
+  // every caller -- winner or loser, regardless of resolution order --
+  // ends up with the session that is actually current by the time its own
+  // call resolves, never its own now-orphaned creation. Without this, the
+  // loser would silently receive a real, persisted, but never-activated
+  // session id and use it for a real side effect (a send, an upload, a
+  // voice-turn append) that would land invisibly in a conversation the UI
+  // never shows.
   const ensureSession = useCallback(
     async (isStillWanted?: () => boolean): Promise<string> => {
       if (sessionIdRef.current) return sessionIdRef.current;
@@ -671,8 +685,30 @@ export function ChatApp() {
       if (stillCurrentSelection && stillWanted) {
         sessionIdRef.current = id;
         setActiveId(id);
+        return id;
       }
-      return id;
+      // A *different*, concurrently-running intent -- its own creatingRef
+      // entry, since it had different settings and/or a different selection
+      // generation -- may have already become the active session while this
+      // caller's own creation was in flight (regardless of resolution
+      // order: whichever intent's network call settles first wins
+      // activation above). Unconditionally returning THIS creation's own id
+      // here would hand the caller a real, backend-persisted, but never-
+      // activated/never-shown session -- a send/upload/voice-turn append
+      // would then silently write into a conversation nobody can see.
+      // Falling back to whatever id IS current instead means every caller
+      // converges on the one conversation actually on screen: send/upload
+      // (which never supply isStillWanted, and can't have their generation
+      // change mid-flight since navigation is blocked while they're
+      // pending) always get either their own session or this safe
+      // fallback. Voice, the only caller whose own stillWanted can be
+      // false, independently re-checks that identical condition before
+      // acting on any result (persist/finish in InlineVoiceLive.tsx), so it
+      // safely ignores whatever id comes back once it's no longer wanted.
+      // If nothing has activated at all yet (this call's own activation
+      // was declined and no other intent has settled either), fall back to
+      // this creation's own id exactly as before.
+      return sessionIdRef.current ?? id;
     },
     [draftDefaults, selectedModel, systemPrompt],
   );
