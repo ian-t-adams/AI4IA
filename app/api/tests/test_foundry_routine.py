@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -104,3 +105,17 @@ def test_example_validates_against_schema():
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
     manifest = json.loads(_EXAMPLE.read_text(encoding="utf-8"))
     jsonschema.validate(manifest, schema)
+
+
+def test_create_routine_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch):
+    # Mirrors test_foundry_toolbox.py's round-9 regression: create_routine()'s ImportError
+    # fallback used to suggest an unpinned `pip install azure-ai-projects azure-identity`,
+    # bypassing the audited, exact `azure-ai-projects==2.3.0` pin in pyproject.toml/uv.lock.
+    # Force the SDK to appear absent (the standard sys.modules=None cache trick; monkeypatch
+    # restores the real module afterwards) and assert the real SystemExit message is pinned.
+    monkeypatch.setitem(sys.modules, "azure.ai.projects", None)
+    with pytest.raises(SystemExit) as exc_info:
+        _r.create_routine(_valid(), "https://p")
+    message = str(exc_info.value)
+    assert "pip install azure-ai-projects==2.3.0 azure-identity" in message
+    assert "pip install azure-ai-projects azure-identity" not in message

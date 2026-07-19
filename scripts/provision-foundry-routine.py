@@ -123,7 +123,7 @@ def create_routine(manifest: dict[str, Any], project_endpoint: str) -> Any:  # p
     except ImportError as exc:
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.3.0 azure-identity'
         ) from exc
 
     project = AIProjectClient(endpoint=project_endpoint, credential=DefaultAzureCredential())

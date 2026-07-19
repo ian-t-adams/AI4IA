@@ -121,7 +121,7 @@ def _project_client(endpoint: str) -> Any:  # pragma: no cover - live only
     except ImportError as exc:
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.3.0 azure-identity'
         ) from exc
     return AIProjectClient(endpoint=endpoint, credential=DefaultAzureCredential(), allow_preview=True)
 

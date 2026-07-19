@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1812,3 +1813,38 @@ def test_create_toolbox_constructs_the_correct_discriminated_openapi_auth_type(
         for part in dotted_attr.split("."):
             obj = getattr(obj, part)
         assert obj == expected_value
+
+
+# ----------------- round 9: pinned SDK version in missing-dependency fallback -----------
+def _simulate_azure_ai_projects_missing(monkeypatch):
+    # The standard, reversible way to force `from azure.ai.projects import ...` to raise
+    # ImportError even though the real package IS installed in this venv: cache `None` for the
+    # module name (see https://docs.python.org/3/reference/import.html#the-module-cache).
+    # monkeypatch.setitem restores the real module object afterwards, so later tests in this
+    # file that construct real SDK models are unaffected.
+    monkeypatch.setitem(sys.modules, "azure.ai.projects", None)
+
+
+@pytest.mark.parametrize(
+    ("call", "label"),
+    [
+        (lambda: _tb.create_toolbox({"tools": []}, _ENDPOINT), "toolbox"),
+        (lambda: _sk._project_client(_ENDPOINT), "skills"),
+    ],
+    ids=["toolbox", "skills"],
+)
+def test_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch, call, label):
+    # Round 8 pinned `azure-ai-projects==2.3.0` exactly in pyproject.toml/uv.lock so every
+    # install path lands on the one version this whole audit reflection-verified field-by-field
+    # -- but both create_toolbox()'s and _project_client()'s ImportError fallback still told an
+    # operator without `uv` to run a bare, unpinned `pip install azure-ai-projects
+    # azure-identity`, silently reopening exactly the drift the pin was meant to close. Simulate
+    # the SDK genuinely being absent and assert the real, user-facing SystemExit message now
+    # carries the exact pin (not just the source string, so a future refactor that changes how
+    # the message is built still has to keep the guarantee).
+    _simulate_azure_ai_projects_missing(monkeypatch)
+    with pytest.raises(SystemExit) as exc_info:
+        call()
+    message = str(exc_info.value)
+    assert "pip install azure-ai-projects==2.3.0 azure-identity" in message, label
+    assert "pip install azure-ai-projects azure-identity" not in message, label

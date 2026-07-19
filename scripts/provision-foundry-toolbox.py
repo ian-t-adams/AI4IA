@@ -343,7 +343,7 @@ def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
     except ImportError as exc:  # pragma: no cover - exercised only on live provisioning
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.3.0 azure-identity'
         ) from exc
 
     project = AIProjectClient(endpoint=project_endpoint, credential=DefaultAzureCredential())
