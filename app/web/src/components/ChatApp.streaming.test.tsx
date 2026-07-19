@@ -319,6 +319,12 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
 
     expect(await screen.findByText("What's the weather?")).toBeInTheDocument();
 
+    // The server echoes this turn's persisted ids before any step/delta --
+    // see onMessageIds in api.ts.
+    act(() => {
+      handlers.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
+    });
+
     // Live activity step arrives before any content.
     act(() => {
       handlers.onStep?.({ kind: "tool_start", label: "Searching the web", tool: "web_search" });
@@ -364,6 +370,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     const handlers = await sendAndCaptureHandlers(user, "Cancel me");
 
     act(() => {
+      handlers.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
       handlers.onDelta("partial reply");
     });
     expect(await screen.findByText("partial reply", { exact: false })).toBeInTheDocument();
@@ -392,6 +399,14 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     const user = userEvent.setup();
     const handlers = await sendAndCaptureHandlers(user, "Trigger an error");
 
+    // The turn was accepted and persisted (ids echoed) before the upstream
+    // model call itself failed mid-stream -- distinct from a pre-persistence
+    // rejection (see the 401/422/429 "ghost message" test below), which
+    // never reaches this point at all.
+    act(() => {
+      handlers.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
+    });
+
     mocks.listMessages.mockResolvedValueOnce([
       persistedMessage({ id: "u1", role: "user", content: "Trigger an error" }),
       persistedMessage({ id: "a1", role: "assistant", content: "", status: "error" }),
@@ -416,6 +431,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     const handlers = await sendAndCaptureHandlers(user, "What's the capital of France?");
 
     act(() => {
+      handlers.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
       handlers.onStep?.({ kind: "tool_start", label: "Looking it up", tool: "web_search" });
       handlers.onStep?.({ kind: "tool_result", label: "Looked it up", tool: "web_search" });
       handlers.onDelta("Paris is the capital of France.");
@@ -452,6 +468,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     const handlers = await sendAndCaptureHandlers(user, "Old session question");
 
     act(() => {
+      handlers.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
       handlers.onDelta("Old session answer.");
     });
     expect(
@@ -506,6 +523,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     const user = userEvent.setup();
     const handlers1 = await sendAndCaptureHandlers(user, "First question");
     act(() => {
+      handlers1.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
       handlers1.onDelta("First partial");
     });
     expect(await screen.findByText("First partial", { exact: false })).toBeInTheDocument();
@@ -529,6 +547,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
 
     const handlers2 = await sendMessageAndCaptureHandlers(user, "Second question");
     act(() => {
+      handlers2.onMessageIds?.({ userMessageId: "u2", assistantMessageId: "a2" });
       handlers2.onDelta("Second partial");
       handlers2.onStep?.({ kind: "tool_start", label: "Second tool", tool: "web_search" });
     });
@@ -562,6 +581,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     const user = userEvent.setup();
     const handlers1 = await sendAndCaptureHandlers(user, "First question");
     act(() => {
+      handlers1.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
       handlers1.onDelta("Fallback answer");
     });
     expect(await screen.findByText("Fallback answer", { exact: false })).toBeInTheDocument();
@@ -584,6 +604,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
 
     const handlers2 = await sendMessageAndCaptureHandlers(user, "Second question");
     act(() => {
+      handlers2.onMessageIds?.({ userMessageId: "u2", assistantMessageId: "a2" });
       handlers2.onDelta("Second answer");
     });
     expect(await screen.findByText("Second answer", { exact: false })).toBeInTheDocument();
@@ -613,6 +634,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     const user = userEvent.setup();
     const handlers = await sendAndCaptureHandlers(user, "Stale reconciliation question");
     act(() => {
+      handlers.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
       handlers.onDelta("Answer built from the live stream.");
     });
     expect(
@@ -654,6 +676,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     const user = userEvent.setup();
     const handlers1 = await sendAndCaptureHandlers(user, "First question");
     act(() => {
+      handlers1.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
       handlers1.onDelta("First reply");
     });
     expect(await screen.findByText("First reply", { exact: false })).toBeInTheDocument();
@@ -675,6 +698,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
 
     const handlers2 = await sendMessageAndCaptureHandlers(user, "Second question");
     act(() => {
+      handlers2.onMessageIds?.({ userMessageId: "u2", assistantMessageId: "a2" });
       handlers2.onDelta("Second live reply");
     });
 
@@ -710,6 +734,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     const user = userEvent.setup();
     const handlers1 = await sendAndCaptureHandlers(user, "Turn A question");
     act(() => {
+      handlers1.onMessageIds?.({ userMessageId: "ua", assistantMessageId: "aa" });
       handlers1.onDelta("A reply");
     });
     expect(await screen.findByText("A reply", { exact: false })).toBeInTheDocument();
@@ -733,6 +758,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
 
     const handlers2 = await sendMessageAndCaptureHandlers(user, "Turn B question");
     act(() => {
+      handlers2.onMessageIds?.({ userMessageId: "ub", assistantMessageId: "ab" });
       handlers2.onDelta("B reply");
     });
     expect(await screen.findByText("B reply", { exact: false })).toBeInTheDocument();
@@ -764,6 +790,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     const { unmount } = render(<ChatApp />);
     const handlers = await sendMessageAndCaptureHandlers(user, "Question");
     act(() => {
+      handlers.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
       handlers.onDelta("Partial reply");
     });
     expect(await screen.findByText("Partial reply", { exact: false })).toBeInTheDocument();
@@ -802,6 +829,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     const user = userEvent.setup();
     const handlers = await sendAndCaptureHandlers(user, "Text turn");
     act(() => {
+      handlers.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
       handlers.onDelta("Text fallback reply");
     });
     expect(
@@ -836,5 +864,183 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     // duplicate -- and the newly-appended voice turn is present too.
     expect(await screen.findAllByText("Text fallback reply")).toHaveLength(1);
     expect(await screen.findByText("Voice reply")).toBeInTheDocument();
+  });
+
+  it("resolves a turn by its exact persisted id even when the fetched row's timestamp is skewed from the browser's clock", async () => {
+    // HIGH-1: the previous design compared a browser-captured "since"
+    // timestamp against server createdAt values, so clock skew between
+    // browser and server could make a genuinely-complete reply look like it
+    // belonged to the wrong window. Exact-id matching never reads createdAt
+    // at all, so a wildly skewed timestamp on the correct row must still
+    // resolve the turn.
+    const user = userEvent.setup();
+    const handlers = await sendAndCaptureHandlers(user, "What time is it on the server?");
+    act(() => {
+      handlers.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
+      handlers.onDelta("It's always server time somewhere.");
+    });
+    expect(
+      await screen.findByText("It's always server time somewhere.", { exact: false }),
+    ).toBeInTheDocument();
+
+    // The server's clock is deliberately six hours ahead of the browser's --
+    // an id match must not care.
+    const skewed = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+    mocks.listMessages.mockResolvedValueOnce([
+      persistedMessage({
+        id: "u1",
+        role: "user",
+        content: "What time is it on the server?",
+        createdAt: skewed,
+      }),
+      persistedMessage({
+        id: "a1",
+        role: "assistant",
+        content: "It's always server time somewhere.",
+        createdAt: skewed,
+      }),
+    ]);
+    act(() => {
+      handlers.onDone();
+    });
+
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByText("It's always server time somewhere."),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Generating")).toBeNull();
+  });
+
+  it("does not let a complete, interleaved Voice Live reply falsely resolve a text turn that is still streaming server-side", async () => {
+    // HIGH-1: a timestamp/freshness heuristic could see *any* new complete
+    // assistant row -- including one from an entirely unrelated Voice Live
+    // exchange -- and conclude the turn it's tracking must be done. Exact id
+    // matching must see straight through this: only a fetched row whose id
+    // equals this turn's own assistantMessageId can resolve it, no matter
+    // what else completed around the same time.
+    const user = userEvent.setup();
+    const handlers = await sendAndCaptureHandlers(user, "Text question");
+    act(() => {
+      handlers.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
+      handlers.onDelta("Text answer");
+    });
+    expect(await screen.findByText("Text answer", { exact: false })).toBeInTheDocument();
+
+    const voiceReply = persistedMessage({
+      id: "voice-1",
+      role: "assistant",
+      content: "Voice reply",
+    });
+    // First attempt: the text turn's own row is still "streaming"
+    // server-side, even though an unrelated Voice Live reply already
+    // completed and persisted.
+    mocks.listMessages.mockResolvedValueOnce([
+      persistedMessage({ id: "u1", role: "user", content: "Text question" }),
+      persistedMessage({ id: "a1", role: "assistant", content: "", status: "streaming" }),
+      voiceReply,
+    ]);
+    // Retry: the text turn's own row is now complete too.
+    mocks.listMessages.mockResolvedValueOnce([
+      persistedMessage({ id: "u1", role: "user", content: "Text question" }),
+      persistedMessage({ id: "a1", role: "assistant", content: "Text answer" }),
+      voiceReply,
+    ]);
+    act(() => {
+      handlers.onDone();
+    });
+
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    // Exactly one copy of the text reply -- a false-positive resolve on the
+    // first attempt would have left a synthetic fallback duplicate behind --
+    // and the unrelated Voice reply is present too.
+    await waitFor(() => expect(screen.queryAllByText("Text answer")).toHaveLength(1));
+    expect(await screen.findByText("Voice reply")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Generating")).toBeNull();
+  });
+
+  it("does not let clicking the already-open session replace a not-yet-reconciled reply with a stale snapshot", async () => {
+    // HIGH-2: selectSession's raw setMessages(msgs) bypassed pending-aware
+    // reconciliation entirely, so re-selecting the conversation already on
+    // screen -- while finalize's own reconciliation fetch for the turn that
+    // *just* finished is still in flight -- could stomp the fallback with
+    // whatever pre-completion snapshot that click's own, independent fetch
+    // happened to see.
+    const user = userEvent.setup();
+    const handlers = await sendAndCaptureHandlers(user, "Will I survive a re-click?");
+    act(() => {
+      handlers.onMessageIds?.({ userMessageId: "u1", assistantMessageId: "a1" });
+      handlers.onDelta("Yes, I will.");
+    });
+    expect(await screen.findByText("Yes, I will.", { exact: false })).toBeInTheDocument();
+
+    // finalize()'s own reconciliation fetch is left pending for the whole
+    // test -- the re-click below issues its own, independent listMessages()
+    // call, which is what's actually under test here.
+    let resolveOwnFetch!: (value: Message[]) => void;
+    mocks.listMessages.mockImplementationOnce(
+      () =>
+        new Promise<Message[]>((resolve) => {
+          resolveOwnFetch = resolve;
+        }),
+    );
+    act(() => {
+      handlers.onDone();
+    });
+    // The placeholder renders synchronously, before finalize's own fetch has
+    // any chance to settle.
+    expect(await screen.findByText("Yes, I will.")).toBeInTheDocument();
+
+    // The user re-clicks the conversation already open in the sidebar while
+    // the backend's own Cosmos upsert may still be in flight; this click's
+    // *own* fetch still sees the pre-completion "streaming" placeholder.
+    mocks.listMessages.mockResolvedValueOnce([
+      persistedMessage({ id: "u1", role: "user", content: "Will I survive a re-click?" }),
+      persistedMessage({ id: "a1", role: "assistant", content: "", status: "streaming" }),
+    ]);
+    const sessionButton = await screen.findByRole("button", { name: "Session A" });
+    await waitFor(() => expect(sessionButton).toBeEnabled());
+    await user.click(sessionButton);
+
+    // The re-click's stale snapshot must not have replaced the reply.
+    expect(await screen.findByText("Yes, I will.")).toBeInTheDocument();
+
+    // finalize()'s original fetch now resolves too, with the real persisted
+    // reply -- both reconciliation paths converge safely, with no duplicate.
+    act(() => {
+      resolveOwnFetch([
+        persistedMessage({ id: "u1", role: "user", content: "Will I survive a re-click?" }),
+        persistedMessage({ id: "a1", role: "assistant", content: "Yes, I will." }),
+      ]);
+    });
+    await waitFor(() => expect(screen.queryAllByText("Yes, I will.")).toHaveLength(1));
+  });
+
+  it("removes the optimistic user bubble instead of leaving a ghost message when the backend rejects the turn before persisting anything", async () => {
+    // MEDIUM: a pre-persistence HTTP rejection (401/422/429) never reaches
+    // the SSE loop at all -- api.ts's own `!resp.ok` branch calls onError
+    // directly, with no onMessageIds and no buffered content/steps ever
+    // having arrived. Since nothing was ever persisted, there is nothing to
+    // reconcile: the optimistic user bubble must be removed immediately
+    // rather than left as an unresolvable ghost that no future fetch could
+    // ever clear.
+    const user = userEvent.setup();
+    const handlers = await sendAndCaptureHandlers(user, "This will be refused");
+    expect(await screen.findByText("This will be refused")).toBeInTheDocument();
+
+    act(() => {
+      handlers.onError("429: Too many requests. Try again in 30 seconds.");
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("429: Too many requests");
+    // The ghost user bubble is gone -- nothing was ever persisted for it, so
+    // there is no history for a later refresh to bring back either.
+    await waitFor(() => expect(screen.queryByText("This will be refused")).toBeNull());
+    // No reconciliation fetch was attempted: there was nothing accepted, so
+    // there is nothing to reconcile.
+    expect(mocks.listMessages).not.toHaveBeenCalled();
+
+    // The composer is immediately usable again for a retry.
+    const textbox = await screen.findByLabelText("Message");
+    await waitFor(() => expect(textbox).toBeEnabled());
   });
 });

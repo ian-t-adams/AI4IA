@@ -734,6 +734,13 @@ export interface StreamHandlers {
   // the UI can show "Searching the web..." while it runs. Ignored by callers that
   // don't render activity.
   onStep?: (step: ActivityStep) => void;
+  // Called once, as early as possible (before any delta/step), with the
+  // server's own already-persisted ids for this turn's user + assistant
+  // messages. Lets the caller correlate its optimistic bubbles to the exact
+  // persisted turn instead of a timestamp heuristic. Never called for an
+  // already-fully-persisted reply (e.g. a slash-command echo), since there
+  // is no race to correlate away in that case.
+  onMessageIds?: (ids: { userMessageId: string; assistantMessageId: string }) => void;
   // Called when the caller aborts the stream (e.g. Stop button). Lets the UI
   // reconcile with the server, which persists a `cancelled` assistant message.
   onAbort?: () => void;
@@ -794,6 +801,13 @@ export function streamChat(
             }
             if (obj.step) {
               handlers.onStep?.(obj.step as ActivityStep);
+              continue;
+            }
+            if (obj.messageId && obj.userMessageId) {
+              handlers.onMessageIds?.({
+                userMessageId: String(obj.userMessageId),
+                assistantMessageId: String(obj.messageId),
+              });
               continue;
             }
             const delta: string =

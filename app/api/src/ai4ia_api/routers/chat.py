@@ -258,6 +258,7 @@ def _local_reply_response(session_id: str, assistant: Message, stream: bool):
 async def _agentic_stream(
     *,
     assistant: Message,
+    user_message_id: str,
     run: Callable[[Callable[[AgentStep], Awaitable[None]]], Awaitable[AgentRunResult]],
     repo: SessionRepository,
     memory: MemoryServiceProtocol,
@@ -297,6 +298,11 @@ async def _agentic_stream(
     persisted: list[ActivityStep] | None = None
     remembered = False
     try:
+        # Echoed as early as possible, before any tool activity, so the client
+        # can correlate its optimistic bubbles to this exact turn's persisted
+        # rows by id instead of a timestamp heuristic (assistant.id is
+        # assigned at construction, before this generator ever starts).
+        yield f"data: {json.dumps({'messageId': assistant.id, 'userMessageId': user_message_id})}\n\n"
         result: AgentRunResult | None = None
         run_error: Exception | None = None
         while True:
@@ -1293,6 +1299,7 @@ async def chat(
             return StreamingResponse(
                 _agentic_stream(
                     assistant=placeholder,
+                    user_message_id=user_msg.id,
                     run=_run,
                     repo=repo,
                     memory=memory,
@@ -1480,6 +1487,7 @@ async def chat(
                     return StreamingResponse(
                         _agentic_stream(
                             assistant=placeholder,
+                            user_message_id=user_msg.id,
                             run=_run_plain,
                             repo=repo,
                             memory=memory,
@@ -1596,6 +1604,12 @@ async def chat(
         saw_done = False
         stream_usage: dict | None = None
         try:
+            # Echoed first, before any model output, so the client can
+            # correlate its optimistic bubbles to this exact turn's persisted
+            # rows by id (assistant.id/user_msg.id are assigned at
+            # construction, before this generator ever starts) instead of a
+            # timestamp heuristic.
+            yield f"data: {json.dumps({'messageId': assistant.id, 'userMessageId': user_msg.id})}\n\n"
             async for chunk in gateway.stream(
                 deployment=deployment.deploymentName,
                 messages=payload_messages,
