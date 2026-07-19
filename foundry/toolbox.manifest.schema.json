@@ -430,7 +430,7 @@
           },
           "openapi": {
             "type": "object",
-            "description": "Required nested function definition for openapi tools, mirroring azure-ai-projects 2.3.0's OpenApiFunctionDefinition. `spec` is an arbitrary, externally-authored OpenAPI document; scripts/provision-foundry-toolbox.py passes its contents through UNMODIFIED (property names inside spec are never rewritten, so e.g. a JSON-schema property genuinely named `topK` survives as `topK`).",
+            "description": "Required nested function definition for openapi tools, mirroring azure-ai-projects 2.3.0's OpenApiFunctionDefinition. `spec` is an arbitrary, externally-authored OpenAPI document; scripts/provision-foundry-toolbox.py passes its contents through UNMODIFIED (property names inside spec are never rewritten, so e.g. a JSON-schema property genuinely named `topK` survives as `topK`). `additionalProperties: false` here deliberately rejects `functions`: OpenApiFunctionDefinition.functions is declared `rest_field(visibility=[\"read\"])` in the locked SDK -- it is server-populated (extracted from `spec`) and is stripped from every request body by `ToolboxesOperations.create_version()`'s `exclude_readonly=True` JSON encoding, so accepting it as a caller-settable manifest field would be a silently-inert, success-shaped no-op rather than a real configuration knob.",
             "additionalProperties": false,
             "required": [
               "name",

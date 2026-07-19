@@ -646,6 +646,76 @@ def test_schema_rejects_openapi_missing_required_nested_fields_and_bad_auth():
     jsonschema.validate(good, schema)  # must not raise
 
 
+# ----------------- round 11: openapi.functions is read-only, not settable (Finding 1) -
+# A reviewer's premise assumed OpenApiFunctionDefinition.functions was a legitimate manifest
+# field the mapper corrupts via key-conversion. SDK reflection + official Microsoft Learn docs
+# both show it is genuinely READ-ONLY (server-populated, presumably extracted from `spec`):
+# azure-ai-projects 2.3.0 declares it `rest_field(visibility=["read"])`, and
+# ToolboxesOperations.create_version() strips every read-only field from the wire body via
+# `json.dumps(body, cls=SdkJSONEncoder, exclude_readonly=True)`. Modeling it as a settable
+# manifest field would therefore be a silently-inert, success-shaped no-op -- exactly the kind of
+# fix this audit is instructed to avoid. The correct fix is exclusion (already true via
+# `additionalProperties: false`), locked in here with tests instead of a mapper change.
+def test_openapi_function_definition_functions_field_is_readonly_in_the_locked_sdk():
+    m = pytest.importorskip("azure.ai.projects.models")
+    from azure.ai.projects._utils.model_base import _is_readonly
+
+    fd = m.OpenApiFunctionDefinition(
+        name="search_docs",
+        spec={"openapi": "3.0.0"},
+        auth=m.OpenApiAnonymousAuthDetails(),
+        functions=[{"name": "f1", "parameters": {"type": "object"}}],
+    )
+    # _attr_to_rest_field is populated per-instance (not on the class) for these generated
+    # models -- the same introspection technique the reflection-driven parity test below uses.
+    functions_field = fd._attr_to_rest_field["functions"]
+    assert functions_field._visibility == ["read"]
+    assert _is_readonly(functions_field) is True
+
+
+def test_create_toolbox_wire_body_never_includes_readonly_openapi_functions():
+    # Even though the SDK's loose **kwargs constructor accepts `functions=...` without error,
+    # the ACTUAL wire body create_version() sends strips it. Mirrors
+    # ToolboxesOperations.create_version()'s exact body shape and serialization call, so this
+    # fails loudly if a future SDK version ever makes `functions` writable.
+    m = pytest.importorskip("azure.ai.projects.models")
+    from azure.ai.projects._utils.model_base import SdkJSONEncoder
+
+    fd = m.OpenApiFunctionDefinition(
+        name="search_docs",
+        spec={"openapi": "3.0.0"},
+        auth=m.OpenApiAnonymousAuthDetails(),
+        functions=[{"name": "f1", "parameters": {"type": "object"}}],
+    )
+    tool = m.OpenApiToolboxTool(name="x", openapi=fd)
+    body = {"tools": [tool]}
+    wire = json.loads(json.dumps(body, cls=SdkJSONEncoder, exclude_readonly=True))
+    assert "functions" not in wire["tools"][0]["openapi"]
+
+
+def test_schema_rejects_openapi_functions_as_an_unsupported_readonly_field():
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    manifest = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "openapi",
+                "name": "o",
+                "openapi": {
+                    "name": "x",
+                    "spec": {"openapi": "3.0.0"},
+                    "auth": {"type": "anonymous"},
+                    "functions": [{"name": "f1", "parameters": {"type": "object"}}],
+                },
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(manifest, schema)
+
+
 def test_schema_rejects_mcp_missing_both_server_url_and_connector_id():
     # MCPToolboxTool requires server_label plus ONE of server_url/connector_id; a tool with
     # neither is unreachable. Both individually-valid forms must still pass.
@@ -1074,6 +1144,10 @@ def test_main_accepts_schema_valid_manifest_in_dry_run(tmp_path, capsys):
         pytest.param({**_valid_manifest(), "tools": [None]}, id="tools_contains_null"),
         pytest.param({**_valid_manifest(), "tools": "web_search"}, id="tools_is_a_string"),
         pytest.param({**_valid_manifest(), "tools": [{"name": "x"}, "not-a-dict"]}, id="tools_has_non_dict_entry"),
+        pytest.param({**_valid_manifest(), "skills": [None]}, id="skills_contains_null"),
+        pytest.param({**_valid_manifest(), "skills": [{}]}, id="skills_entry_missing_name"),
+        pytest.param({**_valid_manifest(), "connections": [None]}, id="connections_contains_null"),
+        pytest.param({**_valid_manifest(), "connections": [{"name": ""}]}, id="connections_entry_blank_name"),
     ],
 )
 def test_main_reports_malformed_manifests_cleanly_instead_of_crashing(tmp_path, capsys, manifest):
@@ -1092,6 +1166,8 @@ def test_main_reports_malformed_manifests_cleanly_instead_of_crashing(tmp_path, 
     [
         pytest.param([], id="root_is_a_list"),
         pytest.param({**_valid_manifest(), "tools": [None]}, id="tools_contains_null"),
+        pytest.param({**_valid_manifest(), "skills": [None]}, id="skills_contains_null"),
+        pytest.param({**_valid_manifest(), "connections": [None]}, id="connections_contains_null"),
     ],
 )
 def test_main_reports_malformed_manifests_cleanly_even_without_jsonschema(tmp_path, capsys, monkeypatch, manifest):
@@ -1109,6 +1185,87 @@ def test_main_reports_malformed_manifests_cleanly_even_without_jsonschema(tmp_pa
     captured = capsys.readouterr()
     assert rc == 1
     assert "not ready to provision" in captured.err
+
+
+# ----------------- round 11: skills[]/connections[] per-entry validation (Finding 2) --
+# validate_manifest() checked `isinstance(skills, list)` / `isinstance(connections, list)` at the
+# root but never validated individual entries, so `skills: [null]` or a nameless connection sailed
+# through with zero errors and only crashed later -- in main()'s dry-run summary print (`s["name"]
+# for s in ...`) or in to_azd_yaml()'s `c["name"]`/`s["name"]` renders (reached via --emit-yaml).
+# These prove the crash is now caught by validate_manifest() itself, before either downstream
+# consumer ever sees the malformed entry -- with no jsonschema installed, matching the reported bug.
+def test_main_emit_yaml_reports_malformed_connections_cleanly_without_jsonschema_instead_of_crashing(tmp_path, capsys, monkeypatch):
+    monkeypatch.setitem(sys.modules, "jsonschema", None)
+    bad_manifest = {**_valid_manifest(), "connections": [{"name": "ok"}, None]}
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(bad_manifest), encoding="utf-8")
+    yaml_path = tmp_path / "out.yaml"
+
+    rc = _tb.main(["--manifest", str(manifest_path), "--emit-yaml", str(yaml_path)])  # must not raise
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not ready to provision" in captured.err
+    assert "connections[1] must be a JSON object" in captured.err
+    assert not yaml_path.exists()
+
+
+def test_main_emit_yaml_reports_malformed_skills_cleanly_without_jsonschema_instead_of_crashing(tmp_path, capsys, monkeypatch):
+    monkeypatch.setitem(sys.modules, "jsonschema", None)
+    bad_manifest = {**_valid_manifest(), "skills": [{"name": "citation-discipline"}, {"version": 2}]}
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(bad_manifest), encoding="utf-8")
+    yaml_path = tmp_path / "out.yaml"
+
+    rc = _tb.main(["--manifest", str(manifest_path), "--emit-yaml", str(yaml_path)])  # must not raise
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not ready to provision" in captured.err
+    assert "skills[1].name is required" in captured.err
+    assert not yaml_path.exists()
+
+
+def test_validate_manifest_rejects_malformed_skills_entries():
+    non_dict = _tb.validate_manifest({**_valid_manifest(), "skills": [None]})
+    assert any("skills[0] must be a JSON object" in e for e in non_dict)
+
+    missing_name = _tb.validate_manifest({**_valid_manifest(), "skills": [{}]})
+    assert any("skills[0].name is required" in e for e in missing_name)
+
+    blank_name = _tb.validate_manifest({**_valid_manifest(), "skills": [{"name": ""}]})
+    assert any("skills[0].name is required" in e for e in blank_name)
+
+    wrong_type_name = _tb.validate_manifest({**_valid_manifest(), "skills": [{"name": 123}]})
+    assert any("skills[0].name is required" in e for e in wrong_type_name)
+
+    wrong_type_version = _tb.validate_manifest(
+        {**_valid_manifest(), "skills": [{"name": "citation-discipline", "version": 2}]}
+    )
+    assert any("skills[0].version must be a string" in e for e in wrong_type_version)
+
+    # A present, correctly-typed version is fine.
+    ok_version = _tb.validate_manifest(
+        {**_valid_manifest(), "skills": [{"name": "citation-discipline", "version": "2"}]}
+    )
+    assert ok_version == []
+
+
+def test_validate_manifest_rejects_malformed_connections_entries():
+    non_dict = _tb.validate_manifest({**_valid_manifest(), "connections": [None]})
+    assert any("connections[0] must be a JSON object" in e for e in non_dict)
+
+    missing_name = _tb.validate_manifest({**_valid_manifest(), "connections": [{}]})
+    assert any("connections[0].name is required" in e for e in missing_name)
+
+    blank_name = _tb.validate_manifest({**_valid_manifest(), "connections": [{"name": ""}]})
+    assert any("connections[0].name is required" in e for e in blank_name)
+
+    wrong_type_name = _tb.validate_manifest({**_valid_manifest(), "connections": [{"name": 123}]})
+    assert any("connections[0].name is required" in e for e in wrong_type_name)
+
+    ok = _tb.validate_manifest({**_valid_manifest(), "connections": [{"name": "learn-conn"}]})
+    assert ok == []
 
 
 def test_validate_manifest_isinstance_guards_cover_every_malformed_shape():

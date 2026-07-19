@@ -204,6 +204,35 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
             f"{unnamed} tools have no identifier; the service allows at most ONE tool total without "
             "a `name` (or `serverLabel` for mcp) -- give every other tool a unique `name`."
         )
+
+    # Type-safe by construction, same as the `tools[]` loop above: without this, a malformed
+    # entry (`skills: [null]`, a non-object connection, a missing/blank/non-string `name`) sails
+    # through here with zero errors -- `skills`/`connections` were never per-entry validated -- and
+    # then crashes downstream the first time something actually subscripts the entry: `main()`'s
+    # dry-run summary print (`s["name"] for s in manifest.get("skills") or []`) and
+    # `to_azd_yaml()`'s `s["name"]`/`c["name"]` renders both assume every entry is a dict with a
+    # usable `name`. This is the ONLY check that runs when the optional `jsonschema` dependency is
+    # not installed (see this function's docstring), so it must catch these shapes itself rather
+    # than relying on `foundry/toolbox.manifest.schema.json`.
+    for i, skill in enumerate(skills):
+        if not isinstance(skill, dict):
+            errors.append(f"skills[{i}] must be a JSON object, got {type(skill).__name__}.")
+            continue
+        skill_name = skill.get("name")
+        if not isinstance(skill_name, str) or not skill_name:
+            errors.append(f"skills[{i}].name is required and must be a non-empty string.")
+        version = skill.get("version")
+        if version is not None and not isinstance(version, str):
+            errors.append(f"skills[{i}].version must be a string if present, got {type(version).__name__}.")
+
+    for i, conn in enumerate(connections):
+        if not isinstance(conn, dict):
+            errors.append(f"connections[{i}] must be a JSON object, got {type(conn).__name__}.")
+            continue
+        conn_name = conn.get("name")
+        if not isinstance(conn_name, str) or not conn_name:
+            errors.append(f"connections[{i}].name is required and must be a non-empty string.")
+
     return errors
 
 
