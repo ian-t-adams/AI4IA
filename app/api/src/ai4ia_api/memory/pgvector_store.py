@@ -32,15 +32,12 @@ migrations/bootstrap.
 from __future__ import annotations
 
 import asyncio
-import logging
 import math
 import time
 from collections.abc import Sequence
 from typing import Any, Protocol
 
 from .models import MemoryRecord
-
-logger = logging.getLogger(__name__)
 
 # Scope for an Azure Database for PostgreSQL access token.
 _PG_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"
@@ -283,6 +280,29 @@ class PgVectorStore:
         async with self._pool.acquire() as conn:  # pyright: ignore[reportOptionalMemberAccess]
             count = await conn.fetchval(_ERASE_SESSION, user_id, session_id)
         return int(count or 0)
+
+    async def erase_document(self, user_id: str, document_id: str) -> int:
+        """Not supported on this backend: the ``memories`` table has no
+        ``document_id`` column to key an erase on (see the module docstring).
+
+        Raises rather than reporting a success-shaped no-op. Returning ``0``
+        here previously let ``forget_document`` claim "0 forgotten" while the
+        document's memories stayed fully recallable, and let
+        ``remember_document``'s idempotent re-save silently accumulate
+        duplicate records on every repeat save of the same document (the
+        "erase old before inserting new" step was doing nothing). Adding a
+        ``document_id`` column is a schema migration that needs separate
+        approval; until then, raising surfaces honestly through the existing
+        "memory operation failed" handling (the callers in
+        ``routers/library.py`` already catch this and return 502) instead of
+        lying about success.
+        """
+        raise NotImplementedError(
+            "erase_document is not supported by the pgvector memory backend "
+            f"(no document_id column; user={user_id} document={document_id}); "
+            "a schema migration is required to support document-scoped "
+            "memory erase/idempotent re-save on this backend."
+        )
 
     async def close(self) -> None:
         if self._owns_pool and self._pool is not None:

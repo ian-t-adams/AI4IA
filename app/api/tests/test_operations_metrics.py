@@ -111,3 +111,19 @@ def test_terminal_and_security_queries_match_real_custom_events():
     assert 'Name == "security_block"' in SECURITY_KQL
     assert "AppEvents" in SECURITY_KQL
     assert "AppTraces" not in SECURITY_KQL
+
+
+@pytest.mark.asyncio
+async def test_close_swallows_querier_close_failure():
+    """A querier.close() failure must not propagate: main.py's shutdown block
+    closes every resource independently, so one raising close() must not be
+    allowed to look like the service itself is broken."""
+
+    class RaisingQuerier(FakeQuerier):
+        async def close(self) -> None:
+            raise RuntimeError("boom")
+
+    service = OperationsMetricsService(
+        make_settings(), querier=RaisingQuerier(LogQueryData(rows=[]))
+    )
+    await service.close()  # must not raise

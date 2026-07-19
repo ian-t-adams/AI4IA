@@ -10,3 +10,4 @@ def test_health_ready_reports_config(client):
     body = resp.json()
     assert body["auth_provider"] == "dev"
     assert body["session_store"] == "memory"
+    assert body["env"] == "local"

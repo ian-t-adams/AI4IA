@@ -26,11 +26,16 @@ producer/consumer parity exactly like the retrieval service.
 from __future__ import annotations
 
 import logging
+import secrets
 
 from ..config import Settings
 from .blob_store import BlobNotFoundError, BlobStore, version_path
 from .models import DocumentStatus, DocumentVersion, UserDocument
-from .repository import DocumentLibraryRepository, DocumentNotFoundError
+from .repository import (
+    DocumentConflictError,
+    DocumentLibraryRepository,
+    DocumentNotFoundError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +55,17 @@ def _safe_filename(name: str | None) -> str:
     base = (name or "export.md").replace("\\", "/").split("/")[-1]
     base = "".join(c for c in base if c.isprintable()).strip()
     return (base or "export.md")[:_NAME_LIMIT]
+
+
+def _log_safe_path(path: str) -> str:
+    """``path`` with its final segment stripped for safe logging.
+
+    ``version_path`` embeds the (sanitized but still model/user-supplied)
+    export filename as the last path segment. Everything before it is opaque
+    ids + a random attempt token, so logging the trimmed path lets an
+    operator locate the blob without persisting document content/filename
+    into Container Apps / Log Analytics."""
+    return path.rsplit("/", 1)[0] if "/" in path else path
 
 
 class DocumentExportService:
@@ -78,9 +94,12 @@ class DocumentExportService:
             doc = await self._library.get_document(user_id, document_id)
         except DocumentNotFoundError:
             return None, {"error": f"No document found with id '{document_id}'."}
-        except Exception:  # noqa: BLE001 - degrade, never propagate
+        except Exception as exc:  # noqa: BLE001 - degrade, never propagate
             logger.warning(
-                "export gate load failed user=%s id=%s", user_id, document_id, exc_info=True
+                "export gate load failed user=%s id=%s error_type=%s",
+                user_id,
+                document_id,
+                type(exc).__name__,
             )
             return None, {"error": "Could not access that document right now."}
         if doc.status != DocumentStatus.ready:
@@ -122,14 +141,23 @@ class DocumentExportService:
         safe_name = _safe_filename(filename)
         safe_note = _one_line(note, _NOTE_LIMIT)
         n = doc.next_version
-        path = version_path(user_id, document_id, n, safe_name)
+        # A random per-attempt token (not just n) keys the blob path: two
+        # concurrent exports of the same document both read next_version
+        # before either commits, so they can compute the same n. Without a
+        # unique path per attempt, the loser's cleanup below could delete the
+        # winner's already-committed blob (see version_path's docstring).
+        token = secrets.token_hex(8)
+        path = version_path(user_id, document_id, n, token, safe_name)
         data = body.encode("utf-8")
         try:
             await self._blob.put(path, data, content_type or "text/markdown")
-        except Exception:  # noqa: BLE001 - degrade, never propagate
+        except Exception as exc:  # noqa: BLE001 - degrade, never propagate
             logger.warning(
-                "export blob write failed user=%s id=%s n=%s",
-                user_id, document_id, n, exc_info=True,
+                "export blob write failed user=%s id=%s n=%s error_type=%s",
+                user_id,
+                document_id,
+                n,
+                type(exc).__name__,
             )
             return {"error": "Could not save the adjusted document right now."}
 
@@ -141,6 +169,17 @@ class DocumentExportService:
             size=len(data),
             note=safe_note,
         )
+
+        async def _delete_blob(target: str) -> None:
+            try:
+                await self._blob.delete_prefix(target)
+            except Exception as exc:  # noqa: BLE001 - best-effort cleanup
+                logger.warning(
+                    "orphan version cleanup failed path=%s error_type=%s",
+                    _log_safe_path(target),
+                    type(exc).__name__,
+                )
+
         # Re-read + append under the manifest's own update path so we never blindly
         # overwrite a racing change; update_document raises on a vanished doc
         # (no create-on-missing).
@@ -148,18 +187,43 @@ class DocumentExportService:
         try:
             await self._library.update_document(doc)
         except DocumentNotFoundError:
-            # The document was deleted between the gate and the manifest write;
-            # best-effort purge the orphaned version blob so no un-referenced
-            # artifact lingers, then report a generic not-found.
-            try:
-                await self._blob.delete_prefix(path)
-            except Exception:  # noqa: BLE001 - best-effort cleanup
-                logger.warning("orphan version cleanup failed path=%s", path, exc_info=True)
+            # The document was deleted between the gate and the manifest write.
+            # Conclusive: Cosmos confirmed synchronously that nothing was
+            # written, so the blob is definitely unreferenced.
+            await _delete_blob(path)
             return {"error": f"No document found with id '{document_id}'."}
-        except Exception:  # noqa: BLE001 - degrade, never propagate
+        except DocumentConflictError:
+            # A concurrent writer's commit already moved the etag past ours
+            # (412). Also conclusive - unlike a dropped connection, this is a
+            # synchronous, definitive server response to *this* request body:
+            # Cosmos rejected it, so the manifest cannot reference our
+            # uniquely-pathed attempt blob. Safe to delete without a confirm-read.
+            await _delete_blob(path)
+            return {"error": "Could not record the adjusted document right now."}
+        except Exception as exc:  # noqa: BLE001 - degrade, never propagate
+            # Genuinely ambiguous: the client observed a failure but cannot
+            # tell whether the write committed server-side before it did (a
+            # dropped connection or timeout can lose the ack after Cosmos
+            # already persisted the replace_item). A "confirm read" cannot
+            # soundly resolve this either - under Session consistency a single
+            # read after a write whose own ack the client already missed is
+            # not guaranteed to reflect it, so re-reading here could observe
+            # stale data and delete a blob the manifest now legitimately
+            # references. Never delete synchronously in this branch: retain
+            # the attempt blob. RESIDUAL GAP: no delayed reconciliation/GC
+            # job exists yet to clean up a blob that turns out to be a true
+            # orphan (write did not commit) -- this call site only guarantees
+            # it never deletes a possibly-committed blob, not that orphans
+            # get cleaned up. Do not describe this as "reconciled".
             logger.warning(
-                "export manifest update failed user=%s id=%s n=%s",
-                user_id, document_id, n, exc_info=True,
+                "export manifest update failed ambiguously; blob retained "
+                "(no reconciliation job exists yet) user=%s id=%s n=%s "
+                "path=%s error_type=%s",
+                user_id,
+                document_id,
+                n,
+                _log_safe_path(path),
+                type(exc).__name__,
             )
             return {"error": "Could not record the adjusted document right now."}
 
@@ -208,10 +272,13 @@ class DocumentExportService:
             data = await self._blob.get(version.path)
         except BlobNotFoundError:
             return {"error": f"No content stored for version {n}."}
-        except Exception:  # noqa: BLE001 - degrade, never propagate
+        except Exception as exc:  # noqa: BLE001 - degrade, never propagate
             logger.warning(
-                "version read failed user=%s id=%s n=%s",
-                user_id, document_id, n, exc_info=True,
+                "version read failed user=%s id=%s n=%s error_type=%s",
+                user_id,
+                document_id,
+                n,
+                type(exc).__name__,
             )
             return {"error": "Could not read that version right now."}
         return {

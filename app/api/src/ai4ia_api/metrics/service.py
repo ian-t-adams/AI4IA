@@ -2,9 +2,12 @@
 
 Maps each configured ARM resource id to a small set of platform metrics and reads
 them from Azure Monitor. Best-effort by construction: a panel whose id is unset,
-whose SDK is missing, or whose query fails is returned as ``unavailable`` with a
-short reason — never an error. Panels light up as diagnostics/resource ids
-appear.
+whose SDK is missing, or whose query fails outright is returned as ``unavailable``
+with a short reason — never an error. A panel where only some requested metrics
+actually failed (see ``AzureMonitorQuerier``'s per-aggregation-group error
+handling) is returned as ``partial`` with the failing metrics named, instead of
+silently reporting ``ok`` alongside metrics that never had a chance to resolve.
+Panels light up as diagnostics/resource ids appear.
 """
 from __future__ import annotations
 
@@ -13,7 +16,7 @@ from dataclasses import dataclass
 
 from ..config import Settings
 from .azure_monitor import MetricsQuerier
-from .models import MetricRequest, ResourceMetricsReport, ResourcePanel
+from .models import MetricRequest, PanelStatus, ResourceMetricsReport, ResourcePanel
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,12 @@ class _PanelSpec:
     display_name: str
     id_attr: str  # Settings attribute holding the ARM resource id
     metrics: tuple[MetricRequest, ...]
+    # Override DEFAULT_GRANULARITY_MINUTES when this panel's metrics don't all
+    # support it together. Azure Monitor's batch metrics API requires every
+    # metric in one query to share a common supported time grain and rejects
+    # the whole call with 400 BadRequest otherwise, so a panel that mixes a
+    # coarser-grained metric with finer ones must request the coarser grain.
+    granularity_minutes: int | None = None
 
 
 # Curated, low-cardinality metric set per resource. Names are the Azure Monitor
@@ -66,7 +75,7 @@ PANEL_SPECS: tuple[_PanelSpec, ...] = (
         id_attr="metrics_cosmos_resource_id",
         metrics=(
             MetricRequest(name="TotalRequestUnits", label="Request Units", aggregation="total", unit="RU"),
-            MetricRequest(name="TotalRequests", label="Requests", aggregation="total"),
+            MetricRequest(name="TotalRequests", label="Requests", aggregation="count"),
             MetricRequest(
                 name="ServiceAvailability",
                 label="Availability",
@@ -74,6 +83,17 @@ PANEL_SPECS: tuple[_PanelSpec, ...] = (
                 unit="%",
             ),
         ),
+        # ServiceAvailability only supports a 1-hour time grain (TotalRequests
+        # and TotalRequestUnits support down to 1 minute); querying all three
+        # together at the service default of 5 minutes is rejected by Azure
+        # Monitor: "BadRequest: ... only support common time grain 01:00:00".
+        # Separately, TotalRequests only supports the Count aggregation,
+        # TotalRequestUnits only Total/Average/Maximum, and ServiceAvailability
+        # only Minimum/Average/Maximum -- no aggregation is common to all
+        # three, so AzureMonitorQuerier issues one query_resources call per
+        # aggregation for this panel rather than one combined call (which
+        # Azure Monitor would reject with its own 400 BadRequest).
+        granularity_minutes=60,
     ),
     _PanelSpec(
         key="containerApp",
@@ -135,12 +155,17 @@ class ResourceMetricsService:
             return ResourcePanel.unavailable(
                 spec.key, spec.display_name, "Azure Monitor client unavailable."
             )
+        # A panel-specific override (see _PanelSpec.granularity_minutes) always
+        # wins; Azure Monitor requires the timespan to cover at least one full
+        # bucket, so widen the window to match rather than ask for a partial one.
+        granularity = spec.granularity_minutes or self._granularity
+        window = max(self._window, granularity)
         try:
             points = await querier.query(
                 resource_id,
                 list(spec.metrics),
-                window_minutes=self._window,
-                granularity_minutes=self._granularity,
+                window_minutes=window,
+                granularity_minutes=granularity,
             )
         except Exception:  # noqa: BLE001 - resource panels are best-effort
             logger.warning(
@@ -149,10 +174,31 @@ class ResourceMetricsService:
             return ResourcePanel.unavailable(
                 spec.key, spec.display_name, "Metrics query failed."
             )
+        # Production incident: a metric whose query genuinely failed (Azure
+        # Monitor error) and a metric with no data yet both resolved to a bare
+        # null value, so this panel was reported "ok" either way -- there was
+        # no way to tell "nothing happened" from "something broke". Points
+        # that failed carry a safe ``error`` reason (see AzureMonitorQuerier);
+        # a panel with at least one but not all of those is "partial", and a
+        # panel where every point failed is "unavailable" rather than a
+        # falsely reassuring "ok".
+        errored = [p for p in points if p.error]
+        if errored and len(errored) == len(points):
+            reasons = sorted({p.error for p in errored if p.error})
+            return ResourcePanel.unavailable(
+                spec.key, spec.display_name, f"Metrics query failed: {'; '.join(reasons)}"
+            )
+        status: PanelStatus = "ok"
+        detail = None
+        if errored:
+            status = "partial"
+            labels = ", ".join(p.label for p in errored)
+            detail = f"Unavailable: {labels}."
         return ResourcePanel(
             key=spec.key,
             displayName=spec.display_name,
-            status="ok",
+            status=status,
+            detail=detail,
             metrics=points,
         )
 

@@ -235,13 +235,45 @@ def test_memory_list_and_delete_are_user_scoped(monkeypatch):
         client.app.state.memory = EnumerableMemory()
         alice = {"X-Dev-User": "alice"}
         bob = {"X-Dev-User": "bob"}
-        assert client.get("/api/memories", headers=alice).json()["items"][0]["id"] == "owned"
+        listed = client.get("/api/memories", headers=alice).json()
+        assert listed["items"][0]["id"] == "owned"
+        # A backend that genuinely implements per-item delete (no explicit
+        # supports_delete override) still advertises delete support.
+        assert listed["supportsDelete"] is True
         assert client.get("/api/memories", headers=bob).json()["items"] == []
         assert client.delete("/api/memories/owned", headers=bob).status_code == 404
         assert client.delete("/api/memories/owned", headers=alice).status_code == 204
     assert ("list", "ok", "api") in events
     assert ("delete", "not_found", "api") in events
     assert ("delete", "ok", "api") in events
+
+
+def test_memory_list_reports_supports_delete_false_for_fail_closed_backend():
+    """A backend whose ``delete_memory`` method exists but always fails closed
+    (e.g. mem0, which cannot verify a hard-forget) must set the class attribute
+    ``supports_delete = False`` so the list response never advertises a delete
+    affordance the API will only 501 on. This guards the fix in
+    ``routers/memories.py`` where ``supportsDelete`` previously fell back to a
+    bare ``hasattr(memory, "delete_memory")`` check that couldn't tell a real
+    deletable backend from a fail-closed one exposing the same method name.
+    """
+
+    class FailClosedMemory:
+        enabled = True
+        supports_delete = False
+
+        async def list_memories(self, user_id: str, *, limit: int = 100):
+            return [MemoryRecord(id="owned", user_id=user_id, text="Some note")]
+
+        async def delete_memory(self, user_id: str, memory_id: str) -> bool:
+            raise RuntimeError("deletion is unsupported by this backend")
+
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        client.app.state.memory = FailClosedMemory()
+        resp = client.get("/api/memories", headers={"X-Dev-User": "alice"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["supportsDelete"] is False
 
 
 def test_authoritative_voice_frame_removes_client_instructions():

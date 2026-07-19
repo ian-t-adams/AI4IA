@@ -118,6 +118,8 @@ async def test_tokens_per_month_denies():
     decision = await svc.check("u")
     assert decision.code == 429
     assert decision.limit_kind == "tokens_per_month"
+    # Retry-After is capped at a day even though the window itself is a month.
+    assert decision.retry_after_seconds == 24 * 60 * 60
 
 
 async def test_cost_per_month_denies():
@@ -128,6 +130,7 @@ async def test_cost_per_month_denies():
     decision = await svc.check("u")
     assert decision.code == 429
     assert decision.limit_kind == "cost_per_month"
+    assert decision.retry_after_seconds == 24 * 60 * 60
 
 
 async def test_zero_limit_is_a_hard_block():

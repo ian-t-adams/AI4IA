@@ -27,13 +27,15 @@ from fastapi import (
     status,
 )
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..entitlements.service import EntitlementService
 from ..logging_setup import emit_custom_event
+from ..memory.mem0_service import MemoryEraseUnsupportedError
 from ..memory.telemetry import emit_memory_operation
+from ..content_understanding.models import is_valid_analyzer_id
 from ..library.access import (
     can_access,
     list_accessible_documents,
@@ -56,6 +58,7 @@ from ..library.models import (
 from ..library.repository import (
     AnalyzerConflictError,
     AnalyzerNotFoundError,
+    DocumentConflictError,
     DocumentLibraryRepository,
     DocumentNotFoundError,
 )
@@ -143,12 +146,31 @@ class LibrarySummary(BaseModel):
     )
 
 
+# A custom analyzer's baseAnalyzerId is interpolated directly into the Content
+# Understanding request URL path (see ContentUnderstandingClient.submit_url), so
+# it is restricted to the same charset the CU service itself uses for analyzer
+# ids. This blocks "/", "?", "#", whitespace, and control characters (including
+# a trailing newline) from reaching URL construction. The rule lives in
+# ``content_understanding.models`` so this validator and the CU client's own
+# defense-in-depth check can never drift apart.
+
+
 class AnalyzerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=1000)
     modalities: list[Modality] = Field(default_factory=lambda: [Modality.document])
     baseAnalyzerId: str | None = None
     config: dict = Field(default_factory=dict)
+
+    @field_validator("baseAnalyzerId")
+    @classmethod
+    def validate_base_analyzer_id(cls, value: str | None) -> str | None:
+        if value is not None and not is_valid_analyzer_id(value):
+            raise ValueError(
+                "baseAnalyzerId may only contain letters, digits, '.', '-' and "
+                "'_' (1-64 characters)."
+            )
+        return value
 
 
 def _library(request: Request) -> DocumentLibraryRepository:
@@ -547,6 +569,12 @@ async def delete_document(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> None:
+    """Delete a document and cascade-forget any memories it contributed.
+
+    Forgets memory before deleting the manifest (see the comment below) so a
+    failed forget aborts the delete instead of losing the only retryable
+    handle. See :func:`save_document_to_memory` for the residual save-vs-delete
+    race this ordering narrows but does not close."""
     repo = _library(request)
     uid = user.internal_user_id
     try:
@@ -556,6 +584,47 @@ async def delete_document(
     if not require_owner(uid, doc):
         # Never reveal another user's document via delete.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    # Forget anything this document contributed to the owner's durable memory
+    # (save-to-memory) BEFORE deleting the manifest, and let a failure abort
+    # the delete instead of swallowing it. Once the manifest is gone there is
+    # no stable, retryable handle left to erase memories by document_id, so a
+    # document whose erase failed here would leave its content permanently
+    # recallable with no way to ever finish the job — the manifest delete is
+    # NOT a safe "source of truth" for this step the way it is for the
+    # best-effort blob/chunk purge below (recall is user-visible; a missing
+    # blob/index entry is not). Mirrors the explicit 11E-3 forget endpoint
+    # (memory.forget_document), which surfaces the same failures as 502.
+    # A backend that cannot verify document-scoped hard deletion raises before
+    # mutating anything. Keep the manifest/blob intact so the owner retains a
+    # retryable handle instead of leaving orphaned, recallable memory.
+    memory = getattr(request.app.state, "memory", None)
+    if memory is not None and getattr(memory, "enabled", False):
+        try:
+            forgotten = await memory.forget_document(uid, document_id)
+        except MemoryEraseUnsupportedError:
+            # The global handler maps this intrinsic limitation to 501.
+            raise
+        except Exception:  # noqa: BLE001 - surface so the delete stays retryable
+            logger.warning(
+                "delete-cascaded memory-forget failed user=%s id=%s; aborting "
+                "delete so the document remains a retryable handle",
+                uid,
+                document_id,
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Could not update memory right now; document was not deleted.",
+            )
+        if forgotten:
+            logger.info(
+                "delete cascaded memory-forget user=%s id=%s forgotten=%s",
+                uid,
+                document_id,
+                forgotten,
+            )
+
     await repo.delete_document(uid, document_id)
     # Cancel any in-flight enrich for this document, then best-effort purge of
     # blob artifacts + indexed chunks. The manifest delete is the source of truth;
@@ -565,33 +634,6 @@ async def delete_document(
     if ingestor is not None:
         await ingestor.cancel_enrich(uid, document_id)
         await ingestor.purge(uid, document_id)
-    # Complete the erase: also forget anything this document contributed to the
-    # owner's durable memory (save-to-memory). Delete already cascades
-    # to the document's other derived artifacts (blobs + indexed chunks above), so
-    # leaving its saved memories behind is the inconsistency; forgetting them here
-    # makes "delete" a complete erase with no derived trace left. Best-effort and
-    # idempotent, exactly like the purge: the manifest delete is the source of
-    # truth and a memory hiccup must never block the delete. No-op when memory is
-    # disabled or the document had nothing saved. Reuses the same machinery as the
-    # explicit 11E-3 forget endpoint (memory.forget_document).
-    memory = getattr(request.app.state, "memory", None)
-    if memory is not None and getattr(memory, "enabled", False):
-        try:
-            forgotten = await memory.forget_document(uid, document_id)
-            if forgotten:
-                logger.info(
-                    "delete cascaded memory-forget user=%s id=%s forgotten=%s",
-                    uid,
-                    document_id,
-                    forgotten,
-                )
-        except Exception:  # noqa: BLE001 - memory cleanup is best-effort
-            logger.warning(
-                "delete memory-forget failed user=%s id=%s",
-                uid,
-                document_id,
-                exc_info=True,
-            )
 
 
 class SaveToMemoryResult(BaseModel):
@@ -662,7 +704,26 @@ async def save_document_to_memory(
     library itself isn't queried. Flag-gated by the library (404 when document
     understanding is off) and by memory (409 when memory is disabled); owner-only
     and ``ready``-status-gated, mirroring the read/delete gates. Memory failures
-    surface (502) because the user explicitly asked to save."""
+    surface (502) because the user explicitly asked to save.
+
+    A backend that cannot verify the idempotent pre-delete fails before adding
+    replacement memories. For mem0 this is surfaced as 501 via
+    :class:`~ai4ia_api.memory.mem0_service.MemoryEraseUnsupportedError`.
+
+    RESIDUAL GAP (not fixed here): this reads the document, then writes to
+    memory; it does not re-check that the document hasn't been deleted (and
+    its memories forgotten by :func:`delete_document`) in between. A save
+    racing a concurrent delete can therefore recreate memories for a document
+    that no longer exists, with no manifest left to retry a forget against.
+    An earlier revision attempted to close this with a post-write recheck
+    that self-compensated by forgetting what it just saved; that was reverted
+    because a single post-write read is not a durable fence against a
+    concurrent writer on another replica -- it narrowed the window without
+    closing it, while adding real complexity. Closing this properly needs a
+    document-level mutual-exclusion/versioning primitive (e.g. a CAS'd
+    in-progress marker checked by both save and delete) or serializing
+    save/delete through the same transactional boundary; neither exists
+    today. Tracked as a known architectural limitation."""
     started = time.monotonic()
     repo = _library(request)
     uid = user.internal_user_id
@@ -700,6 +761,9 @@ async def save_document_to_memory(
         saved = await memory.remember_document(
             uid, items=items, session_id=None, document_id=document_id
         )
+    except MemoryEraseUnsupportedError:
+        # Preserve the typed 501 mapping rather than implying a transient 502.
+        raise
     except Exception:  # noqa: BLE001 - surface a transient memory failure, don't 500
         logger.warning(
             "save-to-memory failed user=%s id=%s", uid, document_id, exc_info=True
@@ -730,9 +794,11 @@ async def forget_document_from_memory(
     memories intact. Flag-gated by the library (404 when document understanding
     is off) and by memory (409 when memory is disabled); owner-only. Unlike save
     there is no ``ready``-status gate — a document whose memories were saved
-    earlier can be forgotten regardless of its current status. Idempotent: a
-    document with nothing saved forgets ``0``. Memory failures surface (502)
-    because the user explicitly asked to forget."""
+    earlier can be forgotten regardless of its current status. Memory failures
+    surface (502) because the user explicitly asked to forget.
+
+    A backend that cannot verify document-scoped hard deletion fails before
+    mutation; mem0 surfaces that intrinsic limitation as 501."""
     started = time.monotonic()
     repo = _library(request)
     uid = user.internal_user_id
@@ -755,6 +821,9 @@ async def forget_document_from_memory(
 
     try:
         forgotten = await memory.forget_document(uid, document_id)
+    except MemoryEraseUnsupportedError:
+        # Preserve the typed 501 mapping rather than implying a transient 502.
+        raise
     except Exception:  # noqa: BLE001 - surface a transient memory failure, don't 500
         logger.warning(
             "forget-from-memory failed user=%s id=%s", uid, document_id, exc_info=True
@@ -911,7 +980,15 @@ async def set_document_shares(
         doc.acl = []
     doc.visibility = payload.visibility
     doc.touch()
-    saved = await repo.update_document(doc)
+    try:
+        saved = await repo.update_document(doc)
+    except DocumentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    except DocumentConflictError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document changed concurrently; reload and try again.",
+        )
     logger.info(
         "share-set user=%s id=%s visibility=%s grantees=%d",
         uid, document_id, doc.visibility.value, len(doc.acl),
@@ -934,20 +1011,61 @@ async def revoke_document_share(
     document returns a generic 404."""
     repo = _library(request)
     uid = user.internal_user_id
-    try:
-        doc = await repo.get_document(uid, document_id)
-    except DocumentNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    if not require_owner(uid, doc):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-
     principal = normalize_principal(email)
-    if principal and principal in doc.acl:
-        doc.acl = [e for e in doc.acl if e != principal]
+    if not principal:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="A grantee email is required.",
+        )
+
+    # Always perform an ETag-conditional replace, even when the first snapshot
+    # does not contain the grantee. Returning that stale snapshot as success
+    # could race with a concurrent grant. Conflicts are reloaded and retried;
+    # after the accepted write, re-read and verify the current ACL is absent.
+    for _attempt in range(3):
+        try:
+            doc = await repo.get_document(uid, document_id)
+        except DocumentNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+            )
+        if not require_owner(uid, doc):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+            )
+
+        was_present = principal in doc.acl
+        if was_present:
+            doc.acl = [entry for entry in doc.acl if entry != principal]
         doc.touch()
-        doc = await repo.update_document(doc)
-        logger.info("share-revoke user=%s id=%s", uid, document_id)
-    return ShareState.of(doc)
+        try:
+            await repo.update_document(doc)
+        except DocumentNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+            )
+        except DocumentConflictError:
+            continue
+
+        try:
+            current = await repo.get_document(uid, document_id)
+        except DocumentNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+            )
+        if not require_owner(uid, current):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+            )
+        if principal not in current.acl:
+            if was_present:
+                logger.info("share-revoke user=%s id=%s", uid, document_id)
+            return ShareState.of(current)
+
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Document changed concurrently; reload and try again.",
+    )
 
 
 # --- annotations ---
@@ -1056,7 +1174,15 @@ async def create_annotation(
     annotation = DocumentAnnotation(body=text, anchor=_clean_anchor(body.anchor))
     doc.annotations.append(annotation)
     doc.touch()
-    await repo.update_document(doc)
+    try:
+        await repo.update_document(doc)
+    except DocumentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    except DocumentConflictError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document changed concurrently; reload and try again.",
+        )
     logger.info("annotation created user=%s doc=%s id=%s", uid, document_id, annotation.id)
     return AnnotationView.of(annotation)
 
@@ -1093,7 +1219,15 @@ async def update_annotation(
         annotation.anchor = _clean_anchor(body.anchor)
     annotation.touch()
     doc.touch()
-    await repo.update_document(doc)
+    try:
+        await repo.update_document(doc)
+    except DocumentNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    except DocumentConflictError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document changed concurrently; reload and try again.",
+        )
     return AnnotationView.of(annotation)
 
 
@@ -1115,7 +1249,15 @@ async def delete_annotation(
     doc.annotations = [a for a in doc.annotations if a.id != annotation_id]
     if len(doc.annotations) != before:
         doc.touch()
-        await repo.update_document(doc)
+        try:
+            await repo.update_document(doc)
+        except DocumentNotFoundError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        except DocumentConflictError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Document changed concurrently; reload and try again.",
+            )
 
 
 # --- analyzers ---

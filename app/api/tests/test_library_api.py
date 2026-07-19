@@ -136,3 +136,80 @@ def test_builtin_analyzer_not_deletable_over_http(client):
     builtin_id = next(iter(BUILTIN_ANALYZER_IDS))
     assert client.delete(f"/api/library/analyzers/{builtin_id}").status_code == 404
     assert client.get(f"/api/library/analyzers/{builtin_id}").status_code == 200
+
+
+def test_create_analyzer_accepts_valid_base_analyzer_id(client):
+    resp = client.post(
+        "/api/library/analyzers",
+        json={"name": "Invoices", "baseAnalyzerId": "prebuilt-documentSearch"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["baseAnalyzerId"] == "prebuilt-documentSearch"
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "../secrets",
+        "foo/bar",
+        "foo?x=1",
+        "foo#frag",
+        "foo bar",
+        "a" * 129,
+        "",
+    ],
+)
+def test_create_analyzer_rejects_unsafe_base_analyzer_id(client, bad_id):
+    # baseAnalyzerId is interpolated directly into the Content Understanding
+    # request URL, so path/query-breaking characters must be rejected at the
+    # API boundary (422) rather than reaching the CU client.
+    resp = client.post(
+        "/api/library/analyzers",
+        json={"name": "Invoices", "baseAnalyzerId": bad_id},
+    )
+    assert resp.status_code == 422
+
+
+def test_create_analyzer_accepts_base_analyzer_id_with_dot_and_at_64_chars(client):
+    # The Content Understanding analyzer-id contract allows dots and up to 64
+    # characters (ai4ia_api.content_understanding.models.ANALYZER_ID_RE).
+    value = "a" * 63 + "."
+    resp = client.post(
+        "/api/library/analyzers",
+        json={"name": "Invoices", "baseAnalyzerId": value},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["baseAnalyzerId"] == value
+
+
+def test_create_analyzer_rejects_base_analyzer_id_over_64_chars(client):
+    resp = client.post(
+        "/api/library/analyzers",
+        json={"name": "Invoices", "baseAnalyzerId": "a" * 65},
+    )
+    assert resp.status_code == 422
+
+
+def test_create_analyzer_rejects_base_analyzer_id_with_trailing_newline(client):
+    # Regression: a validator built on ``match(pattern + "$")`` instead of
+    # ``fullmatch`` would incorrectly accept this, because "$" alone matches
+    # just before a trailing newline.
+    resp = client.post(
+        "/api/library/analyzers",
+        json={"name": "Invoices", "baseAnalyzerId": "prebuilt-invoice\n"},
+    )
+    assert resp.status_code == 422
+
+
+def test_create_analyzer_accepts_base_analyzer_id_not_starting_with_alnum(client):
+    # Unlike the previous validator (which required an alphanumeric first
+    # character), the CU analyzer-id contract
+    # (fullmatch(r'[A-Za-z0-9._-]{1,64}', value)) allows '.', '_' and '-' in
+    # any position, including first.
+    value = "-custom.analyzer_v2"
+    resp = client.post(
+        "/api/library/analyzers",
+        json={"name": "Invoices", "baseAnalyzerId": value},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["baseAnalyzerId"] == value

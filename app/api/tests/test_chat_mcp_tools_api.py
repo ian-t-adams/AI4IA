@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from ai4ia_api.agents.mcp_client import FakeMcpConnector, McpToolResult
 from ai4ia_api.agents.mcp_secrets import InMemoryMcpSecretStore
-from ai4ia_api.agents.mcp_servers import DiscoveredTool
+from ai4ia_api.agents.mcp_servers import DiscoveredTool, tool_alias
 from ai4ia_api.agents.mcp_service import McpServerService
 from ai4ia_api.agents.mcp_store import InMemoryUserMcpServerStore
 from ai4ia_api.main import create_app
@@ -28,6 +28,10 @@ from tests.conftest import make_settings
 
 _PUBLIC_RESOLVER = lambda _host: ["93.184.216.34"]  # noqa: E731 - terse test stub
 _FORECAST = DiscoveredTool(name="forecast", description="Forecast", inputSchema={})
+# The model-facing function-schema name for this (server, tool) pair -- the
+# provider-safe alias, NOT the raw ``mcp:weather/forecast`` governance name
+# (which stays reserved for persisted tool attachment; see mcp_servers.tool_alias).
+_FORECAST_ALIAS = tool_alias("weather", "forecast")
 
 
 def _enabled_client(connector: FakeMcpConnector) -> TestClient:
@@ -99,7 +103,10 @@ class _McpToolThenAnswerGateway:
                                     "id": "c1",
                                     "type": "function",
                                     "function": {
-                                        "name": "mcp:weather/forecast",
+                                        # A real model only ever sees the provider-safe
+                                        # alias in its tools schema, never the raw
+                                        # ``mcp:weather/forecast`` governance name.
+                                        "name": _FORECAST_ALIAS,
                                         "arguments": json.dumps({}),
                                     },
                                 }

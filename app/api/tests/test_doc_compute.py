@@ -8,6 +8,9 @@ injected (in-memory library + blob + a fake Code Interpreter); no network.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from ai4ia_api.code_interpreter.models import CodeInterpreterResult
 from ai4ia_api.library.blob_store import (
     PARSED_NAME,
@@ -27,7 +30,7 @@ from ai4ia_api.library.compute_factory import build_document_compute
 from ai4ia_api.library.export import DocumentExportService
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
 from ai4ia_api.library.models import DocumentStatus, UserDocument
-from ai4ia_api.library.repository import DocumentNotFoundError
+from ai4ia_api.library.repository import DocumentConflictError, DocumentNotFoundError
 from ai4ia_api.library.retrieval import DocumentRetrievalService
 from tests.conftest import make_settings
 
@@ -413,8 +416,11 @@ async def test_export_writes_new_version_and_bumps_manifest():
     refreshed = await library.get_document("u1", doc.id)
     assert refreshed.version_count == 2
     assert [v.n for v in refreshed.versions] == [1, 2]
-    # The version blobs exist under the versions/ prefix.
-    assert await blob.get(version_prefix("u1", doc.id, 1) + "out.md") == b"# v1 content"
+    # The version blob is looked up via the manifest's own stored path (the
+    # path includes a per-attempt token, so it's never reconstructed from
+    # (user, doc, n, filename) alone - see version_path()).
+    v1 = next(v for v in refreshed.versions if v.n == 1)
+    assert await blob.get(v1.path) == b"# v1 content"
 
 
 async def test_export_leaves_original_immutable():
@@ -456,7 +462,9 @@ async def test_export_caps_content_length():
     doc = await _seed_doc(library, blob)
     res = await export.export_version("u1", doc.id, content="0123456789", filename="big.md")
     assert res["truncated"] is True
-    stored = await blob.get(version_prefix("u1", doc.id, 1) + "big.md")
+    refreshed = await library.get_document("u1", doc.id)
+    v1 = next(v for v in refreshed.versions if v.n == 1)
+    stored = await blob.get(v1.path)
     assert stored == b"01234"
 
 
@@ -493,6 +501,273 @@ async def test_export_orphan_blob_cleaned_when_doc_vanishes():
     assert "error" in res
     # The version blob it optimistically wrote was cleaned up.
     assert await blob.delete_prefix(version_prefix("u1", doc.id, 1)) == 0
+
+
+async def test_export_orphan_blob_cleaned_on_generic_manifest_failure():
+    """HIGH finding (round 5): a generic manifest-write failure (e.g. a
+    transient/dropped-connection Cosmos error) is ambiguous — the client
+    cannot tell whether the write committed server-side before the failure
+    was observed. The fix must never delete the version blob synchronously
+    in this branch, even in a case like this one where the write actually
+    never applied: without a trustworthy signal that it didn't, retaining
+    the blob for out-of-band reconciliation is the only safe choice."""
+    blob = InMemoryBlobStore()
+
+    class FlakyRepo(InMemoryDocumentLibraryRepository):
+        async def update_document(self, doc):
+            raise RuntimeError("transient failure")
+
+    library = FlakyRepo()
+    export = _export(library, blob, _settings())
+    doc = await _seed_doc(library, blob)
+
+    res = await export.export_version("u1", doc.id, content="adjusted", filename="new.md")
+    assert "error" in res
+    # Retained, not purged - an ambiguous failure must never delete synchronously.
+    assert await blob.delete_prefix(version_prefix("u1", doc.id, 1)) == 1
+
+
+async def test_export_ambiguous_failure_after_commit_preserves_winners_blob():
+    """Production-grade HIGH finding: export_version's generic exception
+    handler unconditionally deleted the just-written version blob for ANY
+    manifest-update failure -- including an *ambiguous* one where the write
+    actually committed server-side (e.g. Cosmos accepted and persisted the
+    replace_item, but the client's connection dropped before the ack). That
+    blind cleanup could delete a blob the manifest now legitimately
+    references, corrupting an already-committed version.
+
+    This repo reproduces exactly that shape: update_document really performs
+    the write (delegating to the in-memory implementation) and only THEN
+    raises, simulating "the commit landed, but the caller still observed a
+    failure". Round-5 hardening: even a same-request confirm-read cannot
+    soundly resolve this (see the stale-read test below), so the fix simply
+    never deletes synchronously on an ambiguous failure — the blob must
+    survive regardless.
+    """
+    blob = InMemoryBlobStore()
+
+    class CommitThenRaiseRepo(InMemoryDocumentLibraryRepository):
+        async def update_document(self, doc):
+            await super().update_document(doc)
+            raise RuntimeError("ack never received after commit")
+
+    library = CommitThenRaiseRepo()
+    export = _export(library, blob, _settings())
+    doc = await _seed_doc(library, blob)
+
+    res = await export.export_version("u1", doc.id, content="adjusted", filename="new.md")
+    assert "error" in res
+
+    # The manifest genuinely committed the version despite the client-side
+    # exception...
+    refreshed = await library.get_document("u1", doc.id)
+    assert refreshed.version_count == 1
+    winner = refreshed.versions[0]
+    # ...so its blob must survive: the ambiguous-failure path must not
+    # delete a blob the manifest still references.
+    data = await blob.get(winner.path)
+    assert data == b"adjusted"
+
+
+async def test_export_ambiguous_failure_survives_stale_confirm_read():
+    """HIGH finding (round 5): the previous fix re-read the manifest to
+    confirm a path was unreferenced before deleting it on an ambiguous
+    failure. That confirm-read is itself unsound: under Cosmos Session
+    consistency, a read immediately following a write whose own ack this
+    same client already missed is NOT guaranteed to reflect that write, so
+    the confirm-read can return a stale (pre-commit) snapshot and cause the
+    exact corruption it was meant to prevent.
+
+    This repo commits the write (mirroring the shape above) and then makes
+    every subsequent get_document call return a stale snapshot with no
+    versions at all - the worst case a confirm-read could hit. The fix must
+    never perform that confirm-read for an ambiguous failure in the first
+    place: get_document is called exactly once (the initial readiness gate,
+    before the write is attempted), and the blob survives regardless of what
+    a later read would have (wrongly) shown."""
+    blob = InMemoryBlobStore()
+
+    class CommitThenStaleReadRepo(InMemoryDocumentLibraryRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.get_calls = 0
+
+        async def update_document(self, doc):
+            await super().update_document(doc)
+            raise RuntimeError("ack never received after commit")
+
+        async def get_document(self, user_id, document_id):
+            self.get_calls += 1
+            doc = await super().get_document(user_id, document_id)
+            if self.get_calls > 1:
+                # Worst-case stale read: doesn't show the commit that (per
+                # the real store) already landed.
+                return doc.model_copy(update={"versions": []})
+            return doc
+
+    library = CommitThenStaleReadRepo()
+    export = _export(library, blob, _settings())
+    doc = await _seed_doc(library, blob)
+
+    res = await export.export_version("u1", doc.id, content="adjusted", filename="new.md")
+    assert "error" in res
+
+    # No confirm-read: get_document is called only for the initial gate.
+    assert library.get_calls == 1
+
+    # The real (non-stale) store state shows the version committed...
+    real_doc = library._docs["u1"][doc.id]
+    assert len(real_doc.versions) == 1
+    winner = real_doc.versions[0]
+    # ...and its blob must survive even though a confirm-read would have
+    # (wrongly) reported it as unreferenced.
+    data = await blob.get(winner.path)
+    assert data == b"adjusted"
+
+
+async def test_export_conflict_failure_deletes_only_this_attempts_blob():
+    """A DocumentConflictError (412 - etag moved because a concurrent writer
+    already committed a different version) is conclusive, not ambiguous:
+    Cosmos synchronously rejected *this* request body, so the manifest
+    cannot reference this attempt's uniquely-pathed blob. Unlike a generic
+    ambiguous failure, this must be deleted immediately WITHOUT a
+    confirm-read - proven by counting get_document calls rather than just
+    the outcome, since an in-memory fake that shares object references could
+    otherwise make a stale confirm-read coincidentally "look" correct."""
+    blob = InMemoryBlobStore()
+
+    class ConflictRepo(InMemoryDocumentLibraryRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.get_calls = 0
+
+        async def update_document(self, doc):
+            raise DocumentConflictError(doc.id)
+
+        async def get_document(self, user_id, document_id):
+            self.get_calls += 1
+            return await super().get_document(user_id, document_id)
+
+    library = ConflictRepo()
+    export = _export(library, blob, _settings())
+    doc = await _seed_doc(library, blob)
+
+    res = await export.export_version("u1", doc.id, content="adjusted", filename="new.md")
+    assert "error" in res
+    # Deleted immediately: no confirm-read (get_document is called only once,
+    # for the initial readiness gate before the write is even attempted).
+    assert library.get_calls == 1
+    assert await blob.delete_prefix(version_prefix("u1", doc.id, 1)) == 0
+
+
+async def test_export_ambiguous_failure_log_never_contains_filename(caplog):
+    """MEDIUM finding (round 5): export's cleanup-failure log embedded the
+    full blob path, whose final segment is the model/user-supplied export
+    filename - so a crafted or sensitive filename could land in Container
+    Apps / Log Analytics. This targets the exact site that leaked it: the
+    best-effort ``delete_prefix`` cleanup itself failing after a conclusive
+    rejection (a DocumentConflictError, so both old and new code attempt a
+    delete rather than a generic ambiguous failure, which never deletes at
+    all and so would trivially "pass" without exercising the fix). Captured
+    at INFO, not just WARNING, so a lower-severity leak can't slip through."""
+    sensitive_name = "super-secret-quarterly-plan-do-not-log.md"
+
+    class BoomOnDeleteBlobStore(InMemoryBlobStore):
+        async def delete_prefix(self, prefix: str) -> int:
+            raise RuntimeError("delete_prefix unavailable")
+
+    blob = BoomOnDeleteBlobStore()
+
+    class ConflictRepo(InMemoryDocumentLibraryRepository):
+        async def update_document(self, doc):
+            raise DocumentConflictError(doc.id)
+
+    library = ConflictRepo()
+    export = _export(library, blob, _settings())
+    doc = await _seed_doc(library, blob)
+
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.library.export"):
+        res = await export.export_version(
+            "u1", doc.id, content="adjusted", filename=sensitive_name
+        )
+    assert "error" in res
+    assert caplog.records, "expected the delete-failure path to log something"
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert sensitive_name not in joined
+    # The opaque id/token portion of the path is still fine to log.
+    assert doc.id in joined
+
+
+async def test_export_concurrent_race_does_not_delete_winners_blob():
+    """Production-grade HIGH finding: two concurrent export_version calls on
+    the same document both read next_version before either commits, so both
+    can compute the same version number n and (with the same filename) the
+    same pre-fix blob path. The optimistic-concurrency loser's orphan-blob
+    cleanup must never delete the winner's already-committed blob.
+
+    This drives a *real* race via asyncio.gather against a repo that
+    deterministically reproduces the production shape: both callers observe
+    the same starting document snapshot (mirroring two overlapping requests
+    that each load the doc before either writes), then whichever
+    update_document call arrives first wins and the second is rejected with
+    DocumentNotFoundError - exactly what CosmosDocumentLibraryRepository
+    raises when CosmosAccessConditionFailedError fires because the other
+    writer's commit already moved the etag (see cosmos_repo.update_document).
+    """
+
+    class RacingRepo(InMemoryDocumentLibraryRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self._readers = 0
+            self._both_read = asyncio.Event()
+            self._read_lock = asyncio.Lock()
+            self._updates = 0
+            self._update_lock = asyncio.Lock()
+
+        async def get_document(self, user_id, document_id):
+            doc = await super().get_document(user_id, document_id)
+            async with self._read_lock:
+                self._readers += 1
+                if self._readers >= 2:
+                    self._both_read.set()
+            await asyncio.wait_for(self._both_read.wait(), timeout=5)
+            return doc
+
+        async def update_document(self, document):
+            async with self._update_lock:
+                self._updates += 1
+                call_no = self._updates
+            if call_no == 1:
+                return await super().update_document(document)
+            # Second concurrent writer: Cosmos's real conditional replace_item
+            # would fail here (etag already moved) and get mapped to
+            # DocumentNotFoundError - reproduce that exact shape.
+            raise DocumentNotFoundError(document.id)
+
+    library = RacingRepo()
+    blob = InMemoryBlobStore()
+    export = _export(library, blob, _settings())
+    doc = await _seed_doc(library, blob)
+
+    # Same filename on both racers: pre-fix, this is what makes their
+    # (identical, pre-fix) paths collide.
+    results = await asyncio.gather(
+        export.export_version("u1", doc.id, content="content A", filename="adjusted.md"),
+        export.export_version("u1", doc.id, content="content B", filename="adjusted.md"),
+    )
+
+    oks = [r for r in results if "error" not in r]
+    errors = [r for r in results if "error" in r]
+    assert len(oks) == 1
+    assert len(errors) == 1
+
+    refreshed = await library.get_document("u1", doc.id)
+    assert refreshed.version_count == 1
+    winner = refreshed.versions[0]
+    # The winner's manifest entry must still resolve to its own content - the
+    # loser's cleanup must not have deleted the winner's committed blob.
+    data = await blob.get(winner.path)
+    assert data in (b"content A", b"content B")
 
 
 async def test_export_list_and_read_version_gated():
