@@ -5,8 +5,8 @@
 # the invariant documented in AGENTS.md ("CI uses Python 3.12"). Bump deliberately
 # alongside a CI version update (and note the reason here), not via an unreviewed
 # Dependabot major-version merge: see AI4IA#187 for a base-image drift that reached
-# python:3.14-slim untested and caused azure-cosmos/aiohttp DeprecationWarning noise
-# in production before anything exercised that combination.
+# python:3.14-slim without an image test. Production warning reports prompted the
+# review, but the audit did not establish that Python 3.14 caused those warnings.
 FROM python:3.12-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \

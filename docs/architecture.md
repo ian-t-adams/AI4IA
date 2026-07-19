@@ -45,7 +45,8 @@ it is generated locally and never through excalidraw.com.
 | Application | FastAPI Container App | Auth, user normalization, sessions, chat/agent execution, tool governance, documents, memory, usage, and telemetry |
 | Compatible model edge | SimpleL7Proxy Container App | Authenticated HTTP/SSE ingress, in-memory queueing, delayed requeue, and per-replica circuit breaking |
 | AI gateway | Basic v2 APIM | Model catalog routing, bounded immediate regional failover, scoped subscriptions, policy enforcement, and managed identity to Foundry |
-| Agent tools | Built-ins, BYO MCP, official MCP, Foundry Toolbox/WebIQ | Governed tool discovery and execution with budgets, approvals, redaction, and health state |
+| Agent tools | Built-ins, BYO MCP, official MCP, and Foundry Toolbox | Governed tool discovery and execution with budgets, approvals, redaction, and health state |
+| Web grounding | WebIQ | Separate feature-gated server-side search/browse tools whose bounded results are treated as untrusted model context |
 | Canonical state | Cosmos DB and Blob Storage | User-scoped records plus source documents and durable generated artifacts |
 | Derived state | Postgres/pgvector, mem0, Azure AI Search | Rebuildable memory vectors, document chunks, and retrieval indexes |
 | Native Azure planes | Content Understanding, Monitor, Key Vault, Storage, Cosmos, Search | Non-model control/data planes called directly with managed identity or configured service auth |
@@ -158,18 +159,25 @@ Telemetry and secondary-index updates are best-effort and may be partial, but
 canonical message/session writes must report failures rather than presenting a
 false success.
 
+The mem0 adapter is intentionally non-destructive because the pinned SDK cannot
+prove hard deletion. It advertises `supportsDelete=false`; explicit erase APIs fail
+closed with a typed `501`, while `/forget` records a truthful assistant response
+that no records were deleted. Operators must not interpret mem0 erase attempts as
+successful forgetting.
+
 ## Agent and tool execution
 
 The in-process agent runtime receives only server-approved tool schemas. Per turn:
 
 1. FastAPI composes built-in, official MCP, and optional BYO MCP capabilities.
-2. Official tool names win collisions; one shared budget caps total MCP calls.
+2. Remote MCP tools receive deterministic provider-safe aliases while dispatch
+   retains the exact remote name. Plane/server identity is part of the alias and
+   approval binding; deterministic precedence resolves any remaining collision.
 3. The registry rechecks scopes, approvals, ownership, host policy, and SSRF rules.
 4. Tool errors and denials become structured outcomes the model can handle; call
    budgets and orchestration depth bound fan-out.
-5. The assistant answer, usage, artifacts, and activity trace are persisted.
-   Metadata-only activity is the target state in PR #189; current `main` can still
-   persist prompt/query details.
+5. The assistant answer, usage, artifacts, and metadata-only activity trace are
+   persisted.
 
 BYO MCP servers are untrusted and approval-gated. DNS/public-HTTPS validation is
 performed again when a request runs to resist DNS rebinding. Official MCP servers
@@ -179,20 +187,13 @@ capability whose bounded output is treated as untrusted model context.
 
 ### Activity visibility
 
-The required activity contract is **not chain-of-thought**: user-facing activity
-and ordinary INFO telemetry contain only structured step kind, coarse outcome,
-tool name, and non-content metadata. They must never contain raw or summarized
-arguments/results, prompts or queries, credentials, hidden reasoning, audio, or
-transcripts. Live steps are announced while a turn runs; finalized metadata-only
-steps are the target stored form after PR #189 merges.
-
-That contract is implemented on the open PR #189 branch by commit `c351131`, which
-sources optional detail only from fixed runtime reason/category strings and removes
-parsed arguments from INFO logs. Current `main` does not yet contain that commit:
-`agents/activity.py` still allowlists argument text including `prompt`, and
-`agents/runtime.py` still writes redacted parsed arguments at INFO. Until #189 is
-merged and deployed, treat activity details and agent INFO logs as potentially
-containing user content and restrict access accordingly.
+The activity contract is **not chain-of-thought**: user-facing activity and
+ordinary INFO telemetry contain only structured step kind, coarse outcome, a
+validated tool alias/name, and fixed server-owned reason/category
+strings. They never contain raw or summarized arguments/results, prompts or
+queries, credentials, hidden reasoning, URLs, remote exception text, audio, or
+transcripts. Live steps are announced while a turn runs; the same bounded shape is
+stored with the completed turn.
 
 ## Failure behavior
 
@@ -204,6 +205,7 @@ containing user content and restrict access accordingly.
 | Proxy saturation/expiry | Explicit timeout/429; no durable or globally ordered queue claim |
 | Tool denial/error | Structured activity/tool outcome; no swallowed success |
 | BYO MCP DNS/host change | Execution-time SSRF validation blocks the call |
+| Unsupported destructive memory operation | Typed `501` or truthful command reply; no mutation and no success claim |
 | Derived memory/search failure | Canonical chat can continue where safe; degraded context is observable and rebuildable |
 | Canonical persistence failure | Surface an error/partial state; do not claim durable completion |
 | Voice socket/provider failure | Close with bounded safe details and correlation metadata; preserve the typed-chat session |
@@ -212,12 +214,19 @@ containing user content and restrict access accordingly.
 ## Observability
 
 Correlation ids connect browser/API requests, model gateway calls, usage records,
-and custom events. The target telemetry contract permits metadata, latency, status,
-provider/model target, and bounded activity categories, but excludes credentials,
-prompt/response bodies, raw audio, transcripts, and tool arguments/results. Current
-agent INFO logging violates the content-exclusion portion as described above; PR
-#191 therefore depends on the corresponding #189 privacy fix. Admin operations use
-fixed, bounded server-owned KQL; users cannot submit arbitrary KQL.
+and custom events. Telemetry permits metadata, latency, status, provider/model
+target, and bounded activity categories, but excludes credentials, prompt/response
+bodies, URLs, remote exception text, raw audio, transcripts, and tool
+arguments/results. Browser error reporting uses a content-free schema: an event
+enum, allowlisted error code, severity, and booleans only, with client deduplication
+and server-side rate limiting. Admin operations use fixed, bounded server-owned
+KQL; users cannot submit arbitrary KQL.
+
+Voice Live audio is carried in JSON `input_audio_buffer.append` WebSocket **text**
+frames. A zero `clientBinaryFrames` count is therefore expected and does not mean
+the microphone was silent. Diagnose capture with `clientTextFrames`, sampled safe
+event types, connection outcome, and lifecycle events; binary-frame counters only
+describe actual binary WebSocket messages.
 
 SimpleL7Proxy exports health and routing metadata, but exact queue fairness,
 cross-replica ordering, circuit-breaker state, and end-to-end provider quota
@@ -238,8 +247,8 @@ label those gaps rather than infer precision.
 - APIM-to-AI calls use managed identity and least-scope data-plane roles.
 - BYO MCP endpoints require public HTTPS, execution-time SSRF checks, approvals,
   and Key Vault-backed secrets.
-- The target log/activity contract excludes user content and secrets; current agent
-  argument exposure remains a blocking #189 privacy gap.
+- Log, activity, and browser-client-event contracts exclude user content and
+  secrets by construction and validate remote tool names before persistence.
 - Generated artifacts and document bytes are served through authenticated API
   routes, not public blob URLs.
 
@@ -254,12 +263,13 @@ label those gaps rather than infer precision.
 - Speech Voice Live is default-off pending approved live validation of its APIM
   policy, managed-identity audience/RBAC, what-if, canary, and manual browser path.
 - Memory has no global user-facing consent toggle or recalled-memory indicator.
+- The mem0 backend cannot prove hard deletion with the pinned SDK, so destructive
+  operations fail closed and its UI advertises deletion as unsupported.
 - Anonymous public document links, folder-level sharing, and custom analyzer
   authoring are not implemented.
 - Some tool, voice, proxy, and provider telemetry remains metadata-only or
   unavailable; absence is reported explicitly.
-- Current agent activity details and INFO logs can retain ordinary prompt/query
-  argument text after secret redaction. PR #191 must not be accepted without the
-  corresponding #189 privacy-hardening commit.
+- Repository state is documented here, but production deployment parity remains
+  unknown until operators record revision SHAs and run approved smoke tests.
 - Repository governance, implementation PR status, validation evidence, and owner
   actions are maintained in [`platform-audit.md`](./platform-audit.md).

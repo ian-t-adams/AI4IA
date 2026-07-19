@@ -39,7 +39,7 @@
   <rect class="leaf" x="360" y="350" width="250" height="100" stroke="#107C10" fill="#DFF6DD"/>
   <text class="box" x="485" y="378"><tspan x="485">Agent + tool runtime</tspan><tspan x="485" dy="20">budgets, approvals,</tspan><tspan x="485" dy="20">execution-time rechecks</tspan></text>
   <rect class="leaf" x="360" y="480" width="250" height="140" stroke="#107C10" fill="#DFF6DD"/>
-  <text class="box" x="485" y="508"><tspan x="485">Server-authoritative policy</tspan><tspan x="485" dy="20">feature gates + ownership</tspan><tspan x="485" dy="20">target safe activity</tspan><tspan x="485" dy="20">pending PR #189</tspan></text>
+  <text class="box" x="485" y="508"><tspan x="485">Server-authoritative policy</tspan><tspan x="485" dy="20">feature gates + ownership</tspan><tspan x="485" dy="20">metadata-only activity</tspan><tspan x="485" dy="20">content-free telemetry</tspan></text>
 
   <rect class="container" x="690" y="130" width="430" height="560" stroke="#F7630C"/>
   <text class="section" x="905" y="173">Gateway and credential boundaries</text>
@@ -59,18 +59,18 @@
   <rect class="leaf" x="1200" y="210" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
   <text class="box" x="1360" y="238"><tspan x="1360">Microsoft Foundry deployments</tspan><tspan x="1360" dy="20">multi-model, multi-region</tspan><tspan x="1360" dy="20">APIM managed identity</tspan></text>
   <rect class="leaf" x="1200" y="350" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
-  <text class="box" x="1360" y="378"><tspan x="1360">AIServices Voice Live</tspan><tspan x="1360" dy="20">optional, default-off</tspan><tspan x="1360" dy="20">APIM managed identity</tspan></text>
+  <text class="box" x="1360" y="378"><tspan x="1360">Azure AI Services Voice Live</tspan><tspan x="1360" dy="20">optional, default-off</tspan><tspan x="1360" dy="20">APIM managed identity</tspan></text>
   <rect class="leaf" x="1200" y="490" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
   <text class="box" x="1360" y="518"><tspan x="1360">Curated MCP + Foundry Toolbox</tspan><tspan x="1360" dy="20">WebIQ is a separate</tspan><tspan x="1360" dy="20">server-side capability</tspan></text>
   <rect class="leaf" x="1200" y="630" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
   <text class="box" x="1360" y="658"><tspan x="1360">Cosmos + Blob</tspan><tspan x="1360" dy="20">canonical user records,</tspan><tspan x="1360" dy="20">source docs and artifacts</tspan></text>
   <rect class="leaf" x="1200" y="770" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
-  <text class="box" x="1360" y="798"><tspan x="1360">Postgres/pgvector + AI Search</tspan><tspan x="1360" dy="20">rebuildable memory vectors,</tspan><tspan x="1360" dy="20">chunks and indexes</tspan></text>
+  <text class="box" x="1360" y="798"><tspan x="1360">Postgres/pgvector + mem0 + AI Search</tspan><tspan x="1360" dy="20">rebuildable memory vectors,</tspan><tspan x="1360" dy="20">chunks and indexes</tspan></text>
 
   <rect class="container" x="320" y="730" width="800" height="160" stroke="#1E1E1E"/>
   <text class="section" x="720" y="772">Direct native planes and cross-cutting operations</text>
   <rect class="leaf" x="360" y="795" width="320" height="70" stroke="#1E1E1E" fill="#F3F2F1"/>
-  <text class="box" x="520" y="835">CU, Key Vault, Storage, Cosmos, Search</text>
+  <text class="box" x="520" y="825"><tspan x="520">Content Understanding + Key Vault</tspan><tspan x="520" dy="20">Storage, Cosmos, Search</tspan></text>
   <rect class="leaf" x="740" y="795" width="340" height="70" stroke="#1E1E1E" fill="#F3F2F1"/>
   <text class="box" x="910" y="835">App Insights + Log Analytics + Monitor</text>
 
@@ -83,7 +83,7 @@
   <path class="flow" d="M610 255 L730 255" stroke="#F7630C" marker-end="url(#arrow-orange)"/>
   <text class="label" x="670" y="218"><tspan x="670">1. proxy-ingress</tspan><tspan x="670" dy="17">S7P-KEY</tspan></text>
   <path class="flow" d="M890 255 L930 255" stroke="#F7630C" marker-end="url(#arrow-orange)"/>
-  <text class="label" x="910" y="330"><tspan x="910">2. model-only</tspan><tspan x="910" dy="17">APIM key</tspan></text>
+  <text class="label" x="910" y="198">2. model-only APIM key</text>
   <path class="flow" d="M1090 255 L1200 255" stroke="#5C2D91" marker-end="url(#arrow-purple)"/>
   <text class="label" x="1145" y="220">managed identity</text>
   <path class="flow" d="M610 275 L680 380 L930 380" stroke="#F7630C" stroke-dasharray="8 6" marker-end="url(#arrow-orange)"/>

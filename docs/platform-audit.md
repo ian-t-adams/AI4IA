@@ -1,15 +1,10 @@
 # AI4IA Platform Audit
 
-> **Audit status (2026-07-18):** repository and PR review refreshed after #185 and
-> #187 merged to `main`. This report separates merged source, open proposals, and
-> deployment status; it does **not** claim that any repository change is deployed.
->
-> **Acceptance dependency:** PR #191 must not merge until PR #189 contains and
-> merges privacy-hardening commit `c351131`, which removes
-> prompt/query/tool-argument content from user-facing activity and ordinary agent
-> INFO logs. The fix is retained at reviewed #189 head
-> `c71b6e172778835f4ac37a053853b85fe819383f` but is not on `main`;
-> deployment parity is not established.
+> **Audit status (2026-07-19):** repository and PR review refreshed after all
+> accepted implementation work merged to `main` through
+> `13f2dd6cfdedfec4b898b61da3d08cab6ada02fe`. This report distinguishes
+> repository truth from runtime evidence; it does **not** claim that the merged
+> revisions are deployed.
 >
 > **Governance risk:** `main` currently has **no branch protection and no repository
 > ruleset**. A direct push can bypass every CI workflow and review. The owner should
@@ -31,7 +26,7 @@ The audit covered:
 - API/web sources for routing, ownership, agent execution, redacted activity,
   Voice Live/TTS, WebIQ, Foundry Toolbox, error behavior, and observability;
 - current heads, descriptions, changed files, diffs, and merge status for PRs
-  #184-#190;
+  #184-#192;
 - contributor guidance and CI workflow definitions; and
 - GitHub REST evidence for branch protection/rulesets.
 
@@ -55,8 +50,8 @@ The audit confirmed these load-bearing facts:
 | Derived state | Memory vectors, document chunks, parsed artifacts, and search indexes are rebuildable |
 | Enforcement | FastAPI owns auth, user normalization, ownership, feature gates, entitlements, tools, persistence, and metering |
 | Tool safety | Registration and execution checks, approvals, bounded calls, public-HTTPS/SSRF validation, scoped secrets, and structured failures |
-| Activity visibility target | Structured step kind, tool name, and coarse outcome only; never hidden reasoning, arguments/results, credentials, prompts/queries, audio, or transcripts |
-| Current activity/privacy gap | Current `main` allowlists argument text including `prompt` and logs redacted parsed arguments at INFO; open PR #189 commit `c351131` removes both, and PR #191 depends on that commit merging |
+| Activity visibility | Structured step kind, validated tool alias/name, fixed reason category, and coarse outcome only; never hidden reasoning, arguments/results, credentials, prompts/queries, URLs, remote exception text, audio, or transcripts |
+| Browser error telemetry | Content-free event/code/severity/boolean schema with client deduplication and per-user server throttling; no message, route, component, URL, stack, token, or remote error text |
 | Native Azure paths | Content Understanding, Monitor, Key Vault, Storage, Cosmos, and AI Search use their native data/control planes rather than pretending to be model traffic |
 
 ## Documentation findings and remediation
@@ -65,43 +60,39 @@ The audit confirmed these load-bearing facts:
 | --- | --- |
 | `architecture.md` mixed current and migration prose, repeated policy details, and incorrectly said one key covered both proxy ingress and realtime | Rewritten around components, boundaries, request paths, state, agents/tools, activity, failures, observability, controls, tradeoffs, and residual gaps; all core credentials are mapped separately |
 | Deployment diagrams conflated model, realtime, and MCP APIs and omitted trust semantics | Replaced with maintainable Mermaid plus editable Excalidraw and rendered SVG system/data-flow views |
-| Activity and telemetry prose overstated current privacy | Documented the strict metadata-only target, the current prompt/query argument leak, and the blocking dependency on the #189 privacy fix |
+| Activity and telemetry prose overstated current privacy | #189 removed argument-derived activity details and parsed-argument INFO logs; architecture and user docs now describe the merged metadata-only contract |
 | Historical audit files were easy to mistake for current posture | Kept them as provenance and added this evergreen, status-labeled audit report as the current index |
 | Foundry Toolbox docs blurred supported tool types with the three tools in the canonical toolbox | Added an explicit available-versus-deployed distinction |
 | Toolbox `--create` repeat behavior was under-specified | Documented safe version creation and warned that repeat calls are not a no-op |
-| WebIQ browse behavior under active remediation could be read as current | This report labels PR #184 open; current docs do not claim its pending-crawl/retry fixes are merged |
+| WebIQ browse behavior under active remediation could be read as current | #184 merged its bounded live-crawl/pending-retry behavior; docs distinguish WebIQ from Foundry Toolbox web search |
 | Voice docs emphasized Voice Live but not turn-based TTS routing | Clarified that TTS/transcription are HTTP calls on the normal proxy path and are independent of the Voice Live socket |
 | Proxy README repeated the stale shared-ingress/realtime-key claim | #185 corrected it to the three-credential core design; this rebase preserves that merged wording |
 | Docs portal would not surface an evergreen audit | Added this report to `site/data/docs.manifest.json` and regenerated `docs.js` |
 
-`AGENTS.md` already states the correct routing, catalog, ownership, feature-gate,
-Cosmos, execution-time tool, and secret invariants. This workstream does not change
-those invariants or the documented CI commands, so it intentionally leaves
-`AGENTS.md` unchanged.
+`AGENTS.md` states the routing, catalog, ownership, feature-gate, Cosmos,
+execution-time tool, and secret invariants. This workstream preserves those
+invariants and corrects its Python image-history note: runtime skew was proven, but
+the audit did not establish that Python 3.14 caused the reported dependency
+warnings.
 
 ## Parallel implementation work
 
-PRs #185 and #187 are merged to `main`; the remaining entries are open. The open
-PR commit summaries and changed-file sets were reviewed through **2026-07-19
-02:48:08 UTC**. Each listed head means "reviewed through this commit"; later commits
-are not covered until this snapshot is explicitly refreshed. A merged repository
-change is still not evidence of deployment.
+All accepted implementation work is now on `main`. The table records squash-merge
+commits, not deployment revisions.
 
-| PR | Reviewed-through head | Category | Proposed/remediated work | Status used by this report |
-| --- | --- | --- | --- | --- |
-| #184 | `4070269beca1` | Foundry Toolbox and WebIQ | WebIQ browse live-crawl/pending-retry handling, official MCP fail-closed catalog checks, Toolbox SDK/schema/provisioning corrections | Open; reviewed through listed head; deployment not established |
-| #185 | merge `18fd952e91d9` | Gateway/proxy and API health | Confirms routing invariant, separates credential wording, constant-time proxy auth comparison, and API health probes | Merged to `main`; deployment not established |
-| #186 | `bf66deb29def` | Chat rendering reliability | Per-turn local reconciliation plus streamed-reply/race protection | Open; reviewed through listed head, not on `main`; deployment not established |
-| #187 | merge `fd22072e29c9` | CI/Docker | PR-time API/web image builds plus Docker/CI hygiene | Merged to `main`; Docker jobs exist but are not protected required checks |
-| #188 | `409ac91be679` | Voice lifecycle and TTS | Input/playback/session lifecycle, race cleanup, navigation locking, accessibility, and TTS fixes | Open; reviewed through listed head, not on `main`; deployment not established |
-| #189 | `c71b6e172778` | API reliability and privacy | Ownership, race, persistence, metrics, explicit failures, metadata-only activity/log privacy, and hostile-input coverage | Open; required `c351131` privacy fix is retained but unmerged, so PR #191 remains blocked on #189 merging |
-| #190 | `d3bd4a4b155a` | Web UX and help | Accessibility, advanced-setting/tool help, client telemetry/privacy, modal/focus, and UI consistency | Open; reviewed through listed head, not on `main`; deployment not established |
+| PR | Main commit | Category | Merged outcome |
+| --- | --- | --- | --- |
+| #184 | `e08afa0` | Foundry Toolbox and WebIQ | Bounded WebIQ crawl/retry behavior, fail-closed official MCP posture, and Toolbox SDK/schema/provisioning coverage |
+| #185 | `18fd952` | Gateway/proxy and API health | Confirmed routing invariant, separated credential scopes, constant-time proxy auth comparison, and health probes |
+| #186 | Closed | Chat rendering proposal | Superseded by the narrower persistence-ordering fix in #192 |
+| #187 | `fd22072` | CI/Docker | PR-time API/web image builds, Docker context hardening, runtime-version alignment, and operator-script tests |
+| #188 | `13f2dd6` | Voice lifecycle and TTS | Capture/playback recovery, atomic session finalization, navigation escape, visible provider guidance, and content-free media-failure telemetry |
+| #189 | `55d4278` | API reliability and privacy | Ownership/concurrency fixes, safe session normalization, aggregation-aware metrics, fail-closed mem0 erase, deterministic MCP aliases, metadata-only activity/logs, and explicit failures |
+| #190 | `5c01b1e` | Web UX and help | Accessible advanced-setting/tool help, model grouping, modal/focus consistency, and content-free client-event telemetry |
+| #192 | `299b520` | Chat rendering reliability | Persists terminal assistant state before stream completion and reconciles fallback messages without duplicate writes |
 
-Because these branches can evolve, merge owners should refresh this table and rerun
-the validation matrix after each PR merges. Resolve overlapping documentation
-changes from #184 against the evergreen architecture and audit rather than
-restoring point-in-time wording. The #191 rebase retains #185's merged topology,
-credential, proxy-auth, and health-probe facts and #187's merged CI posture.
+The documentation branch includes each implementation merge before this snapshot.
+A merged repository change is still not evidence of deployment.
 
 ## Benefits
 
@@ -111,8 +102,8 @@ credential, proxy-auth, and health-probe facts and #187's merged CI posture.
   WebSocket exception without opening Bicep.
 - Security review can trace each credential to one holder, hop, and API/product
   scope.
-- Once the required #189 privacy fix lands, agent activity remains useful without
-  exposing chain-of-thought or user/tool argument content.
+- Agent activity remains useful without exposing chain-of-thought or user/tool
+  argument content.
 - Historical findings remain available without being mistaken for current
   implementation status.
 - The portal completeness gate keeps this report and architecture sources
@@ -148,9 +139,11 @@ paths, balanced Mermaid fences, transparent Excalidraw containers, filled leaves
 black text with explicit dimensions, unique element ids, and the rendered SVG
 `viewBox`/content labels.
 
-Full implementation validation remains owned by the remaining PRs and existing CI:
-web lint/test/build, API ruff/pyright/pytest, Bicep/schema validation, proxy .NET
-build/tests, quality, CodeQL, security scans, and PR-time Docker image builds.
+Implementation PR final heads passed their full GitHub checks before merge,
+including web lint/test/build, API ruff/pyright/pytest, Bicep/schema validation,
+proxy .NET build/tests, quality, CodeQL, security scans, and PR-time Docker image
+builds. The documentation branch reruns applicable drift, link, schema, and diagram
+checks after every main integration.
 
 ## Residual gaps
 
@@ -158,14 +151,13 @@ build/tests, quality, CodeQL, security scans, and PR-time Docker image builds.
 | --- | --- | --- |
 | No `main` ruleset or branch protection | Reviews and checks can be bypassed | Owner action required; audit did not mutate live settings |
 | `app-ci`, `infra-validate`, and `docker-build` are path-filtered | Requiring their conditional job contexts directly would deadlock docs-only and other out-of-scope PRs because those contexts are never emitted | Add always-emitted aggregate/no-op-success contexts first, then require only those unconditional aggregates |
-| Open PRs #184, #186, and #188-#190 | Proposed fixes are not guaranteed on `main`; deployment parity is unverified | Status is explicit; merge and validate independently |
-| Activity and INFO logs can contain ordinary prompt/query argument text | User content can reach persisted activity or telemetry despite secret redaction | Block PR #191 on the corresponding #189 privacy-hardening commit; restrict activity/log access until it is deployed |
 | No evidence in this audit of production deployment parity | Repository truth may lead the live revision | Use inventory, revision SHA, smoke tests, and approved what-if before claiming parity |
 | Proxy queue state is per-replica memory | No durable/global ordering or exact fairness | Warm replica, bounded expiry/requeue, explicit telemetry limitations |
 | Basic v2 APIM is single-region/capacity-one by current design | Gateway outage/capacity concentration | Monitor and make an explicit cost/reliability scaling decision |
 | Speech Voice Live production gate is open | Optional provider is not proven end-to-end live | Keep default-off until policy compiler, RBAC/audience, what-if, canary, and manual tests pass |
 | Tool/browser/AI preview surfaces | Contract and availability can change | Feature gates, curated catalogs, bounded output, and deliberate provisioning |
 | Some telemetry dimensions are unavailable | Operators cannot infer exact queue/provider state | Panels report partial/stale/unavailable instead of fabricated values |
+| mem0 cannot prove hard deletion with the pinned SDK | An erase request cannot satisfy a hard-delete promise | `supportsDelete=false`; destructive calls fail closed; `/forget` states that no records were deleted |
 | Memory consent and recalled-memory indicator are absent | Users lack a global control and provenance cue | Keep owner-scoped management; design explicit controls before expansion |
 
 ## Owner actions
@@ -175,10 +167,9 @@ build/tests, quality, CodeQL, security scans, and PR-time Docker image builds.
 | P0 | Add a `main` ruleset requiring pull requests, one approving review, stale-approval dismissal, conversation resolution, and blocked force-push/deletion | Ruleset visible through GitHub API/UI and a test PR cannot merge without requirements |
 | P0 | Add always-emitted aggregate checks for application, infrastructure, container, quality, and security validation; each aggregate must run on every PR and report explicit no-op success when its path-scoped jobs do not apply. The container aggregate must include web image, API image, and `dockerignore context boundary` results | Docs-only and representative scoped PRs all emit the same aggregate contexts; applicable child failures make the aggregate fail |
 | P0 | Require only those unconditional aggregate contexts after a dry run proves they are always emitted; do not directly require conditional `app-ci`, `infra-validate`, or `docker-build` job names | Ruleset lists only unconditional aggregate contexts and both docs-only and scoped test PRs remain mergeable when green |
-| P0 | Merge PR #189 privacy-hardening commit `c351131` before accepting PR #191 | Tests prove activity and INFO telemetry contain metadata only; #189 merged SHA is recorded here |
-| P0 | Merge the remaining implementation PRs only after each branch is rebased, conflicts are resolved, and its stated validation is rerun | Merged SHA plus green required checks; report table updated |
-| P1 | Reconcile #184 documentation hunks against this architecture/audit instead of reintroducing stale wording | Final merged docs preserve the credential, privacy-dependency, and status tables |
+| P0 | Merge PR #191 only after rebasing onto final `main`, validating generated docs/diagrams, and obtaining independent acceptance review | Merged SHA plus green checks; report snapshot matches final main |
 | P1 | Record the deployed API/web/proxy revision SHAs and run approved post-deploy smoke tests | Revision inventory and timestamped smoke result |
+| P1 | Decide whether Docker Dependabot updates should be limited to minor/patch or instead require explicit owner review for major runtime changes | Policy prevents another unreviewed runtime-major drift while preserving deliberate upgrades |
 | P1 | Keep Speech Voice Live disabled until all runbook gates close | Approved compiler/what-if/RBAC/audience/canary/manual evidence |
 | P2 | Decide whether Basic v2 capacity/region posture meets the target SLO and budget | Written SLO, capacity decision, and alert thresholds |
 | P2 | Define memory consent/provenance UX and stable proxy/provider telemetry dimensions | Accepted design and tracked implementation issue/PR |
