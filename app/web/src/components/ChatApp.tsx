@@ -148,56 +148,14 @@ function replaceTemporaryMessageId(
   ];
 }
 
-function discoverAcceptedUserId(
-  fresh: Message[],
-  knownMessageIds: ReadonlySet<string>,
-  sentContent: string,
-): string | null {
-  const users = fresh.filter(
-    (message) =>
-      !knownMessageIds.has(message.id) &&
-      message.role === "user" &&
-      message.source !== "voice" &&
-      message.content === sentContent,
-  );
-  return users.length === 1 ? users[0].id : null;
-}
-
-function discoverAcceptedPair(
-  fresh: Message[],
-  knownMessageIds: ReadonlySet<string>,
-  sentContent: string,
-): { userMessageId: string; assistantMessageId: string } | null {
-  const userMessageId = discoverAcceptedUserId(
-    fresh,
-    knownMessageIds,
-    sentContent,
-  );
-  if (!userMessageId) return null;
-  const userIndex = fresh.findIndex((message) => message.id === userMessageId);
-  const user = fresh[userIndex];
-  const assistant = fresh[userIndex + 1];
-  if (
-    !assistant ||
-    knownMessageIds.has(assistant.id) ||
-    assistant.role !== "assistant" ||
-    assistant.source === "voice" ||
-    assistant.source !== user.source
-  ) {
-    return null;
-  }
-  return {
-    userMessageId: user.id,
-    assistantMessageId: assistant.id,
-  };
-}
-
 function terminalMessage(messages: Message[], id: string): boolean {
   const message = messages.find((candidate) => candidate.id === id);
   return Boolean(message && message.status !== "streaming");
 }
 
 const RECONCILIATION_DELAYS_MS = [250, 750, 1500] as const;
+const UNKNOWN_STREAM_OUTCOME =
+  "Outcome unknown; refresh or leave and reselect the conversation to reconcile.";
 
 function getProviderDefaultVoice(provider: VoiceProvider): string {
   const voices = provider.capabilities.voices.options as readonly string[];
@@ -393,7 +351,6 @@ export function ChatApp() {
   // immediately (before the setActiveId state flush), preventing a double create
   // when an upload is quickly followed by a send.
   const sessionIdRef = useRef<string | null>(null);
-  const messagesRef = useRef<Message[]>([]);
   const selectionGenerationRef = useRef(0);
   const turnGenerationRef = useRef(0);
   const reconciliationTimersRef = useRef(new Set<number>());
@@ -409,9 +366,6 @@ export function ChatApp() {
   useEffect(() => {
     sessionIdRef.current = activeId;
   }, [activeId]);
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
 
   const clearReconciliationTimers = useCallback(() => {
     for (const timer of reconciliationTimersRef.current) {
@@ -1409,11 +1363,6 @@ export function ChatApp() {
         userCreatedAt.getTime() + 1,
       ).toISOString();
       const temporaryAssistantId = `tmp-assistant-${optimisticUser.id.slice(4)}`;
-      const knownMessageIds = new Set(
-        messagesRef.current
-          .filter((message) => message.sessionId === sessionId)
-          .map((message) => message.id),
-      );
       setStreamingStartedAt(assistantCreatedAt);
       setMessages((prev) => [...prev, optimisticUser]);
 
@@ -1432,28 +1381,10 @@ export function ChatApp() {
         sessionIdRef.current === sessionId;
       const applyFresh = (fresh: Message[]): boolean => {
         if (!ownsTurn()) return false;
-        const discovered = metadata
-          ? null
-          : discoverAcceptedPair(fresh, knownMessageIds, content);
-        const discoveredUserId =
-          discovered?.userMessageId ??
-          (metadata
-            ? null
-            : discoverAcceptedUserId(fresh, knownMessageIds, content));
-        const durableUserId = metadata
-          ? metadata.userMessageId
-          : discoveredUserId;
-        const durableAssistantId =
-          metadata?.assistantMessageId ??
-          discovered?.assistantMessageId ??
-          null;
-        if (!metadata && discovered) {
-          metadata = {
-            userMessageId: discovered.userMessageId,
-            assistantMessageId: discovered.assistantMessageId,
-          };
-          trackPendingAssistant(sessionId, discovered.assistantMessageId);
-        }
+        const acceptedMetadata = metadata;
+        if (!acceptedMetadata) return false;
+        const durableUserId = acceptedMetadata.userMessageId;
+        const durableAssistantId = acceptedMetadata.assistantMessageId;
         setMessages((previous) => {
           let adopted = previous;
           if (durableUserId) {
@@ -1470,9 +1401,11 @@ export function ChatApp() {
               durableAssistantId,
             );
           }
-          const removeIds = new Set<string>();
-          if (metadata || durableUserId) removeIds.add(optimisticUser.id);
-          return reconcileMessages(adopted, fresh, removeIds);
+          return reconcileMessages(
+            adopted,
+            fresh,
+            new Set([optimisticUser.id]),
+          );
         });
         if (
           durableAssistantId &&
@@ -1546,7 +1479,7 @@ export function ChatApp() {
         setStreamMaterialized(true);
 
         let reconciliationAmbiguous = false;
-        if (info.definitePreAcceptance !== true || hasFallback) {
+        if (metadata) {
           try {
             const fresh = await api.listMessages(sessionId);
             if (!ownsTurn()) return;
@@ -1554,9 +1487,7 @@ export function ChatApp() {
             setInspectorVersion((value) => value + 1);
           } catch {
             if (!ownsTurn()) return;
-            reconciliationAmbiguous =
-              info.definitePreAcceptance !== true &&
-              !info.persistenceFailed;
+            reconciliationAmbiguous = !info.persistenceFailed;
           }
         }
 
@@ -1626,11 +1557,20 @@ export function ChatApp() {
               definitePreAcceptance: false,
             }),
           onError: (msg, info) => {
-            if (ownsTurn()) setError(msg);
+            if (ownsTurn()) {
+              setError(
+                metadata === null && info.definitePreAcceptance !== true
+                  ? `${msg} ${UNKNOWN_STREAM_OUTCOME}`
+                  : msg,
+              );
+            }
             void finalize("error", info);
           },
           // Stop button: reconcile with the server's cancelled message.
-          onAbort: (info) =>
+          onAbort: (info) => {
+            if (ownsTurn() && metadata === null) {
+              setError(UNKNOWN_STREAM_OUTCOME);
+            }
             void finalize(
               "cancelled",
               info ?? {
@@ -1638,7 +1578,8 @@ export function ChatApp() {
                 persistenceFailed: false,
                 definitePreAcceptance: false,
               },
-            ),
+            );
+          },
         },
       );
     },

@@ -591,7 +591,7 @@ describe("ChatApp stream reconciliation", () => {
     expect(screen.getByText("429: rate limited")).toBeInTheDocument();
   });
 
-  it("retains the optimistic user and reconciles after an ambiguous 5xx", async () => {
+  it("retains local state without querying history after an ambiguous 5xx", async () => {
     mocks.listMessages.mockResolvedValue([]);
     const handlers = captureStreamHandlers();
     const user = userEvent.setup();
@@ -609,8 +609,12 @@ describe("ChatApp stream reconciliation", () => {
       expect(screen.getByRole("button", { name: "Send draft message" })).toBeEnabled(),
     );
     expect(screen.getByText("hello from draft")).toBeInTheDocument();
-    expect(screen.getByText("503: upstream reset")).toBeInTheDocument();
+    expect(
+      screen.getByText(/503: upstream reset.*Outcome unknown/),
+    ).toBeInTheDocument();
     expect(mocks.streamChat).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+    expect(mocks.listMessages).toHaveBeenCalledTimes(1);
     view.unmount();
   });
 
@@ -695,128 +699,31 @@ describe("ChatApp stream reconciliation", () => {
     });
     expect(await screen.findByText("Truncated but visible")).toBeInTheDocument();
     expect(
-      await screen.findByText("Stream completed without message metadata."),
+      await screen.findByText(
+        /Stream completed without message metadata.*Outcome unknown/,
+      ),
     ).toBeInTheDocument();
     expect(mocks.streamChat).toHaveBeenCalledTimes(2);
   });
 
-  it("adopts durable IDs from history after an accepted no-metadata stream", async () => {
-    mocks.listMessages
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        chatMessage("accepted-user", "user", "hello from draft"),
-        chatMessage("accepted-assistant", "assistant", "", "streaming"),
-      ])
-      .mockResolvedValueOnce([
-        chatMessage("accepted-user", "user", "hello from draft"),
-        chatMessage(
-          "accepted-assistant",
-          "assistant",
-          "Authoritative recovered reply",
-        ),
-      ]);
-    const handlers = captureStreamHandlers();
-    const user = userEvent.setup();
-    render(<ChatApp />);
-    await user.click(await screen.findByRole("button", { name: "Session A" }));
-    await user.click(screen.getByRole("button", { name: "Send draft message" }));
-    act(() => {
-      handlers().onDelta("Buffered without metadata");
-      handlers().onError("Stream ended unexpectedly.", {
-        accepted: false,
-        persistenceFailed: false,
-        definitePreAcceptance: false,
-      });
-    });
-
-    await waitFor(() =>
-      expect(screen.getByText("Buffered without metadata")).toHaveAttribute(
-        "data-message-id",
-        "accepted-assistant",
-      ),
-    );
-    expect(screen.getAllByText("Buffered without metadata")).toHaveLength(1);
-    expect(screen.getByText("hello from draft")).toHaveAttribute(
-      "data-message-id",
-      "accepted-user",
-    );
-    expect(document.querySelector('[data-message-id^="tmp-"]')).toBeNull();
-    expect(await screen.findByText("Authoritative recovered reply")).toHaveAttribute(
-      "data-message-id",
-      "accepted-assistant",
-    );
-    expect(mocks.streamChat).toHaveBeenCalledTimes(1);
-  });
-
-  it("correlates the sent turn without binding stale initial history", async () => {
-    const stale = [
-      chatMessage("stale-user", "user", "older question"),
-      chatMessage("stale-assistant", "assistant", "Older answer"),
-    ];
-    mocks.listMessages
-      .mockResolvedValueOnce(stale)
-      .mockResolvedValueOnce([
-        ...stale,
-        chatMessage("current-user", "user", "hello from draft"),
-        chatMessage("current-assistant", "assistant", "Current answer"),
-      ]);
-    const handlers = captureStreamHandlers();
-    const user = userEvent.setup();
-    render(<ChatApp />);
-    await user.click(await screen.findByRole("button", { name: "Session A" }));
-    await screen.findByText("Older answer");
-    await user.click(screen.getByRole("button", { name: "Send draft message" }));
-    act(() => {
-      handlers().onDelta("Buffered current answer");
-      handlers().onError("Stream ended unexpectedly.", {
-        accepted: false,
-        persistenceFailed: false,
-        definitePreAcceptance: false,
-      });
-    });
-
-    expect(await screen.findByText("Current answer")).toHaveAttribute(
-      "data-message-id",
-      "current-assistant",
-    );
-    expect(screen.getByText("Older answer")).toHaveAttribute(
-      "data-message-id",
-      "stale-assistant",
-    );
-    expect(screen.queryByText("Buffered current answer")).toBeNull();
-  });
-
-  it("does not bind an interleaved Voice row and keeps polling", async () => {
-    let resolvePoll!: (messages: ReturnType<typeof chatMessage>[]) => void;
-    const ambiguous = [
-      { ...chatMessage("voice-user", "user", "voice question"), source: "voice" as const },
-      {
-        ...chatMessage("voice-assistant", "assistant", "Voice answer"),
-        source: "voice" as const,
-      },
-      chatMessage("current-user", "user", "hello from draft"),
-      {
-        ...chatMessage("interleaved-voice", "assistant", "Interleaved voice"),
-        source: "voice" as const,
-      },
-      chatMessage("current-assistant", "assistant", "", "streaming"),
+  it("keeps interleaved same-source turns unbound until navigation reload", async () => {
+    const authoritative = [
+      chatMessage("turn-a-user", "user", "hello from draft"),
+      chatMessage("turn-a-assistant", "assistant", "Possible answer A"),
+      chatMessage("turn-b-user", "user", "hello from draft"),
+      chatMessage("turn-b-assistant", "assistant", "Possible answer B"),
     ];
     mocks.listMessages
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce(ambiguous)
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolvePoll = resolve;
-          }),
-      );
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(authoritative);
     const handlers = captureStreamHandlers();
     const user = userEvent.setup();
     render(<ChatApp />);
     await user.click(await screen.findByRole("button", { name: "Session A" }));
     await user.click(screen.getByRole("button", { name: "Send draft message" }));
     act(() => {
-      handlers().onDelta("Unbound fallback");
+      handlers().onDelta("Outcome-unknown fallback");
       handlers().onError("Stream ended unexpectedly.", {
         accepted: false,
         persistenceFailed: false,
@@ -825,78 +732,36 @@ describe("ChatApp stream reconciliation", () => {
     });
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Send draft message" })).toBeEnabled(),
-    );
-    expect(screen.getAllByText("hello from draft")).toHaveLength(1);
-    expect(screen.getByText("hello from draft")).toHaveAttribute(
-      "data-message-id",
-      "current-user",
-    );
-    expect(screen.getByText("Unbound fallback").getAttribute("data-message-id")).toMatch(
-      /^tmp-assistant-/,
-    );
-    await waitFor(
-      () => expect(mocks.listMessages).toHaveBeenCalledTimes(3),
-      { timeout: 1000 },
-    );
-
-    await act(async () => {
-      resolvePoll([
-        ambiguous[0],
-        ambiguous[1],
-        chatMessage("current-user", "user", "hello from draft"),
-        chatMessage("current-assistant", "assistant", "Recovered current answer"),
-      ]);
-    });
-    expect(await screen.findByText("Recovered current answer")).toHaveAttribute(
-      "data-message-id",
-      "current-assistant",
-    );
-    expect(screen.queryByText("Unbound fallback")).toBeNull();
-  });
-
-  it("keeps duplicate-content recovery ambiguous through bounded polling", async () => {
-    const ambiguous = [
-      chatMessage("duplicate-user-1", "user", "hello from draft"),
-      chatMessage("duplicate-assistant-1", "assistant", "First possible answer"),
-      chatMessage("duplicate-user-2", "user", "hello from draft"),
-      chatMessage("duplicate-assistant-2", "assistant", "Second possible answer"),
-    ];
-    mocks.listMessages
-      .mockResolvedValueOnce([])
-      .mockResolvedValue(ambiguous);
-    const handlers = captureStreamHandlers();
-    const user = userEvent.setup();
-    const view = render(<ChatApp />);
-    await user.click(await screen.findByRole("button", { name: "Session A" }));
-    await user.click(screen.getByRole("button", { name: "Send draft message" }));
-    act(() => {
-      handlers().onDelta("Ambiguous fallback");
-      handlers().onError("Stream ended unexpectedly.", {
-        accepted: false,
-        persistenceFailed: false,
-        definitePreAcceptance: false,
-      });
-    });
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Send draft message" })).toBeEnabled(),
-    );
-    await waitFor(
-      () => expect(mocks.listMessages.mock.calls.length).toBeGreaterThanOrEqual(3),
-      { timeout: 1000 },
     );
     expect(
-      screen.getByText("Ambiguous fallback").getAttribute("data-message-id"),
+      screen.getByText("Outcome-unknown fallback").getAttribute("data-message-id"),
     ).toMatch(/^tmp-assistant-/);
-    expect(screen.getAllByText("hello from draft")).toHaveLength(3);
-    view.unmount();
+    expect(screen.getAllByText("hello from draft")).toHaveLength(1);
+    expect(screen.getByText(/Outcome unknown/)).toBeInTheDocument();
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+    expect(mocks.listMessages).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Possible answer A")).toBeNull();
+    expect(screen.queryByText("Possible answer B")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Session B" }));
+    await screen.findByText("Session B", {
+      selector: ".chat-header .editable-session-title-text",
+    });
+    await user.click(screen.getByRole("button", { name: "Session A" }));
+    expect(await screen.findByText("Possible answer A")).toHaveAttribute(
+      "data-message-id",
+      "turn-a-assistant",
+    );
+    expect(screen.getByText("Possible answer B")).toHaveAttribute(
+      "data-message-id",
+      "turn-b-assistant",
+    );
+    expect(screen.queryByText("Outcome-unknown fallback")).toBeNull();
+    expect(document.querySelector('[data-message-id^="tmp-"]')).toBeNull();
   });
 
   it("keeps a suppressed command honest without inventing assistant metadata", async () => {
-    mocks.listMessages
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        chatMessage("summary-user", "user", "hello from draft"),
-      ]);
+    mocks.listMessages.mockResolvedValueOnce([]);
     const handlers = captureStreamHandlers();
     const user = userEvent.setup();
     const view = render(<ChatApp />);
@@ -914,19 +779,20 @@ describe("ChatApp stream reconciliation", () => {
     });
 
     await waitFor(() =>
-      expect(
-        document.querySelector('[data-message-id="summary-user"]'),
-      ).toHaveTextContent("hello from draft"),
+      expect(screen.getByRole("button", { name: "Send draft message" })).toBeEnabled(),
     );
     expect(screen.getAllByText("hello from draft")).toHaveLength(1);
+    expect(screen.getByText("hello from draft").getAttribute("data-message-id")).toMatch(
+      /^tmp-/,
+    );
     expect(
-      screen.getByText(
-        "The command result was superseded before it could be saved.",
-      ),
+      screen.getByText(/superseded before it could be saved.*Outcome unknown/),
     ).toBeInTheDocument();
     expect(
       document.querySelector('[data-message-id^="tmp-assistant-"]'),
     ).toBeNull();
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+    expect(mocks.listMessages).toHaveBeenCalledTimes(1);
     view.unmount();
   });
 
