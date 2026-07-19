@@ -15,7 +15,7 @@ from ai4ia_api.auth.base import AuthenticatedUser
 from ai4ia_api.catalog import load_catalog
 from ai4ia_api.sessions.cosmos_repo import CosmosSessionRepository
 from ai4ia_api.sessions.memory_repo import InMemorySessionRepository
-from ai4ia_api.sessions.models import Message, MessageRole, Session, ToolOverrides
+from ai4ia_api.sessions.models import Document, Message, MessageRole, Session, ToolOverrides
 from ai4ia_api.sessions.repository import SessionConflictError, SessionNotFoundError
 
 
@@ -666,3 +666,204 @@ async def test_cosmos_get_and_patch_session_survive_corrupted_tool_overrides():
     patched = await repo.patch_session("u1", session.id, {"title": "Renamed"})
     assert patched.title == "Renamed"
     assert patched.toolOverrides == ToolOverrides(added=[], removed=[])
+
+
+class _SessionsDeletedOnce:
+    """Fake ``sessions`` container whose ``read_item`` succeeds until
+    ``delete_item`` is called, after which every read raises 404 -- i.e., a
+    consistent "does the session currently exist" view across multiple
+    reads, unlike the simpler check-then-write fakes above which only model
+    a single race shape."""
+
+    def __init__(self, session: Session) -> None:
+        self.item = {**session.model_dump(mode="json"), "_etag": "e1"}
+        self.deleted = False
+
+    async def read_item(self, *, item, partition_key):
+        if self.deleted:
+            raise CosmosResourceNotFoundError(message="deleted concurrently")
+        return dict(self.item)
+
+    async def delete_item(self, *, item, partition_key):
+        self.deleted = True
+
+
+async def test_cosmos_add_message_self_compensates_when_write_lands_after_sweep():
+    """HIGH production-shape finding: delete_session previously deleted
+    children BEFORE the parent. That left a permanent-orphan window: a
+    concurrent add_message could pass its own ownership check while the
+    session still existed, then have its write land strictly AFTER
+    delete_session's children-sweep query had already run (and seen
+    nothing) but before the session was gone -- so neither side ever
+    caught it. The fix (a) reorders delete_session to delete the parent
+    FIRST, and (b) adds a post-write recheck-and-compensate to every
+    child-writer; this test drives the exact worst-case interleaving that
+    only the combination of both closes.
+    """
+    session = Session(userId="u1")
+    write_gate = asyncio.Event()
+
+    class _GatedMessages:
+        def __init__(self) -> None:
+            self.items: dict[str, dict] = {}
+            self.delete_attempts: list[str] = []
+
+        async def create_item(self, body):
+            # Force this write to land strictly after delete_session's
+            # children-sweep query below has already run and seen nothing.
+            await asyncio.wait_for(write_gate.wait(), timeout=5)
+            self.items[body["id"]] = body
+
+        async def query_items(self, *, query, parameters=None, partition_key=None):
+            for doc_id in list(self.items.keys()):
+                yield {"id": doc_id}
+
+        async def delete_item(self, *, item, partition_key):
+            self.delete_attempts.append(item)
+            if item not in self.items:
+                raise CosmosResourceNotFoundError(message="not found")
+            del self.items[item]
+
+    class _SignalingEmptyDocuments:
+        """No-row ``documents`` container that opens the write gate once
+        delete_session's cascade reaches it -- i.e., once the message sweep
+        immediately before has already completed."""
+
+        async def query_items(self, *, query, parameters=None, partition_key=None):
+            write_gate.set()
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _SessionsDeletedOnce(session)
+    messages = _GatedMessages()
+    repo._messages = messages
+    repo._documents = _SignalingEmptyDocuments()
+
+    message = Message(sessionId=session.id, userId="u1", role=MessageRole.user, content="hi")
+
+    add_result, delete_result = await asyncio.gather(
+        repo.add_message("u1", message),
+        repo.delete_session("u1", session.id),
+        return_exceptions=True,
+    )
+
+    assert delete_result is None  # delete_session succeeded outright
+    assert isinstance(add_result, SessionNotFoundError)
+    # The message must not survive the race: add_message's own post-write
+    # recheck caught the gone parent and self-compensated.
+    assert message.id not in messages.items
+    assert messages.delete_attempts == [message.id]
+
+
+async def test_cosmos_add_message_if_summary_version_compensates_when_session_deleted_mid_write():
+    """Sub-bug within the same finding: add_message_if_summary_version's own
+    post-write summaryVersion recheck could raise SessionNotFoundError
+    (parent deleted concurrently) and let it propagate uncaught, skipping
+    the method's existing compensating-delete logic and leaving the
+    just-written message orphaned even though the caller correctly saw an
+    exception. The recheck must trigger the same self-compensation as a
+    mismatched summaryVersion does."""
+    session = Session(userId="u1", summaryVersion=1)
+    sessions_fake = _SessionsDeletedOnce(session)
+
+    class _MessagesRecordingDeletes:
+        def __init__(self) -> None:
+            self.items: dict[str, dict] = {}
+            self.delete_attempts: list[str] = []
+
+        async def create_item(self, body):
+            self.items[body["id"]] = body
+            # The parent is deleted strictly between this write landing and
+            # the method's own recheck immediately below.
+            sessions_fake.deleted = True
+
+        async def delete_item(self, *, item, partition_key):
+            self.delete_attempts.append(item)
+            if item not in self.items:
+                raise CosmosResourceNotFoundError(message="not found")
+            del self.items[item]
+
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = sessions_fake
+    messages = _MessagesRecordingDeletes()
+    repo._messages = messages
+    message = Message(sessionId=session.id, userId="u1", role=MessageRole.user, content="hi")
+
+    with pytest.raises(SessionNotFoundError):
+        await repo.add_message_if_summary_version("u1", message, expected_version=1)
+
+    assert message.id not in messages.items
+    assert messages.delete_attempts == [message.id]
+
+
+async def test_cosmos_upsert_message_compensates_when_session_deleted_mid_write():
+    """Same recheck-and-compensate fix applied to upsert_message (used for
+    both creating and updating a session's messages, e.g. streaming
+    assistant replies): a session deleted strictly between the write
+    landing and this method's own recheck must not leave the message
+    behind."""
+    session = Session(userId="u1")
+    sessions_fake = _SessionsDeletedOnce(session)
+
+    class _MessagesRecordingDeletes:
+        def __init__(self) -> None:
+            self.items: dict[str, dict] = {}
+            self.delete_attempts: list[str] = []
+
+        async def upsert_item(self, body):
+            self.items[body["id"]] = body
+            sessions_fake.deleted = True
+
+        async def delete_item(self, *, item, partition_key):
+            self.delete_attempts.append(item)
+            if item not in self.items:
+                raise CosmosResourceNotFoundError(message="not found")
+            del self.items[item]
+
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = sessions_fake
+    messages = _MessagesRecordingDeletes()
+    repo._messages = messages
+    message = Message(sessionId=session.id, userId="u1", role=MessageRole.assistant, content="hi")
+
+    with pytest.raises(SessionNotFoundError):
+        await repo.upsert_message("u1", message)
+
+    assert message.id not in messages.items
+    assert messages.delete_attempts == [message.id]
+
+
+async def test_cosmos_add_document_compensates_when_session_deleted_mid_write():
+    """Same recheck-and-compensate fix applied to add_document: an uploaded
+    document written strictly before a concurrent session delete must not
+    survive as an orphan referencing a gone session."""
+    session = Session(userId="u1")
+    sessions_fake = _SessionsDeletedOnce(session)
+
+    class _DocumentsRecordingDeletes:
+        def __init__(self) -> None:
+            self.items: dict[str, dict] = {}
+            self.delete_attempts: list[str] = []
+
+        async def create_item(self, body):
+            self.items[body["id"]] = body
+            sessions_fake.deleted = True
+
+        async def delete_item(self, *, item, partition_key):
+            self.delete_attempts.append(item)
+            if item not in self.items:
+                raise CosmosResourceNotFoundError(message="not found")
+            del self.items[item]
+
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = sessions_fake
+    documents = _DocumentsRecordingDeletes()
+    repo._documents = documents
+    document = Document(sessionId=session.id, userId="u1", filename="a.txt")
+
+    with pytest.raises(SessionNotFoundError):
+        await repo.add_document("u1", document)
+
+    assert document.id not in documents.items
+    assert documents.delete_attempts == [document.id]

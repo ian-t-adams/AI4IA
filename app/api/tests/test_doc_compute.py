@@ -521,6 +521,83 @@ async def test_export_orphan_blob_cleaned_on_generic_manifest_failure():
     assert await blob.delete_prefix(version_prefix("u1", doc.id, 1)) == 0
 
 
+async def test_export_ambiguous_failure_after_commit_preserves_winners_blob():
+    """Production-grade HIGH finding: export_version's generic exception
+    handler unconditionally deleted the just-written version blob for ANY
+    manifest-update failure -- including an *ambiguous* one where the write
+    actually committed server-side (e.g. Cosmos accepted and persisted the
+    replace_item, but the client's connection dropped before the ack). That
+    blind cleanup could delete a blob the manifest now legitimately
+    references, corrupting an already-committed version.
+
+    This repo reproduces exactly that shape: update_document really performs
+    the write (delegating to the in-memory implementation) and only THEN
+    raises, simulating "the commit landed, but the caller still observed a
+    failure". The fix must re-confirm via a fresh read before deleting: since
+    the path IS referenced by the (now-committed) manifest, cleanup must
+    leave the blob alone.
+    """
+    blob = InMemoryBlobStore()
+
+    class CommitThenRaiseRepo(InMemoryDocumentLibraryRepository):
+        async def update_document(self, doc):
+            await super().update_document(doc)
+            raise RuntimeError("ack never received after commit")
+
+    library = CommitThenRaiseRepo()
+    export = _export(library, blob, _settings())
+    doc = await _seed_doc(library, blob)
+
+    res = await export.export_version("u1", doc.id, content="adjusted", filename="new.md")
+    assert "error" in res
+
+    # The manifest genuinely committed the version despite the client-side
+    # exception...
+    refreshed = await library.get_document("u1", doc.id)
+    assert refreshed.version_count == 1
+    winner = refreshed.versions[0]
+    # ...so its blob must survive: the ambiguous-failure cleanup must not
+    # delete a blob the manifest still references.
+    data = await blob.get(winner.path)
+    assert data == b"adjusted"
+
+
+async def test_export_cleanup_confirm_read_failure_preserves_blob():
+    """If the confirm-read itself fails (the manifest's true state cannot be
+    determined), the outcome is genuinely indeterminate: the cleanup must NOT
+    delete the blob (better to leave a possibly-orphaned artifact for
+    reconciliation/GC than to risk deleting a live, referenced one)."""
+    blob = InMemoryBlobStore()
+
+    class ConfirmReadFailsRepo(InMemoryDocumentLibraryRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self._get_calls = 0
+
+        async def update_document(self, doc):
+            raise RuntimeError("transient failure")
+
+        async def get_document(self, user_id, document_id):
+            self._get_calls += 1
+            if self._get_calls == 1:
+                # The initial ownership/status gate read in _ready_doc must
+                # still succeed so export_version reaches the manifest write.
+                return await super().get_document(user_id, document_id)
+            # The cleanup's confirm-read fails: the true manifest state is
+            # unknowable, so deletion must be skipped.
+            raise RuntimeError("confirm-read also failed")
+
+    library = ConfirmReadFailsRepo()
+    export = _export(library, blob, _settings())
+    doc = await _seed_doc(library, blob)
+
+    res = await export.export_version("u1", doc.id, content="adjusted", filename="new.md")
+    assert "error" in res
+    # Indeterminate outcome: the version blob must be preserved, not deleted.
+    prefix = version_prefix("u1", doc.id, 1)
+    assert await blob.delete_prefix(prefix) == 1
+
+
 async def test_export_concurrent_race_does_not_delete_winners_blob():
     """Production-grade HIGH finding: two concurrent export_version calls on
     the same document both read next_version before either commits, so both

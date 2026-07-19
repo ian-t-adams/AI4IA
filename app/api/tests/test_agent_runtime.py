@@ -8,6 +8,7 @@ are honored.
 from __future__ import annotations
 
 import json
+import logging
 
 from ai4ia_api.agents.runtime import run_agent_turn
 from ai4ia_api.agents.tool_exec import ToolContext, ToolDefinition, ToolExecutor, build_tools
@@ -418,3 +419,77 @@ async def test_on_step_failure_never_breaks_the_turn():
         on_step=boom,
     )
     assert result.text == "42."
+
+
+async def test_tool_ran_log_never_includes_argument_content(caplog):
+    """Regression: 'agent tool ran' logged raw (redact_obj'd) arguments at INFO,
+    persisting ordinary tool-argument content (e.g. a search query or prompt)
+    into application logs. The log line must carry only the tool name."""
+    registry, executor = build_tools()
+    marker = "super-secret-expression-marker-should-not-be-logged"
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "calculator", json.dumps({"expression": "1+1", "note": marker})),
+            _assistant_text("2."),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=["calculator"],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+        )
+    ran_records = [r for r in caplog.records if "agent tool ran" in r.getMessage()]
+    assert len(ran_records) == 1
+    assert ran_records[0].getMessage() == "agent tool ran: tool=calculator"
+    assert marker not in ran_records[0].getMessage()
+    # No record anywhere in this turn carries the marker value.
+    assert all(marker not in r.getMessage() for r in caplog.records)
+
+
+async def test_delegate_log_never_includes_argument_content(caplog):
+    """Regression: 'agent delegated' logged raw (redact_obj'd) arguments at
+    INFO. Same fix as the tool_result path, covering the synthetic-handler
+    (delegate) branch."""
+    registry = ToolRegistry()
+    executor = ToolExecutor()
+    marker = "secret-delegate-prompt-should-not-be-logged"
+
+    async def handler(args, ctx):
+        return {"ok": True}
+
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "delegate_to_agent", json.dumps({"prompt": marker})),
+            _assistant_text("done."),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=[],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+            extra_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "delegate_to_agent",
+                        "description": "d",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            extra_handlers={"delegate_to_agent": handler},
+        )
+    delegated_records = [r for r in caplog.records if "agent delegated" in r.getMessage()]
+    assert len(delegated_records) == 1
+    assert delegated_records[0].getMessage() == "agent delegated: tool=delegate_to_agent"
+    assert all(marker not in r.getMessage() for r in caplog.records)

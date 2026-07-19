@@ -369,7 +369,32 @@ class CosmosSessionRepository:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
         await self._owned_session(user_id, session_id)
-        # Delete child messages first (partition = sessionId).
+        # Delete the parent FIRST -- this is the fence that closes a
+        # concurrent-orphan race. Every child-writer (add_message,
+        # add_message_if_summary_version, add_document, upsert_message)
+        # re-verifies the parent still exists immediately after its own
+        # write and self-compensates (deletes what it just wrote) if not.
+        # So a child write that races with this delete is always caught by
+        # ONE of two sides: if the child's write finishes before this
+        # delete, its post-write recheck runs after the delete and catches
+        # it directly; if the child's write finishes after this delete, the
+        # children-sweep below (which runs only once the parent is
+        # irrevocably gone) catches it. Deleting children before the parent
+        # (the previous order) left a window where a child could land
+        # strictly between the sweep's query snapshot and the parent
+        # delete, which neither side would ever catch -- a permanent
+        # orphan. Residual: if the sweep below hits a genuine non-404 error
+        # after the parent is gone, a retry of this call can no longer
+        # resume (there's nothing left to re-authenticate against); that
+        # narrow, rare exposure is accepted in exchange for closing the
+        # much more common orphan-creation race.
+        try:
+            await self._sessions.delete_item(item=session_id, partition_key=user_id)
+        except CosmosResourceNotFoundError as exc:
+            # Deleted concurrently (e.g. a duplicate request) — same outcome
+            # as never having existed for this call.
+            raise SessionNotFoundError(session_id) from exc
+
         query = "SELECT c.id FROM c WHERE c.sessionId = @sid"
         params = [{"name": "@sid", "value": session_id}]
         async for doc in self._messages.query_items(
@@ -379,11 +404,12 @@ class CosmosSessionRepository:
                 await self._messages.delete_item(item=doc["id"], partition_key=session_id)
             except CosmosResourceNotFoundError:
                 # Another concurrent delete/cascade (e.g. a duplicate request,
-                # or a racing single-message delete) already removed this
-                # child between the query above and this call. The cascade's
-                # goal -- no messages left for this session -- already holds
-                # for this item, so treat it as done and keep going rather
-                # than surfacing a raw SDK error for a row that's already gone.
+                # a racing single-message delete, or a child-writer's own
+                # compensating delete) already removed this child between the
+                # query above and this call. The cascade's goal -- no
+                # messages left for this session -- already holds for this
+                # item, so treat it as done and keep going rather than
+                # surfacing a raw SDK error for a row that's already gone.
                 continue
         # Cascade-delete uploaded documents (also partitioned by sessionId).
         async for doc in self._documents.query_items(
@@ -394,17 +420,26 @@ class CosmosSessionRepository:
             except CosmosResourceNotFoundError:
                 continue  # same idempotent reasoning as the messages loop above
 
-        try:
-            await self._sessions.delete_item(item=session_id, partition_key=user_id)
-        except CosmosResourceNotFoundError as exc:
-            # Deleted concurrently during the cascade above (e.g. a duplicate
-            # request) — same outcome as never having existed for this call.
-            raise SessionNotFoundError(session_id) from exc
-
     async def add_message(self, user_id: str, message: Message) -> Message:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
         await self._owned_session(user_id, message.sessionId)
         message.userId = user_id
         await self._messages.create_item(self._to_doc(message))
+        # The parent can be deleted concurrently between the ownership check
+        # above and this write landing: delete_session's children-sweep only
+        # catches writes it can already see at query time. Re-verify the
+        # parent still exists and self-compensate (delete what was just
+        # written) if not, so a concurrent session delete can never leave a
+        # message orphaned behind it.
+        try:
+            await self._owned_session(user_id, message.sessionId)
+        except SessionNotFoundError:
+            try:
+                await self._messages.delete_item(item=message.id, partition_key=message.sessionId)
+            except CosmosResourceNotFoundError:
+                pass  # already swept by the concurrent delete_session
+            raise
         return message
 
     async def add_message_if_summary_version(
@@ -418,7 +453,19 @@ class CosmosSessionRepository:
         message.userId = user_id
         message.summaryVersion = expected_version
         await self._messages.create_item(self._to_doc(message))
-        latest = await self._owned_session(user_id, message.sessionId)
+        try:
+            latest = await self._owned_session(user_id, message.sessionId)
+        except SessionNotFoundError:
+            # The parent was deleted concurrently after this write landed;
+            # self-compensate so no message survives its session (same
+            # reasoning as add_message's post-write recheck above).
+            try:
+                await self._messages.delete_item(
+                    item=message.id, partition_key=message.sessionId
+                )
+            except CosmosResourceNotFoundError:
+                pass
+            raise
         if latest.summaryVersion == expected_version:
             return True
         try:
@@ -430,9 +477,23 @@ class CosmosSessionRepository:
         return False
 
     async def upsert_message(self, user_id: str, message: Message) -> Message:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
         await self._owned_session(user_id, message.sessionId)
         message.userId = user_id
         await self._messages.upsert_item(self._to_doc(message))
+        # Same post-write recheck-and-compensate as add_message: if the
+        # session no longer exists, the message can't belong to it either
+        # (whether this call created or updated it), so remove it rather
+        # than leave it orphaned.
+        try:
+            await self._owned_session(user_id, message.sessionId)
+        except SessionNotFoundError:
+            try:
+                await self._messages.delete_item(item=message.id, partition_key=message.sessionId)
+            except CosmosResourceNotFoundError:
+                pass
+            raise
         return message
 
     async def list_messages(self, user_id: str, session_id: str) -> list[Message]:
@@ -459,9 +520,24 @@ class CosmosSessionRepository:
                 continue  # already gone (concurrent clear/delete) -- idempotent
 
     async def add_document(self, user_id: str, document: Document) -> Document:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
         await self._owned_session(user_id, document.sessionId)
         document.userId = user_id
         await self._documents.create_item(self._to_doc(document))
+        # Same post-write recheck-and-compensate as add_message: catch a
+        # parent delete that raced between the ownership check and this
+        # write landing.
+        try:
+            await self._owned_session(user_id, document.sessionId)
+        except SessionNotFoundError:
+            try:
+                await self._documents.delete_item(
+                    item=document.id, partition_key=document.sessionId
+                )
+            except CosmosResourceNotFoundError:
+                pass  # already swept by the concurrent delete_session
+            raise
         return document
 
     async def list_documents(self, user_id: str, session_id: str) -> list[Document]:

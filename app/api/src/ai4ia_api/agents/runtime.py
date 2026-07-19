@@ -11,8 +11,11 @@ the standard tool-calling protocol against the model gateway:
   3. Loop (bounded) until the model returns a plain answer, then return it.
 
 Governance is centralized: every invocation is re-checked against the tool-safety
-registry (defense in depth on top of schema-time filtering), and all arguments,
-results, and error strings are redacted before they enter the step trace or logs.
+registry (defense in depth on top of schema-time filtering). Argument/result
+content is only ever credential-redacted (``redact_obj``) before it lands on the
+in-process ``AgentStep`` trace, and free-text log lines never include it at all —
+only the tool name and fixed, bounded status/reason strings reach logs or the
+user-facing activity view (see ``agents.activity``).
 The real Microsoft Agent Framework / Foundry toolbox / MCP can later replace the
 :class:`~ai4ia_api.agents.tool_exec.ToolExecutor` behind this same loop.
 """
@@ -265,7 +268,7 @@ async def run_agent_turn(
                         result=redact_obj(raw_result),
                     )
                 )
-                logger.info("agent delegated: tool=%s args=%s", name, redact_obj(parsed))
+                logger.info("agent delegated: tool=%s", name)
                 continue
 
             decision = registry.authorize(
@@ -380,7 +383,7 @@ async def run_agent_turn(
                     result=redact_obj(raw_result),
                 )
             )
-            logger.info("agent tool ran: tool=%s args=%s", name, redact_obj(parsed))
+            logger.info("agent tool ran: tool=%s", name)
 
         if force_final:
             schema = []  # disable tools so the next call yields a natural answer
