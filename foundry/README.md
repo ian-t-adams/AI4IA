@@ -31,7 +31,8 @@ PR #125, with **zero new runtime code**. APIM injects the managed-identity beare
 ## Provisioning (operator, one time)
 
 ```bash
-# 0. Install the provisioning-only extra (not in the runtime container / CI).
+# 0. Install the provisioning-only extra (CI's app-ci.yml api job installs it too, so the
+#    real-SDK toolbox construction tests run there; the runtime container never does).
 uv pip install -e "app/api[foundry]"
 
 # 1. Create skills (dry run first; --create writes to Foundry).

@@ -75,8 +75,9 @@
             "properties": {
               "indexes": {
                 "type": "array",
-                "description": "The SDK currently supports at most one index per azure_ai_search tool.",
+                "description": "The SDK currently supports at most one index per azure_ai_search tool (azure-ai-projects AzureAISearchToolResource.indexes docstring: 'maximum of 1 index resource').",
                 "minItems": 1,
+                "maxItems": 1,
                 "items": {
                   "type": "object",
                   "additionalProperties": false,

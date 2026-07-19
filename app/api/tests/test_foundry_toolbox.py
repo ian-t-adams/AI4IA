@@ -360,9 +360,10 @@ def test_schema_rejects_root_level_azure_ai_search_fields_and_bare_browser_autom
     jsonschema.validate(good, schema)  # must not raise
 
 
-def test_schema_rejects_azure_ai_search_empty_or_incomplete_indexes():
-    # A tool with no indexes, or an index entry missing the required indexName, is inert or
-    # unprovisionable; the schema must reject both instead of silently accepting them.
+def test_schema_rejects_azure_ai_search_empty_incomplete_or_multiple_indexes():
+    # A tool with no indexes, an index entry missing the required indexName, or more than
+    # one index is inert, unprovisionable, or unsupported by the SDK; the schema must reject
+    # all three instead of silently accepting them.
     jsonschema = pytest.importorskip("jsonschema")
     schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
 
@@ -385,6 +386,27 @@ def test_schema_rejects_azure_ai_search_empty_or_incomplete_indexes():
     }
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(missing_index_name, schema)
+
+    # azure-ai-projects' AzureAISearchToolResource.indexes docstring: "There can be a maximum
+    # of 1 index resource attached to the agent." A second index is not a richer config, it's
+    # unrepresentable -- the SDK constructor accepts the list but the service only honors one.
+    two_indexes = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "azure_ai_search",
+                "name": "x",
+                "azureAiSearch": {
+                    "indexes": [
+                        {"indexName": "docs", "projectConnectionId": "search-conn"},
+                        {"indexName": "docs2", "projectConnectionId": "search-conn"},
+                    ]
+                },
+            }
+        ],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(two_indexes, schema)
 
 
 def test_schema_rejects_openapi_missing_required_nested_fields_and_bad_auth():
