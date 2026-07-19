@@ -24,8 +24,8 @@ flowchart TB
   API --> OffMCP[Official MCP tools]
   OffMCP --> APIM[Shared apim-mcp<br/>Basic v2 + scoped keys + MI]
   APIM --> MCPUp[Curated upstream MCP servers]
-  API --> Proxy[SimpleL7Proxy<br/>HTTP/SSE queue + requeue]
-  Proxy --> APIM
+  API -->|proxy-ingress key| Proxy[SimpleL7Proxy<br/>HTTP/SSE queue + requeue]
+  Proxy -->|model-API key| APIM
   API -. "azure_openai<br/>/openai/realtime key" .-> APIM
   API -. "speech_voice_live<br/>/speech/voice-live/realtime key" .-> APIM
   APIM --> EUS2[Foundry East US 2]
@@ -209,14 +209,19 @@ raw frames, audio, transcripts, prompts/history, and tool arguments/results.
 
 - DNS/custom domain terminates on the public SimpleL7Proxy Container App. APIM is
   the proxy's backend and never routes back to the proxy.
-- FastAPI receives the realtime-only APIM key. It uses that same value to
-  authenticate to the proxy for normal calls; the proxy strips it and injects a
-  separate model-API subscription key. The realtime subscription cannot invoke
-  the normal APIM model API.
-- `speech_voice_live` adds a second, independently scoped APIM subscription held
+- FastAPI holds two distinct keys, never the proxy's model-API key: a proxy-ingress
+  key (`AI4IA_MODEL_GATEWAY_API_KEY`) that authenticates normal calls to the proxy,
+  scoped to a product with no APIs so it cannot invoke any model or realtime API;
+  and a realtime-only key (`AI4IA_REALTIME_GATEWAY_API_KEY`) used only for the
+  direct FastAPI -> APIM realtime hop. The proxy strips the ingress key at the edge
+  and injects its own, third key — held only by the proxy, for the proxy -> APIM
+  model hop — before forwarding; FastAPI never receives that key.
+  `Settings.validate_runtime()` fails startup if the realtime key and the
+  proxy-ingress key are ever the same value.
+- `speech_voice_live` adds a fourth, independently scoped APIM subscription held
   only by FastAPI, bound to the `/speech/voice-live/realtime` WebSocket API. That
   key cannot invoke `/openai/realtime`, the normal model API, the MCP plane, or the
-  proxy ingress product, and the `/openai/realtime` key cannot invoke it either.
+  proxy ingress product, and none of the other three keys can invoke it either.
 - APIM performs bounded immediate attempts across compatible regional
   deployments. SimpleL7Proxy performs delayed requeue and owns queue TTL and
   per-replica circuit breaking. The synchronous queue is not durable or global.
@@ -298,11 +303,13 @@ flowchart LR
 ## Identity and RBAC
 
 Azure service data planes use managed identities and scoped role assignments. The
-current proxy/APIM transition uses two independently scoped APIM subscription keys:
-one secret for proxy -> normal-model APIM and one realtime-only key that also
-authenticates FastAPI -> proxy. Both remain Container App secrets and are stripped
-before forwarding. The migration target is Entra workload authentication on both hops.
-`speech_voice_live` adds a third, distinct APIM subscription key (`ai4ia-api-speech-voice-live`)
+current proxy/APIM transition uses three independently scoped APIM subscription
+keys: one held only by the proxy for proxy -> normal-model APIM, one proxy-ingress
+key held only by FastAPI for FastAPI -> proxy, and one realtime-only key held only
+by FastAPI for the direct FastAPI -> APIM realtime hop. All three remain Container
+App secrets; the proxy strips the ingress key before forwarding and injects its own
+model key. The migration target is Entra workload authentication on every hop.
+`speech_voice_live` adds a fourth, distinct APIM subscription key (`ai4ia-api-speech-voice-live`)
 held only by FastAPI and scoped only to the Speech Voice Live WebSocket API.
 
 The shared active APIM's system-assigned managed identity gets the additional

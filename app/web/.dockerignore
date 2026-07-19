@@ -6,4 +6,5 @@ node_modules
 .gitignore
 npm-debug.log
 README.md
-.env*.local
+**/.env*
+!**/.env.example
