@@ -60,7 +60,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.10" },
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.4" },
     { name = "asyncpg", specifier = ">=0.29" },
-    { name = "azure-ai-projects", marker = "extra == 'foundry'", specifier = ">=2.3.0" },
+    { name = "azure-ai-projects", marker = "extra == 'foundry'", specifier = "==2.3.0" },
     { name = "azure-cosmos", specifier = ">=4.7" },
     { name = "azure-identity", specifier = ">=1.17" },
     { name = "azure-identity", marker = "extra == 'foundry'", specifier = ">=1.17" },

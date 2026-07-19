@@ -135,7 +135,7 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 | `code_interpreter` | Sandboxed Python | `container` (optional) | Foundry-managed sandbox (distinct from AI4IA's existing direct Responses-API code interpreter). `container`, if set, is either an **existing container ID** (string; a pre-registered container resource) or a nested `{"type": "auto", ...}` object (SDK 2.3.0's `AutoCodeInterpreterToolParam`) for the managed sandbox with custom `fileIds`/`memoryLimit`/`networkPolicy`. Omit it entirely for the plain default sandbox. `networkPolicy` (SDK 2.3.0's `ContainerNetworkPolicyParam`) restricts sandbox outbound network access: `{"type": "disabled"}` or `{"type": "allowlist", "allowedDomains": [...]}` (non-empty). The SDK's allowlist variant also supports `domainSecrets` (a literal secret **value** injected per allowed domain); AI4IA intentionally does not expose that field here -- this manifest is committed to source control, so a per-domain secret value has no safe home in it (see AGENTS.md's "no secret sprawl" rule). |
 | `file_search` | Search uploaded files | `vectorStoreIds`, `maxNumResults`/`rankingOptions`/`filters` (all optional) | Connectionless once files are attached. `vectorStoreIds`, if set, must be non-empty (an empty list is inert). `maxNumResults` is an integer 1-50. `rankingOptions.ranker` is `auto` or `default-2024-11-15`; `.scoreThreshold` is 0-1; `.hybridSearch`, if present, requires both `embeddingWeight` and `textWeight` (0-1 each). `filters` is a comparison (`type`/`key`/`value`, one of `eq`/`ne`/`gt`/`gte`/`lt`/`lte`/`in`/`nin`) or compound (`type`: `and`/`or` plus nested `filters[]`) tree over vector-store file metadata -- a **different shape** from `web_search.filters` above despite the shared name; each type's shape is independently schema-enforced. |
 | `browser_automation_preview` | Drive a hosted browser | `browserAutomationPreview.connection.projectConnectionId` | Nested shape (SDK 2.3.0's `BrowserAutomationToolParameters`). The connection must be a **Playwright Workspace** connection, not a plain API connection. Preview; heavier isolation review recommended. |
-| `openapi` | Call an OpenAPI-described API | `openapi` (nested `name`, `spec`, `auth`) | Wraps a REST API as a tool; `auth.type` is `anonymous`, `project_connection` (needs `auth.securityScheme.projectConnectionId`), or `managed_identity` (needs `auth.securityScheme.audience`). `spec` is passed through **byte-for-byte unmodified** -- its property names describe someone else's API and are never snake_cased, so a JSON-schema property genuinely named e.g. `topK` is never corrupted into `top_k`. |
+| `openapi` | Call an OpenAPI-described API | `openapi` (nested `name`, `spec`, `auth`) | Wraps a REST API as a tool; `auth.type` is `anonymous` (no other field), `project_connection` (ONLY `auth.securityScheme.projectConnectionId`), or `managed_identity` (ONLY `auth.securityScheme.audience`) -- each is a strictly closed shape (schema `oneOf`, `additionalProperties: false` at every level), so e.g. a stray `securityScheme` on `anonymous` or an extra key alongside `projectConnectionId`/`audience` is rejected, not silently ignored. `spec` is passed through **byte-for-byte unmodified** -- its property names describe someone else's API and are never snake_cased, so a JSON-schema property genuinely named e.g. `topK` is never corrupted into `top_k`. |
 | `toolbox_search_preview` | **Tool search** — let the model pick tools from a large set | none | Add this so the toolbox self-describes its tools to the model. |
 | `mcp` | Nest another MCP server as a tool | `serverLabel`, one of `serverUrl`/`connectorId`, `requireApproval`, `projectConnectionId`, `serverDescription`/`allowedTools`/`deferLoading` (optional) | Lets the toolbox aggregate upstream MCP servers. Identified by `serverLabel`. Unlike `azure_ai_search`/`browser_automation_preview`, `mcp`'s `projectConnectionId` genuinely is a tool-root field in the SDK. `requireApproval` is the literal `"always"`/`"never"`, or an object with `always`/`never` keys each holding a tool filter (`toolNames`/`readOnly`); an empty object is rejected. `allowedTools` is either a non-empty array of tool-name strings or that same tool-filter shape, restricting which discovered upstream tools are exposed. `serverDescription` is free text surfaced to the model; `deferLoading` (boolean) defers fetching the server's tool list until first use. There is no BYO-container-image tool type; if you need to run genuinely custom execution logic, wrap it in your own server and expose it as an `mcp` tool instead of trying to pass a custom image to `code_interpreter.container`. The SDK's `mcp` model also exposes `authorization` (an OAuth bearer token) and `headers` (which can carry auth material); AI4IA does not expose either for the same secret-sprawl reason as `networkPolicy.domainSecrets` above -- put credentials in the referenced project connection instead. |
 | `a2a_preview` | Delegate to a remote Agent-to-Agent (A2A) protocol agent | one of `projectConnectionId`/`baseUrl`, `agentCardPath`/`sendCredentialsForAgentCard` (optional) | SDK 2.3.0's `A2APreviewToolboxTool` -- the **inbound** direction (AI4IA's toolbox *calling out* to someone else's A2A agent), the inverse of the "Routines and Agent-to-Agent (A2A)" section below (AI4IA *exposing* its own agent as an A2A endpoint for others to call). Use `projectConnectionId` to delegate through a project connection storing the remote agent's endpoint and auth (Microsoft's documented approach), or `baseUrl` (+ optional `agentCardPath`, `sendCredentialsForAgentCard`) for a self-contained, connectionless call to an anonymous agent. Exactly one of `projectConnectionId`/`baseUrl` is required; fields specific to other tool types (e.g. `serverLabel`, `requireApproval`) are rejected. |
@@ -147,7 +147,10 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 > catch-all default) to `{"pin": <bool>, "additionalSearchText": <string>}` (SDK 2.3.0's common
 > `ToolConfig`) -- `pin` keeps a tool always loaded/visible; `additionalSearchText` adds extra text
 > the model uses when `toolbox_search_preview` picks tools. Unknown keys under a `toolConfigs`
-> entry are rejected.
+> entry are rejected. The map's own keys (the tool names) are caller-defined and always preserved
+> exactly as written -- the provisioner never runs them through its camelCase-to-snake_case table,
+> even when a tool name happens to collide with an unrelated manifest keyword (e.g. a tool
+> literally named `topK` stays `topK`, it is never coerced to `top_k`).
 
 > **Deliberate gaps (not modeled, by design -- genuine secrets only):** `code_interpreter`'s
 > `container.networkPolicy.domainSecrets` (a literal secret **value** per allowed domain) and
@@ -231,11 +234,20 @@ Skill `name` must match `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (max 64). The create p
 
 ## Operator runbook (end to end)
 
-1. **Install the provisioning extra** (never installed by CI or the container):
+1. **Install the provisioning extra.** `azure-ai-projects` is pinned to an exact version
+   (`==2.3.0` as of this writing, not a floating floor) because the toolbox model classes this
+   script constructs have already changed shape once between 2.x releases; every install path
+   should land on the one version the manifest schema, provisioner, and tests were reviewed
+   against:
 
    ```bash
    uv pip install -e "app/api[foundry]"
    ```
+
+   CI installs this same extra (`pip install -e ".[dev,foundry]"`, see `.github/workflows/app-ci.yml`)
+   so `tests/test_foundry_toolbox.py`'s real-SDK-construction cases run for real instead of
+   skipping — but it is never part of the deployed runtime container image; the app talks only
+   MCP-over-HTTP at runtime (see "No runtime dependency creep" above).
 
 2. **Resolve the project endpoint.** With `enableFoundryToolbox=true` deployed, read it from
    `azd env get-values` (`AZURE_FOUNDRY_PROJECT_ENDPOINT`), or pass `--project-endpoint`.

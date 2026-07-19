@@ -453,81 +453,64 @@
               },
               "auth": {
                 "type": "object",
-                "description": "OpenApiAuthDetails: anonymous | project_connection | managed_identity.",
-                "required": [
-                  "type"
-                ],
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "enum": [
-                      "anonymous",
-                      "project_connection",
-                      "managed_identity"
-                    ]
-                  },
-                  "securityScheme": {
-                    "type": "object"
-                  }
-                },
-                "allOf": [
+                "description": "OpenApiAuthDetails, matching azure-ai-projects 2.3.0's discriminated auth models exactly (each branch is fully closed -- no extra/credential-like keys of any kind, per type, are accepted): OpenApiAnonymousAuthDetails takes ONLY `type` (the SDK constructor has no other parameter at all, so e.g. a stray `securityScheme` or `token` alongside `anonymous` is rejected, not silently ignored); OpenApiProjectConnectionAuthDetails/OpenApiManagedAuthDetails each require a `securityScheme` object holding exactly the one field their SDK security-scheme class defines (`projectConnectionId` / `audience` respectively) and nothing else.",
+                "oneOf": [
                   {
-                    "if": {
-                      "properties": {
-                        "type": {
-                          "const": "project_connection"
-                        }
+                    "additionalProperties": false,
+                    "required": [
+                      "type"
+                    ],
+                    "properties": {
+                      "type": {
+                        "const": "anonymous"
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "required": [
+                      "type",
+                      "securityScheme"
+                    ],
+                    "properties": {
+                      "type": {
+                        "const": "project_connection"
                       },
-                      "required": [
-                        "type"
-                      ]
-                    },
-                    "then": {
-                      "required": [
-                        "securityScheme"
-                      ],
-                      "properties": {
-                        "securityScheme": {
-                          "type": "object",
-                          "required": [
-                            "projectConnectionId"
-                          ],
-                          "properties": {
-                            "projectConnectionId": {
-                              "type": "string",
-                              "minLength": 1
-                            }
+                      "securityScheme": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "projectConnectionId"
+                        ],
+                        "properties": {
+                          "projectConnectionId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         }
                       }
                     }
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "type": {
-                          "const": "managed_identity"
-                        }
+                    "additionalProperties": false,
+                    "required": [
+                      "type",
+                      "securityScheme"
+                    ],
+                    "properties": {
+                      "type": {
+                        "const": "managed_identity"
                       },
-                      "required": [
-                        "type"
-                      ]
-                    },
-                    "then": {
-                      "required": [
-                        "securityScheme"
-                      ],
-                      "properties": {
-                        "securityScheme": {
-                          "type": "object",
-                          "required": [
-                            "audience"
-                          ],
-                          "properties": {
-                            "audience": {
-                              "type": "string",
-                              "minLength": 1
-                            }
+                      "securityScheme": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "audience"
+                        ],
+                        "properties": {
+                          "audience": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         }
                       }

@@ -131,17 +131,25 @@ dev = [
 # pytest.importorskip; NOT installed in the runtime container (the app never imports these
 # SDKs at runtime -- only the operator-invoked provisioning scripts do). Operators installing
 # it standalone at provisioning time: uv pip install -e "app/api[foundry]"
-# azure-ai-projects>=2.3.0 is a hard floor, not just "some preview version": the toolboxes/
-# skills clients and the *ToolboxTool model classes scripts/provision-foundry-toolbox.py
-# constructs (CodeInterpreterToolboxTool, OpenApiToolboxTool, MCPToolboxTool, ...) do not exist
-# in earlier 2.x releases (e.g. 2.2.0) -- a lower floor would let a fresh resolve (no cached
-# 2.3.0+ wheel pinned elsewhere) silently select a version that ImportErrors or has no toolbox
-# support at all, which is not the kind of failure this extra should ever produce quietly.
+# azure-ai-projects is pinned EXACTLY to 2.3.0, not just floored at it: this whole extra's
+# provisioner (scripts/provision-foundry-toolbox.py) and its test suite
+# (tests/test_foundry_toolbox.py) are reflection-verified, field-by-field, against 2.3.0's actual
+# *ToolboxTool model classes and constructor signatures (CodeInterpreterToolboxTool,
+# OpenApiToolboxTool, MCPToolboxTool, AzureAISearchToolboxTool, ...). Those shapes have already
+# changed once between 2.x releases (the toolbox model classes plainly do not exist in 2.2.0), so
+# a floating `>=2.3.0` floor would let a bare `pip install .[foundry]` -- which is exactly what
+# both CI (.github/workflows/app-ci.yml) and operators (see docs/foundry-toolbox.md) run -- silently
+# resolve a newer, unreviewed release whose shapes may again differ, ignoring uv.lock's own
+# resolution entirely (`pip install` does not consult uv.lock). An exact pin makes every install
+# path -- pip or uv -- land on the one version this audit actually exercised. Bumping this pin is a
+# deliberate, reviewed action: re-run the reflection parity test
+# (test_reflection_driven_parity_covers_every_sdk_toolbox_type_and_field) against the new version
+# first, fix whatever it flags, THEN raise the pin and regenerate uv.lock.
 # azure-mgmt-apicenter registers the private-tool-catalog assets (scripts/provision-private-tool-catalog.py --create).
 # jsonschema backs scripts/provision-foundry-toolbox.py's strict manifest-schema validation,
 # which --create requires before constructing any SDK model.
 foundry = [
-    "azure-ai-projects>=2.3.0",
+    "azure-ai-projects==2.3.0",
     "azure-identity>=1.17",
     "azure-mgmt-apicenter>=1.0.0",
     "jsonschema>=4.18",

@@ -1678,3 +1678,137 @@ def test_resolve_project_endpoint_fails_closed(module, monkeypatch):
     assert module.resolve_project_endpoint("https://x/api/projects/p") == "https://x/api/projects/p"
     monkeypatch.setenv("AZURE_FOUNDRY_PROJECT_ENDPOINT", "https://env/api/projects/p")
     assert module.resolve_project_endpoint(None) == "https://env/api/projects/p"
+
+
+# ----------------- round 8: toolConfigs map keys / strict openapi.auth ------------------
+def test_convert_keys_preserves_arbitrary_tool_configs_map_keys_even_when_colliding_with_camel_to_snake():
+    # Regression guard: toolConfigs (azure-ai-projects 2.3.0's ToolboxTool.tool_configs) is a
+    # map keyed by ARBITRARY tool names (or "*"), not an AI4IA manifest schema shape -- but
+    # _convert_keys() used to run _to_snake() over every dict key at every depth, including a
+    # map's own keys. "topK" is deliberately chosen because it IS a real, pre-existing
+    # _CAMEL_TO_SNAKE entry (used unrelatedly for Azure AI Search's indexes[].topK): before the
+    # fix, a tool literally named "topK" in toolConfigs would be silently renamed to "top_k",
+    # making the config apply to a nonexistent tool instead of the one actually named "topK".
+    assert "topK" in _tb._CAMEL_TO_SNAKE  # sanity: this key really does collide
+
+    converted = _tb._convert_keys(
+        {"topK": {"additionalSearchText": "extra"}, "*": {"pin": True}},
+        parent_key="toolConfigs",
+    )
+    assert converted == {"topK": {"additional_search_text": "extra"}, "*": {"pin": True}}
+
+    # Same guarantee through the full manifest -> planned-tool projection.
+    manifest = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "web_search",
+                "name": "web",
+                "toolConfigs": {"topK": {"additionalSearchText": "extra"}},
+            }
+        ],
+    }
+    planned = _tb.plan_tools(manifest)[0]
+    assert planned["tool_configs"] == {"topK": {"additional_search_text": "extra"}}
+    assert "top_k" not in planned["tool_configs"]
+
+    # And against the real SDK model: the map key must survive on the constructed instance too.
+    m = pytest.importorskip("azure.ai.projects.models")
+    fields = {k: v for k, v in planned.items() if k != "type"}
+    built = m.WebSearchToolboxTool(**fields)
+    assert built.tool_configs == {"topK": {"additional_search_text": "extra"}}
+
+
+def test_schema_openapi_auth_rejects_anonymous_with_extra_fields_and_security_scheme_extras():
+    # Strict per-branch closure: OpenApiAnonymousAuthDetails takes NO field besides `type` (not
+    # even an empty/absent securityScheme); OpenApiProjectConnectionAuthDetails/
+    # OpenApiManagedAuthDetails's securityScheme has EXACTLY one field each
+    # (projectConnectionId / audience) -- any additional key (e.g. a stray "token") must be
+    # rejected, not silently ignored.
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(_MANIFEST_SCHEMA.read_text(encoding="utf-8"))
+
+    def _tool_with_auth(auth: dict) -> dict:
+        return {
+            **_valid_manifest(),
+            "tools": [
+                {
+                    "type": "openapi",
+                    "name": "o",
+                    "openapi": {"name": "x", "spec": {"openapi": "3.0.0"}, "auth": auth},
+                }
+            ],
+        }
+
+    bad_shapes = [
+        {"type": "anonymous", "securityScheme": {"projectConnectionId": "c"}},
+        {"type": "anonymous", "token": "shh"},
+        {
+            "type": "project_connection",
+            "securityScheme": {"projectConnectionId": "c", "token": "shh"},
+        },
+        {"type": "managed_identity", "securityScheme": {"audience": "a", "apiKey": "shh"}},
+    ]
+    for auth in bad_shapes:
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(_tool_with_auth(auth), schema)
+
+    good_shapes = [
+        {"type": "anonymous"},
+        {"type": "project_connection", "securityScheme": {"projectConnectionId": "c"}},
+        {"type": "managed_identity", "securityScheme": {"audience": "a"}},
+    ]
+    for auth in good_shapes:
+        jsonschema.validate(_tool_with_auth(auth), schema)  # must not raise
+
+
+@pytest.mark.parametrize(
+    ("auth", "expected_cls_name", "expected_attrs"),
+    [
+        ({"type": "anonymous"}, "OpenApiAnonymousAuthDetails", {}),
+        (
+            {"type": "project_connection", "securityScheme": {"projectConnectionId": "conn-1"}},
+            "OpenApiProjectConnectionAuthDetails",
+            {"security_scheme.project_connection_id": "conn-1"},
+        ),
+        (
+            {"type": "managed_identity", "securityScheme": {"audience": "https://api.example.com"}},
+            "OpenApiManagedAuthDetails",
+            {"security_scheme.audience": "https://api.example.com"},
+        ),
+    ],
+    ids=["anonymous", "project_connection", "managed_identity"],
+)
+def test_create_toolbox_constructs_the_correct_discriminated_openapi_auth_type(
+    monkeypatch, auth, expected_cls_name, expected_attrs
+):
+    # Real-SDK guard for all three OpenApiAuthDetails subclasses -- managed_identity in
+    # particular was not previously exercised against a live model instance anywhere.
+    pytest.importorskip("azure.ai.projects")
+    pytest.importorskip("azure.identity")
+    from azure.ai.projects import models as m
+
+    captured: dict = {}
+    _install_fake_ai_project_client(monkeypatch, returned_version="1", captured=captured)
+
+    manifest = {
+        **_valid_manifest(),
+        "tools": [
+            {
+                "type": "openapi",
+                "name": "o",
+                "openapi": {"name": "x", "spec": {"openapi": "3.0.0"}, "auth": auth},
+            }
+        ],
+    }
+    _tb.create_toolbox(manifest, _ENDPOINT)
+
+    _, kwargs = captured["create_version"]
+    openapi_tool = next(t for t in kwargs["tools"] if isinstance(t, m.OpenApiToolboxTool))
+    built_auth = openapi_tool.openapi.auth
+    assert isinstance(built_auth, getattr(m, expected_cls_name))
+    for dotted_attr, expected_value in expected_attrs.items():
+        obj = built_auth
+        for part in dotted_attr.split("."):
+            obj = getattr(obj, part)
+        assert obj == expected_value

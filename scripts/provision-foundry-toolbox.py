@@ -127,6 +127,18 @@ _CAMEL_TO_SNAKE = {
 # spec the model calls against.
 _OPAQUE_NESTED_KEYS = {("openapi", "spec")}
 
+# Manifest keys whose VALUE is a map with caller-defined, arbitrary keys (tool names, or the `*`
+# catch-all) that must survive _convert_keys() verbatim -- never looked up in
+# _CAMEL_TO_SNAKE -- even though the map's own VALUES are still AI4IA-shaped config objects that
+# must keep being recursed into and snake_cased. This differs from _OPAQUE_NESTED_KEYS (which
+# stops recursion entirely because the whole subtree is someone else's document): here the keys
+# are opaque but each value (a ToolConfig: `pin`/`additionalSearchText`) is not. Without this, a
+# tool literally named e.g. `topK` -- which collides with an unrelated, real _CAMEL_TO_SNAKE entry
+# used for Azure AI Search's `indexes[].topK` -- would be silently renamed to `top_k`, making the
+# config apply to a nonexistent tool instead of the one actually named `topK`
+# (azure-ai-projects 2.3.0's ToolboxTool.tool_configs: "keys are tool names or `*`").
+_ARBITRARY_KEYED_MAP_FIELDS = {"toolConfigs"}
+
 
 # --------------------------------------------------------------------------------------
 # Pure helpers (no Azure SDK import; unit-tested offline)
@@ -205,8 +217,16 @@ def _convert_keys(value: Any, *, parent_key: str | None = None) -> Any:
     ``(parent_key, key)`` pairs in ``_OPAQUE_NESTED_KEYS`` (currently just ``openapi.spec``) are
     copied verbatim -- not recursed into -- so an externally-authored payload's own property
     names are never mistaken for AI4IA manifest keys and rewritten (see ``_OPAQUE_NESTED_KEYS``).
+
+    ``parent_key`` values in ``_ARBITRARY_KEYED_MAP_FIELDS`` (currently just ``toolConfigs``) get
+    a different treatment: the map's own keys are copied verbatim (they are caller-defined tool
+    names, not manifest schema keys), but -- unlike ``_OPAQUE_NESTED_KEYS`` -- each value is still
+    recursed into and snake_cased, since ``ToolConfig`` fields like ``additionalSearchText`` are
+    real AI4IA manifest keys (see ``_ARBITRARY_KEYED_MAP_FIELDS``).
     """
     if isinstance(value, dict):
+        if parent_key in _ARBITRARY_KEYED_MAP_FIELDS:
+            return {k: _convert_keys(v, parent_key=None) for k, v in value.items()}
         return {
             _to_snake(k): (v if (parent_key, k) in _OPAQUE_NESTED_KEYS else _convert_keys(v, parent_key=k))
             for k, v in value.items()
