@@ -58,6 +58,12 @@ interface InlineVoiceLiveOptions {
   // longer wants the session it triggered creation of to hijack navigation
   // once creation resolves, even when no actual navigation ever happened.
   ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+  // Lets discardPersistence release a pending ensureSession() call
+  // immediately rather than leaving it to time out on its own. Optional so
+  // existing callers/tests that don't wire it keep today's behavior
+  // (discard still unlocks the UI instantly either way; only the
+  // ChatApp-level cache eviction/network abort is skipped).
+  abandonPendingSessionCreation?: () => void;
   persistConversation: (
     sessionId: string,
     conversationId: string,
@@ -96,10 +102,13 @@ export interface InlineVoiceLiveState {
   stop: () => void;
   retryPersistence: () => void;
   // Abandons a stuck (still saving) or failed voice transcript so navigation
-  // unlocks immediately without waiting on the network. The underlying save
-  // request, if still in flight, is left to resolve in the background (its
-  // outcome is ignored) rather than aborted, since fetch cancellation isn't
-  // plumbed through ensureSession/persistConversation.
+  // unlocks immediately without waiting on the network. If the save hasn't
+  // reached persistConversation yet -- it's still waiting on session
+  // creation -- that pending creation is cancelled via
+  // abandonPendingSessionCreation, when the caller supplies it. A save
+  // already past that point (persistConversation itself in flight) is left
+  // to resolve in the background with its outcome ignored, since fetch
+  // cancellation isn't plumbed through persistConversation.
   discardPersistence: () => void;
 }
 
@@ -202,6 +211,7 @@ export function useInlineVoiceLive({
   tools = false,
   activeSessionId = null,
   ensureSession,
+  abandonPendingSessionCreation,
   persistConversation,
 }: InlineVoiceLiveOptions): InlineVoiceLiveState {
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -393,8 +403,9 @@ export function useInlineVoiceLive({
 
   const discardPersistence = useCallback(() => {
     // Invalidates any attempt captured so far -- in-flight or not -- so its
-    // eventual settlement (however long it takes, since the underlying
-    // request is not aborted) can never mutate state again.
+    // eventual settlement (however long it takes for a save already past
+    // session creation, since persistConversation itself is not aborted)
+    // can never mutate state again.
     attemptIdRef.current += 1;
     persistenceRef.current = null;
     sessionPromiseRef.current = null;
@@ -402,7 +413,14 @@ export function useInlineVoiceLive({
     setSaving(false);
     setPersistenceError(null);
     setPersisted(true);
-  }, []);
+    // If this attempt's ensureSession() call is still pending (hasn't
+    // reached persistConversation yet), release the ChatApp-level cache
+    // slot and abort the underlying request immediately rather than
+    // leaving it to run until SESSION_CREATION_TIMEOUT_MS elapses on its
+    // own -- a no-op if a different intent (different settings/generation,
+    // or one that already settled) now occupies that slot.
+    abandonPendingSessionCreation?.();
+  }, [abandonPendingSessionCreation]);
 
   const start = useCallback(() => {
     if (persistenceRef.current) return;
@@ -687,7 +705,7 @@ export function InlineVoiceLiveStatus({
         <button
           type="button"
           onClick={voice.discardPersistence}
-          title="Stop waiting on this voice transcript so chat navigation unlocks immediately. A save already in progress isn't cancelled and may still complete in the background."
+          title="Stop waiting on this voice transcript so chat navigation unlocks immediately. Session creation still pending is cancelled right away; a save already past that point isn't cancelled and may still complete in the background."
           style={{
             border: "1px solid var(--border)",
             borderRadius: 999,

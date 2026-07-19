@@ -85,6 +85,52 @@ import { EditableSessionTitle } from "./EditableSessionTitle";
 const MOBILE_SIDEBAR_QUERY = "(max-width: 720px)";
 const MOBILE_INSPECTOR_QUERY = "(max-width: 1050px)";
 
+// Bounds how long ANY caller of ensureSession -- not just whichever one
+// started the request -- will wait on a single pending session creation
+// before giving up and evicting the shared cache entry. Without this, a
+// hung createSession() network call (dropped connection, backend stall)
+// left the entry cached forever: a later Retry (after voice's own
+// PERSIST_TIMEOUT_MS fired) or a plain text send would join the exact same
+// doomed promise and hang right along with it, with no way out short of a
+// page reload. 20s matches voice's PERSIST_TIMEOUT_MS (InlineVoiceLive.tsx)
+// so the two settle around the same time for voice's own call; send/upload
+// have no timeout of their own today and rely entirely on this bound.
+const SESSION_CREATION_TIMEOUT_MS = 20_000;
+
+// Rejects once `deadline` (a Date.now()-style absolute timestamp) has
+// passed; never resolves. Racing this against a pending creation bounds how
+// long a caller waits without affecting the underlying request itself --
+// that keeps running in the background exactly as it does today unless
+// abandonPendingSessionCreation() also aborts it. Deadline-based (rather
+// than a fixed delay from "now") so a caller that joins an already-pending
+// creation partway through still only waits out the REMAINDER of the
+// original budget, not a fresh full timeout.
+//
+// Its own setTimeout is never cleared, so on the far more common path --
+// entry.promise wins the race because creation succeeds well within the
+// budget -- this promise is left pending and rejects on its own, unread,
+// once the original deadline arrives. A bare `.catch(() => {})` here (on a
+// throwaway derived promise, not the one actually returned/raced) keeps
+// that inevitable, ignorable rejection from ever surfacing as an "Uncaught
+// (in promise)" console warning; Promise.race still independently attaches
+// its own handler to the very same returned promise, so the real caller
+// racing against it is completely unaffected and still observes the
+// rejection when this side of the race genuinely wins.
+function sessionCreationDeadline(deadline: number): Promise<never> {
+  const timeout = new Promise<never>((_, reject) => {
+    const delay = Math.max(0, deadline - Date.now());
+    setTimeout(() => {
+      reject(
+        new Error(
+          "Creating the conversation is taking too long. Please try again.",
+        ),
+      );
+    }, delay);
+  });
+  timeout.catch(() => {});
+  return timeout;
+}
+
 function pickDefaultModel(models: ModelEntry[]): string | null {
   // Never default to a capability model: prefer a plain "chat" model, then any
   // conversational model, and only then give up.
@@ -313,13 +359,45 @@ export function ChatApp() {
   // chat never clears this ref, so without the generation component two
   // otherwise-unrelated generations that share the same default settings
   // could otherwise collide on the same cache entry.
-  const creatingRef = useRef<{ intentKey: string; promise: Promise<string> } | null>(
-    null,
-  );
+  //
+  // startedAt + controller back the SESSION_CREATION_TIMEOUT_MS bound in
+  // ensureSession: startedAt lets every caller (not just the one that
+  // installed the entry) compute the same absolute deadline, and controller
+  // lets a hung request actually be cancelled -- either once that bound
+  // trips, or immediately via abandonPendingSessionCreation() (wired to
+  // voice's "Stop waiting") -- instead of merely being ignored while it
+  // keeps running forever in the background. mismatchClaimed lets at most
+  // ONE caller sharing this entry (same generation + settings, hence the
+  // same key) ever attempt a cross-key mismatch supersession against
+  // activeIntentKeyRef (see ensureSession) -- two such callers normally
+  // settle back-to-back in the same microtask flush, but are not guaranteed
+  // to, and without this a second one could re-observe "the active key
+  // differs from mine" (because a third, genuinely different intent
+  // superseded in the gap) and incorrectly flip activation back to this
+  // entry's own, already-adjudicated key.
+  const creatingRef = useRef<{
+    intentKey: string;
+    promise: Promise<string>;
+    startedAt: number;
+    controller: AbortController;
+    mismatchClaimed: boolean;
+  } | null>(null);
   // Synchronous mirror of activeId so ensureSession sees a just-created session
   // immediately (before the setActiveId state flush), preventing a double create
   // when an upload is quickly followed by a send.
   const sessionIdRef = useRef<string | null>(null);
+  // The intentKey (see ensureSession) that sessionIdRef.current was last
+  // activated under. Null whenever sessionIdRef.current is null. Lets
+  // ensureSession detect a genuine settings mismatch -- a later caller
+  // racing to create its OWN session, under different model/prompt/agent/
+  // tools/docs, that resolves after an earlier (differently-configured)
+  // candidate already activated -- and let the later, mismatched caller
+  // supersede rather than silently inherit config it never asked for. Only
+  // ever consulted while sessionIdRef.current is non-null (activation is a
+  // one-shot event per generation prior to that), so this never second-
+  // guesses an already-established, in-use conversation -- only the narrow
+  // window where two brand-new candidate sessions are still racing.
+  const activeIntentKeyRef = useRef<string | null>(null);
   const selectionGenerationRef = useRef(0);
   const modelMutationGenerationRef = useRef(0);
   const capabilityGenerationRef = useRef(0);
@@ -424,6 +502,13 @@ export function ChatApp() {
       }
       const generation = ++selectionGenerationRef.current;
       sessionIdRef.current = id;
+      // A brand-new selection generation can never legitimately be compared
+      // against an intentKey computed under the previous one (its captured
+      // generation number is now stale), so there is nothing left for a
+      // future ensureSession race to correctly supersede against -- clear it
+      // rather than let a coincidental key match from an unrelated future
+      // creation silently skip activation.
+      activeIntentKeyRef.current = null;
       setActiveId(id);
       setError(null);
       try {
@@ -488,6 +573,9 @@ export function ChatApp() {
     if (voiceActiveRef.current) voiceStopRef.current();
     selectionGenerationRef.current += 1;
     sessionIdRef.current = null;
+    // See the matching comment in selectSession: a new generation invalidates
+    // any intentKey computed under the old one.
+    activeIntentKeyRef.current = null;
     setActiveId(null);
     setMessages([]);
     setDocuments([]);
@@ -577,6 +665,24 @@ export function ChatApp() {
     [],
   );
 
+  // Shared by ensureSession and abandonPendingSessionCreation so both always
+  // compute the identical key from the identical formula. Memoized (rather
+  // than a plain function) so its own identity only changes when one of the
+  // settings it captures actually does -- both callers below list it as a
+  // dependency, and without memoizing it here that would force a fresh
+  // ensureSession/abandonPendingSessionCreation every single render.
+  const computeSessionIntentKey = useCallback(
+    (capturedGeneration: number) =>
+      `${capturedGeneration}:${JSON.stringify({
+        model: selectedModel,
+        systemPrompt: systemPrompt || null,
+        agentName: draftDefaults.agentName,
+        toolOverrides: draftDefaults.toolOverrides,
+        libraryDocumentIds: draftDefaults.libraryDocumentIds,
+      })}`,
+    [selectedModel, systemPrompt, draftDefaults],
+  );
+
   // Lazily create (or reuse) the active session. Shared by send + document
   // upload so they never race to create two sessions; concurrent callers await
   // the same in-flight creation promise.
@@ -624,26 +730,36 @@ export function ChatApp() {
   // entries, two genuinely different callers (e.g. Voice Live creating
   // under one set of settings while a text send/upload creates under
   // another, both concurrently) can each have their own in-flight
-  // createSession() call outstanding at once. Whichever one resolves first
-  // activates its session as above; the return value below guarantees
-  // every caller -- winner or loser, regardless of resolution order --
-  // ends up with the session that is actually current by the time its own
-  // call resolves, never its own now-orphaned creation. Without this, the
-  // loser would silently receive a real, persisted, but never-activated
-  // session id and use it for a real side effect (a send, an upload, a
-  // voice-turn append) that would land invisibly in a conversation the UI
-  // never shows.
+  // createSession() call outstanding at once. Activation below lets
+  // whichever intent resolves LAST supersede an already-active DIFFERENT
+  // (mismatched) one -- see activeIntentKeyRef -- rather than always
+  // favoring whoever merely resolved first, since silently converging every
+  // caller onto the first winner would mean a later, differently-configured
+  // caller (e.g. a plain text send after Stop waiting + New chat changed
+  // the settings) sends into a session actually built from stale config. A
+  // same-key resolution never displaces anything, so this only ever
+  // arbitrates between brand-new, still-racing candidates on a blank
+  // starting point -- never against an already-established, in-use
+  // conversation (activation is impossible once sessionIdRef.current is set
+  // unless the intent key genuinely differs). The return value below
+  // guarantees every OTHER caller -- one whose own intent didn't end up
+  // activating -- still ends up with the session that is actually current
+  // by the time its own call resolves, never its own now-orphaned creation.
+  //
+  // A pending creation's wait is bounded to SESSION_CREATION_TIMEOUT_MS from
+  // when it STARTED (not from when each caller joined), for every caller
+  // sharing the entry -- not just whichever one installed it -- so a hung
+  // network call can never wedge Retry, a plain text send, or navigation
+  // forever. Once that bound trips (or abandonPendingSessionCreation() is
+  // called explicitly -- see InlineVoiceLive's "Stop waiting" wiring), the
+  // entry is evicted identity-safely and its request is aborted so the next
+  // caller gets a genuinely fresh attempt instead of racing the same doomed
+  // promise again.
   const ensureSession = useCallback(
     async (isStillWanted?: () => boolean): Promise<string> => {
       if (sessionIdRef.current) return sessionIdRef.current;
       const capturedGeneration = selectionGenerationRef.current;
-      const intentKey = `${capturedGeneration}:${JSON.stringify({
-        model: selectedModel,
-        systemPrompt: systemPrompt || null,
-        agentName: draftDefaults.agentName,
-        toolOverrides: draftDefaults.toolOverrides,
-        libraryDocumentIds: draftDefaults.libraryDocumentIds,
-      })}`;
+      const intentKey = computeSessionIntentKey(capturedGeneration);
       let entry = creatingRef.current;
       if (!entry || entry.intentKey !== intentKey) {
         // The identity-safe cleanup below is registered via `.finally()`
@@ -656,14 +772,18 @@ export function ChatApp() {
         // statement has returned. `.finally()`'s callback is merely
         // registered here, not invoked synchronously, so it can safely
         // close over `creation` once assigned.
+        const controller = new AbortController();
         const creation: Promise<string> = (async () => {
-          const created = await api.createSession({
-            model: selectedModel,
-            systemPrompt: systemPrompt || null,
-            agentName: draftDefaults.agentName,
-            toolOverrides: draftDefaults.toolOverrides,
-            libraryDocumentIds: draftDefaults.libraryDocumentIds,
-          });
+          const created = await api.createSession(
+            {
+              model: selectedModel,
+              systemPrompt: systemPrompt || null,
+              agentName: draftDefaults.agentName,
+              toolOverrides: draftDefaults.toolOverrides,
+              libraryDocumentIds: draftDefaults.libraryDocumentIds,
+            },
+            controller.signal,
+          );
           setSessions((prev) => [created, ...prev]);
           return created.id;
         })().finally(() => {
@@ -674,16 +794,61 @@ export function ChatApp() {
             creatingRef.current = null;
           }
         });
-        entry = { intentKey, promise: creation };
+        entry = {
+          intentKey,
+          promise: creation,
+          startedAt: Date.now(),
+          controller,
+          mismatchClaimed: false,
+        };
         creatingRef.current = entry;
       }
-      const id = await entry.promise;
+      let id: string;
+      try {
+        id = await Promise.race([
+          entry.promise,
+          sessionCreationDeadline(
+            entry.startedAt + SESSION_CREATION_TIMEOUT_MS,
+          ),
+        ]);
+      } catch (waitError) {
+        // Bounded out. Evict identity-safely (a differently-keyed, newer
+        // entry may already have replaced this one) and abort the
+        // underlying request so it stops consuming a connection and any
+        // OTHER caller still awaiting this same entry.promise also gives up
+        // now instead of hanging until its own (later-computed, but
+        // identical) deadline -- rather than leave the next caller to race
+        // the same doomed promise again. The abort's eventual rejection
+        // inside the creation IIFE above is swallowed by the existing
+        // `.finally()`, so this never produces an unhandled rejection.
+        if (creatingRef.current === entry) {
+          creatingRef.current = null;
+        }
+        entry.controller.abort();
+        throw waitError;
+      }
       const stillCurrentSelection =
-        selectionGenerationRef.current === capturedGeneration &&
-        !sessionIdRef.current;
+        selectionGenerationRef.current === capturedGeneration;
       const stillWanted = isStillWanted ? isStillWanted() : true;
-      if (stillCurrentSelection && stillWanted) {
+      const noSessionActiveYet = !sessionIdRef.current;
+      // At most one caller sharing this entry ever gets to attempt a
+      // cross-key mismatch supersession -- see the mismatchClaimed comment
+      // on creatingRef. Claimed unconditionally (regardless of the outcome
+      // below), since the invariant is "this key's one comparison has
+      // happened", not "this key's comparison succeeded".
+      const canClaimMismatch = !entry.mismatchClaimed;
+      entry.mismatchClaimed = true;
+      const settingsMismatch =
+        canClaimMismatch &&
+        !noSessionActiveYet &&
+        activeIntentKeyRef.current !== intentKey;
+      if (
+        stillCurrentSelection &&
+        stillWanted &&
+        (noSessionActiveYet || settingsMismatch)
+      ) {
         sessionIdRef.current = id;
+        activeIntentKeyRef.current = intentKey;
         setActiveId(id);
         return id;
       }
@@ -691,27 +856,50 @@ export function ChatApp() {
       // entry, since it had different settings and/or a different selection
       // generation -- may have already become the active session while this
       // caller's own creation was in flight (regardless of resolution
-      // order: whichever intent's network call settles first wins
-      // activation above). Unconditionally returning THIS creation's own id
-      // here would hand the caller a real, backend-persisted, but never-
-      // activated/never-shown session -- a send/upload/voice-turn append
-      // would then silently write into a conversation nobody can see.
-      // Falling back to whatever id IS current instead means every caller
-      // converges on the one conversation actually on screen: send/upload
-      // (which never supply isStillWanted, and can't have their generation
-      // change mid-flight since navigation is blocked while they're
-      // pending) always get either their own session or this safe
-      // fallback. Voice, the only caller whose own stillWanted can be
-      // false, independently re-checks that identical condition before
-      // acting on any result (persist/finish in InlineVoiceLive.tsx), so it
-      // safely ignores whatever id comes back once it's no longer wanted.
-      // If nothing has activated at all yet (this call's own activation
-      // was declined and no other intent has settled either), fall back to
-      // this creation's own id exactly as before.
+      // order: whichever intent's network call settles LAST, if its
+      // settings genuinely differ from what's currently active, wins
+      // activation above; a same-key resolution never displaces anything).
+      // Unconditionally returning THIS creation's own id here would hand
+      // the caller a real, backend-persisted, but never-activated/never-
+      // shown session -- a send/upload/voice-turn append would then
+      // silently write into a conversation nobody can see. Falling back to
+      // whatever id IS current instead means every caller converges on the
+      // one conversation actually on screen: send/upload (which never
+      // supply isStillWanted, and can't have their generation change mid-
+      // flight since navigation is blocked while they're pending) always
+      // get either their own session or this safe fallback. Voice, the
+      // only caller whose own stillWanted can be false, independently
+      // re-checks that identical condition before acting on any result
+      // (persist/finish in InlineVoiceLive.tsx), so it safely ignores
+      // whatever id comes back once it's no longer wanted. If nothing has
+      // activated at all yet (this call's own activation was declined and
+      // no other intent has settled either), fall back to this creation's
+      // own id exactly as before.
       return sessionIdRef.current ?? id;
     },
-    [draftDefaults, selectedModel, systemPrompt],
+    [computeSessionIntentKey, draftDefaults, selectedModel, systemPrompt],
   );
+
+  // Lets a caller (voice's "Stop waiting") release a pending session
+  // creation immediately instead of waiting out SESSION_CREATION_TIMEOUT_MS.
+  // Recomputes the SAME intentKey formula ensureSession uses and only acts
+  // if creatingRef.current still matches it -- key-safe rather than
+  // identity-safe, since the caller here (InlineVoiceLive) has no access to
+  // ensureSession's internal entry/promise, only to the settings that would
+  // produce the same key. If a DIFFERENT intent (different settings, or a
+  // later generation) now occupies the slot, this is a no-op: the caller
+  // abandoning its OWN wait must never cancel someone else's creation.
+  // Likewise a no-op if this intent already activated or failed, since
+  // creatingRef is cleared by the original `.finally()` once a creation
+  // settles -- there is nothing left in flight to abandon.
+  const abandonPendingSessionCreation = useCallback(() => {
+    const intentKey = computeSessionIntentKey(selectionGenerationRef.current);
+    const entry = creatingRef.current;
+    if (entry && entry.intentKey === intentKey) {
+      creatingRef.current = null;
+      entry.controller.abort();
+    }
+  }, [computeSessionIntentKey]);
 
   const runUpload = useCallback(
     async (uploadId: string) => {
@@ -1059,6 +1247,7 @@ export function ChatApp() {
     tools: voiceToolsAvailable && voicePrefsResolved.tools,
     activeSessionId: activeId,
     ensureSession,
+    abandonPendingSessionCreation,
     persistConversation: persistVoiceConversation,
   });
   // Session/chat navigation is blocked only while there is voice data that

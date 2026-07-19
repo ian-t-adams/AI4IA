@@ -415,19 +415,23 @@ export async function listSessions(): Promise<Session[]> {
   return jsonOrThrow(await apiFetch("/api/sessions", { cache: "no-store" }));
 }
 
-export async function createSession(input: {
-  title?: string;
-  model?: string | null;
-  systemPrompt?: string | null;
-  agentName?: string | null;
-  toolOverrides?: ToolOverrides;
-  libraryDocumentIds?: string[] | null;
-}): Promise<Session> {
+export async function createSession(
+  input: {
+    title?: string;
+    model?: string | null;
+    systemPrompt?: string | null;
+    agentName?: string | null;
+    toolOverrides?: ToolOverrides;
+    libraryDocumentIds?: string[] | null;
+  },
+  signal?: AbortSignal,
+): Promise<Session> {
   return jsonOrThrow(
     await apiFetch("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
+      signal,
     }),
   );
 }
