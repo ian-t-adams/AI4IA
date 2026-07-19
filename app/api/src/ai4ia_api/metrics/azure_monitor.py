@@ -11,6 +11,15 @@ imported lazily inside ``__init__`` so the app and tests run without
 ``azure-monitor-querymetrics`` installed and the service can degrade gracefully. A
 small in-process protocol (:class:`MetricsQuerier`) lets tests inject a fake querier
 with zero Azure dependency.
+
+One :meth:`AzureMonitorQuerier.query` call may issue more than one
+``query_resources`` request: the batch API requires every metric named in a
+single request to support every aggregation requested in that same request, so
+a panel whose metrics don't all share one aggregation (e.g. Cosmos DB mixing
+Count-only, Total-only, and Average-only metrics) is split into one request
+per distinct aggregation and the results are merged back in the caller's
+order. Panels whose metrics already share one aggregation still make exactly
+one request.
 """
 from __future__ import annotations
 
@@ -77,8 +86,6 @@ class AzureMonitorQuerier:
     ) -> list[MetricPoint]:
         from azure.monitor.querymetrics import MetricAggregationType
 
-        # Request every aggregation the panel needs once; read the configured one
-        # off each metric's latest non-null datapoint below.
         agg_map = {
             "average": MetricAggregationType.AVERAGE,
             "total": MetricAggregationType.TOTAL,
@@ -86,22 +93,43 @@ class AzureMonitorQuerier:
             "count": MetricAggregationType.COUNT,
         }
         namespace = _metric_namespace(resource_id)
-        aggregations = sorted({r.aggregation for r in requests})
-        # Batch data-plane API: one resource per call, namespace derived from its id.
-        results = await self._client.query_resources(
-            resource_ids=[resource_id],
-            metric_namespace=namespace,
-            metric_names=[r.name for r in requests],
-            timespan=timedelta(minutes=window_minutes),
-            granularity=timedelta(minutes=granularity_minutes),
-            aggregations=[agg_map[a] for a in aggregations],
-        )
-        metrics = results[0].metrics if results else []
-        by_name = {str(m.name): m for m in metrics}
-        points: list[MetricPoint] = []
+
+        # Production incident: Azure Monitor's batch metrics API rejects a call
+        # whose requested aggregation isn't supported by *every* metric named in
+        # that same call (e.g. Cosmos DB's TotalRequests supports only Count,
+        # TotalRequestUnits only Total/Average/Maximum, and ServiceAvailability
+        # only Minimum/Average/Maximum -- no aggregation is common to all
+        # three). A single call requesting the union of every panel metric's
+        # aggregation is invalid whenever a panel mixes metrics that don't all
+        # share one. Group requests by their own aggregation and issue one call
+        # per group instead, so each call only ever asks for an aggregation
+        # every metric in it actually supports. Panels whose metrics already
+        # share one aggregation (the common case) still make exactly one call.
+        groups: dict[str, list[MetricRequest]] = {}
         for req in requests:
-            points.append(self._resolve(req, by_name.get(req.name)))
-        return points
+            groups.setdefault(req.aggregation, []).append(req)
+
+        # Resolve each request against its own group's response only (never a
+        # map merged across groups), so two requests that name the same metric
+        # under different aggregations can never shadow one another.
+        resolved: dict[tuple[str, str], object] = {}
+        for aggregation, group_requests in groups.items():
+            results = await self._client.query_resources(
+                resource_ids=[resource_id],
+                metric_namespace=namespace,
+                metric_names=[r.name for r in group_requests],
+                timespan=timedelta(minutes=window_minutes),
+                granularity=timedelta(minutes=granularity_minutes),
+                aggregations=[agg_map[aggregation]],
+            )
+            metrics = results[0].metrics if results else []
+            for metric in metrics:
+                resolved[(str(metric.name), aggregation)] = metric
+
+        return [
+            self._resolve(req, resolved.get((req.name, req.aggregation)))
+            for req in requests
+        ]
 
     @staticmethod
     def _resolve(req: MetricRequest, metric) -> MetricPoint:

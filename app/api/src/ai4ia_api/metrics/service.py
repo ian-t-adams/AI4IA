@@ -84,9 +84,12 @@ PANEL_SPECS: tuple[_PanelSpec, ...] = (
         # and TotalRequestUnits support down to 1 minute); querying all three
         # together at the service default of 5 minutes is rejected by Azure
         # Monitor: "BadRequest: ... only support common time grain 01:00:00".
-        # Separately, TotalRequests only supports the Count aggregation (not
-        # Total/Average/Maximum) -- Azure Monitor rejects any other requested
-        # aggregation for that metric name with its own 400 BadRequest.
+        # Separately, TotalRequests only supports the Count aggregation,
+        # TotalRequestUnits only Total/Average/Maximum, and ServiceAvailability
+        # only Minimum/Average/Maximum -- no aggregation is common to all
+        # three, so AzureMonitorQuerier issues one query_resources call per
+        # aggregation for this panel rather than one combined call (which
+        # Azure Monitor would reject with its own 400 BadRequest).
         granularity_minutes=60,
     ),
     _PanelSpec(
