@@ -179,6 +179,7 @@ function isReconciliationStale(
 
 const RECONCILE_MAX_ATTEMPTS = 2;
 const RECONCILE_RETRY_DELAY_MS = 150;
+const MAX_KNOWN_MESSAGE_IDS = 500;
 
 function wait(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -266,13 +267,13 @@ function resolvePendingTurns(
   const removeIds = new Set<string>();
   const openRowIds = new Set<string>();
   for (const [clientTurnId, entry] of [...pendingTurns.entries()]) {
-    if (entry.sessionId !== fetchedSessionId) continue;
     // A stale-generation entry's messages were already wiped by whatever
     // reselect bumped the generation; nothing left here to resolve.
     if (entry.generation !== activeGeneration) {
       pendingTurns.delete(clientTurnId);
       continue;
     }
+    if (entry.sessionId !== fetchedSessionId) continue;
     const rows = correlatedRows(fresh, entry);
     const persistedAssistant = rows.find(
       (message) => message.role === "assistant",
@@ -307,6 +308,22 @@ function resolvePendingTurns(
     }
   }
   return { removeIds, openRowIds };
+}
+
+function prunePendingTurns(
+  pendingTurns: Map<string, PendingTurn>,
+  activeSessionId: string | null,
+  activeGeneration: number,
+) {
+  for (const [clientTurnId, entry] of pendingTurns) {
+    if (
+      activeSessionId === null ||
+      entry.sessionId !== activeSessionId ||
+      entry.generation !== activeGeneration
+    ) {
+      pendingTurns.delete(clientTurnId);
+    }
+  }
 }
 
 // Mirrors the backend's persistence contract (runtime.py persist=False on
@@ -709,6 +726,9 @@ export function ChatApp() {
       const generation = isSameSession
         ? selectionGenerationRef.current
         : ++selectionGenerationRef.current;
+      if (!isSameSession) {
+        prunePendingTurns(pendingTurnsRef.current, id, generation);
+      }
       cancelHistoryRequests();
       sessionIdRef.current = id;
       setActiveId(id);
@@ -824,6 +844,11 @@ export function ChatApp() {
       if (id === activeId && voiceActiveRef.current) voiceStopRef.current();
       try {
         await api.deleteSession(id);
+        for (const [clientTurnId, pending] of pendingTurnsRef.current) {
+          if (pending.sessionId === id) {
+            pendingTurnsRef.current.delete(clientTurnId);
+          }
+        }
         if (id === activeId) newChat();
         await refreshSessions();
       } catch (e) {
@@ -1516,7 +1541,9 @@ export function ChatApp() {
         clientTurnId,
         source: "chat",
         knownMessageIds: new Set(
-          messagesRef.current.map((message) => message.id),
+          messagesRef.current
+            .slice(-MAX_KNOWN_MESSAGE_IDS)
+            .map((message) => message.id),
         ),
         optimisticUserId: optimisticUser.id,
         placeholderId: null,
@@ -1657,6 +1684,15 @@ export function ChatApp() {
             if (ids.clientTurnId && ids.clientTurnId !== clientTurnId) return;
             pendingTurn.assistantMessageId = ids.assistantMessageId;
             pendingTurn.userMessageId = ids.userMessageId;
+          },
+          onInProgress: (retryAfterMs) => {
+            setError(
+              `This turn is still running. Check again in ${Math.max(
+                1,
+                Math.ceil(retryAfterMs / 1000),
+              )} second(s).`,
+            );
+            void finalize("cancelled");
           },
           onDone: () => void finalize("complete"),
           onError: (msg) => {

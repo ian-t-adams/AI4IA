@@ -750,6 +750,9 @@ export interface StreamHandlers {
   }) => void;
   // A definitive HTTP rejection before an SSE body was accepted.
   onRejected?: (status: number, detail: string) => void;
+  // The same id is already executing in another request. This is deliberately
+  // distinct from completion: callers keep the turn pending and reconcile later.
+  onInProgress?: (retryAfterMs: number) => void;
   // Called when the caller aborts the stream (e.g. Stop button). Lets the UI
   // reconcile with the server, which persists a `cancelled` assistant message.
   onAbort?: () => void;
@@ -772,9 +775,11 @@ export function streamChat(
   const controller = new AbortController();
 
   (async () => {
+    const chatProtocol = "client-turn-v2";
     const maxAttempts = 2;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       let sawEvent = false;
+      let retrySafe = false;
       try {
         const resp = await apiFetch("/api/chat", {
           method: "POST",
@@ -788,6 +793,8 @@ export function streamChat(
           handlers.onError(`${resp.status}: ${detail}`);
           return;
         }
+        retrySafe =
+          resp.headers.get("X-AI4IA-Chat-Protocol") === chatProtocol;
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -810,6 +817,14 @@ export function streamChat(
               const obj = JSON.parse(payload);
               if (obj.error) {
                 handlers.onError(String(obj.error));
+                return;
+              }
+              if (obj.inProgress) {
+                handlers.onInProgress?.(
+                  Number.isFinite(Number(obj.retryAfterMs))
+                    ? Number(obj.retryAfterMs)
+                    : 1000,
+                );
                 return;
               }
               if (obj.step) {
@@ -837,7 +852,7 @@ export function streamChat(
         }
         // A response accepted but lost before its first SSE byte is safe to retry:
         // clientTurnId makes the POST idempotent at the API persistence boundary.
-        if (!sawEvent && attempt < maxAttempts - 1) {
+        if (retrySafe && !sawEvent && attempt < maxAttempts - 1) {
           await abortableDelay(100, controller.signal);
           continue;
         }
@@ -848,7 +863,7 @@ export function streamChat(
           handlers.onAbort?.();
           return;
         }
-        if (!sawEvent && attempt < maxAttempts - 1) {
+        if (retrySafe && !sawEvent && attempt < maxAttempts - 1) {
           try {
             await abortableDelay(100, controller.signal);
             continue;

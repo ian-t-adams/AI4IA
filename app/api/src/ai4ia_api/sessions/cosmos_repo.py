@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from .models import (
     Document,
     Message,
+    MessageStatus,
     Session,
     normalize_session_patch_changes,
     normalize_session_title,
@@ -420,6 +421,56 @@ class CosmosSessionRepository:
                 raise ClientTurnConflictError(user_message.clientTurnId)
             return saved_user, saved_assistant, False
 
+    async def terminalize_chat_turn(
+        self,
+        user_id: str,
+        session_id: str,
+        assistant_message_id: str,
+        *,
+        status: MessageStatus,
+        content: str,
+        stale_before: datetime | None = None,
+    ) -> Message | None:
+        from azure.core import MatchConditions
+        from azure.cosmos.exceptions import (
+            CosmosAccessConditionFailedError,
+            CosmosResourceNotFoundError,
+        )
+
+        await self._owned_session(user_id, session_id)
+        for _ in range(3):
+            try:
+                raw = await self._messages.read_item(
+                    item=assistant_message_id, partition_key=session_id
+                )
+            except CosmosResourceNotFoundError:
+                return None
+            current = Message.model_validate(raw)
+            if current.userId != user_id:
+                raise SessionNotFoundError(session_id)
+            if current.status.value != "streaming":
+                return current
+            if stale_before is not None and current.createdAt > stale_before:
+                return current
+            try:
+                saved = await self._messages.patch_item(
+                    item=assistant_message_id,
+                    partition_key=session_id,
+                    patch_operations=[
+                        {"op": "set", "path": "/status", "value": status.value},
+                        {"op": "set", "path": "/content", "value": content},
+                    ],
+                    etag=raw.get("_etag"),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+                return Message.model_validate(saved)
+            except CosmosAccessConditionFailedError:
+                continue
+        latest = await self._messages.read_item(
+            item=assistant_message_id, partition_key=session_id
+        )
+        return Message.model_validate(latest)
+
     async def add_message_if_summary_version(
         self, user_id: str, message: Message, *, expected_version: int
     ) -> bool:
@@ -430,7 +481,7 @@ class CosmosSessionRepository:
             return False
         message.userId = user_id
         message.summaryVersion = expected_version
-        await self._messages.create_item(self._to_doc(message))
+        await self._messages.upsert_item(self._to_doc(message))
         latest = await self._owned_session(user_id, message.sessionId)
         if latest.summaryVersion == expected_version:
             return True

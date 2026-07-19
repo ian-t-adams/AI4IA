@@ -239,6 +239,9 @@ class _SummaryMessages:
             self.items.pop(body["id"], None)
         return body
 
+    async def upsert_item(self, body):
+        return await self.create_item(body)
+
     async def delete_item(self, *, item, partition_key):
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 

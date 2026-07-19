@@ -8,7 +8,10 @@ import { apiFetch } from "./auth";
 
 const mockApiFetch = vi.mocked(apiFetch);
 
-function sseResponse(chunks: string[]): Response {
+function sseResponse(
+  chunks: string[],
+  protocol: string | null = "client-turn-v2",
+): Response {
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -16,7 +19,15 @@ function sseResponse(chunks: string[]): Response {
       controller.close();
     },
   });
-  return { ok: true, status: 200, statusText: "OK", body: stream } as unknown as Response;
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    body: stream,
+    headers: new Headers(
+      protocol ? { "X-AI4IA-Chat-Protocol": protocol } : undefined,
+    ),
+  } as unknown as Response;
 }
 
 afterEach(() => mockApiFetch.mockReset());
@@ -131,6 +142,61 @@ describe("streamChat", () => {
     );
     expect(bodies[0].clientTurnId).toBe(bodies[1].clientTurnId);
     expect(text).toBe("replayed");
+  });
+
+  it("does not retry a byte-less response without the current protocol marker", async () => {
+    mockApiFetch.mockResolvedValue(sseResponse([], null));
+    const error = vi.fn();
+    await new Promise<void>((resolve) => {
+      streamChat(
+        {
+          sessionId: "s1",
+          content: "hi",
+          clientTurnId: "123e4567-e89b-42d3-a456-426614174000",
+        },
+        {
+          onDelta: vi.fn(),
+          onDone: resolve,
+          onError: (message) => {
+            error(message);
+            resolve();
+          },
+        },
+      );
+    });
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith("Stream ended unexpectedly.");
+  });
+
+  it("reports an in-progress replay without treating it as done", async () => {
+    mockApiFetch.mockResolvedValue(
+      sseResponse([
+        `data: ${JSON.stringify({ inProgress: true, retryAfterMs: 750 })}\n\n`,
+      ]),
+    );
+    const done = vi.fn();
+    const inProgress = vi.fn();
+    await new Promise<void>((resolve) => {
+      streamChat(
+        {
+          sessionId: "s1",
+          content: "hi",
+          clientTurnId: "123e4567-e89b-42d3-a456-426614174000",
+        },
+        {
+          onDelta: vi.fn(),
+          onDone: done,
+          onError: resolve,
+          onInProgress: (retryAfterMs) => {
+            inProgress(retryAfterMs);
+            resolve();
+          },
+        },
+      );
+    });
+    expect(inProgress).toHaveBeenCalledWith(750);
+    expect(done).not.toHaveBeenCalled();
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
   });
 
   it("reports definitive pre-SSE HTTP rejection separately", async () => {

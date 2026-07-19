@@ -117,10 +117,7 @@ async def execute_command(
             **changes,
         )
 
-    if client_turn_id and command.kind not in (
-        CommandKind.clear,
-        CommandKind.summarize,
-    ):
+    if client_turn_id and command.kind is not CommandKind.clear:
         user_message = turn_message(
             MessageRole.user,
             parsed.raw,

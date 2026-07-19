@@ -16,7 +16,7 @@ import json
 import logging
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -89,6 +89,12 @@ from ..websearch.factory import WebSearchService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
+CHAT_PROTOCOL_HEADER = "X-AI4IA-Chat-Protocol"
+CHAT_PROTOCOL_VERSION = "client-turn-v2"
+CHAT_TURN_REPLAY_WAIT_SECONDS = 0.5
+CHAT_TURN_REPLAY_POLL_SECONDS = 0.05
+CHAT_TURN_LEASE_SECONDS = 300
+SAFE_TURN_ERROR = "This turn couldn't be completed. Please try again."
 
 
 class ChatRequest(BaseModel):
@@ -149,6 +155,15 @@ def _turn_metadata(user_message: Message, assistant: Message) -> dict[str, str]:
     return metadata
 
 
+def _streaming_response(iterator: AsyncIterator[str], *, status_code: int = 200):
+    return StreamingResponse(
+        iterator,
+        status_code=status_code,
+        media_type="text/event-stream",
+        headers={CHAT_PROTOCOL_HEADER: CHAT_PROTOCOL_VERSION},
+    )
+
+
 def _replay_response(
     session_id: str, user_message: Message, assistant: Message, stream: bool
 ):
@@ -157,14 +172,69 @@ def _replay_response(
 
     async def gen():
         yield f"data: {json.dumps(_turn_metadata(user_message, assistant))}\n\n"
+        if assistant.status is MessageStatus.streaming:
+            yield (
+                "data: "
+                + json.dumps({"inProgress": True, "retryAfterMs": 1000})
+                + "\n\n"
+            )
+            return
         for step in assistant.steps or []:
             yield f"data: {json.dumps({'step': step.model_dump(exclude_none=True)})}\n\n"
         if assistant.content:
             chunk = {"choices": [{"delta": {"content": assistant.content}}]}
             yield f"data: {json.dumps(chunk)}\n\n"
+        if assistant.status in (MessageStatus.error, MessageStatus.cancelled):
+            detail = (
+                assistant.content
+                or (
+                    SAFE_TURN_ERROR
+                    if assistant.status is MessageStatus.error
+                    else "This turn was cancelled."
+                )
+            )
+            yield f"data: {json.dumps({'error': detail})}\n\n"
+            return
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return _streaming_response(gen())
+
+
+async def _resolved_replay_response(
+    *,
+    repo: SessionRepository,
+    user_id: str,
+    session_id: str,
+    user_message: Message,
+    assistant: Message,
+    stream: bool,
+):
+    if assistant.status is MessageStatus.streaming:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CHAT_TURN_REPLAY_WAIT_SECONDS
+        while loop.time() < deadline:
+            await asyncio.sleep(CHAT_TURN_REPLAY_POLL_SECONDS)
+            messages = await repo.list_messages(user_id, session_id)
+            current = next(
+                (message for message in messages if message.id == assistant.id),
+                assistant,
+            )
+            assistant = current
+            if assistant.status is not MessageStatus.streaming:
+                break
+        if assistant.status is MessageStatus.streaming:
+            stale_before = _now() - timedelta(seconds=CHAT_TURN_LEASE_SECONDS)
+            recovered = await repo.terminalize_chat_turn(
+                user_id,
+                session_id,
+                assistant.id,
+                status=MessageStatus.error,
+                content=SAFE_TURN_ERROR,
+                stale_before=stale_before,
+            )
+            if recovered is not None:
+                assistant = recovered
+    return _replay_response(session_id, user_message, assistant, stream)
 
 
 def _history(messages: list[Message], system_prompt: str | None) -> list[dict]:
@@ -320,7 +390,7 @@ def _local_reply_response(
         yield f"data: {json.dumps(chunk)}\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return _streaming_response(gen())
 
 
 # Live activity + final answer for an agentic (tool-using) turn. The turn's tool
@@ -426,6 +496,10 @@ async def _agentic_stream(
     except (asyncio.CancelledError, GeneratorExit):
         final = MessageStatus.cancelled
         raise
+    except Exception:
+        final = MessageStatus.error
+        content = SAFE_TURN_ERROR
+        yield f"data: {json.dumps({'error': SAFE_TURN_ERROR})}\n\n"
     finally:
         if not task.done():
             task.cancel()
@@ -649,6 +723,53 @@ async def chat(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    request.state.claimed_chat_turn = None
+    try:
+        return await _chat_impl(body, request, user)
+    except (asyncio.CancelledError, GeneratorExit):
+        await _terminalize_claimed_request(
+            body, request, user, MessageStatus.cancelled, "This turn was cancelled."
+        )
+        raise
+    except Exception:
+        await _terminalize_claimed_request(
+            body, request, user, MessageStatus.error, SAFE_TURN_ERROR
+        )
+        raise
+
+async def _terminalize_claimed_request(
+    body: ChatRequest,
+    request: Request,
+    user: AuthenticatedUser,
+    terminal_status: MessageStatus,
+    content: str,
+) -> None:
+    assistant_id = getattr(request.state, "claimed_chat_turn", None)
+    if assistant_id is None:
+        return
+    repo: SessionRepository = request.app.state.session_repo
+    try:
+        await asyncio.shield(
+            repo.terminalize_chat_turn(
+                user.internal_user_id,
+                body.sessionId,
+                assistant_id,
+                status=terminal_status,
+                content=content,
+            )
+        )
+    except Exception:
+        logger.error(
+            "Failed to terminalize claimed chat turn",
+            extra={"session_id": body.sessionId, "assistant_id": assistant_id},
+        )
+
+
+async def _chat_impl(
+    body: ChatRequest,
+    request: Request,
+    user: AuthenticatedUser,
+):
     repo: SessionRepository = request.app.state.session_repo
     catalog: ModelCatalog = request.app.state.catalog
     gateway: ModelGatewayClient = request.app.state.gateway
@@ -732,6 +853,13 @@ async def chat(
     if parsed.command is not None and parsed.command.kind is CommandKind.unknown:
         cmd_name = parsed.command.name
         if cmd_name in DIRECT_SLASH_TOOLS:
+            if body.clientTurnId:
+                request.state.claimed_chat_turn = turn_message_id(
+                    user.internal_user_id,
+                    body.sessionId,
+                    body.clientTurnId,
+                    MessageRole.assistant,
+                )
             try:
                 assistant = await execute_tool_command(
                     parsed=parsed,
@@ -745,6 +873,7 @@ async def chat(
                     client_request_fingerprint=fingerprint,
                 )
             except ClientTurnConflictError as exc:
+                request.state.claimed_chat_turn = None
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=(
@@ -764,6 +893,18 @@ async def chat(
                 if body.clientTurnId
                 else None
             )
+            if (
+                command_user is not None
+                and assistant.status is not MessageStatus.complete
+            ):
+                return await _resolved_replay_response(
+                    repo=repo,
+                    user_id=user.internal_user_id,
+                    session_id=body.sessionId,
+                    user_message=command_user,
+                    assistant=assistant,
+                    stream=body.stream,
+                )
             return _local_reply_response(
                 body.sessionId, command_user, assistant, body.stream
             )
@@ -858,6 +999,17 @@ async def chat(
         # mention (e.g. "@coder /help" runs /help); the mention was already
         # validated above. (A /tool command was already routed above.)
         if parsed.is_command:
+            if (
+                body.clientTurnId
+                and parsed.command is not None
+                and parsed.command.kind is not CommandKind.clear
+            ):
+                request.state.claimed_chat_turn = turn_message_id(
+                    user.internal_user_id,
+                    body.sessionId,
+                    body.clientTurnId,
+                    MessageRole.assistant,
+                )
             try:
                 assistant = await execute_command(
                     parsed=parsed,
@@ -873,6 +1025,7 @@ async def chat(
                     client_request_fingerprint=fingerprint,
                 )
             except ClientTurnConflictError as exc:
+                request.state.claimed_chat_turn = None
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=(
@@ -894,6 +1047,18 @@ async def chat(
                 and parsed.command.kind is not CommandKind.clear
                 else None
             )
+            if (
+                command_user is not None
+                and assistant.status is not MessageStatus.complete
+            ):
+                return await _resolved_replay_response(
+                    repo=repo,
+                    user_id=user.internal_user_id,
+                    session_id=body.sessionId,
+                    user_message=command_user,
+                    assistant=assistant,
+                    stream=body.stream,
+                )
             return _local_reply_response(
                 body.sessionId, command_user, assistant, body.stream
             )
@@ -1063,9 +1228,15 @@ async def chat(
                 detail="clientTurnId was already used for a different chat request.",
             ) from exc
         if not claimed:
-            return _replay_response(
-                body.sessionId, saved_user, saved_assistant, body.stream
+            return await _resolved_replay_response(
+                repo=repo,
+                user_id=user.internal_user_id,
+                session_id=body.sessionId,
+                user_message=saved_user,
+                assistant=saved_assistant,
+                stream=body.stream,
             )
+        request.state.claimed_chat_turn = claimed_assistant.id
     else:
         user_msg = Message(
             sessionId=body.sessionId,
@@ -1536,7 +1707,7 @@ async def chat(
                     on_step=on_step,
                 )
 
-            return StreamingResponse(
+            return _streaming_response(
                 _agentic_stream(
                     assistant=placeholder,
                     user_message_id=user_msg.id,
@@ -1554,7 +1725,6 @@ async def chat(
                     extra_usage=usage_sink,  # live list: sub-turn usage lands during the run
                     get_attachments=lambda: [*image_sink, *video_sink, *doc_sink],
                 ),
-                media_type="text/event-stream",
             )
 
         run = await run_agent_turn(
@@ -1708,7 +1878,7 @@ async def chat(
                         )
                         return _extract_text(res), TokenUsage.parse(res.get("usage"))
 
-                    return StreamingResponse(
+                    return _streaming_response(
                         _agentic_stream(
                             assistant=placeholder,
                             user_message_id=user_msg.id,
@@ -1725,7 +1895,6 @@ async def chat(
                             content_for_model=content_for_model,
                             fallback=_rag_fallback,
                         ),
-                        media_type="text/event-stream",
                     )
 
                 run = await run_agent_turn(
@@ -1777,8 +1946,17 @@ async def chat(
         except ModelGatewayError as exc:
             assistant = await assistant_placeholder()
             assistant.status = MessageStatus.error
+            assistant.content = SAFE_TURN_ERROR
             await repo.upsert_message(user.internal_user_id, assistant)
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.detail)
+        except (asyncio.CancelledError, GeneratorExit):
+            raise
+        except Exception:
+            assistant = await assistant_placeholder()
+            assistant.status = MessageStatus.error
+            assistant.content = SAFE_TURN_ERROR
+            await repo.upsert_message(user.internal_user_id, assistant)
+            raise
         text = _extract_text(result)
         assistant = await persist_assistant(text)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
@@ -1835,6 +2013,9 @@ async def chat(
         except (asyncio.CancelledError, GeneratorExit):
             final = MessageStatus.cancelled
             raise
+        except Exception:
+            final = MessageStatus.error
+            yield f"data: {json.dumps({'error': SAFE_TURN_ERROR})}\n\n"
         finally:
             assistant.content = "".join(parts)
             assistant.status = final
@@ -1878,7 +2059,7 @@ async def chat(
                     )
                 )
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return _streaming_response(event_stream())
 
 
 def _extract_text(result: dict) -> str:

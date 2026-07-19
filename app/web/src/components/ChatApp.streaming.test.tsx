@@ -516,6 +516,56 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     expect(screen.queryByText("Old session answer.")).toBeNull();
   });
 
+  it("prunes an abandoned A turn when switching to B without returning to A", async () => {
+    const user = userEvent.setup();
+    mocks.listSessions.mockResolvedValue([session("A"), session("B")]);
+    const handlers = await sendAndCaptureHandlers(user, "Pending in A");
+    act(() => {
+      handlers.onMessageIds?.({ userMessageId: "ua", assistantMessageId: "aa" });
+      handlers.onDelta("Fallback in A");
+    });
+
+    let resolveA!: (value: Message[]) => void;
+    mocks.listMessages.mockImplementationOnce(
+      () =>
+        new Promise<Message[]>((resolve) => {
+          resolveA = resolve;
+        }),
+    );
+    act(() => {
+      handlers.onDone();
+    });
+
+    const sessionB = await screen.findByRole("button", { name: "Session B" });
+    await waitFor(() => expect(sessionB).toBeEnabled());
+    await user.click(sessionB);
+    await waitFor(() =>
+      expect(mocks.listMessages).toHaveBeenCalledWith("B", expect.any(AbortSignal)),
+    );
+    expect(screen.queryByText("Pending in A")).toBeNull();
+    expect(screen.queryByText("Fallback in A")).toBeNull();
+
+    act(() => {
+      resolveA([
+        persistedMessage({
+          id: "ua",
+          role: "user",
+          content: "Pending in A",
+        }),
+        persistedMessage({
+          id: "aa",
+          role: "assistant",
+          content: "Fallback in A",
+        }),
+      ]);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByText("Pending in A")).toBeNull();
+    expect(screen.queryByText("Fallback in A")).toBeNull();
+  });
+
   it("does not let a stale finalize from a rapid same-session resend wipe the newer turn's live stream", async () => {
     // isSameConversation() only checked sessionId/generation, so a second
     // send in the *same* session (no navigation) wasn't caught by it. A

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from .models import (
     Document,
     Message,
+    MessageStatus,
     Session,
     normalize_session_patch_changes,
     normalize_session_title,
@@ -208,6 +209,32 @@ class InMemorySessionRepository:
             bucket.extend((user_message, assistant_message))
             return user_message, assistant_message, True
 
+    async def terminalize_chat_turn(
+        self,
+        user_id: str,
+        session_id: str,
+        assistant_message_id: str,
+        *,
+        status: MessageStatus,
+        content: str,
+        stale_before: datetime | None = None,
+    ) -> Message | None:
+        async with self._lock:
+            await self._owned_session(user_id, session_id)
+            for message in self._messages.get(session_id, []):
+                if message.id != assistant_message_id:
+                    continue
+                if message.userId != user_id:
+                    raise SessionNotFoundError(session_id)
+                if message.status.value != "streaming":
+                    return message.model_copy(deep=True)
+                if stale_before is not None and message.createdAt > stale_before:
+                    return message.model_copy(deep=True)
+                message.status = status
+                message.content = content
+                return message.model_copy(deep=True)
+            return None
+
     async def add_message_if_summary_version(
         self, user_id: str, message: Message, *, expected_version: int
     ) -> bool:
@@ -217,7 +244,13 @@ class InMemorySessionRepository:
                 return False
             message.userId = user_id
             message.summaryVersion = expected_version
-            self._messages.setdefault(message.sessionId, []).append(message)
+            bucket = self._messages.setdefault(message.sessionId, [])
+            for index, existing in enumerate(bucket):
+                if existing.id == message.id:
+                    bucket[index] = message
+                    break
+            else:
+                bucket.append(message)
             return True
 
     async def upsert_message(self, user_id: str, message: Message) -> Message:

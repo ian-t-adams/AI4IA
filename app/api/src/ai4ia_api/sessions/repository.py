@@ -6,9 +6,10 @@ message operation first proves the parent session belongs to the user.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from .models import Document, Message, Session
+from .models import Document, Message, MessageStatus, Session
 
 
 class SessionNotFoundError(Exception):
@@ -74,6 +75,17 @@ class SessionRepository(Protocol):
     async def claim_chat_turn(
         self, user_id: str, user_message: Message, assistant_message: Message
     ) -> tuple[Message, Message, bool]: ...
+
+    async def terminalize_chat_turn(
+        self,
+        user_id: str,
+        session_id: str,
+        assistant_message_id: str,
+        *,
+        status: MessageStatus,
+        content: str,
+        stale_before: datetime | None = None,
+    ) -> Message | None: ...
 
     async def add_message_if_summary_version(
         self, user_id: str, message: Message, *, expected_version: int
