@@ -12,7 +12,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 
 import { ChatApp } from "./ChatApp";
 import type { StreamHandlers } from "@/lib/api";
-import type { Message } from "@/lib/types";
+import type { Message, VoiceTurnInput } from "@/lib/types";
 
 const mocks = vi.hoisted(() => ({
   listModels: vi.fn(),
@@ -39,6 +39,18 @@ const mocks = vi.hoisted(() => ({
   fetchImageArtifact: vi.fn(),
   fetchVideoArtifact: vi.fn(),
   fetchDocumentArtifact: vi.fn(),
+  appendVoiceTurns: vi.fn(),
+}));
+
+// Captures the persistConversation callback ChatApp wires into Voice Live, so
+// a test can invoke it directly without mounting the real voice/audio stack.
+type PersistConversation = (
+  sessionId: string,
+  conversationId: string,
+  turns: VoiceTurnInput[],
+) => Promise<void>;
+const voiceMock = vi.hoisted(() => ({
+  persistConversation: null as PersistConversation | null,
 }));
 
 vi.mock("@/lib/api", () => mocks);
@@ -69,19 +81,22 @@ vi.mock("./InlineVoiceLive", () => ({
   InlineVoiceLiveStatus: () => null,
   mergeDisplayMessages: (messages: unknown[]) => messages,
   voiceMessagesForSession: () => [],
-  useInlineVoiceLive: () => ({
-    active: false,
-    supported: false,
-    phase: "idle",
-    saving: false,
-    persistenceError: null,
-    error: null,
-    start: vi.fn(),
-    stop: vi.fn(),
-    exitLocked: false,
-    messages: [],
-    boundSessionId: null,
-  }),
+  useInlineVoiceLive: (options: { persistConversation: PersistConversation }) => {
+    voiceMock.persistConversation = options.persistConversation;
+    return {
+      active: false,
+      supported: false,
+      phase: "idle",
+      saving: false,
+      persistenceError: null,
+      error: null,
+      start: vi.fn(),
+      stop: vi.fn(),
+      exitLocked: false,
+      messages: [],
+      boundSessionId: null,
+    };
+  },
 }));
 
 // jsdom has no layout engine, so scrollIntoView (called by MessageList in an
@@ -241,6 +256,8 @@ beforeEach(() => {
     maxDocuments: 100,
     modalities: ["document"],
   });
+  mocks.appendVoiceTurns.mockResolvedValue([]);
+  voiceMock.persistConversation = null;
 });
 
 afterEach(() => {
@@ -400,6 +417,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
 
     act(() => {
       handlers.onStep?.({ kind: "tool_start", label: "Looking it up", tool: "web_search" });
+      handlers.onStep?.({ kind: "tool_result", label: "Looked it up", tool: "web_search" });
       handlers.onDelta("Paris is the capital of France.");
     });
     expect(
@@ -417,6 +435,8 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     // The reply must still render -- reconstructed from the buffered stream
     // content -- instead of silently disappearing.
     expect(await screen.findByText("Paris is the capital of France.")).toBeInTheDocument();
+    // Only the finalized tool_result counts: the synthetic fallback drops
+    // the unfinished-looking tool_start marker (see finalizedSteps).
     expect(await screen.findByText(/Activity · 1 step/)).toBeInTheDocument();
     // No stale "generating" placeholder should linger once finalize settles.
     expect(screen.queryByLabelText("Generating")).toBeNull();
@@ -553,6 +573,15 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledTimes(1));
     expect(await screen.findByText("Fallback answer")).toBeInTheDocument();
 
+    // Captured now, in turn 1's own window, rather than alongside turn 2's
+    // fixture below: persistedMessage() timestamps default to call time, so
+    // building every turn's messages in one later literal would push turn
+    // 1's createdAt after turn 2's window start and break its resolution.
+    const turn1Persisted = [
+      persistedMessage({ id: "u1", role: "user", content: "First question" }),
+      persistedMessage({ id: "a1", role: "assistant", content: "Fallback answer" }),
+    ];
+
     const handlers2 = await sendMessageAndCaptureHandlers(user, "Second question");
     act(() => {
       handlers2.onDelta("Second answer");
@@ -562,8 +591,7 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
     // Turn 2 succeeds, and its reconciliation returns the full authoritative
     // history -- including turn 1's real persisted reply under a different ID.
     mocks.listMessages.mockResolvedValueOnce([
-      persistedMessage({ id: "u1", role: "user", content: "First question" }),
-      persistedMessage({ id: "a1", role: "assistant", content: "Fallback answer" }),
+      ...turn1Persisted,
       persistedMessage({ id: "u2", role: "user", content: "Second question" }),
       persistedMessage({ id: "a2", role: "assistant", content: "Second answer" }),
     ]);
@@ -613,5 +641,200 @@ describe("ChatApp streaming render (real MessageList, no mocks on the render pat
       ),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Generating")).toBeNull();
+  });
+
+  it("keeps the first turn's finalized reply on screen while a second turn streams live in the same session", async () => {
+    // HIGH-1: finalize() used to clear the shared streamingText immediately,
+    // relying entirely on a later fetch to put the reply back. If a second
+    // send started in the same session before that fetch resolved, the
+    // first finalize's isCurrentTurn() check would fail and it would commit
+    // neither the fetched history nor a fallback -- the reply vanished with
+    // nothing left to render it. Materializing a placeholder before the
+    // streaming lock is released closes that gap.
+    const user = userEvent.setup();
+    const handlers1 = await sendAndCaptureHandlers(user, "First question");
+    act(() => {
+      handlers1.onDelta("First reply");
+    });
+    expect(await screen.findByText("First reply", { exact: false })).toBeInTheDocument();
+
+    let resolveFirstFetch!: (value: Message[]) => void;
+    mocks.listMessages.mockImplementationOnce(
+      () =>
+        new Promise<Message[]>((resolve) => {
+          resolveFirstFetch = resolve;
+        }),
+    );
+    act(() => {
+      handlers1.onDone();
+    });
+
+    // The placeholder renders synchronously, before turn 1's fetch has any
+    // chance to settle.
+    expect(await screen.findByText("First reply")).toBeInTheDocument();
+
+    const handlers2 = await sendMessageAndCaptureHandlers(user, "Second question");
+    act(() => {
+      handlers2.onDelta("Second live reply");
+    });
+
+    // Both must be visible at once: turn 1's finalized placeholder and turn
+    // 2's still-live stream.
+    expect(await screen.findByText("First reply")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Second live reply", { exact: false }),
+    ).toBeInTheDocument();
+
+    act(() => {
+      resolveFirstFetch([
+        persistedMessage({ id: "u1", role: "user", content: "First question" }),
+        persistedMessage({ id: "a1", role: "assistant", content: "First reply" }),
+      ]);
+    });
+
+    // Turn 1's late reconciliation lands cleanly without disturbing turn 2.
+    await waitFor(() => expect(screen.queryAllByText("First reply")).toHaveLength(1));
+    expect(
+      await screen.findByText("Second live reply", { exact: false }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not let a second turn's successful reconciliation erase an earlier turn still streaming server-side", async () => {
+    // HIGH-2: the old design judged "freshness" solely from the *latest*
+    // assistant message, then cleared every locally-tracked id in bulk. If
+    // turn A's backend call was genuinely still in flight while turn B (a
+    // later, same-session turn) finished and reconciled cleanly, B's fresh,
+    // complete assistant made the whole fetch look "fresh" and erased A's
+    // fallback even though no terminal persisted A reply existed anywhere.
+    // Per-turn windows fix this: B's fetch can only resolve *B's* window.
+    const user = userEvent.setup();
+    const handlers1 = await sendAndCaptureHandlers(user, "Turn A question");
+    act(() => {
+      handlers1.onDelta("A reply");
+    });
+    expect(await screen.findByText("A reply", { exact: false })).toBeInTheDocument();
+
+    // Captured now (before turn B starts) so these timestamps land inside
+    // turn A's own resolution window rather than turn B's -- see the
+    // turn1Persisted note in the fallback-supersession test above.
+    const turnAStillStreaming = [
+      persistedMessage({ id: "ua", role: "user", content: "Turn A question" }),
+      persistedMessage({ id: "aa", role: "assistant", content: "", status: "streaming" }),
+    ];
+    // Turn A's own reconciliation attempts both see the backend's
+    // still-in-progress placeholder and give up after the retry budget.
+    mocks.listMessages.mockResolvedValueOnce(turnAStillStreaming);
+    mocks.listMessages.mockResolvedValueOnce(turnAStillStreaming);
+    act(() => {
+      handlers1.onDone();
+    });
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    expect(await screen.findByText("A reply")).toBeInTheDocument();
+
+    const handlers2 = await sendMessageAndCaptureHandlers(user, "Turn B question");
+    act(() => {
+      handlers2.onDelta("B reply");
+    });
+    expect(await screen.findByText("B reply", { exact: false })).toBeInTheDocument();
+
+    // B's own fetch succeeds immediately: its assistant reply is the latest
+    // and complete, even though A (earlier in the same fetch) is still
+    // shown mid-stream.
+    mocks.listMessages.mockResolvedValueOnce([
+      ...turnAStillStreaming,
+      persistedMessage({ id: "ub", role: "user", content: "Turn B question" }),
+      persistedMessage({ id: "ab", role: "assistant", content: "B reply" }),
+    ]);
+    act(() => {
+      handlers2.onDone();
+    });
+
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledTimes(3));
+    // A's fallback survives, untouched and not duplicated.
+    await waitFor(() => expect(screen.queryAllByText("A reply")).toHaveLength(1));
+    expect(await screen.findByText("B reply")).toBeInTheDocument();
+  });
+
+  it("stops retrying reconciliation once the component unmounts mid-retry", async () => {
+    // MEDIUM-1: the retry loop had no way to know the component (or turn)
+    // was gone, so an in-flight retry could fire its next attempt -- and
+    // try to update state -- after unmount. mountedRef fences every
+    // attempt/result so an abandoned turn's polling actually stops.
+    const user = userEvent.setup();
+    const { unmount } = render(<ChatApp />);
+    const handlers = await sendMessageAndCaptureHandlers(user, "Question");
+    act(() => {
+      handlers.onDelta("Partial reply");
+    });
+    expect(await screen.findByText("Partial reply", { exact: false })).toBeInTheDocument();
+
+    // The first attempt sees a stale (still-streaming) result, so
+    // fetchReconciledMessages schedules a retry after the retry delay.
+    mocks.listMessages.mockResolvedValueOnce([
+      persistedMessage({ id: "u1", role: "user", content: "Question" }),
+      persistedMessage({ id: "a1", role: "assistant", content: "", status: "streaming" }),
+    ]);
+    act(() => {
+      handlers.onDone();
+    });
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledTimes(1));
+    const listSessionsCallsBeforeUnmount = mocks.listSessions.mock.calls.length;
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    unmount();
+
+    // Wait well past the retry delay: neither the retry attempt nor the
+    // post-reconciliation session refresh may fire after unmount.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(mocks.listMessages).toHaveBeenCalledTimes(1);
+    expect(mocks.listSessions.mock.calls.length).toBe(listSessionsCallsBeforeUnmount);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("routes a completed Voice Live exchange through the same per-turn reconciliation as text chat, without duplicating a fallback bubble", async () => {
+    // MEDIUM-2: persistVoiceConversation used to reconcile its listMessages()
+    // result with a bespoke, voice-only diff (dedup by newly-created id
+    // only), bypassing pendingTurnsRef entirely. A text-chat fallback bubble
+    // tracked there was never removed once its real persisted copy arrived
+    // through the voice merge, leaving a duplicate. Routing both paths
+    // through applyReconciledMessages fixes that.
+    const user = userEvent.setup();
+    const handlers = await sendAndCaptureHandlers(user, "Text turn");
+    act(() => {
+      handlers.onDelta("Text fallback reply");
+    });
+    expect(
+      await screen.findByText("Text fallback reply", { exact: false }),
+    ).toBeInTheDocument();
+
+    mocks.listMessages.mockRejectedValueOnce(new Error("network blip"));
+    act(() => {
+      handlers.onDone();
+    });
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Text fallback reply")).toBeInTheDocument();
+
+    expect(voiceMock.persistConversation).not.toBeNull();
+    mocks.appendVoiceTurns.mockResolvedValueOnce([
+      persistedMessage({ id: "voice-1", role: "assistant", content: "Voice reply" }),
+    ]);
+    mocks.listMessages.mockResolvedValueOnce([
+      persistedMessage({ id: "u1", role: "user", content: "Text turn" }),
+      persistedMessage({ id: "a1", role: "assistant", content: "Text fallback reply" }),
+      persistedMessage({ id: "voice-1", role: "assistant", content: "Voice reply" }),
+    ]);
+
+    await act(async () => {
+      await voiceMock.persistConversation?.("A", "conv-1", [
+        { role: "user", text: "Voice question" },
+      ]);
+    });
+
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledTimes(2));
+    // The real persisted copy replaces the tracked fallback -- no
+    // duplicate -- and the newly-appended voice turn is present too.
+    expect(await screen.findAllByText("Text fallback reply")).toHaveLength(1);
+    expect(await screen.findByText("Voice reply")).toBeInTheDocument();
   });
 });
