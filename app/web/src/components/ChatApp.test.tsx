@@ -1064,4 +1064,150 @@ describe("ChatApp uploads", () => {
       await Promise.all([firstResult, secondResult]);
     });
   });
+
+  // Regression (voice acceptance round 11, HIGH): creatingRef's intent
+  // fingerprint used to key only on settings, never on selection
+  // generation. New chat resets settings to a fixed, deterministic default
+  // (same model/systemPrompt/agent/tools/docs every time) but never clears
+  // creatingRef, so an abandoned voice creation started while already on
+  // default settings produced the exact same fingerprint as a later
+  // send/upload's creation after Stop waiting + New chat -- even though the
+  // two belong to entirely different selection generations. This drives the
+  // *real* ensureSession callback and the *real* New chat button to prove a
+  // later caller in a new generation always fires (and activates) its own
+  // request instead of silently inheriting an earlier, already-abandoned
+  // generation's in-flight creation just because both generations'
+  // settings happen to coincide.
+  it("does not let an abandoned voice session creation from an earlier generation be reused after New chat resets back to the same default settings", async () => {
+    const resolvers: Array<() => void> = [];
+    const created = [session("OLD"), session("NEW")];
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          const value = created[resolvers.length];
+          resolvers.push(() => resolve(value));
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    // Voice Live begins creating a session under the current (default)
+    // settings, then is abandoned before that creation resolves.
+    const firstCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let firstResult: Promise<string> | undefined;
+    act(() => {
+      firstResult = firstCall.ensureSession(() => false);
+    });
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+
+    // "New chat" bumps the selection generation and resets settings back to
+    // the exact same defaults they already were -- no visible settings
+    // change, but a genuinely different generation.
+    await user.click(screen.getByRole("button", { name: "+ New chat" }));
+
+    // A fresh caller (e.g. a text send) in the new generation asks for a
+    // session under those (coincidentally identical) default settings.
+    const secondCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let secondResult: Promise<string> | undefined;
+    act(() => {
+      secondResult = secondCall.ensureSession(() => true);
+    });
+
+    // Even though the settings fingerprint alone would match the still-
+    // in-flight, already-abandoned first generation's creation, the new
+    // generation must fire its own independent request.
+    expect(mocks.createSession).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      resolvers.forEach((resolve) => resolve());
+      await Promise.all([firstResult, secondResult]);
+    });
+
+    // The still-current (second) generation's own, freshly created session
+    // must be what actually gets activated -- not the abandoned first
+    // generation's.
+    expect(
+      await screen.findByText("Session NEW", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  // Regression (voice acceptance round 11, HIGH -- literal scenario):
+  // proves the same New-chat-then-diverge flow using the real "+ New chat"
+  // button (rather than editing the draft directly, as the round-10 test
+  // above does) followed by genuinely different settings, end to end.
+  it("fires its own session creation for a send after New chat resets settings differently than an earlier abandoned voice creation", async () => {
+    const resolvers: Array<() => void> = [];
+    const created = [session("OLD"), session("NEW")];
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          const value = created[resolvers.length];
+          resolvers.push(() => resolve(value));
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    const promptBox = screen.getByLabelText("System prompt");
+    await user.type(promptBox, "Voice prompt");
+
+    const firstCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let firstResult: Promise<string> | undefined;
+    act(() => {
+      firstResult = firstCall.ensureSession(() => false);
+    });
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+    expect(mocks.createSession).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ systemPrompt: "Voice prompt" }),
+    );
+
+    // Stop waiting + New chat: bumps generation and resets the system
+    // prompt back to blank.
+    await user.click(screen.getByRole("button", { name: "+ New chat" }));
+
+    // The user then types a different prompt before sending.
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.type(screen.getByLabelText("System prompt"), "Send prompt");
+
+    const secondCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let secondResult: Promise<string> | undefined;
+    act(() => {
+      secondResult = secondCall.ensureSession(() => true);
+    });
+
+    expect(mocks.createSession).toHaveBeenCalledTimes(2);
+    expect(mocks.createSession).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ systemPrompt: "Send prompt" }),
+    );
+
+    await act(async () => {
+      resolvers.forEach((resolve) => resolve());
+      await Promise.all([firstResult, secondResult]);
+    });
+
+    expect(
+      await screen.findByText("Session NEW", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+  });
 });

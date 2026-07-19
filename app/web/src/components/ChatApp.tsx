@@ -303,10 +303,16 @@ export function ChatApp() {
   // Holds an in-flight lazy session-creation promise so a rapid send + upload
   // (or two uploads) share a single session instead of racing to create two.
   // Keyed by an "intent" fingerprint (see ensureSession) of the exact
-  // model/systemPrompt/agent/tools/docs the in-flight request was built from,
-  // so a caller whose own current settings have since diverged (e.g. after
-  // Stop waiting + New chat resets them) never silently reuses a stale
-  // creation made under different settings -- it fires its own instead.
+  // selection generation plus the model/systemPrompt/agent/tools/docs the
+  // in-flight request was built from, so a caller whose own current settings
+  // have since diverged (e.g. after Stop waiting + New chat resets them)
+  // never silently reuses a stale creation made under different settings --
+  // it fires its own instead. The generation component additionally ensures
+  // a creation started in one generation is never reused by a later one even
+  // if New chat happens to reset settings back to identical defaults: New
+  // chat never clears this ref, so without the generation component two
+  // otherwise-unrelated generations that share the same default settings
+  // could otherwise collide on the same cache entry.
   const creatingRef = useRef<{ intentKey: string; promise: Promise<string> } | null>(
     null,
   );
@@ -595,29 +601,35 @@ export function ChatApp() {
   // valid caller's "yes" be silently discarded just because it happened to
   // share the same in-flight creation as an earlier caller's "no".
   //
-  // Sharing is further gated by an "intent" fingerprint of the exact payload
-  // this call would send to api.createSession. Without it, a caller whose
+  // Sharing is further gated by an "intent" fingerprint of the selection
+  // generation plus the exact payload this call would send to
+  // api.createSession. Without the settings component, a caller whose
   // settings changed *after* an earlier creation started (e.g. Voice Live
   // begins creating a session, the user hits Stop waiting + New chat which
   // resets model/systemPrompt/agent/tools/docs, then sends a fresh message)
   // would silently reuse that stale in-flight promise -- binding the new,
   // differently-configured send to a session actually created with the OLD
   // settings, since both callers would otherwise await the identical network
-  // request. A caller only reuses the cached entry when its own current
-  // settings would produce an identical request; otherwise it fires its own
-  // and installs its own entry, without clobbering a different still-in-
-  // flight generation that may belong to another still-valid caller.
+  // request. Without the generation component, New chat (which never clears
+  // creatingRef) could let a later generation reuse a still-in-flight
+  // creation from an earlier, already-abandoned generation whenever New
+  // chat happened to reset settings back to identical defaults, since the
+  // settings-only fingerprint would then coincidentally match. A caller only
+  // reuses the cached entry when its own current generation AND settings
+  // would produce an identical request; otherwise it fires its own and
+  // installs its own entry, without clobbering a different still-in-flight
+  // generation that may belong to another still-valid caller.
   const ensureSession = useCallback(
     async (isStillWanted?: () => boolean): Promise<string> => {
       if (sessionIdRef.current) return sessionIdRef.current;
       const capturedGeneration = selectionGenerationRef.current;
-      const intentKey = JSON.stringify({
+      const intentKey = `${capturedGeneration}:${JSON.stringify({
         model: selectedModel,
         systemPrompt: systemPrompt || null,
         agentName: draftDefaults.agentName,
         toolOverrides: draftDefaults.toolOverrides,
         libraryDocumentIds: draftDefaults.libraryDocumentIds,
-      });
+      })}`;
       let entry = creatingRef.current;
       if (!entry || entry.intentKey !== intentKey) {
         // The identity-safe cleanup below is registered via `.finally()`

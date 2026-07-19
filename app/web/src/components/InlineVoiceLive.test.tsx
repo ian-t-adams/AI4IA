@@ -766,6 +766,102 @@ describe("inline Voice Live chat", () => {
     vi.useRealTimers();
   });
 
+  // Regression (voice acceptance round 11, MEDIUM): the previous test proves
+  // a still-current attempt's *late success* can clear a timeout-driven
+  // error. This proves the other supersession path -- the user explicitly
+  // discarding -- works identically once a timeout has already fired, and
+  // that the abandoned save's eventual (never-cancelled) resolution can
+  // never resurrect the error/lock state or duplicate content for that
+  // now-superseded attempt. A one-shot "settled" latch would have made
+  // finish()'s *first* call (the timeout) permanent, but here the risk runs
+  // the other way: discard must remain the last word even though finish()
+  // stays reentrant for late completions.
+  it("lets the user discard after the bounded timeout fires, and the abandoned save's later resolution does not resurrect the error or duplicate the turn", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    let resolvePersist: (() => void) | undefined;
+    const persist = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePersist = resolve;
+        }),
+    );
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [
+        {
+          id: "u1",
+          role: "user",
+          text: "Timed out then discarded turn",
+          pending: false,
+          streaming: false,
+          tool: "",
+        },
+      ],
+    });
+    const { rerender } = render(<Harness persist={persist} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+    controller = makeController();
+    rerender(<Harness persist={persist} />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+
+    // Same timeout-driven error state as the tests above.
+    expect(
+      screen.getByText(
+        "Saving the voice transcript is taking too long. Retry, or stop waiting to continue.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop waiting" })).toBeEnabled();
+
+    // The user gives up waiting instead of retrying or waiting further --
+    // the same escape hatch available before a timeout must still work
+    // identically after one.
+    await user.click(screen.getByRole("button", { name: "Stop waiting" }));
+
+    expect(screen.getByText("Voice Live ready")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop waiting" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry saving" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Start live voice conversation" }),
+    ).toBeEnabled();
+
+    // The abandoned save -- never actually cancelled -- now finally
+    // resolves in the background. It must be a complete no-op: no error or
+    // lock resurrection, and no duplicate/late content injected into a UI
+    // the user has already moved past.
+    await act(async () => {
+      resolvePersist?.();
+      for (let i = 0; i < 20; i += 1) {
+        await Promise.resolve();
+      }
+    });
+
+    expect(screen.getByText("Voice Live ready")).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "Saving the voice transcript is taking too long. Retry, or stop waiting to continue.",
+      ),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop waiting" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry saving" })).toBeNull();
+
+    // Nothing about the discard-then-late-resolution sequence should trap
+    // the user: a brand new conversation can start immediately.
+    await user.click(
+      screen.getByRole("button", { name: "Start live voice conversation" }),
+    );
+    expect(mocks.start).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
+  });
+
   // Regression: discardPersistence() is the user's explicit escape hatch for
   // a stuck/failed save. It must unlock the UI synchronously — it cannot
   // wait on the network request it is abandoning.
