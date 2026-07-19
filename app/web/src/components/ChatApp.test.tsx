@@ -1223,19 +1223,24 @@ describe("ChatApp uploads", () => {
   // own creatingRef entries, per the round-10/11 fixes above) can each have
   // their own api.createSession() network call in flight at the same time.
   // These two tests drive two differently-configured concurrent
-  // ensureSession() calls -- standing in for Voice Live and a typed send
-  // racing each other -- and resolve their underlying creations in each
-  // possible order.
+  // ensureSession() calls -- standing in for Voice Live (issued first) and
+  // a typed send after editing settings (issued second, hence the
+  // genuinely LATER intent by sequence) -- and resolve their underlying
+  // creations in each possible order.
   //
-  // Regression (voice acceptance round 13, MEDIUM): whichever differently-
-  // configured intent resolves LAST supersedes an already-active mismatched
-  // one, so the conversation actually on screen always reflects the most
-  // recent settings rather than whichever request happened to win the race
-  // to resolve first. A Promise's own resolved value is fixed the instant
-  // it settles, so the EARLIER-resolving caller's own already-returned id
-  // never changes after the fact -- only the LATER caller's own return
-  // value, and the active session the UI shows, end up reflecting the
-  // supersession.
+  // Regression (voice acceptance round 13, MEDIUM; corrected in round 15,
+  // HIGH, after discovering resolution order alone was an unreliable proxy
+  // for "later intent" -- see the sequence comment on creatingRef): only
+  // the genuinely LATER-ISSUED intent may ever supersede an already-active
+  // mismatched one, regardless of which one's underlying network call
+  // happens to resolve first. When the later-issued (send) intent resolves
+  // after the earlier one (voice) already activated, it correctly
+  // supersedes -- the conversation on screen reflects the most recent
+  // settings. A Promise's own resolved value is fixed the instant it
+  // settles, so the earlier-resolving caller's own already-returned id
+  // never changes after the fact -- only which caller "already activated"
+  // matters, and that is decided by *issuance* order, never resolution
+  // order (see the sibling test below for the mirror image).
   it("lets the later-resolving, differently-configured (send-shaped) creation supersede the earlier-issued (voice-shaped) one that already activated", async () => {
     const resolvers: Array<() => void> = [];
     const created = [session("VOICE"), session("SEND")];
@@ -1307,7 +1312,15 @@ describe("ChatApp uploads", () => {
     ).toBeInTheDocument();
   });
 
-  it("lets the later-resolving, differently-configured (voice-shaped) creation supersede the earlier-issued (send-shaped) one that already activated", async () => {
+  // Regression (voice acceptance round 15, HIGH): the mirror image of the
+  // sibling test above, and the exact defect this round fixes. Voice is
+  // issued FIRST (lower sequence) but its underlying network call happens
+  // to settle SECOND, after the genuinely later-issued (send) intent has
+  // already activated. Resolution order alone must never let the older,
+  // staler intent win -- see "older voice intent resolving after newer
+  // send can replace active session while send continues hidden" and the
+  // sequence comment on creatingRef/activeActivationSequenceRef.
+  it("does not let the earlier-issued (voice-shaped) creation supersede the later-issued (send-shaped) one that already activated, even though voice resolves after it", async () => {
     const resolvers: Array<() => void> = [];
     const created = [session("VOICE"), session("SEND")];
     mocks.createSession.mockImplementation(
@@ -1323,6 +1336,8 @@ describe("ChatApp uploads", () => {
       await screen.findByText("New conversation", { selector: "strong" }),
     ).toBeInTheDocument();
 
+    // Voice Live's ensureSession call fires FIRST, under the current
+    // (blank) settings.
     const voiceCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
       ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
     };
@@ -1332,6 +1347,9 @@ describe("ChatApp uploads", () => {
     });
     expect(mocks.createSession).toHaveBeenCalledTimes(1);
 
+    // A concurrent, differently-configured intent (e.g. a typed send after
+    // editing the draft system prompt) fires its OWN, genuinely LATER (by
+    // sequence) creation.
     await user.click(screen.getByRole("tab", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Send prompt");
     const sendCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
@@ -1343,10 +1361,8 @@ describe("ChatApp uploads", () => {
     });
     expect(mocks.createSession).toHaveBeenCalledTimes(2);
 
-    // This time the later-issued (send) creation resolves *first* and
-    // activates -- the opposite resolution order from the sibling test
-    // above. Nothing else is active yet, so its own ensureSession() call
-    // resolves to its own "SEND" id -- fixed the instant it settles.
+    // The later-issued (send) intent resolves FIRST this time. Nothing is
+    // active yet, so it activates normally.
     await act(async () => {
       resolvers[1]();
       await sendResult;
@@ -1357,22 +1373,107 @@ describe("ChatApp uploads", () => {
       }),
     ).toBeInTheDocument();
 
-    // Voice's own creation resolves *after* the send-shaped intent already
-    // activated, under genuinely different settings. It supersedes: its
-    // own ensureSession() call resolves to its own "VOICE" id, and the
-    // conversation actually on screen switches to match -- the symmetric
-    // mirror of the sibling test above.
+    // Voice's own creation resolves SECOND, under its own (now stale)
+    // settings. Even though it resolves AFTER send already activated --
+    // the exact shape that used to let resolution order win -- voice is
+    // the EARLIER-issued intent (lower sequence) and must not supersede.
     await act(async () => {
       resolvers[0]();
       await voiceResult;
     });
     expect(await sendResult).toBe("SEND");
-    expect(await voiceResult).toBe("VOICE");
+    // Voice's own call falls back to the session that's actually current,
+    // never its own now-orphaned "VOICE" creation.
+    expect(await voiceResult).toBe("SEND");
     expect(
-      await screen.findByText("Session VOICE", {
+      screen.getByText("Session SEND", {
         selector: ".chat-header .editable-session-title-text",
       }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Session VOICE", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  // Regression (voice acceptance round 15, HIGH): proves the narrower,
+  // previously-unclosed race one hop earlier than the "already-streaming"
+  // test above closes too. Resolving both underlying creations back-to-back
+  // (rather than waiting for streamChat before resolving voice, as that
+  // test deliberately does) lets the two calls' own multi-hop promise
+  // chains genuinely interleave hop-by-hop: send()'s own ensureSession()
+  // call activates internally (sessionIdRef.current is set) one microtask
+  // before send()'s CALLER code -- the `streamingSessionIdRef.current =
+  // sessionId;` line, one further `await` hop later -- actually runs, so
+  // currentSessionInUse alone still reads false at the exact instant
+  // voice's own activation-decision code executes. Only the sequence-based
+  // guard (activeActivationSequenceRef) closes this exact window.
+  it("keeps active/send coherent when a genuinely later send() and an earlier-issued voice intent resolve in the same interleaved microtask batch", async () => {
+    const resolvers: Array<() => void> = [];
+    const created = [session("VOICE"), session("SEND")];
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          const value = created[resolvers.length];
+          resolvers.push(() => resolve(value));
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    // Voice starts creating a session FIRST, under the current (blank)
+    // settings.
+    const voiceCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+    };
+    let voiceResult: Promise<string> | undefined;
+    act(() => {
+      voiceResult = voiceCall.ensureSession(() => true);
+    });
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+
+    // The user edits settings and sends a REAL message -- a genuinely
+    // LATER intent (by sequence) that fires its own concurrent creation.
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.type(screen.getByLabelText("System prompt"), "Send prompt");
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(2));
+
+    // Resolve BOTH underlying creations back-to-back -- no artificial
+    // synchronization point in between -- so the two calls' own multi-hop
+    // promise chains genuinely interleave.
+    await act(async () => {
+      resolvers[1]();
+      resolvers[0]();
+      await voiceResult;
+      await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+    });
+
+    // send() must have streamed into its own, genuinely-later "SEND"
+    // session -- never voice's stale "VOICE" one.
+    expect(mocks.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "SEND" }),
+      expect.anything(),
+    );
+    expect(mocks.streamChat).toHaveBeenCalledTimes(1);
+    // Voice's own call must fall back to the session that's actually
+    // current and being streamed into, never its own now-orphaned "VOICE"
+    // creation.
+    expect(await voiceResult).toBe("SEND");
+    expect(
+      screen.getByText("Session SEND", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Session VOICE", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).not.toBeInTheDocument();
   });
 
   // Regression (voice acceptance round 13, MEDIUM -- real send() integration):
@@ -1745,6 +1846,104 @@ describe("ChatApp uploads", () => {
         selector: ".chat-header .editable-session-title-text",
       }),
     ).toBeInTheDocument();
+  });
+
+  // Regression (voice acceptance round 15, HIGH): abandonPendingSessionCreation
+  // ("Stop waiting") used to recompute an intent key from CURRENT settings
+  // at the moment it was clicked. If those settings changed after voice's
+  // own call joined its entry -- without any navigation, so voice's call is
+  // never told to give up -- the recomputed key could coincidentally match
+  // a DIFFERENT, entirely unrelated caller's entry (e.g. a typed send fired
+  // under the new settings) instead of voice's own now-stale-keyed one,
+  // wrongly aborting that unrelated caller's healthy creation. Voice's own
+  // waiter must be released by identity (voiceWaiterRef), never by
+  // re-deriving a key from settings that may have drifted since voice's own
+  // call actually joined.
+  it("does not abort an unrelated, differently-keyed session creation when settings changed before Stop waiting was clicked", async () => {
+    const resolvers: Array<() => void> = [];
+    const created = [session("VOICE"), session("SEND")];
+    mocks.createSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          const value = created[resolvers.length];
+          resolvers.push(() => resolve(value));
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+
+    // Voice starts creating a session under the current (blank) settings.
+    const call = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
+      ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
+      abandonPendingSessionCreation: () => void;
+    };
+    let voiceResult: Promise<string> | undefined;
+    act(() => {
+      voiceResult = call.ensureSession(() => true);
+    });
+    expect(mocks.createSession).toHaveBeenCalledTimes(1);
+    const [, voiceSignal] = mocks.createSession.mock.calls[0] as [
+      unknown,
+      AbortSignal,
+    ];
+    expect(voiceSignal.aborted).toBe(false);
+
+    // WITHOUT navigating away, the user edits the draft system prompt and
+    // sends a real message -- a genuinely different intent key, so it
+    // fires its own, separate creation rather than sharing voice's.
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.type(screen.getByLabelText("System prompt"), "Send prompt");
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(2));
+    const [, sendSignal] = mocks.createSession.mock.calls[1] as [
+      unknown,
+      AbortSignal,
+    ];
+    expect(sendSignal.aborted).toBe(false);
+
+    // Voice clicks "Stop waiting" only now, after settings have already
+    // changed. A key recomputed from the CURRENT (edited) settings would
+    // match send's entry, not voice's own (blank-settings) one -- the
+    // exact stale-key defect this round fixes.
+    act(() => {
+      call.abandonPendingSessionCreation();
+    });
+
+    // Voice's own, now-abandoned creation is aborted...
+    expect(voiceSignal.aborted).toBe(true);
+    // ...but send's entirely unrelated, still-healthy creation must be left
+    // completely alone.
+    expect(sendSignal.aborted).toBe(false);
+
+    // Send's creation resolves normally and activates -- proving it was
+    // never disturbed by voice's abandon.
+    await act(async () => {
+      resolvers[1]();
+      await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+    });
+    expect(mocks.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "SEND" }),
+      expect.anything(),
+    );
+    expect(
+      screen.getByText("Session SEND", {
+        selector: ".chat-header .editable-session-title-text",
+      }),
+    ).toBeInTheDocument();
+
+    // Clean up voice's own abandoned (but never network-settled) promise:
+    // it safely falls back to whatever session is actually current rather
+    // than its own orphaned "VOICE" one, and resolving it here (rather than
+    // leaving it pending) avoids a real SESSION_CREATION_TIMEOUT_MS timer
+    // dangling past the end of this test.
+    await act(async () => {
+      resolvers[0]();
+      await voiceResult;
+    });
+    expect(await voiceResult).toBe("SEND");
   });
 
   // Regression (voice acceptance round 13, MEDIUM): the intent key must
