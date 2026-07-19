@@ -113,39 +113,45 @@ export function SettingsPanel({
           />
         </div>
 
-        <fieldset
-          style={{ border: "none", margin: 0, padding: 0, opacity: theme === "contrast" ? 0.4 : 1 }}
-          disabled={theme === "contrast"}
-        >
-          <legend style={{ fontSize: "0.85em", color: "var(--fg-muted)", marginBottom: 8 }}>
-            Accent color
-          </legend>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {theme === "contrast" && (
-            <p style={{ margin: "0 0 8px", fontSize: "0.78em", color: "var(--fg-muted)" }}>
+            // Kept outside the disabled fieldset below: the fieldset's reduced
+            // opacity is appropriate for controls the user can't act on, but it
+            // would also wash out the very explanation that tells them why --
+            // the one piece of text here that most needs full contrast.
+            <p style={{ margin: 0, fontSize: "0.78em", color: "var(--fg-muted)" }}>
               Disabled while High contrast is active — that theme uses its own
               fixed, tested colors to guarantee readability, so a custom accent
               can&apos;t be applied on top of it. Switch to Light or Dark to
               pick a color.
             </p>
           )}
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {ACCENTS.map((c) => (
-              <button
-                key={c}
-                onClick={() => setAccent(c)}
-                aria-label={`Accent ${c}`}
-                aria-pressed={accent === c}
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: "50%",
-                  background: c,
-                  border: accent === c ? "3px solid var(--fg)" : "1px solid var(--border)",
-                }}
-              />
-            ))}
-          </div>
-        </fieldset>
+          <fieldset
+            style={{ border: "none", margin: 0, padding: 0, opacity: theme === "contrast" ? 0.4 : 1 }}
+            disabled={theme === "contrast"}
+          >
+            <legend style={{ fontSize: "0.85em", color: "var(--fg-muted)", marginBottom: 8 }}>
+              Accent color
+            </legend>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              {ACCENTS.map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setAccent(c)}
+                  aria-label={`Accent ${c}`}
+                  aria-pressed={accent === c}
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: "50%",
+                    background: c,
+                    border: accent === c ? "3px solid var(--fg)" : "1px solid var(--border)",
+                  }}
+                />
+              ))}
+            </div>
+          </fieldset>
+        </div>
 
         <ImageryPanel models={models} />
       </div>

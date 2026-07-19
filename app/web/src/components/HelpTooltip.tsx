@@ -129,7 +129,13 @@ export function HelpTooltip({
           if (!pinnedRef.current) setOpen(false);
         }}
         onKeyDown={(event) => {
-          if (event.key === "Escape") {
+          // Only consume Escape while the tooltip is actually open, and stop
+          // it from bubbling in that case -- otherwise a tooltip nested
+          // inside a modal/drawer would also close that enclosing surface on
+          // the same keypress. When the tooltip isn't open, let Escape pass
+          // through untouched so the enclosing dialog can still handle it.
+          if (event.key === "Escape" && open) {
+            event.stopPropagation();
             setOpen(false);
             setPinned(false);
             pinnedRef.current = false;

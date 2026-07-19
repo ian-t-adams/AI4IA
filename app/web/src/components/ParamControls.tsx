@@ -123,17 +123,26 @@ export function ParamControls({
             The maximum length of the model&apos;s reply, in tokens (roughly 3&ndash;4
             characters each). Raise it for long-form answers like essays or code files;
             lower it to keep replies short. Longer replies cost more and take longer to
-            generate, and this value is always capped by the selected model&apos;s own
-            maximum output{" "}
-            {model?.maxOutputTokens != null
-              ? `(currently ${model.maxOutputTokens.toLocaleString()}).`
-              : "."}{" "}
-            Leaving it at the default, 1024, is treated as &ldquo;no preference&rdquo;
-            and expands to the model&apos;s full ceiling instead of actually capping the
-            reply at 1024 &mdash; pick a different value if you want a genuinely short
-            reply. A few flagship models also enforce a much higher minimum (at least
-            16,384) regardless of a lower value here, since part of that budget goes to
-            hidden reasoning before the visible reply is written.
+            generate.{" "}
+            {model?.maxOutputTokens != null ? (
+              <>
+                This value is capped by the selected model&apos;s published maximum
+                output (currently {model.maxOutputTokens.toLocaleString()}). Leaving it
+                at the default, 1024, is treated as &ldquo;no preference&rdquo; and
+                expands to the model&apos;s full ceiling instead of actually capping the
+                reply at 1024 &mdash; pick a different value if you want a genuinely
+                short reply.
+              </>
+            ) : (
+              <>
+                This model publishes no maximum-output size, so 1024 is sent as a
+                literal cap on the reply length instead of expanding to a model
+                ceiling &mdash; raise it if replies are getting cut short.
+              </>
+            )}{" "}
+            A few flagship models also enforce a much higher minimum (at least 16,384)
+            regardless of a lower value here, since part of that budget goes to hidden
+            reasoning before the visible reply is written.
           </HelpTooltip>
         </div>
         <input

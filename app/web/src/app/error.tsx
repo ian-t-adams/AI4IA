@@ -17,6 +17,7 @@ export default function Error({
   useEffect(() => {
     reportClientEvent("render_error", {
       message: error.message,
+      code: error.name,
       route: typeof window !== "undefined" ? window.location.pathname : undefined,
     });
   }, [error]);

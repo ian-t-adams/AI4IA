@@ -29,6 +29,7 @@ describe("Error boundary", () => {
 
     expect(mocks.reportClientEvent).toHaveBeenCalledWith("render_error", {
       message: "boom",
+      code: "Error",
       route: expect.any(String),
     });
     expect(screen.getByRole("alert")).toBeInTheDocument();

@@ -40,15 +40,31 @@ describe("reportClientEvent", () => {
     expect(init.headers).toEqual({ "Content-Type": "application/json" });
     expect(JSON.parse(init.body)).toEqual({
       event: "unhandled_error",
+      code: "unknown",
       message: "boom",
       route: "/chat",
       component: "ChatApp",
     });
   });
 
+  it("passes through a known error code but normalizes an unrecognized one to 'unknown'", async () => {
+    const { reportClientEvent } = await freshModule();
+
+    reportClientEvent("unhandled_error", { message: "a", code: "TypeError" });
+    reportClientEvent("unhandled_error", { message: "b", code: "made_up_code" });
+    reportClientEvent("unhandled_error", { message: "c", code: undefined });
+
+    const bodies = mocks.apiFetch.mock.calls.map(([, init]) => JSON.parse(init.body));
+    expect(bodies[0].code).toBe("TypeError");
+    expect(bodies[1].code).toBe("unknown");
+    expect(bodies[2].code).toBe("unknown");
+  });
+
   it("truncates an overlong message and adds an ellipsis", async () => {
     const { reportClientEvent } = await freshModule();
-    const longMessage = "x".repeat(400);
+    // Repeated short words (not one long run) so this exercises the length
+    // cap without also tripping the long-opaque-token redaction below.
+    const longMessage = "failed ".repeat(60);
 
     reportClientEvent("render_error", { message: longMessage });
 
@@ -68,6 +84,90 @@ describe("reportClientEvent", () => {
     expect(body.message).toBeUndefined();
     expect(body.route).toBeUndefined();
     expect(body.component).toBeUndefined();
+    expect(body.code).toBe("unknown");
+  });
+
+  describe("redaction of hostile message content", () => {
+    // These directly cover HIGH-2: raw Error.message/rejection text may
+    // contain credentials, URLs/query tokens, PII, or response bodies, so
+    // this must never reach Application Insights unredacted. Fixtures below
+    // are intentionally low-entropy, repeated-character placeholders (never
+    // realistic-looking secrets) so they read clearly as synthetic test data.
+    // The backend (client_events.py's _sanitize) independently re-applies
+    // the same patterns -- see the matching test there.
+    const longOpaqueRun = "x".repeat(30);
+    const shortKeyValue = "y".repeat(20);
+    const email = "jane.doe@example.test";
+    const guid = "11111111-2222-3333-4444-555555555555";
+
+    it("redacts an authorization-style key/value pair", async () => {
+      const { reportClientEvent } = await freshModule();
+      reportClientEvent("unhandled_error", {
+        message: `Authorization: ${shortKeyValue} rejected`,
+      });
+
+      const [, init] = mocks.apiFetch.mock.calls[0];
+      const body = JSON.parse(init.body);
+      expect(body.message).not.toContain(shortKeyValue);
+      expect(body.message).toBe("Authorization=[redacted] rejected");
+    });
+
+    it("redacts an entire URL, including its query string", async () => {
+      const { reportClientEvent } = await freshModule();
+      reportClientEvent("unhandled_error", {
+        message: "Failed to fetch https://example.test/path?a=1&b=2",
+      });
+
+      const [, init] = mocks.apiFetch.mock.calls[0];
+      const body = JSON.parse(init.body);
+      expect(body.message).not.toContain("example.test");
+      expect(body.message).toBe("Failed to fetch [redacted-url]");
+    });
+
+    it("redacts an email address but keeps surrounding text useful", async () => {
+      const { reportClientEvent } = await freshModule();
+      reportClientEvent("unhandled_error", { message: `User ${email} not found` });
+
+      const [, init] = mocks.apiFetch.mock.calls[0];
+      const body = JSON.parse(init.body);
+      expect(body.message).toBe("User [redacted-email] not found");
+    });
+
+    it("redacts a GUID-shaped session/request id", async () => {
+      const { reportClientEvent } = await freshModule();
+      reportClientEvent("unhandled_error", { message: `session ${guid} crashed` });
+
+      const [, init] = mocks.apiFetch.mock.calls[0];
+      const body = JSON.parse(init.body);
+      expect(body.message).not.toContain(guid);
+      expect(body.message).toBe("session [redacted-id] crashed");
+    });
+
+    it("redacts a generic long opaque token with no other recognizable shape", async () => {
+      const { reportClientEvent } = await freshModule();
+      reportClientEvent("unhandled_error", { message: `token ${longOpaqueRun} invalid` });
+
+      const [, init] = mocks.apiFetch.mock.calls[0];
+      const body = JSON.parse(init.body);
+      expect(body.message).not.toContain(longOpaqueRun);
+      expect(body.message).toBe("token [redacted-token] invalid");
+    });
+
+    it("does not let authenticated user correlation preserve message content", async () => {
+      // The frontend never sends a userId itself (the backend derives it
+      // from the authenticated request), so proving the message is scrubbed
+      // here is what keeps the backend's later userId-tagged record from
+      // preserving this content against that user.
+      const { reportClientEvent } = await freshModule();
+      reportClientEvent("unhandled_error", {
+        message: `for ${email}, token=${longOpaqueRun}`,
+      });
+
+      const [, init] = mocks.apiFetch.mock.calls[0];
+      const body = JSON.parse(init.body);
+      expect(body.message).not.toContain(email);
+      expect(body.message).not.toContain(longOpaqueRun);
+    });
   });
 
   it("de-dupes identical (event, message) pairs within the same page load", async () => {

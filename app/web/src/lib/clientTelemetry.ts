@@ -6,10 +6,16 @@
 // were only observable via user reports.
 //
 // This module never throws: every reporting path is wrapped so a telemetry
-// failure can't break the app it's trying to observe. It intentionally sends
-// only a short, capped message plus route/component labels -- no stack traces
-// or arbitrary payloads -- so it can never leak PII/tokens into logs. The
-// backend independently enforces the same field caps and rate-limits per user.
+// failure can't break the app it's trying to observe. `code` is a small,
+// stable, allowlisted classification (e.g. "TypeError", "NotAllowedError")
+// derived from the underlying JS/DOM error where available -- it can never
+// carry free text. The free-text fields (`message`/`route`/`component`) are
+// redacted for common secret/PII shapes (tokens, URLs, emails, GUIDs) before
+// they ever leave the browser, then bounded/capped. This is defense-in-depth,
+// not the only layer: the backend (client_events.py) independently
+// re-applies equivalent redaction and the same field caps, since a
+// modified/compromised client could skip the redaction done here -- and
+// enforces the per-user rate limit itself.
 import { apiFetch } from "./auth";
 
 // Mirrors the backend's ClientEventType literal
@@ -21,8 +27,36 @@ export type ClientTelemetryEvent =
   | "media_playback_error"
   | "microphone_error";
 
+// Mirrors the backend's _KNOWN_CODES allowlist (client_events.py). Keep in
+// sync. Anything outside this set is normalized to "unknown" by
+// `normalizeCode` below -- this field must never carry free text, since it's
+// meant to be safe to slice/dice in App Insights without any redaction risk.
+const KNOWN_CODES = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "URIError",
+  "EvalError",
+  "AbortError",
+  "NetworkError",
+  "TimeoutError",
+  "QuotaExceededError",
+  "NotAllowedError",
+  "NotFoundError",
+  "NotSupportedError",
+  "SecurityError",
+  "DOMException",
+  "string_rejection",
+  "non_error_rejection",
+]);
+
 export interface ClientEventDetails {
   message?: string | null;
+  /** Stable JS/DOM error name (e.g. `error.name`). Normalized to "unknown"
+   * unless it matches `KNOWN_CODES` -- never pass free text here. */
+  code?: string | null;
   route?: string | null;
   component?: string | null;
 }
@@ -34,10 +68,42 @@ const MAX_COMPONENT_LENGTH = 100;
 // that keeps re-throwing) can't flood Application Insights or the rate limiter.
 const MAX_REPORTS_PER_PAGE_LOAD = 20;
 
+// Redacts common secret/PII shapes from free text. Mirrors the backend's
+// _REDACTIONS list (client_events.py's _sanitize) -- keep the two in sync.
+// Order matters: broader patterns (JWTs, URLs) run before the generic
+// long-opaque-token catch-all so a match isn't partially double-redacted.
+const REDACTIONS: Array<[RegExp, string]> = [
+  [/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[redacted-token]"],
+  [
+    /\b(authorization|bearer|token|api[_-]?key|secret|password|access[_-]?key|sas)\b\s*[:=]\s*"?[^\s"&,]+/gi,
+    "$1=[redacted]",
+  ],
+  [/https?:\/\/\S+/gi, "[redacted-url]"],
+  [/[\w.+-]+@[\w-]+\.[\w.-]+/g, "[redacted-email]"],
+  [/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "[redacted-id]"],
+  [/\b[A-Za-z0-9+/_-]{24,}\b/g, "[redacted-token]"],
+];
+
+function sanitize(value: string): string {
+  let result = value.replace(/[\r\n\t]+/g, " ");
+  for (const [pattern, replacement] of REDACTIONS) {
+    result = result.replace(pattern, replacement);
+  }
+  return result.trim();
+}
+
 function truncate(value: string | null | undefined, max: number): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
-  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+  // Sanitize before truncating: cutting a long value first could leave a
+  // dangling half-redacted secret that no longer matches a full pattern.
+  const sanitized = sanitize(trimmed);
+  if (!sanitized) return undefined;
+  return sanitized.length > max ? `${sanitized.slice(0, max - 1)}…` : sanitized;
+}
+
+function normalizeCode(code: string | null | undefined): string {
+  return code && KNOWN_CODES.has(code) ? code : "unknown";
 }
 
 const reportedKeys = new Set<string>();
@@ -48,20 +114,22 @@ let reportCount = 0;
  * swallows all failures (network errors, auth not ready, backend down) so a
  * reporting failure never surfaces to the user or throws inside a catch/error
  * handler that's already handling a failure. De-dupes identical
- * (event, message) pairs and caps total reports per page load.
+ * (event, code, message) tuples and caps total reports per page load.
  */
 export function reportClientEvent(
   event: ClientTelemetryEvent,
   details: ClientEventDetails = {},
 ): void {
   const message = truncate(details.message, MAX_MESSAGE_LENGTH);
-  const key = `${event}|${message ?? ""}`;
+  const code = normalizeCode(details.code);
+  const key = `${event}|${code}|${message ?? ""}`;
   if (reportedKeys.has(key) || reportCount >= MAX_REPORTS_PER_PAGE_LOAD) return;
   reportedKeys.add(key);
   reportCount += 1;
 
   const body = {
     event,
+    code,
     message,
     route: truncate(details.route, MAX_ROUTE_LENGTH),
     component: truncate(details.component, MAX_COMPONENT_LENGTH),
@@ -96,8 +164,10 @@ export function installGlobalClientTelemetry(): void {
   installed = true;
 
   window.addEventListener("error", (event: ErrorEvent) => {
+    const err = event.error instanceof Error ? event.error : undefined;
     reportClientEvent("unhandled_error", {
-      message: event.message || (event.error instanceof Error ? event.error.message : undefined),
+      message: event.message || err?.message,
+      code: err?.name,
       route: window.location.pathname,
     });
   });
@@ -110,8 +180,15 @@ export function installGlobalClientTelemetry(): void {
         : typeof reason === "string"
           ? reason
           : "Unhandled promise rejection";
+    const code =
+      reason instanceof Error
+        ? reason.name
+        : typeof reason === "string"
+          ? "string_rejection"
+          : "non_error_rejection";
     reportClientEvent("unhandled_rejection", {
       message,
+      code,
       route: window.location.pathname,
     });
   });

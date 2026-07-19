@@ -603,6 +603,21 @@ button:disabled {
   font-size: 0.65rem;
   font-weight: 600;
   flex: 0 0 auto;
+  position: relative;
+}
+
+.help-trigger-sm::before {
+  /* Expands the effective (invisible) hit target to the WCAG 2.2 AA
+     minimum of 24x24 without visually enlarging the 18px glyph, so dense
+     rows (status pills, per-item badges, checkbox lists) don't look
+     bloated but the trigger is still comfortably tappable. */
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
 }
 
 .help-content {

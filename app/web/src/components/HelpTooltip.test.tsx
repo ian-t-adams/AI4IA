@@ -42,6 +42,30 @@ describe("HelpTooltip", () => {
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
+  it("consumes Escape to close itself without also closing an ancestor dialog, but lets a later Escape reach it once already closed", async () => {
+    const user = userEvent.setup();
+    const onDialogKeyDown = vi.fn();
+    render(
+      <div onKeyDown={onDialogKeyDown}>
+        <HelpTooltip label="Nested">Some help text.</HelpTooltip>
+      </div>,
+    );
+    const trigger = screen.getByRole("button", { name: "Help: Nested" });
+    await user.click(trigger);
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    // The enclosing dialog/drawer must not also see this keypress -- otherwise
+    // one Escape would dismiss both the tooltip and its containing modal.
+    expect(onDialogKeyDown).not.toHaveBeenCalled();
+
+    // Once the tooltip is already closed, Escape is no longer this trigger's
+    // concern, so it must propagate normally to the enclosing dialog.
+    await user.keyboard("{Escape}");
+    expect(onDialogKeyDown).toHaveBeenCalledTimes(1);
+  });
+
   it("applies the compact trigger class when size is sm, and the default class otherwise", () => {
     const { rerender } = render(
       <HelpTooltip label="Risk" size="sm">

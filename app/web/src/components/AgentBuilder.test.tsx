@@ -204,4 +204,17 @@ describe("AgentBuilder", () => {
     expect(screen.getByText(/Reasoning\./)).toBeInTheDocument();
     expect(screen.getByText(/multi-step logic/)).toBeInTheDocument();
   });
+
+  it("describes the preferred-model default as a fallback, not an override", async () => {
+    const user = userEvent.setup();
+    render(<AgentBuilder agents={[]} models={[]} onChanged={async () => {}} />);
+    await user.click(screen.getByRole("button", { name: "Help: Preferred model" }));
+    const tooltip = screen.getByRole("tooltip");
+    // Backend precedence is body.model (chat header) > session.model >
+    // agent.defaultModel -- so this setting must read as a fallback, never
+    // as something that overrides an explicit header/session choice.
+    expect(tooltip).toHaveTextContent(/fallback/i);
+    expect(tooltip).toHaveTextContent(/take priority over this/i);
+    expect(tooltip).not.toHaveTextContent(/overrides the model/i);
+  });
 });

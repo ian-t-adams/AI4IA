@@ -384,10 +384,11 @@ export function AgentBuilder({
               Preferred model
             </label>
             <HelpTooltip label="Preferred model" size="sm">
-              Overrides the model for any conversation using this agent, no
-              matter which model is chosen in the chat header. Leave as
-              &quot;Session default&quot; to let each conversation use whatever
-              model the user picked there instead.
+              A fallback only, used when a conversation has no model chosen
+              yet. An explicit chat-header pick or the session&apos;s current
+              model both take priority over this. Leave as &quot;Session
+              default&quot; to always defer to whatever model the user picked
+              there instead.
             </HelpTooltip>
           </div>
           <select

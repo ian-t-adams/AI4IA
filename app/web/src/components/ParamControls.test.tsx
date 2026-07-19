@@ -81,6 +81,26 @@ describe("ParamControls", () => {
     expect(screen.getByRole("tooltip")).toHaveTextContent(/16,384/);
   });
 
+  it("does not claim the 1024 default expands to a ceiling when the model publishes no max-output size", async () => {
+    const user = userEvent.setup();
+    const modelWithoutCeiling: ModelEntry = { ...MODEL, maxOutputTokens: null };
+    setup({}, modelWithoutCeiling);
+    await user.click(screen.getByRole("button", { name: "Help: Max tokens" }));
+    const tooltip = screen.getByRole("tooltip");
+    expect(tooltip).toHaveTextContent(/no maximum-output size/i);
+    expect(tooltip).toHaveTextContent(/literal cap/i);
+    expect(tooltip).not.toHaveTextContent(/expands to/i);
+    expect(tooltip).not.toHaveTextContent(/no preference/i);
+  });
+
+  it("still discloses the flagship minimum even when the model publishes no max-output size", async () => {
+    const user = userEvent.setup();
+    const modelWithoutCeiling: ModelEntry = { ...MODEL, maxOutputTokens: null };
+    setup({}, modelWithoutCeiling);
+    await user.click(screen.getByRole("button", { name: "Help: Max tokens" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/16,384/);
+  });
+
   it("still clamps the max tokens input to the model's cap on change", async () => {
     const { onChange } = setup({ max_tokens: 100 }, MODEL);
     const input = screen.getByRole("spinbutton");
