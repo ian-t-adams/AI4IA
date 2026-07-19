@@ -54,7 +54,7 @@ def test_record_failure_increments_and_summarizes():
     assert changed is True
     assert server.consecutiveFailures == 1
     assert server.lastHealthCheck == _T0
-    assert "connection refused" in (server.lastHealthError or "")
+    assert server.lastHealthError == "execution_error"
     # One failure is below the threshold -> not yet quarantined.
     assert server.quarantinedUntil is None
     assert health.is_quarantined(server, now=_T0) is False
@@ -119,7 +119,7 @@ def test_quarantine_remaining_and_reason():
     assert reason is not None
     assert "quarantined" in reason
     assert str(QUARANTINE_THRESHOLD) in reason
-    assert "connection refused" in reason
+    assert "execution_error" in reason
 
 
 def test_quarantine_reason_none_when_not_quarantined():
@@ -160,11 +160,11 @@ def test_health_status_degraded_then_quarantined():
 # --- summarize_error redaction ------------------------------------------------
 
 
-def test_summarize_error_redacts_secret_material():
+def test_summarize_error_replaces_remote_text_with_fixed_category():
     secret = "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     summary = health.summarize_error(f"401 from server token={secret}")
     assert secret not in summary
-    assert "***REDACTED***" in summary
+    assert summary == "execution_error"
 
 
 def test_summarize_error_is_bounded():

@@ -20,7 +20,7 @@ import operator
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from .tools import ToolRegistry, ToolRisk, ToolSpec
 
@@ -50,6 +50,10 @@ class ToolContext:
     approvals: frozenset[str] = field(default_factory=frozenset)
     target_hosts: frozenset[str] = field(default_factory=frozenset)
     correlation_id: str | None = None
+    # Durable governance/attachment name -> provider-safe runtime alias.
+    # Empty for built-ins. The runtime resolves selected names through this
+    # map before it produces the first gateway tool schema.
+    tool_aliases: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

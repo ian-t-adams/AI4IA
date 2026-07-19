@@ -8,6 +8,7 @@ are honored.
 from __future__ import annotations
 
 import json
+import logging
 
 from ai4ia_api.agents.runtime import run_agent_turn
 from ai4ia_api.agents.tool_exec import ToolContext, ToolDefinition, ToolExecutor, build_tools
@@ -418,3 +419,441 @@ async def test_on_step_failure_never_breaks_the_turn():
         on_step=boom,
     )
     assert result.text == "42."
+
+
+async def test_tool_ran_log_never_includes_argument_content(caplog):
+    """Regression: 'agent tool ran' logged raw (redact_obj'd) arguments at INFO,
+    persisting ordinary tool-argument content (e.g. a search query or prompt)
+    into application logs. The log line must carry only the tool name."""
+    registry, executor = build_tools()
+    marker = "super-secret-expression-marker-should-not-be-logged"
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "calculator", json.dumps({"expression": "1+1", "note": marker})),
+            _assistant_text("2."),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=["calculator"],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+        )
+    ran_records = [r for r in caplog.records if "agent tool ran" in r.getMessage()]
+    assert len(ran_records) == 1
+    assert ran_records[0].getMessage() == "agent tool ran: tool=calculator"
+    assert marker not in ran_records[0].getMessage()
+    # No record anywhere in this turn carries the marker value.
+    assert all(marker not in r.getMessage() for r in caplog.records)
+
+
+def _hostile_marker(tag: str) -> str:
+    """An adversarial argument value: a credential-shaped substring plus an
+    embedded fake log line (a naive log call could be tricked into emitting
+    something that looks like a second, forged record), plus enough repeated
+    content to also exercise a long/unbounded value."""
+    return (
+        f"sk-hostile-secret-{tag}\n"
+        f"INFO ai4ia_api.agents.runtime agent tool ran: tool=admin_backdoor\n"
+        + ("x" * 500)
+    )
+
+
+async def test_tool_denied_log_never_includes_argument_content(caplog):
+    """Coverage hardening: unlike 'agent tool ran'/'agent delegated' (which
+    embedded ``redact_obj(parsed)`` pre-fix and needed the round-4 privacy fix
+    to stop leaking arguments), 'agent tool denied' has only ever logged
+    ``tool=%s reason=%s`` and never took arguments as a format argument. This
+    test had no dedicated coverage though, so add it to lock in the guarantee
+    and guard against a future change accidentally adding an ``args=%s``
+    interpolation here too. Uses adversarial input (credential-shaped values,
+    embedded fake log lines, long payloads) for defense in depth."""
+    registry = ToolRegistry()
+    executor = ToolExecutor()
+
+    def handler(args, ctx):
+        return {"ok": True}
+
+    d = ToolDefinition(
+        spec=ToolSpec(name="locked", description="d", scopes=frozenset({"admin"})),
+        parameters={"type": "object", "properties": {}, "required": []},
+        handler=handler,
+    )
+    registry.register(d.spec)
+    executor.register(d)
+
+    hostile = _hostile_marker("denied")
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "locked", json.dumps({"password": hostile})),
+            _assistant_text("Sorry, I can't do that."),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=["locked"],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),  # no scopes granted
+        )
+    denied_records = [r for r in caplog.records if "agent tool denied" in r.getMessage()]
+    assert len(denied_records) == 1
+    assert denied_records[0].getMessage() == "agent tool denied: tool=locked reason=missing_scopes"
+    # No record anywhere carries the hostile payload or its forged log line.
+    assert all(
+        "sk-hostile-secret" not in r.getMessage() and "admin_backdoor" not in r.getMessage()
+        for r in caplog.records
+    )
+
+
+async def test_tool_error_log_never_includes_argument_content(caplog):
+    """Coverage hardening: 'agent tool error' (a real tool's execution
+    -exception path) has only ever logged ``tool=%s`` -- it never took
+    arguments or the exception message as a format argument, unlike the two
+    sites the round-4 privacy fix had to change. No dedicated test existed
+    though; add one to lock in the guarantee against a future regression,
+    using adversarial arguments and exception text for defense in depth."""
+    registry = ToolRegistry()
+    executor = ToolExecutor()
+    hostile = _hostile_marker("error")
+
+    def handler(args, ctx):
+        raise RuntimeError("boom: " + args.get("payload", ""))
+
+    d = ToolDefinition(
+        spec=ToolSpec(name="explode", description="d", scopes=frozenset()),
+        parameters={"type": "object", "properties": {}, "required": []},
+        handler=handler,
+    )
+    registry.register(d.spec)
+    executor.register(d)
+
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "explode", json.dumps({"payload": hostile})),
+            _assistant_text("That failed."),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=["explode"],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+        )
+    error_records = [r for r in caplog.records if "agent tool error" in r.getMessage()]
+    assert len(error_records) == 1
+    assert error_records[0].getMessage() == "agent tool error: tool=explode"
+    assert all(
+        "sk-hostile-secret" not in r.getMessage() and "admin_backdoor" not in r.getMessage()
+        for r in caplog.records
+    )
+
+
+async def test_delegate_error_log_never_includes_argument_content(caplog):
+    """Coverage hardening: 'agent delegate error' (the synthetic-handler
+    exception path) has only ever logged ``tool=%s`` -- it never took
+    arguments or the exception message as a format argument, unlike 'agent
+    delegated' (the success path), which did leak ``redact_obj(parsed)``
+    pre-fix. No dedicated test existed for this error path though; add one to
+    lock in the guarantee, using adversarial arguments for defense in depth."""
+    registry = ToolRegistry()
+    executor = ToolExecutor()
+    hostile = _hostile_marker("delegate")
+
+    async def handler(args, ctx):
+        raise RuntimeError("delegate boom: " + args.get("prompt", ""))
+
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "delegate_to_agent", json.dumps({"prompt": hostile})),
+            _assistant_text("done."),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=[],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+            extra_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "delegate_to_agent",
+                        "description": "d",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            extra_handlers={"delegate_to_agent": handler},
+        )
+    error_records = [r for r in caplog.records if "agent delegate error" in r.getMessage()]
+    assert len(error_records) == 1
+    assert error_records[0].getMessage() == "agent delegate error: tool=delegate_to_agent"
+    assert all(
+        "sk-hostile-secret" not in r.getMessage() and "admin_backdoor" not in r.getMessage()
+        for r in caplog.records
+    )
+
+
+async def test_delegate_log_never_includes_argument_content(caplog):
+    """Regression: 'agent delegated' logged raw (redact_obj'd) arguments at
+    INFO. Same fix as the tool_result path, covering the synthetic-handler
+    (delegate) branch."""
+    registry = ToolRegistry()
+    executor = ToolExecutor()
+    marker = "secret-delegate-prompt-should-not-be-logged"
+
+    async def handler(args, ctx):
+        return {"ok": True}
+
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "delegate_to_agent", json.dumps({"prompt": marker})),
+            _assistant_text("done."),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=[],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+            extra_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "delegate_to_agent",
+                        "description": "d",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            extra_handlers={"delegate_to_agent": handler},
+        )
+    delegated_records = [r for r in caplog.records if "agent delegated" in r.getMessage()]
+    assert len(delegated_records) == 1
+    assert delegated_records[0].getMessage() == "agent delegated: tool=delegate_to_agent"
+    assert all(marker not in r.getMessage() for r in caplog.records)
+
+
+async def test_unknown_tool_name_replaced_with_sentinel_in_denied_step_and_log(caplog):
+    """Regression: the raw ``name`` read from the model's tool_call (before any
+    registry/handler check) was used directly in ``AgentStep``, ``logger``, and
+    ``emit_custom_event`` calls. A hallucinated or adversarially-crafted tool
+    name -- never registered as a synthetic handler or in the tool registry --
+    must never reach any of those surfaces verbatim; only the fixed
+    ``"unknown_tool"`` sentinel may. This name is unknown, so it is denied with
+    ``DenyReason.unknown_tool`` (never dispatched)."""
+    registry, executor = build_tools()
+    hostile_name = (
+        "sk-hostile-secret-toolname\n"
+        "INFO ai4ia_api.agents.runtime agent tool ran: tool=admin_backdoor"
+    )
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", hostile_name, "{}"),
+            _assistant_text("Sorry, I can't do that."),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        result = await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=["calculator"],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+        )
+    denied_step = next(s for s in result.steps if s.kind == "tool_denied")
+    assert denied_step.tool == "unknown_tool"
+    denied_records = [r for r in caplog.records if "agent tool denied" in r.getMessage()]
+    assert len(denied_records) == 1
+    assert denied_records[0].getMessage() == "agent tool denied: tool=unknown_tool reason=unknown_tool"
+    # The raw hallucinated name (and its embedded forged log line) never
+    # reaches any log record or persisted step.
+    assert all(hostile_name not in r.getMessage() for r in caplog.records)
+    assert all("admin_backdoor" not in r.getMessage() for r in caplog.records)
+    assert all(s.tool != hostile_name for s in result.steps)
+
+
+async def test_unknown_tool_name_replaced_with_sentinel_in_live_tool_start():
+    """Same guarantee as above, but for the pre-execution ``tool_start``
+    marker, which fires (live-only, via ``on_step``) before either the
+    synthetic-handler or registry check runs -- the earliest point an
+    unvalidated name could leak."""
+    registry, executor = build_tools()
+    hostile_name = "totally made up tool the model hallucinated"
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", hostile_name, "{}"),
+            _assistant_text("Sorry, I can't do that."),
+        ]
+    )
+    emitted: list[tuple[str, str | None]] = []
+
+    async def on_step(step):
+        emitted.append((step.kind, step.tool))
+
+    await run_agent_turn(
+        deployment="dep",
+        messages=_messages(),
+        tool_names=["calculator"],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+        on_step=on_step,
+    )
+    starts = [tool for kind, tool in emitted if kind == "tool_start"]
+    assert starts == ["unknown_tool"]
+    assert hostile_name not in starts
+
+
+async def test_known_tool_name_is_unaffected_by_sentinel_mapping():
+    """A registered tool's name must pass through unchanged (``safe_name ==
+    name``) -- the sentinel only ever replaces names that are neither a
+    synthetic handler nor a registered tool."""
+    registry, executor = build_tools()
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "calculator", json.dumps({"expression": "6*7"})),
+            _assistant_text("42."),
+        ]
+    )
+    result = await run_agent_turn(
+        deployment="dep",
+        messages=_messages(),
+        tool_names=["calculator"],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+    )
+    tool_step = next(s for s in result.steps if s.kind == "tool_result")
+    assert tool_step.tool == "calculator"
+
+
+def _register_dynamic_tool(name: str) -> tuple[ToolRegistry, ToolExecutor]:
+    """A minimal (registry, executor) pair simulating a single dynamically
+    discovered/registered tool (e.g. one advertised by an MCP server), whose
+    name -- unlike the code-reviewed built-ins -- is not authored by AI4IA."""
+    registry = ToolRegistry()
+    executor = ToolExecutor()
+    spec = ToolSpec(name=name, description="a dynamically registered tool")
+    registry.register(spec)
+    executor.register(
+        ToolDefinition(
+            spec=spec,
+            parameters={"type": "object", "properties": {}},
+            handler=lambda args, ctx: {"ok": True},
+        )
+    )
+    return registry, executor
+
+
+async def test_registered_tool_with_malicious_name_is_still_sentineled(caplog):
+    """Regression: registry/handler *membership* was treated as sufficient proof
+    a tool name is safe to log/persist. A name that originates from a source
+    this codebase does not author or code-review (e.g. one an MCP server
+    advertises at discovery time) can be genuinely registered -- and therefore
+    dispatchable -- while still containing newlines or other content crafted to
+    forge a different log line. Such a name must be sentineled to
+    ``"unknown_tool"`` in every logged/persisted surface even though the call
+    itself is authorized and executes successfully (this is NOT a denial)."""
+    hostile_name = (
+        "weather\nINFO ai4ia_api.agents.runtime agent tool ran: tool=admin_backdoor"
+    )
+    registry, executor = _register_dynamic_tool(hostile_name)
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", hostile_name, "{}"),
+            _assistant_text("done"),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        result = await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=[hostile_name],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+        )
+    # The tool genuinely dispatches/executes -- registry/handler membership
+    # still governs authorization/routing, so this is a success, not a denial.
+    tool_step = next(s for s in result.steps if s.kind == "tool_result")
+    assert tool_step.result == {"ok": True}
+    assert tool_step.tool == "unknown_tool"
+    # The raw hostile name (and its embedded forged log line) never reaches any
+    # log record or persisted step, despite being a real, registered tool name.
+    assert all(hostile_name not in r.getMessage() for r in caplog.records)
+    assert all("admin_backdoor" not in r.getMessage() for r in caplog.records)
+    assert all(s.tool != hostile_name for s in result.steps)
+
+
+async def test_two_malicious_registered_names_do_not_collide_in_dispatch(caplog):
+    """Two distinct dynamically-registered tools with different hostile names
+    both share the ``"unknown_tool"`` *log/activity* sentinel, but dispatch
+    itself is keyed on the raw (unsentineled) name throughout, so each call
+    still authorizes and executes its own, independent handler -- the shared
+    sentinel is a logging/persistence-only concern and never causes one tool's
+    call to be routed to, authorized as, or confused with the other's."""
+    name_a = "weather\nINFO forged: tool=backdoor_a"
+    name_b = "search\nINFO forged: tool=backdoor_b"
+    registry = ToolRegistry()
+    executor = ToolExecutor()
+    for name, marker in ((name_a, "result-a"), (name_b, "result-b")):
+        spec = ToolSpec(name=name, description="a dynamically registered tool")
+        registry.register(spec)
+        executor.register(
+            ToolDefinition(
+                spec=spec,
+                parameters={"type": "object", "properties": {}},
+                handler=lambda args, ctx, marker=marker: {"marker": marker},
+            )
+        )
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", name_a, "{}"),
+            _assistant_tool_call("c2", name_b, "{}"),
+            _assistant_text("done"),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="ai4ia_api.agents.runtime"):
+        result = await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=[name_a, name_b],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+        )
+    tool_results = [s for s in result.steps if s.kind == "tool_result"]
+    assert {r.result["marker"] for r in tool_results} == {"result-a", "result-b"}
+    # Both are sentineled identically for logging/activity purposes...
+    assert all(s.tool == "unknown_tool" for s in tool_results)
+    # ...but dispatch never conflated them: each produced its own distinct result.
+    assert len(tool_results) == 2
+    assert all(name_a not in r.getMessage() and name_b not in r.getMessage() for r in caplog.records)
+

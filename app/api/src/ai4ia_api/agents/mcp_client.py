@@ -27,11 +27,11 @@ import httpx
 
 from .mcp_servers import (
     MAX_TOOL_DESCRIPTION_LEN,
-    MAX_TOOL_NAME_LEN,
     MAX_TOOLS_PER_SERVER,
     DiscoveredTool,
     McpAuthMode,
     McpConnectionError,
+    is_valid_remote_tool_name,
 )
 from .ssrf import Resolver, SsrfError, resolve_pinned_ip
 
@@ -42,7 +42,6 @@ PROTOCOL_VERSION = "2025-06-18"
 _CLIENT_INFO = {"name": "ai4ia", "version": "1.0"}
 _DEFAULT_TIMEOUT_S = 15.0
 _DEFAULT_MAX_BYTES = 2_000_000
-
 
 @dataclass(frozen=True)
 class McpAuth:
@@ -290,7 +289,7 @@ class HttpxMcpConnector:
                 f"{method}: endpoint is not a permitted egress target: {exc}"
             ) from exc
         except httpx.HTTPError as exc:
-            raise McpConnectionError(f"{method}: request failed: {exc}") from exc
+            raise McpConnectionError(f"{method}: transport error.") from exc
         if resp.status_code >= 400:
             raise McpConnectionError(
                 f"{method}: server returned HTTP {resp.status_code}."
@@ -330,8 +329,7 @@ class HttpxMcpConnector:
     def _raise_for_rpc_error(payload: dict[str, Any], method: str) -> None:
         error = payload.get("error")
         if error:
-            message = error.get("message") if isinstance(error, dict) else str(error)
-            raise McpConnectionError(f"{method}: server error: {message}.")
+            raise McpConnectionError(f"{method}: remote protocol error.")
 
     @staticmethod
     def _parse_tools(payload: dict[str, Any]) -> list[DiscoveredTool]:
@@ -342,17 +340,26 @@ class HttpxMcpConnector:
         if not isinstance(raw_tools, list):
             raise McpConnectionError("tools/list: result has no tools array.")
         tools: list[DiscoveredTool] = []
-        for raw in raw_tools[:MAX_TOOLS_PER_SERVER]:
+        seen_names: set[str] = set()
+        for raw in raw_tools:
+            if len(tools) >= MAX_TOOLS_PER_SERVER:
+                break
             if not isinstance(raw, dict):
                 continue
             name = raw.get("name")
-            if not isinstance(name, str) or not name.strip():
+            if (
+                not isinstance(name, str)
+                or not is_valid_remote_tool_name(name)
+                or name in seen_names
+            ):
                 continue
+            seen_names.add(name)
             description = raw.get("description")
             schema = raw.get("inputSchema")
             tools.append(
                 DiscoveredTool(
-                    name=name.strip()[:MAX_TOOL_NAME_LEN],
+                    name=name,
+                    rawName=name,
                     description=(description or "")[:MAX_TOOL_DESCRIPTION_LEN]
                     if isinstance(description, str)
                     else "",
@@ -369,6 +376,14 @@ class HttpxMcpConnector:
         if not isinstance(result, dict):
             raise McpConnectionError("tools/call: malformed result.")
         is_error = bool(result.get("isError"))
+        # The tool's own result content (success or business-logic error, e.g.
+        # "invalid date") is a normal chat-turn tool result, not a log/activity
+        # line -- it goes through the same credential/secret redaction as any
+        # other tool result (see ``runtime.py``'s ``redact_obj``) and is never
+        # blanked here, so the model/user still sees a useful reason a call
+        # failed. Only exception *messages* raised by this client (connection,
+        # RPC-protocol errors above) are fixed, content-free strings, since
+        # those can otherwise chain into log output.
         content = cls._content_to_text(result.get("content"), max_bytes)
         return McpToolResult(content=content, is_error=is_error)
 

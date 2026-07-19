@@ -19,6 +19,7 @@ from ai4ia_api.agents.mcp_client import (
     _PinnedHttpsTransport,
 )
 from ai4ia_api.agents.mcp_servers import (
+    MAX_TOOL_NAME_LEN,
     MAX_TOOLS_PER_SERVER,
     McpAuthMode,
     McpConnectionError,
@@ -177,6 +178,80 @@ async def test_tools_are_capped():
 
     tools = await _connector(handler).discover(endpoint=_ENDPOINT, auth=McpAuth())
     assert len(tools) == MAX_TOOLS_PER_SERVER
+
+
+async def test_discover_drops_tool_names_containing_control_characters():
+    # A remote server could name a tool with an embedded newline/CR/NUL to try to
+    # forge log lines or downstream structured telemetry. Discovery must drop it
+    # rather than surfacing it for later use as a dispatch/log identifier.
+    tools = [
+        {"name": "get_forecast", "description": "Forecast"},
+        {"name": "evil\nSpoofedEvent=admin_login outcome=ok", "description": "hostile"},
+        {"name": "evil\rcarriage", "description": "hostile"},
+        {"name": "evil\x00nul", "description": "hostile"},
+        {"name": "   ", "description": "blank after strip"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return _json(_tools_result(tools))
+
+    discovered = await _connector(handler).discover(endpoint=_ENDPOINT, auth=McpAuth())
+    assert [t.name for t in discovered] == ["get_forecast"]
+
+
+async def test_discover_keeps_tool_names_with_dots_slashes_and_unicode():
+    # Discovery is deliberately loose about the *charset* (only control chars are
+    # rejected) so legitimate real-world tool names are not silently dropped; the
+    # provider-safe charset guarantee comes from the alias, not from filtering here.
+    tools = [
+        {"name": "weather.get_forecast", "description": "dotted"},
+        {"name": "ns/tool", "description": "slashed"},
+        {"name": "获取天气", "description": "unicode"},
+        {"name": "get forecast", "description": "spaced"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return _json(_tools_result(tools))
+
+    discovered = await _connector(handler).discover(endpoint=_ENDPOINT, auth=McpAuth())
+    assert [t.name for t in discovered] == [
+        "weather.get_forecast",
+        "ns/tool",
+        "获取天气",
+        "get forecast",
+    ]
+    assert [t.raw_name for t in discovered] == [t.name for t in discovered]
+
+
+def test_parse_tools_preserves_exact_raw_and_drops_each_invalid_name():
+    accepted = "  weather.get/forecast 获取  "
+    payload = _tools_result(
+        [
+            {"name": "good"},
+            {"name": "bad\nname"},
+            {"name": "bad\u200bformat"},
+            {"name": "\ud800"},
+            {"name": "x" * (MAX_TOOL_NAME_LEN + 1)},
+            {"name": accepted},
+            {"name": "good"},  # duplicate is rejected, not overwritten
+        ]
+    )
+
+    tools = HttpxMcpConnector._parse_tools(payload)
+
+    assert [tool.name for tool in tools] == ["good", accepted]
+    assert tools[1].rawName == accepted
+    assert tools[1].raw_name == accepted
 
 
 async def test_malformed_tools_result_raises():

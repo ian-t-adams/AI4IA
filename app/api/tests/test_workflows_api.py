@@ -185,6 +185,36 @@ def test_workflows_are_isolated_per_user(client):
     assert len(client.get("/api/workflows", headers=alice).json()["workflows"]) == 1
 
 
+def test_update_cannot_modify_another_users_workflow(client):
+    alice = {"X-Dev-User": "alice"}
+    bob = {"X-Dev-User": "bob"}
+    body = _wf_body(name="mine", steps=[{"agent": "a1", "instruction": "{input}"}])
+    assert client.post("/api/workflows", json=body, headers=alice).status_code == 201
+    # Bob's own partition has no "mine" -> 404, not a leak/edit of alice's.
+    resp = client.put(
+        "/api/workflows/mine",
+        json={"displayName": "Hijacked"},
+        headers=bob,
+    )
+    assert resp.status_code == 404, resp.text
+    mine = client.get("/api/workflows", headers=alice).json()["workflows"]
+    assert mine[0]["displayName"] == "Summarize"
+
+
+def test_delete_cannot_remove_another_users_workflow(client):
+    alice = {"X-Dev-User": "alice"}
+    bob = {"X-Dev-User": "bob"}
+    body = _wf_body(name="mine", steps=[{"agent": "a1", "instruction": "{input}"}])
+    assert client.post("/api/workflows", json=body, headers=alice).status_code == 201
+    # Idempotent no-op in bob's own (empty) partition -> 204, but alice's
+    # workflow must survive untouched.
+    resp = client.delete("/api/workflows/mine", headers=bob)
+    assert resp.status_code == 204, resp.text
+    assert [w["name"] for w in client.get("/api/workflows", headers=alice).json()["workflows"]] == [
+        "mine"
+    ]
+
+
 def test_run_unknown_step_agent_persists_failure(client):
     """A workflow whose step references a non-existent agent runs, fails gracefully
     (ok=False), persists an assistant message, but meters nothing (no model call)."""

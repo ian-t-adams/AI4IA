@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from ai4ia_api.auth.base import AuthCredentials
 from ai4ia_api.library.models import DocumentStatus, UserDocument
+from ai4ia_api.library.repository import DocumentConflictError, DocumentNotFoundError
 from ai4ia_api.main import create_app
 from tests.conftest import make_settings
 
@@ -233,3 +234,126 @@ def test_annotations_excluded_from_document_summary(client):
     )
     summary = client.get("/api/library/documents").json()
     assert summary and "annotations" not in summary[0]
+
+
+# --- concurrent-delete race: update_document can still raise DocumentNotFoundError
+# after the router's own ownership check passed (the document vanished in the
+# gap). Every annotation-mutating endpoint must translate that into a 404,
+# matching every other document-not-found path, instead of letting it bubble
+# up as a raw 500 from the app's generic exception handler. ---
+class _UpdateRacesDeleteRepo:
+    """Wraps a real repo; ``update_document`` raises as if a concurrent delete
+    landed between the router's ownership read and this write."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def update_document(self, document):
+        raise DocumentNotFoundError(document.id)
+
+
+def test_create_annotation_document_deleted_concurrently_is_404(client):
+    uid = _uid(client)
+    doc = asyncio.run(_seed(client, uid=uid))
+    client.app.state.document_library = _UpdateRacesDeleteRepo(
+        client.app.state.document_library
+    )
+    resp = client.post(
+        f"/api/library/documents/{doc.id}/annotations", json={"body": "note"}
+    )
+    assert resp.status_code == 404
+
+
+def test_update_annotation_document_deleted_concurrently_is_404(client):
+    uid = _uid(client)
+    doc = asyncio.run(_seed(client, uid=uid))
+    created = client.post(
+        f"/api/library/documents/{doc.id}/annotations", json={"body": "original"}
+    ).json()
+    client.app.state.document_library = _UpdateRacesDeleteRepo(
+        client.app.state.document_library
+    )
+    resp = client.patch(
+        f"/api/library/documents/{doc.id}/annotations/{created['id']}",
+        json={"body": "edited"},
+    )
+    assert resp.status_code == 404
+
+
+def test_delete_annotation_document_deleted_concurrently_is_404(client):
+    uid = _uid(client)
+    doc = asyncio.run(_seed(client, uid=uid))
+    created = client.post(
+        f"/api/library/documents/{doc.id}/annotations", json={"body": "original"}
+    ).json()
+    client.app.state.document_library = _UpdateRacesDeleteRepo(
+        client.app.state.document_library
+    )
+    resp = client.delete(
+        f"/api/library/documents/{doc.id}/annotations/{created['id']}"
+    )
+    assert resp.status_code == 404
+
+
+# --- etag conflict: update_document can also lose an optimistic-concurrency
+# race (the document still exists but was modified since the router's own
+# read). That must surface as 409, distinct from the 404 case above — a
+# stale-write conflict is not a not-found. ---
+class _UpdateRacesConflictRepo:
+    """Wraps a real repo; ``update_document`` raises as if the document was
+    modified (etag moved) between the router's ownership read and this write."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def update_document(self, document):
+        raise DocumentConflictError(document.id)
+
+
+def test_create_annotation_document_modified_concurrently_is_409(client):
+    uid = _uid(client)
+    doc = asyncio.run(_seed(client, uid=uid))
+    client.app.state.document_library = _UpdateRacesConflictRepo(
+        client.app.state.document_library
+    )
+    resp = client.post(
+        f"/api/library/documents/{doc.id}/annotations", json={"body": "note"}
+    )
+    assert resp.status_code == 409
+
+
+def test_update_annotation_document_modified_concurrently_is_409(client):
+    uid = _uid(client)
+    doc = asyncio.run(_seed(client, uid=uid))
+    created = client.post(
+        f"/api/library/documents/{doc.id}/annotations", json={"body": "original"}
+    ).json()
+    client.app.state.document_library = _UpdateRacesConflictRepo(
+        client.app.state.document_library
+    )
+    resp = client.patch(
+        f"/api/library/documents/{doc.id}/annotations/{created['id']}",
+        json={"body": "edited"},
+    )
+    assert resp.status_code == 409
+
+
+def test_delete_annotation_document_modified_concurrently_is_409(client):
+    uid = _uid(client)
+    doc = asyncio.run(_seed(client, uid=uid))
+    created = client.post(
+        f"/api/library/documents/{doc.id}/annotations", json={"body": "original"}
+    ).json()
+    client.app.state.document_library = _UpdateRacesConflictRepo(
+        client.app.state.document_library
+    )
+    resp = client.delete(
+        f"/api/library/documents/{doc.id}/annotations/{created['id']}"
+    )
+    assert resp.status_code == 409

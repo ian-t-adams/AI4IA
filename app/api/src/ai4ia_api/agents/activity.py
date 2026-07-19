@@ -8,8 +8,15 @@ each step to an :class:`~ai4ia_api.sessions.models.ActivityStep` for two surface
 * the **persisted** trace stored on the assistant message (finalized steps only).
 
 Redaction is deliberate: only a coarse ``kind``, the tool name, a human ``label``,
-and a short single-line ``detail`` pulled from a known-safe argument key (e.g. the
-search query or URL) — never raw tool results or full arguments.
+and a short single-line ``detail`` are surfaced — never raw tool results or
+arguments. ``detail`` is sourced *only* from ``AgentStep.detail``, a fixed,
+bounded reason/category string the runtime itself sets for denial/error/final
+steps (e.g. ``"budget_exceeded"``, ``"missing_scope"``); it is never derived from
+tool arguments, since those can carry arbitrary user content (prompts, URLs,
+file paths) that must not be persisted or logged. The tool name itself is
+re-validated against the same bounded, canonical charset the runtime enforces
+(belt-and-suspenders: this is the actual persistence/SSE boundary, so it must
+not blindly trust an already-sanitized value from its one current caller).
 """
 from __future__ import annotations
 
@@ -17,6 +24,7 @@ from typing import Any
 
 from ..sessions.models import ActivityStep
 from .runtime import AgentStep
+from .tools import is_safe_tool_name
 
 # tool name -> (present-progressive label for live, past-tense label for the trace)
 _TOOL_VERBS: dict[str, tuple[str, str]] = {
@@ -38,8 +46,9 @@ _TOOL_VERBS: dict[str, tuple[str, str]] = {
     "get_current_time": ("Checking the time", "Checked the time"),
 }
 
-# Argument keys that are safe + useful to show as a short detail, in priority order.
-_DETAIL_KEYS = ("query", "url", "expression", "prompt", "agent", "path", "filename", "language")
+# Bound on the fixed reason/category string surfaced as ``detail`` (defense in
+# depth: every current value is far shorter than this, but never trust a future
+# call site not to hand us something long or multi-line).
 _DETAIL_MAX = 80
 
 
@@ -52,16 +61,17 @@ def _verbs(tool: str | None) -> tuple[str, str]:
     return _TOOL_VERBS.get(tool or "", (f"Running {human}", f"Ran {human}"))
 
 
-def _detail(step: AgentStep) -> str | None:
-    """A short, single-lined, length-capped hint drawn from a safe argument key."""
-    args = step.arguments
-    if not isinstance(args, dict):
+def _safe_detail(detail: str | None) -> str | None:
+    """Single-lined, length-capped view of the step's fixed reason/category.
+
+    ``detail`` must already be a bounded, non-content-bearing string (e.g. an
+    error category or denial reason) set directly by the runtime -- never text
+    derived from tool arguments or results.
+    """
+    if not isinstance(detail, str):
         return None
-    for key in _DETAIL_KEYS:
-        value = args.get(key)
-        if isinstance(value, str) and value.strip():
-            return " ".join(value.split())[:_DETAIL_MAX]
-    return None
+    collapsed = " ".join(detail.split())
+    return collapsed[:_DETAIL_MAX] if collapsed else None
 
 
 def serialize_step(step: AgentStep) -> ActivityStep | None:
@@ -74,6 +84,11 @@ def serialize_step(step: AgentStep) -> ActivityStep | None:
     if kind == "final":
         return None
     tool = step.tool
+    if tool is not None and not is_safe_tool_name(tool):
+        # Defense in depth: the runtime already sentinels any tool name that
+        # isn't both registered and well-formed, but this is the actual
+        # persistence/SSE boundary, so it never trusts that unconditionally.
+        tool = "unknown_tool"
     present, past = _verbs(tool)
     if kind == "tool_start":
         label = present
@@ -88,7 +103,7 @@ def serialize_step(step: AgentStep) -> ActivityStep | None:
     out: dict[str, Any] = {"kind": kind, "label": label}
     if tool:
         out["tool"] = tool
-    detail = _detail(step)
+    detail = _safe_detail(step.detail)
     if detail:
         out["detail"] = detail
     return ActivityStep(**out)

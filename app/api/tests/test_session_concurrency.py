@@ -2,7 +2,10 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from azure.cosmos.exceptions import CosmosAccessConditionFailedError
+from azure.cosmos.exceptions import (
+    CosmosAccessConditionFailedError,
+    CosmosResourceNotFoundError,
+)
 
 from ai4ia_api.agents.agent_catalog import load_agent_catalog
 from ai4ia_api.agents.command_service import execute_command
@@ -13,7 +16,7 @@ from ai4ia_api.catalog import load_catalog
 from ai4ia_api.sessions.cosmos_repo import CosmosSessionRepository
 from ai4ia_api.sessions.memory_repo import InMemorySessionRepository
 from ai4ia_api.sessions.models import Message, MessageRole, Session, ToolOverrides
-from ai4ia_api.sessions.repository import SessionConflictError
+from ai4ia_api.sessions.repository import SessionConflictError, SessionNotFoundError
 
 
 async def test_model_and_document_updates_survive_concurrency():
@@ -438,3 +441,241 @@ def test_application_has_no_unversioned_full_session_writers():
         if ".update_session(" in path.read_text(encoding="utf-8"):
             offenders.append(str(path.relative_to(source)))
     assert offenders == []
+
+
+class _ConcurrentlyDeletedSessions:
+    """Fake ``sessions`` container simulating a delete that lands in the gap
+    between a method's existence check and its own write.
+
+    ``read_item`` still succeeds (the check-before-write step), but every
+    ``patch_item``/``delete_item`` call raises ``CosmosResourceNotFoundError``,
+    mimicking another concurrent request deleting the session first.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.item = {**session.model_dump(mode="json"), "_etag": "e1"}
+
+    async def read_item(self, *, item, partition_key):
+        return dict(self.item)
+
+    async def patch_item(
+        self,
+        *,
+        item,
+        partition_key,
+        patch_operations,
+        etag=None,
+        match_condition=None,
+    ):
+        raise CosmosResourceNotFoundError(message="deleted concurrently")
+
+    async def delete_item(self, *, item, partition_key):
+        raise CosmosResourceNotFoundError(message="deleted concurrently")
+
+
+class _EmptyQueryContainer:
+    """Fake ``messages``/``documents`` container with no rows, so
+    ``delete_session``'s cascade loops are no-ops before it reaches the
+    final (concurrently-raced) ``sessions.delete_item`` call."""
+
+    async def query_items(self, *, query, parameters=None, partition_key=None):
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+
+@pytest.mark.parametrize(
+    "method_name, call_kwargs",
+    [
+        ("patch_session", {"changes": {"model": "gpt-5.2"}}),
+        ("touch_session", {}),
+        (
+            "invalidate_summary",
+            {},
+        ),
+    ],
+)
+async def test_cosmos_patch_paths_translate_concurrent_delete_to_not_found(
+    method_name, call_kwargs
+):
+    session = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _ConcurrentlyDeletedSessions(session)
+    method = getattr(repo, method_name)
+    with pytest.raises(SessionNotFoundError):
+        await method("u1", session.id, **call_kwargs)
+
+
+async def test_cosmos_mutate_library_document_ids_translates_concurrent_delete():
+    session = Session(userId="u1", libraryDocumentIds=[])
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _ConcurrentlyDeletedSessions(session)
+    with pytest.raises(SessionNotFoundError):
+        await repo.mutate_library_document_ids("u1", session.id, "doc-a", add=True)
+
+
+async def test_cosmos_generated_title_translates_concurrent_delete_to_not_found():
+    session = Session(userId="u1")  # title="New chat", titleSource="auto" (eligible)
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _ConcurrentlyDeletedSessions(session)
+    with pytest.raises(SessionNotFoundError):
+        await repo.set_generated_title_if_eligible("u1", session.id, "Generated")
+
+
+async def test_cosmos_delete_session_translates_concurrent_delete_to_not_found():
+    session = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _ConcurrentlyDeletedSessions(session)
+    repo._messages = _EmptyQueryContainer()
+    repo._documents = _EmptyQueryContainer()
+    with pytest.raises(SessionNotFoundError):
+        await repo.delete_session("u1", session.id)
+
+
+class _SucceedingSessions:
+    """Fake ``sessions`` container where reads, patches, and the final
+    delete all succeed normally -- isolates the child-container race
+    (below) from the session's own concurrent-delete race, which is
+    already covered by ``_ConcurrentlyDeletedSessions`` above."""
+
+    def __init__(self, session: Session) -> None:
+        self.item = {**session.model_dump(mode="json"), "_etag": "e1"}
+        self.deleted = False
+
+    async def read_item(self, *, item, partition_key):
+        return dict(self.item)
+
+    async def patch_item(
+        self, *, item, partition_key, patch_operations, etag=None, match_condition=None
+    ):
+        for op in patch_operations:
+            self.item[op["path"].lstrip("/")] = op["value"]
+        self.item["_etag"] = "e2"
+
+    async def delete_item(self, *, item, partition_key):
+        self.deleted = True
+
+
+class _RacedChildContainer:
+    """Fake ``messages``/``documents`` container whose listed rows are each
+    already gone by the time this container's own ``delete_item`` runs --
+    every delete raises ``CosmosResourceNotFoundError``, exactly as Cosmos
+    does for a real concurrent double-delete (e.g. a duplicate request, or a
+    racing single-item delete) landing in the query-then-delete gap. Deleted
+    (albeit 404ing) ids stop being returned by later queries, matching a real
+    container so delete_session's bounded repeated sweep converges instead of
+    re-attempting the same already-gone rows every pass."""
+
+    def __init__(self, ids: list[str]) -> None:
+        self._ids = list(ids)
+        self.delete_attempts: list[str] = []
+
+    async def query_items(self, *, query, parameters=None, partition_key=None):
+        for item_id in list(self._ids):
+            yield {"id": item_id}
+
+    async def delete_item(self, *, item, partition_key):
+        self.delete_attempts.append(item)
+        if item in self._ids:
+            self._ids.remove(item)
+        raise CosmosResourceNotFoundError(message="deleted concurrently")
+
+
+async def test_cosmos_delete_session_tolerates_concurrently_deleted_children():
+    """Production-shape regression: delete_session's cascade previously let a
+    raw CosmosResourceNotFoundError from the *messages* or *documents*
+    container escape uncaught when a concurrent request/cascade removed a
+    child row between this call's own query and its delete_item. That 404 is
+    the cascade's already-achieved goal state for that row, so it must be
+    swallowed and the cascade must continue -- and the still-existing session
+    must still be deleted, not misreported as SessionNotFoundError."""
+    session = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _SucceedingSessions(session)
+    messages = _RacedChildContainer(["m1", "m2"])
+    documents = _RacedChildContainer(["d1"])
+    repo._messages = messages
+    repo._documents = documents
+
+    await repo.delete_session("u1", session.id)  # must not raise
+
+    assert messages.delete_attempts == ["m1", "m2"]
+    assert documents.delete_attempts == ["d1"]
+    assert repo._sessions.deleted is True
+
+
+async def test_cosmos_clear_messages_tolerates_concurrently_deleted_messages():
+    """Same idempotent-child-404 reasoning as delete_session's cascade,
+    applied to the standalone clear-messages path (identical query-then-
+    delete-per-row shape, same race)."""
+    session = Session(userId="u1")
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _SucceedingSessions(session)
+    messages = _RacedChildContainer(["m1"])
+    repo._messages = messages
+
+    await repo.clear_messages("u1", session.id)  # must not raise
+
+    assert messages.delete_attempts == ["m1"]
+
+
+class _LegacyDocSessions:
+    """Cosmos container stand-in serving one already-stored document whose
+    ``toolOverrides`` predates/violates the current schema (e.g. written by
+    an older code path, or hand-edited)."""
+
+    def __init__(self, item: dict) -> None:
+        self.item = item
+
+    async def read_item(self, *, item, partition_key):
+        return dict(self.item)
+
+    async def patch_item(
+        self, *, item, partition_key, patch_operations, etag=None, match_condition=None
+    ):
+        for operation in patch_operations:
+            self.item[operation["path"].lstrip("/")] = operation["value"]
+        self.item["_etag"] = "e2"
+        return dict(self.item)
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [None, [], "corrupt", {"add": ["x"]}, {"added": "not-a-list"}],
+)
+def test_session_model_tolerates_malformed_persisted_tool_overrides(malformed):
+    """Regression for a production 500 on PATCH /api/sessions/<id> traced to
+    ``sessions.py``'s ``update_session`` -> ``_validate_policy_fields`` reading
+    ``session.toolOverrides`` as its unset-field fallback. The root cause was
+    upstream: ``Session.model_validate`` raised ``ValidationError`` (not
+    caught anywhere in the read path) whenever a persisted document's
+    ``toolOverrides`` didn't match the current schema, making every future
+    read *and* patch of that one session a permanent 500. A malformed value
+    must be tolerated as "no overrides" instead of failing the whole read.
+    """
+    session = Session(userId="u1", title="Legacy chat")
+    doc = {**session.model_dump(mode="json"), "toolOverrides": malformed}
+    restored = Session.model_validate(doc)
+    assert restored.toolOverrides == ToolOverrides(added=[], removed=[])
+
+
+async def test_cosmos_get_and_patch_session_survive_corrupted_tool_overrides():
+    """End-to-end version of the above through the actual Cosmos repository:
+    both ``get_session`` (GET) and ``patch_session`` (PATCH) must succeed
+    against a legacy/corrupted document rather than 500ing, and the field
+    self-heals to empty overrides on the next write."""
+    session = Session(userId="u1", title="Legacy chat")
+    doc = {
+        **session.model_dump(mode="json"),
+        "toolOverrides": None,
+        "_etag": "e1",
+    }
+    repo = object.__new__(CosmosSessionRepository)
+    repo._sessions = _LegacyDocSessions(doc)
+
+    fetched = await repo.get_session("u1", session.id)
+    assert fetched.toolOverrides == ToolOverrides(added=[], removed=[])
+
+    patched = await repo.patch_session("u1", session.id, {"title": "Renamed"})
+    assert patched.title == "Renamed"
+    assert patched.toolOverrides == ToolOverrides(added=[], removed=[])
+

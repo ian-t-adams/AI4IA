@@ -215,6 +215,81 @@ describe("AdminDashboard new analytics panels", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders a partial resource panel's successful metrics and marks the failed one unavailable, not blanking the whole panel", async () => {
+    // Production gap: a resource panel where one metric's own Azure Monitor
+    // query failed (status "partial") used to be indistinguishable from
+    // "unavailable" in the UI -- the whole panel, including metrics that DID
+    // resolve, was hidden behind a bare "Unavailable — {detail}" message.
+    vi.mocked(fetchResources).mockResolvedValue({
+      generatedAt: "2024-06-30T00:00:00Z",
+      windowMinutes: 60,
+      panels: [
+        {
+          key: "cosmos",
+          displayName: "Cosmos DB",
+          status: "partial",
+          detail: "Unavailable: Total requests.",
+          metrics: [
+            { name: "TotalRequestUnits", label: "Request units", aggregation: "total", value: 123 },
+            {
+              name: "TotalRequests",
+              label: "Total requests",
+              aggregation: "count",
+              value: null,
+              error: "metric query failed (BadRequest)",
+              errorCode: "BadRequest",
+              errorMessage: "Aggregation is unsupported.",
+            },
+          ],
+        },
+      ],
+    });
+    render(<AdminDashboard />);
+    const panel = await panelByHeading("Platform resources");
+
+    // The panel is not blanked behind "Unavailable" -- the metric that did
+    // resolve still renders its real value.
+    const requestUnitsRow = (await within(panel).findByText("Request units")).closest("li");
+    expect(requestUnitsRow).not.toBeNull();
+    expect(requestUnitsRow).toHaveTextContent("123");
+
+    // The failed metric is marked unavailable inline (never a bare "—"
+    // indistinguishable from legitimate no-data yet), and its safe reason is
+    // only in the tooltip, never rendered as visible body text.
+    const unavailableLabel = within(panel).getByText("Unavailable (BadRequest)");
+    expect(unavailableLabel).toHaveStyle({ color: "var(--danger)" });
+    expect(unavailableLabel).toHaveAttribute(
+      "title",
+      "BadRequest: Aggregation is unsupported.",
+    );
+
+    // The panel-level partial note surfaces the safe, human-readable detail.
+    expect(within(panel).getByText(/^Partial/)).toBeInTheDocument();
+    expect(within(panel).getByText(/Unavailable: Total requests\./)).toBeInTheDocument();
+  });
+
+  it("still hides the metrics list for a wholly unavailable resource panel", async () => {
+    vi.mocked(fetchResources).mockResolvedValue({
+      generatedAt: "2024-06-30T00:00:00Z",
+      windowMinutes: 60,
+      panels: [
+        {
+          key: "search",
+          displayName: "Azure AI Search",
+          status: "unavailable",
+          detail: "Resource id not configured.",
+          metrics: [],
+        },
+      ],
+    });
+    render(<AdminDashboard />);
+    const panel = await panelByHeading("Platform resources");
+    expect(
+      within(panel).getByText(/Unavailable — Resource id not configured\./),
+    ).toBeInTheDocument();
+    expect(within(panel).queryByText("Partial")).toBeNull();
+  });
+
   it("surfaces rejected data sources instead of rendering silent empties", async () => {
     vi.mocked(fetchOperations).mockRejectedValueOnce(new Error("workspace denied"));
     render(<AdminDashboard />);

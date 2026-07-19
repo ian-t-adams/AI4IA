@@ -24,8 +24,8 @@ CHUNKS_NAME = "chunks.jsonl"
 # extracted from the CU result, served to the media player. Optional sidecar —
 # absent for documents and for AV without scene detail.
 MEDIA_NAME = "media.json"
-# Subdirectory under a document's prefix holding "adjust & return" exports
-# Each export writes ``{userId}/{documentId}/versions/{n}/{name}``,
+# Subdirectory under a document's prefix holding "adjust & return" exports.
+# Each export writes ``{userId}/{documentId}/versions/{n}/{token}/{name}``,
 # leaving the original raw/parsed artifacts immutable.
 VERSIONS_DIR = "versions"
 
@@ -46,8 +46,32 @@ def version_prefix(user_id: str, document_id: str, n: int) -> str:
     return f"{document_prefix(user_id, document_id)}{VERSIONS_DIR}/{n}/"
 
 
-def version_path(user_id: str, document_id: str, n: int, name: str) -> str:
-    return f"{version_prefix(user_id, document_id, n)}{name}"
+def version_path(user_id: str, document_id: str, n: int, token: str, name: str) -> str:
+    """Path for one export *attempt's* blob.
+
+    ``token`` must be unique per attempt, not just per version number ``n``:
+    two concurrent exports of the same document can both read the same
+    ``next_version`` before either has committed, so both compute the same
+    ``n``. Without a per-attempt token, they would collide on the identical
+    path ``versions/{n}/{name}`` — and the losing attempt's orphan-blob
+    cleanup (``delete_prefix`` on that shared path) would then delete the
+    winning attempt's already-committed blob out from under its manifest
+    entry. Keying the path on a random token as well as ``n`` guarantees a
+    cleanup can only ever remove the exact blob its own attempt wrote.
+    """
+    return f"{version_prefix(user_id, document_id, n)}{token}/{name}"
+
+
+def _log_safe_blob_name(name: str) -> str:
+    """``name`` with its final path segment stripped for safe logging.
+
+    A blob's last path segment can be a model/user-supplied export filename
+    (see ``version_path``); everything before it is opaque ids + a random
+    attempt token. Logging the trimmed name lets an operator locate the blob
+    without persisting document content/filename into Container Apps / Log
+    Analytics.
+    """
+    return name.rsplit("/", 1)[0] if "/" in name else name
 
 
 @runtime_checkable
@@ -152,8 +176,17 @@ class AzureBlobStore:
             try:
                 await container.delete_blob(blob.name)
                 deleted += 1
-            except Exception:  # noqa: BLE001 - best-effort purge
-                logger.warning("blob delete failed path=%s", blob.name, exc_info=True)
+            except Exception as exc:  # noqa: BLE001 - best-effort purge
+                # Log only the trimmed path and the exception's *type* -- not
+                # exc_info/the raw blob name, whose final segment can be a
+                # model/user-supplied filename, and not the exception's own
+                # message/traceback, which for storage SDK errors can embed
+                # the full request path. See _log_safe_blob_name.
+                logger.warning(
+                    "blob delete failed path=%s error_type=%s",
+                    _log_safe_blob_name(blob.name),
+                    type(exc).__name__,
+                )
         return deleted
 
     async def close(self) -> None:

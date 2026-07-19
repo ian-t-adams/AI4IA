@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol
 
@@ -46,8 +46,9 @@ from .mcp_servers import (
     UserMcpServer,
     discovered_tool_to_spec,
     is_mcp_tool_name,
+    is_valid_remote_tool_name,
     namespaced_tool_name,
-    tool_requires_approval,
+    tool_alias,
 )
 from .ssrf import Resolver, SsrfError, validate_public_https_url
 from .tool_exec import (
@@ -109,6 +110,10 @@ class McpPlane:
     servers: Sequence[UserMcpServer]
     secrets: SecretResolver
     connector: McpConnector
+    # Stable source identity (for example ``official`` or ``byo``). It is part
+    # of every alias and approval binding, preventing one plane's accepted
+    # definition from authorizing a colliding definition on another plane.
+    plane_id: str = "default"
     resolver: Resolver | None = None
     health: HealthReporter | None = None
 
@@ -133,6 +138,7 @@ def _make_handler(
     server: UserMcpServer,
     tool: DiscoveredTool,
     *,
+    alias: str,
     secrets: SecretResolver,
     connector: McpConnector,
     resolver: Resolver | None,
@@ -140,9 +146,17 @@ def _make_handler(
     max_calls: int,
     health: HealthReporter | None = None,
 ):
-    """Build the async handler for one (server, tool), closure-bound to one endpoint."""
+    """Build the async handler for one (server, tool), closure-bound to one endpoint.
+
+    ``alias`` is the provider-safe, deterministic identifier for this tool (see
+    :func:`~ai4ia_api.agents.mcp_servers.tool_alias`) — it is what reaches
+    observability output. The *raw* ``tool.name`` advertised by the remote server
+    is used only for the actual outbound ``tools/call`` dispatch, so a hostile or
+    malformed remote name can dispatch correctly but can never forge a log or
+    telemetry line.
+    """
     endpoint = server.endpoint
-    tool_name = tool.name
+    raw_tool_name = tool.raw_name
 
     async def handler(args: dict, ctx: ToolContext) -> dict:
         if budget["used"] >= max_calls:
@@ -166,24 +180,28 @@ def _make_handler(
             result = await connector.call_tool(
                 endpoint=endpoint,
                 auth=auth,
-                tool=tool_name,
+                tool=raw_tool_name,
                 arguments=args or {},
             )
         except Exception as exc:  # noqa: BLE001 - record health, then re-raise mapped
             # A reachable host that re-validates internal, a transport failure, or a
             # protocol error: all count against the server's health so a persistently
             # failing server gets quarantined instead of retried every turn.
-            await _safe_report(health, server, ok=False, error=exc)
+            category = (
+                "egress_blocked" if isinstance(exc, (SsrfError, ToolExecutionError))
+                else "transport_error"
+            )
+            await _safe_report(health, server, ok=False, error=category)
             obs.emit(
                 event=obs.EVENT_TOOL_CALL,
                 server=server.name,
                 host=server.host,
-                tool=tool_name,
+                tool=alias,
                 outcome=obs.OUTCOME_ERROR,
                 latency_ms=timer.ms,
-                detail=str(exc),
+                detail=category,
             )
-            raise
+            raise ToolExecutionError("MCP tool execution failed.") from exc
 
         # Reachable: the server connected and responded. ``isError`` is a tool-level
         # result (e.g. bad arguments), NOT a connectivity failure, so it does NOT
@@ -193,13 +211,130 @@ def _make_handler(
             event=obs.EVENT_TOOL_CALL,
             server=server.name,
             host=server.host,
-            tool=tool_name,
+            tool=alias,
             outcome=obs.OUTCOME_TOOL_ERROR if result.is_error else obs.OUTCOME_OK,
             latency_ms=timer.ms,
         )
         return {"content": result.content, "isError": result.is_error}
 
     return handler
+
+
+@dataclass(frozen=True)
+class McpToolBinding:
+    """Exact governance/model/dispatch identities for one accepted definition."""
+
+    governance_name: str
+    alias: str
+    raw_name: str
+    plane_id: str
+    definition: ToolDefinition
+    auto_approved: bool
+
+
+def _alias_for(plane_id: str, server_name: str, raw_name: str) -> str:
+    """Keep the legacy/default plane stable while binding named planes."""
+    if plane_id == "default":
+        return tool_alias(server_name, raw_name)
+    return tool_alias(server_name, raw_name, plane=plane_id)
+
+
+def _build_mcp_tool_bindings(
+    servers: Sequence[UserMcpServer],
+    *,
+    attached_tool_names: Collection[str],
+    secrets: SecretResolver,
+    connector: McpConnector,
+    resolver: Resolver | None = None,
+    budget: dict[str, int],
+    max_calls: int = MAX_MCP_TOOL_CALLS_PER_TURN,
+    health: HealthReporter | None = None,
+    now: datetime | None = None,
+    plane_id: str = "default",
+) -> list[McpToolBinding]:
+    """Build exact bindings for attached, owned MCP tools in one plane.
+
+    A binding keeps the durable selected governance name, provider-safe alias,
+    and exact accepted raw dispatch name separate. Invalid legacy names,
+    duplicate servers/tools, and alias collisions are rejected locally; no
+    dictionary overwrite can silently retarget a tool.
+    """
+    attached = {n for n in attached_tool_names if is_mcp_tool_name(n)}
+    if not attached:
+        return []
+    bindings: list[McpToolBinding] = []
+    seen_servers: set[str] = set()
+    seen_governance: set[str] = set()
+    seen_aliases: set[str] = set()
+    for server in servers:
+        if server.name in seen_servers:
+            logger.warning(
+                "duplicate mcp server rejected for this turn",
+                extra={"server": server.name, "plane": plane_id},
+            )
+            continue
+        seen_servers.add(server.name)
+        if is_quarantined(server, now=now):
+            obs.emit_skip(
+                server=server.name,
+                host=server.host,
+                reason=quarantine_reason(server, now=now) or "quarantined",
+            )
+            continue
+        for tool in server.discoveredTools:
+            raw_name = tool.raw_name
+            if not is_valid_remote_tool_name(tool.name) or not is_valid_remote_tool_name(
+                raw_name
+            ):
+                logger.warning(
+                    "invalid mcp tool definition rejected for this turn",
+                    extra={"server": server.name, "plane": plane_id},
+                )
+                continue
+            governance_name = namespaced_tool_name(server.name, tool.name)
+            if governance_name not in attached:
+                continue
+            if governance_name in seen_governance:
+                logger.warning(
+                    "duplicate mcp tool rejected for this turn",
+                    extra={"server": server.name, "plane": plane_id},
+                )
+                continue
+            seen_governance.add(governance_name)
+            alias = _alias_for(plane_id, server.name, raw_name)
+            if alias in seen_aliases:
+                logger.warning(
+                    "mcp tool alias collision rejected for this turn",
+                    extra={"server": server.name, "plane": plane_id},
+                )
+                continue
+            seen_aliases.add(alias)
+            definition = ToolDefinition(
+                spec=replace(discovered_tool_to_spec(server, tool), name=alias),
+                parameters=tool.inputSchema or dict(_EMPTY_OBJECT_SCHEMA),
+                handler=_make_handler(
+                    server,
+                    tool,
+                    alias=alias,
+                    secrets=secrets,
+                    connector=connector,
+                    resolver=resolver,
+                    budget=budget,
+                    max_calls=max_calls,
+                    health=health,
+                ),
+            )
+            bindings.append(
+                McpToolBinding(
+                    governance_name=governance_name,
+                    alias=alias,
+                    raw_name=raw_name,
+                    plane_id=plane_id,
+                    definition=definition,
+                    auto_approved=not definition.spec.needs_approval,
+                )
+            )
+    return bindings
 
 
 def build_mcp_tool_definitions(
@@ -213,76 +348,24 @@ def build_mcp_tool_definitions(
     max_calls: int = MAX_MCP_TOOL_CALLS_PER_TURN,
     health: HealthReporter | None = None,
     now: datetime | None = None,
+    plane_id: str = "default",
 ) -> list[ToolDefinition]:
-    """Governed :class:`ToolDefinition`s for the attached, owned MCP tools.
-
-    Only tools whose namespaced name is in ``attached_tool_names`` AND owned by the
-    caller (present in ``servers``' cached ``discoveredTools``) are built — so the
-    merged executor advertises exactly what the agent attached, nothing more. Names
-    are de-duplicated defensively so a malformed server record can never raise on
-    double registration. ``budget`` is shared across all returned handlers to cap
-    total MCP calls for the turn.
-
-    A **quarantined** server is skipped wholesale (its tools are not built, so the
-    model never sees them and the turn does not pay its connect timeout) until the
-    quarantine window elapses; the skip is logged with a clear reason.
-    """
-    attached = {n for n in attached_tool_names if is_mcp_tool_name(n)}
-    if not attached:
-        return []
-    defs: list[ToolDefinition] = []
-    seen: set[str] = set()
-    for server in servers:
-        if is_quarantined(server, now=now):
-            obs.emit_skip(
-                server=server.name,
-                host=server.host,
-                reason=quarantine_reason(server, now=now) or "quarantined",
-            )
-            continue
-        for tool in server.discoveredTools:
-            name = namespaced_tool_name(server.name, tool.name)
-            if name not in attached or name in seen:
-                continue
-            seen.add(name)
-            defs.append(
-                ToolDefinition(
-                    spec=discovered_tool_to_spec(server, tool),
-                    parameters=tool.inputSchema or dict(_EMPTY_OBJECT_SCHEMA),
-                    handler=_make_handler(
-                        server,
-                        tool,
-                        secrets=secrets,
-                        connector=connector,
-                        resolver=resolver,
-                        budget=budget,
-                        max_calls=max_calls,
-                        health=health,
-                    ),
-                )
-            )
-    return defs
-
-
-def auto_approved_tool_names(
-    servers: Sequence[UserMcpServer], attached_tool_names: Collection[str]
-) -> frozenset[str]:
-    """Attached MCP tool names that run WITHOUT a human-approval gate.
-
-    A tool is pre-approved when :func:`~ai4ia_api.agents.mcp_servers.tool_requires_approval`
-    is false for it — i.e. its server is ``trusted`` (and the tool is not overridden
-    to ``always``), or the tool is explicitly overridden to ``never``. These go into
-    ``ToolContext.approvals`` so the runtime skips the approval gate for exactly
-    those; every other attached MCP tool stays approval-gated.
-    """
-    attached = {n for n in attached_tool_names if is_mcp_tool_name(n)}
-    out: set[str] = set()
-    for server in servers:
-        for tool in server.discoveredTools:
-            name = namespaced_tool_name(server.name, tool.name)
-            if name in attached and not tool_requires_approval(server, tool.name):
-                out.add(name)
-    return frozenset(out)
+    """Governed definitions for one plane; identity mapping stays internal."""
+    return [
+        binding.definition
+        for binding in _build_mcp_tool_bindings(
+            servers,
+            attached_tool_names=attached_tool_names,
+            secrets=secrets,
+            connector=connector,
+            resolver=resolver,
+            budget=budget,
+            max_calls=max_calls,
+            health=health,
+            now=now,
+            plane_id=plane_id,
+        )
+    ]
 
 
 def build_mcp_turn_tools(
@@ -310,9 +393,11 @@ def build_mcp_turn_tools(
 
     * ``target_hosts = frozenset()`` — skip the registry egress check (see the module
       docstring; real egress is enforced per-handler via the SSRF re-validation), and
-    * ``approvals`` = pre-approved attached tool names (trusted/``never`` per
-      :func:`auto_approved_tool_names`, plus any explicitly ``approved`` names
-      supplied by the caller, e.g. a per-turn approval UI).
+    * ``approvals`` = pre-approved attached tool aliases (each binding's
+      ``auto_approved`` flag — trusted server without a per-tool ``always``
+      override, or an explicit per-tool ``never`` override; see
+      :func:`_build_mcp_tool_bindings`), plus any explicitly ``approved`` names
+      supplied by the caller, e.g. a per-turn approval UI.
 
     Quarantined servers are skipped (see :func:`build_mcp_tool_definitions`); if that
     leaves no runnable tools the function returns ``None``.
@@ -358,18 +443,35 @@ def build_mcp_turn_tools_multi(
     * **Shared budget.** A single :data:`MAX_MCP_TOOL_CALLS_PER_TURN`-bounded budget
       dict is threaded into every handler across all planes, so the cap is on total
       MCP calls for the turn, not per-plane.
-    * **Unioned approvals.** Pre-approved names from every plane's
-      :func:`auto_approved_tool_names` are unioned with the caller's ``approved``.
+    * **Unioned approvals.** Each accepted binding's ``auto_approved`` flag (see
+      :func:`_build_mcp_tool_bindings`) is unioned across every plane with the
+      caller's ``approved``.
 
     Returns ``None`` when no plane contributes a runnable tool (none attached, or all
     quarantined), so the caller keeps the shared app singletons.
     """
     budget: dict[str, int] = {"used": 0}
     defs: list[ToolDefinition] = []
-    seen: set[str] = set()
-    approvals: set[str] = set(approved)
+    aliases: dict[str, str] = {}
+    seen_planes: set[str] = set()
+    seen_governance: set[str] = set()
+    seen_aliases: set[str] = set()
+    explicit_approvals = set(approved)
+    # Preserve non-MCP approvals for built-ins. MCP approvals are translated
+    # only after an exact definition+plane binding has been accepted.
+    approvals: set[str] = {
+        name for name in explicit_approvals if not is_mcp_tool_name(name)
+    }
     for plane in planes:
-        plane_defs = build_mcp_tool_definitions(
+        if plane.plane_id != "default" and plane.plane_id in seen_planes:
+            logger.warning(
+                "duplicate mcp plane rejected for this turn",
+                extra={"plane": plane.plane_id},
+            )
+            continue
+        if plane.plane_id != "default":
+            seen_planes.add(plane.plane_id)
+        plane_bindings = _build_mcp_tool_bindings(
             plane.servers,
             attached_tool_names=attached_tool_names,
             secrets=plane.secrets,
@@ -379,14 +481,30 @@ def build_mcp_turn_tools_multi(
             max_calls=max_calls,
             health=plane.health,
             now=now,
+            plane_id=plane.plane_id,
         )
-        for d in plane_defs:
-            # Earlier-plane-wins de-dup: keep the first registration of a name.
-            if d.spec.name in seen:
+        for binding in plane_bindings:
+            # Earlier accepted plane wins a governance-name collision. A
+            # quarantined plane contributes no binding and therefore no
+            # approval, so a later BYO collision is governed by its own spec.
+            if binding.governance_name in seen_governance:
                 continue
-            seen.add(d.spec.name)
-            defs.append(d)
-        approvals |= auto_approved_tool_names(plane.servers, attached_tool_names)
+            if binding.alias in seen_aliases:
+                logger.warning(
+                    "cross-plane mcp alias collision rejected for this turn",
+                    extra={"plane": plane.plane_id},
+                )
+                continue
+            seen_governance.add(binding.governance_name)
+            seen_aliases.add(binding.alias)
+            aliases[binding.governance_name] = binding.alias
+            defs.append(binding.definition)
+            if (
+                binding.auto_approved
+                or binding.governance_name in explicit_approvals
+                or binding.alias in explicit_approvals
+            ):
+                approvals.add(binding.alias)
     if not defs:
         return None
     registry, executor = build_tools(extra=defs)
@@ -394,5 +512,6 @@ def build_mcp_turn_tools_multi(
         approvals=frozenset(approvals),
         target_hosts=frozenset(),
         correlation_id=correlation_id,
+        tool_aliases=aliases,
     )
     return registry, executor, ctx

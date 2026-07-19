@@ -17,7 +17,9 @@ Key-Vault-backed secrets + per-turn execution are a later sub-phase).
 """
 from __future__ import annotations
 
+import hashlib
 import re
+import unicodedata
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -104,9 +106,19 @@ def _now() -> datetime:
 class DiscoveredTool(BaseModel):
     """A tool advertised by a remote MCP server, as cached on the record."""
 
+    # ``name`` is the durable governance/attachment component. ``rawName`` is
+    # the exact accepted string advertised by the remote server and is used
+    # only for tools/call. They are currently equal for newly discovered tools,
+    # but keeping both prevents a future canonicalization from corrupting
+    # dispatch and lets old records (which lack rawName) migrate lazily.
     name: str
+    rawName: str | None = None
     description: str = ""
     inputSchema: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def raw_name(self) -> str:
+        return self.rawName if self.rawName is not None else self.name
 
 
 class UserMcpServer(BaseModel):
@@ -210,6 +222,62 @@ def namespaced_tool_name(server_name: str, tool_name: str) -> str:
 def is_mcp_tool_name(name: str) -> bool:
     """True if ``name`` is a namespaced MCP tool (``mcp:<server>/<tool>``)."""
     return name.startswith(f"{TOOL_NAME_PREFIX}:")
+
+
+_ALIAS_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_ALIAS_HASH_LEN = 32
+_ALIAS_SLUG_LEN = 24
+
+
+def is_valid_remote_tool_name(name: object) -> bool:
+    """Whether a remote tool name is safe to accept and persist.
+
+    Names remain otherwise exact (spaces, dots, slashes, and Unicode letters
+    are allowed). Empty/blank, oversized, malformed Unicode, and every Unicode
+    ``Other`` category (controls, surrogates, format controls, private-use, and
+    unassigned code points) are rejected per tool.
+    """
+    if not isinstance(name, str) or not name or not name.strip():
+        return False
+    if len(name) > MAX_TOOL_NAME_LEN:
+        return False
+    try:
+        encoded = name.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    if len(encoded) > MAX_TOOL_NAME_LEN * 4:
+        return False
+    return not any(unicodedata.category(ch).startswith("C") for ch in name)
+
+
+def tool_alias(server_name: str, tool_name: str, *, plane: str = "default") -> str:
+    """A deterministic, provider-safe alias for one tool definition and plane.
+
+    Remote MCP tool names are supplied by the server operator, not authored or
+    reviewed by us, and are not guaranteed to satisfy the ``[A-Za-z0-9_-]{1,64}``
+    charset that OpenAI/Azure function names -- and our own log/telemetry
+    fields -- require (see ``agents.tools.is_safe_tool_name``). The governed
+    name from :func:`namespaced_tool_name` (``mcp:<server>/<tool>``) is a
+    durable, user-facing contract (persisted tool attachments, the tool
+    catalog) and must keep that shape.
+
+    This alias is a second, purely runtime-computed identifier used only for
+    the model-facing function-schema name and for structured logs/telemetry
+    (see ``mcp_execution.build_mcp_tool_definitions``): it is never persisted,
+    so it is cheaply recomputed identically every turn. Collision resistance
+    comes entirely from a 128-bit hash of the plane plus the *raw*
+    ``(server_name, tool_name)`` pair -- the human-readable slug is cosmetic and may
+    collide, so callers combining aliases across tools must still check for a
+    duplicate rather than assume uniqueness from the slug alone. ``plane`` is
+    part of the digest so an official definition and a BYO definition with the
+    same governance/raw names can never share approval or dispatch identity.
+    """
+    material = f"{plane}\x00{server_name}\x00{tool_name}".encode(
+        "utf-8", errors="surrogatepass"
+    )
+    digest = hashlib.sha256(material).hexdigest()[:_ALIAS_HASH_LEN]
+    slug = _ALIAS_UNSAFE_RE.sub("_", server_name).strip("_")[:_ALIAS_SLUG_LEN] or "srv"
+    return f"mcp_{slug}_{digest}"
 
 
 def effective_tool_approval(server: UserMcpServer, tool_name: str) -> McpToolApproval:
