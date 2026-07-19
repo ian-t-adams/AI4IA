@@ -19,6 +19,7 @@ import {
 } from "react";
 
 import { getApiAccessToken, isEntraEnabled } from "./auth";
+import { reportClientEvent } from "./clientTelemetry";
 import {
   DEFAULT_VOICE_PROVIDER_ID,
   voiceProviderCatalog,
@@ -915,6 +916,17 @@ export function useVoiceLive(
         .getUserMedia({
           audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
         })
+        .catch((error: unknown) => {
+          if (attempt === attemptRef.current) {
+            reportClientEvent("microphone_error", {
+              code:
+                error instanceof Error || error instanceof DOMException
+                  ? error.name
+                  : null,
+            });
+          }
+          throw error;
+        })
         .then((stream) => {
           if (attempt !== attemptRef.current) {
             for (const track of stream.getTracks()) track.stop();
@@ -994,7 +1006,7 @@ export function useVoiceLive(
       // hoisted function declaration defined below in this same scope, so
       // it's safe to reference here. Guarded with a typeof check because
       // some test doubles for MediaStreamTrack only implement stop().
-      const handleTrackEnded = () => finishSession(MIC_TRACK_ENDED_MESSAGE);
+      const handleTrackEnded = () => finishSession(MIC_TRACK_ENDED_MESSAGE, true);
       // A track can also go silent while staying readyState === "live" (so
       // "ended" never fires): the spec requires the browser to flip `muted`
       // true and fire "mute" whenever it "receives no data from the source"
@@ -1004,7 +1016,7 @@ export function useVoiceLive(
       // healthy. Treated as fatal (same as "ended") rather than a recoverable
       // wait-for-unmute, matching this app's "capture failures are explicit"
       // requirement.
-      const handleTrackMuted = () => finishSession(MIC_TRACK_MUTED_MESSAGE);
+      const handleTrackMuted = () => finishSession(MIC_TRACK_MUTED_MESSAGE, true);
       session.onTrackEnded = handleTrackEnded;
       session.onTrackMuted = handleTrackMuted;
       for (const track of stream.getTracks()) {
@@ -1025,7 +1037,7 @@ export function useVoiceLive(
         (track) => track.readyState === "ended",
       );
       if (endedTrack) {
-        finishSession(MIC_TRACK_ENDED_MESSAGE);
+        handleTrackEnded();
         return;
       }
       // Same gap, different failure mode: a track can likewise already be
@@ -1038,7 +1050,7 @@ export function useVoiceLive(
       // whole call.
       const alreadyMutedTrack = stream.getTracks().find((track) => track.muted);
       if (alreadyMutedTrack) {
-        finishSession(MIC_TRACK_MUTED_MESSAGE);
+        handleTrackMuted();
         return;
       }
 
@@ -1439,10 +1451,11 @@ export function useVoiceLive(
       // onerror/onclose fires first) tears down and reports exactly once. The
       // message depends on whether the session ever reached "live"
       // (session.opened).
-      function finishSession(message: string) {
+      function finishSession(message: string, reportMicrophoneError = false) {
         if (sessionRef.current !== session) return;
         if (!session.errorReported) {
           session.errorReported = true;
+          if (reportMicrophoneError) reportClientEvent("microphone_error");
           onErrorRef.current(message);
         }
         cleanupSession(session);

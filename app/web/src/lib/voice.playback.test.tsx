@@ -5,12 +5,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // useSpeechPlayback only calls synthesizeSpeech (never fetch/apiFetch directly),
 // so mock it the same way Composer.test.tsx mocks useVoiceRecorder: deterministic,
 // no network, no MediaRecorder/getUserMedia plumbing to fake.
-const { mockSynthesizeSpeech } = vi.hoisted(() => ({
+const { mockSynthesizeSpeech, mockReportClientEvent } = vi.hoisted(() => ({
   mockSynthesizeSpeech: vi.fn(),
+  mockReportClientEvent: vi.fn(),
 }));
 vi.mock("./api", () => ({
   synthesizeSpeech: mockSynthesizeSpeech,
   transcribeAudio: vi.fn(),
+}));
+vi.mock("./clientTelemetry", () => ({
+  reportClientEvent: mockReportClientEvent,
 }));
 
 import { useSpeechPlayback } from "./voice";
@@ -46,6 +50,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   mockSynthesizeSpeech.mockReset();
+  mockReportClientEvent.mockReset();
 });
 
 describe("useSpeechPlayback", () => {
@@ -94,6 +99,7 @@ describe("useSpeechPlayback", () => {
     );
     expect(result.current.activeId).toBeNull();
     expect(result.current.busyId).toBeNull();
+    expect(mockReportClientEvent).toHaveBeenCalledWith("media_playback_error");
   });
 
   it("falls back to the generic message when no MediaError code is available", async () => {
@@ -136,6 +142,7 @@ describe("useSpeechPlayback", () => {
     expect(result.current.busyId).toBeNull();
     expect(result.current.activeId).toBeNull();
     expect(FakeAudio.instances).toHaveLength(0);
+    expect(mockReportClientEvent).not.toHaveBeenCalled();
   });
 
   it("does not surface an error when playback is stopped deliberately mid-flight", async () => {

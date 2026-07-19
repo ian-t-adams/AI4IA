@@ -11,11 +11,15 @@ import {
 const auth = vi.hoisted(() => ({
   getToken: vi.fn<() => Promise<string | null>>(),
 }));
+const telemetry = vi.hoisted(() => ({
+  reportClientEvent: vi.fn(),
+}));
 
 vi.mock("./auth", () => ({
   isEntraEnabled: () => true,
   getApiAccessToken: () => auth.getToken(),
 }));
+vi.mock("./clientTelemetry", () => telemetry);
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -787,6 +791,7 @@ describe("useVoiceLive lifecycle", () => {
     expect(track.stop).toHaveBeenCalledTimes(1);
     expect(socket.close).toHaveBeenCalledTimes(1);
     expect(FakeAudioContext.instances[0].close).toHaveBeenCalledTimes(1);
+    expect(telemetry.reportClientEvent).toHaveBeenCalledWith("microphone_error");
     await waitFor(() => expect(result.current.status).toBe("idle"));
 
     // A late, expected onclose for the socket we just asked to close must

@@ -13,6 +13,7 @@ import {
 } from "react";
 
 import { transcribeAudio, synthesizeSpeech } from "./api";
+import { reportClientEvent } from "./clientTelemetry";
 
 // Preference order. Chrome/Firefox favor webm/opus; Safari only does mp4.
 const MIME_CANDIDATES = [
@@ -191,6 +192,9 @@ export function useVoiceRecorder(
         if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
       recorder.onerror = () => {
+        if (mountedRef.current && recorderRef.current === recorder) {
+          reportClientEvent("microphone_error");
+        }
         stopTracks();
         recorderRef.current = null;
         if (mountedRef.current) {
@@ -202,9 +206,17 @@ export function useVoiceRecorder(
       recorderRef.current = recorder;
       recorder.start();
       setRecording(true);
-    } catch {
+    } catch (error) {
       stopTracks();
-      onErrorRef.current("Microphone access was denied or unavailable.");
+      if (mountedRef.current) {
+        reportClientEvent("microphone_error", {
+          code:
+            error instanceof Error || error instanceof DOMException
+              ? error.name
+              : null,
+        });
+        onErrorRef.current("Microphone access was denied or unavailable.");
+      }
     } finally {
       startingRef.current = false;
     }
@@ -380,10 +392,18 @@ export function useSpeechPlayback(
       };
       audio.onerror = () => {
         cancelPlaybackRef.current = null;
+        if (mountedRef.current && audioRef.current === audio) {
+          reportClientEvent("media_playback_error");
+        }
         reject(new Error(`Couldn't play the synthesized audio.${mediaErrorDetail(audio)}`));
       };
       audio.play().catch((e) => {
         cancelPlaybackRef.current = null;
+        if (mountedRef.current && audioRef.current === audio) {
+          reportClientEvent("media_playback_error", {
+            code: e instanceof Error ? e.name : null,
+          });
+        }
         reject(e as Error);
       });
     });
@@ -438,7 +458,9 @@ export function useSpeechPlayback(
             setBusyId(null);
             setActiveId(null);
             const msg = (e as Error).message;
-            if (msg !== "__stopped__") onErrorRef.current(msg);
+            if (msg !== "__stopped__") {
+              onErrorRef.current(msg);
+            }
           }
         }
       })();
