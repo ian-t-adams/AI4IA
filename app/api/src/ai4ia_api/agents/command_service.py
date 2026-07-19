@@ -79,6 +79,7 @@ async def execute_command(
     memory: MemoryServiceProtocol | None = None,
     summarizer: SummarizationService | None = None,
     gateway: "ModelGatewayClient | None" = None,
+    on_user_message: Callable[[Message], None] | None = None,
 ) -> Message:
     """Run the parsed command, persist its effects, and return the reply message."""
     command = parsed.command
@@ -103,17 +104,17 @@ async def execute_command(
         session.summarizedThroughMessageId = cleared.summarizedThroughMessageId
         session.summaryVersion = cleared.summaryVersion
     else:
-        await repo.add_message(
-            user_id,
-            Message(
-                sessionId=session.id,
-                userId=user_id,
-                role=MessageRole.user,
-                content=parsed.raw,
-                status=MessageStatus.complete,
-                fromCommand=True,
-            ),
+        user_message = Message(
+            sessionId=session.id,
+            userId=user_id,
+            role=MessageRole.user,
+            content=parsed.raw,
+            status=MessageStatus.complete,
+            fromCommand=True,
         )
+        await repo.add_message(user_id, user_message)
+        if on_user_message is not None:
+            on_user_message(user_message)
         if command.kind is CommandKind.forget:
             reply = await _forget_reply(memory, user_id, session.id, command.args)
         elif command.kind is CommandKind.summarize:
@@ -172,6 +173,7 @@ async def execute_tool_command(
     registry: ToolRegistry,
     executor: ToolExecutor,
     correlation_id: str | None = None,
+    on_user_message: Callable[[Message], None] | None = None,
 ) -> Message:
     """Run a *direct* tool named by a slash command and persist the user echo +
     the result reply. These tools (see :data:`DIRECT_SLASH_TOOLS`) are
@@ -181,17 +183,17 @@ async def execute_tool_command(
     assert command is not None, "execute_tool_command requires a parsed command"
     user_id = user.internal_user_id
 
-    await repo.add_message(
-        user_id,
-        Message(
-            sessionId=session.id,
-            userId=user_id,
-            role=MessageRole.user,
-            content=parsed.raw,
-            status=MessageStatus.complete,
-            fromCommand=True,
-        ),
+    user_message = Message(
+        sessionId=session.id,
+        userId=user_id,
+        role=MessageRole.user,
+        content=parsed.raw,
+        status=MessageStatus.complete,
+        fromCommand=True,
     )
+    await repo.add_message(user_id, user_message)
+    if on_user_message is not None:
+        on_user_message(user_message)
 
     reply = await _run_direct_tool(
         command.name, command.args, registry, executor, correlation_id
