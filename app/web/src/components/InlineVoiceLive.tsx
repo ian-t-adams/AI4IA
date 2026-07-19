@@ -113,11 +113,23 @@ export interface InlineVoiceLiveState {
 // either success or a diagnosable persistenceError within a bounded time.
 const PERSIST_TIMEOUT_MS = 20_000;
 const PERSIST_TIMEOUT_MESSAGE =
-  "Saving the voice transcript is taking too long. Retry, or discard it to continue.";
+  "Saving the voice transcript is taking too long. Retry, or stop waiting to continue.";
 
-function finalizedTurns(turns: LiveTurn[]): VoiceTurnInput[] {
+function finalizedTurns(turns: LiveTurn[], active: boolean): VoiceTurnInput[] {
   return turns
-    .filter((turn) => !turn.pending && !turn.streaming && turn.text.trim())
+    .filter((turn) => {
+      const settled = !turn.pending && !turn.streaming;
+      // Once the connection has ended, a still-open (pending/streaming) turn
+      // can never receive more content -- voiceLive.ts never flips those
+      // flags after a mid-turn teardown, so waiting for "settled" would wait
+      // forever. If it already holds real text (most commonly an assistant
+      // reply cut off mid-stream by stop()), treat connection-end itself as
+      // the finalization signal so the genuine partial exchange is saved
+      // instead of silently lost. An empty still-open turn (nothing was ever
+      // said) is excluded either way by the trim() check below, and is
+      // separately dropped from view entirely -- see the `messages` filter.
+      return (settled || !active) && turn.text.trim();
+    })
     .map((turn) => ({
       role: turn.role,
       text: turn.text.trim(),
@@ -217,9 +229,15 @@ export function useInlineVoiceLive({
   const stopLive = live.stop;
 
   const turnsRef = useRef(live.turns);
+  // Mirrors live.active alongside live.turns for persist()'s synchronous
+  // first call (fired from stop() before teardown/re-render), which must
+  // read a ref rather than the reactive `live.active` prop directly -- see
+  // finalizedTurns() above and the call site below.
+  const liveActiveRef = useRef(live.active);
   useLayoutEffect(() => {
     turnsRef.current = live.turns;
-  }, [live.turns]);
+    liveActiveRef.current = live.active;
+  }, [live.turns, live.active]);
   const sessionPromiseRef = useRef<Promise<string> | null>(null);
   const persistenceRef = useRef<Promise<void> | null>(null);
   const persistedRef = useRef(false);
@@ -245,7 +263,7 @@ export function useInlineVoiceLive({
   const persist = useCallback((): Promise<void> => {
     if (persistedRef.current) return Promise.resolve();
     if (persistenceRef.current) return persistenceRef.current;
-    const turns = finalizedTurns(turnsRef.current);
+    const turns = finalizedTurns(turnsRef.current, liveActiveRef.current);
     if (turns.length === 0) return Promise.resolve();
 
     const attemptId = ++attemptIdRef.current;
@@ -481,7 +499,15 @@ export function useInlineVoiceLive({
         // kept (see the map below, which turns its live indicator off), so
         // a genuine partial exchange stays visible.
         if (!live.active && stillOpen && !turn.text.trim()) return false;
-        return !persisted || stillOpen || !turn.text.trim();
+        // Once the connection has ended, a still-open turn is as final as
+        // it will ever get (mirrors finalizedTurns() above), even though
+        // voiceLive.ts never flips its own pending/streaming flag after a
+        // mid-turn teardown. Without this, a turn now eligible for (and
+        // subsequently) persisted under that same rule would never drop
+        // from this transient overlay -- producing a permanent duplicate
+        // once ChatApp's own `messages` state also picks up the saved copy.
+        const isFinal = !live.active || !stillOpen;
+        return !persisted || !isFinal || !turn.text.trim();
       })
       .map((turn) => {
         // Mirrors the filter above: a turn still open the instant the
@@ -506,21 +532,21 @@ export function useInlineVoiceLive({
   // no exchanges yet is NOT unsaved — nothing has been said. Once the call
   // is still connected and has produced any turn (even one still pending),
   // navigating away would stop the call and truncate whatever is mid-flight,
-  // so that keeps blocking regardless of finalization. But once the call has
-  // ended, a turn that was still pending the instant stop() cut the
-  // connection can never be completed or saved — persist() already found
-  // nothing finalized to save and returned without setting saving or
-  // persistenceError. Counting that stale, un-finalizable turn here would
-  // lock navigation forever with neither a "Saving…" state nor a
-  // Retry/Discard control able to appear (both are gated on saving/
-  // persistenceError). So once inactive, only genuinely finalized turns
-  // count.
+  // so that keeps blocking regardless of finalization. Once the call has
+  // ended, finalizedTurns() itself now finalizes any still-open turn that
+  // already holds real text (a mid-stream cutoff), so that content keeps
+  // counting as unsaved here too, right up until persist() actually saves
+  // it -- only a turn that was still open AND empty the instant stop() cut
+  // the connection can never be completed or saved, so that (and only that)
+  // case must stop counting once inactive, or navigation would lock forever
+  // with neither a "Saving…" state nor a Retry/Stop-waiting control able to
+  // appear (both are gated on saving/persistenceError).
   const hasUnsavedTurns =
     saving ||
     Boolean(persistenceError) ||
     (!persisted &&
       live.turns.length > 0 &&
-      (live.active || finalizedTurns(live.turns).length > 0));
+      (live.active || finalizedTurns(live.turns, live.active).length > 0));
 
   return {
     messages,
@@ -642,7 +668,7 @@ export function InlineVoiceLiveStatus({
             cursor: "pointer",
           }}
         >
-          Discard
+          Stop waiting
         </button>
       )}
     </div>

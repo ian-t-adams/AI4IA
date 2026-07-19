@@ -398,7 +398,7 @@ export function ChatApp() {
       if (streamingRef.current) return;
       if (voiceNavigationLockedRef.current) {
         setError(
-          "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cDiscard\u201d in the voice status bar to continue.",
+          "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar to continue.",
         );
         return;
       }
@@ -464,7 +464,7 @@ export function ChatApp() {
     if (streamingRef.current) return;
     if (voiceNavigationLockedRef.current) {
       setError(
-        "Finish saving the voice transcript before starting a new conversation. Use \u201cRetry saving\u201d or \u201cDiscard\u201d in the voice status bar to continue.",
+        "Finish saving the voice transcript before starting a new conversation. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar to continue.",
       );
       return;
     }
@@ -512,7 +512,7 @@ export function ChatApp() {
       if (streamingRef.current) return;
       if (voiceNavigationLockedRef.current) {
         setError(
-          "Finish saving the voice transcript before deleting this conversation. Use \u201cRetry saving\u201d or \u201cDiscard\u201d in the voice status bar to continue.",
+          "Finish saving the voice transcript before deleting this conversation. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar to continue.",
         );
         return;
       }
@@ -980,7 +980,7 @@ export function ChatApp() {
   // lock) while streaming or while voice data is unsaved, so a plain
   // `disabled` attribute leaves users with no idea why the button won't
   // respond or how to get out. Surface the reason — and, for the voice case,
-  // the recovery path (Retry saving/Discard in the voice status bar) — via a
+  // the recovery path (Retry saving/Stop waiting in the voice status bar) — via a
   // visible, aria-describedby-linked hint on those controls (Sidebar renders
   // its own shared hint; the header's standalone EditableSessionTitle gets
   // its own copy below via headerLockReasonId, since it lives outside the
@@ -988,7 +988,7 @@ export function ChatApp() {
   const sidebarDisabledReason = streaming
     ? "Wait for the current reply to finish generating."
     : voiceExitLocked
-      ? "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cDiscard\u201d in the voice status bar below."
+      ? "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar below."
       : undefined;
   const headerLockReasonId = useId();
   useLayoutEffect(() => {

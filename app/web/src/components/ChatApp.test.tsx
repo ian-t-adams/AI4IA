@@ -523,7 +523,7 @@ describe("ChatApp uploads", () => {
 
   it("hard-disables sidebar navigation with an explanatory, recoverable tooltip while a voice transcript is stuck saving, then re-enables once it resolves", async () => {
     const recoveryTooltip =
-      "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cDiscard\u201d in the voice status bar below.";
+      "Finish saving the voice transcript before switching conversations. Use \u201cRetry saving\u201d or \u201cStop waiting\u201d in the voice status bar below.";
     const user = userEvent.setup();
     const { rerender } = render(<ChatApp />);
     await user.click(await screen.findByRole("button", { name: "Session A" }));

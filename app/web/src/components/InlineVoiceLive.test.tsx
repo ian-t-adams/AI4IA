@@ -671,11 +671,11 @@ describe("inline Voice Live chat", () => {
 
     expect(
       screen.getByText(
-        "Saving the voice transcript is taking too long. Retry, or discard it to continue.",
+        "Saving the voice transcript is taking too long. Retry, or stop waiting to continue.",
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry saving" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Stop waiting" })).toBeEnabled();
     expect(
       screen.getByRole("button", { name: "Retry saving the voice transcript below" }),
     ).toBeInTheDocument();
@@ -714,10 +714,10 @@ describe("inline Voice Live chat", () => {
       screen.getByRole("button", { name: "Saving live voice transcript" }),
     ).toBeDisabled();
 
-    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+    await userEvent.click(screen.getByRole("button", { name: "Stop waiting" }));
 
     expect(screen.getByText("Voice Live ready")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop waiting" })).toBeNull();
     expect(
       screen.getByRole("button", { name: "Start live voice conversation" }),
     ).toBeEnabled();
@@ -771,14 +771,14 @@ describe("inline Voice Live chat", () => {
       ).toBeInTheDocument(),
     );
     expect(screen.getByRole("button", { name: "Retry saving" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Stop waiting" })).toBeEnabled();
     expect(
       screen.queryByRole("button", { name: "Saving live voice transcript" }),
     ).toBeNull();
     expect(mocks.start).not.toHaveBeenCalled();
 
     // The same escape hatch that recovers a hung save also recovers this one.
-    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+    await userEvent.click(screen.getByRole("button", { name: "Stop waiting" }));
     expect(screen.getByText("Voice Live ready")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Start live voice conversation" }),
@@ -843,9 +843,9 @@ describe("inline Voice Live chat", () => {
       screen.getByRole("button", { name: "Saving live voice transcript" }),
     ).toBeDisabled();
 
-    // Discard abandons the still in-flight save (bumps attemptIdRef) and
-    // returns the UI to ready without waiting on it.
-    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+    // "Stop waiting" abandons the still in-flight save (bumps attemptIdRef)
+    // and returns the UI to ready without waiting on it.
+    await userEvent.click(screen.getByRole("button", { name: "Stop waiting" }));
     expect(
       screen.getByRole("button", { name: "Start live voice conversation" }),
     ).toBeEnabled();
@@ -971,7 +971,7 @@ describe("inline Voice Live chat", () => {
     // Still the current (only) attempt: the predicate must say so.
     expect(capturedIsStillWanted?.()).toBe(true);
 
-    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+    await userEvent.click(screen.getByRole("button", { name: "Stop waiting" }));
 
     // Same predicate instance, re-queried after discard: it must now report
     // false so ChatApp's ensureSession knows not to commit navigation once
@@ -1031,7 +1031,7 @@ describe("inline Voice Live chat", () => {
     // Still the current (only) attempt: the predicate must say so.
     expect(capturedIsStillValid?.()).toBe(true);
 
-    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+    await userEvent.click(screen.getByRole("button", { name: "Stop waiting" }));
 
     // Same predicate instance, re-queried after discard: it must now report
     // false so ChatApp knows not to commit any state from this save once its
@@ -1079,7 +1079,7 @@ describe("inline Voice Live chat", () => {
         screen.getByText("ensureSession contract violation"),
       ).toBeInTheDocument(),
     );
-    expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Stop waiting" })).toBeEnabled();
   });
 
   it("exposes hasUnsavedTurns/exitLocked only once real data would be lost, not merely while live", () => {
@@ -1175,6 +1175,70 @@ describe("inline Voice Live chat", () => {
     expect(getByTestId("locked").textContent).toBe("false");
   });
 
+  // Regression (voice acceptance round 9, MEDIUM companion): unlike the
+  // empty-pending-turn case above, a still-open turn that already holds
+  // real text (an assistant reply cut off mid-stream) CAN be completed --
+  // finalizedTurns() now saves it once inactive -- so exitLocked must stay
+  // true until that save actually resolves, not flip false the instant the
+  // connection ends merely because the turn was never explicitly finalized.
+  it("keeps exitLocked true after stop for a still-streaming turn with real content, until its save resolves", async () => {
+    let resolvePersist: (() => void) | undefined;
+    function LockHarness() {
+      const voice = useInlineVoiceLive({
+        config: CONFIG,
+        model: "catalog-realtime-model",
+        agent: "analyst",
+        agents: AGENTS,
+        history: [],
+        activeSessionId: "session-1",
+        ensureSession: async () => "session-1",
+        persistConversation: () =>
+          new Promise<void>((resolve) => {
+            resolvePersist = resolve;
+          }),
+      });
+      return <span data-testid="locked">{String(voice.exitLocked)}</span>;
+    }
+
+    const partialTurn = {
+      id: "a1",
+      role: "assistant" as const,
+      text: "Cut off mid-sentence",
+      pending: false,
+      streaming: true,
+      tool: "",
+    };
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [partialTurn],
+    });
+    const { rerender, getByTestId } = render(<LockHarness />);
+    expect(getByTestId("locked").textContent).toBe("true");
+
+    // stop() tears the connection down synchronously, but voiceLive.ts
+    // never settles a turn that was still streaming -- the same turn
+    // remains, `streaming: true`, exactly as it would after a real
+    // mid-response stop() call.
+    controller = makeController({
+      status: "idle",
+      active: false,
+      turns: [partialTurn],
+    });
+    rerender(<LockHarness />);
+    // Inactive, but this turn has real content and is now being saved:
+    // navigation must stay locked rather than unlocking over unsaved data.
+    expect(getByTestId("locked").textContent).toBe("true");
+
+    // The save is dispatched through a microtask chain (ensureSession's
+    // resolved-session promise, then persistConversation itself), so
+    // resolvePersist isn't captured synchronously after rerender().
+    await waitFor(() => expect(resolvePersist).toBeInstanceOf(Function));
+    resolvePersist?.();
+    // Once the save actually resolves, the lock clears normally.
+    await waitFor(() => expect(getByTestId("locked").textContent).toBe("false"));
+  });
+
   // Regression (final acceptance review, Finding 4): the test above proves
   // exitLocked recovers, but the rendered transcript previously still kept
   // showing a permanent "Listening…" bubble for this same never-finalized
@@ -1255,6 +1319,89 @@ describe("inline Voice Live chat", () => {
       screen.getByText("Partial answer before the call"),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Generating")).not.toBeInTheDocument();
+  });
+
+  // Regression (voice acceptance round 9, MEDIUM): the test above proves the
+  // partial content stays on screen, but finalizedTurns() still excluded a
+  // still-open (pending/streaming) turn even once the connection had ended
+  // -- voiceLive.ts never flips that flag after a mid-turn teardown, so it
+  // never settles. The turn was therefore never included in the append
+  // payload, never counted as unsaved, and navigation could unlock with
+  // real, visible-but-unsaved history silently left behind. finalizedTurns()
+  // now finalizes a still-open turn's real text once the connection has
+  // ended, so it (a) reaches persistConversation()'s payload, (b) keeps
+  // hasUnsavedTurns/exitLocked true until that save actually completes, and
+  // (c) drops from this transient overlay once persisted, so it doesn't
+  // duplicate the durable copy ChatApp's own `messages` state then shows
+  // alongside it.
+  it("includes a still-streaming turn's real content in the save payload once stop() ends the call, keeps navigation locked until it saves, and avoids a duplicate once saved", async () => {
+    const partialTurn = {
+      id: "a1",
+      role: "assistant" as const,
+      text: "Here is the partial ans",
+      pending: false,
+      streaming: true,
+      tool: "",
+    };
+    const persistCalls: VoiceTurnInput[][] = [];
+    let resolvePersist: (() => void) | undefined;
+    const persist = vi.fn((_sessionId: string, _conversationId: string, turns: VoiceTurnInput[]) => {
+      persistCalls.push(turns);
+      return new Promise<void>((resolve) => {
+        resolvePersist = resolve;
+      });
+    });
+    controller = makeController({
+      status: "live",
+      active: true,
+      turns: [partialTurn],
+    });
+    const { rerender } = render(
+      <Harness activeSessionId="session-1" persist={persist} />,
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Stop live voice conversation" }),
+    );
+    // stop() tears the connection down synchronously, but voiceLive.ts never
+    // clears/settles `turns` -- the same still-streaming turn remains,
+    // exactly as it would after a real stop() call mid-response.
+    controller = makeController({
+      status: "idle",
+      active: false,
+      turns: [partialTurn],
+    });
+    rerender(<Harness activeSessionId="session-1" persist={persist} />);
+
+    // The append payload includes the partial content -- it is not silently
+    // lost just because the turn was still "streaming" when torn down.
+    await waitFor(() => expect(persistCalls).toHaveLength(1));
+    expect(persistCalls[0]).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        text: "Here is the partial ans",
+      }),
+    ]);
+
+    // The save is genuinely in flight: navigation must stay locked rather
+    // than unlocking over content that hasn't been saved yet.
+    expect(
+      screen.getByRole("button", { name: "Saving live voice transcript" }),
+    ).toBeDisabled();
+    // Exactly one copy on screen so far -- only this transient overlay has
+    // it; the durable side hasn't produced its own copy yet.
+    expect(screen.getAllByText("Here is the partial ans")).toHaveLength(1);
+
+    resolvePersist?.();
+    await waitFor(() =>
+      expect(screen.getByText("Voice Live ready")).toBeInTheDocument(),
+    );
+
+    // Once persisted, exactly one copy remains: the durable copy that
+    // ChatApp's own `messages` state now shows (simulated here by the
+    // Harness's persistedMessages), not a duplicate left behind by this
+    // transient overlay.
+    expect(screen.getAllByText("Here is the partial ans")).toHaveLength(1);
   });
 
   it("adopts a session created by a text send in the same empty chat", () => {
