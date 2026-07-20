@@ -4,12 +4,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import * as api from "@/lib/api";
 import {
+  createMemory,
   deleteMemory,
   getInspector,
   getLibrarySummary,
   listMemories,
+  updateMemory,
   type InspectorSnapshot,
   type LibrarySummary,
+  type MemoryItem,
   type MemoryList,
 } from "@/lib/inspector";
 import type {
@@ -150,6 +153,9 @@ export function ConversationInspector({
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [memoryRetryId, setMemoryRetryId] = useState<string | null>(null);
   const [memoryConfirmId, setMemoryConfirmId] = useState<string | null>(null);
+  const [memoryCreateText, setMemoryCreateText] = useState("");
+  const [memoryEditId, setMemoryEditId] = useState<string | null>(null);
+  const [memoryEditText, setMemoryEditText] = useState("");
   const [toolQuery, setToolQuery] = useState("");
   const [promptDraft, setPromptDraft] = useState(systemPrompt);
   const sectionGenerationRef = useRef({
@@ -397,21 +403,61 @@ export function ConversationInspector({
     [draftDefaults, onDraftDefaultsChange],
   );
   const loading = Object.values(phases).some((phase) => phase === "loading");
-  const deleteMemoryItem = useCallback(async (id: string) => {
-    setMemoryPending(id);
+  const createMemoryItem = useCallback(async () => {
+    const text = memoryCreateText.trim();
+    if (!text) return;
+    setMemoryPending("create");
+    setMemoryError(null);
+    setMemoryRetryId(null);
+    try {
+      await createMemory(text);
+      setMemoryCreateText("");
+      setMemory(await listMemories());
+      showSaved("Memory created");
+    } catch (reason) {
+      setMemoryError((reason as Error).message);
+    } finally {
+      setMemoryPending(null);
+    }
+  }, [memoryCreateText, showSaved]);
+  const updateMemoryItem = useCallback(async (item: MemoryItem) => {
+    const text = memoryEditText.trim();
+    if (!text || !item.etag) return;
+    setMemoryPending(item.id);
+    setMemoryError(null);
+    setMemoryRetryId(null);
+    try {
+      await updateMemory(item.id, text, item.etag);
+      setMemoryEditId(null);
+      setMemoryEditText("");
+      setMemory(await listMemories());
+      showSaved("Memory updated");
+    } catch (reason) {
+      setMemoryError((reason as Error).message);
+    } finally {
+      setMemoryPending(null);
+    }
+  }, [memoryEditText, showSaved]);
+  const deleteMemoryItem = useCallback(async (item: MemoryItem) => {
+    setMemoryPending(item.id);
     setMemoryConfirmId(null);
     setMemoryError(null);
     setMemoryRetryId(null);
     try {
-      await deleteMemory(id);
+      await deleteMemory(item.id, item.etag);
+      if (memoryEditId === item.id) {
+        setMemoryEditId(null);
+        setMemoryEditText("");
+      }
       setMemory(await listMemories());
+      showSaved("Memory deleted");
     } catch (reason) {
       setMemoryError((reason as Error).message);
-      setMemoryRetryId(id);
+      setMemoryRetryId(item.id);
     } finally {
       setMemoryPending(null);
     }
-  }, []);
+  }, [memoryEditId, showSaved]);
 
   const selectedIds = useMemo(
     () => new Set(snapshot?.libraryDocuments.map((document) => document.id) ?? []),
@@ -1001,7 +1047,7 @@ export function ConversationInspector({
           <section>
             <SectionTitle
               title="Memory"
-              help="These are memories scoped to your authenticated identity. Deleting removes only the selected owned memory. Disabled or unsupported backends are shown explicitly."
+              help="These durable memories are scoped to your authenticated identity. Create and edit make user-locked memories that automatic consolidation cannot change. Updates and deletes use version checks so a stale browser cannot overwrite newer data."
             />
             {phases.memory === "loading" ? (
               <div className="inspector-empty">Loading memories…</div>
@@ -1022,7 +1068,7 @@ export function ConversationInspector({
                       const item = memory?.items.find(
                         (memoryItem) => memoryItem.id === memoryRetryId,
                       );
-                      if (item) void deleteMemoryItem(item.id);
+                      if (item) void deleteMemoryItem(item);
                     }}
                   >
                     Retry
@@ -1033,52 +1079,159 @@ export function ConversationInspector({
             {phases.memory === "ready" && memory?.status !== "ok" ? (
               <div className="inspector-empty">{memory?.detail ?? "Memory is unavailable."}</div>
             ) : null}
+            {memory?.status === "ok" && memory.supportsCreate ? (
+              <form
+                className="memory-editor"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void createMemoryItem();
+                }}
+              >
+                <label htmlFor="new-memory">Add a memory</label>
+                <textarea
+                  id="new-memory"
+                  rows={3}
+                  maxLength={2000}
+                  value={memoryCreateText}
+                  placeholder="A durable preference or fact to remember"
+                  disabled={memoryPending !== null}
+                  onChange={(event) => setMemoryCreateText(event.target.value)}
+                />
+                <div className="inspector-actions">
+                  <button
+                    type="submit"
+                    disabled={!memoryCreateText.trim() || memoryPending !== null}
+                  >
+                    {memoryPending === "create" ? "Saving…" : "Save memory"}
+                  </button>
+                </div>
+              </form>
+            ) : null}
             {memory?.status === "ok" ? (
               <ul className="inspector-list memory-list">
-                {memory.items.map((item) => (
-                  <li key={item.id}>
-                    <span>{item.text}<small>{item.source}{item.createdAt ? ` · ${new Date(item.createdAt).toLocaleDateString()}` : ""}</small></span>
-                    {memory.supportsDelete ? (
-                      memoryConfirmId === item.id ? (
-                        <span className="memory-confirmation">
-                          <span>Delete this memory?</span>
-                          <button
-                            ref={memoryConfirmRef}
-                            type="button"
-                            aria-label={`Confirm deletion of memory: ${item.text.slice(0, 80)}`}
-                            disabled={memoryPending === item.id}
-                            onClick={() => void deleteMemoryItem(item.id)}
-                          >
-                            {memoryPending === item.id ? "Deleting…" : "Confirm"}
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`Cancel deletion of memory: ${item.text.slice(0, 80)}`}
-                            onClick={() => setMemoryConfirmId(null)}
-                          >
-                            Cancel
-                          </button>
-                        </span>
-                      ) : (
-                        <button
-                          ref={(element) => {
-                            if (element) {
-                              memoryTriggerRefs.current.set(item.id, element);
-                            } else {
-                              memoryTriggerRefs.current.delete(item.id);
-                            }
+                {memory.items.map((item) => {
+                  const editing = memoryEditId === item.id;
+                  return (
+                    <li key={item.id}>
+                      {editing ? (
+                        <form
+                          className="memory-editor"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            void updateMemoryItem(item);
                           }}
-                          type="button"
-                          aria-label={`Delete memory: ${item.text.slice(0, 80)}`}
-                          disabled={memoryPending === item.id}
-                          onClick={() => setMemoryConfirmId(item.id)}
                         >
-                          Delete
-                        </button>
-                      )
-                    ) : null}
-                  </li>
-                ))}
+                          <label htmlFor={`memory-edit-${item.id}`}>
+                            Edit memory
+                          </label>
+                          <textarea
+                            id={`memory-edit-${item.id}`}
+                            rows={3}
+                            maxLength={2000}
+                            value={memoryEditText}
+                            disabled={memoryPending !== null}
+                            onChange={(event) => setMemoryEditText(event.target.value)}
+                          />
+                          <div className="inspector-actions">
+                            <button
+                              type="submit"
+                              disabled={
+                                !item.etag ||
+                                !memoryEditText.trim() ||
+                                memoryPending !== null
+                              }
+                            >
+                              {memoryPending === item.id ? "Saving…" : "Save"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={memoryPending !== null}
+                              onClick={() => {
+                                setMemoryEditId(null);
+                                setMemoryEditText("");
+                              }}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <>
+                          <span>
+                            {item.text}
+                            <small>
+                              {item.source}
+                              {item.createdAt
+                                ? ` · ${new Date(item.createdAt).toLocaleDateString()}`
+                                : ""}
+                              {item.origin === "user" ? " · user managed" : ""}
+                            </small>
+                          </span>
+                          <span className="inspector-actions">
+                            {memory.supportsEdit && item.etag ? (
+                              <button
+                                type="button"
+                                aria-label={`Edit memory: ${item.text.slice(0, 80)}`}
+                                disabled={memoryPending !== null}
+                                onClick={() => {
+                                  setMemoryEditId(item.id);
+                                  setMemoryEditText(item.text);
+                                  setMemoryConfirmId(null);
+                                }}
+                              >
+                                Edit
+                              </button>
+                            ) : null}
+                            {memory.supportsDelete ? (
+                              memoryConfirmId === item.id ? (
+                                <span className="memory-confirmation">
+                                  <span>Delete this memory?</span>
+                                  <button
+                                    ref={memoryConfirmRef}
+                                    type="button"
+                                    aria-label={`Confirm deletion of memory: ${item.text.slice(0, 80)}`}
+                                    disabled={memoryPending !== null}
+                                    onClick={() => void deleteMemoryItem(item)}
+                                  >
+                                    {memoryPending === item.id ? "Deleting…" : "Confirm"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label={`Cancel deletion of memory: ${item.text.slice(0, 80)}`}
+                                    disabled={memoryPending !== null}
+                                    onClick={() => setMemoryConfirmId(null)}
+                                  >
+                                    Cancel
+                                  </button>
+                                </span>
+                              ) : (
+                                <button
+                                  ref={(element) => {
+                                    if (element) {
+                                      memoryTriggerRefs.current.set(item.id, element);
+                                    } else {
+                                      memoryTriggerRefs.current.delete(item.id);
+                                    }
+                                  }}
+                                  type="button"
+                                  aria-label={`Delete memory: ${item.text.slice(0, 80)}`}
+                                  disabled={memoryPending !== null}
+                                  onClick={() => {
+                                    setMemoryConfirmId(item.id);
+                                    setMemoryEditId(null);
+                                    setMemoryEditText("");
+                                  }}
+                                >
+                                  Delete
+                                </button>
+                              )
+                            ) : null}
+                          </span>
+                        </>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             ) : null}
             {memory?.status === "ok" && memory.items.length === 0 ? (

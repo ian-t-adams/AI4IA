@@ -4,9 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ai4ia_api.config import MemoryStoreKind, Settings
+from ai4ia_api.memory.cosmos_service import CosmosMemoryService
 from ai4ia_api.memory.factory import build_memory_service
 from ai4ia_api.memory.in_memory import InMemoryVectorStore
-from ai4ia_api.memory.pgvector_store import PgVectorStore
 from ai4ia_api.memory.service import MemoryService, NoopMemoryService
 
 
@@ -47,26 +47,36 @@ def test_in_memory_builds_service_with_in_memory_store():
     assert isinstance(svc._store, InMemoryVectorStore)
 
 
-def test_pgvector_builds_service_without_connecting():
+def test_cosmos_builds_canonical_service_without_connecting(monkeypatch):
+    constructed: dict[str, object] = {}
+
+    class StubCosmosStore:
+        def __init__(self, **kwargs) -> None:
+            constructed.update(kwargs)
+
+    monkeypatch.setattr(
+        "ai4ia_api.memory.factory.CosmosMemoryStore", StubCosmosStore
+    )
     svc = build_memory_service(
         _settings(
-            memory_store=MemoryStoreKind.pgvector,
-            postgres_host="psql.example.com",
-            postgres_user="api-id",
+            memory_store=MemoryStoreKind.cosmos,
+            cosmos_endpoint="https://cosmos.example",
         ),
         gateway=_GATEWAY,
         catalog=_CATALOG,
     )
-    assert isinstance(svc, MemoryService)
-    assert isinstance(svc._store, PgVectorStore)
-    # Constructed but never connected (lazy): no pool yet.
-    assert svc._store._pool is None
-    assert svc.enabled is True
+    assert isinstance(svc, CosmosMemoryService)
+    assert constructed == {
+        "endpoint": "https://cosmos.example",
+        "database": "ai4ia",
+        "expected_dim": 3072,
+        "embedding_model": "text-embedding-3-large-dep",
+    }
 
 
-def test_pgvector_without_host_fails_closed_to_noop():
+def test_cosmos_without_endpoint_fails_closed_to_noop():
     svc = build_memory_service(
-        _settings(memory_store=MemoryStoreKind.pgvector, postgres_user="api-id"),
+        _settings(memory_store=MemoryStoreKind.cosmos),
         gateway=_GATEWAY,
         catalog=_CATALOG,
     )

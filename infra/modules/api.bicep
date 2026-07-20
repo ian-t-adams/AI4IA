@@ -46,28 +46,27 @@ param modelGatewayApiKey string = ''
 @description('Header carrying the model gateway API key. Use a proxy-only header when the upstream APIM also uses a subscription key.')
 param modelGatewayApiKeyHeader string = 'Ocp-Apim-Subscription-Key'
 
-@description('Cosmos DB account endpoint for the canonical session store.')
+@description('Cosmos DB account endpoint for canonical session and memory data.')
 param cosmosEndpoint string
 
 @description('Cosmos DB database name.')
 param cosmosDatabase string
 
-@description('Memory store backend the api uses (disabled|in_memory|pgvector|mem0).')
+@description('Memory store backend the api uses (disabled|in_memory|cosmos).')
 @allowed([
   'disabled'
   'in_memory'
-  'pgvector'
-  'mem0'
+  'cosmos'
 ])
 param memoryStore string = 'disabled'
 
-@description('Postgres Flexible Server FQDN for the pgvector memory store (empty when memory is not pgvector).')
+@description('Postgres Flexible Server FQDN retained for source migration and document-index fallback.')
 param postgresHost string = ''
 
-@description('Postgres database name for the pgvector memory store.')
+@description('Postgres database name retained for source migration and document-index fallback.')
 param postgresDatabase string = 'mem0'
 
-@description('Postgres AAD role name the api identity connects as (its identity resource name).')
+@description('Postgres AAD role name retained for source migration and document-index fallback.')
 param postgresUser string = ''
 
 @description('Application Insights connection string for api telemetry.')
@@ -325,9 +324,9 @@ var adminEnv = concat(
   ] : []
 )
 
-// Postgres connection is required for the durable memory backends (the custom
-// pgvector store and the real-mem0 store both persist vectors in Postgres).
-var pgEnv = (memoryStore == 'pgvector' || memoryStore == 'mem0') ? [
+// PostgreSQL is no longer a memory backend. Keep its connection available only
+// for the document-index fallback while the migration/retirement window is open.
+var pgEnv = (!empty(postgresHost) && !empty(postgresUser)) ? [
   {
     name: 'AI4IA_POSTGRES_HOST'
     value: postgresHost
@@ -341,20 +340,12 @@ var pgEnv = (memoryStore == 'pgvector' || memoryStore == 'mem0') ? [
     value: postgresUser
   }
 ] : []
-// mem0-specific: disable the library's PostHog telemetry at the process level
-// (belt-and-suspenders; the code also setdefault()s this before importing mem0).
-var mem0Env = memoryStore == 'mem0' ? [
-  {
-    name: 'MEM0_TELEMETRY'
-    value: 'false'
-  }
-] : []
 var memoryEnv = concat([
   {
     name: 'AI4IA_MEMORY_STORE'
     value: memoryStore
   }
-], pgEnv, mem0Env)
+], pgEnv)
 
 // Voice Live realtime relay settings. Default OFF: with the flag unset
 // the /api/voice/live WebSocket refuses immediately, so the relay is inert and the

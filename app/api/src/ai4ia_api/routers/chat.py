@@ -1427,7 +1427,7 @@ async def chat(
         # When the agent attaches ``recall_memory`` and memory is enabled,
         # inject the synthetic recall capability — same closure-bound pattern as
         # the library/web tools. It is bound to THIS user (so it can only ever
-        # search the caller's own mem0 store) + this session (for ``scope=session``)
+        # search the caller's own memory store) + this session (for ``scope=session``)
         # and the turn nonce. Only offered when memory is on; otherwise skipped, so
         # the turn is byte-for-byte unchanged. Best-effort: a build failure leaves
         # the agent with its other tools.

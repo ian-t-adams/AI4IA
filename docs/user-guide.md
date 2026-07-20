@@ -148,15 +148,16 @@ authenticated API routes rather than public blob URLs.
 ## Memory
 
 When memory is enabled, AI4IA can recall prior user context and can save ready
-document summaries to memory. The inspector lists memories owned by the current
-user and supports confirmed, item-labelled deletion with pending/error/retry state
-when the configured backend can verify and delete an owned record. There is no
-global consent/toggle yet.
+document summaries to memory. The inspector lists only memories owned by the
+current user. You can create a memory, edit it inline, or delete it after an
+item-labelled confirmation. Pending, conflict, error, and retry states stay on
+the affected item rather than disabling the whole inspector.
 
-The mem0 backend currently reports deletion as unsupported because its pinned SDK
-cannot prove hard deletion. Delete controls stay unavailable, erase APIs fail
-closed, and `/forget` explicitly says that no memories were deleted; it never
-reports a success-shaped result for an unverifiable operation.
+Memories you create or edit are locked against automatic consolidation. `/forget`
+removes this conversation's memories by default; `/forget me` removes all active
+memories for your profile. Document deletion also fences and removes memories
+derived from that document. There is no global consent/toggle or per-answer
+recalled-memory indicator yet.
 
 The Usage section reports known token/cost subtotals and request coverage when some
 providers omit usage. `Unknown` is shown instead of zero when every request is

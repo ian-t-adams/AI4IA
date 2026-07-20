@@ -74,6 +74,13 @@ class InMemoryVectorStore:
                 document_id=record.document_id,
                 id=record.id,
                 created_at=record.created_at,
+                updated_at=record.updated_at,
+                version=record.version,
+                etag=record.etag,
+                origin=record.origin,
+                locked=record.locked,
+                write_epoch=record.write_epoch,
+                embedding_model=record.embedding_model,
                 score=score,
             )
             scored.append(hit)

@@ -19,7 +19,7 @@ feature posture.
 | Library compute / export | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | none | `documentComputeEnabled` | Document understanding, Responses API base URL + model outside local |
 | Inline attachment Code Interpreter | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | none | `inlineDocumentComputeEnabled` | Responses API base URL + model outside local |
 | Azure AI Search chunk store | `AI4IA_SEARCH_ENDPOINT` set | none | `searchEnabled` + `searchLocation` | Search service + API identity RBAC |
-| Memory / semantic recall | `AI4IA_MEMORY_STORE` | save/forget controls only | `postgresLocation` derives `mem0` when non-empty | Postgres host/user for `pgvector` or `mem0` |
+| Memory / semantic recall | `AI4IA_MEMORY_STORE=cosmos` | inspector create/edit/delete controls | `memoryStore` | Cosmos endpoint/database, vector capability/container, and catalog-resolved embedding/extraction models |
 | Image generation | `AI4IA_IMAGE_BLOB_ACCOUNT_URL` when provisioned | Settings / imagery UI | `imageGenerationEnabled` | Image-capable model deployment and media blob storage |
 | Video generation | `AI4IA_VIDEO_BLOB_ACCOUNT_URL` when provisioned | inline attachment rendering | `videoGenerationEnabled` | Sora-capable deployment and media blob storage |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | Cosmos, Key Vault URI, Entra auth outside local |
@@ -35,7 +35,7 @@ feature posture.
 
 The checked-in live parameters currently turn on image/video generation,
 document understanding, document compute, inline-attachment code interpreter, AI
-Search, Voice Live + tools, custom tools, Web IQ search, Postgres-backed memory,
+Search, Voice Live + tools, custom tools, Web IQ search, Cosmos-backed memory,
 and — as of the Foundry activation — the **official MCP plane, the Foundry toolbox
 bridge, and the private tool catalog** (`enableOfficialMcp` / `enableFoundryToolbox`
 / `enablePrivateToolCatalog` are all `true`). The new proxy profile, priority,
@@ -265,16 +265,22 @@ Outside local, both fail closed without the Responses API base URL and model.
 
 - `disabled` — off.
 - `in_memory` — ephemeral local/dev store.
-- `pgvector` — custom Postgres + pgvector store.
-- `mem0` — mem0 OSS over Postgres + pgvector with gateway-backed extraction and
-  embeddings.
+- `cosmos` — canonical production store with user-partitioned text/vectors, full
+  CRUD, ETags, idempotency, and concurrency-safe scoped forgetting.
 
-In IaC, a non-empty `postgresLocation` provisions Postgres and derives
-`memoryStore='mem0'`. The live default uses `centralus` because the subscription
-is offer-restricted for Postgres Flexible Server in several app regions.
+IaC defaults `memoryStore='cosmos'` from `AI4IA_MEMORY_STORE`. During cutover,
+operators deliberately set it to `disabled` to freeze writes before migration,
+then restore `cosmos` only after verification. Startup fails closed if the Cosmos
+endpoint is missing or either catalog-driven memory model cannot resolve.
+`postgresLocation` only retains the legacy migration source and the optional
+document-chunk fallback; it no longer changes the memory backend.
 
-Gap: automatic recall is available, plus document save/forget, but the chat UI
-does not yet expose a global memory toggle or recalled-memory indicator.
+The Conversation Inspector exposes create, inline edit, and confirmed delete.
+Automatic recall and planner consolidation remain best-effort so a memory service
+failure cannot break chat; explicit CRUD and forget operations surface failures.
+There is still no global consent toggle or recalled-memory provenance indicator.
+See [Memory architecture](../memory.md) and the
+[migration runbook](./memory-migration.md).
 
 ### Custom MCP tools
 

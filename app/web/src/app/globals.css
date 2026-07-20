@@ -584,6 +584,18 @@ button:disabled {
   gap: 6px;
 }
 
+.memory-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.memory-list > li > .inspector-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .help-tooltip {
   position: relative;
   display: inline-flex;

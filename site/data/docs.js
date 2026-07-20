@@ -9,6 +9,7 @@ window.AI4IA_DOCS = {
         { path: "README.md", title: "Repository overview", desc: "What AI4IA is, current state, layout, key decisions and how to deploy." },
         { path: "docs/user-guide.md", title: "User guide", desc: "How to use the app: chat, agents, voice, library, media, memory and admin views." },
         { path: "docs/architecture.md", title: "Architecture", desc: "Governed multi-model design, request lifecycle, components and MCP planes." },
+        { path: "docs/memory.md", title: "Memory architecture", desc: "Canonical Cosmos memory, owner-scoped CRUD, vector recall, concurrency fences, deletion, privacy, and remaining gaps." },
         { path: "docs/platform-audit.md", title: "Platform audit", desc: "Evergreen architecture, remediation status, validation evidence, residual gaps, and explicit owner actions." },
         { path: "AGENTS.md", title: "Agent & contributor guide", desc: "Machine-facing map for humans and AI agents: invariants, CI commands, and how to add tools, models, flags and routers." },
       ],
@@ -30,6 +31,7 @@ window.AI4IA_DOCS = {
       docs: [
         { path: "docs/runbooks/deployment.md", title: "Deployment runbook", desc: "One-time OIDC setup, custom domains, and the continuous deploy workflow." },
         { path: "docs/runbooks/feature-enablement.md", title: "Feature enablement", desc: "The authoritative flag list and how to safely turn features on/off." },
+        { path: "docs/runbooks/memory-migration.md", title: "Memory migration", desc: "Dry-run-first PostgreSQL-to-Cosmos cutover, verification, rollback, and retirement gates." },
         { path: "docs/runbooks/telemetry.md", title: "Telemetry and admin diagnostics", desc: "Metric sources, privacy boundaries, freshness, unknown states, and diagnosis of unavailable panels." },
         { path: "docs/runbooks/teardown.md", title: "Teardown & rebuild", desc: "Inventory, teardown and soft-delete purge procedures." },
       ],

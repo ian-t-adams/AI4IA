@@ -1,11 +1,9 @@
 """Shared rendering of recalled memories into an injectable context block.
 
-Both memory backends (the custom :class:`MemoryService` and the real-mem0
-:class:`Mem0MemoryService`) inject recalled snippets the same way: as a clearly
-delimited, explicitly *untrusted* reference block with hard caps (count,
-per-item chars, total chars). Centralizing it here keeps that safety contract —
-and the exact wording the model sees — identical across backends, so behavior
-can't drift between them.
+All memory backends inject recalled snippets as a clearly delimited, explicitly
+*untrusted* reference block with hard caps (count, per-item chars, total chars).
+Centralizing it here keeps the safety contract and model-visible wording
+identical across backends.
 """
 from __future__ import annotations
 

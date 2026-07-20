@@ -20,6 +20,9 @@
     "postgresLocation": {
       "value": "${AI4IA_POSTGRES_LOCATION=centralus}"
     },
+    "memoryStore": {
+      "value": "${AI4IA_MEMORY_STORE=cosmos}"
+    },
     "adminSubjects": {
       "value": "${AI4IA_ADMIN_SUBJECTS=}"
     },

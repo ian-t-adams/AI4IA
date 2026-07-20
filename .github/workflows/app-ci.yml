@@ -12,12 +12,14 @@ on:
       - "scripts/gen-model-catalog.py"
       - "scripts/gen-mcp-catalog.py"
       - "scripts/gen-voice-provider-catalog.py"
+      - "scripts/migrate-memory-to-cosmos.py"
       - "scripts/provision-foundry-toolbox.py"
       - "scripts/provision-foundry-skills.py"
       - "scripts/provision-private-tool-catalog.py"
       - "scripts/provision-foundry-routine.py"
       - "scripts/provision-foundry-a2a.py"
       - "scripts/tests/test_voice_provider_catalog.py"
+      - "scripts/tests/test_memory_cosmos_migration.py"
       - ".github/workflows/app-ci.yml"
   push:
     branches: [main]
@@ -31,12 +33,14 @@ on:
       - "scripts/gen-model-catalog.py"
       - "scripts/gen-mcp-catalog.py"
       - "scripts/gen-voice-provider-catalog.py"
+      - "scripts/migrate-memory-to-cosmos.py"
       - "scripts/provision-foundry-toolbox.py"
       - "scripts/provision-foundry-skills.py"
       - "scripts/provision-private-tool-catalog.py"
       - "scripts/provision-foundry-routine.py"
       - "scripts/provision-foundry-a2a.py"
       - "scripts/tests/test_voice_provider_catalog.py"
+      - "scripts/tests/test_memory_cosmos_migration.py"
 
 permissions:
   contents: read
@@ -103,3 +107,6 @@ jobs:
         run: pyright
       - name: Test (pytest)
         run: pytest -q
+      - name: Memory migration script tests
+        working-directory: .
+        run: pytest -q scripts/tests/test_memory_cosmos_migration.py

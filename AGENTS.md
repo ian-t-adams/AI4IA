@@ -21,7 +21,7 @@ AI4IA is a governed, multi-model, multi-region agentic chat app on Azure Contain
 1. **Gateway-first model traffic.** Compatible HTTP/SSE calls (chat, agents, embeddings, images, videos, and REST speech) go SimpleL7Proxy -> APIM -> Foundry. Realtime/Voice Live WebSockets are the explicit exception: FastAPI relay -> APIM -> Foundry. Do not call Foundry model deployments directly from app code. Direct calls are reserved for non-OpenAI/native control or data planes such as Content Understanding, Azure Monitor, Key Vault, Blob, Cosmos, and Azure AI Search.
 2. **Catalog-driven models.** Do not hardcode deployment names or model lists. `infra/models.json` is the source of truth; generated runtime catalog data must match it.
 3. **Server-authoritative feature gates.** The web app may hide UI, but the API and startup validation must enforce feature posture. Never gate only in React/Next.js.
-4. **Cosmos is canonical.** Sessions, messages, usage, user agents/workflows, MCP server records, and document manifests are canonical and scoped per user. Derived memory vectors, document chunks, search indexes, and parsed artifacts must be rebuildable.
+4. **Cosmos is canonical.** Sessions, messages, usage, user agents/workflows, MCP server records, document manifests, and memory text/vectors are canonical and scoped per user. Document chunks, search indexes, and parsed artifacts must be rebuildable.
 5. **Tools re-check at execution time.** Tool execution must re-validate scopes, approvals, target hosts, and SSRF/public-HTTPS rules when a call runs, not only when a tool/server is registered.
 6. **No secret sprawl.** Do not log credentials, commit secrets, or put user MCP secrets in Cosmos; durable MCP secrets belong in Key Vault outside local.
 
@@ -99,6 +99,13 @@ Then it runs in `app/api`:
 ruff check .
 pyright
 pytest -q
+```
+
+It also runs the Cosmos migration script tests from the repo root after the API
+development dependencies are installed:
+
+```powershell
+pytest -q scripts/tests/test_memory_cosmos_migration.py
 ```
 
 This repo has `app/api/uv.lock`; if using `uv` locally, sync the dev extra and run the same tools through `uv run`, but treat the workflow commands above as authoritative.

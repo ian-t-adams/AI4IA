@@ -63,9 +63,9 @@
   <rect class="leaf" x="1200" y="490" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
   <text class="box" x="1360" y="518"><tspan x="1360">Curated MCP + Foundry Toolbox</tspan><tspan x="1360" dy="20">WebIQ is a separate</tspan><tspan x="1360" dy="20">server-side capability</tspan></text>
   <rect class="leaf" x="1200" y="630" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
-  <text class="box" x="1360" y="658"><tspan x="1360">Cosmos + Blob</tspan><tspan x="1360" dy="20">canonical user records,</tspan><tspan x="1360" dy="20">source docs and artifacts</tspan></text>
+  <text class="box" x="1360" y="658"><tspan x="1360">Cosmos + Blob</tspan><tspan x="1360" dy="20">canonical user records,</tspan><tspan x="1360" dy="20">memories, vectors + artifacts</tspan></text>
   <rect class="leaf" x="1200" y="770" width="320" height="90" stroke="#5C2D91" fill="#E8DAEF"/>
-  <text class="box" x="1360" y="798"><tspan x="1360">Postgres/pgvector + mem0 + AI Search</tspan><tspan x="1360" dy="20">rebuildable memory vectors,</tspan><tspan x="1360" dy="20">chunks and indexes</tspan></text>
+  <text class="box" x="1360" y="798"><tspan x="1360">AI Search + optional pgvector</tspan><tspan x="1360" dy="20">rebuildable document chunks</tspan><tspan x="1360" dy="20">and retrieval indexes</tspan></text>
 
   <rect class="container" x="320" y="730" width="800" height="160" stroke="#1E1E1E"/>
   <text class="section" x="720" y="772">Direct native planes and cross-cutting operations</text>

@@ -7,7 +7,6 @@ utterances after a successful turn. Disabled by default — the factory returns 
 
 from .factory import build_memory_service
 from .models import MemoryRecord
-from .pgvector_store import PgVectorStore
 from .service import MemoryService, MemoryServiceProtocol, NoopMemoryService
 
 __all__ = [
@@ -15,6 +14,5 @@ __all__ = [
     "MemoryService",
     "MemoryServiceProtocol",
     "NoopMemoryService",
-    "PgVectorStore",
     "build_memory_service",
 ]

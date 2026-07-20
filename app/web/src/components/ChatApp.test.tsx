@@ -27,6 +27,8 @@ const mocks = vi.hoisted(() => ({
   getInspector: vi.fn(),
   listMemories: vi.fn(),
   getLibrarySummary: vi.fn(),
+  createMemory: vi.fn(),
+  updateMemory: vi.fn(),
   deleteMemory: vi.fn(),
   useInlineVoiceLive: vi.fn(),
   appendVoiceTurns: vi.fn(),
@@ -37,6 +39,8 @@ vi.mock("@/lib/inspector", () => ({
   getInspector: mocks.getInspector,
   listMemories: mocks.listMemories,
   getLibrarySummary: mocks.getLibrarySummary,
+  createMemory: mocks.createMemory,
+  updateMemory: mocks.updateMemory,
   deleteMemory: mocks.deleteMemory,
 }));
 vi.mock("./VoiceLiveProvider", () => ({
@@ -274,6 +278,8 @@ beforeEach(() => {
   }));
   mocks.listMemories.mockResolvedValue({
     status: "disabled",
+    supportsCreate: false,
+    supportsEdit: false,
     supportsDelete: false,
     items: [],
     detail: "Memory disabled",

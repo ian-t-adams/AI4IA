@@ -44,9 +44,9 @@
     {"type":"rectangle","id":"toolbox","x":1200,"y":490,"width":320,"height":90,"strokeColor":"#5C2D91","backgroundColor":"#E8DAEF","fillStyle":"solid","strokeWidth":1,"roundness":{"type":3}},
     {"type":"text","id":"toolbox-text","x":1222,"y":507,"width":275,"height":70,"text":"Curated MCP + Foundry Toolbox\nWebIQ is a separate\nserver-side capability","fontSize":14,"fontFamily":1,"strokeColor":"#000000","textAlign":"center","verticalAlign":"top"},
     {"type":"rectangle","id":"cosmos","x":1200,"y":630,"width":320,"height":90,"strokeColor":"#5C2D91","backgroundColor":"#E8DAEF","fillStyle":"solid","strokeWidth":1,"roundness":{"type":3}},
-    {"type":"text","id":"cosmos-text","x":1222,"y":647,"width":275,"height":70,"text":"Cosmos + Blob\ncanonical user records,\nsource docs and artifacts","fontSize":14,"fontFamily":1,"strokeColor":"#000000","textAlign":"center","verticalAlign":"top"},
+    {"type":"text","id":"cosmos-text","x":1222,"y":647,"width":275,"height":105,"text":"Cosmos + Blob\ncanonical user records,\nmemories, vectors + artifacts","fontSize":14,"fontFamily":1,"strokeColor":"#000000","textAlign":"center","verticalAlign":"top"},
     {"type":"rectangle","id":"derived","x":1200,"y":770,"width":320,"height":90,"strokeColor":"#5C2D91","backgroundColor":"#E8DAEF","fillStyle":"solid","strokeWidth":1,"roundness":{"type":3}},
-    {"type":"text","id":"derived-text","x":1222,"y":787,"width":275,"height":70,"text":"Postgres/pgvector + mem0 + AI Search\nrebuildable memory vectors,\nchunks and indexes","fontSize":14,"fontFamily":1,"strokeColor":"#000000","textAlign":"center","verticalAlign":"top"},
+    {"type":"text","id":"derived-text","x":1222,"y":787,"width":275,"height":105,"text":"AI Search + optional pgvector\nrebuildable document chunks\nand retrieval indexes","fontSize":14,"fontFamily":1,"strokeColor":"#000000","textAlign":"center","verticalAlign":"top"},
 
     {"type":"rectangle","id":"container-crosscut","x":320,"y":730,"width":800,"height":160,"strokeColor":"#1E1E1E","backgroundColor":"transparent","fillStyle":"solid","strokeWidth":2,"roundness":{"type":3}},
     {"type":"text","id":"label-crosscut","x":340,"y":742,"width":760,"height":45,"text":"Direct native planes and cross-cutting operations","fontSize":18,"fontFamily":1,"strokeColor":"#000000","textAlign":"center","verticalAlign":"top"},
