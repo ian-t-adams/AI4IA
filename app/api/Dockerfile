@@ -7,7 +7,7 @@
 # Dependabot major-version merge: see AI4IA#187 for a base-image drift that reached
 # python:3.14-slim without an image test. Production warning reports prompted the
 # review, but the audit did not establish that Python 3.14 caused those warnings.
-FROM python:3.12-slim AS base
+FROM python:3.14-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
