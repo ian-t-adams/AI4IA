@@ -101,6 +101,20 @@ azd env set AI4IA_MEMORY_STORE disabled
 azd up
 ```
 
+> **CI deployment (this repo):** production ships through the `deploy.yml`
+> GitHub Actions workflow, not a local `azd up`. The equivalent freeze is to set
+> the `AI4IA_MEMORY_STORE` repository variable to `disabled` (the workflow already
+> defaults to `disabled` when unset) and run the workflow:
+>
+> ```powershell
+> gh variable set AI4IA_MEMORY_STORE --body disabled
+> gh workflow run deploy.yml -f provision=true
+> ```
+>
+> Everywhere below that says `azd env set AI4IA_MEMORY_STORE <value>; azd up`, the
+> CI equivalent is `gh variable set AI4IA_MEMORY_STORE --body <value>` followed by
+> `gh workflow run deploy.yml -f provision=true` (or a push to `main`).
+
 This deploy also prepares the Cosmos vector capability/container while the new
 API revision performs no recall or writes. Verify:
 

@@ -95,6 +95,15 @@ jobs:
       AI4IA_ENTRA_WEB_CLIENT_ID: ${{ vars.AI4IA_ENTRA_WEB_CLIENT_ID }}
       AI4IA_ENTRA_API_SCOPE: ${{ vars.AI4IA_ENTRA_API_SCOPE }}
       AI4IA_ADMIN_SUBJECTS: ${{ vars.AI4IA_ADMIN_SUBJECTS }}
+      # Canonical memory backend selection for the staged mem0 -> Cosmos cutover.
+      # main.parameters.json resolves memoryStore from ${AI4IA_MEMORY_STORE=cosmos};
+      # CI can't run `azd env set`, so plumb it here or every deploy silently takes
+      # the 'cosmos' default and activates memory against an empty container (also
+      # deadlocking the migration's post-cutover safety guard). Fail-closed default
+      # 'disabled' keeps the provisioned Cosmos `memories` container inactive until
+      # the mem0 -> Cosmos migration is applied/verified; then set this repo variable
+      # to 'cosmos' and redeploy. See docs/runbooks/memory-migration.md.
+      AI4IA_MEMORY_STORE: ${{ vars.AI4IA_MEMORY_STORE || 'disabled' }}
       # Speech Voice Live is a second, additive realtime provider fronted by the
       # SAME shared active APIM (a dedicated /speech/voice-live/realtime
       # WebSocket API + distinct subscription key; see infra/modules/gateway.bicep).
