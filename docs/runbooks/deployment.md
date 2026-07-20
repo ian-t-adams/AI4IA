@@ -334,6 +334,54 @@ keep this secret set, **or** entitle the managed identity and leave it empty on 
 > Container App secret). Diagnose live-search auth state from the admin **Web search health** panel,
 > which reports `authMode` (`api_key` / `managed_identity` / `unconfigured`) and categorized failures.
 
+### 2.7 Application Entra app registrations (required when `AI4IA_AUTH_PROVIDER=entra`)
+
+The **deployment** identity in §2.1 only lets the pipeline provision Azure. Production
+*user* sign-in is separate: it needs **two Microsoft Entra app registrations** that the
+Bicep does **not** create (they are tenant objects, not subscription resources). The
+`AI4IA_ENTRA_*` repo variables in §2.3 are pointers to these apps — set them to empty
+values and they reference nothing, so every authenticated request returns `401`. Create
+them once per tenant:
+
+1. **API app registration** — the audience the API validates (`aud`, `iss`, `tid`;
+   see `app/api/src/ai4ia_api/auth/entra.py`). Expose a delegated scope named
+   `access_as_user` and set its access-token version to 2.
+
+   ```powershell
+   # API app: exposes api://<api-app-id>/access_as_user
+   $api = az ad app create --display-name "AI4IA API (<env>)" `
+     --sign-in-audience AzureADMyOrg | ConvertFrom-Json
+   az ad app update --id $api.appId --identifier-uris "api://$($api.appId)"
+   # Set requestedAccessTokenVersion=2 and add the access_as_user scope in the
+   # portal (App registrations -> Expose an API -> Add a scope), or via Graph.
+   ```
+
+2. **Web SPA app registration** — the browser MSAL client. Add a **Single-page
+   application** redirect URI equal to the web origin (the vanity host, e.g.
+   `https://ai4ia.<domain>`, plus `http://localhost:3000` for local dev), and grant it
+   delegated permission to the API app's `access_as_user` scope (grant admin consent).
+
+   ```powershell
+   $web = az ad app create --display-name "AI4IA Web (<env>)" `
+     --sign-in-audience AzureADMyOrg `
+     --spa-redirect-uris "https://ai4ia.<domain>" "http://localhost:3000" | ConvertFrom-Json
+   ```
+
+Then map them to the repo variables (§2.3):
+
+| Repo variable | Value |
+|---|---|
+| `AI4IA_ENTRA_TENANT_ID` | the tenant GUID (also `AZURE_TENANT_ID`) |
+| `AI4IA_ENTRA_AUDIENCE` | the **API** app id GUID (the code accepts `api://<guid>` too) |
+| `AI4IA_ENTRA_API_SCOPE` | `api://<api-app-id>/access_as_user` |
+| `AI4IA_ENTRA_WEB_CLIENT_ID` | the **web SPA** app id GUID |
+| `AI4IA_ADMIN_SUBJECTS` | comma-separated `oid` of the admin user(s); gates `/api/admin/*` |
+
+Until all four `AI4IA_ENTRA_*` variables are set to real registrations, keep
+`AI4IA_AUTH_PROVIDER` unset/`dev` (the demo flow). With `AI4IA_AUTH_PROVIDER=entra` the
+API fails closed on a missing audience/tenant, and the web app falls open to the dev
+flow if any `ENTRA_*` value is missing (see `app/web/.env.example`).
+
 ## 3. Moving to a new subscription or tenant (1:1 standup)
 
 The stack is data-driven, so standing it up in a **new subscription/tenant** is a small set of
@@ -376,6 +424,21 @@ Procedure:
 5. **Break-glass ops scripts** (`scripts/inventory.ps1`, `teardown.ps1`, `purge-soft-deleted.ps1`)
    default their `-ResourceGroup` / `-NameFilter` to the original environment on purpose (so they
    cannot accidentally target the wrong stack). Pass explicit arguments for the new environment.
+
+Clean-room notes for a brand-new subscription/tenant:
+
+- **Entra app registrations** (§2.7) are per-tenant and not created by `azd`. Create the API + web
+  SPA apps and set the four `AI4IA_ENTRA_*` variables before enabling `AI4IA_AUTH_PROVIDER=entra`,
+  or the app returns `401`.
+- **Resource provider registration** — a fresh subscription may need
+  `az provider register -n Microsoft.DocumentDB -n Microsoft.CognitiveServices -n Microsoft.ApiManagement -n Microsoft.App -n Microsoft.DBforPostgreSQL`
+  (and EventHub/Search/ServiceBus if those features are on) before the first provision.
+- **Activate memory** — `AI4IA_MEMORY_STORE` defaults to `disabled` in `deploy.yml` (fail-closed).
+  A greenfield stand-up has no legacy `mem0` data to migrate, so set the `AI4IA_MEMORY_STORE` repo
+  variable to `cosmos` and deploy — no migration runbook needed. (The [memory-migration
+  runbook](./memory-migration.md) applies only when moving *existing* `mem0`/PostgreSQL memories.)
+- The first provision can hit the Cosmos vector-capability race in §7.4; re-running `azd provision`
+  resolves it.
 
 ## 4. Enabling feature-flagged capabilities at deploy time
 
@@ -509,6 +572,39 @@ confirmed code-level diagnostics/UX fixes. They do **not** establish a root caus
 for any Azure OpenAI Realtime failure. Until the authenticated canary and manual
 signed-in microphone retest produce correlated evidence, an Azure OpenAI upstream
 service or model cause remains unproven.
+
+### 7.4 `Provision infrastructure` fails: Cosmos "Container Vector Policy ... capability has not been enabled"
+
+Symptom — `azd provision` fails creating the Cosmos `memories` container with
+`BadRequest ... "A Container Vector Policy has been provided, but the capability has not
+been enabled on your account"` (request URI `/dbs/ai4ia/colls`).
+
+Cause — `infra/modules/data.bicep` declares the account capability
+`EnableNoSQLVectorSearch` **and** the vector `memories` container in the same
+deployment. `EnableNoSQLVectorSearch` must propagate to the Cosmos **data plane** before
+a vector container can be created; when the capability is newly added to an existing
+account (the upgrade path) the container create can race ahead of propagation and fail.
+A brand-new (greenfield) account usually succeeds on the first pass because account
+creation itself gives the capability time to activate.
+
+Fix — enable the capability out-of-band, then **re-run the deploy** (`azd provision` is
+idempotent, exactly like §7.1/§7.2):
+
+```powershell
+# Preserve EnableServerless; add the vector capability. Takes ~1-2 min to propagate.
+az cosmosdb update -g "rg-ai4ia-<env>" -n "<cosmos-account>" `
+  --capabilities EnableServerless EnableNoSQLVectorSearch
+
+# Then re-run the deploy workflow (or `azd provision` locally). The memories container
+# is created once the capability is active; the second run is otherwise a no-op.
+gh workflow run deploy.yml -f provision=true --ref main
+```
+
+If the account already has the capability but the container still doesn't exist, create
+it directly with the exact policy from `data.bicep` (partition key `/userId`, vector
+`/embedding` float32/cosine/3072 `quantizedFlat`, `/embedding/*` excluded, TTL `-1`) via
+an ARM `PUT` to `.../sqlDatabases/ai4ia/containers/memories?api-version=2024-11-15`; a
+subsequent `azd provision` reconciles it idempotently.
 
 ## APIM Basic v2 migration guardrail
 
