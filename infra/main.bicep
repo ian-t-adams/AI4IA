@@ -207,7 +207,15 @@ param proxyMaxReplicas int = 3
 @description('Optional App Configuration label for the proxy hot-reload scope.')
 param proxyAppConfigLabel string = ''
 
-@description('Deploy the Postgres Flexible Server (pgvector home for mem0). Derived from postgresLocation: empty location => skip. Disable where the subscription is offer-restricted for Postgres; mem0/pgvector is optional for the MVP api/web.')
+@description('Memory backend emitted to the API. Use disabled during the migration freeze, then cosmos after verification.')
+@allowed([
+  'disabled'
+  'in_memory'
+  'cosmos'
+])
+param memoryStore string = 'cosmos'
+
+@description('Retain the legacy Postgres Flexible Server for source migration and optional document-index fallback. Empty location skips it; remove only after approved retirement.')
 param postgresLocation string = ''
 
 @description('''Network isolation foundation. When true, provisions a VNet +
@@ -264,8 +272,8 @@ var regionList = map(items(models.regions), r => {
 
 var uniqueSuffix = uniqueString(subscription().id, environmentName)
 
-// Postgres (mem0/pgvector) is opt-in via a non-empty postgresLocation, since several
-// subscriptions are offer-restricted for Postgres Flexible Server in some regions.
+// Retain Postgres for migration rollback and the document-index fallback via a
+// non-empty postgresLocation; some subscriptions remain offer-restricted.
 var postgresEnabled = !empty(postgresLocation)
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
@@ -737,10 +745,10 @@ module api 'modules/api.bicep' = {
     realtimeGatewayApiKey: gateway.outputs.realtimeGatewayKey
     cosmosEndpoint: data.outputs.cosmosEndpoint
     cosmosDatabase: data.outputs.cosmosDatabaseName
-    // Per-user memory: real mem0 (LLM extraction + pgvector) when Postgres is
-    // deployed, else disabled. The custom 'pgvector' store remains
-    // available as a one-value revert (its table is untouched and coexists).
-    memoryStore: postgresEnabled ? 'mem0' : 'disabled'
+    // Cosmos is the active per-user memory store. Keep the legacy Postgres
+    // parameters wired for source migration and document-index fallback while the
+    // server, metrics, and existing data remain through the migration window.
+    memoryStore: memoryStore
     postgresHost: data.outputs.postgresFqdn
     postgresDatabase: data.outputs.postgresDatabaseName
     postgresUser: apiIdentity.name

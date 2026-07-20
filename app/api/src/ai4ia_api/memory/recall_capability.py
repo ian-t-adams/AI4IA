@@ -1,7 +1,7 @@
 """The ``recall_memory`` synthetic capability.
 
 Gives a tool-enabled agent (and the main chat) an *explicit* way to semantically
-search the authenticated user's durable mem0 store on demand, beyond the small
+search the authenticated user's durable memory store on demand, beyond the small
 best-effort recall block auto-injected each turn. It mirrors
 :func:`ai4ia_api.library.chat_capability.build_document_capability`: a function
 schema + an async handler, injected into

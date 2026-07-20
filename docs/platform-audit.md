@@ -159,7 +159,7 @@ all post-merge workflows.
 | Speech Voice Live production gate is open | Optional provider is not proven end-to-end live | Keep default-off until policy compiler, RBAC/audience, what-if, canary, and manual tests pass |
 | Tool/browser/AI preview surfaces | Contract and availability can change | Feature gates, curated catalogs, bounded output, and deliberate provisioning |
 | Some telemetry dimensions are unavailable | Operators cannot infer exact queue/provider state | Panels report partial/stale/unavailable instead of fabricated values |
-| mem0 cannot prove hard deletion with the pinned SDK | An erase request cannot satisfy a hard-delete promise | `supportsDelete=false`; destructive calls fail closed; `/forget` states that no records were deleted |
+| Cosmos memory migration is prepared but not yet deployed | Repository CRUD/deletion guarantees do not prove production cutover | Follow the gated migration runbook; retain PostgreSQL and old revisions until verification and an agreed rollback window complete |
 | Memory consent and recalled-memory indicator are absent | Users lack a global control and provenance cue | Keep owner-scoped management; design explicit controls before expansion |
 
 ## Owner actions

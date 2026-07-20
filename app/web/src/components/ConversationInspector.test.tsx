@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   updateSession: vi.fn(),
   associateLibraryDocument: vi.fn(),
   disassociateLibraryDocument: vi.fn(),
+  createMemory: vi.fn(),
+  updateMemory: vi.fn(),
   deleteMemory: vi.fn(),
 }));
 
@@ -32,6 +34,8 @@ vi.mock("@/lib/inspector", () => ({
   getInspector: mocks.getInspector,
   listMemories: mocks.listMemories,
   getLibrarySummary: mocks.getLibrarySummary,
+  createMemory: mocks.createMemory,
+  updateMemory: mocks.updateMemory,
   deleteMemory: mocks.deleteMemory,
 }));
 
@@ -132,6 +136,8 @@ beforeEach(() => {
   );
   mocks.listMemories.mockResolvedValue({
     status: "ok",
+    supportsCreate: false,
+    supportsEdit: false,
     supportsDelete: false,
     items: [],
     detail: null,
@@ -741,6 +747,8 @@ describe("ConversationInspector", () => {
   it("confirms item-specific memory deletion and exposes a pending-safe label", async () => {
     mocks.listMemories.mockResolvedValue({
       status: "ok",
+      supportsCreate: false,
+      supportsEdit: false,
       supportsDelete: true,
       items: [
         {
@@ -750,6 +758,11 @@ describe("ConversationInspector", () => {
           sessionId: "s1",
           documentId: null,
           createdAt: null,
+          updatedAt: null,
+          version: 1,
+          etag: '"v1"',
+          origin: "implicit",
+          locked: false,
         },
       ],
       detail: null,
@@ -780,7 +793,61 @@ describe("ConversationInspector", () => {
     });
     expect(confirmAfterCancel).toHaveFocus();
     await userEvent.click(confirmAfterCancel);
-    expect(mocks.deleteMemory).toHaveBeenCalledWith("m1");
+    expect(mocks.deleteMemory).toHaveBeenCalledWith("m1", '"v1"');
+  });
+
+  it("creates and edits user-managed memories with accessible controls", async () => {
+    const item = {
+      id: "m1",
+      text: "Prefers concise answers",
+      source: "explicit",
+      sessionId: null,
+      documentId: null,
+      createdAt: null,
+      updatedAt: null,
+      version: 1,
+      etag: '"v1"',
+      origin: "user",
+      locked: true,
+    };
+    mocks.listMemories.mockResolvedValue({
+      status: "ok",
+      supportsCreate: true,
+      supportsEdit: true,
+      supportsDelete: true,
+      items: [item],
+      detail: null,
+    });
+    mocks.createMemory.mockResolvedValue(item);
+    mocks.updateMemory.mockResolvedValue({
+      ...item,
+      text: "Prefers brief answers",
+      version: 2,
+      etag: '"v2"',
+    });
+    const user = userEvent.setup();
+    render(<ConversationInspector {...props()} />);
+    await user.click(screen.getByRole("tab", { name: "Memory" }));
+
+    await user.type(
+      await screen.findByRole("textbox", { name: "Add a memory" }),
+      "Uses metric units",
+    );
+    await user.click(screen.getByRole("button", { name: "Save memory" }));
+    expect(mocks.createMemory).toHaveBeenCalledWith("Uses metric units");
+
+    await user.click(
+      screen.getByRole("button", { name: "Edit memory: Prefers concise answers" }),
+    );
+    const editor = screen.getByRole("textbox", { name: "Edit memory" });
+    await user.clear(editor);
+    await user.type(editor, "Prefers brief answers");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(mocks.updateMemory).toHaveBeenCalledWith(
+      "m1",
+      "Prefers brief answers",
+      '"v1"',
+    );
   });
 
   it("shows and auto-clears saved feedback", async () => {

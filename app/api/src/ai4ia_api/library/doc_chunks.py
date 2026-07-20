@@ -1,7 +1,7 @@
 """Per-user document chunk vector store.
 
-Mirrors :mod:`ai4ia_api.memory.pgvector_store`: AAD-only Postgres + pgvector, exact
-cosine KNN (the 3072-dim embeddings exceed pgvector's ANN ceiling), lazy idempotent
+Uses AAD-only Postgres + pgvector with exact cosine KNN (the 3072-dim embeddings
+exceed pgvector's ANN ceiling), lazy idempotent
 init, injectable pool + token provider for tests. The differences from the memory
 store are the schema (a ``doc_chunks`` table carrying ``document_id`` + grounding)
 and the search filter: results are always scoped to ``user_id`` and may be further

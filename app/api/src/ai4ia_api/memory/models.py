@@ -36,4 +36,11 @@ class MemoryRecord:
     document_id: str | None = None
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     created_at: datetime = field(default_factory=_now)
+    updated_at: datetime = field(default_factory=_now)
+    version: int = 1
+    etag: str | None = None
+    origin: str = "implicit"
+    locked: bool = False
+    write_epoch: int = 0
+    embedding_model: str | None = None
     score: float | None = None

@@ -100,10 +100,17 @@ export interface MemoryItem {
   sessionId: string | null;
   documentId: string | null;
   createdAt: string | null;
+  updatedAt: string | null;
+  version: number;
+  etag: string | null;
+  origin: string;
+  locked: boolean;
 }
 
 export interface MemoryList {
   status: "ok" | "disabled" | "unavailable";
+  supportsCreate: boolean;
+  supportsEdit: boolean;
   supportsDelete: boolean;
   items: MemoryItem[];
   detail: string | null;
@@ -133,11 +140,61 @@ export async function listMemories(): Promise<MemoryList> {
   return jsonOrThrow(await apiFetch("/api/memories", { cache: "no-store" }));
 }
 
-export async function deleteMemory(memoryId: string): Promise<void> {
+function mutationKey(): string {
+  return globalThis.crypto.randomUUID();
+}
+
+export async function createMemory(
+  text: string,
+  idempotencyKey = mutationKey(),
+): Promise<MemoryItem> {
+  return jsonOrThrow(
+    await apiFetch("/api/memories", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
+      },
+      body: JSON.stringify({ text }),
+    }),
+  );
+}
+
+export async function updateMemory(
+  memoryId: string,
+  text: string,
+  etag: string,
+  idempotencyKey = mutationKey(),
+): Promise<MemoryItem> {
+  return jsonOrThrow(
+    await apiFetch(`/api/memories/${encodeURIComponent(memoryId)}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "If-Match": etag,
+        "Idempotency-Key": idempotencyKey,
+      },
+      body: JSON.stringify({ text }),
+    }),
+  );
+}
+
+export async function deleteMemory(
+  memoryId: string,
+  etag?: string | null,
+  idempotencyKey = mutationKey(),
+): Promise<void> {
   const response = await apiFetch(`/api/memories/${encodeURIComponent(memoryId)}`, {
     method: "DELETE",
+    headers: {
+      ...(etag ? { "If-Match": etag } : {}),
+      "Idempotency-Key": idempotencyKey,
+    },
   });
-  if (!response.ok) throw new Error(`${response.status}: failed to delete memory`);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(`${response.status}: ${body?.detail ?? "failed to delete memory"}`);
+  }
 }
 
 export async function getLibrarySummary(): Promise<LibrarySummary> {

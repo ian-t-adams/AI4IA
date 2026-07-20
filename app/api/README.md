@@ -20,8 +20,9 @@ SimpleL7Proxy.
 - Agents/tools: curated agents, user-defined agents, workflows, governed built-in
   tools, generated image/video/document artifacts, Web IQ search tools when
   enabled, and user-registered remote MCP servers.
-- Memory: disabled/in-memory/pgvector/mem0 backends, automatic recall, explicit
-  forget, document save/forget, and bounded caller-owned mem0 insight/deletion.
+- Memory: disabled/in-memory/Cosmos backends; catalog-driven planning and
+  embeddings; automatic recall; owner-scoped create/edit/delete; concurrency-safe
+  forget; and atomic document memory replacement.
 - Documents: per-session attachments plus the feature-gated cross-session library,
   Content Understanding ingest, retrieval, code interpreter, annotations, sharing,
   media playback metadata, and processing/export tools.

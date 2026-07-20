@@ -28,9 +28,9 @@ it is generated locally and never through excalidraw.com.
 4. **Models are catalog-driven.** `infra/models.json` is authoritative for
    deployments, regions, categories, capabilities, and generated runtime data.
 5. **Cosmos is canonical.** User sessions, messages, usage, agents, workflows,
-   MCP records, and document manifests are durable and user-scoped in Cosmos.
-   Memory vectors, chunks, search indexes, and parsed artifacts are derived and
-   rebuildable.
+   MCP records, document manifests, and memory text/vectors are durable and
+   user-scoped in Cosmos. Document chunks, search indexes, and parsed artifacts
+   are derived and rebuildable.
 6. **FastAPI enforces feature posture.** Browser visibility is not authorization.
    Startup validation fails closed for enabled features with missing prerequisites.
 7. **Tools are authorized when they run.** Registration-time checks do not replace
@@ -47,8 +47,8 @@ it is generated locally and never through excalidraw.com.
 | AI gateway | Basic v2 APIM | Model catalog routing, bounded immediate regional failover, scoped subscriptions, policy enforcement, and managed identity to Foundry |
 | Agent tools | Built-ins, BYO MCP, official MCP, and Foundry Toolbox | Governed tool discovery and execution with budgets, approvals, redaction, and health state |
 | Web grounding | WebIQ | Separate feature-gated server-side search/browse tools whose bounded results are treated as untrusted model context |
-| Canonical state | Cosmos DB and Blob Storage | User-scoped records plus source documents and durable generated artifacts |
-| Derived state | Postgres/pgvector, mem0, Azure AI Search | Rebuildable memory vectors, document chunks, and retrieval indexes |
+| Canonical state | Cosmos DB and Blob Storage | User-scoped records and memory text/vectors plus source documents and durable generated artifacts |
+| Derived state | Azure AI Search or optional Postgres/pgvector | Rebuildable document chunks and retrieval indexes |
 | Native Azure planes | Content Understanding, Monitor, Key Vault, Storage, Cosmos, Search | Non-model control/data planes called directly with managed identity or configured service auth |
 | Observability | Application Insights, Log Analytics, Azure Monitor | Correlated logs, traces, usage, resource metrics, and fixed operator queries |
 
@@ -67,8 +67,8 @@ flowchart LR
   F["Foundry deployments"]
   S["AIServices Voice Live<br/>(optional)"]
   T["Curated MCP / Foundry Toolbox"]
-  C[("Cosmos DB")]
-  D[("Blob + derived stores")]
+  C[("Cosmos DB<br/>records + memory vectors")]
+  D[("Blob + derived document stores")]
 
   B -->|"HTTPS + Entra/dev auth"| W
   W -->|"same-origin /api/*"| A
@@ -147,7 +147,8 @@ the normal SimpleL7Proxy path.
 | MCP server records | Cosmos | User-owned metadata; durable secrets live in Key Vault, not Cosmos |
 | Document manifests/shares | Cosmos | Owner-scoped writes and a common access predicate for owned, email-shared, and tenant-public reads |
 | Source documents and artifacts | Blob Storage | Private; bytes are served through authenticated API routes |
-| Memory vectors/chunks/indexes | Postgres/pgvector, mem0, AI Search | Derived, filtered by user/document ownership, and rebuildable from canonical records/blobs |
+| Memory text and vectors | Cosmos `memories` | Canonical; `/userId` partition, point operations always include the authenticated user partition, ETag writes, per-user write epochs, and scoped deletion cutoffs |
+| Document chunks/indexes | Azure AI Search or optional Postgres/pgvector | Derived, filtered by user/document ownership, and rebuildable from canonical manifests/blobs |
 
 Session policy changes use atomic patches. Explicit document selection is an exact
 allowlist; missing selection preserves legacy all-accessible behavior, while an
@@ -159,11 +160,14 @@ Telemetry and secondary-index updates are best-effort and may be partial, but
 canonical message/session writes must report failures rather than presenting a
 false success.
 
-The mem0 adapter is intentionally non-destructive because the pinned SDK cannot
-prove hard deletion. It advertises `supportsDelete=false`; explicit erase APIs fail
-closed with a typed `501`, while `/forget` records a truthful assistant response
-that no records were deleted. Operators must not interpret mem0 erase attempts as
-successful forgetting.
+Cosmos memory stores plaintext and its embedding in one item. Explicit create,
+update, and delete use idempotency receipts and ETags; user-created or edited
+records are locked against automatic planner mutation. Forget first advances a
+per-user write epoch, then purges only matching older records, so stale writes
+cannot resurrect deleted memory and post-forget writes survive. Document memory
+replacement and source markers share a partition transaction; a permanent source
+tombstone prevents a stale save from recreating memory after its document is
+deleted. See [Memory architecture](./memory.md).
 
 ## Agent and tool execution
 
@@ -205,7 +209,8 @@ stored with the completed turn.
 | Proxy saturation/expiry | Explicit timeout/429; no durable or globally ordered queue claim |
 | Tool denial/error | Structured activity/tool outcome; no swallowed success |
 | BYO MCP DNS/host change | Execution-time SSRF validation blocks the call |
-| Unsupported destructive memory operation | Typed `501` or truthful command reply; no mutation and no success claim |
+| Stale memory edit/delete | `409` conflict; reload the current ETag before retrying |
+| Concurrent forget/write | Epoch fence rejects stale writes; conditional purge preserves post-forget records |
 | Derived memory/search failure | Canonical chat can continue where safe; degraded context is observable and rebuildable |
 | Canonical persistence failure | Surface an error/partial state; do not claim durable completion |
 | Voice socket/provider failure | Close with bounded safe details and correlation metadata; preserve the typed-chat session |
@@ -238,7 +243,7 @@ label those gaps rather than infer precision.
 - Entra bearer validation checks signature, issuer, audience, tenant, and expiry.
 - Local `X-Dev-User` identity is controlled by the same-origin proxy and is not
   trusted in production.
-- Cosmos partitions, blob prefixes, vector filters, memory records, MCP secrets,
+- Cosmos partitions, blob prefixes, vector queries, memory records, MCP secrets,
   and document checks are user-scoped.
 - API endpoints enforce admin/feature/ownership posture even when the UI hides a
   control.
@@ -262,9 +267,11 @@ label those gaps rather than infer precision.
   workload identity rather than trusting caller-supplied profile headers.
 - Speech Voice Live is default-off pending approved live validation of its APIM
   policy, managed-identity audience/RBAC, what-if, canary, and manual browser path.
-- Memory has no global user-facing consent toggle or recalled-memory indicator.
-- The mem0 backend cannot prove hard deletion with the pinned SDK, so destructive
-  operations fail closed and its UI advertises deletion as unsupported.
+- Memory has no global user-facing consent toggle or recalled-memory provenance
+  indicator. Users can create, edit, and delete individual owned records.
+- Active-store deletion removes Cosmos plaintext and vectors, but Azure backup
+  retention is governed by the account policy and is not an instantaneous
+  physical purge guarantee.
 - Anonymous public document links, folder-level sharing, and custom analyzer
   authoring are not implemented.
 - Some tool, voice, proxy, and provider telemetry remains metadata-only or

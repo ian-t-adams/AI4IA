@@ -33,7 +33,6 @@ from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..entitlements.service import EntitlementService
 from ..logging_setup import emit_custom_event
-from ..memory.mem0_service import MemoryEraseUnsupportedError
 from ..memory.telemetry import emit_memory_operation
 from ..content_understanding.models import is_valid_analyzer_id
 from ..library.access import (
@@ -601,10 +600,11 @@ async def delete_document(
     memory = getattr(request.app.state, "memory", None)
     if memory is not None and getattr(memory, "enabled", False):
         try:
-            forgotten = await memory.forget_document(uid, document_id)
-        except MemoryEraseUnsupportedError:
-            # The global handler maps this intrinsic limitation to 501.
-            raise
+            source_deleter = getattr(memory, "delete_document_source", None)
+            if source_deleter is not None:
+                forgotten = await source_deleter(uid, document_id)
+            else:
+                forgotten = await memory.forget_document(uid, document_id)
         except Exception:  # noqa: BLE001 - surface so the delete stays retryable
             logger.warning(
                 "delete-cascaded memory-forget failed user=%s id=%s; aborting "
@@ -706,24 +706,9 @@ async def save_document_to_memory(
     and ``ready``-status-gated, mirroring the read/delete gates. Memory failures
     surface (502) because the user explicitly asked to save.
 
-    A backend that cannot verify the idempotent pre-delete fails before adding
-    replacement memories. For mem0 this is surfaced as 501 via
-    :class:`~ai4ia_api.memory.mem0_service.MemoryEraseUnsupportedError`.
-
-    RESIDUAL GAP (not fixed here): this reads the document, then writes to
-    memory; it does not re-check that the document hasn't been deleted (and
-    its memories forgotten by :func:`delete_document`) in between. A save
-    racing a concurrent delete can therefore recreate memories for a document
-    that no longer exists, with no manifest left to retry a forget against.
-    An earlier revision attempted to close this with a post-write recheck
-    that self-compensated by forgetting what it just saved; that was reverted
-    because a single post-write read is not a durable fence against a
-    concurrent writer on another replica -- it narrowed the window without
-    closing it, while adding real complexity. Closing this properly needs a
-    document-level mutual-exclusion/versioning primitive (e.g. a CAS'd
-    in-progress marker checked by both save and delete) or serializing
-    save/delete through the same transactional boundary; neither exists
-    today. Tracked as a known architectural limitation."""
+    Cosmos commits replacement memories with an active source marker in one
+    transactional batch. Document deletion permanently tombstones that marker
+    before purging, so a stale concurrent save cannot recreate orphaned memory."""
     started = time.monotonic()
     repo = _library(request)
     uid = user.internal_user_id
@@ -761,9 +746,6 @@ async def save_document_to_memory(
         saved = await memory.remember_document(
             uid, items=items, session_id=None, document_id=document_id
         )
-    except MemoryEraseUnsupportedError:
-        # Preserve the typed 501 mapping rather than implying a transient 502.
-        raise
     except Exception:  # noqa: BLE001 - surface a transient memory failure, don't 500
         logger.warning(
             "save-to-memory failed user=%s id=%s", uid, document_id, exc_info=True
@@ -797,8 +779,7 @@ async def forget_document_from_memory(
     earlier can be forgotten regardless of its current status. Memory failures
     surface (502) because the user explicitly asked to forget.
 
-    A backend that cannot verify document-scoped hard deletion fails before
-    mutation; mem0 surfaces that intrinsic limitation as 501."""
+    Cosmos uses a source marker and scoped purge so retries are safe."""
     started = time.monotonic()
     repo = _library(request)
     uid = user.internal_user_id
@@ -821,9 +802,6 @@ async def forget_document_from_memory(
 
     try:
         forgotten = await memory.forget_document(uid, document_id)
-    except MemoryEraseUnsupportedError:
-        # Preserve the typed 501 mapping rather than implying a transient 502.
-        raise
     except Exception:  # noqa: BLE001 - surface a transient memory failure, don't 500
         logger.warning(
             "forget-from-memory failed user=%s id=%s", uid, document_id, exc_info=True

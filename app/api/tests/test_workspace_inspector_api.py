@@ -6,6 +6,7 @@ import asyncio
 from ai4ia_api.main import create_app
 from ai4ia_api.library.models import DocumentStatus, UserDocument
 from ai4ia_api.memory.models import MemoryRecord
+from ai4ia_api.memory.cosmos_store import MemoryConflictError, MemoryNotFoundError
 from ai4ia_api.routers.realtime import inject_session_tools, reject_client_system_message
 from ai4ia_api.usage.models import UsageRecord
 from ai4ia_api.library.chat_capability import build_document_capability
@@ -39,6 +40,82 @@ class EnumerableMemory:
 
     async def close(self) -> None:
         return None
+
+
+class CrudMemory:
+    enabled = True
+    supports_create = True
+    supports_edit = True
+    supports_delete = True
+
+    def __init__(self) -> None:
+        self.records: dict[str, dict[str, MemoryRecord]] = {}
+        self.receipts: set[tuple[str, str]] = set()
+
+    async def list_memories(self, user_id: str, *, limit: int = 100):
+        return list(self.records.get(user_id, {}).values())[:limit]
+
+    async def create_memory(
+        self, user_id: str, text: str, *, idempotency_key: str | None = None
+    ) -> MemoryRecord:
+        memory_id = f"m-{idempotency_key or len(self.records.get(user_id, {}))}"
+        existing = self.records.setdefault(user_id, {}).get(memory_id)
+        if existing is not None:
+            return existing
+        record = MemoryRecord(
+            id=memory_id,
+            user_id=user_id,
+            text=text,
+            origin="user",
+            locked=True,
+            etag='"v1"',
+        )
+        self.records[user_id][memory_id] = record
+        return record
+
+    async def update_memory(
+        self,
+        user_id: str,
+        memory_id: str,
+        text: str,
+        *,
+        expected_etag: str,
+        idempotency_key: str | None = None,
+    ) -> MemoryRecord:
+        records = self.records.get(user_id, {})
+        record = records.get(memory_id)
+        if record is None:
+            raise MemoryNotFoundError(memory_id)
+        receipt = (user_id, f"update:{idempotency_key}")
+        if idempotency_key is not None and receipt in self.receipts:
+            return record
+        if record.etag != expected_etag:
+            raise MemoryConflictError(memory_id)
+        record.text = text
+        record.version += 1
+        record.etag = f'"v{record.version}"'
+        self.receipts.add(receipt)
+        return record
+
+    async def delete_memory(
+        self,
+        user_id: str,
+        memory_id: str,
+        *,
+        expected_etag: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> bool:
+        receipt = (user_id, f"delete:{idempotency_key}")
+        if idempotency_key is not None and receipt in self.receipts:
+            return True
+        record = self.records.get(user_id, {}).get(memory_id)
+        if record is None:
+            raise MemoryNotFoundError(memory_id)
+        if expected_etag is not None and record.etag != expected_etag:
+            raise MemoryConflictError(memory_id)
+        del self.records[user_id][memory_id]
+        self.receipts.add(receipt)
+        return True
 
 
 def test_session_policy_and_inspector_are_server_owned():
@@ -250,9 +327,8 @@ def test_memory_list_and_delete_are_user_scoped(monkeypatch):
 
 def test_memory_list_reports_supports_delete_false_for_fail_closed_backend():
     """A backend whose ``delete_memory`` method exists but always fails closed
-    (e.g. mem0, which cannot verify a hard-forget) must set the class attribute
-    ``supports_delete = False`` so the list response never advertises a delete
-    affordance the API will only 501 on. This guards the fix in
+    must set ``supports_delete = False`` so the list response never advertises
+    a delete affordance the API cannot honor. This guards the fix in
     ``routers/memories.py`` where ``supportsDelete`` previously fell back to a
     bare ``hasattr(memory, "delete_memory")`` check that couldn't tell a real
     deletable backend from a fail-closed one exposing the same method name.
@@ -274,6 +350,68 @@ def test_memory_list_reports_supports_delete_false_for_fail_closed_backend():
         resp = client.get("/api/memories", headers={"X-Dev-User": "alice"})
         assert resp.status_code == 200, resp.text
         assert resp.json()["supportsDelete"] is False
+
+
+def test_memory_crud_uses_owner_scope_etags_and_idempotency():
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        client.app.state.memory = CrudMemory()
+        alice = {"X-Dev-User": "alice", "Idempotency-Key": "create-1"}
+        created = client.post(
+            "/api/memories",
+            headers=alice,
+            json={"text": "Prefers concise answers"},
+        )
+        assert created.status_code == 201, created.text
+        assert created.headers["etag"] == '"v1"'
+        memory_id = created.json()["id"]
+
+        listed = client.get(
+            "/api/memories", headers={"X-Dev-User": "alice"}
+        ).json()
+        assert listed["supportsCreate"] is True
+        assert listed["supportsEdit"] is True
+        assert listed["supportsDelete"] is True
+        assert listed["items"][0]["origin"] == "user"
+        assert listed["items"][0]["locked"] is True
+
+        cross_user = client.patch(
+            f"/api/memories/{memory_id}",
+            headers={"X-Dev-User": "bob", "If-Match": '"v1"'},
+            json={"text": "Steal it"},
+        )
+        assert cross_user.status_code == 404
+        stale = client.patch(
+            f"/api/memories/{memory_id}",
+            headers={"X-Dev-User": "alice", "If-Match": '"stale"'},
+            json={"text": "Prefers brief answers"},
+        )
+        assert stale.status_code == 409
+
+        updated = client.patch(
+            f"/api/memories/{memory_id}",
+            headers={
+                "X-Dev-User": "alice",
+                "If-Match": '"v1"',
+                "Idempotency-Key": "update-1",
+            },
+            json={"text": "Prefers brief answers"},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["version"] == 2
+        assert updated.headers["etag"] == '"v2"'
+
+        delete_headers = {
+            "X-Dev-User": "alice",
+            "If-Match": '"v2"',
+            "Idempotency-Key": "delete-1",
+        }
+        assert client.delete(
+            f"/api/memories/{memory_id}", headers=delete_headers
+        ).status_code == 204
+        assert client.delete(
+            f"/api/memories/{memory_id}", headers=delete_headers
+        ).status_code == 204
 
 
 def test_authoritative_voice_frame_removes_client_instructions():

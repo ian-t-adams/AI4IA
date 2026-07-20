@@ -1,5 +1,6 @@
-// Application data stores: Cosmos DB (NoSQL, canonical app data) + Postgres
-// Flexible Server (pgvector home for mem0). Identity-based auth only (no keys/passwords).
+// Application data stores: Cosmos DB (NoSQL, canonical app and vector memory data) +
+// PostgreSQL Flexible Server (legacy memory rollback). Identity-based auth only
+// (no keys/passwords).
 @description('Location for the data stores.')
 param location string
 
@@ -27,7 +28,7 @@ param logAnalyticsWorkspaceId string
 @description('Tenant ID for Entra auth on Postgres.')
 param tenantId string = subscription().tenantId
 
-@description('Deploy the Postgres Flexible Server (pgvector home for mem0). Disable where the subscription is offer-restricted for Postgres.')
+@description('Retain the legacy Postgres Flexible Server for migration rollback and document-index fallback. Disable only where the subscription is offer-restricted for Postgres.')
 param deployPostgres bool = true
 
 @description('Location for the Postgres Flexible Server (may differ from `location` due to subscription offer restrictions).')
@@ -92,6 +93,9 @@ resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
       {
         name: 'EnableServerless'
       }
+      {
+        name: 'EnableNoSQLVectorSearch'
+      }
     ]
     disableLocalAuth: true
     minimalTlsVersion: 'Tls12'
@@ -118,7 +122,7 @@ resource cosmosDb 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2024-11-15
   }
 }
 
-// Canonical app data: partition by user where possible; messages by session.
+// Existing canonical app data: partition by user where possible; messages by session.
 var containers = [
   {
     name: 'users'
@@ -188,6 +192,56 @@ resource cosmosContainers 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/co
     }
   }
 }]
+
+// Canonical semantic memory shares each user logical partition. The embedding is
+// excluded from the normal range index and indexed only by the vector policy.
+resource cosmosMemoriesContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'memories'
+  properties: {
+    resource: {
+      id: 'memories'
+      partitionKey: {
+        paths: [
+          '/userId'
+        ]
+        kind: 'Hash'
+        version: 2
+      }
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        automatic: true
+        includedPaths: [
+          {
+            path: '/*'
+          }
+        ]
+        excludedPaths: [
+          {
+            path: '/embedding/*'
+          }
+        ]
+        vectorIndexes: [
+          {
+            path: '/embedding'
+            type: 'quantizedFlat'
+          }
+        ]
+      }
+      vectorEmbeddingPolicy: {
+        vectorEmbeddings: [
+          {
+            path: '/embedding'
+            dataType: 'float32'
+            distanceFunction: 'cosine'
+            dimensions: 3072
+          }
+        ]
+      }
+      defaultTtl: -1
+    }
+  }
+}
 
 // Cosmos data-plane RBAC: api identity gets the built-in Data Contributor role.
 var cosmosDataContributorRoleId = '00000000-0000-0000-0000-000000000002'

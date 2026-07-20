@@ -1,17 +1,11 @@
 """Unit tests for the slash-command execution service."""
 from __future__ import annotations
 
-from typing import cast
-
-import pytest
-
 from ai4ia_api.agents.agent_catalog import load_agent_catalog
 from ai4ia_api.agents.command_service import HELP_TEXT, execute_command
 from ai4ia_api.agents.commands import parse_input
 from ai4ia_api.auth.base import AuthenticatedUser
 from ai4ia_api.catalog import load_catalog
-from ai4ia_api.memory.mem0_service import MemoryEraseUnsupportedError
-from ai4ia_api.memory.service import MemoryServiceProtocol
 from ai4ia_api.sessions.memory_repo import InMemorySessionRepository
 from ai4ia_api.sessions.models import Message, MessageRole, MessageStatus, Session
 
@@ -207,42 +201,6 @@ async def test_forget_rejects_unknown_scope():
     repo, user, session = await _setup()
     forget = await _run(repo, user, session, "/forget everywhere")
     assert "Usage: /forget" in forget.content
-
-
-@pytest.mark.parametrize("command", ["/forget", "/forget me"])
-async def test_forget_reports_unsupported_backend_without_orphaning_command(
-    command: str,
-):
-    class _UnsupportedMemory:
-        enabled = True
-
-        async def forget_session(self, user_id: str, session_id: str) -> int:
-            raise MemoryEraseUnsupportedError
-
-        async def forget_user(self, user_id: str) -> int:
-            raise MemoryEraseUnsupportedError
-
-    repo, user, session = await _setup()
-    parsed = parse_input(command)
-    reply = await execute_command(
-        parsed=parsed,
-        session=session,
-        user=user,
-        repo=repo,
-        catalog=load_catalog(),
-        agents=load_agent_catalog(),
-        memory=cast(MemoryServiceProtocol, _UnsupportedMemory()),
-    )
-
-    assert reply.content == (
-        "Forgetting isn't supported by the configured memory backend. "
-        "No memories were deleted."
-    )
-    messages = await repo.list_messages(user.internal_user_id, session.id)
-    assert [message.role for message in messages] == [
-        MessageRole.user,
-        MessageRole.assistant,
-    ]
 
 
 async def test_unknown_command_points_to_help():

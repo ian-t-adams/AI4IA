@@ -36,7 +36,7 @@ dependencies = [
     # the dependency (and the alert) entirely rather than suppressing it.
     "pyjwt[crypto]>=2.8",
     "azure-identity>=1.17",
-    "azure-cosmos>=4.7",
+    "azure-cosmos>=4.16.1,<5",
     # Async azure SDKs (azure.cosmos.aio + azure.identity.aio) require an async
     # HTTP transport at runtime; azure-core selects aiohttp by default.
     "aiohttp>=3.10",
@@ -49,17 +49,6 @@ dependencies = [
     # PDF text extraction for the document-upload feature. docx/pptx
     # are parsed with the stdlib (zipfile + ElementTree); only PDF needs a dep.
     "pypdf>=4.0",
-    # Real mem0 OSS memory backend (memory_store=mem0): LLM fact-extraction +
-    # consolidation over Postgres+pgvector. Pinned exactly because our integration
-    # (Mem0MemoryService) depends on verified 2.0.11 internals — config keys,
-    # azure_openai default_headers, the pgvector connection_pool injection point,
-    # and add/search/get_all/delete_all signatures. Bump deliberately with tests.
-    "mem0ai==2.0.12",
-    # mem0's pgvector store uses psycopg3 + its pool. We inject our own AAD-token
-    # ConnectionPool (no SQL password), so both are required at runtime. Imported
-    # lazily (only when memory_store=mem0) so the app/tests run without them wired.
-    "psycopg[binary]>=3.2",
-    "psycopg-pool>=3.2",
     # Blob storage for the document library: raw uploads + parsed
     # artifacts. Async client (azure.storage.blob.aio) reached via the api managed
     # identity; imported lazily so the app/tests run without it wired (the
@@ -187,8 +176,8 @@ extraPaths = ["src"]
 exclude = ["**/__pycache__", ".venv", "tests"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
-# Most Azure SDKs (cosmos, search, identity, monitor, storage, keyvault) and mem0
-# ship without complete type stubs/`py.typed`; missing-stub findings are not real
+# Most Azure SDKs (cosmos, search, identity, monitor, storage, keyvault) ship
+# without complete type stubs/`py.typed`; missing-stub findings are not real
 # defects, so they should not fail the gate.
 reportMissingTypeStubs = false
 # Surface (but don't fail on) ignore comments that no longer suppress anything, so

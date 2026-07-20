@@ -345,14 +345,15 @@ config edits plus the normal deploy — no code changes. What varies per environ
 | Subscription / tenant / region | `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_LOCATION` repo vars | See §2.3. |
 | Model deployment-name token | `infra/models.json` → `naming.subscriptionToken` | Stamped into every model deployment name (`{model}-<token>-<region>-<sku>`). Read by bicep **and** the runtime catalog. |
 | Foundry account/project token | `infra/models.json` → `naming.foundryToken` | Names `mf-<token>-<env>-<region>` and the toolbox project endpoint. |
-| Postgres region | `AI4IA_POSTGRES_LOCATION` | Must be unrestricted for the subscription (see §7.1). |
+| Postgres region (temporary) | `AI4IA_POSTGRES_LOCATION` | Required only while the legacy migration source/document-index fallback remains (see §7.1). |
 | API Center region | `AI4IA_API_CENTER_LOCATION` | Only if `enablePrivateToolCatalog=true`; not available in every region (see §7.2 / the API Center note). |
 | Custom domains | `AI4IA_*_CUSTOM_DOMAIN` / `*_MANAGED_CERT_NAME` | Leave empty for a vanilla hostname; see §2.5. |
 
 Procedure:
 
-1. Set the repo variables for the new subscription/tenant/env (§2.3), plus `AI4IA_POSTGRES_LOCATION`
-   and (if used) `AI4IA_API_CENTER_LOCATION` to regions valid there.
+1. Set the repo variables for the new subscription/tenant/env (§2.3), plus
+   `AI4IA_POSTGRES_LOCATION` while PostgreSQL is retained and (if used)
+   `AI4IA_API_CENTER_LOCATION` to regions valid there.
 2. If you want a different naming token, edit `infra/models.json` `naming.subscriptionToken` and
    `naming.foundryToken`, then **regenerate the runtime catalog** so routing matches the deployments:
 
@@ -425,7 +426,8 @@ Symptom — the deploy job fails in **Provision infrastructure** with:
 LocationIsOfferRestricted: Subscriptions are restricted from provisioning in location '<region>'.
 ```
 
-Cause — the Postgres Flexible Server (mem0/pgvector home) is being provisioned in a region
+Cause — the temporarily retained Postgres Flexible Server (legacy memory migration
+source and optional document-index fallback) is being provisioned in a region
 where **this subscription is offer-restricted** for that resource. It is a subscription-level
 policy, not a quota/capacity issue, and it surfaces only at provision time — `az bicep build` and the
 other resources (Cosmos, Container Apps, Foundry) succeed in the same region. The `slurmfactory`

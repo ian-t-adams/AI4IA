@@ -16,7 +16,6 @@ from ai4ia_api.library.blob_store import PARSED_NAME, blob_path
 from ai4ia_api.library.models import DocumentStatus, UserDocument
 from ai4ia_api.main import create_app
 from ai4ia_api.memory.in_memory import InMemoryVectorStore
-from ai4ia_api.memory.mem0_service import MemoryEraseUnsupportedError
 from ai4ia_api.memory.service import MemoryService
 from tests.conftest import make_settings
 
@@ -326,25 +325,18 @@ def test_delete_document_succeeds_after_memory_forget_recovers():
         c.__exit__(None, None, None)
 
 
-# --- production defect: pgvector's erase_document cannot key on document_id ---
+# --- generic backend safety: document erasure must be truthful ---
 
 
 class _NoDocumentEraseStore(InMemoryVectorStore):
-    """Stands in for PgVectorStore: every op works except erase_document,
-    which raises NotImplementedError instead of the store's old false-success
-    no-op (see memory/pgvector_store.py)."""
+    """A test backend whose document-scoped erase is unsupported."""
 
     async def erase_document(self, user_id: str, document_id: str) -> int:
         raise NotImplementedError("document-scoped erase is not supported")
 
 
 def test_save_to_memory_502_when_store_cannot_erase_by_document(client):
-    """Production defect: PgVectorStore.erase_document used to report a false
-    success (0 removed) while a document's memories stayed fully recallable,
-    so remember_document's idempotent re-save silently duplicated them on
-    every repeat save. It now raises instead of lying; the explicit save
-    endpoint must surface that as 502 ("memory failures surface because the
-    user explicitly asked to save"), never a false 201."""
+    """An explicit save must surface an unsupported pre-delete, not claim 201."""
     client.app.state.memory = MemoryService(
         store=_NoDocumentEraseStore(), embedder=FakeEmbedder()
     )
@@ -368,11 +360,7 @@ def test_forget_document_502_when_store_cannot_erase_by_document(client):
 
 
 def test_delete_document_502_when_store_cannot_erase_by_document():
-    """Same production defect, reached through the delete cascade: a backend
-    that cannot key an erase on document_id (pgvector today) must abort the
-    whole delete with 502 rather than removing the manifest while the
-    document's memories stay permanently recallable with no handle left to
-    retry against."""
+    """A backend that cannot erase by source must preserve the manifest."""
     c = _client()
     try:
         c.app.state.memory = MemoryService(
@@ -382,67 +370,6 @@ def test_delete_document_502_when_store_cannot_erase_by_document():
         doc = asyncio.run(_seed(c, uid=uid, parsed=None))
         resp = c.delete(f"/api/library/documents/{doc.id}")
         assert resp.status_code == 502, resp.text
-        refreshed = asyncio.run(c.app.state.document_library.get_document(uid, doc.id))
-        assert refreshed.id == doc.id
-    finally:
-        c.__exit__(None, None, None)
-
-
-# --- mem0 fail-closed: MemoryEraseUnsupportedError surfaces as 501, distinct
-# from the generic 502 above (a typed, permanent backend limitation, not a
-# transient failure worth retrying without a config/backend change). ---
-
-
-def test_save_to_memory_501_when_backend_reports_erase_unsupported():
-    c = _client()
-    try:
-        uid = _uid(c)
-        doc = asyncio.run(_seed(c, uid=uid))
-
-        async def unsupported(*args, **kwargs):
-            raise MemoryEraseUnsupportedError("mem0 cannot verify a hard-forget")
-
-        c.app.state.memory.remember_document = unsupported  # type: ignore[assignment]
-        resp = c.post(f"/api/library/documents/{doc.id}/memory")
-        assert resp.status_code == 501, resp.text
-        assert resp.json()["code"] == "memory_deletion_unsupported"
-    finally:
-        c.__exit__(None, None, None)
-
-
-def test_forget_document_501_when_backend_reports_erase_unsupported():
-    c = _client()
-    try:
-        uid = _uid(c)
-        doc = asyncio.run(_seed(c, uid=uid))
-
-        async def unsupported(*args, **kwargs):
-            raise MemoryEraseUnsupportedError("mem0 cannot verify a hard-forget")
-
-        c.app.state.memory.forget_document = unsupported  # type: ignore[assignment]
-        resp = c.delete(f"/api/library/documents/{doc.id}/memory")
-        assert resp.status_code == 501, resp.text
-        assert resp.json()["code"] == "memory_deletion_unsupported"
-    finally:
-        c.__exit__(None, None, None)
-
-
-def test_delete_document_501_when_backend_reports_erase_unsupported():
-    """Same fail-closed contract reached through the delete cascade: the
-    manifest must survive (retryable) rather than the delete silently
-    proceeding past an unverifiable erase."""
-    c = _client()
-    try:
-        uid = _uid(c)
-        doc = asyncio.run(_seed(c, uid=uid, parsed=None))
-
-        async def unsupported(*args, **kwargs):
-            raise MemoryEraseUnsupportedError("mem0 cannot verify a hard-forget")
-
-        c.app.state.memory.forget_document = unsupported  # type: ignore[assignment]
-        resp = c.delete(f"/api/library/documents/{doc.id}")
-        assert resp.status_code == 501, resp.text
-        assert resp.json()["code"] == "memory_deletion_unsupported"
         refreshed = asyncio.run(c.app.state.document_library.get_document(uid, doc.id))
         assert refreshed.id == doc.id
     finally:

@@ -89,3 +89,15 @@ description = "Synthetic base64 credential-shaped fixture, replaced with a low-e
 condition = "AND"
 commits = ["240c178da9db50e477e9d2eff65caacfedc1bc58"]
 paths = ['''app/api/tests/test_client_events_api\.py''']
+
+# 7) FastAPI's public Idempotency-Key request-header declaration.
+#    The generic-api-key rule interprets the adjacent `max_length=128` validator
+#    as a credential assignment. This is a standard HTTP header name and numeric
+#    input bound, not a secret. Scope the exception to the exact router path and
+#    declaration fragment so any other secret-shaped value remains blocking.
+[[allowlists]]
+description = "Public Idempotency-Key header declaration (protocol label, not a credential)."
+condition = "AND"
+regexTarget = "line"
+paths = ['''app/api/src/ai4ia_api/routers/memories\.py''']
+regexes = ['''alias="Idempotency-Key", max_length=128''']
