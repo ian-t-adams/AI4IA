@@ -343,6 +343,14 @@ Bicep does **not** create (they are tenant objects, not subscription resources).
 values and they reference nothing, so every authenticated request returns `401`. Create
 them once per tenant:
 
+> **Automated:** `scripts/provision-entra-apps.ps1` does all of the below and prints the
+> repo-variable values. Dry-run first, then apply:
+> ```powershell
+> ./scripts/provision-entra-apps.ps1 -WebRedirectUri https://<web-host>,http://localhost:3000
+> ./scripts/provision-entra-apps.ps1 -WebRedirectUri https://<web-host> -AdminUpn you@tenant -Apply
+> ```
+> The manual steps below document exactly what it creates.
+
 1. **API app registration** — the audience the API validates (`aud`, `iss`, `tid`;
    see `app/api/src/ai4ia_api/auth/entra.py`). Expose a delegated scope named
    `access_as_user` and set its access-token version to 2.
