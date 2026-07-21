@@ -10,7 +10,6 @@ window.AI4IA_DOCS = {
         { path: "docs/user-guide.md", title: "User guide", desc: "How to use the app: chat, agents, voice, library, media, memory and admin views." },
         { path: "docs/architecture.md", title: "Architecture", desc: "Governed multi-model design, request lifecycle, components and MCP planes." },
         { path: "docs/memory.md", title: "Memory architecture", desc: "Canonical Cosmos memory, owner-scoped CRUD, vector recall, concurrency fences, deletion, privacy, and remaining gaps." },
-        { path: "docs/platform-audit.md", title: "Platform audit", desc: "Evergreen architecture, remediation status, validation evidence, residual gaps, and explicit owner actions." },
         { path: "AGENTS.md", title: "Agent & contributor guide", desc: "Machine-facing map for humans and AI agents: invariants, CI commands, and how to add tools, models, flags and routers." },
       ],
     },
@@ -55,11 +54,10 @@ window.AI4IA_DOCS = {
       ],
     },
     {
-      group: "History & audits",
+      group: "Roadmap & changelog",
       docs: [
+        { path: "docs/roadmap.md", title: "Roadmap & open items", desc: "Living list of outstanding work, accepted tradeoffs, and owner decisions \u2014 what is planned or still needed." },
         { path: "CHANGELOG.md", title: "Changelog", desc: "Notable, human-readable changes to the deployed application over time." },
-        { path: "docs/brutal-audit.md", title: "Brutal repo audit (historical)", desc: "A historical record of the reliability/security/cost review passes and the fixes shipped, kept for provenance \u2014 not current guidance." },
-        { path: "docs/audit-2026-06-findings.md", title: "June 2026 audit findings (historical)", desc: "A point-in-time findings log from the June 2026 review pass, retained as a record." },
       ],
     },
   ],
