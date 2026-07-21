@@ -278,5 +278,5 @@ label those gaps rather than infer precision.
   unavailable; absence is reported explicitly.
 - Repository state is documented here, but production deployment parity remains
   unknown until operators record revision SHAs and run approved smoke tests.
-- Repository governance, implementation PR status, validation evidence, and owner
-  actions are maintained in [`platform-audit.md`](./platform-audit.md).
+- Outstanding governance decisions, open work, and owner actions are tracked in
+  [`roadmap.md`](./roadmap.md).

@@ -87,7 +87,7 @@ deployed resources. The authoritative Markdown lives here:
 - [Region & capability map](docs/region-capability-matrix.md)
 - [Naming & tagging](docs/naming-and-tagging.md)
 - [Configuration reference](docs/configuration-reference.md)
-- [Brutal repo audit](docs/brutal-audit.md)
+- [Roadmap & open items](docs/roadmap.md)
 - [Deployment runbook](docs/runbooks/deployment.md)
 - [Feature enablement runbook](docs/runbooks/feature-enablement.md)
 - [Teardown & rebuild runbook](docs/runbooks/teardown.md)

@@ -42,8 +42,7 @@ feature-gated tools (`web_search`, `news_search`, `video_search`, `image_search`
 and `browse_url`) using `AI4IA_WEB_SEARCH_ENABLED` plus API-key or managed-identity
 auth. Its bounded results are fenced as untrusted model context. Enabling the
 Foundry Toolbox does not enable WebIQ, and disabling WebIQ does not remove the
-Toolbox's own `web_search`. Current implementation/remediation status is tracked in
-the [`platform audit`](./platform-audit.md).
+Toolbox's own `web_search`.
 
 ## Why this approach
 
