@@ -125,6 +125,13 @@ jobs:
       # budget start date). Set this repo variable to a fixed yyyy-MM-01 to keep
       # redeploys idempotent. See docs/runbooks/deployment.md.
       AI4IA_BUDGET_START_DATE: ${{ vars.AI4IA_BUDGET_START_DATE }}
+      # Azure Monitor alerting baseline (action group + api 5xx / Cosmos 429 metric
+      # alerts). Default OFF so merging is inert; to turn proactive alerts on, set the
+      # AI4IA_ENABLE_ALERTS repo variable to 'true' AND set AI4IA_ALERT_EMAIL to a
+      # recipient (an enabled action group with no receiver notifies no one). See
+      # infra/modules/alerts.bicep and docs/roadmap.md.
+      AI4IA_ENABLE_ALERTS: ${{ vars.AI4IA_ENABLE_ALERTS || 'false' }}
+      AI4IA_ALERT_EMAIL: ${{ vars.AI4IA_ALERT_EMAIL }}
       # Web IQ API key. This is a SECRET (not a repo variable). Web search is
       # enabled in main.parameters.json, so if this is empty at provision time
       # bicep drops the webiq-api-key Container App secret and falls back to the

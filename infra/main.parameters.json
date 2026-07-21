@@ -53,6 +53,12 @@
     "budgetStartDate": {
       "value": "${AI4IA_BUDGET_START_DATE=}"
     },
+    "enableAlerts": {
+      "value": "${AI4IA_ENABLE_ALERTS=false}"
+    },
+    "alertEmail": {
+      "value": "${AI4IA_ALERT_EMAIL=}"
+    },
     "enableOfficialMcp": {
       "value": true
     },
