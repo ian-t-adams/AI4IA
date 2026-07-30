@@ -5,6 +5,13 @@ on:
     paths:
       - "infra/**"
       - "foundry/**"
+      # Every script this workflow *runs* must also be a trigger path, or a
+      # change to a validator does not run that validator. validate-catalog.py
+      # and validate-feature-prereqs.py were being executed here without being
+      # listed, so editing either one skipped the job entirely.
+      - "scripts/validate-catalog.py"
+      - "scripts/validate-feature-prereqs.py"
+      - "scripts/tests/test_feature_prereqs.py"
       - "scripts/gen-gateway-policy.py"
       - "scripts/tests/test_gateway_policy.py"
       - "scripts/gen-voice-provider-catalog.py"
@@ -15,10 +22,14 @@ on:
     paths:
       - "infra/**"
       - "foundry/**"
+      - "scripts/validate-catalog.py"
+      - "scripts/validate-feature-prereqs.py"
+      - "scripts/tests/test_feature_prereqs.py"
       - "scripts/gen-gateway-policy.py"
       - "scripts/tests/test_gateway_policy.py"
       - "scripts/gen-voice-provider-catalog.py"
       - "scripts/tests/test_voice_provider_catalog.py"
+      - ".github/workflows/infra-validate.yml"
 
 permissions:
   contents: read
@@ -81,6 +92,15 @@ jobs:
 
       - name: Validate deployment parameters
         run: python scripts/validate-feature-prereqs.py
+
+      # The step above resolves appEnvironment=dev (the committed default), so a
+      # contradiction that only appears under the prod/entra configuration a
+      # production or new-tenant standup uses would not surface until that
+      # deploy. These tests drive the validator through both paths, and pin the
+      # "the realtime Origin allowlist stays derived, never a literal hostname"
+      # invariant that main.bicep now depends on.
+      - name: Deployment parameter validator tests
+        run: python -m unittest scripts.tests.test_feature_prereqs
 
       - name: Bicep build (lint)
         run: bicep build infra/main.bicep --stdout > /dev/null
