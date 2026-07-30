@@ -8,7 +8,7 @@
   files so the rebuild is reversible and auditable. Read-only.
 
 .EXAMPLE
-  ./scripts/inventory.ps1 -Subscription ca68cf94-... -ResourceGroup rg-ai4ia-slurmfactory
+  ./scripts/inventory.ps1 -Subscription <id> -ResourceGroup rg-ai4ia-<env>
 #>
 [CmdletBinding()]
 param(

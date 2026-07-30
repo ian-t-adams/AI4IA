@@ -17,7 +17,7 @@ committed* .dockerignore file plus synthetic root- and nested-depth dotenv
 files, then inspects the file listing that landed inside the image. It
 exercises the real Docker engine instead of reimplementing dockerignore
 glob semantics in Python, so it can't silently drift from actual build
-behavior. Skipped automatically when the `docker` CLI isn't available.
+behavior. Skipped automatically when a usable Docker engine isn't available.
 """
 
 from __future__ import annotations
@@ -31,7 +31,35 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
-DOCKER_AVAILABLE = shutil.which("docker") is not None
+
+def _docker_engine_available() -> bool:
+    """True only when a Docker engine can actually build.
+
+    Checking `shutil.which("docker")` alone is not enough: Docker Desktop
+    installs the CLI on PATH permanently, so the CLI is present even when the
+    engine is stopped. In that state every `docker build` here fails with a
+    daemon-connection error and the suite reports two ERRORs that look like
+    dockerignore regressions but are just a stopped daemon. `docker version`
+    formatted on the *server* field is the cheap, unambiguous probe: it exits
+    non-zero when nothing is listening. (`docker info` is not usable for this --
+    it still exits 0 with client-only output on some setups.)
+    """
+    if shutil.which("docker") is None:
+        return False
+    try:
+        proc = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Version}}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+DOCKER_AVAILABLE = _docker_engine_available()
 
 # Synthetic secret (dotenv) and example files created at root and nested
 # depths inside the probe build context. File contents are irrelevant;
@@ -112,7 +140,7 @@ def _build_and_list_files(dockerignore_path: Path) -> set[str]:
     return files
 
 
-@unittest.skipUnless(DOCKER_AVAILABLE, "docker CLI not available")
+@unittest.skipUnless(DOCKER_AVAILABLE, "no usable Docker engine (CLI missing or daemon not running)")
 class DockerignoreContextTests(unittest.TestCase):
     def _assert_recursive_dotenv_handling(self, dockerignore_path: Path) -> None:
         files = _build_and_list_files(dockerignore_path)

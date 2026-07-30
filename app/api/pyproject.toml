@@ -108,7 +108,17 @@ dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "anyio>=4.4",
-    "ruff>=0.5",
+    # Ruff's ceiling is deliberate, and mirrors the fastapi/starlette reasoning
+    # above: a lint gate that floats is a gate whose contract can change without a
+    # code change. Ruff 0.16.0 expanded its *default* rule set, and because this
+    # extra had no ceiling and `[tool.ruff.lint]` declared no explicit `select`,
+    # CI's `pip install -e ".[dev]"` silently resolved 0.16.0 and turned a
+    # previously-green `ruff check .` into 498 findings across every open PR --
+    # with zero source changes. `select` is now pinned explicitly (see
+    # [tool.ruff.lint]), which closes that specific failure mode, and the ceiling
+    # keeps the remaining surface (fix behavior, rule semantics within the
+    # selected set) an explicit, CI-gated bump rather than a surprise.
+    "ruff>=0.5,<0.17",
     "pyright>=1.1.400",
     # Lets tests exercise real foundry/toolbox.manifest.schema.json validation (see
     # test_foundry_toolbox.py) instead of skipping via pytest.importorskip("jsonschema").
@@ -163,6 +173,19 @@ asyncio_mode = "auto"
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Pinned EXPLICITLY rather than inherited from ruff's default. This is the rule
+# set the gate has always enforced (ruff's historical default: pycodestyle
+# errors E4/E7/E9 + pyflakes F), but leaving it implicit made the gate's contract
+# a property of the installed ruff version instead of this repo. Ruff 0.16.0
+# widened the default set and instantly reddened CI on unrelated PRs. Stating the
+# selection here makes `ruff check .` deterministic across ruff releases.
+#
+# Widening this list is welcome, but it is a deliberate change: add the rule,
+# run `ruff check . --fix`, review the diff, and land it with a green pytest --
+# not as a side effect of a dependency resolution.
+select = ["E4", "E7", "E9", "F"]
 
 [tool.pyright]
 # Static type gate for the shipping package. A realistic "basic" baseline catches

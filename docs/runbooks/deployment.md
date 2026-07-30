@@ -403,7 +403,24 @@ config edits plus the normal deploy — no code changes. What varies per environ
 | Foundry account/project token | `infra/models.json` → `naming.foundryToken` | Names `mf-<token>-<env>-<region>` and the toolbox project endpoint. |
 | Postgres region (temporary) | `AI4IA_POSTGRES_LOCATION` | Required only while the legacy migration source/document-index fallback remains (see §7.1). |
 | API Center region | `AI4IA_API_CENTER_LOCATION` | Only if `enablePrivateToolCatalog=true`; not available in every region (see §7.2 / the API Center note). |
-| Custom domains | `AI4IA_*_CUSTOM_DOMAIN` / `*_MANAGED_CERT_NAME` | Leave empty for a vanilla hostname; see §2.5. |
+| Custom domains | `AI4IA_*_CUSTOM_DOMAIN` / `*_MANAGED_CERT_NAME` | Leave empty for a vanilla hostname; see §2.5. The values in §2.5's table are **this deployment's**, not portable — a new tenant has its own hostnames and certs. |
+| APIM publisher mailbox | `AI4IA_APIM_PUBLISHER_EMAIL` | Must be an operator-owned address in the new tenant. `validate-feature-prereqs.py` warns while it is still the `@example.com` placeholder. |
+| Owner / cost-center tags | `AI4IA_OWNER`, `AI4IA_COST_CENTER` | Accountability tags stamped on every resource; see [`naming-and-tagging.md`](../naming-and-tagging.md). |
+
+Deliberately **not** in that list, because they need no per-tenant edit:
+
+- **Voice Live Origin allowlist.** Bicep derives it from the web app this deployment
+  actually creates (Container Apps default FQDN + `webCustomDomain` when bound), so it
+  is correct in a new tenant with no configuration. `AI4IA_REALTIME_ALLOWED_ORIGINS`
+  only *adds* origins. (This used to be a hardcoded hostname in
+  `infra/main.parameters.json` — a stale value still satisfied the API's non-empty
+  allowlist startup check, so the stack came up green and then rejected every browser.)
+- **Built-in Azure role IDs** in `infra/modules/*.bicep` are the same GUIDs in every
+  tenant.
+- **Operator scripts.** None carry a default subscription, resource group, or purge
+  filter. `status-snapshot.ps1` resolves its target from the selected azd environment
+  (falling back to the current `az` context); `inventory.ps1`, `teardown.ps1`,
+  `purge-soft-deleted.ps1`, and `seed-models.ps1` require the target explicitly.
 
 Procedure:
 
@@ -429,9 +446,17 @@ Procedure:
    deploy, run `python scripts/provision-foundry-toolbox.py --create` against the new project (the
    `infra/mcp-servers.json` entry is already portable — its APIM upstream URL is computed by bicep
    from the new project endpoint). See [`../foundry-toolbox.md`](../foundry-toolbox.md).
-5. **Break-glass ops scripts** (`scripts/inventory.ps1`, `teardown.ps1`, `purge-soft-deleted.ps1`)
-   default their `-ResourceGroup` / `-NameFilter` to the original environment on purpose (so they
-   cannot accidentally target the wrong stack). Pass explicit arguments for the new environment.
+5. **Break-glass ops scripts** (`scripts/inventory.ps1`, `teardown.ps1`,
+   `purge-soft-deleted.ps1`, `seed-models.ps1`) take their target explicitly — they have
+   no default subscription, resource group, or purge filter, so they cannot silently act
+   on the environment you moved away from. `purge-soft-deleted.ps1` reads
+   **subscription-wide** soft-delete lists, so its mandatory `-NameFilter` is what keeps
+   a purge scoped to this stack.
+6. **Regenerate the published status/inventory data** (only if you publish the portal):
+   `./scripts/status-snapshot.ps1` resolves the subscription, resource group, and probe
+   URLs from the selected azd environment, so run `azd env select <new-env>` first. The
+   checked-in `site/data/*.js` snapshots still describe the *previous* environment until
+   you do.
 
 Clean-room notes for a brand-new subscription/tenant:
 

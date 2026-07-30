@@ -43,6 +43,13 @@ param devUser string = ''
 @description('Custom domain bound to the web ingress (empty disables custom-domain binding).')
 param customDomain string = ''
 
+@description('''Container App resource name. Supplied by main.bicep rather than derived here
+because the caller must know this name *before* this module is deployed: the deployed web
+origin (https://<appName>.<containerEnvDefaultDomain>) is folded into the api's realtime
+Origin allowlist, and the api module is deployed first. Keeping the name in one place means
+that derivation can never drift from the resource it describes.''')
+param appName string
+
 @description('Existing Azure-managed certificate name to adopt (empty derives a stable name).')
 param managedCertificateName string = ''
 
@@ -206,7 +213,7 @@ var webCustomDomains = empty(customDomain) ? [] : [
 ]
 
 resource webApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
-  name: 'ca-web-${environmentName}'
+  name: appName
   location: location
   tags: union(tags, {
     'azd-service-name': 'web'

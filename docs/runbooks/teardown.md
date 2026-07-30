@@ -1,22 +1,29 @@
 # Runbook: Teardown & Rebuild
 
-> **Destructive.** This is the break-glass teardown path for the live `slurmfactory`
-> AI4IA environment. Follow the order exactly. Validate in a parallel RG **before** deleting anything.
+> **Destructive.** This is the break-glass teardown path for an AI4IA environment.
+> Follow the order exactly. Validate in a parallel RG **before** deleting anything.
 
 ## Context
-- Subscription: `ca68cf94-f445-43f1-8379-3d0100e293a2`
-- Tenant: `nomad-analytics`
-- Live stack RG: `rg-ai4ia-slurmfactory`
+
+Every command below takes the target explicitly — no script in this repo carries a
+default subscription, resource group, or purge filter, because a baked-in target is
+silently *wrong* after a move to a new subscription or tenant. Resolve the values for
+the environment you are tearing down first:
+
+```powershell
+az login
+azd env select <env>                        # the azd env for the target stack
+$sub = azd env get-value AZURE_SUBSCRIPTION_ID
+$rg  = azd env get-value AZURE_RESOURCE_GROUP
+```
+
+- Live stack RG: `rg-ai4ia-<env>` (from `AZURE_ENV_NAME`)
 - **Protected (never delete):** `NetworkWatcherRG`, `Default-ActivityLogAlerts`,
   `DefaultResourceGroup-*`
-- The helper script still defaults to the legacy pre-AI4IA `rg-aiforia-slurmfactory`
-  target, so pass `-ResourceGroups` and `-PurgeNameFilter` explicitly for the live stack.
 
 ## 0. Pre-flight (read-only)
 ```powershell
-az login
-./scripts/inventory.ps1 -Subscription ca68cf94-f445-43f1-8379-3d0100e293a2 `
-  -ResourceGroup rg-ai4ia-slurmfactory
+./scripts/inventory.ps1 -Subscription $sub -ResourceGroup $rg
 ```
 Archive the resulting summary outside the target resource group so the rebuild is auditable and reversible.
 
@@ -27,24 +34,23 @@ azd env set AZURE_RESOURCE_GROUP rg-ai4ia-validate
 azd provision
 ```
 Confirm Foundry accounts, model deployments, and core services come up cleanly and that
-quota/capacity is sufficient in eastus2 + swedencentral + westus. Fix IaC until green.
+quota/capacity is sufficient in every region in `infra/models.json`. Fix IaC until green.
 
 ## 2. Tear down the live stack
 ```powershell
 # Dry run first (lists resources, deletes nothing):
-./scripts/teardown.ps1 -Subscription ca68cf94-f445-43f1-8379-3d0100e293a2 `
-  -ResourceGroups rg-ai4ia-slurmfactory -PurgeNameFilter ai4ia
+./scripts/teardown.ps1 -Subscription $sub -ResourceGroups $rg -PurgeNameFilter ai4ia
 
 # Execute:
-./scripts/teardown.ps1 -Subscription ca68cf94-f445-43f1-8379-3d0100e293a2 `
-  -ResourceGroups rg-ai4ia-slurmfactory -PurgeNameFilter ai4ia -Force
+./scripts/teardown.ps1 -Subscription $sub -ResourceGroups $rg -PurgeNameFilter ai4ia -Force
 ```
-This deletes `rg-ai4ia-slurmfactory` and purges soft-deleted Cognitive/Key Vault resources
-matching `ai4ia`.
+This deletes the resource group and purges soft-deleted Cognitive/Key Vault resources
+matching the filter. The purge lists are **subscription-wide**, so choose a filter that
+matches only this stack — `-PurgeNameFilter` is mandatory for exactly that reason.
 
 ## 3. Provision the real environment
 ```powershell
-azd env select slurmfactory   # or azd env new slurmfactory in a fresh checkout
+azd env select <env>   # or azd env new <env> in a fresh checkout
 azd up
 ```
 

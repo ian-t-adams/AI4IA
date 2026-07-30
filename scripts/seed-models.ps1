@@ -8,7 +8,7 @@
   publishes new models or SKUs. Read-only against Azure.
 
 .EXAMPLE
-  ./scripts/seed-models.ps1 -Subscription ca68cf94-...
+  ./scripts/seed-models.ps1 -Subscription <id>
 #>
 [CmdletBinding()]
 param(
