@@ -9,8 +9,8 @@ General Azure resources use `azd`-style names built from an abbreviation +
 | Resource | Pattern | Example |
 |---|---|---|
 | Resource group | `rg-<workload>-<env>` | `rg-ai4ia-dev` |
-| Foundry (Cognitive) account | `mf-aiforia-slurmfactory-<region>` | `mf-aiforia-slurmfactory-eastus2` |
-| Foundry project | `proj-default-aiforia-slurmfactory-<region>` | `proj-default-aiforia-slurmfactory-eastus2` |
+| Foundry (Cognitive) account | `mf-<foundryToken>-<env>-<region>` | `mf-aiforia-dev-eastus2` |
+| Foundry project | `proj-default-<foundryToken>-<env>-<region>` | `proj-default-aiforia-dev-eastus2` |
 | Container Apps env | `cae-<workload>-<env>` | `cae-ai4ia-dev` |
 | Container App | `ca-<service>-<env>` | `ca-api-dev`, `ca-web-dev`, `ca-proxy-dev` |
 | Key Vault | `kv-<workload><env><suffix>` | `kvai4iadev3k7x` |
@@ -27,6 +27,23 @@ General Azure resources use `azd`-style names built from an abbreviation +
 > The existing brand prefix `aiforia` (= **AI4IA**) and the `slurmfactory` token are kept for
 > Foundry/model resources to match operator expectations. New app-tier resources use the
 > shorter `ai4ia` workload token.
+>
+> **Two different tokens, both currently spelled `slurmfactory`.** They are independent and
+> only coincide because the long-running environment is *named* after the subscription:
+>
+> - `naming.subscriptionToken` in [`infra/models.json`](../infra/models.json) is fixed, and
+>   appears in **model deployment names** (`{model}-slurmfactory-{region}-{skuShort}`).
+> - `<env>` is the azd environment name (`AZURE_ENV_NAME`), and appears in the **resource
+>   group and Foundry account/project names**. In the current deployment it happens to be
+>   `slurmfactory`, which is why that stack has `rg-ai4ia-slurmfactory` and
+>   `mf-aiforia-slurmfactory-eastus2`.
+>
+> Changing the environment name therefore renames the resource group and the Foundry
+> accounts but *not* the model deployments, and changing `subscriptionToken` does the
+> reverse. A new tenant standing up an env called `prod` gets `rg-ai4ia-prod` and
+> `mf-aiforia-prod-eastus2` while its deployments stay `{model}-slurmfactory-...` unless
+> the token is also changed (see
+> [deployment runbook §3](./runbooks/deployment.md)).
 
 ## Model deployment naming
 Deployments follow `infra/models.json` `naming.pattern`:
