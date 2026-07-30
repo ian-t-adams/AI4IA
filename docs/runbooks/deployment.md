@@ -424,6 +424,37 @@ Deliberately **not** in that list, because they need no per-tenant edit:
 
 Procedure:
 
+0. **Preflight the target subscription.** Both checks below are read-only and take
+   under a minute. They exist because the failures they catch surface *late* —
+   `azd provision` creates the resource group, Foundry accounts, gateway, and data
+   tier first, so a missing provider or an unavailable model kills the run after
+   the slow, expensive part already succeeded, leaving a half-built stack.
+
+   ```powershell
+   az login
+   az account set --subscription <new-subscription-id>
+
+   python scripts/check-resource-providers.py     # add --register to fix
+   python scripts/check-model-availability.py
+   ```
+
+   `check-resource-providers.py` derives the required namespaces from
+   `infra/**/*.bicep`, so it cannot drift when a module adds a resource type. An
+   untouched subscription typically has **most of them unregistered** — a fresh
+   one measured 18 of them missing. `--register` requests them all and waits for
+   `Registered`, which is asynchronous and can take several minutes.
+
+   `check-model-availability.py` compares `infra/models.json` against what the
+   subscription is actually entitled to deploy, per region. Model availability is
+   per-subscription: limited-access models need an approved request and partner
+   models need the Marketplace offer enabled, and neither is visible until the
+   deployment step. Version mismatches are reported as warnings, not errors,
+   because Azure commonly rolls a retired pinned version forward.
+
+   If a model is genuinely unavailable, either request access or drop its
+   deployment from `infra/models.json` and re-run `python scripts/gen-model-catalog.py`
+   (plus the generators in step 2).
+
 1. Set the repo variables for the new subscription/tenant/env (§2.3), plus
    `AI4IA_POSTGRES_LOCATION` while PostgreSQL is retained and (if used)
    `AI4IA_API_CENTER_LOCATION` to regions valid there.
@@ -463,9 +494,11 @@ Clean-room notes for a brand-new subscription/tenant:
 - **Entra app registrations** (§2.7) are per-tenant and not created by `azd`. Create the API + web
   SPA apps and set the four `AI4IA_ENTRA_*` variables before enabling `AI4IA_AUTH_PROVIDER=entra`,
   or the app returns `401`.
-- **Resource provider registration** — a fresh subscription may need
-  `az provider register -n Microsoft.DocumentDB -n Microsoft.CognitiveServices -n Microsoft.ApiManagement -n Microsoft.App -n Microsoft.DBforPostgreSQL`
-  (and EventHub/Search/ServiceBus if those features are on) before the first provision.
+- **Resource provider registration** — an untouched subscription has most of the required
+  providers unregistered, and provisioning fails partway through when it hits the first
+  one. Run `python scripts/check-resource-providers.py --register` (step 0 above) rather
+  than registering by hand: the script derives the full set from `infra/**/*.bicep`, so it
+  stays correct as modules change, and it waits for registration to actually complete.
 - **Activate memory** — `AI4IA_MEMORY_STORE` defaults to `disabled` in `deploy.yml` (fail-closed).
   A greenfield stand-up has no legacy `mem0` data to migrate, so set the `AI4IA_MEMORY_STORE` repo
   variable to `cosmos` and deploy — no migration runbook needed. (The [memory-migration

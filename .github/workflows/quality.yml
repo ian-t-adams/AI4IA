@@ -142,3 +142,14 @@ jobs:
           # dependency install is needed. It isn't run by app-ci or
           # infra-validate, so it's exercised here instead of going untested.
           python3 -m unittest scripts.tests.test_voice_live_canary
+
+      - name: Run subscription preflight unit tests
+        run: |
+          set -euo pipefail
+          # scripts/check-resource-providers.py and check-model-availability.py
+          # are the operator preflights for standing this stack up in a new
+          # subscription/tenant. Both call Azure, so CI cannot run them end to
+          # end -- but their decision logic is pure and is what actually
+          # prevents a partial deploy, so it is pinned here. The suite is
+          # stdlib-only and makes no network calls.
+          python3 -m unittest scripts.tests.test_subscription_preflight
