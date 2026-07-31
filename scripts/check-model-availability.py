@@ -175,26 +175,28 @@ def evaluate_quota(
     them individually would let a pair that each fit -- but together do not --
     pass.
 
-    **Only `capacity > limit` is an error.** That is unarguable: the catalog is
-    asking for more than the subscription could ever hold, and no retry helps.
+    **Only `capacity > limit` is an error here.** That is unarguable: the catalog
+    is asking for more than the subscription could ever hold, and no retry helps.
 
     Exceeding *remaining* quota (`limit - currentValue`) is only a **warning**,
-    because `currentValue` is demonstrably not the number ARM enforces against:
+    because a per-region reading of `currentValue` is not what ARM enforces
+    against in this region. The counter is **subscription-wide**, and the same
+    aggregate is replicated verbatim into every region's response -- see
+    :func:`evaluate_shared_quota`, which is the check that actually reasons about
+    it. Locally that produces readings which look alarming and are not:
 
-    * `OpenAI.GlobalStandard.text-embedding-3-large` reports `1000/1000` in a
-      region with **no** deployment of it at all -- and the 120-capacity
-      deployment in the other region succeeded while its counter read the same
-      saturated value.
-    * Several counters report `current == limit` for models that have never been
-      deployed in the subscription, which reads as "0 available" for something
-      that in fact deploys fine.
-    * During a provision the value also carries transient in-flight
-      reservations, so it is high precisely when a retry is about to succeed.
+    * `AIServices.GlobalStandard.MAI-Image-2.5` reports `2/2` in **eastus2**, a
+      region that does not offer the model at all. The only deployment is in
+      westus.
+    * `OpenAI.GlobalStandard.gpt-image-1.5` reports `9/9` in both eastus2 and
+      swedencentral while *each* of those regions holds its own 9-capacity
+      deployment -- 18 units against a counter that maxes out at 9, because the
+      displayed value is clamped to the limit.
+    * During a provision the value also carries in-flight reservations, so it is
+      high precisely when a retry is about to succeed.
 
-    Blocking on it would strand a standup on a model that deploys -- the exact
-    failure mode this script exists to prevent. Reporting it loudly as a warning
-    keeps the real signal (a genuine `InsufficientQuota`) visible without the
-    false positives.
+    Blocking per-region on it would strand a standup on a model that deploys --
+    the exact failure mode this script exists to prevent.
 
     A counter that cannot be found is also a warning, because its absence is
     ambiguous: it may mean no quota is granted, or merely that Azure spells that
@@ -240,6 +242,79 @@ def evaluate_quota(
                 f"limit [{entry['counter']}]. Zero headroom, so any concurrent "
                 "reservation -- including a retry of this same provision -- fails it. "
                 "Re-running usually clears it."
+            )
+    return errors, warnings
+
+
+def evaluate_shared_quota(
+    by_region: dict[str, list[dict[str, str]]], index: dict[str, dict[str, Any]]
+) -> tuple[list[str], list[str]]:
+    """Catch a model whose capacity fits each region but not the subscription.
+
+    Model quota is **subscription-wide**, not per-region, and the per-region
+    usage API replicates the same aggregate into every region's response. Proof,
+    measured live: `AIServices.GlobalStandard.MAI-Image-2.5` reads `used=2 /
+    limit=2` in **eastus2**, a region that does not offer MAI-Image at all; the
+    subscription's only deployment of it sits in westus.
+
+    That is how a catalog can pass every per-region check and still fail. Asking
+    for capacity 2 in each of two regions is fine region-by-region -- 2 <= 2 both
+    times -- but it is 4 against a shared limit of 2. Whichever region ARM
+    reaches first wins, and the other dies with `InsufficientQuota`. It is
+    deterministic, so re-running does not help; it just changes which region
+    loses.
+
+    Enforcement is not uniform across publishers, and the split is treated as
+    observed rather than assumed:
+
+    * `AIServices.*` (Microsoft-published) **is** enforced subscription-wide.
+      MAI-Image-2.5/-Flash/-Pro each deployed in westus and then failed in
+      swedencentral on exactly this. Reported as an **error**.
+    * `OpenAI.*` is **not**: `gpt-image-1.5` holds a 9-capacity deployment in
+      eastus2 *and* another in swedencentral -- 18 units against a limit of 9 --
+      and both succeeded. Reported as a **warning**, because blocking it would
+      reject a shape that demonstrably works.
+
+    Single-region models are skipped: :func:`evaluate_quota` already covers them,
+    and re-reporting would double-count.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    totals: dict[tuple[str, str], int] = {}
+    regions: dict[tuple[str, str], set[str]] = {}
+    for region, required in by_region.items():
+        for item in required:
+            key = (item["sku"], item["name"])
+            totals[key] = totals.get(key, 0) + int(item.get("capacity") or 0)
+            regions.setdefault(key, set()).add(region)
+
+    for (sku, name), total in sorted(totals.items()):
+        spread = regions[(sku, name)]
+        if len(spread) < 2:
+            continue
+        entry = next((index[k] for k in _quota_keys(sku, name) if k in index), None)
+        if entry is None or total <= entry["limit"]:
+            continue
+        counter = entry["counter"]
+        where = ", ".join(sorted(spread))
+        detail = (
+            f"{name} ({sku}): {total} total across {len(spread)} regions ({where}) "
+            f"exceeds the {entry['limit']:.0f} subscription-wide limit [{counter}]. "
+            "Quota is shared across regions even though the usage API reports it "
+            "per region."
+        )
+        if counter.partition(".")[0].casefold() == "openai":
+            warnings.append(
+                detail + " OpenAI-published models have been observed to enforce this "
+                "per region (gpt-image-1.5 holds a full-limit deployment in two "
+                "regions at once), so this is reported rather than blocking."
+            )
+        else:
+            errors.append(
+                detail + " Non-OpenAI models are enforced subscription-wide -- the "
+                "first region to deploy consumes the quota and the rest fail with "
+                "InsufficientQuota. Drop a region or request an increase."
             )
     return errors, warnings
 
@@ -385,6 +460,7 @@ def main() -> int:
 
     total_errors = 0
     total_warnings = 0
+    merged_quota: dict[str, dict[str, Any]] = {}
     for region in regions:
         required = by_region.get(region, [])
         if not required:
@@ -395,7 +471,13 @@ def main() -> int:
         index = index_offered(offered)
         errors, warnings = evaluate(required, index, index_lifecycle(offered))
         if not args.skip_quota:
-            quota_errors, quota_warnings = evaluate_quota(required, index_quota(quota_usage(region)))
+            quota_index = index_quota(quota_usage(region))
+            # Counters are subscription-wide and identical in every region, so
+            # merging is safe; a region that does not offer a model can still be
+            # missing its counter, which is why this merges instead of picking one.
+            for key, entry in quota_index.items():
+                merged_quota.setdefault(key, entry)
+            quota_errors, quota_warnings = evaluate_quota(required, quota_index)
             errors += quota_errors
             warnings += quota_warnings
         # Findings go to stdout, not stderr. They are the report -- and when the
@@ -412,6 +494,21 @@ def main() -> int:
             print(f"  all {len(required)} deployments are deployable ({scope}).")
         total_errors += len(errors)
         total_warnings += len(warnings)
+
+    if merged_quota:
+        # Deliberately evaluated over the whole catalog, not just `regions`: the
+        # shared pool is drawn down by every region's deployments regardless of
+        # which one the caller asked about, so narrowing it would hide the
+        # overcommit that `--region` was used to investigate.
+        shared_errors, shared_warnings = evaluate_shared_quota(by_region, merged_quota)
+        if shared_errors or shared_warnings:
+            print("\nSubscription-wide quota (shared across regions) ...")
+            for warning in shared_warnings:
+                print(f"  WARNING: {warning}")
+            for error in shared_errors:
+                print(f"  ERROR: {error}")
+        total_errors += len(shared_errors)
+        total_warnings += len(shared_warnings)
 
     print(
         f"\n{total_errors} blocking problem(s), {total_warnings} warning(s) "

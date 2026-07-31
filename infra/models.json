@@ -532,12 +532,6 @@
           "sku": "GlobalStandard",
           "capacity": 2,
           "version": "2026-06-02"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 2,
-          "version": "2026-06-02"
         }
       ]
     },
@@ -551,12 +545,6 @@
           "sku": "GlobalStandard",
           "capacity": 2,
           "version": "2026-06-19"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 2,
-          "version": "2026-06-19"
         }
       ]
     },
@@ -567,12 +555,6 @@
       "deployments": [
         {
           "region": "westus",
-          "sku": "GlobalStandard",
-          "capacity": 2,
-          "version": "2026-06-02"
-        },
-        {
-          "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 2,
           "version": "2026-06-02"

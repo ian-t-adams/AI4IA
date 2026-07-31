@@ -486,5 +486,95 @@ class QuotaEvaluationTests(unittest.TestCase):
                 )
 
 
+class SharedQuotaTests(unittest.TestCase):
+    """Model quota is subscription-wide, so per-region checks can all pass and still fail.
+
+    Measured live in `sub-planetexpress-slurmfactory`:
+    `AIServices.GlobalStandard.MAI-Image-2.5` reads `used=2 / limit=2` in
+    **eastus2**, a region that does not offer MAI-Image at all -- the
+    subscription's only deployment sits in westus. The usage API replicates one
+    subscription-wide aggregate into every region's response.
+    """
+
+    @staticmethod
+    def _index(counter: str, limit: float) -> dict:
+        return AVAILABILITY.index_quota(
+            [{"name": {"value": counter}, "limit": limit, "currentValue": 0}]
+        )
+
+    def test_two_regions_that_each_fit_can_still_overcommit(self) -> None:
+        """The MAI-Image failure exactly: 2 <= 2 twice, but 4 > 2 in total."""
+        by_region = {
+            "westus": [{"name": "MAI-Image-2.5", "sku": "GlobalStandard", "capacity": 2}],
+            "swedencentral": [{"name": "MAI-Image-2.5", "sku": "GlobalStandard", "capacity": 2}],
+        }
+        errors, _ = AVAILABILITY.evaluate_shared_quota(
+            by_region, self._index("AIServices.GlobalStandard.MAI-Image-2.5", 2)
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("4 total across 2 regions", errors[0])
+
+    def test_openai_overcommit_warns_instead_of_blocking(self) -> None:
+        """gpt-image-1.5 holds a full 9-capacity deployment in *two* regions.
+
+        18 units against a limit of 9, and both succeeded -- so OpenAI-published
+        models are enforced per region. Blocking here would reject a shape that
+        demonstrably works.
+        """
+        by_region = {
+            "eastus2": [{"name": "gpt-image-1.5", "sku": "GlobalStandard", "capacity": 9}],
+            "swedencentral": [{"name": "gpt-image-1.5", "sku": "GlobalStandard", "capacity": 9}],
+        }
+        errors, warnings = AVAILABILITY.evaluate_shared_quota(
+            by_region, self._index("OpenAI.GlobalStandard.gpt-image-1.5", 9)
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("18 total across 2 regions", warnings[0])
+
+    def test_single_region_models_are_left_to_the_per_region_check(self) -> None:
+        """Otherwise every over-limit model would be reported twice."""
+        by_region = {
+            "westus": [{"name": "MAI-Image-2.5", "sku": "GlobalStandard", "capacity": 99}]
+        }
+        errors, warnings = AVAILABILITY.evaluate_shared_quota(
+            by_region, self._index("AIServices.GlobalStandard.MAI-Image-2.5", 2)
+        )
+        self.assertEqual((errors, warnings), ([], []))
+
+    def test_multi_region_within_the_shared_limit_is_silent(self) -> None:
+        """Spanning regions is fine as long as the total fits."""
+        by_region = {
+            "eastus2": [{"name": "gpt-image-1-mini", "sku": "GlobalStandard", "capacity": 2}],
+            "swedencentral": [{"name": "gpt-image-1-mini", "sku": "GlobalStandard", "capacity": 2}],
+        }
+        errors, warnings = AVAILABILITY.evaluate_shared_quota(
+            by_region, self._index("OpenAI.GlobalStandard.gpt-image-1-mini", 4)
+        )
+        self.assertEqual((errors, warnings), ([], []))
+
+    def test_catalog_has_no_subscription_wide_overcommit(self) -> None:
+        """Credential-free guard: no non-OpenAI model may span regions past its cap.
+
+        This is the regression that cost a deploy run. It needs no Azure access
+        because the limits it would have to violate are the ones we hit, so the
+        cheap invariant is simply that MAI-Image stays single-region.
+        """
+        import json
+
+        models = json.loads((ROOT / "infra" / "models.json").read_text(encoding="utf-8"))
+        for model in models["catalog"]:
+            if not model["name"].startswith("MAI-Image"):
+                continue
+            regions = {d["region"] for d in model.get("deployments", [])}
+            self.assertEqual(
+                len(regions),
+                1,
+                f"{model['name']} spans {sorted(regions)}; MAI-Image quota is a "
+                "subscription-wide 2, so a second region deterministically fails "
+                "with InsufficientQuota. Request a quota increase first.",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
