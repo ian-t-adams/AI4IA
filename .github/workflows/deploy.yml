@@ -108,6 +108,30 @@ jobs:
       AI4IA_ENTRA_WEB_CLIENT_ID: ${{ vars.AI4IA_ENTRA_WEB_CLIENT_ID }}
       AI4IA_ENTRA_API_SCOPE: ${{ vars.AI4IA_ENTRA_API_SCOPE }}
       AI4IA_ADMIN_SUBJECTS: ${{ vars.AI4IA_ADMIN_SUBJECTS }}
+      # Same failure mode as AI4IA_MEMORY_STORE below: main.parameters.json reads
+      # these through ${VAR=default}, but azd only substitutes what is present in the
+      # environment. Anything not plumbed here silently deploys its placeholder no
+      # matter what the repo variable says -- which is how the live APIM ended up on
+      # ai4ia@example.com and every resource on owner=ai4ia-operator while both repo
+      # variables were set. deployment.md section 3 lists all of these as required for
+      # a new-tenant standup, so they must be reachable from CI.
+      AI4IA_APIM_PUBLISHER_EMAIL: ${{ vars.AI4IA_APIM_PUBLISHER_EMAIL }}
+      AI4IA_OWNER: ${{ vars.AI4IA_OWNER }}
+      AI4IA_COST_CENTER: ${{ vars.AI4IA_COST_CENTER }}
+      # Regional escape hatches. These exist because Postgres, Search, and API Center
+      # are each capacity/offer constrained per region and are the documented remedy
+      # for LocationIsOfferRestricted (deployment.md section 7.1) -- a remedy that does
+      # not work if the pipeline cannot pass the override.
+      AI4IA_POSTGRES_LOCATION: ${{ vars.AI4IA_POSTGRES_LOCATION }}
+      AI4IA_SEARCH_LOCATION: ${{ vars.AI4IA_SEARCH_LOCATION }}
+      AI4IA_API_CENTER_LOCATION: ${{ vars.AI4IA_API_CENTER_LOCATION }}
+      # Extra browser origins for Voice Live. Bicep already derives the deployed web
+      # origin, so this stays empty for a normal standup; it is the documented knob for
+      # additional origins and must not be silently unreachable.
+      AI4IA_REALTIME_ALLOWED_ORIGINS: ${{ vars.AI4IA_REALTIME_ALLOWED_ORIGINS }}
+      # Secret, not a variable (cf. AI4IA_WEBIQ_API_KEY). Empty keeps the admin API on
+      # Entra managed identity rather than a shared key.
+      AI4IA_ADMIN_API_SECRET: ${{ secrets.AI4IA_ADMIN_API_SECRET }}
       # Canonical memory backend selection for the staged mem0 -> Cosmos cutover.
       # main.parameters.json resolves memoryStore from ${AI4IA_MEMORY_STORE=cosmos};
       # CI can't run `azd env set`, so plumb it here or every deploy silently takes

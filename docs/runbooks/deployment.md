@@ -477,8 +477,18 @@ config edits plus the normal deploy — no code changes. What varies per environ
 | Postgres region (temporary) | `AI4IA_POSTGRES_LOCATION` | Required only while the legacy migration source/document-index fallback remains (see §7.1). |
 | API Center region | `AI4IA_API_CENTER_LOCATION` | Only if `enablePrivateToolCatalog=true`; not available in every region (see §7.2 / the API Center note). |
 | Custom domains | `AI4IA_*_CUSTOM_DOMAIN` / `*_MANAGED_CERT_NAME` | Leave **all four empty for the first provision in a new tenant** — see step 3a below, this is ordering-sensitive and a wrong order fails the deploy. Leave empty permanently for a vanilla hostname; see §2.5. The values in §2.5's table are **this deployment's**, not portable — a new tenant has its own hostnames and certs. |
-| APIM publisher mailbox | `AI4IA_APIM_PUBLISHER_EMAIL` | Must be an operator-owned address in the new tenant. `validate-feature-prereqs.py` warns while it is still the `@example.com` placeholder. |
+| APIM publisher mailbox | `AI4IA_APIM_PUBLISHER_EMAIL` | Must be an operator-owned address in the new tenant. It receives APIM service notices, including **managed-certificate expiry** for the custom domains bound in step 3a. `validate-feature-prereqs.py` warns while it is still the `@example.com` placeholder. |
 | Owner / cost-center tags | `AI4IA_OWNER`, `AI4IA_COST_CENTER` | Accountability tags stamped on every resource; see [`naming-and-tagging.md`](../naming-and-tagging.md). |
+
+> **Setting a repo variable is only half the wiring.** `infra/main.parameters.json` reads
+> every knob as `${VAR=default}`, and azd substitutes **only variables that are actually
+> present in the environment** — it does not read GitHub repo variables. Any parameter that
+> `deploy.yml` does not export in its `env:` block therefore deploys its placeholder
+> default no matter what the repo variable says, with no warning. This was live: the first
+> standup provisioned APIM with `ai4ia@example.com` and tagged every resource
+> `owner=ai4ia-operator` while both repo variables were set correctly.
+> `test_every_azd_parameter_token_is_reachable_from_ci` now fails CI if a parameter token
+> is added without a matching export.
 
 Deliberately **not** in that list, because they need no per-tenant edit:
 
@@ -1004,6 +1014,65 @@ the full picture:
 ```powershell
 az account set --subscription <the-right-one>   # the check follows your az context
 python scripts/check-model-availability.py
+```
+
+### 7.10 Gateway returns `429 No Backends Available` for every request
+
+The body is exactly:
+
+```json
+{"statusCode":429,"statusReason":"No Backends Available"}
+```
+
+**Do not start by looking at capacity.** This status is emitted by the SimpleL7Proxy
+`on-error` fragment, and until the fix described below it was also emitted for failures
+that never reached backend selection at all. The classic case is an APIM
+**subscription-key rejection**: the key is missing, wrong, or sent under the wrong header
+name, APIM aborts in its `authorization` stage, `on-error` runs before any inbound
+fragment has built `listBackends`, and the empty list counts as "zero un-throttled
+backends". A 401 is then reported as a retryable 429 that blames the model backends.
+
+Tell the two apart by whether *any* request works, including the un-routed health path:
+
+```powershell
+# Correct header name. APIM uses Ocp-Apim-Subscription-Key -- api-key is Azure OpenAI's
+# header and APIM ignores it, which reproduces this exact 429.
+curl -s -D- -o- https://<apim>.azure-api.net/openai/status -H "Ocp-Apim-Subscription-Key: <key>"
+```
+
+`/openai/status` returns `{"status":"ok"}` from a `return-response` at the top of the first
+inbound fragment. It touches no model backend, so:
+
+| `/openai/status` | Meaning |
+| --- | --- |
+| `200 {"status":"ok"}` | Inbound policy is healthy. A 429 on a *model* call is a genuine capacity/throttle result. |
+| `429 No Backends Available` | The request is failing **before** routing. Check the subscription key and header name first. |
+
+Read `X-Policy-LastError` on the response — it now carries the real
+`context.LastError` reason/message (for example `SubscriptionKeyNotFound`) even when the
+inbound fragments never ran. A pre-routing failure also no longer sets `S7PREQUEUE` or
+`retry-after-ms`, because retrying cannot fix a rejected credential.
+
+If you need the underlying APIM error directly, take a gateway trace:
+
+```powershell
+# apiId must be a bare ARM resource id, not a management.azure.com URL.
+az rest --method post --url "<apim-arm-id>/gateways/managed/listDebugCredentials?api-version=2023-05-01-preview" `
+  --body '{\"credentialsExpireAfter\":\"PT1H\",\"apiId\":\"<apim-arm-id>/apis/openai\",\"purposes\":[\"tracing\"]}'
+# send Apim-Debug-Authorization: <token>, read Apim-Trace-Id from the response, then:
+az rest --method post --url "<apim-arm-id>/gateways/managed/listTrace?api-version=2023-05-01-preview" `
+  --body '{\"traceId\":\"<id>\"}'
+```
+
+In the trace, inbound jumping straight to `on-error` with **no `include-fragment` entries**
+is the signature of a pre-routing failure.
+
+The proxy's own poller is a good second opinion — it calls `/openai/status` continuously
+with the correct header:
+
+```powershell
+az containerapp logs show -g <rg> -n ca-proxy-<env> --tail 40 --format text
+# [Poller]: ... Path: /openai/status Success: True ... Code: OK   <- proxy -> APIM is healthy
 ```
 
 ## APIM Basic v2 migration guardrail

@@ -1,4 +1,9 @@
 <fragment>
+<!-- Separate a request that failed BEFORE backend selection (APIM authorization, a malformed
+		     catalog, or a policy expression fault) from one that genuinely exhausted its backends.
+		     listBackends is only populated by the endpoint-selection fragments, so an empty list
+		     means routing never ran at all. -->
+<set-variable name="preRoutingFailure" value="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;callCompleted&quot;, false) &amp;&amp; context.Variables.GetValueOrDefault&lt;JArray>(&quot;listBackends&quot;, new JArray()).Count == 0)" />
 <set-variable name="responseObject" value="@{
 			var responseObj = context.Variables.GetValueOrDefault&lt;JObject>(&quot;responseObject&quot;, new JObject());
 			var arr = context.Variables.GetValueOrDefault&lt;JArray>(&quot;activityLog&quot;, new JArray());
@@ -39,6 +44,21 @@
 				JArray backends = context.Variables.GetValueOrDefault&lt;JArray>(&quot;listBackends&quot;, new JArray());
 				JArray priorityBackendIndxs = context.Variables.GetValueOrDefault&lt;JArray>(&quot;PriBackendIndxs&quot;, new JArray());
 				bool contextWindowExceeded = context.Variables.GetValueOrDefault&lt;bool>(&quot;contextWindowExceeded&quot;, false);
+
+				// A failure before backend selection leaves listBackends empty. Reporting No Backends
+				// Available is factually impossible in that state -- a list that was never built cannot
+				// be throttling -- and it buries the real fault (most often a rejected APIM subscription
+				// key) behind a retryable capacity error. Surface the upstream status and the policy
+				// error reason instead; the requeue and retry-after hints are suppressed below, because
+				// retrying can never resolve a pre-routing failure.
+				if (context.Variables.GetValueOrDefault&lt;bool>(&quot;preRoutingFailure&quot;, false)) {
+					responseObj[&quot;statusCode&quot;] = statusCode >= 400 ? statusCode : 500;
+					responseObj[&quot;statusReason&quot;] = lastErrorReason.Length > 0
+						? lastErrorReason
+						: &quot;Gateway Policy Error&quot;;
+					return responseObj;
+				}
+
 				int unthrottledBackends = 0;
 
 				foreach (int i in priorityBackendIndxs) {
@@ -113,17 +133,31 @@
 <set-header name="X-Policy-LastError" exists-action="override">
 			<value>@{
 				JArray errArr = context.Variables.GetValueOrDefault&lt;JArray>("lastPolicyError", new JArray());
-				return errArr.Count == 0 ? "" : errArr.ToString(Newtonsoft.Json.Formatting.None);
+				if (errArr.Count > 0) { return errArr.ToString(Newtonsoft.Json.Formatting.None); }
+				// lastPolicyError is only appended to by the inbound fragments. When the request never
+				// reached them there is still a real APIM error to report, and returning an empty header
+				// is exactly what makes a pre-routing failure look like an unexplained capacity problem.
+				var reason = context.LastError?.Reason ?? "";
+				var message = context.LastError?.Message ?? "";
+				if (reason.Length == 0 &amp;&amp; message.Length == 0) { return ""; }
+				if (message.Length > 200) { message = message.Substring(0, 200) + "..."; }
+				return new JObject { { "reason", reason }, { "message", message } }.ToString(Newtonsoft.Json.Formatting.None);
 			}</value>
 		</set-header>
+<!-- Requeue and retry-after only make sense for a throttled or timed-out backend. Emitting them
+		     for a pre-routing failure tells the caller to retry a request that can never succeed. -->
 <choose>
-			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;RequeueAllowed&quot;, true))">
-				<set-header name="S7PREQUEUE" exists-action="override">
-					<value>true</value>
+			<when condition="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;preRoutingFailure&quot;, false))">
+				<choose>
+					<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;RequeueAllowed&quot;, true))">
+						<set-header name="S7PREQUEUE" exists-action="override">
+							<value>true</value>
+						</set-header>
+					</when>
+				</choose>
+				<set-header name="retry-after-ms" exists-action="override">
+					<value>@(context.Variables.GetValueOrDefault&lt;int>("sleepDuration", 10000).ToString())</value>
 				</set-header>
 			</when>
 		</choose>
-<set-header name="retry-after-ms" exists-action="override">
-			<value>@(context.Variables.GetValueOrDefault&lt;int>("sleepDuration", 10000).ToString())</value>
-		</set-header>
 </fragment>

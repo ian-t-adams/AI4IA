@@ -4,6 +4,7 @@ import importlib.util
 import html
 import io
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -402,6 +403,97 @@ class GatewayPolicyTests(unittest.TestCase):
             "catalog[&quot;DEFAULT&quot;] as JObject ?? new JObject()",
             fragment,
         )
+
+    def test_every_azd_parameter_token_is_reachable_from_ci(self) -> None:
+        """Every ``${VAR}`` in main.parameters.json must be plumbed through deploy.yml.
+
+        azd only substitutes environment variables that are actually present, so a
+        parameter token with no export silently deploys its placeholder default no
+        matter what the repo variable says. That is not hypothetical: the live APIM
+        was provisioned with ``ai4ia@example.com`` and every resource tagged
+        ``owner=ai4ia-operator`` while both repo variables were set correctly,
+        because neither was exported. The AI4IA_MEMORY_STORE comment in deploy.yml
+        records the same bug being found once before for a single variable.
+        """
+        params = (ROOT / "infra/main.parameters.json").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+        tokens = set(
+            re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:=[^}]*)?\}", params)
+        )
+        # azd owns these itself (`azd env new` / the pipeline login), so they are
+        # resolved without an explicit export.
+        azd_native = {
+            "AZURE_ENV_NAME",
+            "AZURE_LOCATION",
+            "AZURE_SUBSCRIPTION_ID",
+            "AZURE_PRINCIPAL_ID",
+        }
+        exported = set(re.findall(r"^\s{6}([A-Z][A-Z0-9_]*):", workflow, re.M))
+        self.assertGreater(
+            len(tokens - azd_native), 25, "parameter token scan looks vacuous"
+        )
+        missing = sorted(tokens - azd_native - exported)
+        self.assertEqual(
+            missing,
+            [],
+            "main.parameters.json reads these but deploy.yml never exports them, so "
+            f"they always take their placeholder default: {missing}",
+        )
+
+    def test_pre_routing_failures_are_not_reported_as_throttling(self) -> None:
+        """A request that dies before backend selection must not be laundered into a 429.
+
+        Observed live: an APIM subscription-key rejection never reaches the
+        endpoint-selection fragments, so ``listBackends`` stays empty, the
+        throttling loop counts zero un-throttled backends, and on-error answers
+        ``429 No Backends Available`` with ``S7PREQUEUE``/``retry-after-ms`` and an
+        empty ``X-Policy-LastError``. That inverts the diagnosis -- it points the
+        operator at backend capacity for what is actually a rejected credential --
+        and tells the caller to retry a request that can never succeed.
+        """
+        for relative in (
+            "infra/policies/simplel7proxy-priority-retry.xml",
+            "infra/policies/simplel7proxy_on_error_32.xml",
+        ):
+            with self.subTest(policy=relative):
+                text = (ROOT / relative).read_text(encoding="utf-8")
+                # The master carries an outbound copy of the throttling verdict too,
+                # but that one defaults unThrottledBackends to -1 and so cannot
+                # misfire on an unrouted request. Scope the assertions to on-error.
+                start = text.find("<on-error>")
+                policy = text[start if start >= 0 else 0 :]
+                self.assertIn(
+                    'name="preRoutingFailure"',
+                    policy,
+                    "on-error must classify failures that never reached routing",
+                )
+                # The empty-list guard has to run BEFORE the throttling verdict,
+                # otherwise the 429 still wins.
+                guard = policy.index("preRoutingFailure&quot;, false)) {")
+                throttle = policy.index("if (unthrottledBackends == 0) {")
+                self.assertLess(
+                    guard,
+                    throttle,
+                    "the pre-routing guard must short-circuit the throttling branch",
+                )
+                # LastError must survive even when the inbound fragments never ran
+                # and so never appended to lastPolicyError.
+                last_error = policy.index('name="X-Policy-LastError"')
+                self.assertIn(
+                    "context.LastError?.Reason",
+                    policy[last_error:],
+                    "X-Policy-LastError must fall back to the real APIM error",
+                )
+                # Requeue/retry hints are only meaningful for a throttled backend.
+                for header in ('name="S7PREQUEUE"', 'name="retry-after-ms"'):
+                    self.assertLess(
+                        policy.index(
+                            'condition="@(!context.Variables.GetValueOrDefault'
+                            "&lt;bool>(&quot;preRoutingFailure&quot;, false))\""
+                        ),
+                        policy.index(header),
+                        f"{header} must be suppressed for pre-routing failures",
+                    )
 
     def test_every_realtime_deployment_has_a_catalog_route(self) -> None:
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
