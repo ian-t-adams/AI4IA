@@ -130,13 +130,14 @@ dev = [
 # pytest.importorskip; NOT installed in the runtime container (the app never imports these
 # SDKs at runtime -- only the operator-invoked provisioning scripts do). Operators installing
 # it standalone at provisioning time: uv pip install -e "app/api[foundry]"
-# azure-ai-projects is pinned EXACTLY to 2.3.0, not just floored at it: this whole extra's
+# azure-ai-projects is pinned EXACTLY to 2.4.0, not just floored at it: this whole extra's
 # provisioner (scripts/provision-foundry-toolbox.py) and its test suite
-# (tests/test_foundry_toolbox.py) are reflection-verified, field-by-field, against 2.3.0's actual
+# (tests/test_foundry_toolbox.py) are reflection-verified, field-by-field, against 2.4.0's actual
 # *ToolboxTool model classes and constructor signatures (CodeInterpreterToolboxTool,
 # OpenApiToolboxTool, MCPToolboxTool, AzureAISearchToolboxTool, ...). Those shapes have already
-# changed once between 2.x releases (the toolbox model classes plainly do not exist in 2.2.0), so
-# a floating `>=2.3.0` floor would let a bare `pip install .[foundry]` -- which is exactly what
+# changed twice now (the toolbox model classes plainly do not exist in 2.2.0, and 2.4.0 added a
+# thirteenth type, ToolSearchToolboxTool/`toolbox_search`, which the parity test caught), so
+# a floating `>=2.4.0` floor would let a bare `pip install .[foundry]` -- which is exactly what
 # both CI (.github/workflows/app-ci.yml) and operators (see docs/foundry-toolbox.md) run -- silently
 # resolve a newer, unreviewed release whose shapes may again differ, ignoring uv.lock's own
 # resolution entirely (`pip install` does not consult uv.lock). An exact pin makes every install
@@ -148,7 +149,7 @@ dev = [
 # jsonschema backs scripts/provision-foundry-toolbox.py's strict manifest-schema validation,
 # which --create requires before constructing any SDK model.
 foundry = [
-    "azure-ai-projects==2.3.0",
+    "azure-ai-projects==2.4.0",
     "azure-identity>=1.17",
     "azure-mgmt-apicenter>=1.0.0",
     "jsonschema>=4.18",

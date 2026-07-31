@@ -57,7 +57,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.10" },
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.4" },
     { name = "asyncpg", specifier = ">=0.29" },
-    { name = "azure-ai-projects", marker = "extra == 'foundry'", specifier = "==2.3.0" },
+    { name = "azure-ai-projects", marker = "extra == 'foundry'", specifier = "==2.4.0" },
     { name = "azure-cosmos", specifier = ">=4.16.1,<5" },
     { name = "azure-identity", specifier = ">=1.17" },
     { name = "azure-identity", marker = "extra == 'foundry'", specifier = ">=1.17" },
@@ -327,7 +327,7 @@ wheels = [
 
 [[package]]
 name = "azure-ai-projects"
-version = "2.3.0"
+version = "2.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "azure-core" },
@@ -337,9 +337,9 @@ dependencies = [
     { name = "openai" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7a/29/ab1a80ce483fcc36ec2ac0a3db8e043aa954700b34b77db43ed5f4f9c488/azure_ai_projects-2.3.0.tar.gz", hash = "sha256:6e3006b7b8aa51c6ff9db61ef4aac3717f8a712cd1a183d5a1d34e2eb33450bd", size = 27563233, upload-time = "2026-07-01T21:09:00.018Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0c/dd/178a6a5b4098c3ef032ec5669f13b2c9ffbfd4b17092bcd1c34888fef7be/azure_ai_projects-2.4.0.tar.gz", hash = "sha256:121154f70cf7de350a38a75e1da710f4e98b7d8114bc3b1ea25124469e34186f", size = 39729773, upload-time = "2026-07-27T21:53:02.819Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/15/bd/7e64f2d6e43d19fc8cf464769804f947d997833eb4dce1c86c2ce76146d2/azure_ai_projects-2.3.0-py3-none-any.whl", hash = "sha256:1da20aeac9663740a97644efedbb9f59eb2a332d3e01bfde7aa03027936edf44", size = 349581, upload-time = "2026-07-01T21:09:04.32Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/08/aec31cd86b458d5437aa7123b7b9609ceafd101fc4e13f3988c3867b424b/azure_ai_projects-2.4.0-py3-none-any.whl", hash = "sha256:d9a9504b3a498d7300d23411f09d49096e2a184473250d6070093828b7b67e49", size = 357441, upload-time = "2026-07-27T21:53:05.972Z" },
 ]
 
 [[package]]

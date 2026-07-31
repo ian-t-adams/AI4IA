@@ -54,7 +54,7 @@ python scripts/provision-private-tool-catalog.py --create
 
 # 5. (optional) Validate a routine and see its plan. Its tool calls target the toolbox, so
 #    they inherit the APIM bridge. Edit foundry/routines/example.routine.json first.
-#    There is no --create: azure-ai-projects 2.3.0's routines surface (an event-trigger model)
+#    There is no --create: azure-ai-projects 2.4.0's routines surface (an event-trigger model)
 #    cannot faithfully represent this steps-based workflow shape -- see docs/foundry-toolbox.md.
 python scripts/provision-foundry-routine.py          # validates + prints steps and tool calls
 

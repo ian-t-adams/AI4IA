@@ -4,7 +4,7 @@ Pins the *pure* validation/projection logic with no Azure SDK/network: manifest 
 the toolbox-tool references a routine's steps make (the bridge point -- every call flows through
 the APIM-fronted toolbox), the step projection, fail-closed endpoint resolution, and that the
 shipped example validates against foundry/routines/routine.schema.json. Also guards the round-10
-finding that this script must NEVER grow a live `--create` path: azure-ai-projects 2.3.0 has no
+finding that this script must NEVER grow a live `--create` path: azure-ai-projects 2.4.0 has no
 `project.routines` compatible with this manifest's steps-based shape (see the module's "Why there
 is no --create" docstring section), so faking a translation would be worse than not having one.
 """
@@ -111,7 +111,7 @@ def test_example_validates_against_schema():
 
 def test_create_routine_and_dash_dash_create_do_not_exist(monkeypatch):
     # Round-10 regression: this script must never regain a live --create path. There is no
-    # non-inventive translation from this manifest's steps to azure-ai-projects 2.3.0's actual
+    # non-inventive translation from this manifest's steps to azure-ai-projects 2.4.0's actual
     # routines surface (project.beta.routines.create_or_update, an event-trigger-invokes-an-
     # existing-agent model) -- so both the function AND the CLI flag must stay gone.
     assert not hasattr(_r, "create_routine")

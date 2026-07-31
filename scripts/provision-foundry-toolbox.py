@@ -55,6 +55,13 @@ _SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,38}[a-z0-9]$")  # matches infra/mcp-se
 # in the SDK (ComputerUsePreviewTool / BingCustomSearchPreviewTool); there is no matching
 # *ToolboxTool, so they cannot go in a toolbox and are intentionally absent here. Browser automation
 # is spelled `browser_automation_preview` to match the SDK discriminator.
+# `toolbox_search` (ToolSearchToolboxTool) arrived in azure-ai-projects 2.4.0 as the GA spelling of
+# tool search; 2.4.0 keeps `toolbox_search_preview` (ToolboxSearchPreviewToolboxTool) alongside it
+# rather than replacing it, and both are live discriminators the service accepts. Both are mapped
+# here deliberately: dropping the preview entry would break already-provisioned manifests, and the
+# two carry an identical field set (only the common name/description/toolConfigs), so the GA branch
+# in toolbox.manifest.schema.json mirrors the preview branch exactly. Prefer `toolbox_search` in new
+# manifests.
 _TYPE_TO_MODEL = {
     "web_search": "WebSearchToolboxTool",
     "azure_ai_search": "AzureAISearchToolboxTool",
@@ -63,6 +70,7 @@ _TYPE_TO_MODEL = {
     "browser_automation_preview": "BrowserAutomationPreviewToolboxTool",
     "openapi": "OpenApiToolboxTool",
     "toolbox_search_preview": "ToolboxSearchPreviewToolboxTool",
+    "toolbox_search": "ToolSearchToolboxTool",
     "mcp": "MCPToolboxTool",
     "a2a_preview": "A2APreviewToolboxTool",
     "fabric_iq_preview": "FabricIQPreviewToolboxTool",
@@ -112,7 +120,7 @@ _CAMEL_TO_SNAKE = {
     "agentCardPath": "agent_card_path",
     "sendCredentialsForAgentCard": "send_credentials_for_agent_card",
 }
-# `indexAssetId` -> `index_asset_id` (azure-ai-projects 2.3.0 AISearchIndexResource.index_asset_id)
+# `indexAssetId` -> `index_asset_id` (azure-ai-projects 2.4.0 AISearchIndexResource.index_asset_id)
 # IS mapped above as a documented, schema-enforced mutually-exclusive alternative to
 # indexName+projectConnectionId, even though no current Microsoft Learn doc for the Azure AI
 # Search tool demonstrates it (see foundry/toolbox.manifest.schema.json's azureAiSearch.indexes
@@ -136,7 +144,7 @@ _OPAQUE_NESTED_KEYS = {("openapi", "spec")}
 # tool literally named e.g. `topK` -- which collides with an unrelated, real _CAMEL_TO_SNAKE entry
 # used for Azure AI Search's `indexes[].topK` -- would be silently renamed to `top_k`, making the
 # config apply to a nonexistent tool instead of the one actually named `topK`
-# (azure-ai-projects 2.3.0's ToolboxTool.tool_configs: "keys are tool names or `*`").
+# (azure-ai-projects 2.4.0's ToolboxTool.tool_configs: "keys are tool names or `*`").
 _ARBITRARY_KEYED_MAP_FIELDS = {"toolConfigs"}
 
 
@@ -410,7 +418,7 @@ def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
     except ImportError as exc:  # pragma: no cover - exercised only on live provisioning
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.3.0 azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.4.0 azure-identity'
         ) from exc
 
     project = AIProjectClient(endpoint=project_endpoint, credential=DefaultAzureCredential())
