@@ -490,6 +490,28 @@ config edits plus the normal deploy — no code changes. What varies per environ
 > `test_every_azd_parameter_token_is_reachable_from_ci` now fails CI if a parameter token
 > is added without a matching export.
 
+> **Exporting a variable that has no repo variable is safe — do not add `|| 'default'`
+> fallbacks to "protect" against it.** GitHub Actions expands `${{ vars.MISSING }}` to an
+> *empty string* rather than omitting the variable, so it is reasonable to worry that
+> exporting an unset knob overwrites a non-empty parameter default with `''`. It does not:
+> azd's `${VAR=default}` resolves an empty value to the **default**, i.e. it behaves like
+> POSIX `${VAR:-default}`, not `${VAR=default}`. Verified live against
+> `main`'s own workflow — with `AI4IA_POSTGRES_LOCATION`, `AI4IA_SEARCH_LOCATION`, and
+> `AI4IA_API_CENTER_LOCATION` all *unset* as repo variables, the resulting subscription
+> deployment resolved them to `centralus`, `eastus`, and `eastus` respectively:
+>
+> ```powershell
+> az deployment sub show -n <name> --query properties.parameters -o json
+> ```
+>
+> This matters most for `AI4IA_POSTGRES_LOCATION`, because `main.bicep` derives
+> `postgresEnabled = !empty(postgresLocation)` — had empty won, exporting the unset
+> variable would have **disabled and torn down the Postgres flexible server**. The
+> `|| 'literal'` fallbacks that some entries do carry (`AI4IA_PROXY_WORKERS`,
+> `AI4IA_MEMORY_STORE`) exist to pin a value that differs from the parameter default, not
+> to guard against empty. Re-confirm with the query above rather than re-deriving this
+> from first principles.
+
 Deliberately **not** in that list, because they need no per-tenant edit:
 
 - **Voice Live Origin allowlist.** Bicep derives it from the web app this deployment
@@ -1073,6 +1095,58 @@ with the correct header:
 ```powershell
 az containerapp logs show -g <rg> -n ca-proxy-<env> --tail 40 --format text
 # [Poller]: ... Path: /openai/status Success: True ... Code: OK   <- proxy -> APIM is healthy
+```
+
+### 7.11 Model call returns `400 model_path_mismatch`
+
+```json
+{"error":{"code":"model_path_mismatch","message":"The deployment path must match the detected catalog model."}}
+```
+
+This is a **client-contract error, not a deploy failure**, and it is the single most
+common way a hand-rolled verification call fails against a healthy gateway. A model call
+through APIM must satisfy three things at once, and only the first is intuitive:
+
+| # | Requirement | Wrong value produces |
+| --- | --- | --- |
+| 1 | `Ocp-Apim-Subscription-Key` header | `401 SubscriptionKeyInvalid` (see §7.10) |
+| 2 | Path deployment is the **full** name — `gpt-5.6-luna-slurmfactory-eastus2-glbl`, not the catalog id `gpt-5.6-luna` | `400 model_path_mismatch` |
+| 3 | `x-LLMModel` header, **equal to the path deployment** | `400 model_path_mismatch` |
+
+Requirement 3 is the one that surprises people: the gateway resolves the backend from the
+`x-LLMModel` **request header** (`modelHeaderName` in
+`infra/policies/simplel7proxy-endpoints.xml`), *not* from the URL path and *not* from the
+request body's `model` field. With no header the detected model is empty, it cannot equal
+the path, and the guard rejects the call — so adding `"model": "..."` to the JSON body
+looks like the obvious fix and changes nothing.
+
+The guard itself is deliberate: it stops a caller from being billed against one deployment
+while the body names another. Canonical call:
+
+```powershell
+$dep = "gpt-5.6-luna-slurmfactory-eastus2-glbl"   # az cognitiveservices account deployment list
+$h = @{
+  'Ocp-Apim-Subscription-Key' = $key
+  'Content-Type'              = 'application/json'
+  'x-LLMModel'                = $dep              # MUST match $dep in the path
+}
+$body = '{"messages":[{"role":"user","content":"Reply with exactly: pong"}],"max_completion_tokens":16}'
+Invoke-WebRequest -SkipHttpErrorCheck -Method POST -Headers $h -Body $body `
+  -Uri "https://<apim>.azure-api.net/openai/deployments/$dep/chat/completions?api-version=2025-04-01-preview"
+```
+
+A healthy response is `200` with `choices[0].message.content` = `pong`, `model` =
+`gpt-5.6-luna-2026-07-09`, and `content_filter_results` **present with
+`"filtered": false`** — that last part is the live proof that the annotate-only RAI policy
+is attached (filtering disabled, annotation still returned). Missing
+`content_filter_results` entirely means the policy is not applied; see
+`scripts/tests/test_rai_policy.py`.
+
+Deployment names are catalog-derived (`<model>-<subscriptionToken>-<region>-<sku>`), so
+list them rather than reconstructing them by hand:
+
+```powershell
+az cognitiveservices account deployment list -g <rg> -n <foundry-account> --query "[].name" -o tsv
 ```
 
 ## APIM Basic v2 migration guardrail

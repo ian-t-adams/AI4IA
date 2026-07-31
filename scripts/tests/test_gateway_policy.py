@@ -404,6 +404,42 @@ class GatewayPolicyTests(unittest.TestCase):
             fragment,
         )
 
+    def test_documented_model_header_matches_the_policy(self) -> None:
+        """deployment.md section 7.11 hardcodes the gateway's model header name.
+
+        The gateway resolves the backend from a *request header*, not from the URL
+        path or the body's ``model`` field, and rejects any mismatch with
+        ``400 model_path_mismatch``. That is unguessable from the error text, so the
+        runbook documents the header by name -- which makes the runbook wrong, in a
+        way nothing else would catch, the moment ``modelHeaderName`` is renamed.
+        Two separate debugging sessions were lost to this exact call contract.
+        """
+        header_decl = re.search(
+            r'<set-variable name="modelHeaderName" value="([^"]+)"',
+            (ROOT / "infra/policies/simplel7proxy-endpoints.xml").read_text(
+                encoding="utf-8"
+            ),
+        )
+        self.assertIsNotNone(
+            header_decl, "modelHeaderName is no longer a literal set-variable"
+        )
+        header = header_decl.group(1)
+
+        runbook = (ROOT / "docs/runbooks/deployment.md").read_text(encoding="utf-8")
+        self.assertIn(
+            header,
+            runbook,
+            f"deployment.md must document the model header {header!r}",
+        )
+        # The template the generator renders from has to agree, or a regenerate
+        # silently swaps the header out from under both the docs and the app.
+        self.assertIn(
+            f'<set-variable name="modelHeaderName" value="{header}"',
+            (ROOT / "infra/policies/simplel7proxy-endpoints.template.xml").read_text(
+                encoding="utf-8"
+            ),
+        )
+
     def test_every_azd_parameter_token_is_reachable_from_ci(self) -> None:
         """Every ``${VAR}`` in main.parameters.json must be plumbed through deploy.yml.
 
