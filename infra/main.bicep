@@ -784,6 +784,10 @@ module api 'modules/api.bicep' = {
     entraAudience: entraAudience
     adminSubjects: adminSubjects
     adminApiSecret: adminApiSecret
+    // The API stamps the priority band; the proxy reserves workers for it. Both
+    // sides read the same switch so they can never be half-enabled: a band with
+    // no reservation is inert, and a reservation with no band starves.
+    proxyPrioritiesEnabled: proxyPrioritiesEnabled
     // Voice Live realtime relay. Default OFF; the Origin allowlist is
     // required (non-empty) when enabling in a deployed env or the relay fails closed.
     realtimeEnabled: voiceLiveEnabled

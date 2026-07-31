@@ -39,6 +39,10 @@
         catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk1&quot;]);
         catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk2&quot;]);
         catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk3&quot;]);
+        catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk4&quot;]);
+        catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk5&quot;]);
+        catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk6&quot;]);
+        catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk7&quot;]);
         return catalog;
     }" />
 

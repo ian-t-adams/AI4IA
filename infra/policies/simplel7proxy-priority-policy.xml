@@ -6,6 +6,10 @@
     <include-fragment fragment-id="endpoint_selection_catalog_1_32" />
     <include-fragment fragment-id="endpoint_selection_catalog_2_32" />
     <include-fragment fragment-id="endpoint_selection_catalog_3_32" />
+    <include-fragment fragment-id="endpoint_selection_catalog_4_32" />
+    <include-fragment fragment-id="endpoint_selection_catalog_5_32" />
+    <include-fragment fragment-id="endpoint_selection_catalog_6_32" />
+    <include-fragment fragment-id="endpoint_selection_catalog_7_32" />
     <include-fragment fragment-id="endpoint_selection_setup_32" />
     <include-fragment fragment-id="simplel7proxy_inbound_post_32" />
   </inbound>

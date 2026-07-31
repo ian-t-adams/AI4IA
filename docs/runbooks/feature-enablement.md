@@ -29,7 +29,7 @@ feature posture.
 | Web IQ search tools | `AI4IA_WEB_SEARCH_ENABLED` | none | `webSearchEnabled` | Web IQ API key or Entra managed identity outside local |
 | Admin resource panels | `AI4IA_RESOURCE_METRICS_ENABLED` + resource ids | admin dashboard | resource-id env from modules | Monitoring Reader and ARM resource ids |
 | Proxy application profiles | proxy runtime only | none | `proxyProfilesEnabled` | Secret-mounted minimal projection **and verified identity-aware app header**; validator blocks enablement with shared-key ingress |
-| Proxy priority reservations | proxy runtime only | none | `proxyPrioritiesEnabled`, `proxyPriorityWorkers` | Valid `priority:count` reservations; per-replica fairness only |
+| Proxy priority reservations | `AI4IA_PROXY_PRIORITIES_ENABLED` | none | `proxyPrioritiesEnabled`, `proxyPriorityWorkers` | Valid `priority:count` reservations; per-replica fairness only. The API and proxy read the **same** switch — see the note below the table |
 | Proxy metadata telemetry | proxy runtime only | none | `proxyEventHubTelemetryEnabled` | Existing Event Hub sender RBAC; no prompt/response/header logging |
 | Proxy durable async | proxy runtime only | none | `proxyAsyncEnabled` | Dedicated AVM Blob + Service Bus resources and proxy MI RBAC |
 
@@ -194,6 +194,25 @@ interval; Event Hub and async settings are cold and need a revision/restart.
 
 - `proxyPrioritiesEnabled=true` requires `proxyPriorityWorkers` such as
   `1:2,3:1`. Reserved capacity and fairness are in-memory **per replica**.
+  This one parameter drives **both** halves of the feature, deliberately: it
+  reserves workers on the proxy *and* sets `AI4IA_PROXY_PRIORITIES_ENABLED` on
+  the API so FastAPI stamps the `x-S7PPriority` band. Half-enabled is useless in
+  either direction — a band with no reservation is inert, and a reservation with
+  no band starves, because `simplel7proxy_inbound_post_32.xml` defaults a
+  header-less request to the *lowest* band. Bands are `1` high / `2` standard /
+  `3` batch, matching `PriorityKeys`/`PriorityValues` in `gateway.bicep`.
+  - The band is derived **server-side** from the authenticated principal in
+    `ai4ia_api.gateway.priority` and carried in a ContextVar. An inbound
+    `x-S7PPriority` from a browser is never read or forwarded; treating one as
+    authoritative would let any user claim the reserved workers.
+  - Admins (`AI4IA_ADMIN_SUBJECTS` / `AI4IA_ADMIN_EMAILS` / the `admin` app role)
+    resolve to band 1; every other authenticated user resolves to band 2. Admin
+    membership comes from `ai4ia_api.auth.identity`, the same predicate the
+    entitlement API uses, so the two cannot drift.
+  - Under spoofable auth (dev provider outside `local`) nobody is promoted:
+    identity is client-supplied there, so the feature fails closed.
+  - Unrelated to Azure's paid **Priority Processing** meters, which bill at 2x
+    standard. This is queue fairness inside our own proxy and costs nothing.
 - `proxyEventHubTelemetryEnabled=true` sends routing/status/latency metadata to
   the existing telemetry hub. Request and response header logging remain false;
   prompts, responses, and profile PII are not emitted. Event Hub is not a queue.

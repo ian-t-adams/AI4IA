@@ -5,6 +5,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..logging_setup import emit_security_block
+from ..gateway.priority import resolve_priority, set_request_priority
 from .base import AuthCredentials, AuthError, AuthenticatedUser
 
 # auto_error=False so dev auth (header-based) works without an Authorization header.
@@ -39,4 +40,13 @@ async def get_current_user(
             directory.capture(user)
         except Exception:  # noqa: BLE001 - capture is strictly best-effort
             pass
+    # Resolve the SimpleL7Proxy priority band here, at the one point where a
+    # request's principal is known to be authentic, and stash it for the gateway
+    # client. Doing it anywhere downstream would risk deriving it from something
+    # the caller controls. See ai4ia_api.gateway.priority.
+    settings = getattr(request.app.state, "settings", None)
+    if settings is not None and settings.proxy_priorities_enabled:
+        set_request_priority(resolve_priority(user, settings))
+    else:
+        set_request_priority(None)
     return user

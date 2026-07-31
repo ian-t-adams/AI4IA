@@ -66,6 +66,26 @@ $fragmentDefinitions = @(
         Path = 'infra/policies/simplel7proxy-endpoints-catalog-3.xml'
     }
     @{
+        ProductionId = 'endpoint_selection_catalog_4_32'
+        TemporaryId = "ai4ia-compiler-catalog-4-$suffix"
+        Path = 'infra/policies/simplel7proxy-endpoints-catalog-4.xml'
+    }
+    @{
+        ProductionId = 'endpoint_selection_catalog_5_32'
+        TemporaryId = "ai4ia-compiler-catalog-5-$suffix"
+        Path = 'infra/policies/simplel7proxy-endpoints-catalog-5.xml'
+    }
+    @{
+        ProductionId = 'endpoint_selection_catalog_6_32'
+        TemporaryId = "ai4ia-compiler-catalog-6-$suffix"
+        Path = 'infra/policies/simplel7proxy-endpoints-catalog-6.xml'
+    }
+    @{
+        ProductionId = 'endpoint_selection_catalog_7_32'
+        TemporaryId = "ai4ia-compiler-catalog-7-$suffix"
+        Path = 'infra/policies/simplel7proxy-endpoints-catalog-7.xml'
+    }
+    @{
         ProductionId = 'endpoint_selection_setup_32'
         TemporaryId = "ai4ia-compiler-setup-$suffix"
         Path = 'infra/policies/simplel7proxy-endpoints.xml'

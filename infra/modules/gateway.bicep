@@ -184,6 +184,13 @@ resource foundryEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024
   }
 }]
 
+// Backend catalog shards. The count here MUST equal CATALOG_FRAGMENT_COUNT in
+// scripts/gen-gateway-policy.py: loadTextContent requires literal paths, so this
+// list cannot be generated, and Bicep deploys only what it lists. A shard the
+// generator writes but this list omits would drop its models from routing with
+// no error. scripts/tests/test_gateway_policy.py pins the two together.
+// Shards beyond what the catalog currently needs hold an empty JObject and merge
+// as a no-op, so spare capacity costs nothing but a tiny fragment resource.
 var endpointSelectionFragmentDefinitions = [
   {
     baseName: 'endpoint_selection_catalog_0_32'
@@ -204,6 +211,26 @@ var endpointSelectionFragmentDefinitions = [
     baseName: 'endpoint_selection_catalog_3_32'
     description: 'Generated model/deployment catalog chunk 3 for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-3.xml')
+  }
+  {
+    baseName: 'endpoint_selection_catalog_4_32'
+    description: 'Generated model/deployment catalog chunk 4 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-4.xml')
+  }
+  {
+    baseName: 'endpoint_selection_catalog_5_32'
+    description: 'Generated model/deployment catalog chunk 5 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-5.xml')
+  }
+  {
+    baseName: 'endpoint_selection_catalog_6_32'
+    description: 'Generated model/deployment catalog chunk 6 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-6.xml')
+  }
+  {
+    baseName: 'endpoint_selection_catalog_7_32'
+    description: 'Generated model/deployment catalog chunk 7 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-7.xml')
   }
   {
     baseName: 'endpoint_selection_setup_32'

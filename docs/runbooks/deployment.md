@@ -403,7 +403,7 @@ config edits plus the normal deploy — no code changes. What varies per environ
 | Foundry account/project token | `infra/models.json` → `naming.foundryToken` | Names `mf-<token>-<env>-<region>` and the toolbox project endpoint. |
 | Postgres region (temporary) | `AI4IA_POSTGRES_LOCATION` | Required only while the legacy migration source/document-index fallback remains (see §7.1). |
 | API Center region | `AI4IA_API_CENTER_LOCATION` | Only if `enablePrivateToolCatalog=true`; not available in every region (see §7.2 / the API Center note). |
-| Custom domains | `AI4IA_*_CUSTOM_DOMAIN` / `*_MANAGED_CERT_NAME` | Leave empty for a vanilla hostname; see §2.5. The values in §2.5's table are **this deployment's**, not portable — a new tenant has its own hostnames and certs. |
+| Custom domains | `AI4IA_*_CUSTOM_DOMAIN` / `*_MANAGED_CERT_NAME` | Leave **all four empty for the first provision in a new tenant** — see step 3a below, this is ordering-sensitive and a wrong order fails the deploy. Leave empty permanently for a vanilla hostname; see §2.5. The values in §2.5's table are **this deployment's**, not portable — a new tenant has its own hostnames and certs. |
 | APIM publisher mailbox | `AI4IA_APIM_PUBLISHER_EMAIL` | Must be an operator-owned address in the new tenant. `validate-feature-prereqs.py` warns while it is still the `@example.com` placeholder. |
 | Owner / cost-center tags | `AI4IA_OWNER`, `AI4IA_COST_CENTER` | Accountability tags stamped on every resource; see [`naming-and-tagging.md`](../naming-and-tagging.md). |
 
@@ -473,6 +473,50 @@ Procedure:
    read `infra/models.json` `naming`), so there is nothing else to change for naming to stay 1:1.
 3. `azd up`. Model deployments, Foundry accounts/projects, and the whole stack come up under the new
    names.
+3a. **Custom domains: bind them *after* the first provision, not during it.**
+
+   Set `AI4IA_WEB_CUSTOM_DOMAIN`, `AI4IA_PROXY_CUSTOM_DOMAIN`, and both
+   `*_MANAGED_CERT_NAME` variables to **empty** before step 3, then re-provision
+   once DNS has moved. This is not a preference — the first provision *fails*
+   otherwise, and it fails late.
+
+   Why: when `webCustomDomain`/`proxyCustomDomain` is non-empty, `web.bicep` and
+   `gateway.bicep` create a `managedCertificates` resource with
+   `domainControlValidation: 'CNAME'`. Azure only issues that certificate after it
+   can verify the hostname resolves to **this** environment — via the `CNAME` to
+   the app's `*.azurecontainerapps.io` FQDN, or the `asuid.<host>` `TXT` record
+   holding this app's `customDomainVerificationId`. During a migration both still
+   point at the *old* tenant's app, and the new app does not exist yet to point
+   them at. So issuance fails, the ARM resource fails, and the whole `azd up`
+   fails — after the Foundry accounts, gateway, and data tier are already built.
+
+   Order that works:
+
+   1. Provision with all four domain variables empty. Everything comes up on the
+      default `*.azurecontainerapps.io` hostnames and is fully usable.
+   2. Read the new coordinates:
+
+      ```powershell
+      az containerapp show -g rg-ai4ia-<env> -n ca-web-<env> `
+        --query "{fqdn:properties.configuration.ingress.fqdn, verificationId:properties.customDomainVerificationId}"
+      ```
+
+   3. **Cutover DNS** at your provider: point `CNAME <host>` at the new `fqdn`
+      and set `TXT asuid.<host>` to the new `verificationId`. Repeat for the proxy
+      hostname. Allow the old TTL to expire before continuing — validation reads
+      public DNS, not your zone file.
+   4. Set `AI4IA_WEB_CUSTOM_DOMAIN` / `AI4IA_PROXY_CUSTOM_DOMAIN` and re-provision.
+      Leave `*_MANAGED_CERT_NAME` empty: with no pinned name Bicep derives a stable
+      one (`mc-<host-with-dashes>`), which is what you want in a tenant that has no
+      pre-existing cert to adopt. Pinning a name copied from the old tenant does
+      not adopt anything — that cert lives in the old tenant's managed environment
+      — it just names the new one confusingly.
+   5. Optional: once issued, record the actual names back into
+      `AI4IA_*_MANAGED_CERT_NAME` so later deploys are explicit rather than derived.
+
+   Because the binding lives in Bicep rather than being added imperatively, once
+   step 4 succeeds it is durable — subsequent deploys re-assert it instead of
+   wiping it (§2.5).
 4. **Foundry toolbox (data-plane, if used):** the toolbox is not created by `azd up`. After the
    deploy, run `python scripts/provision-foundry-toolbox.py --create` against the new project (the
    `infra/mcp-servers.json` entry is already portable — its APIM upstream URL is computed by bicep

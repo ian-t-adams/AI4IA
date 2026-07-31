@@ -355,29 +355,6 @@
       ]
     },
     {
-      "id": "o3-pro",
-      "displayName": "o3-pro",
-      "category": "reasoning",
-      "format": "OpenAI",
-      "api": "responses",
-      "contextWindow": 200000,
-      "maxOutputTokens": 100000,
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "deploymentName": "o3-pro-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "deploymentName": "o3-pro-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
       "id": "Mistral-Large-3",
       "displayName": "Mistral-Large-3",
       "category": "chat",
@@ -644,6 +621,35 @@
           "dataZone": "US",
           "sku": "GlobalStandard",
           "deploymentName": "MAI-Image-2.5-slurmfactory-westus-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "MAI-Image-2.5-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "MAI-Image-2.5-Pro",
+      "displayName": "MAI-Image-2.5-Pro",
+      "category": "image",
+      "format": "Microsoft",
+      "api": "chat",
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "options": [
+        {
+          "region": "westus",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "MAI-Image-2.5-Pro-slurmfactory-westus-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "MAI-Image-2.5-Pro-slurmfactory-swedencentral-glbl"
         }
       ]
     },
@@ -661,6 +667,12 @@
           "dataZone": "US",
           "sku": "GlobalStandard",
           "deploymentName": "MAI-Image-2.5-Flash-slurmfactory-westus-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "MAI-Image-2.5-Flash-slurmfactory-swedencentral-glbl"
         }
       ]
     },

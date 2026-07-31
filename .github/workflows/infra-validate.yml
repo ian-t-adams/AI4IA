@@ -102,5 +102,12 @@ jobs:
       - name: Deployment parameter validator tests
         run: python -m unittest scripts.tests.test_feature_prereqs
 
+      # The annotate-only Responsible AI posture runs under an approved
+      # guardrails-modification exception. Its failure mode is silent — a
+      # deployment that reverts to the blocking default still provisions fine and
+      # only surfaces as unexplained refusals in production — so pin it here.
+      - name: Responsible AI policy posture tests
+        run: python -m unittest scripts.tests.test_rai_policy
+
       - name: Bicep build (lint)
         run: bicep build infra/main.bicep --stdout > /dev/null

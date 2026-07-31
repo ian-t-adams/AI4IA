@@ -1,0 +1,5 @@
+<fragment>
+    <set-variable name="backendCatalogChunk7" value="@{
+        return new JObject();
+    }" />
+</fragment>
