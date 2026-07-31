@@ -21,9 +21,13 @@ window.AI4IA_META = {
     envName: "slurmfactory",
     appEnvironment: "prod",
     authProvider: "Microsoft Entra ID (workforce / B2B)",
-    subscription: "ca68cf94-f445-43f1-8379-3d0100e293a2",
+    subscription: "e852113b-6cb5-441c-ac68-26cff884e479",
     resourceGroup: "rg-ai4ia-slurmfactory",
-    tenant: "nomad-analytics",
+    // Directory display name as Entra actually reports it. The intended name is
+    // "Planet Express" (already what the subscriptions are named), but renaming a
+    // tenant is a directory write and this account is only Owner at the ARM root
+    // management group -- two separate permission planes. Purely cosmetic.
+    tenant: "Contoso",
     primaryRegion: "East US 2",
     regions: [
       { region: "East US 2", role: "Primary US model set, realtime, image/video, router, evaluations" },
