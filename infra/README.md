@@ -41,13 +41,19 @@ APIM realtime API because the proxy does not support WebSockets.
 
 ### Shared APIM cutover posture
 
-`apimcore.bicep` owns/adopts the unconditional existing `apim-mcp-<workload>-<environmentName>`
+`apimcore.bicep` owns the unconditional `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>`
 Basic v2 service (capacity 1), its system identity, and its sole diagnostic setting.
 `gateway.bicep` references it as existing and adds catalog model/realtime APIs, scoped
 subscriptions, policy fragments, and Foundry RBAC. The official MCP APIs are feature-gated
 inside `mcpgateway.bicep`; their product-scoped key is associated only with MCP APIs, so it cannot
 call `openai` or `openai/realtime` after consolidation. SimpleL7Proxy holds the model key;
 FastAPI holds distinct opaque proxy-ingress and realtime keys.
+
+The `-<uniqueSuffix>` is load-bearing, not cosmetic. APIM, API Center, and Foundry account
+names are unique across all of Azure, so the original unsuffixed names could only ever be
+deployed by the one subscription that already held them; standing the stack up in a new
+subscription failed with `ServiceAlreadyExists`. `scripts/tests/test_bicep_naming.py` now
+pins every globally unique name.
 
 The original Consumption APIM and every child remain unchanged as an inactive HTTP/SSE rollback
 plane; it receives no active traffic and is not deleted. Reusing `apim-mcp-*` adds no additional

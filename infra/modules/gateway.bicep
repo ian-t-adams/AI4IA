@@ -14,6 +14,9 @@ param workload string
 @description('Environment name (e.g. ai4ia-dev).')
 param environmentName string
 
+@description('Per-subscription uniqueness suffix. APIM service names are globally unique across Azure (they back <name>.azure-api.net), so the inactive Consumption rollback plane below must carry it or a redeploy into a *different* subscription fails with ServiceAlreadyExists.')
+param uniqueSuffix string
+
 @description('Container Apps managed environment resource ID.')
 param containerEnvId string
 
@@ -154,7 +157,7 @@ resource sharedApim 'Microsoft.ApiManagement/service@2024-06-01-preview' existin
 }
 
 resource legacyConsumptionApim 'Microsoft.ApiManagement/service@2024-05-01' = {
-  name: take('apim-${workload}-${environmentName}', 50)
+  name: take('apim-${workload}-${environmentName}-${uniqueSuffix}', 50)
   location: location
   tags: tags
   sku: {

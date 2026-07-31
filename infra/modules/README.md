@@ -11,7 +11,7 @@ Composable modules consumed by [`../main.bicep`](../main.bicep). Each module:
 
 Gateway-specific modules:
 
-- `apimcore.bicep` owns/adopts the unconditional shared `apim-mcp-*` Basic v2 service,
+- `apimcore.bicep` owns the unconditional shared `apim-mcp-*` Basic v2 service,
   its system identity, and diagnostic setting.
 - `mcpgateway.bicep` references that service as existing and owns the feature-gated
   official MCP backends/APIs/policies/product/key.

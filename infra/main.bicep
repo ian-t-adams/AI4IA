@@ -610,6 +610,7 @@ module apimcore 'modules/apimcore.bicep' = {
     tags: tags
     workload: workload
     environmentName: environmentName
+    uniqueSuffix: uniqueSuffix
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     apimPublisherEmail: apimPublisherEmail
   }
@@ -629,6 +630,7 @@ module gateway 'modules/gateway.bicep' = {
     tags: tags
     workload: workload
     environmentName: environmentName
+    uniqueSuffix: uniqueSuffix
     containerEnvId: platform.outputs.containerEnvId
     sharedApimName: apimcore.outputs.apimName
     sharedApimResourceId: apimcore.outputs.apimId
@@ -689,11 +691,19 @@ module gateway 'modules/gateway.bicep' = {
 // The endpoint is built from the SAME start-computable naming the foundry module
 // uses (foundryToken + environmentName + primary region), NOT from foundry's module
 // output -- that avoids a cycle, since the foundry module already depends on the MCP
-// shared APIM identity for the toolbox role grant. Must stay in sync with
-// foundry.bicep's `projectEndpoint` output and the account/project names below.
-var primaryRegionName = regionNames[primaryFoundryIndex]
-var primaryFoundryAccountNameComputed = take('mf-${foundryToken}-${environmentName}-${primaryRegionName}', 60)
-var primaryFoundryProjectNameComputed = take('proj-default-${foundryToken}-${environmentName}-${primaryRegionName}', 60)
+// shared APIM identity for the toolbox role grant.
+//
+// The account names are computed ONCE here and indexed both by the foundry module
+// loop below and by the primary-project endpoint, so the two cannot drift. They
+// carry uniqueSuffix because a Foundry account takes a globally unique custom
+// subdomain (<account>.services.ai.azure.com, built directly below): without it a
+// deploy into a *different* subscription collides with whichever environment
+// already holds the unsuffixed name. Project names are NOT suffixed -- a project is
+// a child of the account, so it only has to be unique within it.
+var foundryAccountNames = [for r in regionList: take('mf-${foundryToken}-${environmentName}-${r.name}-${uniqueSuffix}', 60)]
+var foundryProjectNames = [for r in regionList: take('proj-default-${foundryToken}-${environmentName}-${r.name}', 60)]
+var primaryFoundryAccountNameComputed = foundryAccountNames[primaryFoundryIndex]
+var primaryFoundryProjectNameComputed = foundryProjectNames[primaryFoundryIndex]
 var primaryFoundryProjectEndpoint = 'https://${toLower(primaryFoundryAccountNameComputed)}.services.ai.azure.com/api/projects/${primaryFoundryProjectNameComputed}'
 var rawMcpServers = loadJsonContent('mcp-servers.json').servers
 var officialMcpServers = [
@@ -731,6 +741,7 @@ module apicenter 'modules/apicenter.bicep' = if (enablePrivateToolCatalog) {
     tags: tags
     workload: workload
     environmentName: environmentName
+    uniqueSuffix: uniqueSuffix
   }
 }
 
@@ -942,8 +953,8 @@ module foundry 'modules/foundry.bicep' = [for (r, i) in regionList: {
   params: {
     location: r.name
     tags: tags
-    accountName: take('mf-${foundryToken}-${environmentName}-${r.name}', 60)
-    projectName: take('proj-default-${foundryToken}-${environmentName}-${r.name}', 60)
+    accountName: foundryAccountNames[i]
+    projectName: foundryProjectNames[i]
     dataPlanePrincipalIds: nativeFoundryPrincipalIds
     toolboxPrincipalIds: (i == primaryFoundryIndex) ? foundryToolboxApimPrincipal : []
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId

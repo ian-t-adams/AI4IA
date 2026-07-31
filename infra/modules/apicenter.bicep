@@ -25,6 +25,9 @@ param workload string
 @description('Environment name (e.g. ai4ia-dev).')
 param environmentName string
 
+@description('Per-subscription uniqueness suffix. API Center service names are globally unique across Azure, so this must be part of the name or a redeploy into a *different* subscription collides with the environment that already holds the unsuffixed name.')
+param uniqueSuffix string
+
 // ---------------- API Center (private tool catalog) ----------------
 // Free plan. The `sku` MUST be declared explicitly: Azure defaults it to Free on
 // CREATE, but a later UPDATE (any redeploy) sends a null sku and fails validation
@@ -32,7 +35,7 @@ param environmentName string
 // here. System-assigned identity is included so the catalog can later be granted
 // read access from Foundry / consumers without a resource replace.
 resource apiCenter 'Microsoft.ApiCenter/services@2024-03-01' = {
-  name: take('apic-${workload}-${environmentName}', 90)
+  name: take('apic-${workload}-${environmentName}-${uniqueSuffix}', 90)
   location: location
   tags: tags
   sku: {

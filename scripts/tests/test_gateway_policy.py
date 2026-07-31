@@ -495,7 +495,12 @@ class GatewayPolicyTests(unittest.TestCase):
         api = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
 
         # Consumption and every original child stay as the inactive rollback plane.
-        self.assertIn("name: take('apim-${workload}-${environmentName}', 50)", gateway)
+        # The name carries uniqueSuffix (see scripts/tests/test_bicep_naming.py):
+        # APIM names are globally unique, so the unsuffixed form could only ever
+        # deploy in the subscription that already owned it.
+        self.assertIn(
+            "name: take('apim-${workload}-${environmentName}-${uniqueSuffix}', 50)", gateway
+        )
         self.assertIn("name: 'Consumption'", gateway)
         for legacy_child in (
             "foundryEndpointValues", "modelPolicyFragments", "modelsApi",
@@ -538,7 +543,10 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("gatewayBaseUrl: apimcore.outputs.gatewayUrl", main)
         self.assertIn("[apimcore.outputs.principalId]", main)
 
-        self.assertIn("name: take('apim-mcp-${workload}-${environmentName}', 50)", apimcore)
+        self.assertTrue(
+            "name: take('apim-mcp-${workload}-${environmentName}-${uniqueSuffix}', 50)" in apimcore,
+            "apimcore must name the shared BasicV2 service with the uniqueness suffix",
+        )
         self.assertIn("name: 'BasicV2'", apimcore)
         self.assertIn("resource apimDiagnostics", apimcore)
 
@@ -547,7 +555,7 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertNotIn("param enableOfficialMcp", mcp)
         self.assertNotIn("resource apimDiagnostics", mcp)
         self.assertNotIn("name: 'BasicV2'", mcp)
-        self.assertNotIn("take('apim-mcp-${workload}-${environmentName}', 50)", mcp)
+        self.assertNotIn("take('apim-mcp-${workload}", mcp)
         self.assertIn("resource mcpProduct", mcp)
         self.assertIn("resource mcpProductApis", mcp)
         self.assertIn("scope: '/products/ai4ia-mcp'", apimcore)

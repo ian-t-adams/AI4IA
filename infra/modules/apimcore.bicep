@@ -1,4 +1,4 @@
-// Shared active APIM plane: adopts the existing apim-mcp-* Basic v2 service so
+// Shared active APIM plane: owns the apim-mcp-* Basic v2 service so
 // model/realtime and optional official-MCP children attach to one gateway.
 @description('Location for the shared active APIM service.')
 param location string
@@ -21,9 +21,12 @@ param apimPublisherEmail string
 @description('APIM publisher org name.')
 param apimPublisherName string = 'AI4IA'
 
+@description('Per-subscription uniqueness suffix. APIM service names are globally unique across Azure (they back <name>.azure-api.net), so this must be part of the name or a redeploy into a *different* subscription fails with ServiceAlreadyExists against the environment that already holds the unsuffixed name.')
+param uniqueSuffix string
+
 
 resource apim 'Microsoft.ApiManagement/service@2024-05-01' = {
-  name: take('apim-mcp-${workload}-${environmentName}', 50)
+  name: take('apim-mcp-${workload}-${environmentName}-${uniqueSuffix}', 50)
   location: location
   tags: tags
   sku: {

@@ -109,5 +109,14 @@ jobs:
       - name: Responsible AI policy posture tests
         run: python -m unittest scripts.tests.test_rai_policy
 
+      # Globally unique resource names (APIM, API Center, Foundry accounts,
+      # Key Vault, storage, ACR, Cosmos, Search, Event Hubs, App Config,
+      # PostgreSQL) must vary per subscription. Omitting the suffix deploys
+      # fine into the subscription that already owns the name and only fails
+      # in a *different* one — i.e. during a tenant migration, late in the
+      # provision, after the data tier already exists.
+      - name: Globally unique resource naming tests
+        run: python -m unittest scripts.tests.test_bicep_naming
+
       - name: Bicep build (lint)
         run: bicep build infra/main.bicep --stdout > /dev/null
