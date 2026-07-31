@@ -490,6 +490,28 @@ config edits plus the normal deploy — no code changes. What varies per environ
 > `test_every_azd_parameter_token_is_reachable_from_ci` now fails CI if a parameter token
 > is added without a matching export.
 
+> **Exporting a variable that has no repo variable is safe — do not add `|| 'default'`
+> fallbacks to "protect" against it.** GitHub Actions expands `${{ vars.MISSING }}` to an
+> *empty string* rather than omitting the variable, so it is reasonable to worry that
+> exporting an unset knob overwrites a non-empty parameter default with `''`. It does not:
+> azd's `${VAR=default}` resolves an empty value to the **default**, i.e. it behaves like
+> POSIX `${VAR:-default}`, not `${VAR=default}`. Verified live against
+> `main`'s own workflow — with `AI4IA_POSTGRES_LOCATION`, `AI4IA_SEARCH_LOCATION`, and
+> `AI4IA_API_CENTER_LOCATION` all *unset* as repo variables, the resulting subscription
+> deployment resolved them to `centralus`, `eastus`, and `eastus` respectively:
+>
+> ```powershell
+> az deployment sub show -n <name> --query properties.parameters -o json
+> ```
+>
+> This matters most for `AI4IA_POSTGRES_LOCATION`, because `main.bicep` derives
+> `postgresEnabled = !empty(postgresLocation)` — had empty won, exporting the unset
+> variable would have **disabled and torn down the Postgres flexible server**. The
+> `|| 'literal'` fallbacks that some entries do carry (`AI4IA_PROXY_WORKERS`,
+> `AI4IA_MEMORY_STORE`) exist to pin a value that differs from the parameter default, not
+> to guard against empty. Re-confirm with the query above rather than re-deriving this
+> from first principles.
+
 Deliberately **not** in that list, because they need no per-tenant edit:
 
 - **Voice Live Origin allowlist.** Bicep derives it from the web app this deployment

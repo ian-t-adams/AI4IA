@@ -122,6 +122,11 @@ jobs:
       # are each capacity/offer constrained per region and are the documented remedy
       # for LocationIsOfferRestricted (deployment.md section 7.1) -- a remedy that does
       # not work if the pipeline cannot pass the override.
+      # No `|| 'default'` fallback on purpose: none of these three has a repo variable
+      # today, so Actions expands them to '', and azd resolves an empty ${VAR=default}
+      # to the default (verified live -- they landed on centralus/eastus/eastus). A
+      # fallback here would be dead weight that has to be kept in sync with
+      # main.parameters.json by hand. Do not "harden" this; see deployment.md section 3.
       AI4IA_POSTGRES_LOCATION: ${{ vars.AI4IA_POSTGRES_LOCATION }}
       AI4IA_SEARCH_LOCATION: ${{ vars.AI4IA_SEARCH_LOCATION }}
       AI4IA_API_CENTER_LOCATION: ${{ vars.AI4IA_API_CENTER_LOCATION }}
