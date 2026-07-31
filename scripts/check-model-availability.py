@@ -16,7 +16,9 @@ things can be wrong, and a subscription can pass some while failing others:
 * **Quota** -- is there capacity left to deploy it? A brand-new subscription is
   offered nearly everything but ships with small default quotas, and several
   image/realtime/audio models default to caps in the single digits. Availability
-  says yes; the deployment still fails with `InsufficientQuota`.
+  says yes; the deployment still fails with `InsufficientQuota`. Note that only
+  `capacity > limit` is treated as blocking -- see `evaluate_quota` for why the
+  reported `currentValue` is not trustworthy enough to fail a run on.
 
 None of that is visible until `azd provision` is already running. Foundry model
 deployments are created late, so either failure lands after the resource group,
@@ -166,18 +168,37 @@ def index_quota(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 def evaluate_quota(
     required: list[dict[str, str]], index: dict[str, dict[str, Any]]
 ) -> tuple[list[str], list[str]]:
-    """Compare one region's requested capacity against remaining quota.
+    """Compare one region's requested capacity against quota.
 
     Requested capacity is summed per model+SKU: several catalog deployments of
     the same model in one region draw down a single shared counter, so checking
     them individually would let a pair that each fit -- but together do not --
     pass.
 
-    Exceeding quota is an error; `azd provision` fails on it. A counter that
-    cannot be found is only a warning, because its absence is ambiguous: it may
-    mean no quota is granted, or merely that Azure spells that counter in a way
-    this mapping does not reconcile. Treating it as fatal would block a standup
-    over a naming quirk, which is the more likely of the two.
+    **Only `capacity > limit` is an error.** That is unarguable: the catalog is
+    asking for more than the subscription could ever hold, and no retry helps.
+
+    Exceeding *remaining* quota (`limit - currentValue`) is only a **warning**,
+    because `currentValue` is demonstrably not the number ARM enforces against:
+
+    * `OpenAI.GlobalStandard.text-embedding-3-large` reports `1000/1000` in a
+      region with **no** deployment of it at all -- and the 120-capacity
+      deployment in the other region succeeded while its counter read the same
+      saturated value.
+    * Several counters report `current == limit` for models that have never been
+      deployed in the subscription, which reads as "0 available" for something
+      that in fact deploys fine.
+    * During a provision the value also carries transient in-flight
+      reservations, so it is high precisely when a retry is about to succeed.
+
+    Blocking on it would strand a standup on a model that deploys -- the exact
+    failure mode this script exists to prevent. Reporting it loudly as a warning
+    keeps the real signal (a genuine `InsufficientQuota`) visible without the
+    false positives.
+
+    A counter that cannot be found is also a warning, because its absence is
+    ambiguous: it may mean no quota is granted, or merely that Azure spells that
+    counter in a way this mapping does not reconcile.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -195,12 +216,30 @@ def evaluate_quota(
                 "Confirm with `az cognitiveservices usage list -l <region>`."
             )
             continue
-        available = entry["limit"] - entry["current"]
-        if capacity > available:
+        limit = entry["limit"]
+        if capacity > limit:
             errors.append(
-                f"{name} ({sku}): needs {capacity} but only {available:.0f} left "
-                f"of a {entry['limit']:.0f} limit [{entry['counter']}]. "
-                "Request a quota increase or lower `capacity` in infra/models.json."
+                f"{name} ({sku}): needs {capacity} but the subscription limit is "
+                f"{limit:.0f} [{entry['counter']}]. Request a quota increase or lower "
+                "`capacity` in infra/models.json."
+            )
+            continue
+        available = limit - entry["current"]
+        if capacity > available:
+            warnings.append(
+                f"{name} ({sku}): needs {capacity}; limit {limit:.0f} is enough, but the "
+                f"counter reports {entry['current']:.0f} already used, leaving "
+                f"{available:.0f} [{entry['counter']}]. currentValue is unreliable "
+                "(it saturates for undeployed models and includes in-flight "
+                "reservations), so this is not treated as blocking -- but if the "
+                "provision fails with InsufficientQuota on this model, it is real."
+            )
+        if capacity == limit:
+            warnings.append(
+                f"{name} ({sku}): needs {capacity}, which is the entire {limit:.0f} "
+                f"limit [{entry['counter']}]. Zero headroom, so any concurrent "
+                "reservation -- including a retry of this same provision -- fails it. "
+                "Re-running usually clears it."
             )
     return errors, warnings
 

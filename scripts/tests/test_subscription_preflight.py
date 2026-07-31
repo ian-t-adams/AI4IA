@@ -403,25 +403,45 @@ class QuotaEvaluationTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertTrue("needs 10" in errors[0], errors[0])
 
-    def test_capacity_exactly_at_the_limit_is_allowed(self) -> None:
-        """16 catalog deployments sit exactly at their cap; that deploys fine."""
+    def test_capacity_exactly_at_the_limit_warns_but_does_not_block(self) -> None:
+        """16 catalog deployments sit exactly at their cap, and they do deploy.
+
+        Zero headroom is fragile rather than impossible: it succeeds on a clean
+        run and fails on a retry that still holds the previous reservation,
+        which is exactly what happened to the three MAI-Image models.
+        """
         errors, warnings = AVAILABILITY.evaluate_quota(
             [{"name": "gpt-image-2", "sku": "GlobalStandard", "capacity": 2}], self._index(2)
         )
-        self.assertEqual((errors, warnings), ([], []))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("entire 2 limit", warnings[0])
 
-    def test_quota_already_consumed_is_subtracted(self) -> None:
-        """Comparing against `limit` instead of the remainder is the easy bug.
+    def test_consumed_quota_warns_rather_than_blocking(self) -> None:
+        """`currentValue` is not the number ARM enforces against.
 
-        It passes on an empty subscription and only fails on a redeploy into a
-        populated one -- the case least likely to be tested.
+        `OpenAI.GlobalStandard.text-embedding-3-large` reports 1000/1000 in a
+        region with no such deployment at all, while the 120-capacity deployment
+        in the *other* region succeeded against an identically saturated
+        counter. Blocking on this reading would strand a standup on a model that
+        demonstrably deploys, so it is reported and not enforced.
         """
-        errors, _ = AVAILABILITY.evaluate_quota(
-            [{"name": "gpt-image-2", "sku": "GlobalStandard", "capacity": 2}],
+        errors, warnings = AVAILABILITY.evaluate_quota(
+            [{"name": "gpt-image-2", "sku": "GlobalStandard", "capacity": 1}],
             self._index(limit=2, current=2),
         )
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("already used", warnings[0])
+
+    def test_over_limit_still_blocks_even_with_quota_free(self) -> None:
+        """`capacity > limit` is unarguable: no retry and no release can fix it."""
+        errors, _ = AVAILABILITY.evaluate_quota(
+            [{"name": "gpt-image-2", "sku": "GlobalStandard", "capacity": 3}],
+            self._index(limit=2, current=0),
+        )
         self.assertEqual(len(errors), 1)
-        self.assertTrue("0 left" in errors[0], errors[0])
+        self.assertIn("subscription limit is 2", errors[0])
 
     def test_repeated_deployments_share_one_counter(self) -> None:
         """Two deployments that each fit can still exceed the shared quota.

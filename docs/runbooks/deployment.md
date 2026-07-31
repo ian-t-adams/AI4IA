@@ -941,6 +941,48 @@ python scripts/gen-gateway-policy.py
 python scripts/validate-catalog.py
 ```
 
+### 7.9 `InsufficientQuota` on a model deployment
+
+```text
+models-swedencentral  DeploymentFailed
+  InsufficientQuota: This operation require 2 new capacity in quota
+  "Microsoft.MAIImage.GlobalStandard", which is bigger than the current available
+  capacity 0. The current quota usage is 2 and the quota limit is 2.
+```
+
+There are two different failures behind this one error code, and they need opposite
+responses. Establish which before changing anything:
+
+```powershell
+az cognitiveservices usage list -l swedencentral `
+  --query "[?contains(name.value,'MAI-Image')].{n:name.value,used:currentValue,lim:limit}" -o table
+```
+
+**Transient (the common one) — re-run, change nothing.** The reported usage includes
+**in-flight reservations**, so a deployment that is mid-provision or that just failed and
+rolled back is still counted for a short window. On the run that produced the error above,
+no MAI-Image deployment existed anywhere in the subscription; the counter read `2/2` during
+the failure and `0/2` a few minutes later. Any model whose catalog capacity **equals** its
+limit has zero headroom and is therefore exposed to this — a retry of the same provision
+can collide with its own previous attempt. The preflight lists every such model as a
+warning.
+
+**Genuine — quota really is too small.** Only when catalog `capacity` exceeds the `limit`
+itself. No amount of retrying fixes it; either lower `capacity` in `infra/models.json` or
+request a quota increase for that region+SKU. The preflight blocks on this case.
+
+Do **not** treat a saturated `currentValue` as proof of the genuine case. It is not
+reliable: `OpenAI.GlobalStandard.text-embedding-3-large` reports `1000/1000` in regions
+where no such deployment exists, and the 120-capacity deployment that *did* succeed did so
+against an identically saturated counter. `check-model-availability.py` reports the reading
+but deliberately does not fail on it — blocking there would strand a standup on models that
+demonstrably deploy. Treat it as a hint to check only if the provision actually fails on
+that model.
+
+Remember ARM aborts the whole `models-<region>` nested deployment at the first failure, so
+one error can be hiding others. Re-running the preflight after the failure is the cheapest
+way to see the full picture.
+
 ## APIM Basic v2 migration guardrail
 
 The active model/realtime/MCP plane is the `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the additive `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the existing `/openai/realtime` API and subscription. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and both voice providers share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic — it never receives Speech Voice Live traffic either. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.
