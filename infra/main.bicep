@@ -84,7 +84,7 @@ param entraApiScope string = ''
 @description('Enable Voice Live end to end: the API realtime relay and the browser live-voice control. Default OFF (no behavior change).')
 param voiceLiveEnabled bool = false
 
-@description('Comma-separated browser Origin allowlist for the live-voice relay handshake (required when voiceLiveEnabled in a deployed env; the relay fails closed otherwise).')
+@description('Additional comma-separated browser Origin allowlist entries for the live-voice relay handshake. The deployed web app origins (the Container Apps default FQDN, plus webCustomDomain when set) are ALWAYS derived and included, so this is only needed for extra origins. Leave empty for a normal deployment; never hardcode an environment hostname here.')
 param realtimeAllowedOrigins string = ''
 
 @description('Enable governed tool calling inside a live voice session (calculator, current time). Inert unless voiceLiveEnabled is also true. Default OFF in bicep (matches the image/video feature pattern); set TRUE in main.parameters.json so enabling Voice Live in the live env gives the assistant tools.')
@@ -579,6 +579,29 @@ var effectiveCuBaseUrl = !empty(cuBaseUrl) ? cuBaseUrl : primaryFoundryEndpoint
 var effectiveCodeInterpreterBaseUrl = !empty(codeInterpreterBaseUrl) ? codeInterpreterBaseUrl : primaryFoundryEndpoint
 var effectiveCodeInterpreterModel = !empty(codeInterpreterModel) ? codeInterpreterModel : 'gpt-4.1-mini-${subscriptionToken}-${location}-glbl'
 
+// --- Realtime (Voice Live) browser Origin allowlist ---
+// The relay fails closed on an Origin it doesn't recognize, so the allowlist has
+// to name the *deployed* web app. Hardcoding a hostname here is a tenant-move
+// hazard: a stale entry still satisfies the api's "non-empty allowlist" startup
+// check, so the app boots green and then 1008s every real browser. Derive the
+// origins this deployment actually serves instead — the Container Apps default
+// FQDN (always) plus the bound custom domain (when one is configured) — and union
+// them with whatever the operator supplied. Result: a clean-room standup in a new
+// tenant/subscription is correct with zero configuration, and
+// AI4IA_REALTIME_ALLOWED_ORIGINS remains available for extra origins.
+// `webAppName` is passed to the web module so this derivation cannot drift from
+// the resource name.
+var webAppName = 'ca-web-${environmentName}'
+var derivedRealtimeOrigins = union(
+  [ 'https://${webAppName}.${platform.outputs.containerEnvDefaultDomain}' ],
+  empty(trim(webCustomDomain)) ? [] : [ 'https://${trim(webCustomDomain)}' ]
+)
+var suppliedRealtimeOrigins = map(
+  filter(split(realtimeAllowedOrigins, ','), o => !empty(trim(o))),
+  o => trim(o)
+)
+var effectiveRealtimeAllowedOrigins = join(union(derivedRealtimeOrigins, suppliedRealtimeOrigins), ',')
+
 module apimcore 'modules/apimcore.bicep' = {
   name: 'apimcore'
   scope: rg
@@ -764,7 +787,7 @@ module api 'modules/api.bicep' = {
     // Voice Live realtime relay. Default OFF; the Origin allowlist is
     // required (non-empty) when enabling in a deployed env or the relay fails closed.
     realtimeEnabled: voiceLiveEnabled
-    realtimeAllowedOrigins: realtimeAllowedOrigins
+    realtimeAllowedOrigins: effectiveRealtimeAllowedOrigins
     realtimeToolsEnabled: voiceLiveToolsEnabled
     // Speech Voice Live: a second, additive realtime provider. Default OFF; the
     // base URL/key come only from the gateway module's dedicated APIM
@@ -860,6 +883,7 @@ module web 'modules/web.bicep' = {
     devUser: appEnvironment == 'prod' ? '' : webDevUser
     customDomain: webCustomDomain
     managedCertificateName: webManagedCertName
+    appName: webAppName
     containerEnvName: platform.outputs.containerEnvName
     // Browser sign-in mirrors the api: only enabled when the api enforces entra
     // and a web client id is supplied. Scope defaults to <audience>/.default.

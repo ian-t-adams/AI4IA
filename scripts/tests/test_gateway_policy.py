@@ -1305,6 +1305,9 @@ class FeaturePrerequisiteTests(unittest.TestCase):
         self.assertIn("voiceDefaultProvider must be a member of voiceProviderAllowlist", output)
 
     def test_speech_voice_live_complete_configuration_passes(self) -> None:
+        # No realtimeAllowedOrigins here on purpose: main.bicep now derives the
+        # allowlist from the web app this deployment creates, and the validator
+        # rejects a literal hostname pinned in parameters as tenant-coupled.
         result, output = self.run_validator(
             {
                 "owner": "operator",
@@ -1313,7 +1316,6 @@ class FeaturePrerequisiteTests(unittest.TestCase):
                 "speechVoiceLiveEnabled": True,
                 "voiceProviderAllowlist": "azure_openai,speech_voice_live",
                 "voiceDefaultProvider": "azure_openai",
-                "realtimeAllowedOrigins": "https://example.test",
             }
         )
         self.assertEqual(result, 0)

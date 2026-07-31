@@ -34,15 +34,31 @@ updates:
       actions:
         patterns: ["*"]
 
+  # Base images track the versions CI actually tests (app-ci pins Node 22 and
+  # Python 3.12; docker-build then builds the images at those versions). Major
+  # bumps are therefore NOT a dependency decision Dependabot can make on its own:
+  # raising the image past the CI toolchain silently ships a runtime no job has
+  # ever exercised. That happened twice -- node:22-alpine -> node:26-alpine and
+  # python:3.12-slim -> python:3.14-slim both merged unreviewed and were reverted
+  # on audit (see AGENTS.md). Majors are ignored so the image and the CI matrix
+  # move together, in one deliberate change that updates the workflow, the
+  # Dockerfile, and the engines/requires-python floors. Minor/patch (security
+  # fixes for the pinned major) still flow through automatically.
   - package-ecosystem: docker
     directory: /app/api
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: docker
     directory: /app/web
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: docker
     directory: /proxy

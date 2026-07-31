@@ -37,5 +37,11 @@ ships, add one when a real gap appears.
   (7 memories migrated + verified); full owner-scoped CRUD with ETags/idempotency.
 - Staged-cutover deploy wiring (`AI4IA_MEMORY_STORE`) and the clean-room reproduction doc
   gaps (Entra app registrations, Cosmos vector-capability ordering) were closed.
+- **New-tenant standup readiness.** Tenant-coupled defaults removed from the IaC and the
+  operator scripts; subscription preflights added for resource-provider registration and
+  per-subscription model availability. Validated end to end against an empty subscription
+  in a new tenant — see [deployment runbook §3](./runbooks/deployment.md).
 
-See [`CHANGELOG.md`](../CHANGELOG.md) for the full shipped history.
+[`CHANGELOG.md`](../CHANGELOG.md) tracks changes from this point forward. It does not yet
+carry the project's earlier history: this repo has no reviewed release tags to backfill
+from, and the changelog's own policy is not to invent them.

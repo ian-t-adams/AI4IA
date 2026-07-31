@@ -5,21 +5,24 @@
 .DESCRIPTION
   Deletes the target resource group(s) and purges soft-deleted Cognitive/Key Vault
   resources so the stack can be rebuilt from IaC. SAFE BY DEFAULT: lists what would
-  be deleted unless -Force is supplied. The built-in target remains the legacy
-  pre-AI4IA rg-aiforia-slurmfactory stack; pass -ResourceGroups and -PurgeNameFilter
-  explicitly for the live rg-ai4ia-slurmfactory environment. Never touches
-  NetworkWatcherRG, Default-ActivityLogAlerts, or DefaultResourceGroup-* (hard-coded
-  protect list).
+  be deleted unless -Force is supplied. Never touches NetworkWatcherRG,
+  Default-ActivityLogAlerts, or DefaultResourceGroup-* (hard-coded protect list).
+
+  -ResourceGroups and -PurgeNameFilter are REQUIRED and have no defaults. A
+  destructive script must never carry a built-in target: a default resource group
+  is wrong the moment the stack moves to another subscription or tenant, and a
+  default purge filter is what turns "clean up my stack" into "purge every
+  soft-deleted Cognitive account and Key Vault in this subscription".
 
 .EXAMPLE
-  ./scripts/teardown.ps1 -Subscription ca68cf94-... -ResourceGroups rg-ai4ia-slurmfactory -PurgeNameFilter ai4ia
-  ./scripts/teardown.ps1 -Subscription ca68cf94-... -ResourceGroups rg-ai4ia-slurmfactory -PurgeNameFilter ai4ia -Force
+  ./scripts/teardown.ps1 -Subscription <id> -ResourceGroups rg-ai4ia-<env> -PurgeNameFilter ai4ia
+  ./scripts/teardown.ps1 -Subscription <id> -ResourceGroups rg-ai4ia-<env> -PurgeNameFilter ai4ia -Force
 #>
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = "High")]
 param(
     [Parameter(Mandatory)] [string] $Subscription,
-    [string[]] $ResourceGroups = @("rg-aiforia-slurmfactory"),
-    [string] $PurgeNameFilter = "aiforia",
+    [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string[]] $ResourceGroups,
+    [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $PurgeNameFilter,
     [switch] $Force
 )
 

@@ -138,7 +138,7 @@
       "value": true
     },
     "realtimeAllowedOrigins": {
-      "value": "https://ai4ia.nomad-analytics.com"
+      "value": "${AI4IA_REALTIME_ALLOWED_ORIGINS=}"
     },
     "voiceLiveToolsEnabled": {
       "value": true

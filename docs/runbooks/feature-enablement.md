@@ -53,9 +53,15 @@ Set:
 
 ```text
 voiceLiveEnabled=true
-realtimeAllowedOrigins=https://<web-origin>
 voiceLiveToolsEnabled=true        # optional
 ```
+
+The Origin allowlist is **derived, not configured**: Bicep always folds the
+deployed web origins (the Container Apps default FQDN, plus `webCustomDomain`
+when one is bound) into `AI4IA_REALTIME_ALLOWED_ORIGINS`, so enabling Voice Live
+in a new environment needs no hostname entry and cannot inherit a stale one from
+another tenant. Set `AI4IA_REALTIME_ALLOWED_ORIGINS` only to add *extra* origins
+(it is union'd with the derived set, never a replacement).
 
 The browser connects directly to the API ingress for `/api/voice/live`; the API
 relay validates auth and Origin, resolves the realtime deployment from the model

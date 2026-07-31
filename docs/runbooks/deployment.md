@@ -403,9 +403,57 @@ config edits plus the normal deploy — no code changes. What varies per environ
 | Foundry account/project token | `infra/models.json` → `naming.foundryToken` | Names `mf-<token>-<env>-<region>` and the toolbox project endpoint. |
 | Postgres region (temporary) | `AI4IA_POSTGRES_LOCATION` | Required only while the legacy migration source/document-index fallback remains (see §7.1). |
 | API Center region | `AI4IA_API_CENTER_LOCATION` | Only if `enablePrivateToolCatalog=true`; not available in every region (see §7.2 / the API Center note). |
-| Custom domains | `AI4IA_*_CUSTOM_DOMAIN` / `*_MANAGED_CERT_NAME` | Leave empty for a vanilla hostname; see §2.5. |
+| Custom domains | `AI4IA_*_CUSTOM_DOMAIN` / `*_MANAGED_CERT_NAME` | Leave empty for a vanilla hostname; see §2.5. The values in §2.5's table are **this deployment's**, not portable — a new tenant has its own hostnames and certs. |
+| APIM publisher mailbox | `AI4IA_APIM_PUBLISHER_EMAIL` | Must be an operator-owned address in the new tenant. `validate-feature-prereqs.py` warns while it is still the `@example.com` placeholder. |
+| Owner / cost-center tags | `AI4IA_OWNER`, `AI4IA_COST_CENTER` | Accountability tags stamped on every resource; see [`naming-and-tagging.md`](../naming-and-tagging.md). |
+
+Deliberately **not** in that list, because they need no per-tenant edit:
+
+- **Voice Live Origin allowlist.** Bicep derives it from the web app this deployment
+  actually creates (Container Apps default FQDN + `webCustomDomain` when bound), so it
+  is correct in a new tenant with no configuration. `AI4IA_REALTIME_ALLOWED_ORIGINS`
+  only *adds* origins. (This used to be a hardcoded hostname in
+  `infra/main.parameters.json` — a stale value still satisfied the API's non-empty
+  allowlist startup check, so the stack came up green and then rejected every browser.)
+- **Built-in Azure role IDs** in `infra/modules/*.bicep` are the same GUIDs in every
+  tenant.
+- **Operator scripts.** None carry a default subscription, resource group, or purge
+  filter. `status-snapshot.ps1` resolves its target from the selected azd environment
+  (falling back to the current `az` context); `inventory.ps1`, `teardown.ps1`,
+  `purge-soft-deleted.ps1`, and `seed-models.ps1` require the target explicitly.
 
 Procedure:
+
+0. **Preflight the target subscription.** Both checks below are read-only and take
+   under a minute. They exist because the failures they catch surface *late* —
+   `azd provision` creates the resource group, Foundry accounts, gateway, and data
+   tier first, so a missing provider or an unavailable model kills the run after
+   the slow, expensive part already succeeded, leaving a half-built stack.
+
+   ```powershell
+   az login
+   az account set --subscription <new-subscription-id>
+
+   python scripts/check-resource-providers.py     # add --register to fix
+   python scripts/check-model-availability.py
+   ```
+
+   `check-resource-providers.py` derives the required namespaces from
+   `infra/**/*.bicep`, so it cannot drift when a module adds a resource type. An
+   untouched subscription typically has **most of them unregistered** — a fresh
+   one measured 18 of them missing. `--register` requests them all and waits for
+   `Registered`, which is asynchronous and can take several minutes.
+
+   `check-model-availability.py` compares `infra/models.json` against what the
+   subscription is actually entitled to deploy, per region. Model availability is
+   per-subscription: limited-access models need an approved request and partner
+   models need the Marketplace offer enabled, and neither is visible until the
+   deployment step. Version mismatches are reported as warnings, not errors,
+   because Azure commonly rolls a retired pinned version forward.
+
+   If a model is genuinely unavailable, either request access or drop its
+   deployment from `infra/models.json` and re-run `python scripts/gen-model-catalog.py`
+   (plus the generators in step 2).
 
 1. Set the repo variables for the new subscription/tenant/env (§2.3), plus
    `AI4IA_POSTGRES_LOCATION` while PostgreSQL is retained and (if used)
@@ -429,18 +477,28 @@ Procedure:
    deploy, run `python scripts/provision-foundry-toolbox.py --create` against the new project (the
    `infra/mcp-servers.json` entry is already portable — its APIM upstream URL is computed by bicep
    from the new project endpoint). See [`../foundry-toolbox.md`](../foundry-toolbox.md).
-5. **Break-glass ops scripts** (`scripts/inventory.ps1`, `teardown.ps1`, `purge-soft-deleted.ps1`)
-   default their `-ResourceGroup` / `-NameFilter` to the original environment on purpose (so they
-   cannot accidentally target the wrong stack). Pass explicit arguments for the new environment.
+5. **Break-glass ops scripts** (`scripts/inventory.ps1`, `teardown.ps1`,
+   `purge-soft-deleted.ps1`, `seed-models.ps1`) take their target explicitly — they have
+   no default subscription, resource group, or purge filter, so they cannot silently act
+   on the environment you moved away from. `purge-soft-deleted.ps1` reads
+   **subscription-wide** soft-delete lists, so its mandatory `-NameFilter` is what keeps
+   a purge scoped to this stack.
+6. **Regenerate the published status/inventory data** (only if you publish the portal):
+   `./scripts/status-snapshot.ps1` resolves the subscription, resource group, and probe
+   URLs from the selected azd environment, so run `azd env select <new-env>` first. The
+   checked-in `site/data/*.js` snapshots still describe the *previous* environment until
+   you do.
 
 Clean-room notes for a brand-new subscription/tenant:
 
 - **Entra app registrations** (§2.7) are per-tenant and not created by `azd`. Create the API + web
   SPA apps and set the four `AI4IA_ENTRA_*` variables before enabling `AI4IA_AUTH_PROVIDER=entra`,
   or the app returns `401`.
-- **Resource provider registration** — a fresh subscription may need
-  `az provider register -n Microsoft.DocumentDB -n Microsoft.CognitiveServices -n Microsoft.ApiManagement -n Microsoft.App -n Microsoft.DBforPostgreSQL`
-  (and EventHub/Search/ServiceBus if those features are on) before the first provision.
+- **Resource provider registration** — an untouched subscription has most of the required
+  providers unregistered, and provisioning fails partway through when it hits the first
+  one. Run `python scripts/check-resource-providers.py --register` (step 0 above) rather
+  than registering by hand: the script derives the full set from `infra/**/*.bicep`, so it
+  stays correct as modules change, and it waits for registration to actually complete.
 - **Activate memory** — `AI4IA_MEMORY_STORE` defaults to `disabled` in `deploy.yml` (fail-closed).
   A greenfield stand-up has no legacy `mem0` data to migrate, so set the `AI4IA_MEMORY_STORE` repo
   variable to `cosmos` and deploy — no migration runbook needed. (The [memory-migration

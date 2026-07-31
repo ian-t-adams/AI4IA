@@ -69,14 +69,33 @@ def main() -> int:
             if not text(parameter_value(parameters, name)):
                 errors.append(f"apiAuthProvider=entra requires {name}.")
 
+    # main.bicep derives the realtime Origin allowlist from the web app this
+    # deployment actually creates (Container Apps default FQDN + webCustomDomain
+    # when bound), so it is never empty and needs no per-environment value. What
+    # does need guarding is the reverse mistake, which is what this file used to
+    # mandate: pinning a literal hostname here. A stale hardcoded origin is still
+    # "non-empty", so it satisfies both this validator and the API's startup
+    # check while naming whatever tenant it was written for -- the stack then
+    # comes up green and rejects every browser on the Voice Live handshake.
+    # Additional origins belong in the AI4IA_REALTIME_ALLOWED_ORIGINS variable,
+    # which Bicep unions into the derived set.
+    raw_realtime_origins = parameter_value(parameters, "realtimeAllowedOrigins", "")
+    if (
+        isinstance(raw_realtime_origins, str)
+        and raw_realtime_origins.strip()
+        and PLACEHOLDER_RE.match(raw_realtime_origins.strip()) is None
+    ):
+        errors.append(
+            "realtimeAllowedOrigins must not hardcode a hostname in main.parameters.json "
+            "(found a literal value): the deployed web origins are derived in main.bicep, "
+            "and a literal is tenant-coupled. Use the AI4IA_REALTIME_ALLOWED_ORIGINS "
+            "variable to add extra origins."
+        )
+
     if truthy(parameter_value(parameters, "voiceLiveToolsEnabled", False)) and not truthy(
         parameter_value(parameters, "voiceLiveEnabled", False)
     ):
         errors.append("voiceLiveToolsEnabled=true is inert unless voiceLiveEnabled=true.")
-
-    if truthy(parameter_value(parameters, "voiceLiveEnabled", False)) and app_environment != "dev":
-        if not text(parameter_value(parameters, "realtimeAllowedOrigins")):
-            errors.append("voiceLiveEnabled=true outside dev requires realtimeAllowedOrigins.")
 
     # Speech Voice Live is a second, additive realtime provider. It must never be
     # reachable unless the master Voice Live gate is also on, its allowlist entry

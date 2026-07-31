@@ -7,23 +7,29 @@
   in a soft-deleted state, which blocks recreating same-named resources. This purges
   them. Destructive and irreversible - purged data cannot be recovered.
 
+  -NameFilter is REQUIRED. The soft-delete lists it reads
+  (`az cognitiveservices account list-deleted` / `az keyvault list-deleted`) are
+  SUBSCRIPTION-wide, not scoped to a resource group, so an empty filter matches
+  every soft-deleted Cognitive account and Key Vault in the subscription --
+  including resources owned by other stacks sharing it.
+
 .EXAMPLE
-  ./scripts/purge-soft-deleted.ps1 -Subscription ca68cf94-... -NameFilter ai4ia -WhatIf
-  ./scripts/purge-soft-deleted.ps1 -Subscription ca68cf94-... -NameFilter ai4ia -Force
+  ./scripts/purge-soft-deleted.ps1 -Subscription <id> -NameFilter ai4ia -WhatIf
+  ./scripts/purge-soft-deleted.ps1 -Subscription <id> -NameFilter ai4ia -Force
 #>
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = "High")]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'NameFilter',
     Justification = 'Consumed inside the Match nested function; the analyzer cannot resolve cross-scope use.')]
 param(
     [Parameter(Mandatory)] [string] $Subscription,
-    [string] $NameFilter = "",
+    [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $NameFilter,
     [switch] $Force
 )
 
 $ErrorActionPreference = "Stop"
 az account set --subscription $Subscription | Out-Null
 
-function Match($name) { return [string]::IsNullOrEmpty($NameFilter) -or $name -like "*$NameFilter*" }
+function Match($name) { return $name -like "*$NameFilter*" }
 
 Write-Host "== Soft-deleted Cognitive Services accounts ==" -ForegroundColor Cyan
 $cog = az cognitiveservices account list-deleted -o json | ConvertFrom-Json

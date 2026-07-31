@@ -22,31 +22,84 @@
   the existing federated (OIDC) identity used by deploy.yml.
 
 .PARAMETER Subscription
-  Target subscription id (default: the AI4IA live subscription).
+  Target subscription id. Defaults to the azd environment's AZURE_SUBSCRIPTION_ID,
+  then the current `az account show` context. Never a baked-in id -- a hardcoded
+  default silently points a new tenant's snapshot at the previous subscription.
 
 .PARAMETER ResourceGroup
-  Target resource group (default: rg-ai4ia-slurmfactory).
+  Target resource group. Defaults to the azd environment's AZURE_RESOURCE_GROUP.
 
 .PARAMETER WebUrl / ProxyUrl
-  Public ingress URLs probed for reachability.
+  Public ingress URLs probed for reachability. Default to the azd environment's
+  AZURE_WEB_URL / AZURE_PROXY_URL outputs (written by `azd provision`). An
+  endpoint with no resolvable URL is skipped rather than probed.
 
 .PARAMETER OutDir
   Where the .js data files are written (default: site/data next to this repo).
 
 .EXAMPLE
   ./scripts/status-snapshot.ps1
+
+.EXAMPLE
+  ./scripts/status-snapshot.ps1 -Subscription <id> -ResourceGroup rg-ai4ia-<env>
 #>
 [CmdletBinding()]
 param(
-    [string] $Subscription  = 'ca68cf94-f445-43f1-8379-3d0100e293a2',
-    [string] $ResourceGroup = 'rg-ai4ia-slurmfactory',
-    [string] $WebUrl        = 'https://ai4ia.nomad-analytics.com',
-    [string] $ProxyUrl      = 'https://genaiproxy.nomad-analytics.com',
+    [string] $Subscription  = '',
+    [string] $ResourceGroup = '',
+    [string] $WebUrl        = '',
+    [string] $ProxyUrl      = '',
     [string] $OutDir        = (Join-Path $PSScriptRoot '..\site\data')
 )
 
 $ErrorActionPreference = 'Stop'
 $nowIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+
+# --- Resolve the target environment ---------------------------------------
+# Every value below is discovered, never hardcoded. `azd provision` writes the
+# stack's own outputs (AZURE_SUBSCRIPTION_ID / AZURE_RESOURCE_GROUP /
+# AZURE_WEB_URL / AZURE_PROXY_URL) into the selected azd environment, so the
+# azd env is the authoritative description of "the deployment this checkout
+# points at". That is what makes this script correct in a new tenant or
+# subscription with no edits -- and what stops it from quietly snapshotting a
+# previous tenant's stack after a move.
+$repoRoot = Split-Path -Parent $PSScriptRoot
+
+function Get-AzdEnvValue {
+    param([Parameter(Mandatory)][string] $Name)
+
+    if (-not (Get-Command azd -ErrorAction SilentlyContinue)) { return $null }
+    try {
+        $value = (& azd env get-value $Name --cwd $repoRoot 2>$null | Select-Object -First 1)
+    } catch {
+        return $null
+    }
+    if ($LASTEXITCODE -ne 0) { return $null }
+    if ([string]::IsNullOrWhiteSpace($value)) { return $null }
+    $value = $value.Trim()
+    # azd prints an ERROR line to stdout in some failure modes; treat it as unset.
+    if ($value -like 'ERROR:*') { return $null }
+    return $value
+}
+
+if (-not $Subscription) { $Subscription = Get-AzdEnvValue 'AZURE_SUBSCRIPTION_ID' }
+if (-not $Subscription) {
+    $Subscription = (az account show --query id -o tsv --only-show-errors 2>$null)
+    if ($LASTEXITCODE -ne 0) { $Subscription = $null }
+}
+if (-not $Subscription) {
+    throw 'Could not resolve a subscription. Run `azd env select <env>` (or `az login`), or pass -Subscription <id>.'
+}
+
+if (-not $ResourceGroup) { $ResourceGroup = Get-AzdEnvValue 'AZURE_RESOURCE_GROUP' }
+if (-not $ResourceGroup) {
+    throw 'Could not resolve a resource group. Run `azd env select <env>` after a provision, or pass -ResourceGroup <name>.'
+}
+
+if (-not $WebUrl)   { $WebUrl   = Get-AzdEnvValue 'AZURE_WEB_URL' }
+if (-not $ProxyUrl) { $ProxyUrl = Get-AzdEnvValue 'AZURE_PROXY_URL' }
+
+Write-Host "Target: subscription $Subscription / resource group $ResourceGroup" -ForegroundColor Cyan
 
 # --- Friendly labels + logical grouping for each Azure resource type. Keeps the
 #     status page human-readable and drives the per-group layout on the site. ---
@@ -150,9 +203,17 @@ function Test-Endpoint([string]$name, [string]$url) {
     [pscustomobject]$obj
 }
 Write-Host 'Probing public endpoints' -ForegroundColor Cyan
+# An endpoint whose URL could not be resolved is reported as 'unknown' rather than
+# probed: a missing azd output is an unknown, not a confirmed outage.
+function Get-UnresolvedEndpoint([string]$name) {
+    [pscustomobject][ordered]@{
+        name = $name; url = ''; httpStatus = 0; ok = $false; state = 'unknown'
+        note = 'no URL resolved (set the azd env output or pass the parameter)'
+    }
+}
 $endpoints = @(
-    (Test-Endpoint 'Web app'      $WebUrl),
-    (Test-Endpoint 'Model proxy'  $ProxyUrl)
+    $(if ($WebUrl)   { Test-Endpoint 'Web app'     $WebUrl }   else { Get-UnresolvedEndpoint 'Web app' }),
+    $(if ($ProxyUrl) { Test-Endpoint 'Model proxy' $ProxyUrl } else { Get-UnresolvedEndpoint 'Model proxy' })
 )
 
 # --- 5) Summaries ---
