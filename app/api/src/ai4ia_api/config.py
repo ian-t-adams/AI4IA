@@ -210,6 +210,13 @@ class Settings(BaseSettings):
     admin_subjects: str | None = None
     admin_emails: str | None = None
     admin_api_secret: str | None = None
+    # Emit the SimpleL7Proxy priority band header (x-S7PPriority) on outbound
+    # gateway calls, derived server-side from the authenticated principal. Must
+    # stay in lockstep with the proxy's own `proxyPrioritiesEnabled`: the header
+    # only means anything once the proxy has reserved workers per band, and the
+    # proxy's reservations only bite once something sets the header. Default OFF
+    # so neither side changes behaviour until both are turned on together.
+    proxy_priorities_enabled: bool = False
     # Optional GLOBAL default limits applied to users without an override. All
     # unset == fully unlimited (the shipped posture). micro-USD to match the ledger.
     default_requests_per_minute: int | None = None
@@ -615,6 +622,18 @@ class Settings(BaseSettings):
     def allowed_tenants(self) -> list[str]:
         raw = self.entra_allowed_tenants or self.entra_tenant_id or ""
         return [t.strip() for t in raw.split(",") if t.strip()]
+
+    @property
+    def auth_provider_is_spoofable(self) -> bool:
+        """True when the wired identity is client-controlled and untrustworthy.
+
+        The dev provider derives identity from the ``X-Dev-User`` header. Locally
+        that is fine (the operator is the only caller); in a *deployed*
+        environment it means any client can name itself. Anything that grants
+        elevated standing on identity alone — admin authorization, proxy priority
+        promotion — must fail closed here rather than trust the claim.
+        """
+        return self.auth_provider == AuthProviderKind.dev and self.env != Environment.local
 
     @property
     def admin_subject_set(self) -> set[str]:

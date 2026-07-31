@@ -93,6 +93,27 @@ function Get-AppByName {
 
 function Write-Section { param([string]$Text) Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
 
+function Test-UserConsentAllowed {
+    <#
+      Can ordinary users consent for themselves? Returns $true / $false, or $null when the
+      policy cannot be read.
+
+      This is what decides whether a failed admin consent is a non-event or a hard block.
+      The tenant grants that ability by assigning a `ManagePermissionGrantsForSelf.*`
+      permission-grant policy to the default user role; if none is assigned, user consent
+      is switched off and an admin grant becomes the only way anyone signs in.
+    #>
+    try {
+        $policy = Invoke-Graph -Method GET -Url "$graph/policies/authorizationPolicy"
+    }
+    catch {
+        return $null
+    }
+    if (-not $policy) { return $null }
+    $assigned = @($policy.defaultUserRolePermissions.permissionGrantPoliciesAssigned)
+    return [bool]@($assigned | Where-Object { $_ -like 'ManagePermissionGrantsForSelf.*' }).Count
+}
+
 # --- Preamble -------------------------------------------------------------------------
 $account = az account show 2>$null | ConvertFrom-Json
 if (-not $account) { throw "Not logged in. Run 'az login' in the target tenant first." }
@@ -108,7 +129,8 @@ $api = Get-AppByName -DisplayName $ApiDisplayName
 if (-not $api) {
     Write-Host "API app '$ApiDisplayName' does not exist yet."
     if ($Apply) {
-        $api = az ad app create --display-name $ApiDisplayName --sign-in-audience AzureADMyOrg 2>$null | ConvertFrom-Json
+        $api = az ad app create --display-name $ApiDisplayName --sign-in-audience AzureADMyOrg | ConvertFrom-Json
+        if (-not $api.appId) { throw "Failed to create API app '$ApiDisplayName'." }
         Write-Host "Created API app $($api.appId)."
     }
 }
@@ -158,13 +180,32 @@ $web = Get-AppByName -DisplayName $WebDisplayName
 if (-not $web) {
     Write-Host "Web SPA app '$WebDisplayName' does not exist yet."
     if ($Apply) {
-        $web = az ad app create --display-name $WebDisplayName --sign-in-audience AzureADMyOrg `
-            --spa-redirect-uris @WebRedirectUri 2>$null | ConvertFrom-Json
+        # `az ad app create` has no SPA flag at all -- spa.redirectUris is Graph-only. Creating
+        # the app through Graph sets the URIs in the same call, so a failure cannot leave a
+        # redirect-less app behind that would then be "reused" on the next run.
+        $web = Invoke-Graph -Method POST -Url "$graph/applications" -Body @{
+            displayName    = $WebDisplayName
+            signInAudience = 'AzureADMyOrg'
+            spa            = @{ redirectUris = @($WebRedirectUri) }
+        }
+        if (-not $web.appId) { throw "Failed to create web SPA app '$WebDisplayName'." }
         Write-Host "Created web SPA app $($web.appId) with redirect URIs: $($WebRedirectUri -join ', ')."
     }
 }
 else {
     Write-Host "Reusing existing web SPA app $($web.appId)."
+    $haveUris = @($web.spa.redirectUris)
+    $missingUris = @($WebRedirectUri | Where-Object { $_ -notin $haveUris })
+    if ($missingUris) {
+        if ($Apply) {
+            Invoke-Graph -Method PATCH -Url "$graph/applications/$($web.id)" `
+                -Body @{ spa = @{ redirectUris = @($haveUris + $missingUris) } } | Out-Null
+            Write-Host "Added redirect URI(s): $($missingUris -join ', ')."
+        }
+        else {
+            Write-Host "Would add redirect URI(s): $($missingUris -join ', ')."
+        }
+    }
 }
 $webAppId = if ($web) { $web.appId } else { '<created-on-apply>' }
 $webObjId = if ($web) { $web.id } else { $null }
@@ -179,9 +220,45 @@ if ($Apply -and $webObjId) {
     Invoke-Graph -Method PATCH -Url "$graph/applications/$webObjId" -Body $rra | Out-Null
     az ad sp create --id $webAppId 2>$null | Out-Null
     az ad app permission admin-consent --id $webAppId 2>$null | Out-Null
-    Write-Host "Granted the web SPA delegated access_as_user with admin consent."
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Granted the web SPA delegated access_as_user with admin consent."
+    }
+    else {
+        # Admin consent needs a *directory* role (Privileged Role Administrator, Cloud
+        # Application Administrator, or Global Administrator). Neither subscription Owner
+        # nor ownership of the app itself confers it, so this failing is routine. Whether
+        # it actually matters depends on two independent settings -- resolve them here
+        # rather than leaving the operator to guess from an alarming-sounding warning.
+        $scopeIsUserConsentable = (-not $existingScope) -or ($existingScope.type -eq 'User')
+        $userConsentAllowed = Test-UserConsentAllowed
+        Write-Host ''
+        Write-Host ("Admin consent was not granted. It needs Privileged Role Administrator, Cloud " +
+            "Application Administrator, or Global Administrator; subscription Owner and app " +
+            "ownership do not confer it.") -ForegroundColor Yellow
+        if ($scopeIsUserConsentable -and $userConsentAllowed -eq $true) {
+            Write-Host ("  -> NOT blocking. access_as_user is user-consentable and this tenant lets " +
+                "users consent for themselves, so each user simply accepts a one-time prompt " +
+                "(`"Access AI4IA as the signed-in user`") at first sign-in. Granting admin consent " +
+                "later only removes that prompt.")
+        }
+        elseif ($userConsentAllowed -eq $false) {
+            Write-Warning ("BLOCKING: this tenant does not let users consent for themselves, so no " +
+                "one can sign in until an admin grants consent. Entra -> Enterprise applications -> " +
+                "$WebDisplayName -> Security -> Permissions -> Grant admin consent.")
+        }
+        elseif (-not $scopeIsUserConsentable) {
+            Write-Warning ("BLOCKING: access_as_user requires admin consent (its scope type is " +
+                "'Admin', not 'User'), so no one can sign in until an admin grants it for " +
+                "$WebDisplayName.")
+        }
+        else {
+            Write-Warning ("Could not read the tenant consent policy, so the impact is unknown. If " +
+                "users get a consent prompt they can accept, nothing more is needed; if they are " +
+                "blocked, an admin must grant consent for $WebDisplayName.")
+        }
+    }
 }
-else {
+elseif (-not $Apply) {
     Write-Host "Would grant the web SPA delegated access_as_user on the API app and admin-consent it."
 }
 

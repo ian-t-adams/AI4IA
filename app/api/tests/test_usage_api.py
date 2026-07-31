@@ -13,11 +13,24 @@ from fastapi.testclient import TestClient
 
 from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
 from ai4ia_api.main import create_app
+from ai4ia_api.usage.pricing import load_pricing
 from tests.conftest import make_settings
 
 _USAGE = {"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500}
-# gpt-5.2 packaged price: 1000*1.25 + 500*10.0 = 1250 + 5000 = 6250 micro-USD.
-_EXPECTED_MICRO_USD = 6250
+# These tests assert the metering *pipeline* (usage is captured, costed, and
+# aggregated), not any particular list price. Deriving the expectation from the
+# packaged price book keeps that intent intact when rates are refreshed —
+# hardcoding it made an unrelated pricing correction fail two tests here.
+# Correctness of the rates themselves is covered by tests/test_usage_pricing.py.
+_EXPECTED_MICRO_USD = load_pricing().estimate(
+    "gpt-5.2",
+    prompt_tokens=_USAGE["prompt_tokens"],
+    completion_tokens=_USAGE["completion_tokens"],
+).micro_usd
+# Guard against the derivation going vacuous: if gpt-5.2 ever leaves the price
+# book, estimate() returns None and the assertions below would stop proving
+# anything. Fail at collection instead.
+assert _EXPECTED_MICRO_USD is not None and _EXPECTED_MICRO_USD > 0
 
 
 class UsageGateway:

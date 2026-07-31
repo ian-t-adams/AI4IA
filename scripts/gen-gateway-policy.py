@@ -16,7 +16,23 @@ ROOT = Path(__file__).resolve().parents[1]
 MODELS_PATH = ROOT / "infra" / "models.json"
 TEMPLATE_PATH = ROOT / "infra" / "policies" / "simplel7proxy-endpoints.template.xml"
 OUTPUT_PATH = ROOT / "infra" / "policies" / "simplel7proxy-endpoints.xml"
-CATALOG_FRAGMENT_COUNT = 4
+# Number of APIM policy fragments the backend catalog is sharded across.
+#
+# The catalog cannot live in one fragment: APIM rejects a single decoded policy
+# expression at 32 KiB (APIM_EXPRESSION_MAX_CHARS below), so render_catalog_fragments
+# packs models into CATALOG_CHUNK_TARGET_CHARS-sized chunks and emits one fragment
+# per chunk. Unused shards are padded with an empty JObject and merged harmlessly,
+# so this is a ceiling, not a fixed cost — over-provisioning it is cheap.
+#
+# THIS VALUE IS DUPLICATED IN TWO NON-PYTHON FILES that cannot import it:
+#   * infra/modules/gateway.bicep          (loadTextContent needs literal paths)
+#   * scripts/test-apim-policy-compiler.ps1
+# Bicep only deploys the fragments it explicitly lists, so raising this constant
+# WITHOUT updating gateway.bicep would silently drop every model in the extra
+# shards from gateway routing — a data-loss bug with no error anywhere. The
+# three files are pinned together by
+# test_gateway_policy.test_catalog_fragment_count_matches_bicep_and_compiler_script.
+CATALOG_FRAGMENT_COUNT = 8
 CATALOG_OUTPUT_PATHS = tuple(
     ROOT / "infra" / "policies" / f"simplel7proxy-endpoints-catalog-{index}.xml"
     for index in range(CATALOG_FRAGMENT_COUNT)

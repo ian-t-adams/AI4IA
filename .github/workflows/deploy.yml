@@ -208,7 +208,14 @@ jobs:
             elif [ -n "$bound" ]; then
               echo "OK: $app keeps [$(echo "$bound" | paste -sd, -)] ($var_name is set)."
             elif [ -n "$var_val" ]; then
-              echo "OK: $app will bind $var_val (no existing binding to protect)."
+              # Nothing to protect, but this is the first-bind path, and bicep
+              # creates a managed cert with CNAME domain-control validation. ARM
+              # fails that resource unless public DNS for $var_val ALREADY points
+              # at this environment. On a first provision in a new subscription or
+              # tenant it points at the old one, so the run dies after the slow
+              # resources are built. Warn rather than fail: a legitimate second-pass
+              # bind (DNS already cut over) looks identical from here.
+              echo "::warning::$app will bind $var_val for the first time. Confirm public DNS already resolves to THIS environment (CNAME -> the app's azurecontainerapps.io FQDN, and TXT asuid.$var_val = its customDomainVerificationId). If this is a new-tenant standup, clear $var_name, provision once, cut DNS over, then re-run. See docs/runbooks/deployment.md section 3 step 3a."
             else
               echo "OK: $app has no binding and $var_name is empty (nothing to protect)."
             fi

@@ -369,11 +369,81 @@ them once per tenant:
    `https://ai4ia.<domain>`, plus `http://localhost:3000` for local dev), and grant it
    delegated permission to the API app's `access_as_user` scope (grant admin consent).
 
+   `az ad app create` has **no SPA redirect flag** (it only offers `--web-redirect-uris`
+   and `--public-client-redirect-uris`); `spa.redirectUris` is settable only through
+   Microsoft Graph, so create this one via `az rest`:
+
    ```powershell
-   $web = az ad app create --display-name "AI4IA Web (<env>)" `
-     --sign-in-audience AzureADMyOrg `
-     --spa-redirect-uris "https://ai4ia.<domain>" "http://localhost:3000" | ConvertFrom-Json
+   $body = @{
+     displayName    = "AI4IA Web (<env>)"
+     signInAudience = 'AzureADMyOrg'
+     spa            = @{ redirectUris = @("https://ai4ia.<domain>", "http://localhost:3000") }
+   } | ConvertTo-Json -Depth 5
+   $body | Set-Content -Path ./web-app.json -Encoding utf8
+   $web = az rest --method POST --url "https://graph.microsoft.com/v1.0/applications" `
+     --headers "Content-Type=application/json" --body '@./web-app.json' | ConvertFrom-Json
+   Remove-Item ./web-app.json
    ```
+
+   > Granting **admin consent** needs Privileged Role Administrator, Cloud Application
+   > Administrator, or Global Administrator. Subscription **Owner is not sufficient** — a
+   > common surprise in MCAPS-managed tenants, where ARM ownership and directory roles are
+   > separate planes. See "Is admin consent actually required?" below before chasing a role.
+
+#### Is admin consent actually required? (usually not)
+
+`provision-entra-apps.ps1` prints a verdict on this, but the reasoning matters because the
+portal is genuinely ambiguous here — it shows a **Grant admin consent** control in two
+different blades and hedges about the "Admin consent required" column.
+
+Admin consent is **optional** when both of these hold:
+
+1. **The scope is user-consentable.** `access_as_user` is created with scope type `User`,
+   which is what makes API permissions show **Admin consent required: No**. (Type `Admin`
+   would make it mandatory.) Check with:
+   ```powershell
+   az ad app show --id <api-app-id> --query "api.oauth2PermissionScopes[].{value:value,whoCanConsent:type}"
+   ```
+2. **The tenant lets users consent for themselves.** True when the default user role is
+   assigned any `ManagePermissionGrantsForSelf.*` permission-grant policy:
+   ```powershell
+   az rest --method GET --url "https://graph.microsoft.com/v1.0/policies/authorizationPolicy" `
+     --query "defaultUserRolePermissions.permissionGrantPoliciesAssigned"
+   ```
+   An empty result means user consent is switched off and admin consent becomes the **only**
+   way anyone signs in.
+
+When both hold, the entire cost of skipping admin consent is a one-time per-user prompt
+("Access AI4IA as the signed-in user") at first sign-in. The web app requests only this one
+scope — no Microsoft Graph permissions — so that prompt is a single line. Granting admin
+consent later just removes the prompt; it is a UX improvement, not a prerequisite.
+
+If you do need it and the **App registrations → API permissions** link is greyed out, that
+is the portal telling you the signed-in account lacks the directory role. The
+**Enterprise applications → Security → Permissions** blade renders the same action as an
+enabled-looking blue button, but it calls the same API and fails the same way — it is not a
+second, lower-privileged path. Two things that also do *not* help, despite looking relevant:
+
+- **Expose an API / App roles** on the *web* app. The web app is a client; it exposes
+  nothing. `access_as_user` lives on the **API** app and is already exposed. AI4IA gates
+  admins with the `AI4IA_ADMIN_SUBJECTS` oid allowlist, not Entra app roles.
+- **Roles and administrators** on the app registration. That delegates *administration of
+  that app object*, and assigning a directory role there itself requires Privileged Role
+  Administrator or Global Administrator — so it cannot bootstrap you out of the gap.
+
+> **Who may sign in** is a separate control from consent, and is easy to conflate. A new
+> service principal has `appRoleAssignmentRequired: false`, so *every* user in the tenant
+> can sign in once consent exists. To restrict it, set Enterprise applications → the app →
+> Properties → **Assignment required = Yes**, then assign users/groups. The app's **owner**
+> can change this with no directory role:
+> ```powershell
+> az ad sp update --id <web-app-id> --set appRoleAssignmentRequired=true
+> ```
+
+> The **"Azure AD Graph / ADAL are deprecated"** banner on app registrations is generic and
+> does not apply here: the web app uses MSAL (`@azure/msal-browser`, `@azure/msal-react`),
+> and `provision-entra-apps.ps1` talks to Microsoft Graph (`graph.microsoft.com/v1.0`), not
+> the retired Azure AD Graph (`graph.windows.net`).
 
 Then map them to the repo variables (§2.3):
 
@@ -399,11 +469,14 @@ config edits plus the normal deploy — no code changes. What varies per environ
 |---|---|---|
 | Environment name | `AZURE_ENV_NAME` repo/azd var | Feeds `environmentName`; names the RG (`rg-ai4ia-<env>`), Foundry accounts/projects (`mf-aiforia-<env>-<region>`), Container Apps, etc. |
 | Subscription / tenant / region | `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_LOCATION` repo vars | See §2.3. |
+| CI/CD deployment identity | `AZURE_CLIENT_ID` repo var | **Not portable.** The federated credential is a tenant object; an identity from the old tenant cannot authenticate to the new one, so `azure/login` fails before any Bicep runs. Recreate per §2.1–2.2 (managed identity + `repo:<owner>/<repo>:environment:production` subject + `Contributor` and `Role Based Access Control Administrator`). |
+| Application Entra app registrations | `AI4IA_ENTRA_AUDIENCE`, `AI4IA_ENTRA_API_SCOPE`, `AI4IA_ENTRA_WEB_CLIENT_ID`, `AI4IA_ENTRA_TENANT_ID` | **Not portable** — directory objects, not subscription resources, so nothing in Bicep creates them. Recreate with `scripts/provision-entra-apps.ps1` (§2.7). Carrying the old app IDs over leaves `AI4IA_AUTH_PROVIDER=entra` pointing at audiences that do not exist in the new tenant: the stack provisions green and every authenticated request then returns `401`. |
+| Admin subjects | `AI4IA_ADMIN_SUBJECTS` repo var | **Not portable, and fails silently.** An `oid` identifies a *user object in one directory*; the same human signing into a new tenant gets a **different** `oid`. A carried-over value is simply an id that matches nobody — no error anywhere, the operator just quietly stops being an admin (losing `/api/admin/*` **and** the P0 gateway priority band). Re-read it in the new tenant with `az ad signed-in-user show --query id -o tsv`. |
 | Model deployment-name token | `infra/models.json` → `naming.subscriptionToken` | Stamped into every model deployment name (`{model}-<token>-<region>-<sku>`). Read by bicep **and** the runtime catalog. |
 | Foundry account/project token | `infra/models.json` → `naming.foundryToken` | Names `mf-<token>-<env>-<region>` and the toolbox project endpoint. |
 | Postgres region (temporary) | `AI4IA_POSTGRES_LOCATION` | Required only while the legacy migration source/document-index fallback remains (see §7.1). |
 | API Center region | `AI4IA_API_CENTER_LOCATION` | Only if `enablePrivateToolCatalog=true`; not available in every region (see §7.2 / the API Center note). |
-| Custom domains | `AI4IA_*_CUSTOM_DOMAIN` / `*_MANAGED_CERT_NAME` | Leave empty for a vanilla hostname; see §2.5. The values in §2.5's table are **this deployment's**, not portable — a new tenant has its own hostnames and certs. |
+| Custom domains | `AI4IA_*_CUSTOM_DOMAIN` / `*_MANAGED_CERT_NAME` | Leave **all four empty for the first provision in a new tenant** — see step 3a below, this is ordering-sensitive and a wrong order fails the deploy. Leave empty permanently for a vanilla hostname; see §2.5. The values in §2.5's table are **this deployment's**, not portable — a new tenant has its own hostnames and certs. |
 | APIM publisher mailbox | `AI4IA_APIM_PUBLISHER_EMAIL` | Must be an operator-owned address in the new tenant. `validate-feature-prereqs.py` warns while it is still the `@example.com` placeholder. |
 | Owner / cost-center tags | `AI4IA_OWNER`, `AI4IA_COST_CENTER` | Accountability tags stamped on every resource; see [`naming-and-tagging.md`](../naming-and-tagging.md). |
 
@@ -473,6 +546,50 @@ Procedure:
    read `infra/models.json` `naming`), so there is nothing else to change for naming to stay 1:1.
 3. `azd up`. Model deployments, Foundry accounts/projects, and the whole stack come up under the new
    names.
+3a. **Custom domains: bind them *after* the first provision, not during it.**
+
+   Set `AI4IA_WEB_CUSTOM_DOMAIN`, `AI4IA_PROXY_CUSTOM_DOMAIN`, and both
+   `*_MANAGED_CERT_NAME` variables to **empty** before step 3, then re-provision
+   once DNS has moved. This is not a preference — the first provision *fails*
+   otherwise, and it fails late.
+
+   Why: when `webCustomDomain`/`proxyCustomDomain` is non-empty, `web.bicep` and
+   `gateway.bicep` create a `managedCertificates` resource with
+   `domainControlValidation: 'CNAME'`. Azure only issues that certificate after it
+   can verify the hostname resolves to **this** environment — via the `CNAME` to
+   the app's `*.azurecontainerapps.io` FQDN, or the `asuid.<host>` `TXT` record
+   holding this app's `customDomainVerificationId`. During a migration both still
+   point at the *old* tenant's app, and the new app does not exist yet to point
+   them at. So issuance fails, the ARM resource fails, and the whole `azd up`
+   fails — after the Foundry accounts, gateway, and data tier are already built.
+
+   Order that works:
+
+   1. Provision with all four domain variables empty. Everything comes up on the
+      default `*.azurecontainerapps.io` hostnames and is fully usable.
+   2. Read the new coordinates:
+
+      ```powershell
+      az containerapp show -g rg-ai4ia-<env> -n ca-web-<env> `
+        --query "{fqdn:properties.configuration.ingress.fqdn, verificationId:properties.customDomainVerificationId}"
+      ```
+
+   3. **Cutover DNS** at your provider: point `CNAME <host>` at the new `fqdn`
+      and set `TXT asuid.<host>` to the new `verificationId`. Repeat for the proxy
+      hostname. Allow the old TTL to expire before continuing — validation reads
+      public DNS, not your zone file.
+   4. Set `AI4IA_WEB_CUSTOM_DOMAIN` / `AI4IA_PROXY_CUSTOM_DOMAIN` and re-provision.
+      Leave `*_MANAGED_CERT_NAME` empty: with no pinned name Bicep derives a stable
+      one (`mc-<host-with-dashes>`), which is what you want in a tenant that has no
+      pre-existing cert to adopt. Pinning a name copied from the old tenant does
+      not adopt anything — that cert lives in the old tenant's managed environment
+      — it just names the new one confusingly.
+   5. Optional: once issued, record the actual names back into
+      `AI4IA_*_MANAGED_CERT_NAME` so later deploys are explicit rather than derived.
+
+   Because the binding lives in Bicep rather than being added imperatively, once
+   step 4 succeeds it is durable — subsequent deploys re-assert it instead of
+   wiping it (§2.5).
 4. **Foundry toolbox (data-plane, if used):** the toolbox is not created by `azd up`. After the
    deploy, run `python scripts/provision-foundry-toolbox.py --create` against the new project (the
    `infra/mcp-servers.json` entry is already portable — its APIM upstream URL is computed by bicep

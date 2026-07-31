@@ -24,27 +24,15 @@ import hmac
 
 from fastapi import Depends, HTTPException, Request, status
 
-from ..config import AuthProviderKind, Environment, Settings
+from ..config import Settings
 from ..logging_setup import emit_security_block
 from .base import AuthenticatedUser
 from .dependencies import get_current_user
-
-
-def _has_admin_role(user: AuthenticatedUser) -> bool:
-    roles = user.claims.get("roles")
-    return isinstance(roles, list) and "admin" in roles
+from .identity import identity_is_admin
 
 
 def _secret_ok(provided: str | None, expected: str) -> bool:
     return bool(provided) and hmac.compare_digest(provided, expected)
-
-
-def _identity_is_admin(user: AuthenticatedUser, settings: Settings) -> bool:
-    if user.subject in settings.admin_subject_set:
-        return True
-    if user.email and user.email.lower() in settings.admin_email_set:
-        return True
-    return _has_admin_role(user)
 
 
 def evaluate_admin(
@@ -58,17 +46,14 @@ def evaluate_admin(
     admin entry without ever being the security boundary itself).
     """
     secret = settings.admin_api_secret
-    spoofable = (
-        settings.auth_provider == AuthProviderKind.dev
-        and settings.env != Environment.local
-    )
+    spoofable = settings.auth_provider_is_spoofable
 
     if spoofable:
         # Identity can't be trusted here; only the shared secret authorizes.
         return bool(secret) and _secret_ok(provided_secret, secret)
 
     # Trustworthy identity (entra) or local dev: allowlist/role governs...
-    if not _identity_is_admin(user, settings):
+    if not identity_is_admin(user, settings):
         return False
     # ...and the secret, when configured, is required as a second factor.
     if secret and not _secret_ok(provided_secret, secret):

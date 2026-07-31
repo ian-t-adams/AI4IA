@@ -102,6 +102,9 @@ param adminSubjects string = ''
 @secure()
 param adminApiSecret string = ''
 
+@description('Emit the server-derived SimpleL7Proxy priority band header on outbound gateway calls (AI4IA_PROXY_PRIORITIES_ENABLED). Must match the proxy-side switch.')
+param proxyPrioritiesEnabled bool = false
+
 @description('Enable the Voice Live realtime WebSocket relay. Default OFF (the /api/voice/live route refuses, so the app is inert).')
 param realtimeEnabled bool = false
 
@@ -320,6 +323,12 @@ var adminEnv = concat(
     {
       name: 'AI4IA_ADMIN_API_SECRET'
       secretRef: 'admin-api-secret'
+    }
+  ] : [],
+  proxyPrioritiesEnabled ? [
+    {
+      name: 'AI4IA_PROXY_PRIORITIES_ENABLED'
+      value: 'true'
     }
   ] : []
 )

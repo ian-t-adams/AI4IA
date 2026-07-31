@@ -342,28 +342,6 @@
       ]
     },
     {
-      "name": "o3-pro",
-      "format": "OpenAI",
-      "category": "reasoning",
-      "api": "responses",
-      "contextWindow": 200000,
-      "maxOutputTokens": 100000,
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-06-10"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-06-10"
-        }
-      ]
-    },
-    {
       "name": "Mistral-Large-3",
       "format": "Mistral AI",
       "category": "chat",
@@ -596,6 +574,31 @@
           "sku": "GlobalStandard",
           "capacity": 2,
           "version": "2026-06-02"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2026-06-02"
+        }
+      ]
+    },
+    {
+      "name": "MAI-Image-2.5-Pro",
+      "format": "Microsoft",
+      "category": "image",
+      "deployments": [
+        {
+          "region": "westus",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2026-06-19"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2026-06-19"
         }
       ]
     },
@@ -606,6 +609,12 @@
       "deployments": [
         {
           "region": "westus",
+          "sku": "GlobalStandard",
+          "capacity": 2,
+          "version": "2026-06-02"
+        },
+        {
+          "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 2,
           "version": "2026-06-02"

@@ -21,9 +21,12 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
   `gpt-audio`), images (`gpt-image-1-mini/1.5/2`), `sora-2`, `model-router`, and
   evaluations. US data zone. Also the region for the `speech_voice_live` voice provider.
 - **Primary EU — Sweden Central:** mirrors East US 2 for realtime/audio/`sora-2`/
-  `model-router`/image, **adds `tts-hd`**, and gives EU data residency.
-- **Targeted — West US:** home of the `MAI-Image-2.5` / `MAI-Image-2.5-Flash` family and
-  `o3-deep-research`, which live nowhere in the primary pair.
+  `model-router`/image, **adds `tts-hd`** and the `MAI-Image-2.5` family, and gives EU
+  data residency.
+- **Targeted — West US:** sole home of `o3-deep-research`, and the first region of the
+  `MAI-Image-2.5` / `-Pro` / `-Flash` family. The MAI models are **not** offered in East
+  US 2, so West US and Sweden Central are their only options; each carries both so a
+  single-region outage does not take image generation down.
 
 > Voice Live is broadly available as an API, but it consumes realtime/audio models that
 > only deploy in East US 2 + Sweden Central — so those are the practical Voice Live regions.
@@ -64,4 +67,40 @@ subscription before `azd up`. Verify with `python scripts/check-model-availabili
 (offering) plus `az cognitiveservices usage list --location <region>` (TPM quota) rather
 than assuming: quota is granted **per model per region**, and entitlement differs between
 subscriptions. As of the Planet Express standup, `gpt-5.5` and the `gpt-5.6` family all
-carry default quota in both primary regions, while `o3-pro` is not offered at all.
+carry default quota in both primary regions.
+
+### `o3-pro` removed from the catalog
+
+`o3-pro` was dropped from `infra/models.json` because it is **not offered in the
+Planet Express subscription in either primary region** — it was the only entry
+that failed `check-model-availability.py`, and an unavailable deployment is a
+hard `azd provision` failure, not a warning. Keeping it would have blocked the
+tenant cutover on a model nothing depends on.
+
+No capability was lost: `o3-pro` is the previous generation of the pro-tier
+reasoning slot, and `gpt-5-pro` and `gpt-5.4-pro` both occupy it, both in the
+`reasoning` category, both available in `eastus2` and `swedencentral`. Plain
+`o3` also remains.
+
+To restore it after an access request is approved, re-add the entry to
+`infra/models.json`:
+
+```jsonc
+{
+  "name": "o3-pro",
+  "format": "OpenAI",
+  "category": "reasoning",
+  "api": "responses",
+  "contextWindow": 200000,
+  "maxOutputTokens": 100000,
+  "deployments": [
+    { "region": "eastus2",       "sku": "GlobalStandard", "capacity": 50, "version": "2025-06-10" },
+    { "region": "swedencentral", "sku": "GlobalStandard", "capacity": 50, "version": "2025-06-10" }
+  ]
+}
+```
+
+then re-run `gen-model-catalog.py`, `gen-gateway-policy.py`, and
+`validate-catalog.py` (see [`runbooks/deployment.md`](runbooks/deployment.md) §3
+step 2). Confirm with `check-model-availability.py` **before** deploying —
+approval is per-subscription and is not visible until the deployment step.

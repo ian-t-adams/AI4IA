@@ -151,6 +151,18 @@ def main() -> int:
             errors.append(f"{cert_name} is set but {domain_name} is empty.")
         if domain and not cert:
             warnings.append(f"{domain_name} is set without {cert_name}; Bicep will derive a cert name.")
+        if domain:
+            # Managed-cert issuance uses domainControlValidation: 'CNAME', so ARM
+            # fails this resource unless public DNS for the host already resolves
+            # to *this* environment. On a first provision in a new tenant it does
+            # not (and cannot — the app does not exist yet), which kills the run
+            # after the expensive resources are already built. See
+            # docs/runbooks/deployment.md §3 step 3a for the working order.
+            warnings.append(
+                f"{domain_name}={domain} requires public DNS (CNAME + asuid TXT) to already point "
+                "at this environment's container app; a first provision in a new subscription/tenant "
+                "must run with the custom-domain variables EMPTY and bind them on a second pass."
+            )
 
     profiles_enabled = truthy(parameter_value(parameters, "proxyProfilesEnabled", False))
     profile_projection = text(parameter_value(parameters, "proxyProfileProjectionJson"))

@@ -195,6 +195,75 @@ class GatewayPolicyTests(unittest.TestCase):
                 gateway_generator.APIM_FRAGMENT_COMPILER_SAFE_BYTES,
             )
 
+    def test_catalog_fragment_count_matches_bicep_and_compiler_script(self) -> None:
+        """Pin the shard count across the three files that must agree.
+
+        CATALOG_FRAGMENT_COUNT lives in Python, but Bicep's loadTextContent needs
+        literal paths and the compiler smoke-test script hardcodes its own list,
+        so neither can import the constant. Bicep deploys only the fragments it
+        names: if the generator emitted more shards than gateway.bicep lists, the
+        models in the extra shards would vanish from gateway routing silently —
+        no build error, no deploy error, just requests failing to resolve a
+        backend. This test is the only thing standing between that and prod.
+        """
+        count = gateway_generator.CATALOG_FRAGMENT_COUNT
+
+        gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
+        compiler = (ROOT / "scripts/test-apim-policy-compiler.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        for index in range(count):
+            path_ref = f"simplel7proxy-endpoints-catalog-{index}.xml"
+            fragment_id = f"endpoint_selection_catalog_{index}_32"
+            self.assertIn(
+                f"loadTextContent('../policies/{path_ref}')",
+                gateway,
+                f"gateway.bicep does not load catalog shard {index}",
+            )
+            self.assertIn(
+                fragment_id,
+                gateway,
+                f"gateway.bicep does not declare fragment {fragment_id}",
+            )
+            self.assertIn(
+                f"infra/policies/{path_ref}",
+                compiler,
+                f"test-apim-policy-compiler.ps1 does not cover catalog shard {index}",
+            )
+
+        # And nothing beyond the configured count, so lowering the constant can
+        # never leave an orphaned reference to a file the generator stopped writing.
+        self.assertNotIn(f"simplel7proxy-endpoints-catalog-{count}.xml", gateway)
+        self.assertNotIn(f"simplel7proxy-endpoints-catalog-{count}.xml", compiler)
+        self.assertEqual(
+            count,
+            gateway.count("simplel7proxy-endpoints-catalog-"),
+            "gateway.bicep catalog shard references do not match "
+            "CATALOG_FRAGMENT_COUNT",
+        )
+
+    def test_catalog_has_headroom_before_the_next_shard_is_required(self) -> None:
+        """Fail while there is still room to add models, not after.
+
+        chunk_catalog packs greedily, so the last shard is the only one with
+        slack. Once every shard is full the next catalog addition raises in
+        render_catalog_fragments, which is correct but arrives at the worst
+        moment — mid-change, with the three-file edit above still to do. Warn
+        early instead by requiring at least one spare shard.
+        """
+        models = json.loads(gateway_generator.MODELS_PATH.read_text(encoding="utf-8"))
+        blocks, _ = gateway_generator.render_catalog(models)
+        used = len(gateway_generator.chunk_catalog(blocks))
+        self.assertLess(
+            used,
+            gateway_generator.CATALOG_FRAGMENT_COUNT,
+            f"the catalog now fills all {used} configured shards. Raise "
+            "CATALOG_FRAGMENT_COUNT in scripts/gen-gateway-policy.py and add the "
+            "matching entries to infra/modules/gateway.bicep and "
+            "scripts/test-apim-policy-compiler.ps1 before adding more models.",
+        )
+
     def test_priority_splitter_rejects_lossy_inbound_order(self) -> None:
         source = (
             ROOT / "infra/policies/simplel7proxy-priority-retry.xml"

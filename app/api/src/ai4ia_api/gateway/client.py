@@ -18,6 +18,7 @@ import httpx
 
 from ..config import GatewayAuthMode, GatewayProviderStyle, Settings
 from ..http_retry import request_with_retry
+from .priority import PRIORITY_HEADER, get_request_priority
 
 # Azure OpenAI reasoning models (the GPT-5 family and the o-series) reject the
 # classic Chat Completions sampling/limit parameters: they require
@@ -282,7 +283,20 @@ class ModelGatewayClient:
             headers[self._api_key_header] = self._api_key
         elif self._auth_mode == GatewayAuthMode.bearer and self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        self._apply_priority(headers)
         return headers
+
+    def _apply_priority(self, headers: dict[str, str]) -> None:
+        """Stamp the server-derived SimpleL7Proxy priority band, if any.
+
+        The band comes from a ContextVar written only by the auth dependency —
+        never copied from the inbound request — so a caller cannot promote itself
+        into the reserved worker pool. When the feature is off the band is None
+        and no header is sent, leaving the proxy on its own default.
+        """
+        band = get_request_priority()
+        if band is not None:
+            headers[PRIORITY_HEADER] = str(band)
 
     def _auth_headers_multipart(self, correlation_id: str | None) -> dict[str, str]:
         """Auth headers WITHOUT a Content-Type: httpx sets the multipart/form-data
@@ -295,6 +309,7 @@ class ModelGatewayClient:
             headers[self._api_key_header] = self._api_key
         elif self._auth_mode == GatewayAuthMode.bearer and self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        self._apply_priority(headers)
         return headers
 
     def build_request(
