@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Root contributor guide, governance files, community templates, and third-party notices.
+- `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` to the model catalog
+  (GlobalStandard in East US 2 + Sweden Central, version `2026-07-09`, 1,050,000-token
+  context). All three are GA, need no access request, and already carry default quota in
+  the target subscription. They serve both Chat Completions and the Responses API, so they
+  route through the existing chat path unchanged.
 - Subscription preflights for standing the stack up in a new tenant/subscription:
   `scripts/check-resource-providers.py` (derives the required resource providers from
   `infra/**/*.bicep`; `--register` registers and waits) and
@@ -27,6 +32,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `gpt-5.4` and `gpt-5.4-pro` declared a 400,000-token context window; both are
+  1,050,000. The understatement silently shrank the per-model max-output cap and the
+  document context budget, so those models were being used well below their capability.
+- The metadata tests in `test_per_model_metadata.py` pinned `gpt-5.4`'s context window as
+  a literal, so correcting upstream model data failed tests that only cover serialization.
+  They now assert against `infra/models.json`, which is exact and additionally catches
+  build-time generator drift.
 - `app-ci` was failing on every open PR. `ruff` was declared as `ruff>=0.5` with no
   explicit `select`, so 0.16.0's widened default rule set produced 498 errors with no
   source change. Pinned the rule set explicitly and bounded the version.

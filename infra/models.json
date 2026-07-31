@@ -44,10 +44,73 @@
   },
   "catalog": [
     {
+      "name": "gpt-5.6-sol",
+      "format": "OpenAI",
+      "category": "chat",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-07-09"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-07-09"
+        }
+      ]
+    },
+    {
+      "name": "gpt-5.6-terra",
+      "format": "OpenAI",
+      "category": "chat",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-07-09"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-07-09"
+        }
+      ]
+    },
+    {
+      "name": "gpt-5.6-luna",
+      "format": "OpenAI",
+      "category": "chat",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-07-09"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 50,
+          "version": "2026-07-09"
+        }
+      ]
+    },
+    {
       "name": "gpt-5.4",
       "format": "OpenAI",
       "category": "chat",
-      "contextWindow": 400000,
+      "contextWindow": 1050000,
       "maxOutputTokens": 128000,
       "deployments": [
         {
@@ -217,7 +280,7 @@
       "format": "OpenAI",
       "category": "reasoning",
       "api": "responses",
-      "contextWindow": 400000,
+      "contextWindow": 1050000,
       "maxOutputTokens": 128000,
       "deployments": [
         {

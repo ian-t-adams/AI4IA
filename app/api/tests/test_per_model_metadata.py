@@ -7,6 +7,9 @@ param translation; the document budget scales from the context window.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from ai4ia_api.catalog import DeploymentOption, ModelEntry, load_catalog
 from ai4ia_api.gateway.client import ModelGatewayClient
 from ai4ia_api.routers.chat import (
@@ -18,6 +21,20 @@ from ai4ia_api.routers.chat import (
 )
 
 from .conftest import make_settings
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_INFRA_MODELS = _REPO_ROOT / "infra" / "models.json"
+
+# The metadata-plumbing tests below assert against infra/models.json rather than a
+# literal window size. The literal was a maintenance trap: a model's published
+# context window is upstream data that changes on vendor revisions, so pinning it
+# here made an unrelated `Add a model` catalog edit fail tests that are really
+# about serialization. Reading the source of truth keeps the assertion exact and
+# additionally catches build-time generator drift.
+def _infra_metadata(name: str) -> tuple[int, int]:
+    catalog = json.loads(_INFRA_MODELS.read_text(encoding="utf-8"))["catalog"]
+    entry = next(m for m in catalog if m["name"] == name)
+    return entry["contextWindow"], entry["maxOutputTokens"]
 
 
 def _entry(**over) -> ModelEntry:
@@ -36,18 +53,20 @@ def _entry(**over) -> ModelEntry:
 
 
 def test_catalog_carries_metadata_for_known_model():
+    ctx, out = _infra_metadata("gpt-5.4")
     catalog = load_catalog()
     entry = catalog.get("gpt-5.4")
     assert entry is not None
-    assert entry.contextWindow == 400000
-    assert entry.maxOutputTokens == 128000
+    assert entry.contextWindow == ctx
+    assert entry.maxOutputTokens == out
 
 
 def test_catalog_metadata_serializes_both_fields():
+    ctx, out = _infra_metadata("gpt-5.4")
     catalog = load_catalog()
     dumped = catalog.get("gpt-5.4").model_dump()
-    assert dumped["contextWindow"] == 400000
-    assert dumped["maxOutputTokens"] == 128000
+    assert dumped["contextWindow"] == ctx
+    assert dumped["maxOutputTokens"] == out
 
 
 def test_model_without_metadata_falls_back_to_none():
@@ -62,11 +81,12 @@ def test_model_without_metadata_falls_back_to_none():
 
 
 def test_models_api_exposes_metadata(client):
+    ctx, out = _infra_metadata("gpt-5.4")
     resp = client.get("/api/models", headers={"X-Dev-User": "alice"})
     assert resp.status_code == 200
     by_id = {m["id"]: m for m in resp.json()["models"]}
-    assert by_id["gpt-5.4"]["contextWindow"] == 400000
-    assert by_id["gpt-5.4"]["maxOutputTokens"] == 128000
+    assert by_id["gpt-5.4"]["contextWindow"] == ctx
+    assert by_id["gpt-5.4"]["maxOutputTokens"] == out
     assert by_id["model-router"]["contextWindow"] is None
     assert by_id["model-router"]["maxOutputTokens"] is None
 

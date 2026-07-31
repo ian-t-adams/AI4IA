@@ -60,5 +60,8 @@ the Azure AI Foundry portal before acting.
 | `gpt-realtime-mini` | realtime | retires 2026-12-15 | Validate `gpt-realtime-2` before changing Voice Live defaults. |
 
 Every deployment still requires Azure quota/capacity confirmation in the target
-subscription before `azd up` (e.g. `gpt-5.5` needs a TPM quota request before it can be
-added to `models.json`).
+subscription before `azd up`. Verify with `python scripts/check-model-availability.py`
+(offering) plus `az cognitiveservices usage list --location <region>` (TPM quota) rather
+than assuming: quota is granted **per model per region**, and entitlement differs between
+subscriptions. As of the Planet Express standup, `gpt-5.5` and the `gpt-5.6` family all
+carry default quota in both primary regions, while `o3-pro` is not offered at all.
