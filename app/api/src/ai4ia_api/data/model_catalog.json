@@ -33,12 +33,81 @@
   },
   "models": [
     {
+      "id": "gpt-5.6-sol",
+      "displayName": "gpt-5.6-sol",
+      "category": "chat",
+      "format": "OpenAI",
+      "api": "chat",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.6-sol-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.6-sol-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "displayName": "gpt-5.6-terra",
+      "category": "chat",
+      "format": "OpenAI",
+      "api": "chat",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.6-terra-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.6-terra-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "displayName": "gpt-5.6-luna",
+      "category": "chat",
+      "format": "OpenAI",
+      "api": "chat",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.6-luna-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "deploymentName": "gpt-5.6-luna-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
       "id": "gpt-5.4",
       "displayName": "gpt-5.4",
       "category": "chat",
       "format": "OpenAI",
       "api": "chat",
-      "contextWindow": 400000,
+      "contextWindow": 1050000,
       "maxOutputTokens": 128000,
       "options": [
         {
@@ -222,7 +291,7 @@
       "category": "reasoning",
       "format": "OpenAI",
       "api": "responses",
-      "contextWindow": 400000,
+      "contextWindow": 1050000,
       "maxOutputTokens": 128000,
       "options": [
         {
