@@ -388,8 +388,62 @@ them once per tenant:
    > Granting **admin consent** needs Privileged Role Administrator, Cloud Application
    > Administrator, or Global Administrator. Subscription **Owner is not sufficient** — a
    > common surprise in MCAPS-managed tenants, where ARM ownership and directory roles are
-   > separate planes. Without consent, each user is prompted individually at first sign-in
-   > (and sign-in fails outright if user consent is disabled tenant-wide).
+   > separate planes. See "Is admin consent actually required?" below before chasing a role.
+
+#### Is admin consent actually required? (usually not)
+
+`provision-entra-apps.ps1` prints a verdict on this, but the reasoning matters because the
+portal is genuinely ambiguous here — it shows a **Grant admin consent** control in two
+different blades and hedges about the "Admin consent required" column.
+
+Admin consent is **optional** when both of these hold:
+
+1. **The scope is user-consentable.** `access_as_user` is created with scope type `User`,
+   which is what makes API permissions show **Admin consent required: No**. (Type `Admin`
+   would make it mandatory.) Check with:
+   ```powershell
+   az ad app show --id <api-app-id> --query "api.oauth2PermissionScopes[].{value:value,whoCanConsent:type}"
+   ```
+2. **The tenant lets users consent for themselves.** True when the default user role is
+   assigned any `ManagePermissionGrantsForSelf.*` permission-grant policy:
+   ```powershell
+   az rest --method GET --url "https://graph.microsoft.com/v1.0/policies/authorizationPolicy" `
+     --query "defaultUserRolePermissions.permissionGrantPoliciesAssigned"
+   ```
+   An empty result means user consent is switched off and admin consent becomes the **only**
+   way anyone signs in.
+
+When both hold, the entire cost of skipping admin consent is a one-time per-user prompt
+("Access AI4IA as the signed-in user") at first sign-in. The web app requests only this one
+scope — no Microsoft Graph permissions — so that prompt is a single line. Granting admin
+consent later just removes the prompt; it is a UX improvement, not a prerequisite.
+
+If you do need it and the **App registrations → API permissions** link is greyed out, that
+is the portal telling you the signed-in account lacks the directory role. The
+**Enterprise applications → Security → Permissions** blade renders the same action as an
+enabled-looking blue button, but it calls the same API and fails the same way — it is not a
+second, lower-privileged path. Two things that also do *not* help, despite looking relevant:
+
+- **Expose an API / App roles** on the *web* app. The web app is a client; it exposes
+  nothing. `access_as_user` lives on the **API** app and is already exposed. AI4IA gates
+  admins with the `AI4IA_ADMIN_SUBJECTS` oid allowlist, not Entra app roles.
+- **Roles and administrators** on the app registration. That delegates *administration of
+  that app object*, and assigning a directory role there itself requires Privileged Role
+  Administrator or Global Administrator — so it cannot bootstrap you out of the gap.
+
+> **Who may sign in** is a separate control from consent, and is easy to conflate. A new
+> service principal has `appRoleAssignmentRequired: false`, so *every* user in the tenant
+> can sign in once consent exists. To restrict it, set Enterprise applications → the app →
+> Properties → **Assignment required = Yes**, then assign users/groups. The app's **owner**
+> can change this with no directory role:
+> ```powershell
+> az ad sp update --id <web-app-id> --set appRoleAssignmentRequired=true
+> ```
+
+> The **"Azure AD Graph / ADAL are deprecated"** banner on app registrations is generic and
+> does not apply here: the web app uses MSAL (`@azure/msal-browser`, `@azure/msal-react`),
+> and `provision-entra-apps.ps1` talks to Microsoft Graph (`graph.microsoft.com/v1.0`), not
+> the retired Azure AD Graph (`graph.windows.net`).
 
 Then map them to the repo variables (§2.3):
 

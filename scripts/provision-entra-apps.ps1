@@ -93,6 +93,27 @@ function Get-AppByName {
 
 function Write-Section { param([string]$Text) Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
 
+function Test-UserConsentAllowed {
+    <#
+      Can ordinary users consent for themselves? Returns $true / $false, or $null when the
+      policy cannot be read.
+
+      This is what decides whether a failed admin consent is a non-event or a hard block.
+      The tenant grants that ability by assigning a `ManagePermissionGrantsForSelf.*`
+      permission-grant policy to the default user role; if none is assigned, user consent
+      is switched off and an admin grant becomes the only way anyone signs in.
+    #>
+    try {
+        $policy = Invoke-Graph -Method GET -Url "$graph/policies/authorizationPolicy"
+    }
+    catch {
+        return $null
+    }
+    if (-not $policy) { return $null }
+    $assigned = @($policy.defaultUserRolePermissions.permissionGrantPoliciesAssigned)
+    return [bool]@($assigned | Where-Object { $_ -like 'ManagePermissionGrantsForSelf.*' }).Count
+}
+
 # --- Preamble -------------------------------------------------------------------------
 $account = az account show 2>$null | ConvertFrom-Json
 if (-not $account) { throw "Not logged in. Run 'az login' in the target tenant first." }
@@ -203,11 +224,38 @@ if ($Apply -and $webObjId) {
         Write-Host "Granted the web SPA delegated access_as_user with admin consent."
     }
     else {
-        Write-Warning ("Delegated access_as_user was recorded on the app, but ADMIN CONSENT FAILED " +
-            "(requires Privileged Role Administrator, Cloud Application Administrator, or Global " +
-            "Administrator -- subscription Owner is not enough). Sign-in will prompt each user, or " +
-            "fail if user consent is disabled. Grant it at: Entra -> App registrations -> " +
-            "$WebDisplayName -> API permissions -> Grant admin consent.")
+        # Admin consent needs a *directory* role (Privileged Role Administrator, Cloud
+        # Application Administrator, or Global Administrator). Neither subscription Owner
+        # nor ownership of the app itself confers it, so this failing is routine. Whether
+        # it actually matters depends on two independent settings -- resolve them here
+        # rather than leaving the operator to guess from an alarming-sounding warning.
+        $scopeIsUserConsentable = (-not $existingScope) -or ($existingScope.type -eq 'User')
+        $userConsentAllowed = Test-UserConsentAllowed
+        Write-Host ''
+        Write-Host ("Admin consent was not granted. It needs Privileged Role Administrator, Cloud " +
+            "Application Administrator, or Global Administrator; subscription Owner and app " +
+            "ownership do not confer it.") -ForegroundColor Yellow
+        if ($scopeIsUserConsentable -and $userConsentAllowed -eq $true) {
+            Write-Host ("  -> NOT blocking. access_as_user is user-consentable and this tenant lets " +
+                "users consent for themselves, so each user simply accepts a one-time prompt " +
+                "(`"Access AI4IA as the signed-in user`") at first sign-in. Granting admin consent " +
+                "later only removes that prompt.")
+        }
+        elseif ($userConsentAllowed -eq $false) {
+            Write-Warning ("BLOCKING: this tenant does not let users consent for themselves, so no " +
+                "one can sign in until an admin grants consent. Entra -> Enterprise applications -> " +
+                "$WebDisplayName -> Security -> Permissions -> Grant admin consent.")
+        }
+        elseif (-not $scopeIsUserConsentable) {
+            Write-Warning ("BLOCKING: access_as_user requires admin consent (its scope type is " +
+                "'Admin', not 'User'), so no one can sign in until an admin grants it for " +
+                "$WebDisplayName.")
+        }
+        else {
+            Write-Warning ("Could not read the tenant consent policy, so the impact is unknown. If " +
+                "users get a consent prompt they can accept, nothing more is needed; if they are " +
+                "blocked, an admin must grant consent for $WebDisplayName.")
+        }
     }
 }
 elseif (-not $Apply) {

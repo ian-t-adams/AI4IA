@@ -114,16 +114,50 @@ class TestCreationFailsLoudly(unittest.TestCase):
 
 
 class TestAdminConsentHonesty(unittest.TestCase):
+    """Admin consent fails routinely, and the *impact* of that failure varies.
+
+    Granting it needs a directory role (Privileged Role Administrator / Cloud Application
+    Administrator / Global Administrator). Subscription Owner does not confer it, and
+    neither does owning the app -- yet ``allowedToCreateApps`` lets any user register the
+    apps in the first place, so the normal operator lands in exactly that gap.
+
+    Whether that matters is a *different* question with two inputs: whether the scope is
+    user-consentable, and whether the tenant lets users consent for themselves. When both
+    hold, a failed admin consent costs one click per user at first sign-in and nothing
+    else. When user consent is switched off tenant-wide, the same failure blocks every
+    sign-in. A warning that cannot tell those apart sends operators hunting for directory
+    roles they do not need -- so the script must resolve it, not just report the failure.
+    """
+
     def setUp(self) -> None:
         self.text = SCRIPT.read_text(encoding="utf-8")
 
-    def test_consent_failure_is_surfaced(self) -> None:
-        self.assertRegex(
-            self.text,
-            r"admin-consent[\s\S]{0,400}?Write-Warning",
-            "Admin consent needs a directory role that subscription Owner does not "
-            "confer, so it fails routinely. The script must warn instead of reporting "
-            "a grant it never received.",
+    def test_consent_impact_is_resolved_against_the_tenant_policy(self) -> None:
+        # assertTrue rather than assertIn: the haystack is the whole script, and assertIn
+        # would dump all of it into the failure report and bury the explanation.
+        self.assertTrue(
+            "authorizationPolicy" in self.text,
+            "The script must read the tenant authorization policy to decide whether a "
+            "failed admin consent is blocking, instead of warning ambiguously.",
+        )
+        self.assertTrue(
+            "ManagePermissionGrantsForSelf" in self.text,
+            "User self-consent is expressed as a ManagePermissionGrantsForSelf.* grant "
+            "policy on the default user role; that is the signal to test.",
+        )
+
+    def test_blocking_case_warns_and_non_blocking_case_does_not(self) -> None:
+        # A tenant with user consent disabled genuinely blocks sign-in -> Write-Warning.
+        self.assertIsNotNone(
+            re.search(r"Write-Warning \(\"BLOCKING", self.text),
+            "When user consent is disabled (or the scope needs admin consent), the "
+            "failure blocks every sign-in and must be surfaced as a warning.",
+        )
+        # The benign case must not be dressed up as a failure.
+        self.assertTrue(
+            "-> NOT blocking." in self.text,
+            "When the scope is user-consentable and the tenant permits self-consent, the "
+            "script must say so plainly rather than implying sign-in is broken.",
         )
 
     def test_consent_success_message_is_conditional(self) -> None:
