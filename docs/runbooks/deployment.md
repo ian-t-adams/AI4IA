@@ -672,6 +672,48 @@ it directly with the exact policy from `data.bicep` (partition key `/userId`, ve
 an ARM `PUT` to `.../sqlDatabases/ai4ia/containers/memories?api-version=2024-11-15`; a
 subsequent `azd provision` reconciles it idempotently.
 
+### 7.5 Every deploy fails validation with `DeploymentActive` (cancelled/timed-out provision)
+
+Symptom — `azd provision` fails within ~30s of "Validating deployment", and **every**
+subsequent run fails the same way:
+
+```text
+DeploymentActive: The deployment with resource id '.../deployments/<name>' cannot be saved,
+because this would overwrite an existing deployment which is still active. ...
+The previous deployment was started at '<t0>' ... and will expire at '<t0 + 7 days>'.
+```
+
+Cause — a previous run was **cancelled** rather than failed, most often by the job's
+`timeout-minutes` (GitHub reports a timed-out job as `cancelled`). Killing the runner does
+not stop ARM: the in-flight deployment stays **active server-side for up to 7 days**, and
+ARM refuses to start another deployment with the same name. So one cancelled provision
+wedges the subscription for a week — this is not a transient error that clears on retry,
+and it is why `deploy.yml` sets a deliberately generous `timeout-minutes` (see the comment
+on that setting).
+
+Fix — cancel the orphaned deployment, then re-run. Cancelling is safe: the run that owned
+it is already gone, and `azd provision` is idempotent.
+
+```powershell
+$rg = "rg-ai4ia-<env>"
+
+# 1. Find what is still running (this is the deployment named in the error).
+az deployment group list -g $rg `
+  --query "[?properties.provisioningState=='Running'].{name:name, started:properties.timestamp}" -o table
+
+# 2. Cancel each one. Repeat for nested deployments if more than one is Running.
+az deployment group cancel -g $rg -n "<name-from-step-1>"
+
+# 3. Confirm nothing is Running any more, then re-deploy.
+az deployment group list -g $rg --query "[?properties.provisioningState=='Running'].name" -o tsv
+gh workflow run deploy.yml -f provision=true --ref main
+```
+
+If the deployment is at **subscription** scope rather than inside the resource group, use
+`az deployment sub list` / `az deployment sub cancel` instead. If a resource is genuinely
+stuck mid-create (rather than the deployment record merely being orphaned), cancel still
+succeeds but the resource may need deleting before the next provision can recreate it.
+
 ## APIM Basic v2 migration guardrail
 
 The active model/realtime/MCP plane is the existing `apim-mcp-<workload>-<environmentName>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the additive `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the existing `/openai/realtime` API and subscription. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and both voice providers share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic — it never receives Speech Voice Live traffic either. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.

@@ -58,7 +58,20 @@ jobs:
     # workflow can be merged before the one-time Azure setup is complete.
     if: ${{ vars.AZURE_CLIENT_ID != '' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 180, not the usual 60: a cancelled `azd provision` does not fail cleanly. GitHub marks a
+    # timed-out job "cancelled" and kills azd mid-flight, but ARM keeps the in-flight deployment
+    # ACTIVE for up to 7 days, and every later deploy then fails validation with
+    # `DeploymentActive: ... cannot be saved, because this would overwrite an existing deployment
+    # which is still active`. So an under-set timeout does not cost one run, it wedges the
+    # subscription until someone runs `az deployment group cancel` (see
+    # docs/runbooks/deployment.md "Recovering from a cancelled or timed-out provision").
+    # This is not hypothetical: run 30594... timed out at exactly 60m mid-`apicenter` and blocked
+    # the next four deploys. That was an INCREMENTAL provision; a cold first provision in a new
+    # tenant is strictly slower (APIM alone is 30-45m, plus Foundry accounts and ~70 model
+    # deployments across two regions), which is precisely the migration cutover run. The risk is
+    # asymmetric -- an over-set timeout wastes runner minutes on a genuinely hung run, an under-set
+    # one costs a 7-day outage -- so this is sized for the cold case with headroom.
+    timeout-minutes: 180
     # A GitHub Environment gives you an approval gate + scoped vars/secrets.
     # Referencing it auto-creates it (no protection) until you add reviewers.
     environment: production

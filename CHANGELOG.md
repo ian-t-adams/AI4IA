@@ -32,6 +32,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The `deploy` job's `timeout-minutes: 60` was too low, and its failure mode was far worse
+  than a failed run: GitHub reports a timed-out job as *cancelled*, which kills `azd`
+  mid-provision while ARM keeps the in-flight deployment **active for up to 7 days**, so
+  every later deploy fails validation with `DeploymentActive`. One timeout wedged the
+  subscription and blocked the next four deploys. Raised to 180 minutes — the run that
+  tripped it was an *incremental* provision, and the new-tenant cutover is a cold provision,
+  which is strictly slower (APIM alone is 30–45 minutes). Added
+  `docs/runbooks/deployment.md` §7.5 with the `az deployment group cancel` recovery.
+- The toolbox provisioner did not model `toolbox_search` (`ToolSearchToolboxTool`), the
+  thirteenth toolbox type added in `azure-ai-projects` 2.4.0, so the pinned-SDK bump could
+  not land. Both it and the still-present `toolbox_search_preview` are now mapped, schema-
+  branched, and covered by the example manifest.
 - `gpt-5.4` and `gpt-5.4-pro` declared a 400,000-token context window; both are
   1,050,000. The understatement silently shrank the per-model max-output cap and the
   document context budget, so those models were being used well below their capability.
