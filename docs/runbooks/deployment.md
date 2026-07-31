@@ -131,11 +131,16 @@ and/or restrict to the `main` branch. Until you add protection, the environment 
 Pre-deploy checklist:
 
 1. Confirm the DNS `CNAME` and `asuid.<host>` `TXT` records already exist at the
-   DNS provider.
+   DNS provider, and verify against a **public** resolver — a corporate or ISP
+   resolver can serve a stale answer for the whole TTL, and Azure reads public DNS.
 2. Confirm the target Container Apps managed certificate names if adopting
    existing certs.
 3. Set all four custom-domain repository variables before `azd provision`.
 4. Treat missing variables as an outage risk, not a harmless omission.
+5. **Binding a hostname for the first time?** It needs a one-time registration
+   before Bicep can issue its certificate — see §3 step 3a. CI does this
+   automatically; a local `azd provision` needs `az containerapp hostname add`
+   run first, or the provision fails with `RequireCustomHostnameInEnvironment`.
 
 The app is reached at vanity hostnames (`ai4ia.nomad-analytics.com` for the web app,
 `genaiproxy.nomad-analytics.com` for the proxy). The binding + Azure-managed TLS cert are declared in
@@ -633,12 +638,51 @@ Procedure:
       pre-existing cert to adopt. Pinning a name copied from the old tenant does
       not adopt anything — that cert lives in the old tenant's managed environment
       — it just names the new one confusingly.
+
+      **The very first bind of a hostname takes two phases, and Bicep can only do
+      the second.** Container Apps refuses to create a managed certificate whose
+      subject is not *already* a custom hostname somewhere in the environment:
+
+      ```text
+      RequireCustomHostnameInEnvironment: Creating managed certificate requires
+      hostname '<host>' added as a custom hostname to a container app or route
+      in environment '<env>'
+      ```
+
+      `web.bicep` / `gateway.bicep` declare the certificate and the ingress binding
+      together, and ARM creates the certificate first (the app depends on
+      `webCert.id`). So the hostname that would satisfy the check is introduced by
+      the resource that is blocked *on* the check. No ordering inside Bicep can
+      break that cycle — the registration has to happen out of band, once.
+
+      The GitHub Actions deploy does this for you: the **Preflight custom-domain
+      bindings** step runs `az containerapp hostname add` for any hostname not yet
+      registered, before `azd provision`. Just set the variables and re-run.
+
+      Provisioning locally, do phase one by hand first:
+
+      ```powershell
+      az containerapp hostname add -g rg-ai4ia-<env> -n ca-web-<env> `
+        --hostname ai4ia.example.com
+      az containerapp hostname add -g rg-ai4ia-<env> -n ca-proxy-<env> `
+        --hostname genaiproxy.example.com
+      azd provision
+      ```
+
+      `hostname add` registers the hostname with `bindingType: Disabled` and no
+      certificate, which is exactly the precondition the certificate needs. It is
+      idempotent, and it is also where Azure validates domain control — so a DNS
+      mistake surfaces in seconds here instead of ~20 minutes into a provision.
+      `azd provision` then issues the certificate and flips the binding to
+      `SniEnabled`.
    5. Optional: once issued, record the actual names back into
       `AI4IA_*_MANAGED_CERT_NAME` so later deploys are explicit rather than derived.
 
    Because the binding lives in Bicep rather than being added imperatively, once
    step 4 succeeds it is durable — subsequent deploys re-assert it instead of
-   wiping it (§2.5).
+   wiping it (§2.5). Phase one is a one-time bootstrap per hostname, not a
+   recurring step: afterwards the hostname is already registered and the preflight
+   is a no-op.
 4. **Foundry toolbox (data-plane, if used):** the toolbox is not created by `azd up`. After the
    deploy, run `python scripts/provision-foundry-toolbox.py --create` against the new project (the
    `infra/mcp-servers.json` entry is already portable — its APIM upstream URL is computed by bicep
@@ -1148,6 +1192,57 @@ list them rather than reconstructing them by hand:
 ```powershell
 az cognitiveservices account deployment list -g <rg> -n <foundry-account> --query "[].name" -o tsv
 ```
+
+### 7.12 `RequireCustomHostnameInEnvironment` on a managed certificate
+
+```text
+RequireCustomHostnameInEnvironment: Creating managed certificate requires hostname
+'<host>' added as a custom hostname to a container app or route in environment '<env>'
+```
+
+The **first** bind of any vanity hostname cannot converge in a single provision, and this
+is a property of Container Apps, not a bug in the template. Azure will not issue a managed
+certificate for a hostname that is not already a custom hostname in the environment — but
+`web.bicep` / `gateway.bicep` declare the certificate and the ingress binding together, and
+ARM creates the certificate first because the app depends on `webCert.id`. The resource
+that would introduce the hostname is blocked on the hostname already existing.
+
+It fails ~20 minutes in, after the Foundry accounts, gateway, and data tier are built, so
+it reads like a late infrastructure fault rather than an ordering precondition.
+
+Fix — register the hostname once, then let Bicep do the rest:
+
+```powershell
+az containerapp hostname add -g rg-ai4ia-<env> -n ca-web-<env> --hostname <host>
+azd provision
+```
+
+`hostname add` creates the hostname with `bindingType: Disabled` and no certificate, which
+is exactly the precondition. `azd provision` then issues the certificate and flips it to
+`SniEnabled`. Confirm both:
+
+```powershell
+az containerapp show -g rg-ai4ia-<env> -n ca-web-<env> `
+  --query "properties.configuration.ingress.customDomains[].{name:name,binding:bindingType}"
+```
+
+**The GitHub Actions deploy already handles this** — the *Preflight custom-domain bindings*
+step registers any unregistered hostname before `azd provision`, so setting the repo
+variables and re-running is sufficient. You only do it by hand when provisioning locally.
+
+If `hostname add` itself fails, the problem is DNS, not ordering: that command is where
+Azure validates domain control. It needs `CNAME <host>` → the app's
+`*.azurecontainerapps.io` FQDN **and** `TXT asuid.<host>` = the app's
+`customDomainVerificationId`, both visible to a public resolver. Check against one
+directly — a corporate resolver can cache a stale target for the full TTL and show you the
+*old* environment long after the record is correct:
+
+```powershell
+$ns = (Resolve-DnsName <zone> -Type NS -DnsOnly).NameHost
+Resolve-DnsName <host> -Type CNAME -Server (Resolve-DnsName $ns[0] -Type A).IPAddress
+```
+
+Full cutover sequence, including where this sits: §3 step 3a.
 
 ## APIM Basic v2 migration guardrail
 
