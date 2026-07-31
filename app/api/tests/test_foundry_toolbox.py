@@ -490,7 +490,7 @@ def test_schema_rejects_azure_ai_search_empty_incomplete_or_multiple_indexes():
 
 
 def test_schema_azure_ai_search_index_asset_id_is_mutually_exclusive_with_index_name():
-    # Round 7 (reversing round 6): `indexAssetId` (azure-ai-projects 2.3.0's
+    # Round 7 (reversing round 6): `indexAssetId` (azure-ai-projects 2.4.0's
     # AISearchIndexResource.index_asset_id) is now modeled as a documented, schema-enforced
     # mutually-exclusive ALTERNATIVE to indexName+projectConnectionId, per explicit product
     # direction -- even though no current Microsoft Learn doc for this tool demonstrates it
@@ -650,7 +650,7 @@ def test_schema_rejects_openapi_missing_required_nested_fields_and_bad_auth():
 # A reviewer's premise assumed OpenApiFunctionDefinition.functions was a legitimate manifest
 # field the mapper corrupts via key-conversion. SDK reflection + official Microsoft Learn docs
 # both show it is genuinely READ-ONLY (server-populated, presumably extracted from `spec`):
-# azure-ai-projects 2.3.0 declares it `rest_field(visibility=["read"])`, and
+# azure-ai-projects 2.4.0 declares it `rest_field(visibility=["read"])`, and
 # ToolboxesOperations.create_version() strips every read-only field from the wire body via
 # `json.dumps(body, cls=SdkJSONEncoder, exclude_readonly=True)`. Modeling it as a settable
 # manifest field would therefore be a silently-inert, success-shaped no-op -- exactly the kind of
@@ -763,7 +763,7 @@ def test_schema_rejects_unknown_tool_property_and_cross_type_field_pollution():
 
 
 def test_schema_accepts_web_search_custom_search_configuration_and_rejects_incomplete_or_misplaced():
-    # Round 6 finding: azure-ai-projects 2.3.0's WebSearchToolboxTool.custom_search_configuration
+    # Round 6 finding: azure-ai-projects 2.4.0's WebSearchToolboxTool.custom_search_configuration
     # (WebSearchConfiguration: project_connection_id + instance_name, both Required with no SDK
     # default) was already snake_cased by the provisioner's _CAMEL_TO_SNAKE table, but the schema
     # rejected it outright -- a manifest the provisioner could actually construct was unusable.
@@ -831,7 +831,7 @@ def test_schema_accepts_web_search_custom_search_configuration_and_rejects_incom
 
 
 def test_schema_accepts_code_interpreter_network_policy_and_rejects_incomplete_or_secret_fields():
-    # Round 6 finding: azure-ai-projects 2.3.0's AutoCodeInterpreterToolParam.network_policy
+    # Round 6 finding: azure-ai-projects 2.4.0's AutoCodeInterpreterToolParam.network_policy
     # (ContainerNetworkPolicyParam: disabled | allowlist) was already snake_cased by the
     # provisioner, but the schema rejected `container.networkPolicy` outright.
     jsonschema = pytest.importorskip("jsonschema")
@@ -886,7 +886,7 @@ def test_schema_accepts_code_interpreter_network_policy_and_rejects_incomplete_o
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(allowlist_empty_domains, schema)
 
-    # domainSecrets carries a literal secret VALUE per domain (azure-ai-projects 2.3.0's
+    # domainSecrets carries a literal secret VALUE per domain (azure-ai-projects 2.4.0's
     # ContainerNetworkPolicyDomainSecretParam.value); this manifest is committed to source
     # control, so the schema must never accept it (AGENTS.md "no secret sprawl").
     with_domain_secrets = {
@@ -1344,9 +1344,9 @@ def test_validate_manifest_defaults_absent_tools_skills_connections_to_empty_wit
         assert errors == [], f"dropping `{key}` entirely should still validate cleanly: {errors}"
 
 
-# ----------------- round 7: new SDK 2.3.0 toolbox types --------------------------------
+# ----------------- round 7: new SDK 2.4.0 toolbox types --------------------------------
 # a2a_preview, fabric_iq_preview, work_iq_preview, reminder_preview were newly added to
-# azure-ai-projects 2.3.0's toolbox model set but omitted from _TYPE_TO_MODEL / the schema /
+# azure-ai-projects 2.4.0's toolbox model set but omitted from _TYPE_TO_MODEL / the schema /
 # the example manifest before this round. Each gets a schema positive+negative case AND a
 # real-SDK construction check (both directions matter: the schema alone doesn't prove the
 # provisioner's camelCase mapping actually reaches the SDK constructor).
@@ -1897,7 +1897,7 @@ def _snake_to_camel(name: str) -> str:
     return head + "".join(part.title() for part in rest)
 
 
-# Fields azure-ai-projects 2.3.0 genuinely accepts but AI4IA deliberately never models in the
+# Fields azure-ai-projects 2.4.0 genuinely accepts but AI4IA deliberately never models in the
 # committed manifest schema because they carry literal secret material (AGENTS.md "no secret
 # sprawl"): MCPToolboxTool.authorization (bearer/API-key credentials for the upstream MCP
 # server) and .headers (arbitrary, possibly-secret HTTP headers). See docs/foundry-toolbox.md
@@ -1921,8 +1921,8 @@ def test_reflection_driven_parity_covers_every_sdk_toolbox_type_and_field():
         obj = getattr(m, class_name)
         if isinstance(obj, type):
             sdk_toolbox_classes[class_name] = obj
-    assert len(sdk_toolbox_classes) >= 12, (
-        f"expected at least the 12 known toolbox types via reflection, found: {sorted(sdk_toolbox_classes)}"
+    assert len(sdk_toolbox_classes) >= 13, (
+        f"expected at least the 13 known toolbox types via reflection, found: {sorted(sdk_toolbox_classes)}"
     )
 
     modeled_classes = set(_tb._TYPE_TO_MODEL.values())
@@ -1991,7 +1991,7 @@ def test_resolve_project_endpoint_fails_closed(module, monkeypatch):
 
 # ----------------- round 8: toolConfigs map keys / strict openapi.auth ------------------
 def test_convert_keys_preserves_arbitrary_tool_configs_map_keys_even_when_colliding_with_camel_to_snake():
-    # Regression guard: toolConfigs (azure-ai-projects 2.3.0's ToolboxTool.tool_configs) is a
+    # Regression guard: toolConfigs (azure-ai-projects 2.4.0's ToolboxTool.tool_configs) is a
     # map keyed by ARBITRARY tool names (or "*"), not an AI4IA manifest schema shape -- but
     # _convert_keys() used to run _to_snake() over every dict key at every depth, including a
     # map's own keys. "topK" is deliberately chosen because it IS a real, pre-existing
@@ -2142,7 +2142,7 @@ def _simulate_azure_ai_projects_missing(monkeypatch):
     ids=["toolbox", "skills"],
 )
 def test_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch, call, label):
-    # Round 8 pinned `azure-ai-projects==2.3.0` exactly in pyproject.toml/uv.lock so every
+    # Round 8 pinned `azure-ai-projects==2.4.0` exactly in pyproject.toml/uv.lock so every
     # install path lands on the one version this whole audit reflection-verified field-by-field
     # -- but both create_toolbox()'s and _project_client()'s ImportError fallback still told an
     # operator without `uv` to run a bare, unpinned `pip install azure-ai-projects
@@ -2154,5 +2154,5 @@ def test_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch
     with pytest.raises(SystemExit) as exc_info:
         call()
     message = str(exc_info.value)
-    assert "pip install azure-ai-projects==2.3.0 azure-identity" in message, label
+    assert "pip install azure-ai-projects==2.4.0 azure-identity" in message, label
     assert "pip install azure-ai-projects azure-identity" not in message, label

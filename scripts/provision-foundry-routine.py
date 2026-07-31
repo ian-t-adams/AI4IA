@@ -19,7 +19,7 @@ What it does
 Why there is no --create
 -------------------------
 This manifest models a multi-step, model-driven, tool-calling workflow (``name``/``description``/
-``model``/``toolbox``/``steps[].{name,instructions,tools}``). azure-ai-projects 2.3.0 has no
+``model``/``toolbox``/``steps[].{name,instructions,tools}``). azure-ai-projects 2.4.0 has no
 ``project.routines`` at all -- its actual (public preview) routines surface is
 ``project.beta.routines.create_or_update(routine_name, *, triggers, action)``, which models
 something fundamentally different: an event **trigger** (a custom event, a GitHub issue, a cron
@@ -170,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Tool calls        : {', '.join(tools) or '(none)'}")
     print("\nEvery tool call above targets the toolbox MCP endpoint, which is fronted by the")
     print("official-MCP APIM -- so this routine inherits the bridge's governance for free.")
-    print("\n(validation-only -- there is no --create; azure-ai-projects 2.3.0's actual routines")
+    print("\n(validation-only -- there is no --create; azure-ai-projects 2.4.0's actual routines")
     print("surface cannot faithfully represent this manifest today. See module docstring / ")
     print("docs/foundry-toolbox.md's 'Routines' section for why.)")
     return 0
