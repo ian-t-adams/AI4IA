@@ -555,7 +555,7 @@ class Settings(BaseSettings):
     memory_document_chunk_chars: int = 600
     # Catalog model used by the Cosmos memory planner to extract and consolidate
     # durable facts. It should be a non-reasoning model with strict JSON support.
-    memory_extraction_model: str = "gpt-4.1-mini"
+    memory_extraction_model: str = "gpt-5.4-mini"
     # Legacy Postgres connection retained for source migration and as the
     # document-chunk fallback when Azure AI Search is not configured. ``user`` is
     # the API managed identity's AAD role; no SQL passwords are used.

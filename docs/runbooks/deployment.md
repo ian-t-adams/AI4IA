@@ -900,6 +900,47 @@ az postgres flexible-server show -g rg-ai4ia-<env> --name psql-… --query state
 gh workflow run deploy.yml -f provision=true --ref main
 ```
 
+### 7.8 `ServiceModelDeprecating` on a model deployment
+
+```text
+models-eastus2  DeploymentFailed
+  ServiceModelDeprecating: The model 'Format:OpenAI,Name:gpt-4.1-mini,Version:2025-04-14'
+  is in deprecating state and cannot be used for new deployments.
+```
+
+Cause — Azure moved the model to the `Deprecating` lifecycle state. This blocks **new**
+deployments while **existing** ones keep serving until the retirement date, which is what
+makes it so easy to miss: the model is still listed by `az cognitiveservices model list`,
+still has quota, and still works in the environment you already have. An incremental
+deploy into an established environment never re-creates the deployment, so it never
+fails. Only a **clean provision** — i.e. exactly a tenant/subscription migration — hits it.
+
+Note the blast radius: ARM aborts the whole `models-<region>` nested deployment on the
+first such model, so the error names one model even when several are affected. Check them
+all in one pass rather than fixing one at a time.
+
+Prevention — `scripts/check-model-availability.py` now checks lifecycle as a third axis
+alongside availability and quota, and blocks on `Deprecating`/`Deprecated`. Run it before
+any cold provision (step 0). It reports whether a deployable version exists to repin to,
+or that the model must be removed.
+
+Fix — if another version of the same model is `GenerallyAvailable`/`Preview`, repin
+`version` in `infra/models.json`. If not (the whole family may go at once, as GPT-4.1 did),
+remove the model and **migrate anything that referenced it by name**. That last step is the
+dangerous one: `config.py memory_extraction_model` and `main.bicep
+effectiveCodeInterpreterModel` both name a model directly, and an unresolvable
+memory-extraction model degrades to `NoopMemoryService` with only a log line — memory
+silently stops working. `docs/region-capability-matrix.md` tracks which models are
+load-bearing for exactly this reason.
+
+```powershell
+python scripts/check-model-availability.py        # find every affected model at once
+# edit infra/models.json, then:
+python scripts/gen-model-catalog.py
+python scripts/gen-gateway-policy.py
+python scripts/validate-catalog.py
+```
+
 ## APIM Basic v2 migration guardrail
 
 The active model/realtime/MCP plane is the `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the additive `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the existing `/openai/realtime` API and subscription. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and both voice providers share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic — it never receives Speech Voice Live traffic either. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.

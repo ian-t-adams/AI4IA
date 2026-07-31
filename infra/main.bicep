@@ -577,7 +577,7 @@ var speechVoiceLiveAccountName = foundry[speechVoiceLiveIndex].outputs.accountNa
 var speechVoiceLiveAccountEndpoint = foundry[speechVoiceLiveIndex].outputs.endpoint
 var effectiveCuBaseUrl = !empty(cuBaseUrl) ? cuBaseUrl : primaryFoundryEndpoint
 var effectiveCodeInterpreterBaseUrl = !empty(codeInterpreterBaseUrl) ? codeInterpreterBaseUrl : primaryFoundryEndpoint
-var effectiveCodeInterpreterModel = !empty(codeInterpreterModel) ? codeInterpreterModel : 'gpt-4.1-mini-${subscriptionToken}-${location}-glbl'
+var effectiveCodeInterpreterModel = !empty(codeInterpreterModel) ? codeInterpreterModel : 'gpt-5.4-mini-${subscriptionToken}-${location}-glbl'
 
 // --- Realtime (Voice Live) browser Origin allowlist ---
 // The relay fails closed on an Origin it doesn't recognize, so the allowlist has

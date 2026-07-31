@@ -57,7 +57,8 @@ the Azure AI Foundry portal before acting.
 | `whisper` | transcription | retirement floor passed | Plan migration off legacy Foundry speech (GPT audio/realtime, or Azure AI Speech STT). |
 | `gpt-4o-mini-tts` | tts | retirement floor passed | Highest risk; evaluate GPT audio/realtime output or Azure AI Speech TTS before removal. |
 | `tts-hd` | tts | retirement floor passed | Keep until a replacement is validated in the deployed voice paths. |
-| `gpt-4.1-mini` | chat-fast | deprecated; retires 2026-10-14 | **Load-bearing** — the memory-extraction model (`config.py memory_extraction_model`) and default code-interpreter model (`main.bicep effectiveCodeInterpreterModel`). Migrate both refs (e.g. to `gpt-5.4-mini`) before removal. |
+| `gpt-4.1-mini` | chat-fast | **REMOVED 2026-07-31** | Azure moved it to `Deprecating`, which blocks *new* deployments (`ServiceModelDeprecating`) while existing ones keep serving — so a clean provision failed even though the model was still listed and quotaed. No non-deprecating version exists (the whole GPT-4.1 family is deprecating). Both load-bearing refs were migrated to `gpt-5.4-mini`: `config.py memory_extraction_model` and `main.bicep effectiveCodeInterpreterModel`. |
+| `o4-mini` | reasoning | **REMOVED 2026-07-31** | Same `Deprecating` state, no successor version. `reasoning` still has 6 models. |
 | `gpt-5.2` | chat | retires 2026-12-12 | Default chat model across app + tests; bump the default before retirement in a dedicated change. |
 | `gpt-image-1.5` | image | retires 2026-12-16 | Keep for compatibility; prefer `gpt-image-2`. |
 | `gpt-realtime-mini` | realtime | retires 2026-12-15 | Validate `gpt-realtime-2` before changing Voice Live defaults. |

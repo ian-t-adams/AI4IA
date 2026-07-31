@@ -426,27 +426,6 @@
       ]
     },
     {
-      "name": "gpt-4.1-mini",
-      "format": "OpenAI",
-      "category": "chat-fast",
-      "contextWindow": 1047576,
-      "maxOutputTokens": 32768,
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 100,
-          "version": "2025-04-14"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 100,
-          "version": "2025-04-14"
-        }
-      ]
-    },
-    {
       "name": "model-router",
       "format": "OpenAI",
       "category": "router",
@@ -462,27 +441,6 @@
           "sku": "GlobalStandard",
           "capacity": 50,
           "version": "2025-11-18"
-        }
-      ]
-    },
-    {
-      "name": "o4-mini",
-      "format": "OpenAI",
-      "category": "reasoning",
-      "contextWindow": 200000,
-      "maxOutputTokens": 100000,
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-04-16"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 50,
-          "version": "2025-04-16"
         }
       ]
     },
