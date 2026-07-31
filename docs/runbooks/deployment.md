@@ -467,7 +467,7 @@ config edits plus the normal deploy — no code changes. What varies per environ
 
 | What | Where | Notes |
 |---|---|---|
-| Environment name | `AZURE_ENV_NAME` repo/azd var | Feeds `environmentName`; names the RG (`rg-ai4ia-<env>`), Foundry accounts/projects (`mf-aiforia-<env>-<region>`), Container Apps, etc. |
+| Environment name | `AZURE_ENV_NAME` repo/azd var | Feeds `environmentName`; names the RG (`rg-ai4ia-<env>`), Foundry accounts/projects (`mf-aiforia-<env>-<region>-<suffix>`), Container Apps, etc. Globally-unique names additionally carry `uniqueString(subscription().id, environmentName)` — see [naming](../naming-and-tagging.md) and §7.6. |
 | Subscription / tenant / region | `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_LOCATION` repo vars | See §2.3. |
 | CI/CD deployment identity | `AZURE_CLIENT_ID` repo var | **Not portable.** The federated credential is a tenant object; an identity from the old tenant cannot authenticate to the new one, so `azure/login` fails before any Bicep runs. Recreate per §2.1–2.2 (managed identity + `repo:<owner>/<repo>:environment:production` subject + `Contributor` and `Role Based Access Control Administrator`). |
 | Application Entra app registrations | `AI4IA_ENTRA_AUDIENCE`, `AI4IA_ENTRA_API_SCOPE`, `AI4IA_ENTRA_WEB_CLIENT_ID`, `AI4IA_ENTRA_TENANT_ID` | **Not portable** — directory objects, not subscription resources, so nothing in Bicep creates them. Recreate with `scripts/provision-entra-apps.ps1` (§2.7). Carrying the old app IDs over leaves `AI4IA_AUTH_PROVIDER=entra` pointing at audiences that do not exist in the new tenant: the stack provisions green and every authenticated request then returns `401`. |
@@ -518,15 +518,32 @@ Procedure:
    `Registered`, which is asynchronous and can take several minutes.
 
    `check-model-availability.py` compares `infra/models.json` against what the
-   subscription is actually entitled to deploy, per region. Model availability is
-   per-subscription: limited-access models need an approved request and partner
-   models need the Marketplace offer enabled, and neither is visible until the
-   deployment step. Version mismatches are reported as warnings, not errors,
-   because Azure commonly rolls a retired pinned version forward.
+   subscription is actually entitled to deploy, per region, on **two** axes that
+   fail independently:
+
+   * **Availability** — is the model offered here? Limited-access models need an
+     approved request and partner models need the Marketplace offer enabled.
+     Version mismatches are reported as warnings, not errors, because Azure
+     commonly rolls a retired pinned version forward.
+   * **Quota** — is there capacity left? A brand-new subscription is offered
+     nearly everything but ships small default quotas, so availability passes and
+     the deployment still dies on `InsufficientQuota`. Requested capacity is
+     summed per model+SKU, because quota is per subscription+region+model+SKU and
+     several deployments draw down one shared counter.
+
+   Quota counters are not named after the models they meter — they carry a
+   publisher prefix the catalog never mentions (`OpenAI.` vs `AIServices.`) and
+   respell the model (`model-router` → `ModelRouter`, `o3-deep-research` →
+   `o3-DeepResearch`, `Cohere-rerank-v4.0-pro` → `Cohere-Rerank-V4-Pro`). The
+   script reconciles these; a counter it still cannot match is a **warning**, not
+   an error, because the absence is ambiguous — verify by hand with
+   `az cognitiveservices usage list -l <region>`. Use `--skip-quota` to check
+   availability alone.
 
    If a model is genuinely unavailable, either request access or drop its
    deployment from `infra/models.json` and re-run `python scripts/gen-model-catalog.py`
-   (plus the generators in step 2).
+   (plus the generators in step 2). If it is merely out of quota, request an
+   increase or lower that deployment's `capacity`.
 
 1. Set the repo variables for the new subscription/tenant/env (§2.3), plus
    `AI4IA_POSTGRES_LOCATION` while PostgreSQL is retained and (if used)
@@ -831,9 +848,61 @@ If the deployment is at **subscription** scope rather than inside the resource g
 stuck mid-create (rather than the deployment record merely being orphaned), cancel still
 succeeds but the resource may need deleting before the next provision can recreate it.
 
+### 7.6 `ServiceAlreadyExists` / "The name … is already taken" (APIM, API Center, Foundry)
+
+Symptom — the first provision into a **new** subscription fails on names that have always
+worked, while the resource group is demonstrably empty:
+
+```text
+apimcore   ServiceAlreadyExists: Api service already exists: apim-mcp-ai4ia-<env>
+apicenter  ValidationError: The name "apic-ai4ia-<env>" is already taken. Please choose another one.
+```
+
+Cause — these names are unique across **all of Azure**, not just the subscription, because
+they back public DNS (`<name>.azure-api.net`, `<account>.services.ai.azure.com`). The name
+is still held by the *previous* tenant's stack, which is not visible from the new
+subscription at all. A template that omits a per-subscription suffix therefore deploys
+forever in the subscription that first claimed the name and can never be stood up beside it.
+
+Fix — already fixed in-template: `apim-mcp-*`, `apim-*`, `apic-*`, and the `mf-*` Foundry
+accounts all interpolate `uniqueSuffix` (`uniqueString(subscription().id, environmentName)`).
+`scripts/tests/test_bicep_naming.py` fails CI if any globally unique name loses it. If you
+hit this on a resource type not yet covered, add it to `GLOBALLY_UNIQUE` in that test rather
+than renaming the environment.
+
+Note this changes resource names, so the old and new environments are independent — the new
+subscription gets its own APIM/Foundry endpoints. Nothing in the generated runtime catalog
+or gateway policy hardcodes these names; they flow from Bicep outputs.
+
+### 7.7 `ServerIsBusy` on a PostgreSQL child resource
+
+Symptom — the `data` deployment fails on a firewall rule, database, or configuration while
+the server itself reports `Ready`:
+
+```text
+ServerIsBusy: Cannot complete operation while server 'psql-…' is busy processing
+another operation. Try again later.
+```
+
+Cause — PostgreSQL flexible server serialises control-plane operations, and a server
+configuration change (the `azure.extensions` update) leaves it internally busy after ARM has
+already reported that child resource as succeeded. The template already chains its children
+(`postgres → administrators → configurations → database → firewallRule`) so they never run
+concurrently; this is the server settling *after* the chain's own dependency was satisfied,
+which Bicep cannot express a wait for.
+
+Fix — **re-run the provision.** This is genuinely transient and idempotent: the server is
+`Ready` by then and the earlier steps are no-ops. It is not a wedged deployment, so §7.5
+does not apply, but check that nothing is left `Running` before retrying.
+
+```powershell
+az postgres flexible-server show -g rg-ai4ia-<env> --name psql-… --query state -o tsv   # expect: Ready
+gh workflow run deploy.yml -f provision=true --ref main
+```
+
 ## APIM Basic v2 migration guardrail
 
-The active model/realtime/MCP plane is the existing `apim-mcp-<workload>-<environmentName>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the additive `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the existing `/openai/realtime` API and subscription. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and both voice providers share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic — it never receives Speech Voice Live traffic either. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.
+The active model/realtime/MCP plane is the `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the additive `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the existing `/openai/realtime` API and subscription. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and both voice providers share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic — it never receives Speech Voice Live traffic either. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.
 
 The superseded PR-only `apim-v2-*` design was never deployed. The corrected what-if
 must contain no `apim-v2-*` creation. If resource inventory unexpectedly finds such

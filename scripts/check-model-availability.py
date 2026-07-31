@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
-"""Verify the target subscription actually offers every model in the catalog.
+"""Verify the target subscription offers -- and has quota for -- every catalog model.
 
 `infra/models.json` is the source of truth for what gets deployed, but it says
-nothing about what a *given* subscription is entitled to. Model availability is
-per subscription, per region: limited-access models (o3-pro and friends) require
-an approved request, Marketplace/partner models depend on the offer being
-enabled, and pinned versions are retired on Azure's schedule, not ours.
+nothing about what a *given* subscription is entitled to. Two independent things
+can be wrong, and a subscription can pass one while failing the other:
+
+* **Availability** -- is the model offered here at all? This is per subscription,
+  per region: limited-access models (o3-pro and friends) require an approved
+  request, Marketplace/partner models depend on the offer being enabled, and
+  pinned versions are retired on Azure's schedule, not ours.
+* **Quota** -- is there capacity left to deploy it? A brand-new subscription is
+  offered nearly everything but ships with small default quotas, and several
+  image/realtime/audio models default to caps in the single digits. Availability
+  says yes; the deployment still fails with `InsufficientQuota`.
 
 None of that is visible until `azd provision` is already running. Foundry model
-deployments are created late, so a missing model fails after the resource group,
+deployments are created late, so either failure lands after the resource group,
 Foundry accounts, gateway, and data tier exist -- the expensive, slow part
 succeeds and then the run dies. Checking first turns a 30-minute partial deploy
 into a 30-second answer.
@@ -21,12 +28,14 @@ Usage:
     az account set --subscription <id>
     python scripts/check-model-availability.py
     python scripts/check-model-availability.py --region eastus2   # narrow it
+    python scripts/check-model-availability.py --skip-quota       # availability only
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -54,7 +63,7 @@ def _az(*args: str) -> subprocess.CompletedProcess[str]:
 def catalog_requirements(models: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
     """Group the catalog's deployments by region.
 
-    Returns {region: [{name, sku, version}, ...]}.
+    Returns {region: [{name, sku, version, capacity}, ...]}.
     """
     by_region: dict[str, list[dict[str, str]]] = {}
     for entry in models.get("catalog", []):
@@ -67,6 +76,7 @@ def catalog_requirements(models: dict[str, Any]) -> dict[str, list[dict[str, str
                     "name": entry["name"],
                     "sku": deployment.get("sku", ""),
                     "version": str(deployment.get("version", "")),
+                    "capacity": deployment.get("capacity", 0),
                 }
             )
     return by_region
@@ -80,6 +90,115 @@ def offered_models(region: str) -> list[dict[str, Any]]:
             f"`az account set --subscription <id>` first.\n{result.stderr.strip()}"
         )
     return json.loads(result.stdout or "[]")
+
+
+def quota_usage(region: str) -> list[dict[str, Any]]:
+    result = _az("cognitiveservices", "usage", "list", "--location", region, "-o", "json")
+    if result.returncode != 0:
+        raise SystemExit(
+            f"ERROR: could not read quota in {region}. Run `az login` and "
+            f"`az account set --subscription <id>` first.\n{result.stderr.strip()}"
+        )
+    return json.loads(result.stdout or "[]")
+
+
+def _quota_keys(sku: str, model: str) -> list[str]:
+    """Candidate lookup keys for one model+SKU, loosest last.
+
+    Quota counters are *not* named after the model. They carry a publisher
+    prefix the catalog never mentions (`OpenAI.` for first-party,
+    `AIServices.` for partner models), and the model segment is spelled
+    differently again: `model-router` counts against `ModelRouter`,
+    `gpt-4.1-mini` against `gpt4.1-mini`, `o3-deep-research` against
+    `o3-DeepResearch`. Stripping the prefix and every non-alphanumeric
+    character reconciles all of those.
+
+    One convention survives that: partner counters drop a ``.0`` version
+    suffix, so `Cohere-rerank-v4.0-pro` counts against `Cohere-Rerank-V4-Pro`.
+    That gets a second candidate rather than a name-specific special case.
+    """
+
+    def norm(value: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", value.casefold())
+
+    sku_key = norm(sku)
+    keys = [f"{sku_key}|{norm(model)}"]
+    without_dot_zero = model.replace(".0", "")
+    if without_dot_zero != model:
+        keys.append(f"{sku_key}|{norm(without_dot_zero)}")
+    return keys
+
+
+def index_quota(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Index usage counters as {"<sku>|<model>": {limit, current, counter}}.
+
+    Keys are normalised the same way as :func:`_quota_keys`, and the publisher
+    prefix (`OpenAI.` / `AIServices.`) is dropped so both namespaces land in one
+    index -- the catalog does not record which publisher a model belongs to.
+    """
+    index: dict[str, dict[str, Any]] = {}
+    for item in raw:
+        counter = (item.get("name") or {}).get("value")
+        if not counter or counter.count(".") < 2:
+            continue
+        # "<publisher>.<sku>.<model>" -- the model segment may itself contain
+        # dots (gpt4.1-mini), so split off publisher and SKU only.
+        _publisher, _, remainder = counter.partition(".")
+        sku, _, model = remainder.partition(".")
+        if not sku or not model:
+            continue
+        for key in _quota_keys(sku, model):
+            index.setdefault(
+                key,
+                {
+                    "limit": float(item.get("limit") or 0),
+                    "current": float(item.get("currentValue") or 0),
+                    "counter": counter,
+                },
+            )
+    return index
+
+
+def evaluate_quota(
+    required: list[dict[str, str]], index: dict[str, dict[str, Any]]
+) -> tuple[list[str], list[str]]:
+    """Compare one region's requested capacity against remaining quota.
+
+    Requested capacity is summed per model+SKU: several catalog deployments of
+    the same model in one region draw down a single shared counter, so checking
+    them individually would let a pair that each fit -- but together do not --
+    pass.
+
+    Exceeding quota is an error; `azd provision` fails on it. A counter that
+    cannot be found is only a warning, because its absence is ambiguous: it may
+    mean no quota is granted, or merely that Azure spells that counter in a way
+    this mapping does not reconcile. Treating it as fatal would block a standup
+    over a naming quirk, which is the more likely of the two.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    wanted: dict[tuple[str, str], int] = {}
+    for item in required:
+        key = (item["sku"], item["name"])
+        wanted[key] = wanted.get(key, 0) + int(item.get("capacity") or 0)
+
+    for (sku, name), capacity in sorted(wanted.items()):
+        entry = next((index[k] for k in _quota_keys(sku, name) if k in index), None)
+        if entry is None:
+            warnings.append(
+                f"{name} ({sku}): no quota counter matched; capacity {capacity} unverified. "
+                "Confirm with `az cognitiveservices usage list -l <region>`."
+            )
+            continue
+        available = entry["limit"] - entry["current"]
+        if capacity > available:
+            errors.append(
+                f"{name} ({sku}): needs {capacity} but only {available:.0f} left "
+                f"of a {entry['limit']:.0f} limit [{entry['counter']}]. "
+                "Request a quota increase or lower `capacity` in infra/models.json."
+            )
+    return errors, warnings
 
 
 def index_offered(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, set[str]]]:
@@ -148,6 +267,11 @@ def main() -> int:
         action="append",
         help="only check this region (repeatable); defaults to every region in the catalog",
     )
+    parser.add_argument(
+        "--skip-quota",
+        action="store_true",
+        help="check availability only, skipping the quota comparison",
+    )
     args = parser.parse_args()
 
     models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
@@ -164,6 +288,10 @@ def main() -> int:
         print(f"Checking {len(required)} deployments in {region} ...", flush=True)
         index = index_offered(offered_models(region))
         errors, warnings = evaluate(required, index)
+        if not args.skip_quota:
+            quota_errors, quota_warnings = evaluate_quota(required, index_quota(quota_usage(region)))
+            errors += quota_errors
+            warnings += quota_warnings
         # Findings go to stdout, not stderr. They are the report -- and when the
         # two streams are merged (a CI log, `2>&1`, a terminal) the OS does not
         # guarantee their relative order, so splitting them shuffles each
@@ -174,7 +302,8 @@ def main() -> int:
         for error in errors:
             print(f"  ERROR: {error}")
         if not errors and not warnings:
-            print(f"  all {len(required)} deployments are available.")
+            scope = "available" if args.skip_quota else "available and within quota"
+            print(f"  all {len(required)} deployments are {scope}.")
         total_errors += len(errors)
         total_warnings += len(warnings)
 
@@ -186,8 +315,9 @@ def main() -> int:
     if total_errors:
         print(
             "\nProvisioning will fail on the blocking problems above. Either request "
-            "access to the model in this subscription, or remove its deployment from "
-            "infra/models.json and re-run `python scripts/gen-model-catalog.py`.",
+            "access to (or quota for) the model in this subscription, or adjust its "
+            "deployment in infra/models.json and re-run "
+            "`python scripts/gen-model-catalog.py`.",
             file=sys.stderr,
         )
         return 1

@@ -192,5 +192,146 @@ class IndexOfferedTests(unittest.TestCase):
         self.assertEqual(AVAILABILITY.index_offered([{"model": {}}, {}]), {})
 
 
+class QuotaIndexTests(unittest.TestCase):
+    """Quota counters are not named after the models they meter.
+
+    Every counter name below was read from a live
+    `az cognitiveservices usage list` against the target subscription. The
+    catalog spelling is on the left, Azure's counter on the right -- reconciling
+    them is the whole job of this index, and getting it wrong silently degrades
+    the check into "no counter found" for every model.
+    """
+
+    # (catalog name, sku, Azure counter)
+    REAL_PAIRS = [
+        ("gpt-5.6-sol", "GlobalStandard", "OpenAI.GlobalStandard.gpt-5.6-sol"),
+        # Publisher prefix differs for partner models.
+        ("Mistral-Large-3", "GlobalStandard", "AIServices.GlobalStandard.Mistral-Large-3"),
+        # Punctuation dropped.
+        ("gpt-4.1-mini", "GlobalStandard", "OpenAI.GlobalStandard.gpt4.1-mini"),
+        # Recased and de-hyphenated entirely.
+        ("model-router", "GlobalStandard", "OpenAI.GlobalStandard.ModelRouter"),
+        ("o3-deep-research", "GlobalStandard", "OpenAI.GlobalStandard.o3-DeepResearch"),
+        # Partner counters drop a ".0" version suffix.
+        ("Cohere-rerank-v4.0-pro", "GlobalStandard", "AIServices.GlobalStandard.Cohere-Rerank-V4-Pro"),
+        ("embed-v-4-0", "GlobalStandard", "AIServices.GlobalStandard.Embed-V-4-0"),
+    ]
+
+    def test_real_counter_names_are_reconciled(self) -> None:
+        for name, sku, counter in self.REAL_PAIRS:
+            index = AVAILABILITY.index_quota(
+                [{"name": {"value": counter}, "limit": 1000, "currentValue": 0}]
+            )
+            errors, warnings = AVAILABILITY.evaluate_quota(
+                [{"name": name, "sku": sku, "capacity": 10}], index
+            )
+            self.assertEqual(errors, [], f"{name} should fit under {counter}")
+            self.assertEqual(warnings, [], f"{name} did not match counter {counter}")
+
+    def test_sku_must_also_match(self) -> None:
+        """A GlobalStandard counter must not satisfy a Standard deployment."""
+        index = AVAILABILITY.index_quota(
+            [{"name": {"value": "OpenAI.GlobalStandard.whisper"}, "limit": 100, "currentValue": 0}]
+        )
+        _errors, warnings = AVAILABILITY.evaluate_quota(
+            [{"name": "whisper", "sku": "Standard", "capacity": 3}], index
+        )
+        self.assertEqual(len(warnings), 1)
+
+    def test_malformed_counters_are_skipped(self) -> None:
+        raw = [{"name": {"value": "NoDotsHere"}}, {"name": {}}, {}]
+        self.assertEqual(AVAILABILITY.index_quota(raw), {})
+
+
+class QuotaEvaluationTests(unittest.TestCase):
+    """Availability and quota fail independently.
+
+    A brand-new subscription is offered nearly every model but ships small
+    default quotas, so `evaluate` can pass while the provision still dies on
+    `InsufficientQuota`. These pin the arithmetic that catches that.
+    """
+
+    @staticmethod
+    def _index(limit: float, current: float = 0) -> dict:
+        return AVAILABILITY.index_quota(
+            [
+                {
+                    "name": {"value": "OpenAI.GlobalStandard.gpt-image-2"},
+                    "limit": limit,
+                    "currentValue": current,
+                }
+            ]
+        )
+
+    def test_capacity_over_limit_is_blocking(self) -> None:
+        errors, _ = AVAILABILITY.evaluate_quota(
+            [{"name": "gpt-image-2", "sku": "GlobalStandard", "capacity": 10}], self._index(2)
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertTrue("needs 10" in errors[0], errors[0])
+
+    def test_capacity_exactly_at_the_limit_is_allowed(self) -> None:
+        """16 catalog deployments sit exactly at their cap; that deploys fine."""
+        errors, warnings = AVAILABILITY.evaluate_quota(
+            [{"name": "gpt-image-2", "sku": "GlobalStandard", "capacity": 2}], self._index(2)
+        )
+        self.assertEqual((errors, warnings), ([], []))
+
+    def test_quota_already_consumed_is_subtracted(self) -> None:
+        """Comparing against `limit` instead of the remainder is the easy bug.
+
+        It passes on an empty subscription and only fails on a redeploy into a
+        populated one -- the case least likely to be tested.
+        """
+        errors, _ = AVAILABILITY.evaluate_quota(
+            [{"name": "gpt-image-2", "sku": "GlobalStandard", "capacity": 2}],
+            self._index(limit=2, current=2),
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertTrue("0 left" in errors[0], errors[0])
+
+    def test_repeated_deployments_share_one_counter(self) -> None:
+        """Two deployments that each fit can still exceed the shared quota.
+
+        Quota is per subscription+region+model+SKU, not per deployment, so
+        checking each in isolation would pass this and then fail in ARM.
+        """
+        errors, _ = AVAILABILITY.evaluate_quota(
+            [
+                {"name": "gpt-image-2", "sku": "GlobalStandard", "capacity": 2},
+                {"name": "gpt-image-2", "sku": "GlobalStandard", "capacity": 2},
+            ],
+            self._index(3),
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertTrue("needs 4" in errors[0], errors[0])
+
+    def test_unmatched_counter_warns_rather_than_blocks(self) -> None:
+        """Absence is ambiguous: no grant, or a spelling we failed to reconcile.
+
+        Blocking on it would strand a standup over a naming quirk, which is the
+        likelier cause -- so it must degrade to a warning.
+        """
+        errors, warnings = AVAILABILITY.evaluate_quota(
+            [{"name": "brand-new-model", "sku": "GlobalStandard", "capacity": 1}], self._index(10)
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertTrue("unverified" in warnings[0], warnings[0])
+
+    def test_catalog_capacity_is_carried_through(self) -> None:
+        """`catalog_requirements` must surface capacity or the check is inert."""
+        import json
+
+        models = json.loads((ROOT / "infra" / "models.json").read_text(encoding="utf-8"))
+        by_region = AVAILABILITY.catalog_requirements(models)
+        for region, items in by_region.items():
+            for item in items:
+                self.assertIn("capacity", item, f"{region}/{item['name']} lost its capacity")
+                self.assertGreater(
+                    int(item["capacity"]), 0, f"{region}/{item['name']} has no capacity"
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
