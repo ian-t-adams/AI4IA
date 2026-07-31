@@ -124,13 +124,20 @@ class CatalogRequirementTests(unittest.TestCase):
 
 class EvaluateTests(unittest.TestCase):
     INDEX = {
-        "gpt-4.1-mini": {"GlobalStandard": {"2025-04-14"}, "Standard": {"2025-04-14"}},
+        "gpt-5.4-mini": {"GlobalStandard": {"2026-03-17"}, "Standard": {"2026-03-17"}},
         "cohere-rerank-v4.0-pro": {"GlobalStandard": {"1"}},
+    }
+    # Every model in INDEX is deployable unless a test says otherwise.
+    LIFECYCLE = {
+        "gpt-5.4-mini": {"2026-03-17": "GenerallyAvailable"},
+        "cohere-rerank-v4.0-pro": {"1": "GenerallyAvailable"},
     }
 
     def test_missing_model_is_blocking(self) -> None:
         errors, warnings = AVAILABILITY.evaluate(
-            [{"name": "o3-pro", "sku": "GlobalStandard", "version": "2025-06-10"}], self.INDEX
+            [{"name": "o3-pro", "sku": "GlobalStandard", "version": "2025-06-10"}],
+            self.INDEX,
+            self.LIFECYCLE,
         )
         self.assertEqual(len(errors), 1)
         self.assertIn("not offered", errors[0])
@@ -138,8 +145,9 @@ class EvaluateTests(unittest.TestCase):
 
     def test_missing_sku_is_blocking_and_lists_alternatives(self) -> None:
         errors, _ = AVAILABILITY.evaluate(
-            [{"name": "gpt-4.1-mini", "sku": "DataZoneStandard", "version": "2025-04-14"}],
+            [{"name": "gpt-5.4-mini", "sku": "DataZoneStandard", "version": "2026-03-17"}],
             self.INDEX,
+            self.LIFECYCLE,
         )
         self.assertEqual(len(errors), 1)
         self.assertIn("GlobalStandard", errors[0])
@@ -150,43 +158,168 @@ class EvaluateTests(unittest.TestCase):
         Failing the standup over that would be worse than proceeding.
         """
         errors, warnings = AVAILABILITY.evaluate(
-            [{"name": "gpt-4.1-mini", "sku": "GlobalStandard", "version": "2024-07-18"}],
+            [{"name": "gpt-5.4-mini", "sku": "GlobalStandard", "version": "2024-07-18"}],
             self.INDEX,
+            self.LIFECYCLE,
         )
         self.assertEqual(errors, [])
         self.assertEqual(len(warnings), 1)
-        self.assertIn("2025-04-14", warnings[0])
+        self.assertIn("2026-03-17", warnings[0])
 
     def test_model_name_comparison_is_case_insensitive(self) -> None:
         """The catalog and the API disagree on case for partner models."""
         errors, warnings = AVAILABILITY.evaluate(
             [{"name": "Cohere-rerank-v4.0-pro", "sku": "GlobalStandard", "version": "1"}],
             self.INDEX,
+            self.LIFECYCLE,
         )
         self.assertEqual(errors, [])
         self.assertEqual(warnings, [])
 
     def test_fully_satisfied_catalog_is_silent(self) -> None:
         errors, warnings = AVAILABILITY.evaluate(
-            [{"name": "gpt-4.1-mini", "sku": "GlobalStandard", "version": "2025-04-14"}],
+            [{"name": "gpt-5.4-mini", "sku": "GlobalStandard", "version": "2026-03-17"}],
             self.INDEX,
+            self.LIFECYCLE,
         )
         self.assertEqual((errors, warnings), ([], []))
+
+
+class LifecycleTests(unittest.TestCase):
+    """A deprecating model is offered, quotaed, and undeployable.
+
+    This is the failure mode that took down the second cutover attempt: the
+    preflight reported "78/78 available and within quota" and `azd provision`
+    then died with `ServiceModelDeprecating` after the Foundry accounts, gateway
+    and data tier had already been built.
+    """
+
+    INDEX = {"gpt-4.1-mini": {"GlobalStandard": {"2025-04-14"}}}
+
+    def test_deprecating_model_is_blocking(self) -> None:
+        errors, _ = AVAILABILITY.evaluate(
+            [{"name": "gpt-4.1-mini", "sku": "GlobalStandard", "version": "2025-04-14"}],
+            self.INDEX,
+            {"gpt-4.1-mini": {"2025-04-14": "Deprecating"}},
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Deprecating", errors[0])
+        self.assertIn("ServiceModelDeprecating", errors[0])
+
+    def test_deprecated_model_is_blocking(self) -> None:
+        errors, _ = AVAILABILITY.evaluate(
+            [{"name": "gpt-4.1-mini", "sku": "GlobalStandard", "version": "2025-04-14"}],
+            self.INDEX,
+            {"gpt-4.1-mini": {"2025-04-14": "Deprecated"}},
+        )
+        self.assertEqual(len(errors), 1)
+
+    def test_error_names_a_deployable_version_when_one_exists(self) -> None:
+        """Repinning is the cheap fix; removal is the expensive one."""
+        index = {"gpt-4.1-mini": {"GlobalStandard": {"2025-04-14", "2026-01-01"}}}
+        errors, _ = AVAILABILITY.evaluate(
+            [{"name": "gpt-4.1-mini", "sku": "GlobalStandard", "version": "2025-04-14"}],
+            index,
+            {
+                "gpt-4.1-mini": {
+                    "2025-04-14": "Deprecating",
+                    "2026-01-01": "GenerallyAvailable",
+                }
+            },
+        )
+        self.assertIn("repin to version 2026-01-01", errors[0])
+
+    def test_error_says_remove_when_no_version_is_deployable(self) -> None:
+        """The whole GPT-4.1 family went deprecating at once; there was nothing to repin to."""
+        errors, _ = AVAILABILITY.evaluate(
+            [{"name": "gpt-4.1-mini", "sku": "GlobalStandard", "version": "2025-04-14"}],
+            self.INDEX,
+            {"gpt-4.1-mini": {"2025-04-14": "Deprecating"}},
+        )
+        self.assertIn("no deployable version", errors[0])
+
+    def test_generally_available_and_preview_are_silent(self) -> None:
+        for status in ("GenerallyAvailable", "Preview"):
+            with self.subTest(status=status):
+                errors, warnings = AVAILABILITY.evaluate(
+                    [{"name": "gpt-4.1-mini", "sku": "GlobalStandard", "version": "2025-04-14"}],
+                    self.INDEX,
+                    {"gpt-4.1-mini": {"2025-04-14": status}},
+                )
+                self.assertEqual((errors, warnings), ([], []))
+
+    def test_absent_lifecycle_is_silent(self) -> None:
+        """Older API versions do not report the field; warning on every model would be noise."""
+        errors, warnings = AVAILABILITY.evaluate(
+            [{"name": "gpt-4.1-mini", "sku": "GlobalStandard", "version": "2025-04-14"}],
+            self.INDEX,
+            {},
+        )
+        self.assertEqual((errors, warnings), ([], []))
+
+    def test_unrecognized_lifecycle_warns_rather_than_blocking(self) -> None:
+        """A new status string should surface, not strand a standup."""
+        errors, warnings = AVAILABILITY.evaluate(
+            [{"name": "gpt-4.1-mini", "sku": "GlobalStandard", "version": "2025-04-14"}],
+            self.INDEX,
+            {"gpt-4.1-mini": {"2025-04-14": "RetiringSoon"}},
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("RetiringSoon", warnings[0])
+
+    def test_status_comparison_is_case_insensitive(self) -> None:
+        errors, _ = AVAILABILITY.evaluate(
+            [{"name": "gpt-4.1-mini", "sku": "GlobalStandard", "version": "2025-04-14"}],
+            self.INDEX,
+            {"gpt-4.1-mini": {"2025-04-14": "DEPRECATING"}},
+        )
+        self.assertEqual(len(errors), 1)
+
+    def test_index_lifecycle_keys_by_casefolded_name_and_version(self) -> None:
+        index = AVAILABILITY.index_lifecycle(
+            [
+                {"model": {"name": "GPT-4.1-Mini", "version": "2025-04-14",
+                           "lifecycleStatus": "Deprecating"}},
+                {"model": {"name": "gpt-4.1-mini", "version": "2026-01-01",
+                           "lifecycleStatus": "GenerallyAvailable"}},
+                {"model": {"name": "no-status", "version": "1"}},
+                {"model": {}},
+            ]
+        )
+        self.assertEqual(
+            index["gpt-4.1-mini"],
+            {"2025-04-14": "Deprecating", "2026-01-01": "GenerallyAvailable"},
+        )
+        self.assertNotIn("no-status", index)
+
+    def test_real_catalog_pins_no_deprecating_version(self) -> None:
+        """Regression guard for the two models that broke the cutover.
+
+        This is a static check against the shipped catalog, so it runs in CI
+        without Azure credentials.
+        """
+        import json
+
+        models = json.loads((ROOT / "infra" / "models.json").read_text(encoding="utf-8"))
+        names = {m["name"] for m in models["catalog"]}
+        self.assertNotIn("gpt-4.1-mini", names)
+        self.assertNotIn("o4-mini", names)
 
 
 class IndexOfferedTests(unittest.TestCase):
     def test_index_collapses_skus_and_versions(self) -> None:
         raw = [
-            {"model": {"name": "gpt-4.1-mini", "version": "2025-04-14",
+            {"model": {"name": "gpt-5.4-mini", "version": "2026-03-17",
                        "skus": [{"name": "GlobalStandard"}, {"name": "Standard"}]}},
-            {"model": {"name": "gpt-4.1-mini", "version": "2024-07-18",
+            {"model": {"name": "gpt-5.4-mini", "version": "2024-07-18",
                        "skus": [{"name": "GlobalStandard"}]}},
         ]
         index = AVAILABILITY.index_offered(raw)
         self.assertEqual(
-            index["gpt-4.1-mini"]["GlobalStandard"], {"2025-04-14", "2024-07-18"}
+            index["gpt-5.4-mini"]["GlobalStandard"], {"2026-03-17", "2024-07-18"}
         )
-        self.assertEqual(index["gpt-4.1-mini"]["Standard"], {"2025-04-14"})
+        self.assertEqual(index["gpt-5.4-mini"]["Standard"], {"2026-03-17"})
 
     def test_entries_without_a_name_are_ignored(self) -> None:
         self.assertEqual(AVAILABILITY.index_offered([{"model": {}}, {}]), {})

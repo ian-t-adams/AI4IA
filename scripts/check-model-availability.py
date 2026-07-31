@@ -2,13 +2,17 @@
 """Verify the target subscription offers -- and has quota for -- every catalog model.
 
 `infra/models.json` is the source of truth for what gets deployed, but it says
-nothing about what a *given* subscription is entitled to. Two independent things
-can be wrong, and a subscription can pass one while failing the other:
+nothing about what a *given* subscription is entitled to. Three independent
+things can be wrong, and a subscription can pass some while failing others:
 
 * **Availability** -- is the model offered here at all? This is per subscription,
   per region: limited-access models (o3-pro and friends) require an approved
   request, Marketplace/partner models depend on the offer being enabled, and
   pinned versions are retired on Azure's schedule, not ours.
+* **Lifecycle** -- is the model still accepting *new* deployments? A deprecating
+  model is still listed, still has quota, and still serves existing deployments
+  for months or years, so both checks above pass -- but creating a new one fails
+  with `ServiceModelDeprecating`. Offered is not the same as deployable.
 * **Quota** -- is there capacity left to deploy it? A brand-new subscription is
   offered nearly everything but ships with small default quotas, and several
   image/realtime/audio models default to caps in the single digits. Availability
@@ -223,16 +227,50 @@ def index_offered(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, set[str]
     return index
 
 
+def index_lifecycle(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, str]]:
+    """Index lifecycle status as {model_name_casefolded: {version: status}}.
+
+    Lifecycle is a property of the model *version*, not of the SKU, so it is
+    indexed separately from :func:`index_offered` rather than folded into it.
+    """
+    index: dict[str, dict[str, str]] = {}
+    for item in raw:
+        model = item.get("model") or {}
+        name = model.get("name")
+        if not name:
+            continue
+        status = model.get("lifecycleStatus")
+        if not status:
+            continue
+        index.setdefault(name.casefold(), {})[str(model.get("version", ""))] = str(status)
+    return index
+
+
+# Azure refuses *new* deployments of these, while existing ones keep serving.
+UNDEPLOYABLE_LIFECYCLE = frozenset({"deprecating", "deprecated"})
+DEPLOYABLE_LIFECYCLE = frozenset({"generallyavailable", "preview"})
+
+
 def evaluate(
-    required: list[dict[str, str]], index: dict[str, dict[str, set[str]]]
+    required: list[dict[str, str]],
+    index: dict[str, dict[str, set[str]]],
+    lifecycle: dict[str, dict[str, str]],
 ) -> tuple[list[str], list[str]]:
     """Compare one region's requirements against what it offers.
 
     Returns (errors, warnings). A missing model or SKU is an error -- the
-    deployment cannot succeed. A model offered under a *different* version is a
-    warning: Azure will often accept the deployment and roll the version
-    forward, and treating it as fatal would block a standup over a routine
-    version retirement.
+    deployment cannot succeed. So is a model whose pinned version is
+    deprecating/deprecated: Azure lists it, quotas it, and still refuses to
+    create a new deployment of it.
+
+    A model offered under a *different* version is a warning: Azure will often
+    accept the deployment and roll the version forward, and treating it as fatal
+    would block a standup over a routine version retirement.
+
+    ``lifecycle`` is a required argument rather than an optional one so a caller
+    cannot silently skip the check -- which is exactly how the first cutover
+    shipped a preflight that reported "78/78 available" while two of those 78
+    could not be deployed.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -251,6 +289,34 @@ def evaluate(
                 f"{name}: offered, but not with SKU {sku} (available: {', '.join(sorted(skus))})."
             )
             continue
+
+        status = (lifecycle.get(name.casefold()) or {}).get(version)
+        if status:
+            folded = status.casefold()
+            if folded in UNDEPLOYABLE_LIFECYCLE:
+                alternatives = sorted(
+                    v
+                    for v, s in (lifecycle.get(name.casefold()) or {}).items()
+                    if s.casefold() in DEPLOYABLE_LIFECYCLE
+                )
+                remedy = (
+                    f"repin to version {', '.join(alternatives)}"
+                    if alternatives
+                    else "no deployable version is offered -- remove the model or "
+                    "replace it with a successor in the same category"
+                )
+                errors.append(
+                    f"{name} ({version}): lifecycle is {status}; Azure refuses new "
+                    f"deployments with ServiceModelDeprecating. Existing deployments "
+                    f"keep serving, so this is invisible until a clean provision. {remedy}."
+                )
+                continue
+            if folded not in DEPLOYABLE_LIFECYCLE:
+                warnings.append(
+                    f"{name} ({version}): unrecognized lifecycle status {status!r}; "
+                    "treating as deployable. Check whether it blocks new deployments."
+                )
+
         versions = skus[sku]
         if version and versions and version not in versions:
             warnings.append(
@@ -286,8 +352,9 @@ def main() -> int:
             print(f"{region}: no deployments in the catalog; skipping.")
             continue
         print(f"Checking {len(required)} deployments in {region} ...", flush=True)
-        index = index_offered(offered_models(region))
-        errors, warnings = evaluate(required, index)
+        offered = offered_models(region)
+        index = index_offered(offered)
+        errors, warnings = evaluate(required, index, index_lifecycle(offered))
         if not args.skip_quota:
             quota_errors, quota_warnings = evaluate_quota(required, index_quota(quota_usage(region)))
             errors += quota_errors
@@ -303,7 +370,7 @@ def main() -> int:
             print(f"  ERROR: {error}")
         if not errors and not warnings:
             scope = "available" if args.skip_quota else "available and within quota"
-            print(f"  all {len(required)} deployments are {scope}.")
+            print(f"  all {len(required)} deployments are deployable ({scope}).")
         total_errors += len(errors)
         total_warnings += len(warnings)
 

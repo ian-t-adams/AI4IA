@@ -447,29 +447,6 @@
       ]
     },
     {
-      "id": "gpt-4.1-mini",
-      "displayName": "gpt-4.1-mini",
-      "category": "chat-fast",
-      "format": "OpenAI",
-      "api": "chat",
-      "contextWindow": 1047576,
-      "maxOutputTokens": 32768,
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "deploymentName": "gpt-4.1-mini-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "deploymentName": "gpt-4.1-mini-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
       "id": "model-router",
       "displayName": "model-router",
       "category": "router",
@@ -489,29 +466,6 @@
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "model-router-slurmfactory-swedencentral-glbl"
-        }
-      ]
-    },
-    {
-      "id": "o4-mini",
-      "displayName": "o4-mini",
-      "category": "reasoning",
-      "format": "OpenAI",
-      "api": "chat",
-      "contextWindow": 200000,
-      "maxOutputTokens": 100000,
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "deploymentName": "o4-mini-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "deploymentName": "o4-mini-slurmfactory-swedencentral-glbl"
         }
       ]
     },
