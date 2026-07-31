@@ -214,13 +214,21 @@ jobs:
           python scripts/gen-gateway-policy.py --check
           python scripts/validate-feature-prereqs.py
 
-      # Guard: a provision rewrites the Container App ingress from the bicep, which
-      # sets customDomains to [] when AI4IA_*_CUSTOM_DOMAIN is empty -> it WIPES an
-      # existing vanity-host binding (live site drops to ERR_CONNECTION_CLOSED; see
-      # docs/runbooks/deployment.md). Bicep can't see the live binding to refuse, so
-      # fail fast here when an app already has a domain bound but the matching repo
-      # variable is empty. Names are deterministic: workload `ai4ia` + AZURE_ENV_NAME.
-      - name: Guard custom-domain bindings (prevent silent wipe)
+      # Two jobs, both of which bicep cannot do for itself. Names are deterministic:
+      # workload `ai4ia` + AZURE_ENV_NAME.
+      #
+      # 1. Guard: a provision rewrites the Container App ingress from the bicep, which
+      #    sets customDomains to [] when AI4IA_*_CUSTOM_DOMAIN is empty -> it WIPES an
+      #    existing vanity-host binding (live site drops to ERR_CONNECTION_CLOSED; see
+      #    docs/runbooks/deployment.md). Bicep can't see the live binding to refuse, so
+      #    fail fast here when an app already has a domain bound but the matching repo
+      #    variable is empty.
+      # 2. First-bind bootstrap: Container Apps rejects a managed certificate whose
+      #    hostname is not already a custom hostname in the environment, and ARM creates
+      #    the cert before the ingress that would introduce it -- so the very first bind
+      #    of a hostname can never converge in a single pass, no matter the ordering
+      #    inside bicep. Register it here first; bicep still owns the durable binding.
+      - name: Preflight custom-domain bindings (guard wipes, register first binds)
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
         run: |
           set -euo pipefail
@@ -228,26 +236,48 @@ jobs:
           rc=0
           guard() {
             app="$1"; var_name="$2"; var_val="$3"
-            # Empty when the app/RG doesn't exist yet (greenfield) or has no binding.
-            bound="$(az containerapp show -g "$rg" -n "$app" \
-              --query "properties.configuration.ingress.customDomains[].name" -o tsv 2>/dev/null || true)"
+            bound=""
+            if az containerapp show -g "$rg" -n "$app" -o none 2>/dev/null; then
+              # Present but domain-less prints nothing, same as a missing app --
+              # hence the separate existence probe above.
+              bound="$(az containerapp show -g "$rg" -n "$app" \
+                --query "properties.configuration.ingress.customDomains[].name" -o tsv 2>/dev/null || true)"
+            else
+              if [ -n "$var_val" ]; then
+                echo "::error::$app does not exist yet but $var_name is set to '$var_val'. That is the wrong order for a new tenant: the managed certificate needs the app, and DNS has to point at an environment that exists. Clear $var_name (and its *_MANAGED_CERT_NAME), provision once, cut DNS over, then re-run. See docs/runbooks/deployment.md section 3 step 3a."
+                rc=1
+              else
+                echo "OK: $app does not exist yet and $var_name is empty (correct greenfield order)."
+              fi
+              return 0
+            fi
+
             if [ -n "$bound" ] && [ -z "$var_val" ]; then
               echo "::error::$app has custom domain(s) bound [$(echo "$bound" | paste -sd, -)] but $var_name is empty. Provisioning would WIPE the binding. Set $var_name (and its *_MANAGED_CERT_NAME) as a repo variable, then re-run."
               rc=1
-            elif [ -n "$bound" ]; then
-              echo "OK: $app keeps [$(echo "$bound" | paste -sd, -)] ($var_name is set)."
-            elif [ -n "$var_val" ]; then
-              # Nothing to protect, but this is the first-bind path, and bicep
-              # creates a managed cert with CNAME domain-control validation. ARM
-              # fails that resource unless public DNS for $var_val ALREADY points
-              # at this environment. On a first provision in a new subscription or
-              # tenant it points at the old one, so the run dies after the slow
-              # resources are built. Warn rather than fail: a legitimate second-pass
-              # bind (DNS already cut over) looks identical from here.
-              echo "::warning::$app will bind $var_val for the first time. Confirm public DNS already resolves to THIS environment (CNAME -> the app's azurecontainerapps.io FQDN, and TXT asuid.$var_val = its customDomainVerificationId). If this is a new-tenant standup, clear $var_name, provision once, cut DNS over, then re-run. See docs/runbooks/deployment.md section 3 step 3a."
-            else
+            elif [ -z "$var_val" ]; then
               echo "OK: $app has no binding and $var_name is empty (nothing to protect)."
+            elif echo "$bound" | grep -qxF "$var_val"; then
+              echo "OK: $app already has $var_val registered; bicep will assert its cert and SNI binding."
+            else
+              # First bind of THIS hostname. Container Apps refuses to create a
+              # managed certificate for a hostname that is not already a custom
+              # hostname somewhere in the environment (RequireCustomHostnameInEnvironment),
+              # but bicep declares the cert and the ingress binding together and ARM
+              # orders the cert first -- so a first bind cannot converge in one pass.
+              # Register the hostname here with binding disabled (no cert needed) and
+              # let bicep do the half it can: issue the cert and flip to SniEnabled.
+              # `hostname add` is also where Azure validates domain control, so a DNS
+              # mistake fails in seconds here instead of ~20 minutes into provisioning.
+              echo "Registering $var_val on $app (binding disabled) so ARM can issue its managed certificate..."
+              if az containerapp hostname add -g "$rg" -n "$app" --hostname "$var_val" -o none; then
+                echo "OK: $var_val registered; bicep will issue the cert and switch it to SniEnabled."
+              else
+                echo "::error::Could not register $var_val on $app. Azure validates domain control here, so public DNS must ALREADY have: CNAME $var_val -> the app's <name>.<envdomain>.azurecontainerapps.io FQDN, and TXT asuid.$var_val = the app's customDomainVerificationId. Confirm with a public resolver (your corporate resolver may still cache the old target). See docs/runbooks/deployment.md section 3 step 3a."
+                rc=1
+              fi
             fi
+            return 0
           }
           guard "ca-web-${AZURE_ENV_NAME}"   "AI4IA_WEB_CUSTOM_DOMAIN"   "${AI4IA_WEB_CUSTOM_DOMAIN:-}"
           guard "ca-proxy-${AZURE_ENV_NAME}" "AI4IA_PROXY_CUSTOM_DOMAIN" "${AI4IA_PROXY_CUSTOM_DOMAIN:-}"

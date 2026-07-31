@@ -166,3 +166,20 @@ jobs:
           # stdlib-only, text-based checks pin the flag, the failure handling, and the
           # honesty of the admin-consent result.
           python3 -m unittest scripts.tests.test_provision_entra_apps
+
+      - name: Run custom-domain preflight tests
+        run: |
+          set -euo pipefail
+          # deploy.yml's custom-domain preflight is the only thing preventing two
+          # failures bicep cannot prevent for itself: provisioning with an empty
+          # AI4IA_*_CUSTOM_DOMAIN wipes a live vanity binding, and a first-time
+          # bind dies ~20 minutes in with RequireCustomHostnameInEnvironment
+          # because ARM creates the managed certificate before the ingress that
+          # would register its hostname. Asserting on the YAML text would only
+          # prove the step mentions the right commands, so these tests extract the
+          # real `run:` block and execute it under bash with `az` stubbed. PyYAML
+          # is the only dependency; the stub is pure shell.
+          python3 -m pip install --user --quiet "PyYAML==${PYYAML_VERSION}"
+          python3 -m unittest scripts.tests.test_custom_domain_preflight
+        env:
+          PYYAML_VERSION: 6.0.3
