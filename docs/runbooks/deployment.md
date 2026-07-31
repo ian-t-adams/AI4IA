@@ -518,15 +518,32 @@ Procedure:
    `Registered`, which is asynchronous and can take several minutes.
 
    `check-model-availability.py` compares `infra/models.json` against what the
-   subscription is actually entitled to deploy, per region. Model availability is
-   per-subscription: limited-access models need an approved request and partner
-   models need the Marketplace offer enabled, and neither is visible until the
-   deployment step. Version mismatches are reported as warnings, not errors,
-   because Azure commonly rolls a retired pinned version forward.
+   subscription is actually entitled to deploy, per region, on **two** axes that
+   fail independently:
+
+   * **Availability** — is the model offered here? Limited-access models need an
+     approved request and partner models need the Marketplace offer enabled.
+     Version mismatches are reported as warnings, not errors, because Azure
+     commonly rolls a retired pinned version forward.
+   * **Quota** — is there capacity left? A brand-new subscription is offered
+     nearly everything but ships small default quotas, so availability passes and
+     the deployment still dies on `InsufficientQuota`. Requested capacity is
+     summed per model+SKU, because quota is per subscription+region+model+SKU and
+     several deployments draw down one shared counter.
+
+   Quota counters are not named after the models they meter — they carry a
+   publisher prefix the catalog never mentions (`OpenAI.` vs `AIServices.`) and
+   respell the model (`model-router` → `ModelRouter`, `o3-deep-research` →
+   `o3-DeepResearch`, `Cohere-rerank-v4.0-pro` → `Cohere-Rerank-V4-Pro`). The
+   script reconciles these; a counter it still cannot match is a **warning**, not
+   an error, because the absence is ambiguous — verify by hand with
+   `az cognitiveservices usage list -l <region>`. Use `--skip-quota` to check
+   availability alone.
 
    If a model is genuinely unavailable, either request access or drop its
    deployment from `infra/models.json` and re-run `python scripts/gen-model-catalog.py`
-   (plus the generators in step 2).
+   (plus the generators in step 2). If it is merely out of quota, request an
+   increase or lower that deployment's `capacity`.
 
 1. Set the repo variables for the new subscription/tenant/env (§2.3), plus
    `AI4IA_POSTGRES_LOCATION` while PostgreSQL is retained and (if used)
