@@ -369,11 +369,27 @@ them once per tenant:
    `https://ai4ia.<domain>`, plus `http://localhost:3000` for local dev), and grant it
    delegated permission to the API app's `access_as_user` scope (grant admin consent).
 
+   `az ad app create` has **no SPA redirect flag** (it only offers `--web-redirect-uris`
+   and `--public-client-redirect-uris`); `spa.redirectUris` is settable only through
+   Microsoft Graph, so create this one via `az rest`:
+
    ```powershell
-   $web = az ad app create --display-name "AI4IA Web (<env>)" `
-     --sign-in-audience AzureADMyOrg `
-     --spa-redirect-uris "https://ai4ia.<domain>" "http://localhost:3000" | ConvertFrom-Json
+   $body = @{
+     displayName    = "AI4IA Web (<env>)"
+     signInAudience = 'AzureADMyOrg'
+     spa            = @{ redirectUris = @("https://ai4ia.<domain>", "http://localhost:3000") }
+   } | ConvertTo-Json -Depth 5
+   $body | Set-Content -Path ./web-app.json -Encoding utf8
+   $web = az rest --method POST --url "https://graph.microsoft.com/v1.0/applications" `
+     --headers "Content-Type=application/json" --body '@./web-app.json' | ConvertFrom-Json
+   Remove-Item ./web-app.json
    ```
+
+   > Granting **admin consent** needs Privileged Role Administrator, Cloud Application
+   > Administrator, or Global Administrator. Subscription **Owner is not sufficient** — a
+   > common surprise in MCAPS-managed tenants, where ARM ownership and directory roles are
+   > separate planes. Without consent, each user is prompted individually at first sign-in
+   > (and sign-in fails outright if user consent is disabled tenant-wide).
 
 Then map them to the repo variables (§2.3):
 
@@ -399,6 +415,9 @@ config edits plus the normal deploy — no code changes. What varies per environ
 |---|---|---|
 | Environment name | `AZURE_ENV_NAME` repo/azd var | Feeds `environmentName`; names the RG (`rg-ai4ia-<env>`), Foundry accounts/projects (`mf-aiforia-<env>-<region>`), Container Apps, etc. |
 | Subscription / tenant / region | `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_LOCATION` repo vars | See §2.3. |
+| CI/CD deployment identity | `AZURE_CLIENT_ID` repo var | **Not portable.** The federated credential is a tenant object; an identity from the old tenant cannot authenticate to the new one, so `azure/login` fails before any Bicep runs. Recreate per §2.1–2.2 (managed identity + `repo:<owner>/<repo>:environment:production` subject + `Contributor` and `Role Based Access Control Administrator`). |
+| Application Entra app registrations | `AI4IA_ENTRA_AUDIENCE`, `AI4IA_ENTRA_API_SCOPE`, `AI4IA_ENTRA_WEB_CLIENT_ID`, `AI4IA_ENTRA_TENANT_ID` | **Not portable** — directory objects, not subscription resources, so nothing in Bicep creates them. Recreate with `scripts/provision-entra-apps.ps1` (§2.7). Carrying the old app IDs over leaves `AI4IA_AUTH_PROVIDER=entra` pointing at audiences that do not exist in the new tenant: the stack provisions green and every authenticated request then returns `401`. |
+| Admin subjects | `AI4IA_ADMIN_SUBJECTS` repo var | **Not portable, and fails silently.** An `oid` identifies a *user object in one directory*; the same human signing into a new tenant gets a **different** `oid`. A carried-over value is simply an id that matches nobody — no error anywhere, the operator just quietly stops being an admin (losing `/api/admin/*` **and** the P0 gateway priority band). Re-read it in the new tenant with `az ad signed-in-user show --query id -o tsv`. |
 | Model deployment-name token | `infra/models.json` → `naming.subscriptionToken` | Stamped into every model deployment name (`{model}-<token>-<region>-<sku>`). Read by bicep **and** the runtime catalog. |
 | Foundry account/project token | `infra/models.json` → `naming.foundryToken` | Names `mf-<token>-<env>-<region>` and the toolbox project endpoint. |
 | Postgres region (temporary) | `AI4IA_POSTGRES_LOCATION` | Required only while the legacy migration source/document-index fallback remains (see §7.1). |

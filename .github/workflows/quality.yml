@@ -153,3 +153,16 @@ jobs:
           # prevents a partial deploy, so it is pinned here. The suite is
           # stdlib-only and makes no network calls.
           python3 -m unittest scripts.tests.test_subscription_preflight
+
+      - name: Run Entra app provisioning guard tests
+        run: |
+          set -euo pipefail
+          # scripts/provision-entra-apps.ps1 creates the two tenant app registrations
+          # production sign-in needs. It runs once per tenant, by hand, against a live
+          # directory -- so CI can never execute it, and it shipped with a call to
+          # `az ad app create --spa-redirect-uris`, a flag that does not exist. stderr
+          # was discarded, so the SPA app was silently never created while the script
+          # printed "Done" and a repo-variable table containing a placeholder. These
+          # stdlib-only, text-based checks pin the flag, the failure handling, and the
+          # honesty of the admin-consent result.
+          python3 -m unittest scripts.tests.test_provision_entra_apps

@@ -108,7 +108,8 @@ $api = Get-AppByName -DisplayName $ApiDisplayName
 if (-not $api) {
     Write-Host "API app '$ApiDisplayName' does not exist yet."
     if ($Apply) {
-        $api = az ad app create --display-name $ApiDisplayName --sign-in-audience AzureADMyOrg 2>$null | ConvertFrom-Json
+        $api = az ad app create --display-name $ApiDisplayName --sign-in-audience AzureADMyOrg | ConvertFrom-Json
+        if (-not $api.appId) { throw "Failed to create API app '$ApiDisplayName'." }
         Write-Host "Created API app $($api.appId)."
     }
 }
@@ -158,13 +159,32 @@ $web = Get-AppByName -DisplayName $WebDisplayName
 if (-not $web) {
     Write-Host "Web SPA app '$WebDisplayName' does not exist yet."
     if ($Apply) {
-        $web = az ad app create --display-name $WebDisplayName --sign-in-audience AzureADMyOrg `
-            --spa-redirect-uris @WebRedirectUri 2>$null | ConvertFrom-Json
+        # `az ad app create` has no SPA flag at all -- spa.redirectUris is Graph-only. Creating
+        # the app through Graph sets the URIs in the same call, so a failure cannot leave a
+        # redirect-less app behind that would then be "reused" on the next run.
+        $web = Invoke-Graph -Method POST -Url "$graph/applications" -Body @{
+            displayName    = $WebDisplayName
+            signInAudience = 'AzureADMyOrg'
+            spa            = @{ redirectUris = @($WebRedirectUri) }
+        }
+        if (-not $web.appId) { throw "Failed to create web SPA app '$WebDisplayName'." }
         Write-Host "Created web SPA app $($web.appId) with redirect URIs: $($WebRedirectUri -join ', ')."
     }
 }
 else {
     Write-Host "Reusing existing web SPA app $($web.appId)."
+    $haveUris = @($web.spa.redirectUris)
+    $missingUris = @($WebRedirectUri | Where-Object { $_ -notin $haveUris })
+    if ($missingUris) {
+        if ($Apply) {
+            Invoke-Graph -Method PATCH -Url "$graph/applications/$($web.id)" `
+                -Body @{ spa = @{ redirectUris = @($haveUris + $missingUris) } } | Out-Null
+            Write-Host "Added redirect URI(s): $($missingUris -join ', ')."
+        }
+        else {
+            Write-Host "Would add redirect URI(s): $($missingUris -join ', ')."
+        }
+    }
 }
 $webAppId = if ($web) { $web.appId } else { '<created-on-apply>' }
 $webObjId = if ($web) { $web.id } else { $null }
@@ -179,9 +199,18 @@ if ($Apply -and $webObjId) {
     Invoke-Graph -Method PATCH -Url "$graph/applications/$webObjId" -Body $rra | Out-Null
     az ad sp create --id $webAppId 2>$null | Out-Null
     az ad app permission admin-consent --id $webAppId 2>$null | Out-Null
-    Write-Host "Granted the web SPA delegated access_as_user with admin consent."
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Granted the web SPA delegated access_as_user with admin consent."
+    }
+    else {
+        Write-Warning ("Delegated access_as_user was recorded on the app, but ADMIN CONSENT FAILED " +
+            "(requires Privileged Role Administrator, Cloud Application Administrator, or Global " +
+            "Administrator -- subscription Owner is not enough). Sign-in will prompt each user, or " +
+            "fail if user consent is disabled. Grant it at: Entra -> App registrations -> " +
+            "$WebDisplayName -> API permissions -> Grant admin consent.")
+    }
 }
-else {
+elseif (-not $Apply) {
     Write-Host "Would grant the web SPA delegated access_as_user on the API app and admin-consent it."
 }
 
