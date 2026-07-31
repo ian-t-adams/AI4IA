@@ -575,12 +575,6 @@
           "dataZone": "US",
           "sku": "GlobalStandard",
           "deploymentName": "MAI-Image-2.5-slurmfactory-westus-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "deploymentName": "MAI-Image-2.5-slurmfactory-swedencentral-glbl"
         }
       ]
     },
@@ -598,12 +592,6 @@
           "dataZone": "US",
           "sku": "GlobalStandard",
           "deploymentName": "MAI-Image-2.5-Pro-slurmfactory-westus-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "deploymentName": "MAI-Image-2.5-Pro-slurmfactory-swedencentral-glbl"
         }
       ]
     },
@@ -621,12 +609,6 @@
           "dataZone": "US",
           "sku": "GlobalStandard",
           "deploymentName": "MAI-Image-2.5-Flash-slurmfactory-westus-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "deploymentName": "MAI-Image-2.5-Flash-slurmfactory-swedencentral-glbl"
         }
       ]
     },

@@ -941,6 +941,71 @@ python scripts/gen-gateway-policy.py
 python scripts/validate-catalog.py
 ```
 
+### 7.9 `InsufficientQuota` on a model deployment
+
+```text
+models-swedencentral  DeploymentFailed
+  InsufficientQuota: This operation require 2 new capacity in quota
+  "Microsoft.MAIImage.GlobalStandard", which is bigger than the current available
+  capacity 0. The current quota usage is 2 and the quota limit is 2.
+```
+
+**Model quota is subscription-wide, not per-region — the usage API just reports it per
+region.** This is the single most misleading thing about diagnosing it. `az cognitiveservices
+usage list -l <region>` replicates one subscription-wide aggregate into *every* region's
+response, so the same counter reads identically everywhere:
+
+```powershell
+foreach ($r in 'eastus2','swedencentral','westus') {
+  az cognitiveservices usage list -l $r -o json |
+    ConvertFrom-Json | Where-Object { $_.name.value -eq 'AIServices.GlobalStandard.MAI-Image-2.5' } |
+    ForEach-Object { "{0,-14} used={1} limit={2}" -f $r, $_.currentValue, $_.limit }
+}
+```
+
+That prints `used=2 limit=2` for all three — including **eastus2, which does not offer
+MAI-Image at all**. The subscription's only deployment is in westus.
+
+So a catalog can pass every per-region check and still fail: asking for capacity 2 in each
+of two regions is fine region-by-region (2 ≤ 2 twice) but it is 4 against a shared limit of
+2. Whichever region ARM reaches first wins and the other dies. **This is deterministic —
+re-running only changes which region loses.**
+
+Enforcement is not uniform, and the difference matters:
+
+| Publisher | Enforced | Evidence |
+| --- | --- | --- |
+| `AIServices.*` (Microsoft) | subscription-wide | MAI-Image-2.5/-Flash/-Pro deployed in westus, then failed in swedencentral |
+| `OpenAI.*` | per region | `gpt-image-1.5` holds a full 9-capacity deployment in eastus2 **and** swedencentral — 18 against a limit of 9, both succeeded |
+
+`check-model-availability.py` encodes exactly that: a multi-region overcommit is an **error**
+for non-OpenAI models and a **warning** for OpenAI ones.
+
+**Triage.** Work out which of three cases you are in before changing anything:
+
+1. **Subscription-wide overcommit** (the case above). Run the preflight — it reports it under
+   `Subscription-wide quota (shared across regions)`. Fix by dropping a region from that model
+   in `infra/models.json`, or request a quota increase. Never "just re-run".
+2. **Capacity genuinely exceeds the limit** in a single region. Lower `capacity` or request an
+   increase. Also blocking in the preflight.
+3. **Transient.** `currentValue` includes in-flight reservations, so a rolled-back attempt
+   keeps its capacity reserved briefly. Only plausible when the *total* fits — otherwise you
+   are in case 1 and re-running will not help. Models whose `capacity` equals their `limit`
+   have zero headroom and are the ones exposed to this; the preflight warns about each.
+
+Do **not** treat a saturated `currentValue` in one region as proof of anything by itself. It
+is a subscription-wide aggregate, it is clamped to the limit (`gpt-image-1.5` shows `9/9`
+while 18 units are deployed), and it moves during a provision.
+
+Remember ARM aborts the whole `models-<region>` nested deployment at the first failure, so
+one error hides the rest. Re-running the preflight after a failure is the cheapest way to see
+the full picture:
+
+```powershell
+az account set --subscription <the-right-one>   # the check follows your az context
+python scripts/check-model-availability.py
+```
+
 ## APIM Basic v2 migration guardrail
 
 The active model/realtime/MCP plane is the `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the additive `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the existing `/openai/realtime` API and subscription. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and both voice providers share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic — it never receives Speech Voice Live traffic either. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.

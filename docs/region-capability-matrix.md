@@ -21,12 +21,28 @@ Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
   `gpt-audio`), images (`gpt-image-1-mini/1.5/2`), `sora-2`, `model-router`, and
   evaluations. US data zone. Also the region for the `speech_voice_live` voice provider.
 - **Primary EU — Sweden Central:** mirrors East US 2 for realtime/audio/`sora-2`/
-  `model-router`/image, **adds `tts-hd`** and the `MAI-Image-2.5` family, and gives EU
-  data residency.
-- **Targeted — West US:** sole home of `o3-deep-research`, and the first region of the
-  `MAI-Image-2.5` / `-Pro` / `-Flash` family. The MAI models are **not** offered in East
-  US 2, so West US and Sweden Central are their only options; each carries both so a
-  single-region outage does not take image generation down.
+  `model-router`/image and **adds `tts-hd`**, and gives EU data residency. It *offers* the
+  `MAI-Image-2.5` family but does not deploy it — see West US below.
+- **Targeted — West US:** sole home of `o3-deep-research` and of the `MAI-Image-2.5` /
+  `-Pro` / `-Flash` family. The MAI models are **not** offered in East US 2, so West US and
+  Sweden Central are their only options — but they are pinned to West US **alone**, which is
+  a quota constraint rather than a design preference:
+
+  > MAI-Image quota is **subscription-wide**, not per-region, and the default limit is 2
+  > units per model. Deploying capacity 2 in West US consumes the whole allowance, so a
+  > second region deterministically fails with `InsufficientQuota` — whichever region ARM
+  > reaches first wins. This cost a provision run before it was understood; see
+  > `docs/runbooks/deployment.md` §7.9. `scripts/check-model-availability.py` now blocks on
+  > it, and `scripts/tests/test_subscription_preflight.py::SharedQuotaTests` pins MAI-Image
+  > to a single region so the second one cannot be re-added by accident.
+  >
+  > **To restore the second region:** request a MAI-Image quota increase to at least 4 per
+  > model in this subscription, then add a `swedencentral` deployment block (capacity 2,
+  > same versions) back to each of the three models in `infra/models.json`, relax the guard
+  > test, and re-run `gen-model-catalog.py` / `gen-gateway-policy.py` / `validate-catalog.py`.
+
+  Note this leaves image generation without regional redundancy, unlike the OpenAI image
+  models (`gpt-image-*`), which are enforced per region and so do carry two regions each.
 
 > Voice Live is broadly available as an API, but it consumes realtime/audio models that
 > only deploy in East US 2 + Sweden Central — so those are the practical Voice Live regions.
