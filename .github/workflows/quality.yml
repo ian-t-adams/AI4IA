@@ -201,11 +201,14 @@ jobs:
           set -euo pipefail
           # The brand images are committed OUTPUT of scripts/gen-brand-assets.py,
           # which needs Pillow and a font and so deliberately does not run here.
-          # That leaves the committed bytes ungated: nothing checked that
-          # site/index.html's og:image dimensions match the real lettermark, and
-          # nothing objected when the portal icon was 1024x1024 / 750 KB behind a
-          # 30px box. Reads PNG IHDR and ICO directory entries directly, so it
-          # verifies Pillow's output without needing Pillow. stdlib-only, no network.
+          # That leaves the committed bytes ungated in three ways, each of which
+          # has bitten this repo: the first orange rebrand silently left six
+          # assets (including the web app's own favicon.ico) on the previous azure
+          # mark at unchanged dimensions; site/index.html's og:image dimensions
+          # were never checked against the real lettermark; and nothing objected
+          # when the portal icon was 1024x1024 / 750 KB behind a 30px box. So this
+          # decodes the actual pixels, and enumerates rasters from git so an asset
+          # no generator owns cannot hide. stdlib-only, no network, ~1.5s.
           python3 -m unittest scripts.tests.test_brand_assets
 
       - name: Run Dependabot config coupling tests

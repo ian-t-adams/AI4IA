@@ -201,7 +201,7 @@ python3 -m unittest scripts.tests.test_subscription_preflight   # new-subscripti
 python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app bootstrap (runs once, by hand, so CI can't)
 python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deploy.yml's real run: block with `az` stubbed
 python3 -m unittest scripts.tests.test_portal_contrast          # WCAG gate for site/assets/styles.css (no build, no other runner)
-python3 -m unittest scripts.tests.test_brand_assets             # committed logo bytes vs their declared sizes
+python3 -m unittest scripts.tests.test_brand_assets             # every committed logo: coverage, palette, size
 python3 -m unittest scripts.tests.test_dependabot_config        # keeps dependabot.yml and the uv.lock gate in step
 ```
 
@@ -314,15 +314,28 @@ Three rules the gates encode, each of which was violated at some point:
    a brand surface; its yellow-on-black measures better than any orange.
 
 Logos are generated, not hand-edited: `python scripts/gen-brand-assets.py` writes
-the app mark, portal icon, Open Graph lettermark, and the favicon ladder from one
-palette definition. It needs Pillow and a bold sans TTF, so it is deliberately not
-wired into CI — run it and commit the output. `scripts/tests/test_brand_assets.py`
-gates the committed bytes instead: it reads PNG IHDR / ICO directory entries with
-the stdlib and fails if an asset's real size stops matching `site/index.html`'s
-declared `og:image` dimensions, if the Open Graph card loses its ~1.91:1 ratio, or
-if the assets creep back toward the 1.65 MB they once totalled. Size each asset
-against how it is actually rendered; the portal icon was once 1024x1024 (750 KB)
-behind a 30 px box.
+**every** committed raster — the app mark, both favicon ladders, the Next.js app
+and Apple icons, the portal icon, the Open Graph lettermark, and all of
+`assets/branding/` — from one palette definition. It needs Pillow and a bold sans
+TTF, so it is deliberately not wired into CI: run it and commit the output.
+
+`scripts/tests/test_brand_assets.py` gates those committed bytes with the stdlib
+(no Pillow), and the three things it checks map to three failures that have
+actually happened here:
+
+- **Completeness.** The first orange rebrand regenerated four assets and missed
+  six, including the web app's own `favicon.ico`. The gate now discovers rasters
+  via `git ls-files` and fails on anything not owned by the generator or listed in
+  `NON_BRAND_RASTERS`. If you add an image, that is a deliberate choice you must
+  record.
+- **Colour.** Those six missed files had the right dimensions and the right
+  weight; they were simply still azure. Only pixels catch that, so the gate
+  decodes them and requires ≥40% of saturated pixels to sit near the brand hue —
+  current assets score ~75%, the old azure mark scores 0%.
+- **Shape and weight.** Real size vs `site/index.html`'s declared `og:image`
+  dimensions, the ~1.91:1 Open Graph ratio, and per-file plus aggregate ceilings.
+  Size each asset against how it is actually rendered; the portal icon was once
+  1024x1024 (750 KB) behind a 30 px box.
 
 ## Auth model and `apiFetch` contract
 

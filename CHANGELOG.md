@@ -85,6 +85,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The browser-tab icon and five other brand rasters were never rebranded. The orange
+  rebrand regenerated four assets; `scripts/gen-brand-assets.py` only ever wrote those
+  four, so `app/web/src/app/favicon.ico` (the tab icon), `icon.png`, `apple-icon.png`,
+  and all three `assets/branding/` files stayed on the previous azure mark. They kept
+  their original dimensions and file sizes, so every check in `test_brand_assets.py` was
+  structural and none could fail — and the six missing files were not even in its
+  expectations table. The generator now owns all ten rasters (adding an Apple touch icon
+  built full-bleed, since iOS applies its own mask), and the gate was rewritten to
+  enumerate rasters from `git ls-files` and to decode actual pixels: assets must be
+  ≥40% saturated pixels near the brand hue, which the current set clears at ~75% and the
+  old azure mark scores 0% on. `scripts/tests/_pngread.py` is a small stdlib PNG decoder
+  added so this runs in CI without Pillow. Saves a further 1.7 MB.
+
 - Proxy priority reservations now actually reserve workers. `gateway.bicep` emitted the
   reservation as the container env var `PriorityWorker`, but the vendored proxy builds
   `PriorityWorkerDict` — the dictionary `WorkerFactory` reserves from — only from the plural
