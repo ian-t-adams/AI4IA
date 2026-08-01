@@ -66,6 +66,7 @@ window.AI4IA_REQUIREMENTS = {
         ["azure-search-documents", "AI Search data + index plane (keyless)"],
         ["azure-keyvault-secrets", "Durable per-user MCP secrets"],
         ["azure-monitor-querymetrics", "Batch metrics API for the admin resource panels"],
+        ["azure-monitor-query", "Read-only Log Analytics KQL for the admin operations/security dashboard"],
         ["azure-monitor-opentelemetry + opentelemetry-instrumentation-httpx", "App Insights traces/metrics/events"],
         ["pypdf / python-multipart", "PDF extraction + multipart uploads"],
         ["webiq", "Web IQ search SDK (default-OFF capability)"],
