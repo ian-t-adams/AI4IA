@@ -240,6 +240,20 @@ def main() -> int:
             "notify nobody. Set AI4IA_ALERT_EMAIL to a deliverable mailbox."
         )
 
+    # Same shape one layer down, and it bit us: the budget is created
+    # unconditionally, but budgetAlertEmails is not surfaced in
+    # main.parameters.json, so it stayed [] and the deployed budget carried an
+    # empty notifications map. A $1500/month guardrail that emails nobody looks
+    # identical in the portal to one that works. main.bicep now falls back to
+    # alertEmail, so the only remaining silent case is both being empty.
+    if not text(parameter_value(parameters, "alertEmail")) and not parameter_value(
+        parameters, "budgetAlertEmails", []
+    ):
+        warnings.append(
+            "budget has no notification recipient: thresholds will be tracked but "
+            "never emailed. Set AI4IA_ALERT_EMAIL (it feeds the budget too)."
+        )
+
     for warning in warnings:
         print(f"WARNING: {warning}")
     if errors:

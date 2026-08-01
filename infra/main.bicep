@@ -22,7 +22,7 @@ param costCenter string = 'genai-demo'
 @description('Monthly cost budget (billing currency) for the resource group.')
 param budgetAmount int = 1500
 
-@description('Emails notified on budget thresholds (empty = tracking only).')
+@description('Emails notified on budget thresholds. Defaults to alertEmail when left empty, so one address drives both the budget and the Monitor action group; set this only to send budget notices somewhere different. Empty AND no alertEmail = tracking only, which means the budget silently notifies nobody.')
 param budgetAlertEmails array = []
 
 @description('Budget start date (first of a month, yyyy-MM-dd). Empty = first of the current month at deploy time. Pin this via the AI4IA_BUDGET_START_DATE repo variable to a fixed month so redeploys stay idempotent: Azure rejects changing an existing budget start date, so an unpinned value drifts and the first deploy of each new month fails ("Start date of budgets cannot be updated").')
@@ -49,7 +49,7 @@ param apiCenterLocation string = 'eastus'
 @description('Opt-in: deploy a minimal Azure Monitor alerting baseline (action group + metric alerts). Default OFF so existing deployments are byte-for-byte unchanged and no alert can fire without explicit enablement.')
 param enableAlerts bool = false
 
-@description('Email address notified by the alerting baseline action group (empty => action group has no receiver). Only used when enableAlerts is true.')
+@description('Email address notified by the alerting baseline action group (empty => action group has no receiver). Only used when enableAlerts is true, EXCEPT as the fallback recipient for budget thresholds, which are independent of the metric-alert baseline: a cost overrun is worth an email whether or not the Monitor alerts are on.')
 param alertEmail string = ''
 
 @description('Application runtime environment for the api (maps to AI4IA_ENV).')
@@ -235,6 +235,16 @@ a VNet path (temp IP allow or a jumpbox) — otherwise azd, which runs off-VNet,
 loses the ability to manage these resources. Default false.''')
 param dataTierPrivate bool = false
 
+@description('''Enable Key Vault purge protection, which blocks permanent deletion of the
+vault and its secrets for the soft-delete retention window. Default false so the
+wipe-and-rebuild workflow can purge and recreate the vault under the same name --
+keyvault.bicep has recommended true for production since it was written, but the
+parameter was never threaded through main.bicep, so no deployment could actually
+turn it on. Enabling it is IRREVERSIBLE: Azure offers no way to switch it back off,
+and the name stays reserved for the retention period, so a teardown-and-redeploy
+of the same environment name will fail until it lapses.''')
+param keyVaultPurgeProtection bool = false
+
 var tags = {
   workload: workload
   env: environmentName
@@ -349,6 +359,7 @@ module keyvault 'modules/keyvault.bicep' = {
     uniqueSuffix: uniqueSuffix
     readerPrincipalIds: allPrincipalIds
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
+    enablePurgeProtection: keyVaultPurgeProtection
     // Custom tools / BYO MCP: the api MI writes per-user MCP
     // connection secrets at runtime, which needs Secrets Officer (write), not the
     // read-only Secrets User above. Granted only when the feature is enabled.
@@ -543,7 +554,12 @@ module cost 'modules/cost.bicep' = {
   params: {
     name: 'budget-${workload}-${environmentName}'
     amount: budgetAmount
-    alertEmails: budgetAlertEmails
+    // budgetAlertEmails is not surfaced in main.parameters.json, so before this
+    // fallback it was permanently [] and the deployed budget carried an empty
+    // notifications map -- a $1500/month guardrail that alerted nobody. Reuse the
+    // address already wired for the action group rather than adding a second knob
+    // that can drift out of sync with it.
+    alertEmails: !empty(budgetAlertEmails) ? budgetAlertEmails : (empty(alertEmail) ? [] : [alertEmail])
     startDate: empty(budgetStartDate) ? budgetStartDateCurrentMonth : budgetStartDate
   }
 }
@@ -884,7 +900,6 @@ module web 'modules/web.bicep' = {
   params: {
     location: location
     tags: tags
-    environmentName: environmentName
     containerEnvId: platform.outputs.containerEnvId
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     webIdentityResourceId: webIdentity.resourceId

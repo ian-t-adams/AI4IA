@@ -61,7 +61,6 @@ export function encodeDevCredential(devUser: string): string {
 
 export type { VoiceProvider, VoiceProviderId };
 export const DEFAULT_VOICE_PROVIDER = DEFAULT_VOICE_PROVIDER_ID;
-export type AzureOpenAIVoiceProvider = Extract<VoiceProvider, { id: "azure_openai" }>;
 export type SpeechVoiceProvider = Extract<VoiceProvider, { id: "speech_voice_live" }>;
 export type SpeechManagedModel = SpeechVoiceProvider["managedModels"][number];
 

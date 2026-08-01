@@ -115,6 +115,33 @@ class CommittedParametersTests(unittest.TestCase):
         self.assertEqual(code, 0, f"production configuration failed validation:\n{err}")
 
 
+class BudgetNotificationTests(unittest.TestCase):
+    """The budget shipped for months with an empty notifications map.
+
+    budgetAlertEmails is not surfaced in main.parameters.json, so it stayed at
+    its [] default and Azure accepted a $1500/month budget that emailed nobody.
+    Nothing failed, and the portal renders a silent budget identically to a
+    working one. main.bicep now falls back to alertEmail; these lock in that the
+    remaining silent case is loud.
+    """
+
+    def test_budget_without_any_recipient_warns(self) -> None:
+        with _environment():
+            code, out, _ = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 0, "a silent budget is a warning, not a hard failure")
+        self.assertIn("budget has no notification recipient", out)
+
+    def test_alert_email_also_covers_the_budget(self) -> None:
+        with _environment(AI4IA_ALERT_EMAIL="ops@example.org"):
+            code, out, _ = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 0)
+        self.assertNotIn(
+            "budget has no notification recipient",
+            out,
+            "alertEmail feeds the budget, so supplying it must silence this warning",
+        )
+
+
 class RealtimeOriginTests(unittest.TestCase):
     def test_literal_realtime_origin_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

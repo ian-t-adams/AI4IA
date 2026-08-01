@@ -52,7 +52,7 @@ flowchart TB
   Web -->|"same-origin proxy"| API["FastAPI API<br/>(Container App)"]
   User -. "Voice Live (WebSocket)" .-> API
   API --> Cosmos[("Cosmos DB<br/>canonical state")]
-  API --> PG[("Postgres + pgvector<br/>memory / chunks")]
+  API --> PG[("Postgres + pgvector<br/>chunk fallback")]
   API --> Blob[("Blob Storage<br/>documents + media")]
   API --> Search["Azure AI Search<br/>(optional retrieval)"]
   API --> CU["Content Understanding"]

@@ -49,6 +49,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Removed
 
+- Three unreferenced symbols and an unused Bicep parameter, each confirmed dead by a
+  repo-wide search returning only its own definition: `ErrorResponse` in `errors.py`
+  (never imported or constructed — every error body is a dict from `build_error_payload`),
+  `VoiceProviderSelectionMode` (the `selectionMode` fields are `Literal` types, not this
+  enum), the TypeScript `AzureOpenAIVoiceProvider` type in `voiceLive.ts` (distinct from
+  the Python class of the same name, which `realtime.py` does use and which is untouched),
+  and `environmentName` in `web.bicep`, which the Bicep linter had been flagging as
+  `no-unused-params`.
+
 - The legacy Consumption-tier APIM (`apim-<workload>-<env>-<suffix>`) and every child
   resource — its model/realtime APIs, policies, policy fragments, subscriptions,
   diagnostics, Foundry role assignments, and the unused
@@ -84,6 +93,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   before the bump.
 
 ### Fixed
+
+- Three infrastructure controls were configured but inert — legal ARM that deploys
+  clean, renders normally in the portal, and does nothing. The $1,500/month resource-group
+  budget notified **nobody**: `cost.bicep` builds an empty notifications map when
+  `alertEmails` is empty, and `budgetAlertEmails` was never surfaced in
+  `main.parameters.json`, so it stayed `[]` permanently (confirmed against live ARM —
+  zero notifications on `budget-ai4ia-slurmfactory`). It now falls back to the already-wired
+  `alertEmail`, and `validate-feature-prereqs.py` warns when neither is set. Key Vault
+  purge protection had been described as "Set true for production" since `keyvault.bicep`
+  was written, but `main.bicep` never passed the parameter, so no deployment could enable
+  it; it is now reachable via `AI4IA_KEYVAULT_PURGE_PROTECTION` and deliberately defaults
+  to `false`, because enabling it is irreversible and reserves the vault name for the
+  soft-delete window. Wiring that knob also required a `deploy.yml` entry — the repo's own
+  `test_every_azd_parameter_token_is_reachable_from_ci` caught the omission that would have
+  made it a fourth inert knob.
+- The Cosmos backup policy was never expressed in IaC, hiding how narrow recovery actually
+  is. The account is **serverless**, which rules out continuous backup and self-service
+  point-in-time restore entirely — Azure refuses to restore *into* a serverless account, so
+  recovery means a new provisioned account via support ticket. The live periodic policy is a
+  240-minute interval with **8-hour retention**, i.e. two snapshots. Pinned to the exact live
+  values (verified a no-op against the deployed account) and documented in the deployment
+  runbook so the number is found before an incident rather than during one.
+- Documentation described the pre-Cosmos memory stack. The portal advertised "mem0 over
+  Postgres + pgvector" and listed `mem0ai` and `psycopg` as dependencies, none of which the
+  app still contains: zero `mem0`/`psycopg` imports in `app/api`, absent from `pyproject.toml`
+  and `uv.lock`, and no pgvector store module exists. `configuration-reference.md` also told
+  operators to set `PriorityWorker` — the singular name the proxy parses and silently
+  discards — so following the table configured nothing. Postgres is described as what it now
+  is (document-chunk fallback and legacy migration source) rather than removed.
 
 - The browser-tab icon and five other brand rasters were never rebranded. The orange
   rebrand regenerated four assets; `scripts/gen-brand-assets.py` only ever wrote those

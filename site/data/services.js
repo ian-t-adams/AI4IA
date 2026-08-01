@@ -72,7 +72,7 @@ window.AI4IA_SERVICES = [
   {
     key: "postgres", name: "Postgres Flexible Server (pgvector)", azureType: "Microsoft.DBforPostgreSQL/flexibleServers",
     group: "Data", icon: "🧬", module: "data.bicep", resourcePattern: "psql-ai4ia-*",
-    summary: "PostgreSQL 16 with pgvector — the home for the mem0 per-user memory store and document chunk vectors. " +
+    summary: "PostgreSQL 16 with pgvector — retained for document chunk vectors and as the legacy memory-migration source; per-user memory is now canonical in Cosmos DB. " +
       "Passwordless: the API authenticates as its managed identity with an AAD access token (no SQL password).",
     identity: "id-api authenticates via Entra token (AI4IA_POSTGRES_USER = id-api)",
     docs: [["Postgres Flexible Server", "https://learn.microsoft.com/azure/postgresql/flexible-server/"], ["pgvector", "https://github.com/pgvector/pgvector"]],

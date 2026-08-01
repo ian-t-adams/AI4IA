@@ -9,9 +9,6 @@ param location string
 @description('Tags applied to all resources.')
 param tags object
 
-@description('Environment name (e.g. ai4ia-dev).')
-param environmentName string
-
 @description('Container Apps managed environment resource ID.')
 param containerEnvId string
 

@@ -764,6 +764,39 @@ Container Apps keeps prior revisions. The proxy is configured for single active
 revision, so rollback means reactivating/redeploying the prior revision rather
 than weighted traffic splitting.
 
+**Rollback recovers code, not data.** The two are separate problems, and the data
+side is the weaker of the two — see below before you need it.
+
+### Data recovery posture (know this before you need it)
+
+The Cosmos account is **serverless**, which constrains recovery more than most
+people expect:
+
+| | Reality |
+| --- | --- |
+| Backup mode | `Periodic` — pinned explicitly in `infra/modules/data.bicep` |
+| Snapshot interval | every 4 hours, 8 hours retained (**two snapshots**) |
+| Redundancy | Geo |
+| Self-service point-in-time restore | **Not available.** Continuous backup is not usable on a serverless account |
+| How you restore | Raise an Azure **support ticket** |
+| Where it restores to | A **new provisioned-throughput account** — Azure refuses to restore *into* a serverless account |
+
+So the effective recovery window for sessions, messages, usage, memory, and user
+agents is roughly **eight hours**, and exercising it is a support engagement that
+lands the data in a differently-shaped account, not an in-place undo. Anything
+older than that window is gone. Treat destructive data operations accordingly:
+there is no "restore yesterday".
+
+Derived stores are exempt by design — document chunks, the AI Search index, and
+parsed artifacts are all rebuildable from the canonical manifests, so they need
+no backup story of their own.
+
+Key Vault is soft-delete enabled with a 7-day retention. Purge protection is
+**off** so the wipe-and-rebuild workflow can recreate the vault under the same
+name; set `AI4IA_KEYVAULT_PURGE_PROTECTION=true` to harden it, but note the
+switch is **irreversible** and reserves the vault name for the retention window,
+which will block a teardown-and-redeploy of the same environment name.
+
 ## 7. Troubleshooting
 
 ### 7.1 `Provision infrastructure` fails with `LocationIsOfferRestricted` (Postgres)

@@ -29,11 +29,6 @@ class VoiceProviderTransport(str, Enum):
     websocket = "websocket"
 
 
-class VoiceProviderSelectionMode(str, Enum):
-    deployment_catalog = "deployment_catalog"
-    managed_model_catalog = "managed_model_catalog"
-
-
 class VoiceProviderVoices(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
