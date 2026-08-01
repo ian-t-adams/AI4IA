@@ -14,7 +14,6 @@ ships, add one when a real gap appears.
 | --- | --- | --- | --- |
 | **P0** | `main` has **no branch protection / ruleset** (verified: protection `404`, rulesets `[]`). Any direct push bypasses CI and review. | Add a ruleset requiring a PR + one approving review + conversation resolution + blocked force-push/deletion, and require **always-emitted aggregate** check contexts (not the path-filtered `app-ci`/`infra-validate`/`docker-build` job names, which would deadlock docs-only PRs). | Owner (repo settings) |
 | **P1** | **Proactive alerting is wired but off.** `enableAlerts=false` by default; only App Insights Smart Detection is live, so there are no threshold alerts for API 5xx spikes or Cosmos throttling. | Plumbing is done: set the `AI4IA_ENABLE_ALERTS` repo variable to `true` **and** `AI4IA_ALERT_EMAIL` to a recipient, then redeploy. Reactive diagnosis via the admin dashboard already works. | `infra/modules/alerts.bicep`, `deploy.yml`, [`telemetry.md`](./runbooks/telemetry.md) |
-| **P1** | **New-tenant standup is now scripted.** Creating the two application Entra app registrations (API + web SPA) used to be a manual portal/CLI step. | `scripts/provision-entra-apps.ps1` (dry-run-first) creates both apps, exposes `access_as_user`, sets redirect URIs + admin consent, and prints the `AI4IA_ENTRA_*` values. | [`deployment.md` §2.7](./runbooks/deployment.md), `scripts/provision-entra-apps.ps1` |
 | **P1** | **Deployment parity isn't automatically proven.** Repository truth can lead the live revision. | Keep recording deployed api/web/proxy revision SHAs + post-deploy smoke evidence after each deploy. | [`deployment.md`](./runbooks/deployment.md) |
 | **P2** | **Gateway is single-region / capacity-1** (APIM Basic v2) and the SimpleL7Proxy queue is per-replica memory (no global ordering/fairness). | Decide whether the capacity/region posture meets the target SLO and budget; set scaling + alert thresholds if not. | [`architecture.md`](./architecture.md) |
 | **P2** | **Memory UX gaps.** No global memory-consent control and no recalled-memory provenance indicator; management is owner-scoped CRUD only. | Design explicit consent + provenance UX before expanding memory surfaces. | [`memory.md`](./memory.md) |
@@ -39,8 +38,11 @@ ships, add one when a real gap appears.
   gaps (Entra app registrations, Cosmos vector-capability ordering) were closed.
 - **New-tenant standup readiness.** Tenant-coupled defaults removed from the IaC and the
   operator scripts; subscription preflights added for resource-provider registration and
-  per-subscription model availability. Validated end to end against an empty subscription
-  in a new tenant — see [deployment runbook §3](./runbooks/deployment.md).
+  per-subscription model availability. `scripts/provision-entra-apps.ps1` (dry-run-first)
+  now creates both application registrations, exposes `access_as_user`, sets redirect URIs
+  and admin consent, and prints the `AI4IA_ENTRA_*` values — the last manual portal step.
+  Validated end to end against an empty subscription in a new tenant — see
+  [deployment runbook §3](./runbooks/deployment.md).
 - **Planet Express deployment live.** The stack is now running in
   `sub-planetexpress-slurmfactory` / `rg-ai4ia-slurmfactory` with custom domains for
   the app and proxy.

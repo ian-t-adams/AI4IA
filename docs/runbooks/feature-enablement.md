@@ -117,37 +117,34 @@ Services User** and **Foundry User** (formerly Azure AI User) on that one
 account; the `speechVoiceLiveManagedIdentityAudience` parameter (default
 `https://ai.azure.com`) is deployment-only, never an app runtime setting.
 
-**Enablement sequence and strict no-deploy gates.** This provider ships fully
-implemented and tested in the repository, but production enablement is
-intentionally blocked behind approvals this runbook cannot satisfy on its own:
+**Enablement status and standing rules.** This provider is **enabled in production**
+(`AI4IA_SPEECH_VOICE_LIVE_ENABLED=true`, with `speech_voice_live` in
+`AI4IA_VOICE_PROVIDER_ALLOWLIST`). The gates below governed that rollout; the ones
+that are standing rules still apply to any future change to this surface:
 
 1. Repository validation passes: catalog/schema checks (including
    `gen-voice-provider-catalog.py --check`), API (`ruff`, `pyright`, `pytest`),
    web (`lint`, `test`, `build`), and IaC/quality gates (schema checks, policy
-   tests, `bicep build`, docs drift).
+   tests, `bicep build`, docs drift). These run in CI on every PR.
 2. Independent code review, a security review of the WebSocket/secret/event/tool
    surface, and an Azure/Bicep specialist review of the additive APIM/MI/RBAC
    changes.
-3. **Separate, explicit approval** before running the live APIM WebSocket policy
-   compiler (`scripts/test-apim-policy-compiler.ps1`) against the target APIM —
-   it creates and deletes temporary Azure resources, so it is never run
-   automatically.
-4. An authorized identity refreshes live Azure inventory and runs a zero-delete
-   production what-if. As of this writing, subscription/resource-group read and
-   `Microsoft.Resources/deployments/whatIf/action` return `403 AuthorizationFailed`
-   for the available identity — this is a recorded, current blocker, not a
-   theoretical one. Deployment does not proceed while that inventory/what-if
-   access remains forbidden.
-5. Only after steps 1-4 close does `azd provision` / `azd deploy` and a merge to
-   `main` become separate, explicitly authorized decisions.
-6. After deployment, run `scripts/voice-live-canary.py` with an operator Entra
+3. **Standing rule — separate, explicit approval** before running the live APIM
+   WebSocket policy compiler (`scripts/test-apim-policy-compiler.ps1`) against the
+   target APIM: it creates and deletes temporary Azure resources, so it is never
+   run automatically.
+4. **Standing rule** — any change touching APIM is reviewed against a zero-delete
+   production what-if containing no deletes, replacements, APIM SKU changes, or
+   legacy Consumption mutations.
+5. After deployment, run `scripts/voice-live-canary.py` with an operator Entra
    token against the authenticated FastAPI `wss://.../api/voice/live` path for
    each enabled model, then manually retest a signed-in microphone session,
    provider/model changes on the next connection, and transcript persistence.
    Direct APIM handshakes are infrastructure diagnostics, not app proof.
 
-No step in this runbook authorizes deployment or merge on its own, and this page
-does not claim a live canary, compiler, what-if, deploy, or manual retest occurred.
+The signed-in manual microphone retest in step 5 is the one outstanding validation
+and is tracked in [`roadmap.md`](../roadmap.md). Deploying and merging remain
+separate, explicitly authorized decisions that this runbook does not grant.
 
 **Rollback and retained resources.** Disabling Speech Voice Live is immediate
 and non-destructive:
