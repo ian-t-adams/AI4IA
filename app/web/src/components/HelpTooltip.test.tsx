@@ -99,7 +99,7 @@ describe("HelpTooltip", () => {
   });
 
   it("stops Escape from also closing a real containing dialog's window keydown listener", async () => {
-    // Mirrors how ImageStudioPanel/MediaPlayer actually close on Escape
+    // Mirrors how MediaPlayer actually closes on Escape
     // (window.addEventListener("keydown", ...), bubble phase) -- distinct
     // from the React onKeyDown ancestor case above, so this proves the
     // document-capture fix wins against that real-world pattern too.

@@ -89,7 +89,7 @@ export function HelpTooltip({
     // a hover-opened tooltip never focuses the trigger, and a pinned tooltip
     // stays open after Tab moves focus to the next field. Capture fires
     // before any bubble-phase listener a containing dialog attaches to
-    // window/document (e.g. ImageStudioPanel, MediaPlayer), so
+    // window/document (e.g. MediaPlayer), so
     // stopPropagation() here reliably keeps this keypress from also closing
     // that dialog. Only registered while open, and removed on close/unmount,
     // so a closed tooltip never intercepts Escape meant for its ancestor.

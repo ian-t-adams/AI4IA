@@ -70,7 +70,11 @@ playback, memory save, or sharing.
 - **Tier 2:** top-k RAG chunks, nonce-fenced as untrusted context.
 - **Tier 3:** `fetch_document` for full/partial parsed Markdown.
 - **Compute:** `run_code` and `export_document` use Azure OpenAI Responses API
-  Code Interpreter when `AI4IA_DOCUMENT_COMPUTE_ENABLED=true`.
+  Code Interpreter when `AI4IA_DOCUMENT_COMPUTE_ENABLED=true`. By default the
+  sandbox receives the document's **parsed text**, not the file itself; set
+  `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED=true` to upload the **original bytes**
+  instead, so the model reads real spreadsheet cells and PDF layout. Unsupported
+  types, oversize originals, and upload failures all fall back to parsed text.
 - **Inline compute:** `analyze_attachment` can hand the original bytes of an
   inline composer attachment to the same Responses API Code Interpreter endpoint
   when `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED=true`; it is independent of the
@@ -104,6 +108,7 @@ Core flags and knobs:
 - `AI4IA_SEARCH_ENDPOINT`, `AI4IA_SEARCH_INDEX_NAME`
 - `AI4IA_DOCUMENT_COMPUTE_ENABLED`
 - `AI4IA_CODE_INTERPRETER_BASE_URL`, `AI4IA_CODE_INTERPRETER_MODEL`
+- `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED`, `AI4IA_CODE_INTERPRETER_MAX_RAW_FILE_BYTES`
 - `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED`
 - `AI4IA_MEMORY_STORE`, `AI4IA_MEMORY_DOCUMENT_MAX_ITEMS`
 

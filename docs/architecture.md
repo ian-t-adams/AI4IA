@@ -20,21 +20,30 @@ it is generated locally and never through excalidraw.com.
 2. **WebSockets bypass only the HTTP proxy.** Realtime and Voice Live flow
    `Browser -> FastAPI relay -> realtime APIM -> Foundry` because
    SimpleL7Proxy does not support WebSockets. They never bypass APIM.
-3. **Three credentials protect the core gateway hops.** FastAPI holds a
+3. **The Code Interpreter sandbox is the one model call that bypasses both.**
+   Document compute posts directly to `{Foundry}/openai/v1/responses` with the
+   built-in `code_interpreter` tool, plus the Files API when raw-file compute is
+   on. It is a stateful Azure-managed container, not a chat-completions
+   deployment, so the catalog gateway — which resolves a backend from
+   `x-LLMModel` for completion-shaped traffic — cannot route it. Auth is the
+   Container App's managed identity (or a resource key), never a gateway key.
+   Introducing any *other* direct model call is a governance change, not an
+   implementation detail.
+4. **Three credentials protect the core gateway hops.** FastAPI holds a
    proxy-ingress key and a separately scoped realtime APIM key. SimpleL7Proxy
    alone holds the model-APIM key. The proxy strips the ingress key before
    injecting its model key. Optional Speech Voice Live adds a fourth,
    independently scoped APIM key.
-4. **Models are catalog-driven.** `infra/models.json` is authoritative for
+5. **Models are catalog-driven.** `infra/models.json` is authoritative for
    deployments, regions, categories, per-model reasoning effort, capabilities, and
    generated runtime data.
-5. **Cosmos is canonical.** User sessions, messages, usage, agents, workflows,
+6. **Cosmos is canonical.** User sessions, messages, usage, agents, workflows,
    MCP records, document manifests, and memory text/vectors are durable and
    user-scoped in Cosmos. Document chunks, search indexes, and parsed artifacts
    are derived and rebuildable.
-6. **FastAPI enforces feature posture.** Browser visibility is not authorization.
+7. **FastAPI enforces feature posture.** Browser visibility is not authorization.
    Startup validation fails closed for enabled features with missing prerequisites.
-7. **Tools are authorized when they run.** Registration-time checks do not replace
+8. **Tools are authorized when they run.** Registration-time checks do not replace
    execution-time scope, approval, ownership, host, and SSRF validation.
 
 ## Components
@@ -51,6 +60,7 @@ it is generated locally and never through excalidraw.com.
 | Canonical state | Cosmos DB and Blob Storage | User-scoped records and memory text/vectors plus source documents and durable generated artifacts |
 | Derived state | Azure AI Search or optional Postgres/pgvector | Rebuildable document chunks and retrieval indexes |
 | Native Azure planes | Content Understanding, Monitor, Key Vault, Storage, Cosmos, Search | Non-model control/data planes called directly with managed identity or configured service auth |
+| Sandboxed compute | Azure OpenAI Responses API Code Interpreter | Azure-managed Python container for `run_code`, `export_document`, and `analyze_attachment`; called directly (see invariant 3) |
 | Observability | Application Insights, Log Analytics, Azure Monitor | Correlated logs, traces, usage, resource metrics, and fixed operator queries |
 
 ## Trust boundaries and request paths
@@ -68,6 +78,7 @@ flowchart LR
   F["Foundry deployments"]
   S["AIServices Voice Live<br/>(optional)"]
   T["Curated MCP / Foundry Toolbox"]
+  X["Responses API<br/>Code Interpreter sandbox"]
   C[("Cosmos DB<br/>records + memory vectors")]
   D[("Blob + derived document stores")]
 
@@ -83,6 +94,8 @@ flowchart LR
   V -->|"strip subscription key;<br/>managed identity"| S
   A -->|"MCP-only APIM key"| M
   M --> T
+  A -. "managed identity<br/>(bypasses proxy AND APIM)" .-> X
+  X --> F
   A --> C
   A --> D
 ```
@@ -96,6 +109,7 @@ flowchart LR
 | Realtime APIM subscription key | FastAPI only | FastAPI relay -> `/openai/realtime` | Realtime API only; cannot invoke the normal model API |
 | Speech Voice Live key (optional) | FastAPI only when enabled | FastAPI relay -> `/speech/voice-live/realtime` | Separate default-off API and subscription; distinct from all three core keys |
 | Official MCP subscription key | FastAPI official MCP service | FastAPI -> official MCP APIM product | MCP APIs only; cannot invoke model/realtime APIs |
+| Code Interpreter identity | FastAPI managed identity (or an optional resource key) | FastAPI -> Foundry `/openai/v1/responses` and `/openai/v1/files` | Data-plane token scoped `https://ai.azure.com/.default`; holds no gateway subscription key, so it cannot reach the model or realtime APIs |
 
 Each APIM API validates its own scoped subscription at ingress, removes the
 subscription-key header before the backend hop, and uses managed identity for
