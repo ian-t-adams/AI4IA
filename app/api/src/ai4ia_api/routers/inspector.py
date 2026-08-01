@@ -29,10 +29,26 @@ class InspectorModel(BaseModel):
 
 
 class InspectorInstructions(BaseModel):
+    """The instructions actually driving this conversation, and where to change them.
+
+    ``value`` is the *effective* text: the agent's persona when an agent owns the
+    turn, otherwise the session's own prompt. It is returned even when the caller
+    cannot edit it here, because the inspector's job is to show what is running --
+    withholding it left the panel unable to answer "what is this agent told to do?".
+    Both a curated persona and a user agent's prompt are already visible to this
+    caller by other means (the persona is shipped in the image; the user agent was
+    authored by this user), and ``resolve_conversation_policy`` only ever resolves
+    agents from *this caller's* composed catalog.
+
+    ``editable`` means editable *in this panel*; ``agentSource`` says where else to
+    go when it is not, since the two answers differ.
+    """
+
     source: str
     editable: bool
     value: str | None = None
     agentName: str | None = None
+    agentSource: str | None = None
 
 
 class InspectorAgent(BaseModel):
@@ -149,8 +165,17 @@ async def get_inspector(
         instructions=InspectorInstructions(
             source=policy.instruction_source,
             editable=policy.agent is None,
-            value=session.systemPrompt if policy.agent is None else None,
+            value=policy.instructions,
             agentName=policy.agent.name if policy.agent else None,
+            agentSource=(
+                None
+                if policy.agent is None
+                else (
+                    "curated"
+                    if request.app.state.agents.get(policy.agent.name) is not None
+                    else "user"
+                )
+            ),
         ),
         agent=InspectorAgent(
             name=policy.agent.name if policy.agent else None,

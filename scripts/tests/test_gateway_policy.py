@@ -504,6 +504,44 @@ class GatewayPolicyTests(unittest.TestCase):
                 f"{path.name}: an unqualified 400 still parks a healthy backend",
             )
 
+    def test_a_permanent_error_returns_the_upstream_body(self) -> None:
+        """<return-response> replaces the response, so an absent <set-body> returns nothing.
+
+        Verified live: before this, a 400 from Foundry reached the caller as
+        ``400 Permanent Error`` with ``Content-Length: 0`` -- correct status, zero
+        diagnostic. The provider's body is the only place the actual reason lives
+        (which parameter, which value, which content-filter category), so dropping
+        it makes every terminal 4xx unactionable from the app.
+        """
+        for path in (
+            ROOT / "infra/policies/simplel7proxy-priority-retry.xml",
+            ROOT / "infra/policies/simplel7proxy_backend_32.xml",
+        ):
+            text = path.read_text(encoding="utf-8")
+            root = ElementTree.fromstring(text)
+            perm_responses = [
+                node
+                for node in root.iter("return-response")
+                if (node.find("set-status") is not None)
+                and node.find("set-status").get("reason") == "Permanent Error"
+            ]
+            self.assertTrue(
+                perm_responses,
+                f"{path.name}: no permanent-error return-response found",
+            )
+            for node in perm_responses:
+                body = node.find("set-body")
+                self.assertIsNotNone(
+                    body,
+                    f"{path.name}: permanent-error response has no <set-body>, so it "
+                    "returns Content-Length: 0 and destroys the provider's diagnostic",
+                )
+                self.assertIn(
+                    "preserveContent: true",
+                    (body.text or ""),
+                    f"{path.name}: the upstream body must be read with preserveContent",
+                )
+
     def test_tokenprocessor_is_only_set_for_text_response_bodies(self) -> None:
         """TOKENPROCESSOR must never be applied to a binary response body.
 

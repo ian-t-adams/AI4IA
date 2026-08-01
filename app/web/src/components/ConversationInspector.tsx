@@ -657,11 +657,26 @@ export function ConversationInspector({
                 <button type="button" onClick={() => void loadSnapshot()}>Retry</button>
               </div>
             ) : snapshot?.instructions.editable === false ? (
-              <div className="inspector-empty">
-                <strong>{snapshot.agent.displayName}</strong>
-                {snapshot.agent.description ? <p>{snapshot.agent.description}</p> : null}
-                <p>The agent persona owns instructions. Edit the agent in Agents & workflows.</p>
-              </div>
+              <>
+                <p className="inspector-note">
+                  <strong>{snapshot.agent.displayName}</strong>
+                  {snapshot.agent.description ? ` — ${snapshot.agent.description}` : null}
+                </p>
+                <label htmlFor="conversation-agent-instructions">
+                  Agent instructions (read-only)
+                </label>
+                <textarea
+                  id="conversation-agent-instructions"
+                  rows={8}
+                  readOnly
+                  value={snapshot.instructions.value ?? ""}
+                />
+                <p className="inspector-note">
+                  {snapshot.instructions.agentSource === "curated"
+                    ? "This is a built-in agent managed by your administrator, so its instructions can't be changed here. To customize it, create your own agent in Agents & workflows — you can paste these instructions in as a starting point."
+                    : "You own this agent. Edit its instructions in Agents & workflows."}
+                </p>
+              </>
             ) : snapshot ? (
               <>
                 <label htmlFor="conversation-system-prompt">System prompt</label>

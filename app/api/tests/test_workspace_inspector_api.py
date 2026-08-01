@@ -141,8 +141,9 @@ def test_session_policy_and_inspector_are_server_owned():
         assert body["instructions"] == {
             "source": "agent",
             "editable": False,
-            "value": None,
+            "value": app.state.agents.get("general").systemPrompt,
             "agentName": "general",
+            "agentSource": "curated",
         }
         assert body["tools"]["inherited"] == ["get_current_time"]
         assert body["tools"]["effective"] == ["get_current_time", "calculator"]
@@ -171,6 +172,41 @@ def test_session_policy_and_inspector_are_server_owned():
         generic = client.get(f"/api/sessions/{session['id']}/inspector").json()
         assert generic["instructions"]["source"] == "session"
         assert generic["instructions"]["value"] == "Session prompt"
+
+
+def test_inspector_shows_a_user_agents_own_instructions_and_names_the_source():
+    """A user-authored persona must be visible and correctly attributed.
+
+    The panel's only guidance used to be "edit the agent in Agents & workflows",
+    which is right for a user agent and a dead end for a curated one -- curated
+    personas ship in the image and are not editable there. agentSource is what
+    lets the UI tell the two apart, so it is asserted for both.
+    """
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/agents",
+            json={
+                "name": "my-helper",
+                "displayName": "My Helper",
+                "description": "Mine",
+                "systemPrompt": "Answer only in haiku.",
+            },
+        )
+        assert created.status_code == 201, created.text
+
+        session = client.post(
+            "/api/sessions", json={"model": "gpt-5.2", "agentName": "my-helper"}
+        )
+        assert session.status_code == 201, session.text
+        body = client.get(f"/api/sessions/{session.json()['id']}/inspector").json()
+        assert body["instructions"] == {
+            "source": "agent",
+            "editable": False,
+            "value": "Answer only in haiku.",
+            "agentName": "my-helper",
+            "agentSource": "user",
+        }
 
 
 def test_session_tool_additions_fail_closed():

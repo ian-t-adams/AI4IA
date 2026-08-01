@@ -68,6 +68,7 @@ export interface InspectorSnapshot {
     editable: boolean;
     value: string | null;
     agentName: string | null;
+    agentSource: "curated" | "user" | null;
   };
   agent: Omit<AgentSummary, "name" | "displayName" | "description"> & {
     name: string | null;
