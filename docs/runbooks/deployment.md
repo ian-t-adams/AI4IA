@@ -1386,6 +1386,45 @@ Pinned by `test_a_permanent_error_returns_the_upstream_body`.
 body names the offending value. If the status is right but the body is empty, a
 `<set-body>` has been dropped from the permanent-error branch.
 
+### 7.16 Responses-API turns leave a 30-day copy of user content at the provider
+
+Applies to the models the catalog marks `"api": "responses"` (the flagship
+reasoning models that `400` on chat completions — see §7.11). Nothing fails; this
+is a silent governance gap, so it will not surface as an error.
+
+**Cause.** The Responses API has a `store` parameter that chat completions has no
+equivalent of, and it **defaults to `true`**. Every turn therefore leaves the
+prompt and the model's output retrievable from `GET /responses/{id}` for 30 days,
+outside the app's own store. AI4IA keeps conversation state in Cosmos scoped per
+user (`AGENTS.md` rule 4) and this client re-sends full history each turn rather
+than chaining with `previous_response_id`, so the retained copy is never read back
+— it is purely a second, ungoverned store of user content.
+
+**Fix (already in the client).** `build_responses_request` sends `"store": false`
+on every Responses turn, streaming and non-streaming alike. Pinned by
+`test_responses_requests_opt_out_of_provider_side_storage`.
+
+**Confirm** against a Foundry account directly (this is a data-plane property, so
+it is easiest to see without the gateway in the way):
+
+```powershell
+$key  = az cognitiveservices account keys list -n <account> -g <rg> --query key1 -o tsv
+$base = "https://<account>.cognitiveservices.azure.com/openai"
+$body = '{"model":"<deployment>","input":[{"role":"user","content":"say pong"}],"max_output_tokens":16384,"store":false}'
+$r = curl.exe -s -X POST "$base/responses?api-version=2025-04-01-preview" `
+  -H "api-key: $key" -H "Content-Type: application/json" --data $body | ConvertFrom-Json
+$r.store                                    # expect False
+curl.exe -s -o NUL -w "%{http_code}" -X GET "$base/responses/$($r.id)?api-version=2025-04-01-preview" -H "api-key: $key"
+```
+
+Expect `store: False` and **404** on the retrieval. A `200` means the turn was
+stored: `store` has been dropped from the request body.
+
+**If turn chaining is ever added**, do not flip `store` back to get reasoning
+continuity. Request `include: ["reasoning.encrypted_content"]` and pass the
+encrypted reasoning items forward — that is the stateless-mode equivalent and
+keeps the content in the app's control.
+
 ## APIM Basic v2 migration guardrail
 
 The active model/realtime/MCP plane is the `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the additive `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the existing `/openai/realtime` API and subscription. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and both voice providers share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic — it never receives Speech Voice Live traffic either. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.

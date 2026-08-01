@@ -412,6 +412,27 @@ def test_build_responses_request_sets_stream_flag():
     assert req.json["stream"] is True
 
 
+def test_responses_requests_opt_out_of_provider_side_storage():
+    """``store`` defaults to TRUE on the Responses API, unlike chat completions.
+
+    Verified live against Foundry: a request that omits ``store`` comes back with
+    ``store: true`` and the whole prompt/output pair stays retrievable from
+    ``GET /responses/{id}`` for 30 days. AI4IA keeps conversation state in Cosmos
+    scoped per user and re-sends full history each turn instead of chaining with
+    ``previous_response_id``, so that retained copy buys nothing and is a second,
+    ungoverned store of user content. Asserted for streaming too: the flag has to
+    be on the request body, and only one code path builds it.
+    """
+    client = _client(gateway_provider_style="azure_openai_native")
+    for stream in (False, True):
+        req = client.build_responses_request(
+            deployment="dep",
+            messages=[{"role": "user", "content": "x"}],
+            stream=stream,
+        )
+        assert req.json["store"] is False, f"stream={stream} leaks content upstream"
+
+
 def test_responses_json_to_chat_translation():
     obj = {
         "status": "completed",
