@@ -72,8 +72,8 @@ export function SignInGate({ children }: { children: React.ReactNode }) {
           fontSize: "1em",
           borderRadius: 8,
           border: "1px solid var(--border)",
-          background: "var(--accent, #2563eb)",
-          color: "#fff",
+          background: "var(--accent)",
+          color: "var(--accent-fg)",
           cursor: busy ? "default" : "pointer",
           opacity: busy ? 0.7 : 1,
         }}

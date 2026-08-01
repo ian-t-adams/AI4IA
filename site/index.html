@@ -9,6 +9,13 @@
   <meta property="og:title" content="AI4IA — governed multi-model agentic chat on Azure" />
   <meta property="og:description" content="Purpose, architecture, deployed Azure services, requirements and live status of the AI4IA platform." />
   <meta property="og:image" content="https://ian-t-adams.github.io/AI4IA/assets/ai4ia-lettermark.png" />
+  <!-- Dimensions are declared so consumers can reserve layout before fetching, and to
+       assert the 1.91:1 ratio twitter:card=summary_large_image expects. The lettermark
+       is generated at exactly this size by scripts/gen-brand-assets.py, and
+       scripts/tests/test_brand_assets.py fails if these stop matching the real file. -->
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="AI4IA wordmark on an orange-to-blue gradient." />
   <meta property="og:url" content="https://ian-t-adams.github.io/AI4IA/" />
   <meta name="twitter:card" content="summary_large_image" />
   <link rel="icon" href="assets/favicon.ico" />

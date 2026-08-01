@@ -70,6 +70,22 @@ check-jsonschema --schemafile infra\mcp-servers.schema.json infra\mcp-servers.js
 bicep build infra\main.bicep --stdout
 ```
 
+### Branding
+
+The palette is orange + blue over near-black, and both stylesheets have contrast
+gates because the failure mode is silent — the page renders, just illegibly.
+Logos are generated from a single palette definition rather than hand-edited.
+
+```powershell
+python scripts\gen-brand-assets.py          # regenerate marks, lettermark, favicon
+python -m unittest scripts.tests.test_portal_contrast   # site/assets/styles.css
+python -m unittest scripts.tests.test_brand_assets      # committed image bytes
+cd app\web; npm test                        # includes globals.contrast.test.ts
+```
+
+See the "Change the brand palette or a logo" section of [`AGENTS.md`](AGENTS.md)
+for the rules those gates encode.
+
 ## Branches and pull requests
 
 - Branch from `main` unless coordinating a stacked change.

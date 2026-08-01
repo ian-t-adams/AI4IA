@@ -1,18 +1,27 @@
 /* AI4IA self-documenting site — shared theme.
-   Accessible by default: WCAG-AA contrast, visible focus rings, status conveyed by
-   icon + text (not colour alone), respects prefers-color-scheme + prefers-reduced-motion. */
+   Brand is orange + blue (complements) over near-black, matching the app's
+   globals.css --brand/--brand-2. Accessible by default: WCAG-AA contrast,
+   visible focus rings, status conveyed by icon + text (not colour alone),
+   respects prefers-color-scheme + prefers-reduced-motion.
+
+   --brand and --brand-2 each do double duty: link/eyebrow/code TEXT on --bg,
+   and gradient FILL under --on-brand. Both directions must clear AA, which is
+   why --on-brand is a token rather than a literal — it has to invert between
+   schemes, and hardcoding it is what previously left dark text at 3.9:1 on the
+   light-mode button gradient. */
 
 :root {
-  --bg: #0b1020;
-  --bg-soft: #121a30;
-  --panel: #16203a;
-  --panel-2: #1b2748;
-  --border: #263356;
+  --bg: #0c0f16;
+  --bg-soft: #141924;
+  --panel: #181e2b;
+  --panel-2: #1e2534;
+  --border: #2b3444;
   --text: #eaf0ff;
   --muted: #a7b4d6;
-  --brand: #6ea8fe;
-  --brand-2: #4de3c1;
-  --accent: #b794ff;
+  --brand: #fb923c;
+  --brand-2: #7cc4ff;
+  --accent: #ffb877;
+  --on-brand: #041018;
   --ok: #37d399;
   --warn: #f3c969;
   --bad: #ff6b7a;
@@ -24,18 +33,19 @@
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f5f7fc;
-    --bg-soft: #eef2fb;
+    --bg: #f7f8fb;
+    --bg-soft: #eef1f7;
     --panel: #ffffff;
-    --panel-2: #f2f6ff;
-    --border: #d8e0f2;
+    --panel-2: #f4f6fa;
+    --border: #dfe4ee;
     --text: #131a2b;
     --muted: #52618a;
-    --brand: #2f6be0;
-    --brand-2: #0ea88a;
-    --accent: #7b4fd0;
-    --ok: #14a06e;
-    --warn: #b9820b;
+    --brand: #b4400f;
+    --brand-2: #1d4ed8;
+    --accent: #9a3412;
+    --on-brand: #ffffff;
+    --ok: #0f7a53;
+    --warn: #8a6108;
     --bad: #d6304a;
     --unknown: #6b7aa0;
     --shadow: 0 8px 24px rgba(20, 40, 90, 0.12);
@@ -50,8 +60,8 @@ html { scroll-behavior: smooth; }
 body {
   margin: 0;
   font-family: "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
-  background: radial-gradient(1200px 600px at 80% -10%, rgba(110, 168, 254, 0.14), transparent 60%),
-    radial-gradient(900px 500px at -10% 10%, rgba(77, 227, 193, 0.10), transparent 55%), var(--bg);
+  background: radial-gradient(1200px 600px at 80% -10%, rgba(251, 146, 60, 0.14), transparent 60%),
+    radial-gradient(900px 500px at -10% 10%, rgba(124, 196, 255, 0.10), transparent 55%), var(--bg);
   color: var(--text);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
@@ -63,7 +73,7 @@ a:hover { text-decoration: underline; }
 :focus-visible { outline: 3px solid var(--brand); outline-offset: 2px; border-radius: 6px; }
 
 .skip-link {
-  position: absolute; left: -999px; top: 0; background: var(--brand); color: #001; padding: 10px 16px;
+  position: absolute; left: -999px; top: 0; background: var(--brand); color: var(--on-brand); padding: 10px 16px;
   z-index: 100; border-radius: 0 0 8px 0; font-weight: 600;
 }
 .skip-link:focus { left: 0; }
@@ -88,7 +98,7 @@ header.site {
 .nav-links a:hover { color: var(--text); background: var(--panel); text-decoration: none; }
 .nav-links a[aria-current="page"] { color: var(--text); background: var(--panel-2); }
 .nav-cta {
-  background: linear-gradient(135deg, var(--brand), var(--brand-2)); color: #041018 !important;
+  background: linear-gradient(135deg, var(--brand), var(--brand-2)); color: var(--on-brand) !important;
   padding: 8px 14px !important; border-radius: 10px; font-weight: 700;
 }
 .nav-cta:hover { filter: brightness(1.06); text-decoration: none; }
@@ -104,7 +114,7 @@ header.site {
   font-weight: 700; border: 1px solid var(--border); background: var(--panel); color: var(--text);
 }
 .btn:hover { text-decoration: none; border-color: var(--brand); }
-.btn.primary { background: linear-gradient(135deg, var(--brand), var(--brand-2)); color: #041018; border: none; }
+.btn.primary { background: linear-gradient(135deg, var(--brand), var(--brand-2)); color: var(--on-brand); border: none; }
 
 /* ---------- Sections ---------- */
 main { padding-bottom: 72px; }

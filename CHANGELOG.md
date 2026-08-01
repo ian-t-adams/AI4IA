@@ -9,6 +9,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Root contributor guide, governance files, community templates, and third-party notices.
+- Orange/blue/near-black brand identity across the app and the GitHub Pages portal,
+  replacing the indigo + blue-teal palette. Regenerated marks, Open Graph lettermark, and
+  favicon from a new reproducible generator (`scripts/gen-brand-assets.py`); the four
+  image assets went from 1.65 MB to 79 KB, and the lettermark moved from a square to the
+  1200x630 Open Graph ratio social consumers actually expect.
+- Contrast gates for both palettes, since an illegible colour renders fine and fails
+  silently: `app/web/src/app/globals.contrast.test.ts` (rewritten, 27 assertions) and
+  `scripts/tests/test_portal_contrast.py` (new, run by `quality` because the static
+  portal has no build step of its own). The portal gate catches four pre-existing AA
+  failures in the palette it replaced.
 - Live Planet Express deployment documentation for tenant
   `6907d2a4-685a-4aea-92ab-d930217467f1`, subscription
   `sub-planetexpress-slurmfactory`, resource group `rg-ai4ia-slurmfactory`, and
@@ -74,6 +84,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   before the bump.
 
 ### Fixed
+
+- Custom accent colours now derive their own foreground from luminance instead of using a
+  fixed per-theme `--accent-fg`. Five of the six shipped accent swatches previously failed
+  WCAG AA in dark theme (worst case 2.9:1 white-on-indigo); the worst case is now 5.0:1.
+  Three buttons that hardcoded `color: "#fff"` over `var(--accent)`, and one stale
+  `var(--accent, #2563eb)` fallback, were fixed in the same pass.
+- The portal's light colour scheme no longer renders dark text on the brand gradient at
+  3.9:1 — the gradient foreground is now a scheme-aware `--on-brand` token rather than a
+  hardcoded near-black, and the light-mode success/warning tokens were darkened to clear AA.
 
 - APIM no longer treats every Foundry `400` as a temporary retryable error. Only
   `context_length_exceeded` remains retryable; malformed requests now return the

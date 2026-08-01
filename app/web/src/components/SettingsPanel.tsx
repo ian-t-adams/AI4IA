@@ -11,7 +11,19 @@ const THEMES: { id: ThemeName; label: string }[] = [
   { id: "contrast", label: "High contrast" },
 ];
 
-const ACCENTS = ["#f97316", "#4f46e5", "#0e7490", "#b91c1c", "#15803d", "#a21caf"];
+// `null` is the brand accent from globals.css, which is theme-aware; the rest are
+// deliberate overrides. Each is paired with a foreground derived at apply time
+// (see readableForeground in ThemeProvider), so a swatch that needs black text on
+// one theme and white on another stays legible instead of relying on a fixed
+// --accent-fg that is only ever right for half of them.
+const ACCENTS: { value: string | null; label: string; swatch: string }[] = [
+  { value: null, label: "Brand orange (default)", swatch: "var(--brand)" },
+  { value: "#1d4ed8", label: "Blue", swatch: "#1d4ed8" },
+  { value: "#0e7490", label: "Teal", swatch: "#0e7490" },
+  { value: "#b91c1c", label: "Red", swatch: "#b91c1c" },
+  { value: "#15803d", label: "Green", swatch: "#15803d" },
+  { value: "#a21caf", label: "Magenta", swatch: "#a21caf" },
+];
 
 export function SettingsPanel({
   models,
@@ -136,16 +148,20 @@ export function SettingsPanel({
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               {ACCENTS.map((c) => (
                 <button
-                  key={c}
-                  onClick={() => setAccent(c)}
-                  aria-label={`Accent ${c}`}
-                  aria-pressed={accent === c}
+                  key={c.value ?? "brand"}
+                  onClick={() => setAccent(c.value)}
+                  aria-label={`Accent ${c.label}`}
+                  aria-pressed={accent === c.value}
+                  title={c.label}
                   style={{
                     width: 32,
                     height: 32,
                     borderRadius: "50%",
-                    background: c,
-                    border: accent === c ? "3px solid var(--fg)" : "1px solid var(--border)",
+                    background: c.swatch,
+                    border:
+                      accent === c.value
+                        ? "3px solid var(--fg)"
+                        : "1px solid var(--border)",
                   }}
                 />
               ))}
