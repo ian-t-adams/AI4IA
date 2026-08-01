@@ -68,7 +68,7 @@ requires-dist = [
     { name = "azure-monitor-querymetrics", specifier = ">=1,<2" },
     { name = "azure-search-documents", specifier = ">=11.5" },
     { name = "azure-storage-blob", specifier = ">=12.20" },
-    { name = "fastapi", specifier = ">=0.115,<0.141" },
+    { name = "fastapi", specifier = ">=0.115,<0.142" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.18" },
     { name = "jsonschema", marker = "extra == 'foundry'", specifier = ">=4.18" },
