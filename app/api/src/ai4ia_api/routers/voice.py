@@ -55,10 +55,12 @@ ALLOWED_VOICES = {
 }
 DEFAULT_VOICE = "alloy"
 # response_format -> media type. mp3 is the broadly-supported default.
+# opus is returned inside an OGG container (the bytes start with "OggS"), so it
+# must be labelled audio/ogg — browsers reject the bare audio/opus type.
 FORMAT_MEDIA_TYPE = {
     "mp3": "audio/mpeg",
     "wav": "audio/wav",
-    "opus": "audio/opus",
+    "opus": "audio/ogg",
     "flac": "audio/flac",
     "aac": "audio/aac",
 }
@@ -66,6 +68,35 @@ DEFAULT_FORMAT = "mp3"
 # Reject an upstream audio response larger than this (defense against an
 # oversized/misbehaving provider response).
 MAX_AUDIO_BYTES = 25_000_000  # ~25 MB
+
+
+def _looks_like_audio(fmt: str, audio: bytes) -> bool:
+    """Does ``audio`` actually start with the container/codec signature implied by
+    ``fmt``?
+
+    The response is labelled from the *requested* format, so without this check a
+    corrupted or error payload is served under a valid audio/* Content-Type and the
+    browser fails opaquely with MEDIA_ERR_SRC_NOT_SUPPORTED. That is not
+    hypothetical: the APIM outbound policy used to set TOKENPROCESSOR on every
+    response, which made SimpleL7Proxy stream the mp3 through a line-based text
+    processor and replace every non-UTF-8 byte with U+FFFD. Sniffing here turns a
+    silent corruption into an actionable 502.
+    """
+    if len(audio) < 4:
+        return False
+    if fmt == "wav":
+        return audio[:4] == b"RIFF" and audio[8:12] == b"WAVE"
+    if fmt == "flac":
+        return audio[:4] == b"fLaC"
+    if fmt == "opus":
+        return audio[:4] == b"OggS"
+    if fmt == "mp3":
+        # ID3v2 tag, or a raw MPEG frame sync (11 set bits).
+        return audio[:3] == b"ID3" or (audio[0] == 0xFF and audio[1] & 0xE0 == 0xE0)
+    if fmt == "aac":
+        # ADTS frame sync (12 set bits), or an ADIF header.
+        return audio[:4] == b"ADIF" or (audio[0] == 0xFF and audio[1] & 0xF0 == 0xF0)
+    return True
 
 # --- Speech-to-text caps ---
 MAX_UPLOAD_BYTES = 25_000_000  # 25 MB (provider limit)
@@ -230,6 +261,25 @@ async def synthesize_speech(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Synthesized audio was unexpectedly large.",
+        )
+    if not _looks_like_audio(fmt, audio):
+        # Serving this would label a non-audio payload audio/*, which the browser
+        # can only report as an unsupported source. Fail with the reason instead.
+        logger.error(
+            "speech.corrupt_payload",
+            extra={
+                "model_id": model_id,
+                "format": fmt,
+                "bytes": len(audio),
+                "correlation_id": correlation_id,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                f"Speech synthesis returned data that is not valid {fmt} audio. "
+                "The gateway may be altering the response body."
+            ),
         )
 
     await metering.record_completion(

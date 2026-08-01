@@ -16,6 +16,16 @@ from tests.conftest import make_settings
 
 ADMIN = {"X-Dev-User": "alice"}
 FAKE_AUDIO = b"ID3\x04\x00\x00\x00\x00fake-mp3-bytes"
+# The API sniffs the payload's container signature before labelling the response
+# (see voice._looks_like_audio), so a stub that returned mp3 bytes for every
+# requested format would 502 rather than exercise the format under test.
+FAKE_AUDIO_BY_FORMAT = {
+    "mp3": FAKE_AUDIO,
+    "wav": b"RIFF\x00\x00\x00\x00WAVEfake",
+    "opus": b"OggS\x00\x02fake-opus",
+    "flac": b"fLaC\x00\x00\x00\x22fake",
+    "aac": b"\xff\xf1\x58\x40fake-aac",
+}
 
 
 class FakeVoiceGateway:
@@ -24,7 +34,7 @@ class FakeVoiceGateway:
     def __init__(self) -> None:
         self.speech_error: ModelGatewayError | None = None
         self.transcribe_error: ModelGatewayError | None = None
-        self.audio: bytes = FAKE_AUDIO
+        self.audio: bytes | None = None  # None -> match the requested format
         self.text: str = "hello from the transcript"
         self.speech_calls: list[dict] = []
         self.transcribe_calls: list[dict] = []
@@ -37,7 +47,9 @@ class FakeVoiceGateway:
         )
         if self.speech_error is not None:
             raise self.speech_error
-        return self.audio
+        if self.audio is not None:
+            return self.audio
+        return FAKE_AUDIO_BY_FORMAT[response_format]
 
     async def transcribe(
         self, *, deployment, audio, filename, content_type, language=None,
@@ -114,6 +126,70 @@ def test_speech_wav_format_media_type(client):
     )
     assert r.status_code == 200, r.text
     assert r.headers["content-type"] == "audio/wav"
+
+
+def test_speech_opus_is_labelled_ogg_not_audio_opus(client):
+    """Azure returns opus inside an OGG container (the bytes start with ``OggS``).
+
+    Labelling that ``audio/opus`` makes browsers refuse the source outright, which
+    surfaces as the same opaque MEDIA_ERR_SRC_NOT_SUPPORTED as a corrupt payload.
+    """
+    r = client.post(
+        "/api/voice/speech",
+        json={"input": "hi", "model": "tts-hd", "format": "opus"},
+        headers={"X-Dev-User": "ian"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "audio/ogg"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            b"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\x00\x5a\xef\xbf\xbd",
+            id="utf8-mojibake",
+        ),
+        pytest.param(b'{"error":{"code":"content_filter"}}', id="json-error-body"),
+        pytest.param(b"<html><body>502 Bad Gateway</body></html>", id="html-error-page"),
+        pytest.param(b"\x00", id="too-short"),
+    ],
+)
+def test_speech_rejects_a_payload_that_is_not_the_requested_audio(client, payload):
+    """A body that is not really audio must 502, not be served as ``audio/*``.
+
+    The response is labelled from the *requested* format, so anything that mangles
+    the payload upstream is invisible to every content-type check between here and
+    the browser -- which can then only report MEDIA_ERR_SRC_NOT_SUPPORTED with no
+    hint of the cause. The mojibake case is the real regression: the APIM outbound
+    policy set TOKENPROCESSOR on every response, so SimpleL7Proxy streamed the mp3
+    through a line-based text processor and replaced every non-UTF-8 byte with
+    U+FFFD while the audio/mpeg Content-Type survived intact.
+    """
+    client.app.state.gateway.audio = payload
+    r = client.post(
+        "/api/voice/speech",
+        json={"input": "hi", "model": "tts-hd", "format": "mp3"},
+        headers={"X-Dev-User": "ian"},
+    )
+    assert r.status_code == 502, r.text
+    assert "not valid mp3 audio" in r.json()["detail"]
+
+
+def test_speech_accepts_a_raw_mpeg_frame_sync_without_an_id3_tag(client):
+    """Azure's mp3 starts with a bare frame sync (ff fx), not an ID3 tag.
+
+    Sniffing only for ``ID3`` would reject every real response from the provider,
+    turning a fix for the corruption bug into a total outage of the feature.
+    """
+    client.app.state.gateway.audio = b"\xff\xf3\xc4\xc4\x00\x5a\x04\x39" + b"\x00" * 32
+    r = client.post(
+        "/api/voice/speech",
+        json={"input": "hi", "model": "tts-hd", "format": "mp3"},
+        headers={"X-Dev-User": "ian"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "audio/mpeg"
 
 
 # ---- speech validation ----

@@ -11,9 +11,34 @@
 				</set-header>
 			</when>
 		</choose>
-<set-header name="TOKENPROCESSOR" exists-action="override">
-			<value>MultiLineAllUsage</value>
-		</set-header>
+<!-- TOKENPROCESSOR asks SimpleL7Proxy to stream the response through a
+		     line-based JSON processor so token usage can be extracted. That
+		     processor (JsonStreamProcessor) reads the body with a StreamReader and
+		     re-emits it with WriteLineAsync, which is LOSSY for anything that is not
+		     text: bytes that are not valid UTF-8 become U+FFFD (ef bf bd) and raw
+		     0x0D/0x0A bytes are consumed as line terminators and rewritten as the
+		     platform newline. Setting this unconditionally corrupted every binary
+		     response: /audio/speech mp3 reached the browser as UTF-8 mojibake under
+		     an intact audio/mpeg Content-Type, so no downstream content-type check
+		     could catch it and playback failed with MEDIA_ERR_SRC_NOT_SUPPORTED.
+		     Only request parsing when the body really is text (chat completions are
+		     application/json, streaming chat is text/event-stream); otherwise leave
+		     the header off so the proxy falls back to its byte-clean pass-through
+		     processor, and strip any value a backend may have echoed. -->
+<choose>
+			<when condition="@{
+				string ct = context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;) ?? &quot;&quot;;
+				ct = ct.TrimStart().ToLowerInvariant();
+				return ct.StartsWith(&quot;application/json&quot;) || ct.StartsWith(&quot;text/&quot;);
+			}">
+				<set-header name="TOKENPROCESSOR" exists-action="override">
+					<value>MultiLineAllUsage</value>
+				</set-header>
+			</when>
+			<otherwise>
+				<set-header name="TOKENPROCESSOR" exists-action="delete" />
+			</otherwise>
+		</choose>
 <set-header name="@((string)context.Variables[&quot;AffinityHeaderName&quot;])" exists-action="override">
 			<value>@(context.Variables.GetValueOrDefault&lt;JObject>("selectedBackend", null)?.Value&lt;string>("affinity") ?? "")</value>
 		</set-header>
