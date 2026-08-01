@@ -34,7 +34,7 @@ dependencies = [
     # pulled in the pure-Python `ecdsa` package — vulnerable to the unpatched
     # Minerva attack (CVE-2024-23342). We never use ECDSA, so dropping it removes
     # the dependency (and the alert) entirely rather than suppressing it.
-    "pyjwt[crypto]>=2.8",
+    "pyjwt[crypto]>=2.13.0",
     "azure-identity>=1.17",
     "azure-cosmos>=4.16.1,<5",
     # Async azure SDKs (azure.cosmos.aio + azure.identity.aio) require an async
