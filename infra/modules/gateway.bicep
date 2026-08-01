@@ -595,7 +595,17 @@ var staticEnv = [
   { name: 'Port', value: '8080' }
   { name: 'Workers', value: string(proxyWorkers) }
   { name: 'MaxAttempts', value: '1' }
-  { name: 'PriorityWorker', value: proxyPrioritiesEnabled ? proxyPriorityWorkers : '' }
+  // MUST be `PriorityWorkers` (plural). ConfigParser.ApplyEnv builds
+  // PriorityWorkerDict -- the dictionary WorkerFactory actually reserves from --
+  // by reading the plural key only. ProxyConfig also declares a SINGULAR
+  // `PriorityWorker` string property, but nothing converts it into that
+  // dictionary (it is absent from the ApplyDerivedSettingsFromConfigNames list),
+  // so the singular name parses cleanly, validates, and is then silently
+  // discarded. Verified against the vendored parser: with the singular name the
+  // dict stays at its `2:1,3:1` default, which reserves NOTHING for band 1 --
+  // the high band this deployment routes admins into. Empty is safe either way
+  // (both names fall back to the default), so the disabled path is unchanged.
+  { name: 'PriorityWorkers', value: proxyPrioritiesEnabled ? proxyPriorityWorkers : '' }
   { name: 'DefaultPriority', value: '2' }
   { name: 'ValidateAuthConfig', value: 'enabled=true;mode=key;header=S7P-KEY' }
   { name: 'ValidateAuthKey1', secretRef: 'api-proxy-inbound-key' }
