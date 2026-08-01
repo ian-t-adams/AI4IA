@@ -17,7 +17,7 @@ Gateway-specific modules:
   official MCP backends/APIs/policies/product/key.
 - `gateway.bicep` references that service as existing and owns the public
   SimpleL7Proxy app plus model/realtime API children, scoped subscriptions, generated
-  fragments, and Foundry role assignments. The Consumption APIM remains rollback-only.
+  fragments, and Foundry role assignments. It creates no APIM service of its own.
 - `proxyasync.bicep` owns optional MI-only Blob/Service Bus resources for durable
   async work. It is not the synchronous priority queue, which remains in-memory
   per proxy replica.

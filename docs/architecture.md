@@ -280,12 +280,12 @@ label those gaps rather than infer precision.
 
 - SimpleL7Proxy queue/fairness state is in-memory and per replica; it is neither
   durable nor globally ordered.
-- Basic v2 APIM capacity is a single-region cost/reliability decision; the prior
-  Consumption APIM is retained only as an inactive rollback plane.
+- Basic v2 APIM capacity is a single-region cost/reliability decision, and it is now
+  the only APIM plane — MCP, HTTP/SSE, and both voice providers share its blast radius.
 - Proxy application profiles remain blocked until ingress derives a verified
   workload identity rather than trusting caller-supplied profile headers.
-- Speech Voice Live is default-off pending approved live validation of its APIM
-  policy, managed-identity audience/RBAC, what-if, canary, and manual browser path.
+- Speech Voice Live is enabled and serving; the outstanding validation is a signed-in
+  manual microphone canary, tracked in [`roadmap.md`](roadmap.md).
 - Memory has no global user-facing consent toggle or recalled-memory provenance
   indicator. Users can create, edit, and delete individual owned records.
 - Active-store deletion removes Cosmos plaintext and vectors, but Azure backup

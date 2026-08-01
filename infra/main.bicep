@@ -90,7 +90,7 @@ param realtimeAllowedOrigins string = ''
 @description('Enable governed tool calling inside a live voice session (calculator, current time). Inert unless voiceLiveEnabled is also true. Default OFF in bicep (matches the image/video feature pattern); set TRUE in main.parameters.json so enabling Voice Live in the live env gives the assistant tools.')
 param voiceLiveToolsEnabled bool = false
 
-@description('Enable Azure AI Speech Voice Live as a second selectable realtime provider (a dedicated APIM WebSocket API + distinct subscription key on the SAME shared active APIM; no new APIM or Foundry resource). Default OFF (fail closed): inert unless voiceLiveEnabled is also true, and the api refuses to start with an incomplete configuration. Production enablement additionally remains gated on the pending live-validation confirmation recorded in .azure/plan.md (managed-identity audience + account posture) -- do not flip this on before that gate closes.')
+@description('Enable Azure AI Speech Voice Live as a second selectable realtime provider (a dedicated APIM WebSocket API + distinct subscription key on the SAME APIM; no new APIM or Foundry resource). Default OFF (fail closed): inert unless voiceLiveEnabled is also true, and the api refuses to start with an incomplete configuration. The live-validation gate on managed-identity audience and account posture is closed; see docs/runbooks/feature-enablement.md for the enablement steps.')
 param speechVoiceLiveEnabled bool = false
 
 @description('Ordered, comma-separated server-authoritative voice provider allowlist (maps to AI4IA_VOICE_PROVIDER_ALLOWLIST). Must always include azure_openai; add speech_voice_live only once speechVoiceLiveEnabled is deliberately turned on and its prerequisites are complete.')
@@ -99,7 +99,7 @@ param voiceProviderAllowlist string = 'azure_openai'
 @description('Server-authoritative default voice provider (maps to AI4IA_VOICE_DEFAULT_PROVIDER); must be a member of voiceProviderAllowlist.')
 param voiceDefaultProvider string = 'azure_openai'
 
-@description('Managed-identity audience (APIM authentication-managed-identity "resource") the shared active APIM uses to authenticate to the Speech Voice Live AIServices account. Defaults to the audience the azure-ai-voicelive SDK requests by default for the fixed api-version this stack pins. Configurable (not caller-influenced) pending the live-validation gate recorded in .azure/plan.md.')
+@description('Managed-identity audience (APIM authentication-managed-identity "resource") APIM uses to authenticate to the Speech Voice Live AIServices account. Defaults to the audience the azure-ai-voicelive SDK requests by default for the fixed api-version this stack pins. Configurable, never caller-influenced.')
 param speechVoiceLiveManagedIdentityAudience string = 'https://ai.azure.com'
 
 @description('Enable automatic context summarization (auto-fold) on the API. Default OFF in bicep (no behavior change: the manual /summarize command still works, but the auto-fold path stays dormant and the default chat path is byte-for-byte unchanged). Set TRUE in main.parameters.json to enable it in the live env. No additional infra is required.')
@@ -628,9 +628,7 @@ module gateway 'modules/gateway.bicep' = {
   params: {
     location: location
     tags: tags
-    workload: workload
     environmentName: environmentName
-    uniqueSuffix: uniqueSuffix
     containerEnvId: platform.outputs.containerEnvId
     sharedApimName: apimcore.outputs.apimName
     sharedApimResourceId: apimcore.outputs.apimId
@@ -663,7 +661,6 @@ module gateway 'modules/gateway.bicep' = {
     proxyAsyncBlobUri: proxyasync.outputs.blobServiceUri
     proxyAsyncServiceBusNamespace: proxyasync.outputs.serviceBusNamespaceFqdn
     proxyAsyncServiceBusQueue: proxyasync.outputs.asyncQueueName
-    apimPublisherEmail: apimPublisherEmail
     customDomain: proxyCustomDomain
     managedCertificateName: proxyManagedCertName
     containerEnvName: platform.outputs.containerEnvName

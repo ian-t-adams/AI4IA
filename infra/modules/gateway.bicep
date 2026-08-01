@@ -8,14 +8,8 @@ param location string
 @description('Tags applied to all resources.')
 param tags object
 
-@description('Workload token (e.g. ai4ia).')
-param workload string
-
 @description('Environment name (e.g. ai4ia-dev).')
 param environmentName string
-
-@description('Per-subscription uniqueness suffix. APIM service names are globally unique across Azure (they back <name>.azure-api.net), so the inactive Consumption rollback plane below must carry it or a redeploy into a *different* subscription fails with ServiceAlreadyExists.')
-param uniqueSuffix string
 
 @description('Container Apps managed environment resource ID.')
 param containerEnvId string
@@ -112,12 +106,6 @@ param proxyAsyncServiceBusNamespace string = ''
 @description('Service Bus queue used by durable async mode.')
 param proxyAsyncServiceBusQueue string = 'requeststatus'
 
-@description('APIM publisher email (required by APIM).')
-param apimPublisherEmail string
-
-@description('APIM publisher org name.')
-param apimPublisherName string = 'AI4IA'
-
 @description('Custom domain bound to the proxy ingress (empty disables custom-domain binding).')
 param customDomain string = ''
 
@@ -136,7 +124,7 @@ param speechVoiceLiveAccountName string
 @description('Endpoint of the existing AIServices account Speech Voice Live routes to (https://<account>.cognitiveservices.azure.com/ or the .services.ai.azure.com equivalent). Converted to WSS and combined with the fixed /voice-live/realtime path; never a user-suppliable value.')
 param speechVoiceLiveAccountEndpoint string
 
-@description('Managed-identity audience (APIM authentication-managed-identity "resource", without the /.default suffix) APIM authenticates to the Speech Voice Live AIServices account with. Defaults to the audience the azure-ai-voicelive SDK requests by default (https://ai.azure.com/.default) for the fixed api-version this module pins. Kept overridable via a named value (not caller-influenced) because confirming this specific account accepts that audience is a pending live-validation gate (see .azure/plan.md).')
+@description('Managed-identity audience (APIM authentication-managed-identity "resource", without the /.default suffix) APIM authenticates to the Speech Voice Live AIServices account with. Defaults to the audience the azure-ai-voicelive SDK requests by default (https://ai.azure.com/.default) for the fixed api-version this module pins. Kept overridable via a named value (never caller-influenced) so a future api-version or account can move it without a code change.')
 param speechVoiceLiveManagedIdentityAudience string = 'https://ai.azure.com'
 
 var foundryBase = endsWith(primaryFoundryEndpoint, '/') ? primaryFoundryEndpoint : '${primaryFoundryEndpoint}/'
@@ -152,40 +140,11 @@ var speechVoiceLiveWssBase = replace(speechVoiceLiveAccountBase, 'https://', 'ws
 var proxyAppName = 'ca-proxy-${environmentName}'
 
 // ---------------- APIM trust boundary ----------------
+// The shared Basic v2 APIM is created and owned by apimcore.bicep; this module
+// only attaches the model, realtime, and Speech Voice Live children to it.
 resource sharedApim 'Microsoft.ApiManagement/service@2024-06-01-preview' existing = {
   name: sharedApimName
 }
-
-resource legacyConsumptionApim 'Microsoft.ApiManagement/service@2024-05-01' = {
-  name: take('apim-${workload}-${environmentName}-${uniqueSuffix}', 50)
-  location: location
-  tags: tags
-  sku: {
-    name: 'Consumption'
-    capacity: 0
-  }
-  identity: {
-    type: 'SystemAssigned'
-  }
-  properties: {
-    publisherEmail: apimPublisherEmail
-    publisherName: apimPublisherName
-  }
-}
-
-// The shared active Basic v2 APIM is adopted by apimcore.bicep and referenced
-// here only as an existing parent. The legacy Consumption APIM below stays
-// intact as an inactive rollback plane; do not reparent its children.
-
-resource foundryEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = [for backend in foundryBackends: {
-  parent: legacyConsumptionApim
-  name: 'foundry-${backend.region}-endpoint'
-  properties: {
-    displayName: 'foundry-${backend.region}-endpoint'
-    secret: false
-    value: endsWith(backend.endpoint, '/') ? substring(backend.endpoint, 0, length(backend.endpoint) - 1) : backend.endpoint
-  }
-}]
 
 // Backend catalog shards. The count here MUST equal CATALOG_FRAGMENT_COUNT in
 // scripts/gen-gateway-policy.py: loadTextContent requires literal paths, so this
@@ -297,36 +256,6 @@ var modelApiPolicyValue = reduce(
   )
 )
 
-resource modelPolicyFragments 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = [for definition in normalizedModelPolicyFragmentDefinitions: {
-  parent: legacyConsumptionApim
-  name: '${definition.baseName}-${uniqueString(definition.value)}'
-  properties: {
-    description: definition.description
-    format: 'rawxml'
-    value: definition.value
-  }
-  dependsOn: [
-    foundryEndpointValues
-  ]
-}]
-
-resource modelsApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
-  parent: legacyConsumptionApim
-  name: 'openai'
-  properties: {
-    displayName: 'SimpleL7Proxy model backend'
-    path: 'openai'
-    protocols: [
-      'https'
-    ]
-    // The policy always selects a catalog backend. This non-proxy fallback keeps
-    // the topology acyclic even if a policy is removed during troubleshooting.
-    serviceUrl: foundryOpenAiUrl
-    subscriptionRequired: true
-    apiType: 'http'
-  }
-}
-
 var modelMethods = [
   'POST'
   'GET'
@@ -334,99 +263,6 @@ var modelMethods = [
   'PATCH'
   'DELETE'
 ]
-
-resource modelOperations 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = [for method in modelMethods: {
-  parent: modelsApi
-  name: 'proxy-${toLower(method)}'
-  properties: {
-    displayName: 'Proxy ${method}'
-    method: method
-    urlTemplate: '/{*path}'
-    templateParameters: [
-      {
-        name: 'path'
-        type: 'string'
-        required: true
-      }
-    ]
-  }
-}]
-
-resource modelsApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = {
-  parent: modelsApi
-  name: 'policy'
-  properties: {
-    format: 'rawxml'
-    value: modelApiPolicyValue
-  }
-  dependsOn: [
-    modelPolicyFragments
-  ]
-}
-
-// Only the proxy receives this subscription. It is injected from an ACA secret
-// into Host1-api-key and never returned to application callers.
-resource proxyModelSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
-  parent: legacyConsumptionApim
-  name: 'ai4ia-proxy-models'
-  properties: {
-    displayName: 'AI4IA SimpleL7Proxy model hop'
-    scope: modelsApi.id
-    state: 'active'
-    allowTracing: false
-  }
-}
-
-// The realtime API is intentionally separate and more specific than /openai.
-// Its key cannot invoke the normal model API, preventing callers from bypassing
-// the proxy for compatible HTTP/SSE traffic.
-resource realtimeApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
-  parent: legacyConsumptionApim
-  name: 'openai-realtime'
-  properties: {
-    displayName: 'FastAPI realtime relay backend'
-    path: 'openai/realtime'
-    protocols: [
-      'https'
-    ]
-    serviceUrl: '${foundryOpenAiUrl}/realtime'
-    subscriptionRequired: true
-    apiType: 'http'
-  }
-}
-
-resource realtimeOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = {
-  parent: realtimeApi
-  name: 'realtime-connect'
-  properties: {
-    displayName: 'Realtime WebSocket connect'
-    method: 'GET'
-    urlTemplate: '/'
-  }
-}
-
-resource realtimeApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = {
-  parent: realtimeApi
-  name: 'policy'
-  properties: {
-    format: 'rawxml'
-    value: loadTextContent('../policies/realtime-routing-legacy.xml')
-  }
-  dependsOn: [
-    foundryEndpointValues
-  ]
-}
-
-resource apiRealtimeSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
-  parent: legacyConsumptionApim
-  name: 'ai4ia-api-realtime'
-  properties: {
-    displayName: 'AI4IA FastAPI realtime relay'
-    scope: realtimeApi.id
-    state: 'active'
-    allowTracing: false
-  }
-}
 
 // APIM is the only identity granted normal model access by this module.
 var openAiUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
@@ -437,31 +273,9 @@ resource foundryAccounts 'Microsoft.CognitiveServices/accounts@2025-04-01-previe
   name: backend.accountName
 }]
 
-resource apimOpenAiUsers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (backend, i) in foundryBackends: {
-  name: guid(foundryAccounts[i].id, legacyConsumptionApim.id, openAiUserRoleId)
-  scope: foundryAccounts[i]
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', openAiUserRoleId)
-    principalId: legacyConsumptionApim.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}]
-
-resource apimCognitiveUsers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (backend, i) in foundryBackends: {
-  name: guid(foundryAccounts[i].id, legacyConsumptionApim.id, cognitiveUserRoleId)
-  scope: foundryAccounts[i]
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveUserRoleId)
-    principalId: legacyConsumptionApim.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}]
-
-// ---------------- Active Basic v2 APIM parity ----------------
-// These resources deliberately attach the active HTTP/SSE and realtime configuration
-// to the shared Basic v2 APIM adopted by apimcore.bicep. The Consumption service and
-// every child above remain untouched for rollback; only callers below move once this
-// shared active plane is ready.
+// ---------------- Basic v2 APIM model + realtime plane ----------------
+// These resources attach the active HTTP/SSE and realtime configuration to the
+// shared Basic v2 APIM adopted by apimcore.bicep.
 resource sharedFoundryEndpointValues 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = [for backend in foundryBackends: {
   parent: sharedApim
   name: 'foundry-${backend.region}-endpoint'
@@ -639,11 +453,11 @@ resource sharedApiRealtimeSubscription 'Microsoft.ApiManagement/service/subscrip
 }
 
 // ---------------- Speech Voice Live (additive, isolated) ----------------
-// A second, separately scoped realtime provider on the SAME shared active
-// Basic v2 APIM. It is entirely additive: it adds one new WebSocket API/path,
-// one new subscription, and one new named-scoped role assignment; it does not
-// modify, reparent, or share credentials with /openai/realtime, the legacy
-// Consumption plane, the model/MCP/proxy APIs, or their subscriptions above.
+// A second, separately scoped realtime provider on the SAME Basic v2 APIM. It is
+// entirely additive: it adds one new WebSocket API/path, one new subscription, and
+// one new named-scoped role assignment; it does not modify, reparent, or share
+// credentials with /openai/realtime, the model/MCP/proxy APIs, or their
+// subscriptions above.
 resource speechVoiceLiveWssEndpointValue 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = if (speechVoiceLiveEnabled) {
   parent: sharedApim
   name: 'speech-voice-live-wss-endpoint'
@@ -721,8 +535,8 @@ resource sharedSpeechVoiceLiveSubscription 'Microsoft.ApiManagement/service/subs
   ]
 }
 
-// Least privilege is granted to the shared active APIM identity only; legacy APIM
-// RBAC is retained above so the inactive rollback service remains complete.
+// Least privilege: Foundry data-plane roles are granted to the APIM system identity
+// only, per Foundry account, so no other principal inherits model access.
 resource sharedApimOpenAiUsers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (backend, i) in foundryBackends: {
   name: guid(foundryAccounts[i].id, sharedApimResourceId, openAiUserRoleId)
   scope: foundryAccounts[i]
@@ -1019,21 +833,6 @@ resource proxyApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
 }
 
 // ---------------- Observability ----------------
-resource apimDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
-  name: 'to-log-analytics'
-  scope: legacyConsumptionApim
-  properties: {
-    workspaceId: logAnalyticsWorkspaceId
-    logs: [
-      { category: 'GatewayLogs', enabled: true }
-    ]
-    metrics: [
-      { category: 'AllMetrics', enabled: true }
-    ]
-  }
-}
-
-
 resource proxyDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: 'to-log-analytics'
   scope: proxyApp
@@ -1049,7 +848,6 @@ var proxyUrl = 'https://${proxyApp.properties.configuration.ingress.fqdn}'
 
 output proxyAppName string = proxyApp.name
 output proxyUrl string = proxyUrl
-output legacyConsumptionApimGatewayUrl string = legacyConsumptionApim.properties.gatewayUrl
 output apimGatewayUrl string = sharedApimGatewayUrl
 output modelGatewayUrl string = '${sharedApimGatewayUrl}/openai'
 @secure()

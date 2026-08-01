@@ -122,9 +122,9 @@ the proxy; APIM derives correlation from the proxy-owned request ID and uses
 managed identity for Foundry. Voice Live fails startup if its URL/key are empty,
 not distinct, or do not describe an HTTPS/WSS `/openai` gateway endpoint.
 
-The active APIM is the existing shared `apim-mcp-*` Basic v2 service (capacity 1); no additional APIM base charge is added. The prior Consumption
-APIM and all of its children remain configured but inactive as the rollback plane;
-they are not deleted by this migration.
+The APIM plane is the shared `apim-mcp-*` Basic v2 service (capacity 1), and it is
+now the only APIM service in the environment; the prior Consumption APIM and all of
+its children have been deleted.
 
 ### Speech Voice Live (second voice provider)
 
@@ -267,4 +267,4 @@ public/private posture and emit diagnostics to the shared Log Analytics workspac
 
 `AI4IA_MODEL_GATEWAY_URL` remains the SimpleL7Proxy `/openai` URL. Its API key is an opaque proxy-ingress key from an APIM product with no APIs, carried in `AI4IA_MODEL_GATEWAY_API_KEY_HEADER` (`S7P-KEY` in the deployed stack), so FastAPI cannot invoke the model API directly. SimpleL7Proxy strips that inbound header and alone injects its separate `Ocp-Apim-Subscription-Key` for the shared model API. Voice Live uses `AI4IA_REALTIME_BASE_URL=https://<shared-active-apim>/openai` and a third core credential, `AI4IA_REALTIME_GATEWAY_API_KEY`, scoped only to `/openai/realtime`. Voice Live startup fails when the URL/key are missing, equal to the proxy ingress key, or do not name an HTTPS/WSS `/openai` endpoint. Speech Voice Live adds an optional fourth, independently scoped pair — `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` (`/speech/voice-live`) and `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY` — with fail-closed distinctness checks against the FastAPI-held proxy-ingress and realtime keys; the model-APIM key remains held only by SimpleL7Proxy.
 
-The active APIM is the existing shared `apim-mcp-*` Basic v2 service (capacity 1); no additional APIM base charge is added. The previous Consumption APIM and all its children remain fully configured but inactive for rollback; this migration does not delete them.
+The APIM plane is the shared `apim-mcp-*` Basic v2 service (capacity 1), and it is now the only APIM service in the environment; the previous Consumption APIM and all its children have been deleted.

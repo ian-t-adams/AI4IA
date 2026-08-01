@@ -28,8 +28,7 @@ Omitting it is exactly what broke the first cutover attempt — see
 | Container Registry | **yes** | `acr<workload><suffix>` | `acrai4ia3k7x` |
 | AI Search | **yes** | `srch-<workload>-<suffix>` | `srch-ai4ia-3k7x` |
 | Storage | **yes** | `st<uniqueString(rg)>` / `sti<uniqueString(rg)>` | `stabc123…` |
-| APIM (shared, active) | **yes** | `apim-mcp-<workload>-<env>-<suffix>` (≤50) | `apim-mcp-ai4ia-dev-3k7x` |
-| APIM (Consumption rollback) | **yes** | `apim-<workload>-<env>-<suffix>` (≤50) | `apim-ai4ia-dev-3k7x` |
+| APIM | **yes** | `apim-mcp-<workload>-<env>-<suffix>` (≤50) | `apim-mcp-ai4ia-dev-3k7x` |
 | API Center | **yes** | `apic-<workload>-<env>-<suffix>` | `apic-ai4ia-dev-3k7x` |
 | Event Hubs namespace | **yes** | `evhns-<workload>-<env>-<suffix>` | `evhns-ai4ia-dev-3k7x` |
 | App Configuration | **yes** | `appcs-<workload>-<env>-<suffix>` | `appcs-ai4ia-dev-3k7x` |

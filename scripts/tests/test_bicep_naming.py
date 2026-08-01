@@ -165,12 +165,11 @@ class GloballyUniqueNamingTests(unittest.TestCase):
         self.assertGreaterEqual(checked, 10, "resource discovery regressed; test is not looking")
         self.assertEqual(failures, [], "\n" + "\n".join(failures))
 
-    def test_the_four_names_that_actually_collided_are_covered(self) -> None:
+    def test_the_names_that_actually_collided_are_covered(self) -> None:
         """Pin the specific regressions, so a refactor cannot quietly drop them."""
         expectations = {
             "apimcore.bicep": "apim-mcp-",
             "apicenter.bicep": "apic-",
-            "gateway.bicep": "apim-",
             "main.bicep": "mf-",
         }
         for filename, prefix in expectations.items():
@@ -184,6 +183,14 @@ class GloballyUniqueNamingTests(unittest.TestCase):
                 f"{filename}: no '{prefix}...' name interpolates uniqueSuffix; "
                 "this is the exact defect that broke the tenant migration.",
             )
+
+        # gateway.bicep used to be a fourth entry here, for the Consumption APIM it
+        # created as a migration rollback plane. That service has been deleted and
+        # the module now creates no APIM service at all, so the expectation is not
+        # dropped silently -- it is asserted gone.
+        gateway = (INFRA / "modules" / "gateway.bicep").read_text(encoding="utf-8")
+        self.assertNotIn("Microsoft.ApiManagement/service@2024-05-01' = {", gateway)
+        self.assertNotIn("uniqueSuffix", gateway)
 
     def test_foundry_project_is_not_suffixed(self) -> None:
         """A project is a child of the account, so it needs no global uniqueness.
