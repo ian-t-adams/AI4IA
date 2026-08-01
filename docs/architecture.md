@@ -26,7 +26,8 @@ it is generated locally and never through excalidraw.com.
    injecting its model key. Optional Speech Voice Live adds a fourth,
    independently scoped APIM key.
 4. **Models are catalog-driven.** `infra/models.json` is authoritative for
-   deployments, regions, categories, capabilities, and generated runtime data.
+   deployments, regions, categories, per-model reasoning effort, capabilities, and
+   generated runtime data.
 5. **Cosmos is canonical.** User sessions, messages, usage, agents, workflows,
    MCP records, document manifests, and memory text/vectors are durable and
    user-scoped in Cosmos. Document chunks, search indexes, and parsed artifacts
@@ -114,6 +115,8 @@ authoritative.
    key, and forwards the original compatible path.
 5. APIM validates the model catalog, performs bounded immediate attempts across
    eligible regions, and calls Foundry with managed identity.
+   Responses-API requests explicitly set `store=false`; AI4IA resends Cosmos
+   history instead of chaining provider-stored turns with `previous_response_id`.
 6. If every eligible backend is throttled, APIM returns the
    `429` + `S7PREQUEUE` + `retry-after-ms` contract; SimpleL7Proxy owns delayed
    requeue. `MaxAttempts=1` prevents retry multiplication.
@@ -250,6 +253,8 @@ label those gaps rather than infer precision.
 - Gateway subscriptions are API/product scoped; proxy ingress, model APIM,
   realtime APIM, Speech Voice Live, and official MCP credentials are not reused.
 - APIM-to-AI calls use managed identity and least-scope data-plane roles.
+- Responses-API chat turns opt out of provider-side storage (`store=false`) so
+  Cosmos remains the only conversation system of record.
 - BYO MCP endpoints require public HTTPS, execution-time SSRF checks, approvals,
   and Key Vault-backed secrets.
 - Log, activity, and browser-client-event contracts exclude user content and
@@ -276,7 +281,7 @@ label those gaps rather than infer precision.
   authoring are not implemented.
 - Some tool, voice, proxy, and provider telemetry remains metadata-only or
   unavailable; absence is reported explicitly.
-- Repository state is documented here, but production deployment parity remains
-  unknown until operators record revision SHAs and run approved smoke tests.
+- Repository state is documented here; operators still need to record revision
+  SHAs and smoke-test evidence after each deploy because live parity is temporal.
 - Outstanding governance decisions, open work, and owner actions are tracked in
   [`roadmap.md`](./roadmap.md).

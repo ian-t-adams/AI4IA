@@ -102,6 +102,17 @@ jobs:
       - name: Voice provider catalog drift check
         working-directory: .
         run: python scripts/gen-voice-provider-catalog.py --check
+      # uv.lock is not on the install path here (CI and app/api/Dockerfile both
+      # `pip install` straight from pyproject.toml), so nothing else notices when
+      # it rots -- it had silently kept pypdf four releases behind, holding four
+      # live CVE alerts open, and was carrying a stale fastapi ceiling too. This
+      # is a pure drift gate in the same spirit as the catalog checks above: it
+      # resolves nothing new and fails only when uv.lock disagrees with
+      # pyproject.toml. `uv` comes from pip so no new pinned action is needed.
+      - name: Dependency lock drift check (uv)
+        run: |
+          pip install uv
+          uv lock --check
       - name: Lint (ruff)
         run: ruff check .
       - name: Type check (pyright)

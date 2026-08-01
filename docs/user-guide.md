@@ -13,7 +13,7 @@ and tool safety; the web app is the user interface.
 3. Start a chat session or reopen an existing session from the sidebar.
 4. Open the Conversation Inspector to change the model, instructions, agent,
    tools, context, memory, usage, or Voice Live settings. The app clamps model
-   parameters to catalog limits.
+   parameters, including reasoning effort, to catalog limits.
 
 ## Chat well
 
@@ -29,8 +29,10 @@ and tool safety; the web app is the user interface.
   models, the API forwards those values unchanged. The UI and API cap output tokens
   to the selected catalog model's published maximum. For GPT-5 and o-series
   deployments, the gateway strips unsupported sampling fields and translates the
-  output-token field to the model's accepted shape. Control visibility does not
-  grant a model capability or override server policy.
+  output-token field to the model's accepted shape. Reasoning effort is offered
+  only from the `reasoningEffort` list in `infra/models.json`; unsupported values
+  are treated as provider errors, not retried as capacity failures. Control
+  visibility does not grant a model capability or override server policy.
 
 ## Agents and workflows
 
@@ -42,7 +44,10 @@ and tool safety; the web app is the user interface.
 - Attach only the tools an agent needs. Tool output is metered, logged, bounded,
   and redacted where applicable.
 - A selected agent is the standing conversation persona. An explicit `@agent`
-  mention remains a one-turn override. The inspector shows inherited and
+  mention remains a one-turn override. The inspector shows the resolved
+  instruction stack read-only, including whether an inherited agent prompt came
+  from the curated catalog or from one of your user agents; conversation-level
+  instructions remain the editable layer. It also shows inherited and
   conversation-level tool changes; the API authorizes every call again at execution.
 - Tool rows state whether a capability is available in typed chat, Voice Live, or
   both. Typed-only tools are never silently advertised to Voice Live.
@@ -170,7 +175,9 @@ Custom MCP servers and Web IQ search tools are feature-gated. When enabled:
 
 - MCP server credentials are stored in Key Vault outside local development.
 - Remote MCP endpoints pass an SSRF guard before discovery and each use.
-- Search and browse output is bounded and treated as untrusted model context.
+- Web IQ contributes five server-side tools — `web_search`, `news_search`,
+  `video_search`, `image_search`, and `browse_url` — and their output is bounded
+  and treated as untrusted model context.
 
 If the controls are hidden, the feature is disabled for that environment.
 

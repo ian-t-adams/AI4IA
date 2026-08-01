@@ -71,6 +71,10 @@ playback, memory save, or sharing.
 - **Tier 3:** `fetch_document` for full/partial parsed Markdown.
 - **Compute:** `run_code` and `export_document` use Azure OpenAI Responses API
   Code Interpreter when `AI4IA_DOCUMENT_COMPUTE_ENABLED=true`.
+- **Inline compute:** `analyze_attachment` can hand the original bytes of an
+  inline composer attachment to the same Responses API Code Interpreter endpoint
+  when `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED=true`; it is independent of the
+  durable library flag and uses short-lived attachment storage.
 - **Processing:** `process_document` produces bounded inline output or a durable
   markdown artifact.
 - **Media:** audio/video timelines and `[[cite:FILENAME@MM:SS]]` citations open

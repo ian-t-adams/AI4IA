@@ -48,7 +48,17 @@ dependencies = [
     "python-multipart>=0.0.9",
     # PDF text extraction for the document-upload feature. docx/pptx
     # are parsed with the stdlib (zipfile + ElementTree); only PDF needs a dep.
-    "pypdf>=4.0",
+    # The floor is a security bound, not a feature one: pypdf < 6.14.2 carries
+    # four advisories (CVE-2026-59935/59936/59937/59938) that are all reachable
+    # here, because documents/extract.py feeds user-uploaded bytes straight into
+    # PdfReader + page.extract_text(). The two HIGH ones are infinite loops on an
+    # unterminated inline image during exactly that text extraction, so none of
+    # the existing guards stop them: _MAX_PDF_PAGES bounds how many pages we
+    # visit, not how long one page takes, and the per-page `except Exception:
+    # continue` cannot catch a hang. Each crafted upload would pin one
+    # run_in_threadpool worker forever until the pool starves. Keep this at or
+    # above 6.14.2.
+    "pypdf>=6.14.2",
     # Blob storage for the document library: raw uploads + parsed
     # artifacts. Async client (azure.storage.blob.aio) reached via the api managed
     # identity; imported lazily so the app/tests run without it wired (the

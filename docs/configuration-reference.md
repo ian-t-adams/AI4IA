@@ -95,6 +95,11 @@ Normal HTTP/SSE traffic uses
 catalog and routing setup; they rewrite region-specific deployment names and
 reject unknown deployments rather than falling back.
 
+Per-model `reasoning_effort` is also catalog-driven. The API only exposes and
+forwards values listed in `infra/models.json` `reasoningEffort`; APIM now treats
+unsupported-value 400s as permanent provider errors and returns the upstream
+diagnostic body instead of requeueing or parking healthy backends.
+
 The generated API policy is a sub-16 KB wrapper over bounded endpoint and
 priority-section fragments. APIM block expressions misparse contiguous `://`
 inside string literals, so generated `@{ ... }` expressions split URL slash

@@ -40,10 +40,15 @@ and — as of the Foundry activation — the **official MCP plane, the Foundry t
 bridge, and the private tool catalog** (`enableOfficialMcp` / `enableFoundryToolbox`
 / `enablePrivateToolCatalog` are all `true`). The new proxy profile, priority,
 Event Hub, and durable-async controls remain `false`; their Bicep defaults are
-also off. `speechVoiceLiveEnabled` also remains `false` (mapped from the
-`AI4IA_SPEECH_VOICE_LIVE_ENABLED` CI variable, default `false`) — Azure OpenAI
-Realtime stays the only active, default-safe voice provider until the separate
-approvals in [Speech Voice Live](#speech-voice-live-second-voice-provider) below close.
+also off. `speechVoiceLiveEnabled` is the one flag whose checked-in value is a
+*default*, not the live posture: `main.parameters.json` carries
+`${AI4IA_SPEECH_VOICE_LIVE_ENABLED=false}`, but that repository variable is set to
+`true`, so the second provider **is** enabled in the live environment and
+`AI4IA_VOICE_PROVIDER_ALLOWLIST` is `azure_openai,speech_voice_live`. Azure OpenAI
+Realtime remains the *default* provider (`AI4IA_VOICE_DEFAULT_PROVIDER`); Speech
+Voice Live is selectable but still owes the manual microphone canary in
+[Speech Voice Live](#speech-voice-live-second-voice-provider) below. Read the
+deployed container's env, not this file, when you need the current answer.
 
 ## Enablement notes
 
@@ -431,9 +436,10 @@ webIqApiKey=<key>
 # or AI4IA_WEBIQ_USE_ENTRA=true
 ```
 
-The API exposes web/news/video/image/browse tools to tool-enabled turns, sanitizes
-and nonce-fences returned content, and caps per-turn search fan-out. Outside local
-it fails closed unless an API key or Entra managed identity is configured.
+The API exposes five tools to tool-enabled turns: `web_search`, `news_search`,
+`video_search`, `image_search`, and `browse_url`. It sanitizes and nonce-fences
+returned content and caps per-turn search fan-out. Outside local it fails closed
+unless an API key or Entra managed identity is configured.
 
 In CI, `webIqApiKey` is supplied by the `AI4IA_WEBIQ_API_KEY` **`production`
 environment secret** (mapped into `.github/workflows/deploy.yml`). If that secret is

@@ -1,9 +1,10 @@
 # Region & capability map
 
 **`infra/models.json` is the authoritative live catalog** — the exact models, versions,
-regions, SKUs, and quotas that deploy. This doc is the *strategic* companion: which
-regions we use and why, the Speech Voice Live catalog, and a retirement watch. When they
-disagree, `models.json` wins; regenerate with `python scripts/gen-model-catalog.py`.
+regions, SKUs, quotas, API surface, and accepted `reasoning_effort` values that deploy.
+This doc is the *strategic* companion: which regions we use and why, the Speech Voice
+Live catalog, and a retirement watch. When they disagree, `models.json` wins; regenerate
+with `python scripts/gen-model-catalog.py`.
 
 Deploy regions today: **East US 2**, **Sweden Central**, **West US** (see
 `infra/models.json` `regions`).
@@ -84,7 +85,9 @@ subscription before `azd up`. Verify with `python scripts/check-model-availabili
 (offering) plus `az cognitiveservices usage list --location <region>` (TPM quota) rather
 than assuming: quota is granted **per model per region**, and entitlement differs between
 subscriptions. As of the Planet Express standup, `gpt-5.5` and the `gpt-5.6` family all
-carry default quota in both primary regions.
+carry default quota in both primary regions. Reasoning-effort support is probed and
+recorded per model in the catalog rather than inferred from provider docs; do not add a
+new value without re-probing the live deployment.
 
 ### `o3-pro` removed from the catalog
 
