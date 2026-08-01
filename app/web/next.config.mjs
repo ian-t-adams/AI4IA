@@ -29,6 +29,14 @@ const securityHeaders = [
 const nextConfig = {
   output: "standalone",
   reactStrictMode: true,
+  // No next/image is used in this app (all image render sites use a plain
+  // <img> with eslint-disable-next-line @next/next/no-img-element). Setting
+  // unoptimized:true disables the built-in image optimizer so that sharp is
+  // never invoked at runtime, making its optional-dependency status enforced
+  // rather than incidental.
+  images: {
+    unoptimized: true,
+  },
   // Linting runs as a dedicated CI step (`npm run lint`); Next 16 no longer
   // executes ESLint during `next build`, so the former `eslint` config key
   // (ignoreDuringBuilds) is removed — it is unsupported in Next 16.
