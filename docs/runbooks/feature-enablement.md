@@ -20,6 +20,7 @@ feature posture.
 | Inline attachment Code Interpreter | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | none | `inlineDocumentComputeEnabled` | Responses API base URL + model outside local |
 | Azure AI Search chunk store | `AI4IA_SEARCH_ENDPOINT` set | none | `searchEnabled` + `searchLocation` | Search service + API identity RBAC |
 | Memory / semantic recall | `AI4IA_MEMORY_STORE=cosmos` | inspector create/edit/delete controls | `memoryStore` | Cosmos endpoint/database, vector capability/container, and catalog-resolved embedding/extraction models |
+| Rolling conversation summarization | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | none | `autoSummarizationEnabled` | None beyond the active chat model — once the transcript exceeds the model-derived threshold, older turns fold into a running summary while the full transcript stays in storage/scrollback. Off leaves the manual `/summarize` command working but never auto-injects a summary |
 | Image generation | `AI4IA_IMAGE_BLOB_ACCOUNT_URL` when provisioned | Settings / imagery UI | `imageGenerationEnabled` | Image-capable model deployment and media blob storage |
 | Video generation | `AI4IA_VIDEO_BLOB_ACCOUNT_URL` when provisioned | inline attachment rendering | `videoGenerationEnabled` | Sora-capable deployment and media blob storage |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | Cosmos, Key Vault URI, Entra auth outside local |
@@ -33,11 +34,12 @@ feature posture.
 | Proxy metadata telemetry | proxy runtime only | none | `proxyEventHubTelemetryEnabled` | Existing Event Hub sender RBAC; no prompt/response/header logging |
 | Proxy durable async | proxy runtime only | none | `proxyAsyncEnabled` | Dedicated AVM Blob + Service Bus resources and proxy MI RBAC |
 | Azure Monitor alerting baseline | n/a (infra only) | none | `enableAlerts`, `alertEmail` | Action group + api-5xx / Cosmos-429 metric alerts. An action group with **no** receiver is legal ARM and notifies nobody — see the note below |
+| Key Vault purge protection | n/a (infra only) | none | `keyVaultPurgeProtection` (`AI4IA_KEYVAULT_PURGE_PROTECTION`) | None — but enabling it is **irreversible**, and it reserves the vault name for the soft-delete retention window, which blocks teardown-and-redeploy of the same environment name. Default `false` for that reason; see the note below |
 
 The checked-in live parameters currently turn on image/video generation,
 document understanding, document compute, inline-attachment code interpreter, AI
 Search, Voice Live + tools, custom tools, Web IQ search, Cosmos-backed memory,
-and — as of the Foundry activation — the **official MCP plane, the Foundry toolbox
+rolling conversation summarization, and — as of the Foundry activation — the **official MCP plane, the Foundry toolbox
 bridge, and the private tool catalog** (`enableOfficialMcp` / `enableFoundryToolbox`
 / `enablePrivateToolCatalog` are all `true`). **Proxy priority reservations and the
 alerting baseline are now on too** (`AI4IA_PROXY_PRIORITIES_ENABLED=true` with
@@ -489,16 +491,47 @@ portal's Alerts blade while notifying **nobody**. Nothing errors. That is why
 `validate-feature-prereqs.py` emits a warning for exactly that combination —
 degraded, not broken, so it is deliberately a warning and not a hard failure.
 
-This environment is currently in that state on purpose. The natural operator
-mailbox, `AI4IA_OWNER` / `AI4IA_APIM_PUBLISHER_EMAIL`
-(`ianadams@MngEnvMCAP795326.onmicrosoft.com`), is **not a deliverable address** —
-Graph reports `mail: null` and an empty `proxyAddresses`, because this MCAPS
-managed-environment account has no Exchange recipient. Wiring the action group to
-it would have produced a receiver that never delivers, which is worse than an
-obviously empty one: it looks configured. Set `AI4IA_ALERT_EMAIL` to a mailbox
-that actually receives (a nomad-analytics.com address, a distribution list, or a
-webhook-backed alternative) and redeploy; the receiver attaches automatically and
-the validator warning clears.
+This environment now sets `AI4IA_ALERT_EMAIL=ian@nomad-analytics.com`, a
+deliverable mailbox, so the action group has a live email receiver and the
+`validate-feature-prereqs.py` warning is clear (the checked-in
+`${AI4IA_ALERT_EMAIL=}` default is empty, so a bare local validate still warns).
+Do not point it at a non-deliverable `*.onmicrosoft.com` MCAPS owner account —
+Graph reports `mail: null` with no Exchange recipient, and a receiver that never
+delivers looks configured but notifies nobody.
+
+**The same shape was live one layer down, in the cost budget.** The
+resource-group budget (`budget-${workload}-${environmentName}`, $1500/month) is
+created unconditionally, but its `budgetAlertEmails` parameter was never
+surfaced in `main.parameters.json`. It therefore stayed at its `[]` default and
+`cost.bicep`'s `empty(alertEmails) ? {} : ...` produced an **empty notifications
+map** — Azure accepted it, the portal rendered a normal-looking budget, and no
+threshold could ever email anyone. `main.bicep` now falls back to `alertEmail`
+so one address drives both paths, `validate-feature-prereqs.py` warns when
+neither is set, and `scripts/tests/test_feature_prereqs.py` locks both halves
+in. Set `budgetAlertEmails` explicitly only if budget notices should go
+somewhere different from the Monitor action group.
+
+### Key Vault purge protection is off on purpose
+
+`keyvault.bicep` has carried a `purgeProtection` parameter described as "Set true
+for production" since it was written, but `main.bicep` never passed it — so no
+deployment could turn it on, whatever an operator put in a variable. It is now
+reachable via `AI4IA_KEYVAULT_PURGE_PROTECTION`, and it still **defaults to
+false**.
+
+That default is a deliberate trade, not an oversight. Purge protection cannot be
+switched back off once enabled — Azure offers no path, at any support tier — and
+while it is on, a deleted vault's globally-scoped name stays reserved for the
+full soft-delete retention window (7 days here). This repo's teardown scripts and
+its documented wipe-and-rebuild flow both recreate the environment under the same
+name, so enabling purge protection converts a routine rebuild into a week-long
+wait for the name to free up.
+
+Turn it on when the environment is genuinely permanent and you have accepted that
+you can no longer rebuild it in place. Soft delete — the protection that actually
+recovers an accidentally deleted secret — is **always on** regardless, so leaving
+this false does not leave secrets unrecoverable; it only leaves the vault itself
+purgeable by someone holding the purge permission.
 
 ## Operational reminders
 

@@ -98,6 +98,26 @@ resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
       }
     ]
     disableLocalAuth: true
+    // Pinned rather than left to Azure's default, because this account holds the
+    // canonical store (sessions, messages, usage, memory, user agents) and its
+    // recovery posture was previously an unstated inherited default. These are
+    // the values the live account already carries, so this is a no-op on deploy.
+    //
+    // Serverless constrains the options: continuous backup / self-service
+    // point-in-time restore is not usable here, and Azure will not restore INTO a
+    // serverless account at all -- a restore targets a NEW provisioned-throughput
+    // account and is raised through support. That makes the effective recovery
+    // window the 8 hours below (two 4-hourly snapshots), which is the number to
+    // reason about before assuming data is recoverable. See "Data recovery
+    // posture" in docs/runbooks/deployment.md.
+    backupPolicy: {
+      type: 'Periodic'
+      periodicModeProperties: {
+        backupIntervalInMinutes: 240
+        backupRetentionIntervalInHours: 8
+        backupStorageRedundancy: 'Geo'
+      }
+    }
     minimalTlsVersion: 'Tls12'
     // Required: the api Container App runs on the Consumption plan with public egress
     // and no VNet integration, so it reaches Cosmos over public networking (data-plane

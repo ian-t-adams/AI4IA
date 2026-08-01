@@ -174,6 +174,12 @@ jobs:
       # infra/modules/alerts.bicep and docs/roadmap.md.
       AI4IA_ENABLE_ALERTS: ${{ vars.AI4IA_ENABLE_ALERTS || 'false' }}
       AI4IA_ALERT_EMAIL: ${{ vars.AI4IA_ALERT_EMAIL }}
+      # Key Vault purge protection. Default OFF so the wipe-and-rebuild workflow can
+      # purge and recreate the vault under the same name. Setting this to 'true' is
+      # IRREVERSIBLE -- Azure offers no way back, and the vault name stays reserved
+      # for the soft-delete retention window, which blocks a teardown-and-redeploy of
+      # the same environment name. See docs/runbooks/deployment.md.
+      AI4IA_KEYVAULT_PURGE_PROTECTION: ${{ vars.AI4IA_KEYVAULT_PURGE_PROTECTION || 'false' }}
       # Web IQ API key. This is a SECRET (not a repo variable). Web search is
       # enabled in main.parameters.json, so if this is empty at provision time
       # bicep drops the webiq-api-key Container App secret and falls back to the

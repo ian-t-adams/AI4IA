@@ -56,6 +56,9 @@
     "enableAlerts": {
       "value": "${AI4IA_ENABLE_ALERTS=false}"
     },
+    "keyVaultPurgeProtection": {
+      "value": "${AI4IA_KEYVAULT_PURGE_PROTECTION=false}"
+    },
     "alertEmail": {
       "value": "${AI4IA_ALERT_EMAIL=}"
     },
