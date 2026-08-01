@@ -53,8 +53,10 @@ class GatewayPolicyTests(unittest.TestCase):
             "reduce(\n  normalizedModelPolicyFragmentDefinitions,",
             gateway,
         )
+        # One fragment loop: the shared Basic v2 plane. This was 2 while the
+        # retired Consumption service ran alongside it as a rollback plane.
         self.assertEqual(
-            2,
+            1,
             gateway.count(
                 "for definition in normalizedModelPolicyFragmentDefinitions"
             ),
@@ -155,9 +157,6 @@ class GatewayPolicyTests(unittest.TestCase):
         gateway_generator.validate_realtime_policy(
             realtime_output, "infra/policies/realtime-routing.xml"
         )
-        legacy_realtime = ROOT / "infra/policies/realtime-routing-legacy.xml"
-        ElementTree.parse(legacy_realtime)
-        self.assertIn("<set-body>", legacy_realtime.read_text(encoding="utf-8"))
 
     def test_catalog_expressions_stay_below_apim_limit(self) -> None:
         output, catalog_fragments = gateway_generator.generate_endpoint_policies()
@@ -817,28 +816,45 @@ class GatewayPolicyTests(unittest.TestCase):
             "var nativeFoundryPrincipalIds =", 1
         )[1].split("]", 1)[0])
 
-    def test_shared_basic_v2_apim_retains_consumption_rollback_and_rewires_callers(self) -> None:
+    def test_shared_basic_v2_apim_is_the_only_gateway_plane(self) -> None:
         gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
         apimcore = (ROOT / "infra/modules/apimcore.bicep").read_text(encoding="utf-8")
         mcp = (ROOT / "infra/modules/mcpgateway.bicep").read_text(encoding="utf-8")
         main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
         api = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
 
-        # Consumption and every original child stay as the inactive rollback plane.
-        # The name carries uniqueSuffix (see scripts/tests/test_bicep_naming.py):
-        # APIM names are globally unique, so the unsuffixed form could only ever
-        # deploy in the subscription that already owned it.
-        self.assertIn(
-            "name: take('apim-${workload}-${environmentName}-${uniqueSuffix}', 50)", gateway
-        )
-        self.assertIn("name: 'Consumption'", gateway)
-        for legacy_child in (
-            "foundryEndpointValues", "modelPolicyFragments", "modelsApi",
-            "modelOperations", "modelsApiPolicy", "proxyModelSubscription",
-            "realtimeApi", "realtimeOperation", "realtimeApiPolicy",
-            "apiRealtimeSubscription", "apimOpenAiUsers", "apimCognitiveUsers",
+        # The retired Consumption service and every child it owned are gone. It was
+        # kept as an inactive rollback plane through the Basic v2 migration and
+        # deleted once the shared service had carried production traffic. Leaving
+        # the Bicep behind would recreate a second billable gateway on next deploy.
+        self.assertNotIn("legacyConsumptionApim", gateway)
+        self.assertNotIn("name: 'Consumption'", gateway)
+        self.assertNotIn("realtime-routing-legacy", gateway)
+        self.assertFalse((ROOT / "infra/policies/realtime-routing-legacy.xml").exists())
+        for retired in (
+            "resource foundryEndpointValues", "resource modelPolicyFragments",
+            "resource modelsApi ", "resource modelOperations",
+            "resource modelsApiPolicy", "resource proxyModelSubscription",
+            "resource realtimeApi ", "resource realtimeOperation",
+            "resource realtimeApiPolicy", "resource apiRealtimeSubscription",
+            "resource apimOpenAiUsers", "resource apimCognitiveUsers",
         ):
-            self.assertIn(f"resource {legacy_child} ", gateway)
+            self.assertNotIn(retired, gateway)
+        # gateway creates no APIM service now, so it needs neither the publisher
+        # fields nor the name tokens that only the Consumption service consumed.
+        for retired_param in (
+            "param apimPublisherEmail", "param apimPublisherName",
+            "param workload string", "param uniqueSuffix string",
+        ):
+            self.assertNotIn(retired_param, gateway)
+        # apimcore still owns the one real service, its publisher identity, and the
+        # uniqueSuffix that keeps globally-unique APIM names deployable elsewhere.
+        self.assertIn("param apimPublisherEmail", apimcore)
+        self.assertIn("param apimPublisherName", apimcore)
+        self.assertIn(
+            "name: take('apim-mcp-${workload}-${environmentName}-${uniqueSuffix}', 50)",
+            apimcore,
+        )
 
         # gateway creates no BasicV2 service; it consumes apimcore's shared contract.
         self.assertIn("param sharedApimName string", gateway)
@@ -1063,12 +1079,9 @@ class GatewayPolicyTests(unittest.TestCase):
         main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
         api = (ROOT / "infra/modules/api.bicep").read_text(encoding="utf-8")
 
-        # Every pre-existing plane (legacy Consumption rollback, the shared
-        # active /openai + /openai/realtime APIs, and their subscriptions) is
-        # untouched: still present and unrenamed.
+        # Every pre-existing plane (the shared active /openai + /openai/realtime
+        # APIs and their subscriptions) is untouched: still present and unrenamed.
         for untouched in (
-            "resource legacyConsumptionApim",
-            "resource realtimeApi", "resource apiRealtimeSubscription",
             "resource sharedModelsApi", "resource sharedProxyModelSubscription",
             "resource sharedProxyIngressSubscription", "resource sharedRealtimeApi",
             "resource sharedApiRealtimeSubscription",
@@ -1219,7 +1232,7 @@ class GatewayPolicyTests(unittest.TestCase):
                 collected.extend(GatewayPolicyTests._collect_resources(nested))
         return collected
 
-    def test_compiled_arm_reuses_single_shared_basic_v2_apim_and_keeps_consumption_rollback(self) -> None:
+    def test_compiled_arm_creates_exactly_one_apim_service(self) -> None:
         template = self._build_bicep_template(ROOT / "infra/main.bicep")
         all_resources = self._collect_resources(template)
         service_resources = [
@@ -1227,13 +1240,20 @@ class GatewayPolicyTests(unittest.TestCase):
             if resource.get("type", "").lower() == "microsoft.apimanagement/service"
             and not resource.get("existing")
         ]
-        self.assertEqual(2, len(service_resources))
+        # Exactly one billable gateway. This was 2 while the Consumption service
+        # was retained as a rollback plane during the Basic v2 migration; that
+        # service has been deleted, so a second one here would silently recreate it.
+        self.assertEqual(1, len(service_resources))
         serialized = json.dumps(template)
         self.assertNotIn("apim-v2-", serialized)
         self.assertNotIn("apim-rt-", serialized)
-        legacy = next(resource for resource in service_resources if resource["sku"]["name"] == "Consumption")
-        shared = next(resource for resource in service_resources if resource["sku"]["name"] == "BasicV2")
-        self.assertEqual({"name": "Consumption", "capacity": 0}, legacy["sku"])
+        shared = service_resources[0]
+        # Scoped to APIM SKUs: "Consumption" is also a Container Apps workload
+        # profile name, so a whole-template search would false-positive.
+        self.assertNotIn(
+            "Consumption",
+            json.dumps([resource.get("sku") for resource in service_resources]),
+        )
         self.assertEqual({"name": "BasicV2", "capacity": 1}, shared["sku"])
         self.assertEqual("SystemAssigned", shared["identity"]["type"])
         self.assertIn("apim-mcp-", json.dumps(shared["name"]))
@@ -1427,8 +1447,8 @@ class GatewayPolicyTests(unittest.TestCase):
         template = json.loads(completed.stdout.lstrip("\ufeff"))
         resources = template["resources"]
         self.assertIn(
-            "modelPolicyFragments",
-            resources["modelsApiPolicy"]["dependsOn"],
+            "sharedModelPolicyFragments",
+            resources["sharedModelsApiPolicy"]["dependsOn"],
         )
         definitions = [
             *template["variables"]["endpointSelectionFragmentDefinitions"],
@@ -1442,7 +1462,7 @@ class GatewayPolicyTests(unittest.TestCase):
             ],
             [definition["baseName"] for definition in definitions],
         )
-        fragment_resource = resources["modelPolicyFragments"]
+        fragment_resource = resources["sharedModelPolicyFragments"]
         self.assertIn("uniqueString", fragment_resource["name"])
         normalized_copy = next(
             variable
@@ -1457,19 +1477,15 @@ class GatewayPolicyTests(unittest.TestCase):
             "[replace(variables('modelPolicyFragmentDefinitions')[copyIndex('normalizedModelPolicyFragmentDefinitions')].value, '\r\n', '\n')]",
             normalized_copy["input"]["value"],
         )
-        for resource_name in (
-            "modelPolicyFragments",
-            "sharedModelPolicyFragments",
-        ):
-            compiled_fragment = resources[resource_name]
-            self.assertIn(
-                "normalizedModelPolicyFragmentDefinitions",
-                compiled_fragment["name"],
-            )
-            self.assertEqual(
-                "[variables('normalizedModelPolicyFragmentDefinitions')[copyIndex()].value]",
-                compiled_fragment["properties"]["value"],
-            )
+        compiled_fragment = resources["sharedModelPolicyFragments"]
+        self.assertIn(
+            "normalizedModelPolicyFragmentDefinitions",
+            compiled_fragment["name"],
+        )
+        self.assertEqual(
+            "[variables('normalizedModelPolicyFragmentDefinitions')[copyIndex()].value]",
+            compiled_fragment["properties"]["value"],
+        )
         self.assertIn(
             "reduce(variables('normalizedModelPolicyFragmentDefinitions')",
             template["variables"]["modelApiPolicyValue"],
@@ -1477,7 +1493,6 @@ class GatewayPolicyTests(unittest.TestCase):
         compiled_fragment_contract = json.dumps(
             {
                 "policy": template["variables"]["modelApiPolicyValue"],
-                "legacy": resources["modelPolicyFragments"],
                 "shared": resources["sharedModelPolicyFragments"],
             }
         )
@@ -1491,7 +1506,7 @@ class GatewayPolicyTests(unittest.TestCase):
         )
         self.assertIn(
             "modelApiPolicyValue",
-            resources["modelsApiPolicy"]["properties"]["value"],
+            resources["sharedModelsApiPolicy"]["properties"]["value"],
         )
 
     def test_live_compiler_harness_has_exact_name_cleanup_guards(self) -> None:

@@ -37,6 +37,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A `uv lock --check` gate in `app-ci`, so `app/api/uv.lock` can no longer rot unnoticed
   behind `pyproject.toml`.
 
+### Removed
+
+- The legacy Consumption-tier APIM (`apim-<workload>-<env>-<suffix>`) and every child
+  resource — its model/realtime APIs, policies, policy fragments, subscriptions,
+  diagnostics, Foundry role assignments, and the unused
+  `legacyConsumptionApimGatewayUrl` output — plus
+  `infra/policies/realtime-routing-legacy.xml`. It existed only as an HTTP/SSE rollback
+  plane during the Basic v2 migration and had been inactive since. `gateway.bicep` now
+  creates no APIM service of its own and attaches its children to the existing
+  `apim-mcp-*` Basic v2 service, which is the only APIM in the environment. Removal was
+  gated on evidence: no live resource referenced the Consumption gateway URL, the module
+  output was consumed by nothing, and an end-to-end chat through
+  SimpleL7Proxy -> APIM -> Foundry returned `200` with annotate-only RAI intact both
+  before and after the deletion. Realtime never had a Consumption rollback path
+  (Consumption does not support WebSockets), so no capability was lost.
+
 ### Changed
 
 - The Voice Live Origin allowlist is now **derived in Bicep** from the web app each

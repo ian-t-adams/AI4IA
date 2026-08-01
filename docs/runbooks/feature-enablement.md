@@ -75,15 +75,14 @@ allowlist is allowed only in local.
 
 The upstream socket is `FastAPI -> APIM -> Foundry`. It does **not** traverse
 SimpleL7Proxy because that worker does not support WebSockets. The relay's APIM
-subscription is scoped to the realtime API only. The active APIM must be the
-WebSocket-capable Basic v2 replacement; Consumption does not support WebSocket
-APIs. Startup fails closed when the replacement `/openai` URL or distinct realtime
-subscription key is absent or malformed.
+subscription is scoped to the realtime API only. The APIM plane must be the
+WebSocket-capable Basic v2 service; the retired Consumption SKU did not support
+WebSocket APIs at all. Startup fails closed when the `/openai` URL or distinct
+realtime subscription key is absent or malformed.
 
 Basic v2 capacity 1 has an approximately $150/month base cost before calls and is
-a single-region, single-unit production gateway. The prior Consumption service is
-retained unchanged only as an inactive HTTP/SSE rollback plane during stabilization;
-its deletion is a later destructive operation requiring separate approval.
+a single-region, single-unit production gateway. It is now the only APIM service in
+the environment — the prior Consumption service has been deleted.
 
 ### Speech Voice Live (second voice provider)
 
@@ -134,8 +133,7 @@ that are standing rules still apply to any future change to this surface:
    target APIM: it creates and deletes temporary Azure resources, so it is never
    run automatically.
 4. **Standing rule** — any change touching APIM is reviewed against a zero-delete
-   production what-if containing no deletes, replacements, APIM SKU changes, or
-   legacy Consumption mutations.
+   production what-if containing no deletes, replacements, or APIM SKU changes.
 5. After deployment, run `scripts/voice-live-canary.py` with an operator Entra
    token against the authenticated FastAPI `wss://.../api/voice/live` path for
    each enabled model, then manually retest a signed-in microphone session,
@@ -174,8 +172,6 @@ and non-destructive:
    Speech-specific Foundry User role assignment. Review a targeted what-if with
    no unplanned deletes and obtain explicit approval before applying it. Never
    use complete deployment mode on the shared resource group or APIM.
-5. The inactive Consumption APIM rollback plane is untouched by any of this — it
-   carries no Speech Voice Live traffic in either direction and needs no action.
 
 Provider/model/settings changes in the inline selector are persisted separately
 and apply only to the next connection; they never reconnect or mutate an active

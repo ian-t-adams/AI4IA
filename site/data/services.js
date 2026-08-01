@@ -44,19 +44,11 @@ window.AI4IA_SERVICES = [
     docs: [["Azure Container Registry", "https://learn.microsoft.com/azure/container-registry/container-registry-intro"]],
   },
   {
-    key: "apim", name: "API Management — Consumption rollback", azureType: "Microsoft.ApiManagement/service",
-    group: "Gateway", icon: "🚪", module: "gateway.bicep", resourcePattern: "apim-ai4ia-*",
-    summary: "Inactive HTTP/SSE rollback plane on the Consumption SKU. Its APIs, policies, subscriptions, " +
-      "diagnostics, and Foundry access remain intact during stabilization, but active callers use apim-mcp.",
-    identity: "system-assigned; legacy Foundry roles retained only for rollback",
-    docs: [["APIM AI gateway", "https://learn.microsoft.com/azure/api-management/genai-gateway-capabilities"]],
-  },
-  {
-    key: "apim-mcp", name: "API Management — shared AI gateway", azureType: "Microsoft.ApiManagement/service",
+    key: "apim-mcp", name: "API Management — AI gateway", azureType: "Microsoft.ApiManagement/service",
     group: "Gateway", icon: "🔌", module: "apimcore.bicep", resourcePattern: "apim-mcp-ai4ia-*",
-    summary: "The shared active APIM (Basic v2) that exposes and governs the curated 'official' " +
-      "MCP servers using APIM's native MCP feature, gated on one subscription key, while also hosting the active " +
-      "model/realtime APIs. The legacy Consumption service is retained only as temporary rollback.",
+    summary: "The single APIM service (Basic v2) that exposes and governs the curated 'official' " +
+      "MCP servers using APIM's native MCP feature, gated on one subscription key, while also hosting the " +
+      "model and realtime APIs. MCP, HTTP/SSE, and both voice providers share it.",
     identity: "system-assigned; may be granted Foundry User to mint the toolbox bearer",
     docs: [["Expose MCP servers in APIM", "https://learn.microsoft.com/azure/api-management/export-rest-mcp-server"]],
   },

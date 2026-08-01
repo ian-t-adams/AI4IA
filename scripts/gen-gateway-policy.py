@@ -919,9 +919,10 @@ def validate_speech_voice_live_policy(policy: str, source: str) -> None:
             f"{source}: must strip caller selectors/credentials before managed-identity authentication"
         )
 
-    # No fallback to Azure OpenAI, another host, the proxy/MCP APIs, or the
-    # Consumption rollback plane. This deliberately scans the whole document
-    # (including comments) so an accidental reference anywhere is caught.
+    # No fallback to Azure OpenAI, another host, or the proxy/MCP APIs. This
+    # deliberately scans the whole document (including comments) so an accidental
+    # reference anywhere is caught. "consumption" is still rejected even though the
+    # Consumption APIM has been deleted, so reintroducing a fallback to one fails here.
     lowered = policy.lower()
     forbidden_tokens = ("openai", "cognitiveservices.azure.com", "consumption", "/mcp", "proxy")
     hits = [token for token in forbidden_tokens if token in lowered]

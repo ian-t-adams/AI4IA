@@ -55,12 +55,10 @@ deployed by the one subscription that already held them; standing the stack up i
 subscription failed with `ServiceAlreadyExists`. `scripts/tests/test_bicep_naming.py` now
 pins every globally unique name.
 
-The original Consumption APIM and every child remain unchanged as an inactive HTTP/SSE rollback
-plane; it receives no active traffic and is not deleted. Reusing `apim-mcp-*` adds no additional
-roughly $150/month APIM base charge. The tradeoff is a shared gateway blast radius: capacity,
-health, and resiliency monitoring now protect MCP, HTTP/SSE, and Voice Live together. Rewire
-callers only after the shared APIs/RBAC are ready. Delete Consumption only in a separately
-approved post-stabilization destructive change.
+`apim-mcp-*` is the only APIM service in the environment; the original Consumption APIM
+and every child were deleted once the Basic v2 plane was proven. The tradeoff is a shared
+gateway blast radius: capacity, health, and resiliency monitoring now protect MCP,
+HTTP/SSE, and Voice Live together. Rewire callers only after the shared APIs/RBAC are ready.
 
 Regenerate and validate policy routing after any `models.json` change:
 

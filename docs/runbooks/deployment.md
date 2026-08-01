@@ -847,10 +847,9 @@ Cause and fix, by message:
 | `Speech Voice Live requires a distinct gateway key; do not reuse ...` | The Speech key equals the Azure OpenAI realtime key or FastAPI's proxy-ingress (`AI4IA_MODEL_GATEWAY_API_KEY`) key | Regenerate/rotate the FastAPI-held keys; the separate proxy-to-model-APIM key remains held only by SimpleL7Proxy |
 | Handshake fails with a bounded, provider-neutral error and no audio | The Speech Voice Live APIM API, its subscription, or the selected AIServices account's RBAC/audience is unhealthy | Check APIM diagnostics for the `speech-voice-live-realtime` API; confirm the managed identity still holds Cognitive Services User + Foundry User on the selected account and that the audience matches (see [`configuration-reference.md`](../configuration-reference.md#speech-voice-live-second-voice-provider)) |
 
-Speech Voice Live never falls back to Azure OpenAI, the proxy, another host, or
-Consumption APIM on failure — a failed Speech connection surfaces a bounded error
-to the browser rather than silently degrading to a different provider or
-deployment.
+Speech Voice Live never falls back to Azure OpenAI, the proxy, or another host on
+failure — a failed Speech connection surfaces a bounded error to the browser rather
+than silently degrading to a different provider or deployment.
 
 The safe protocol-error/close capture, correlation/outcome/frame-count completion
 record, deterministic cleanup, retry messaging, and isolated inline selectors are
@@ -1435,14 +1434,17 @@ continuity. Request `include: ["reasoning.encrypted_content"]` and pass the
 encrypted reasoning items forward — that is the stateless-mode equivalent and
 keeps the content in the app's control.
 
-## APIM Basic v2 migration guardrail
+## APIM plane (single Basic v2 service)
 
-The active model/realtime/MCP plane is the `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the additive `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the existing `/openai/realtime` API and subscription. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and both voice providers share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic — it never receives Speech Voice Live traffic either. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.
+The model/realtime/MCP plane is the `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>` Basic v2 service (capacity 1), and it is the **only** APIM service in the environment. `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` owns the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the `/openai/realtime` API and subscription. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update.
 
-The superseded PR-only `apim-v2-*` design was never deployed. The corrected what-if
-must contain no `apim-v2-*` creation. If resource inventory unexpectedly finds such
-a service, stop and handle it through a separate explicitly approved cleanup rather
-than folding a deletion into this migration.
+Because MCP, HTTP/SSE, and both voice providers share one service, they share its
+blast radius and resilience posture. Any change that touches APIM still gets a
+**zero-delete what-if review** before it is applied.
+
+The superseded PR-only `apim-v2-*` design was never deployed. A what-if must contain
+no `apim-v2-*` creation. If resource inventory unexpectedly finds such a service, stop
+and handle it through a separate explicitly approved cleanup.
 
 ### Speech Voice Live gating (satisfied)
 
@@ -1456,21 +1458,32 @@ That gate is closed. The resource group reads normally, the stack is deployed, a
 live. The remaining validation is a signed-in manual microphone canary, tracked in
 [`roadmap.md`](../roadmap.md) — not a deployment blocker.
 
-The zero-delete what-if discipline below still applies to any change that touches APIM.
+### Consumption APIM removal (done)
 
-### Post-stabilization Consumption cleanup
+The Basic v2 migration briefly ran two APIM services so HTTP/SSE could be rolled back
+to the original Consumption service. That overlap is over: the Consumption service and
+all its children were deleted from Azure and from the IaC, and `gateway.bicep` no longer
+declares an APIM service of its own.
 
-The two APIM services are a temporary migration overlap, not the steady-state design.
-Delete the Consumption service only in a separate destructive change after:
+Removal was gated on evidence, not elapsed time:
 
-1. HTTP and SSE smoke tests pass through SimpleL7Proxy -> shared Basic v2 APIM;
-2. FastAPI -> shared Basic v2 APIM returns WebSocket 101 and completes a real voice turn
-   for each enabled provider;
-3. gateway logs confirm only `apim-mcp-*` receives active traffic for the agreed stabilization period;
-4. operators confirm the Consumption HTTP rollback is no longer required; and
-5. a deletion-specific what-if is reviewed and explicitly approved.
+1. no live resource referenced the Consumption gateway — the proxy's `Host1` and the
+   API's `AI4IA_REALTIME_BASE_URL` / `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` /
+   `AI4IA_OFFICIAL_MCP_GATEWAY_URL` all resolve to `apim-mcp-*`;
+2. the module's `legacyConsumptionApimGatewayUrl` output was consumed by nothing;
+3. an end-to-end chat through SimpleL7Proxy -> Basic v2 APIM -> Foundry returned `200`
+   with annotate-only RAI intact, both before and after the deletion.
 
-Realtime has no working Consumption rollback path for either voice provider.
-During stabilization, HTTP/SSE rollback means restoring the previous proxy
-revision/key that targets Consumption; do not delete or mutate the legacy APIs,
-fragments, policies, subscriptions, or identity before the cleanup approval.
+Realtime never had a Consumption rollback path (Consumption does not support
+WebSockets), so no rollback capability was lost for either voice provider.
+
+**If the name must be reused,** an APIM delete leaves the service soft-deleted and
+holding its globally-unique name for 48 hours. Purge it first:
+
+```bash
+az apim deletedservice list -o table
+az apim deletedservice purge --location <region> --service-name <name>
+```
+
+This does not apply to a normal redeploy — the surviving service is `apim-mcp-*`, a
+different name.

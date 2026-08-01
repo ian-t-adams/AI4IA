@@ -212,6 +212,28 @@ dotnet build proxy/SimpleL7Proxy/SimpleL7Proxy.csproj --configuration Release
 dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release
 ```
 
+### Branch protection on `main`
+
+`main` is protected by a repository ruleset: a pull request is required, force-pushes
+and branch deletion are blocked, review threads must be resolved, and 11 status checks
+must pass. **Required approving reviews is deliberately 0** — this is a solo-maintained
+repo, so requiring an approver would self-block every PR. There are **no bypass actors**,
+so the rule applies to admins too; turning it off is a visible settings change rather
+than a silent `git push`.
+
+Only checks that are emitted on **every** PR are required — the seven `quality` jobs,
+both `codeql` analyses, and `security-scan`'s two blocking jobs. `app-ci`,
+`infra-validate`, and `docker-build` are **path-filtered**, so they are deliberately
+*not* required: GitHub waits indefinitely for a required check that is never reported,
+so requiring one would deadlock every docs-only PR. This was verified rather than
+assumed — adding a single unreachable context flipped an otherwise-green PR from
+`CLEAN` to `BLOCKED`.
+
+The consequence to know: a PR touching `app/**` or `infra/**` still *runs* those
+workflows and still shows a red check, but protection does not block the merge on it.
+Closing that gap needs an always-run aggregate job per path-filtered workflow (tracked
+in `docs/roadmap.md`). If you add such an aggregate, add its context to the ruleset.
+
 ## How to add things
 
 ### Add a chat tool

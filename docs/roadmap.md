@@ -12,9 +12,9 @@ ships, add one when a real gap appears.
 
 | Priority | Item | What's needed | Tracked in |
 | --- | --- | --- | --- |
-| **P0** | `main` has **no branch protection / ruleset** (verified: protection `404`, rulesets `[]`). Any direct push bypasses CI and review. | Add a ruleset requiring a PR + one approving review + conversation resolution + blocked force-push/deletion, and require **always-emitted aggregate** check contexts (not the path-filtered `app-ci`/`infra-validate`/`docker-build` job names, which would deadlock docs-only PRs). | Owner (repo settings) |
 | **P1** | **Proactive alerting is wired but off.** `enableAlerts=false` by default; only App Insights Smart Detection is live, so there are no threshold alerts for API 5xx spikes or Cosmos throttling. | Plumbing is done: set the `AI4IA_ENABLE_ALERTS` repo variable to `true` **and** `AI4IA_ALERT_EMAIL` to a recipient, then redeploy. Reactive diagnosis via the admin dashboard already works. | `infra/modules/alerts.bicep`, `deploy.yml`, [`telemetry.md`](./runbooks/telemetry.md) |
 | **P1** | **Deployment parity isn't automatically proven.** Repository truth can lead the live revision. | Keep recording deployed api/web/proxy revision SHAs + post-deploy smoke evidence after each deploy. | [`deployment.md`](./runbooks/deployment.md) |
+| **P2** | **`main` branch protection excludes the path-filtered workflows.** The ruleset requires the 11 always-emitted contexts (`quality` ×7, `codeql` ×2, `security-scan` ×2 blocking). `app-ci`, `infra-validate`, and `docker-build` are **deliberately not required**: they only run when their trigger paths match, and GitHub waits forever for a required check that is never reported — a docs-only PR would deadlock. Verified empirically: adding one unreachable context flipped an otherwise-green PR to `BLOCKED`. So a PR touching app or infra code shows its failure but is not *blocked* by it. | Add a small always-run aggregate job per path-filtered workflow that reports success when its real jobs are skipped, then require the aggregates. | Owner (repo settings), [`AGENTS.md`](../AGENTS.md) |
 | **P2** | **Gateway is single-region / capacity-1** (APIM Basic v2) and the SimpleL7Proxy queue is per-replica memory (no global ordering/fairness). | Decide whether the capacity/region posture meets the target SLO and budget; set scaling + alert thresholds if not. | [`architecture.md`](./architecture.md) |
 | **P2** | **Memory UX gaps.** No global memory-consent control and no recalled-memory provenance indicator; management is owner-scoped CRUD only. | Design explicit consent + provenance UX before expanding memory surfaces. | [`memory.md`](./memory.md) |
 | **Ops** | **PostgreSQL retirement.** It is retained post-cutover only as the migration source + document-chunk fallback and for the rollback window. | After the agreed rollback window, remove the server, its firewall/admin, config, and data in a separate reviewed change — needs explicit destructive-action approval. | [`memory-migration.md` "Retirement"](./runbooks/memory-migration.md) |
@@ -31,6 +31,16 @@ ships, add one when a real gap appears.
   HTTP/SSE model, and both voice planes.
 
 ## Recently shipped (no longer open)
+
+- **`main` branch protection.** A repository ruleset now requires a pull request
+  (with **0** required approving reviews, so a solo maintainer is not self-blocked),
+  requires conversation resolution, blocks force-pushes and branch deletion, and
+  requires the 11 always-emitted status checks. No bypass actors, so it applies to
+  admins too; disabling it is a deliberate, visible settings change rather than a
+  silent `git push`.
+- **Legacy Consumption APIM removed** from Azure, the IaC, and the docs. The Basic v2
+  `apim-mcp-*` service is now the only APIM plane; `gateway.bicep` creates no APIM
+  service of its own.
 
 - Canonical memory migrated **off mem0/PostgreSQL to Cosmos** and cut over in production
   (7 memories migrated + verified); full owner-scoped CRUD with ETags/idempotency.

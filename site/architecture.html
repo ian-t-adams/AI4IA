@@ -85,8 +85,7 @@ flowchart LR
     ProxyCA["ca-proxy · SimpleL7Proxy"]
   end
   subgraph Gateways["API Management"]
-    Apim["apim · Consumption rollback<br/>(inactive, no traffic)"]
-    ApimMcp["apim-mcp · shared model/realtime/MCP gateway"]
+    ApimMcp["apim-mcp · model/realtime/MCP gateway"]
     Apic["API Center · tool catalog"]
   end
   subgraph Compute["Container Apps env + registry"]
@@ -118,7 +117,6 @@ flowchart LR
   ApiCA --> ProxyCA --> ApimMcp --> AI
   ApiCA -. "azure_openai + speech_voice_live<br/>realtime WS (distinct keys)" .-> ApimMcp
   ApimMcp -. inventory .-> Apic
-  ApimMcp -. "inactive rollback plane" .-> Apim
   ApiCA --> Data
   ApiCA --> Sec
   ApiCA --> Obs
