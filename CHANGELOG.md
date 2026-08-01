@@ -24,6 +24,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `scripts/check-model-availability.py` (checks `infra/models.json` against what the
   target subscription is actually entitled to deploy, per region). Both are documented
   as step 0 of the deployment runbook's new-tenant procedure.
+- `app/api/tests/test_lazy_imports_are_declared.py`, which re-derives every third-party
+  module imported inside a function body from the source AST and fails if one no longer
+  resolves. The API imports heavy/optional SDKs lazily on purpose, which meant no gate
+  noticed a missing dependency: with `azure-monitor-query` uninstalled outright, `pyright`
+  reported `0 errors` (an unresolved submodule of the `azure` *namespace* package does not
+  fail the type gate the way a missing top-level module does) and `pytest` stayed green
+  (the import is lazy and the metrics tests inject a fake querier). 24 modules are covered,
+  including `azure.cosmos.aio`, `azure.identity.aio`, `azure.storage.blob` and `pypdf`.
+- `scripts/tests/test_dependabot_config.py`, which fails if `.github/dependabot.yml` and
+  the `uv lock --check` CI gate are ever paired incompatibly again.
+- A `uv lock --check` gate in `app-ci`, so `app/api/uv.lock` can no longer rot unnoticed
+  behind `pyproject.toml`.
 
 ### Changed
 
@@ -36,6 +48,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Curated and user-agent instruction sources are now visible read-only in the
   Conversation Inspector so inherited prompts can be audited without making those layers
   editable in the session panel.
+- Dependabot manages `/app/api` through `package-ecosystem: uv` rather than `pip`. The pip
+  ecosystem edits `pyproject.toml` and cannot see `uv.lock`, so every Python dependency PR
+  it opened failed the lock gate until someone hand-ran `uv lock`. Confirmed working: the
+  first batch under `uv` updated both files.
+- `azure-monitor-query` raised from `>=1.4,<2` to `>=2.0.0,<3`. The `<2` ceiling existed
+  only to retain `MetricsQueryClient`, which now comes from `azure-monitor-querymetrics`.
+  Every attribute `metrics/log_analytics.py` uses was verified against the real 2.0.0 wheel
+  before the bump.
 
 ### Fixed
 
@@ -80,6 +100,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `docs/naming-and-tagging.md` presented `slurmfactory` as a fixed token in Foundry
   account/project names. Those are built from the azd environment name; the two only
   coincide because the current environment is named after the subscription.
+- A comment in `app/api/pyproject.toml` claimed `azure-monitor-query` had been dropped
+  "since only its metrics client was ever used (no logs client)". Both halves were false —
+  `metrics/log_analytics.py` imports `LogsQueryClient` from it, and the dependency was
+  still declared two lines below the comment saying it was gone. Acting on it would have
+  removed a live dependency and broken the admin operations panel. The same wrong belief
+  had propagated to `site/data/requirements.js`, which omitted the package entirely.
+- `Sidebar.test.tsx` asserted `maxWidth: 100vw` / `maxHeight: 100dvh` via `toHaveStyle`.
+  jsdom 30 drops viewport units from the CSSOM rather than storing them, so the values are
+  no longer DOM-observable even though the component sets them and browsers honour them.
+  Narrowed to the assertion that still describes behaviour.
+- A 0-byte file named `'2026-07-31T21` committed by accident from a truncated shell
+  redirect (Windows cannot use `:` in filenames).
+- Two runbooks still described Speech Voice Live as blocked from production by a
+  `403 AuthorizationFailed` on reading the subscription/resource group, with
+  `docs/runbooks/deployment.md` instructing operators to **"stop and do not deploy."**
+  The provider has been enabled in production since 2026-07-16
+  (`AI4IA_SPEECH_VOICE_LIVE_ENABLED=true`), and the resource group reads normally, so
+  the guidance contradicted live state. Both pages now record the gate as satisfied and
+  keep only the rules that still stand (explicit approval for the live APIM policy
+  compiler, zero-delete what-if for APIM changes, and the outstanding manual mic canary).
+
+### Security
+
+- `pypdf` raised past four CVEs, two HIGH. `CVE-2026-59935` / `CVE-2026-59936` are
+  infinite loops in `page.extract_text()` during inline-image end-marker detection, which
+  the document-extraction path reaches with user-supplied PDFs. The floor was raised in
+  `pyproject.toml`, not just the lock, because nothing on the install path reads the lock.
+- `postcss` raised to `^8.5.18` (GHSA-r28c-9q8g-f849, path traversal) and `sharp` pinned to
+  `^0.35.0` via `overrides` (libvips advisories). `sharp` needed an override because
+  `next` declares `optionalDependencies.sharp: ^0.34.5`, and a caret on a `0.x` version
+  pins the minor — the range can never reach the fixed `0.35.0`. Verified in the resolved
+  tree: only `sharp@0.35.3` is installed, with no nested copy under `next`.
+- Dependabot security updates were enabled; the alert feed is now empty.
 
 ### Notes
 

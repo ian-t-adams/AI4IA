@@ -1444,35 +1444,19 @@ must contain no `apim-v2-*` creation. If resource inventory unexpectedly finds s
 a service, stop and handle it through a separate explicitly approved cleanup rather
 than folding a deletion into this migration.
 
-### Current 403 inventory/what-if blocker (Speech Voice Live)
+### Speech Voice Live gating (satisfied)
 
-As of this writing, the available identity cannot read the target subscription or
-resource group (`403 AuthorizationFailed` on a direct read of
-`rg-ai4ia-slurmfactory`), so Speech Voice Live's account kind/endpoint/location,
-APIM SKU/capacity/identity/APIs/subscriptions/backends, roles, provider
-registration, policy support, health, and quotas/limits have **not** been
-independently verified against live Azure state — the supplied production
-inventory is expected context, not confirmed fact. `speechVoiceLiveEnabled`
-therefore stays `false` in the checked-in parameters, and the following remain
-required, separately authorized, and outstanding before any deployment can be
-proposed:
+This section previously recorded a `403 AuthorizationFailed` blocker: the available
+identity could not read `rg-ai4ia-slurmfactory`, so the APIM/AIServices posture could
+not be verified against live Azure and `speechVoiceLiveEnabled` was held at `false`.
 
-1. An authorized identity regains subscription/resource-group read and
-   `Microsoft.Resources/deployments/whatIf/action` access and re-verifies the
-   selected `eastus2` AIServices account and shared APIM against live state.
-2. The live APIM WebSocket policy compiler
-   (`scripts/test-apim-policy-compiler.ps1`) validates the Speech Voice Live
-   `onHandshake` operation, under its own separate approval, with verified
-   temporary-resource cleanup.
-3. A zero-delete production what-if is run and reviewed, containing no deletes,
-   replacements, APIM SKU changes, or legacy Consumption mutations.
+That gate is closed. The resource group reads normally, the stack is deployed, and
+`AI4IA_SPEECH_VOICE_LIVE_ENABLED=true` with
+`AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live`, so both providers are
+live. The remaining validation is a signed-in manual microphone canary, tracked in
+[`roadmap.md`](../roadmap.md) — not a deployment blocker.
 
-If subscription/resource-group read or `whatIf/action` remains `403`, if compiler
-validation fails, or if what-if includes a delete/replace/APIM-SKU-change/legacy
-Consumption mutation or unplanned resource/RBAC creation: **stop and do not
-deploy.** Live APIM compiler validation, production deployment, and merging the
-implementation to `main` are each separate, explicit approvals this repository's
-documentation cannot substitute for.
+The zero-delete what-if discipline below still applies to any change that touches APIM.
 
 ### Post-stabilization Consumption cleanup
 

@@ -1,9 +1,5 @@
 # Product
 
-## Register
-
-product
-
 ## Users
 
 AI4IA serves enterprise knowledge workers who need grounded multimodal assistance,
