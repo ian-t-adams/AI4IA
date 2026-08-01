@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Root contributor guide, governance files, community templates, and third-party notices.
+- Live Planet Express deployment documentation for tenant
+  `6907d2a4-685a-4aea-92ab-d930217467f1`, subscription
+  `sub-planetexpress-slurmfactory`, resource group `rg-ai4ia-slurmfactory`, and
+  the `ai4ia.nomad-analytics.com` / `genaiproxy.nomad-analytics.com` custom domains.
 - `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` to the model catalog
   (GlobalStandard in East US 2 + Sweden Central, version `2026-07-09`, 1,050,000-token
   context). All three are GA, need no access request, and already carry default quota in
@@ -29,9 +33,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Operator scripts (`teardown.ps1`, `purge-soft-deleted.ps1`, `status-snapshot.ps1`,
   `inventory.ps1`, `seed-models.ps1`) no longer carry tenant-specific defaults; each
   requires its target explicitly or resolves it from the selected azd environment.
+- Curated and user-agent instruction sources are now visible read-only in the
+  Conversation Inspector so inherited prompts can be audited without making those layers
+  editable in the session panel.
 
 ### Fixed
 
+- APIM no longer treats every Foundry `400` as a temporary retryable error. Only
+  `context_length_exceeded` remains retryable; malformed requests now return the
+  provider's `400` without parking a healthy backend or producing `429 Requeue Message`.
+- APIM permanent-error responses preserve the upstream 4xx body and `Content-Type`
+  instead of returning `Content-Length: 0`.
+- Responses API chat turns now send `"store": false`, because AI4IA stores conversation
+  state in Cosmos and does not use `previous_response_id` chaining.
 - The `deploy` job's `timeout-minutes: 60` was too low, and its failure mode was far worse
   than a failed run: GitHub reports a timed-out job as *cancelled*, which kills `azd`
   mid-provision while ARM keeps the in-flight deployment **active for up to 7 days**, so

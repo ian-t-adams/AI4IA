@@ -41,6 +41,12 @@ ships, add one when a real gap appears.
   operator scripts; subscription preflights added for resource-provider registration and
   per-subscription model availability. Validated end to end against an empty subscription
   in a new tenant — see [deployment runbook §3](./runbooks/deployment.md).
+- **Planet Express deployment live.** The stack is now running in
+  `sub-planetexpress-slurmfactory` / `rg-ai4ia-slurmfactory` with custom domains for
+  the app and proxy.
+- **Gateway 4xx governance fixes.** Malformed Foundry 400s are no longer retried,
+  healthy backends are not parked, terminal 4xx bodies survive APIM, and Responses API
+  chat turns send `store=false` so Cosmos remains canonical.
 
 [`CHANGELOG.md`](../CHANGELOG.md) tracks changes from this point forward. It does not yet
 carry the project's earlier history: this repo has no reviewed release tags to backfill

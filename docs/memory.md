@@ -5,10 +5,10 @@ The same item holds the readable memory and its embedding, so text and vector
 cannot drift into separate stores. PostgreSQL and replica-local SQLite are not
 runtime memory stores.
 
-> Repository status: the code, IaC, migration tool, and tests are prepared. This
-> does not prove that a production environment has been migrated or switched.
-> Follow the [memory migration runbook](./runbooks/memory-migration.md) and record
-> deployment evidence before making that claim.
+> Production status: the Planet Express deployment is switched to the Cosmos memory
+> backend. The [memory migration runbook](./runbooks/memory-migration.md) remains the
+> procedure for future cutovers, rollback-window decisions, and eventual PostgreSQL
+> retirement.
 
 ## Why Cosmos
 
@@ -197,10 +197,8 @@ recreate orphaned memory after the source manifest is gone.
 
 - There is no global user-facing memory consent toggle.
 - Answers do not yet identify which recalled memories influenced the response.
-- Production cutover and retirement evidence must be recorded separately from
-  repository validation.
-- PostgreSQL cannot be deleted until migration verification, the rollback window,
-  and document-index posture are explicitly closed and approved.
+- PostgreSQL cannot be deleted until the rollback window and document-index
+  posture are explicitly closed and approved.
 
 ## Primary implementation files
 

@@ -112,6 +112,16 @@ Settings → Secrets and variables → Actions → **Variables** (these are iden
 
 The moment `AZURE_CLIENT_ID` is set, the next qualifying push to `main` deploys.
 
+Current live values:
+
+| Setting | Value |
+|---|---|
+| Tenant | Planet Express `6907d2a4-685a-4aea-92ab-d930217467f1` (Entra display name may still show "Contoso") |
+| Subscription | `sub-planetexpress-slurmfactory` / `e852113b-6cb5-441c-ac68-26cff884e479` |
+| Resource group | `rg-ai4ia-slurmfactory` |
+| Web app | `https://ai4ia.nomad-analytics.com` |
+| Model proxy | `https://genaiproxy.nomad-analytics.com` |
+
 The model gateway has no Front Door in this phase. Point model clients at the
 proxy custom/default FQDN. DNS/custom domain terminates on the proxy Container
 App, which calls APIM; APIM alone has Foundry model RBAC.

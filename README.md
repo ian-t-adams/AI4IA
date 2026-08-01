@@ -13,6 +13,14 @@ Voice Live, image/video generation, document and multimodal understanding,
 custom remote MCP tools, admin usage/resource dashboards, and Azure Monitor /
 Application Insights telemetry.
 
+The live deployment is in the Planet Express tenant
+(`6907d2a4-685a-4aea-92ab-d930217467f1`; Entra may still display "Contoso") and
+subscription `sub-planetexpress-slurmfactory`
+(`e852113b-6cb5-441c-ac68-26cff884e479`), resource group
+`rg-ai4ia-slurmfactory`. Public entry points are
+`https://ai4ia.nomad-analytics.com` for the app and
+`https://genaiproxy.nomad-analytics.com` for compatible model traffic.
+
 Advanced capabilities are feature-gated. Code defaults stay safe and mostly OFF;
 the deployed environment is controlled by `infra/main.parameters.json` and azd
 environment values. The checked-in live parameters enable the application
@@ -54,7 +62,8 @@ azure.yaml  Azure Developer CLI service map
   Foundry calls are reserved for non-OpenAI control planes such as Content
   Understanding and Azure Monitor where required.
 - **Catalog-driven models:** `infra/models.json` is the deployment source of truth
-  and generates the packaged API model catalog.
+  and generates the packaged API model catalog, including per-model
+  `reasoning_effort` values.
 - **Regions:** East US 2 and Sweden Central are the primary US/EU regions; West US
   carries targeted models such as MAI Image and deep research. See
   [`docs/region-capability-matrix.md`](docs/region-capability-matrix.md).
