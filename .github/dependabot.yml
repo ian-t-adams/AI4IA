@@ -1,5 +1,18 @@
 # Dependabot keeps dependencies and CI actions patched. Updates are grouped to
-# cut PR noise; security updates always come through regardless of grouping.
+# cut PR noise; security updates come through ungrouped, regardless of the
+# schedules below.
+#
+# That last part holds only while the repo SETTING "Dependabot security updates"
+# is on, which this file cannot express and which itself requires "Dependabot
+# alerts". Both were off until 2026-08-01, leaving the grouped weekly runs as the
+# only channel — and those are minor/patch only, which by construction cannot
+# move a transitive dependency that a direct dependency pins by range. Three
+# high-severity npm advisories therefore sat open with no path to an automatic
+# fix: postcss and sharp (both pinned under `next`), plus brace-expansion, which
+# code scanning never reported at all — enabling alerts surfaced it immediately.
+# If those settings are turned off again, this file silently stops covering
+# security.
+#
 # Scope: the code we own (app/web npm, app/api pip), the GitHub Actions we run,
 # and our service container base images. The vendored proxy/SimpleL7Proxy NuGet
 # tree is intentionally pinned to an upstream commit and is left unmanaged here.
