@@ -8,6 +8,17 @@ import { HelpTooltip } from "./HelpTooltip";
 // is unchanged for models without a published max-output.
 const DEFAULT_MAX_OUTPUT = 32000;
 
+// Two of the values the provider accepts read badly as bare title-case in a
+// dropdown that already has a "Model default" entry: "None" looks like the same
+// thing (it is the opposite -- an explicit instruction not to reason) and
+// "Xhigh" is not a word. Everything else title-cases fine, so this is an
+// override map rather than a required table: a value the provider adds later
+// still renders, just without a hand-written label.
+const EFFORT_LABELS: Record<string, string> = {
+  none: "None (skip reasoning)",
+  xhigh: "Extra high",
+};
+
 function Slider({
   label,
   value,
@@ -68,47 +79,101 @@ export function ParamControls({
   // only), so this is a UX nicety, not the enforcement point.
   const cap = model?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT;
   const shown = Math.min(params.max_tokens ?? 1024, cap);
+  // Server-computed traits. Default to the permissive shape so a model that
+  // predates these fields (or a stubbed catalog in tests) keeps its controls.
+  const showSampling = model?.supportsSampling ?? true;
+  const effortOptions = model?.reasoningEffortOptions ?? [];
+  // Switching models can leave an effort the new model does not offer (e.g.
+  // "minimal" carried from GPT-5.4 to a GPT-5.6 model, which 400s on it).
+  // Show "Model default" rather than a value the <select> has no option for,
+  // which browsers render as a blank or silently-wrong selection. The server
+  // drops the stale value too; this keeps the control honest about that.
+  const effortValue = effortOptions.includes(params.reasoning_effort ?? "")
+    ? (params.reasoning_effort as string)
+    : "";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <Slider
-        label="Temperature"
-        value={params.temperature ?? 0.7}
-        min={0}
-        max={2}
-        step={0.1}
-        disabled={disabled}
-        onChange={(v) => onChange({ ...params, temperature: v })}
-        help={
-          <>
-            Controls how much randomness the model uses when choosing words. Lower it
-            (toward 0) for consistent, predictable answers like code or facts; raise it
-            (toward 2) for more varied, creative output. Higher values also increase the
-            chance of less accurate or coherent answers. Default is 0.7. GPT-5 and
-            o-series models ignore this control on the server and always use their own
-            fixed default instead, no matter what&apos;s set here.
-          </>
-        }
-      />
-      <Slider
-        label="Top P"
-        value={params.top_p ?? 1}
-        min={0}
-        max={1}
-        step={0.05}
-        disabled={disabled}
-        onChange={(v) => onChange({ ...params, top_p: v })}
-        help={
-          <>
-            An alternate way to control variety: the model only considers the smallest
-            set of next-word options whose combined likelihood reaches this value. 1
-            means &ldquo;consider everything&rdquo;; lowering it narrows the model to
-            its most likely words. Most people adjust Temperature or Top P, not both, to
-            keep behavior predictable. Default is 1. Like Temperature, GPT-5 and
-            o-series models ignore this on the server and always use their own fixed
-            default instead.
-          </>
-        }
-      />
+      {effortOptions.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <label
+              htmlFor="param-reasoning-effort"
+              style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}
+            >
+              Reasoning effort
+            </label>
+            <HelpTooltip label="Reasoning effort" size="sm">
+              How long this model thinks before it starts writing the reply. Higher
+              effort spends more hidden reasoning tokens, which usually improves
+              hard analytical and coding answers but costs more and takes longer.
+              &ldquo;Model default&rdquo; leaves the choice to the model. For
+              straightforward questions a lower setting is often just as good and
+              noticeably faster.
+            </HelpTooltip>
+          </div>
+          <select
+            id="param-reasoning-effort"
+            value={effortValue}
+            disabled={disabled}
+            onChange={(e) => {
+              const v = e.target.value;
+              const next = { ...params };
+              if (v) next.reasoning_effort = v;
+              else delete next.reasoning_effort;
+              onChange(next);
+            }}
+            style={{ padding: "6px 8px" }}
+          >
+            <option value="">Model default</option>
+            {effortOptions.map((o) => (
+              <option key={o} value={o}>
+                {EFFORT_LABELS[o] ?? o.charAt(0).toUpperCase() + o.slice(1)}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      {showSampling && (
+        <Slider
+          label="Temperature"
+          value={params.temperature ?? 0.7}
+          min={0}
+          max={2}
+          step={0.1}
+          disabled={disabled}
+          onChange={(v) => onChange({ ...params, temperature: v })}
+          help={
+            <>
+              Controls how much randomness the model uses when choosing words. Lower
+              it (toward 0) for consistent, predictable answers like code or facts;
+              raise it (toward 2) for more varied, creative output. Higher values
+              also increase the chance of less accurate or coherent answers. Default
+              is 0.7.
+            </>
+          }
+        />
+      )}
+      {showSampling && (
+        <Slider
+          label="Top P"
+          value={params.top_p ?? 1}
+          min={0}
+          max={1}
+          step={0.05}
+          disabled={disabled}
+          onChange={(v) => onChange({ ...params, top_p: v })}
+          help={
+            <>
+              An alternate way to control variety: the model only considers the
+              smallest set of next-word options whose combined likelihood reaches
+              this value. 1 means &ldquo;consider everything&rdquo;; lowering it
+              narrows the model to its most likely words. Most people adjust
+              Temperature or Top P, not both, to keep behavior predictable. Default
+              is 1.
+            </>
+          }
+        />
+      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <label htmlFor="param-max-tokens" style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}>

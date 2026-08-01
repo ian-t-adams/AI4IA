@@ -12,6 +12,8 @@ from typing import Any
 
 from pydantic import BaseModel, computed_field
 
+from .model_traits import reasoning_effort_options, supports_sampling
+
 _PACKAGED = Path(__file__).resolve().parent / "data" / "model_catalog.json"
 
 # Categories whose models are driven through a normal text chat turn and so
@@ -50,6 +52,12 @@ class ModelEntry(BaseModel):
     # app can show the cap and clamp the max-tokens input from one source of truth.
     contextWindow: int | None = None
     maxOutputTokens: int | None = None
+    # ``reasoning_effort`` values this model accepts, from ``infra/models.json``.
+    # ``None`` means "not recorded" and falls back to the family heuristic;
+    # an empty list means "recorded, and this model takes no effort value".
+    # The distinction matters: a reasoning model with no recorded data should
+    # still get the safe low/medium/high floor rather than losing the control.
+    reasoningEffort: list[str] | None = None
     options: list[DeploymentOption]
 
     @computed_field
@@ -64,6 +72,41 @@ class ModelEntry(BaseModel):
         the web app can filter the dropdowns from the same source of truth.
         """
         return self.category in CONVERSATIONAL_CATEGORIES
+
+
+    @computed_field
+    @property
+    def supportsSampling(self) -> bool:
+        """Whether ``temperature``/``top_p`` actually reach the provider.
+
+        Reasoning models 400 on non-default sampling values, so the gateway
+        strips them from the outgoing body. Serializing that here lets the web
+        app hide the sliders instead of presenting controls that are silently
+        discarded -- which is what it did for 11 of the 15 conversational models,
+        including the whole GPT-5.6 family.
+        """
+        return supports_sampling(self.id)
+
+    @computed_field
+    @property
+    def reasoningEffortOptions(self) -> list[str]:
+        """Allowed ``reasoning_effort`` values, empty when unsupported.
+
+        The one knob reasoning models *do* honour, and the UI offered no way to
+        set it. The values must come from the server: they vary per model in ways
+        no naming convention predicts (``gpt-5.6`` rejects ``minimal`` that
+        ``gpt-5.4`` accepts; ``gpt-5-pro`` accepts only ``high``), so a hardcoded
+        list in the web app would offer values that 400.
+
+        Precedence is catalog first, heuristic second. ``infra/models.json``
+        carries per-model values established by probing the live deployment;
+        ``model_traits`` supplies only the conservative floor every reasoning
+        model honours, so a newly added model degrades to fewer options rather
+        than to options that fail.
+        """
+        if self.reasoningEffort is not None:
+            return list(self.reasoningEffort)
+        return reasoning_effort_options(self.id)
 
 
 class ModelCatalog(BaseModel):
@@ -124,6 +167,7 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
                 "api": model.get("api", "chat"),
                 "contextWindow": model.get("contextWindow"),
                 "maxOutputTokens": model.get("maxOutputTokens"),
+                "reasoningEffort": model.get("reasoningEffort"),
                 "options": options,
             }
         )

@@ -15,6 +15,8 @@ function model(over: Partial<ModelEntry> & Pick<ModelEntry, "id" | "displayName"
     conversational: true,
     contextWindow: null,
     maxOutputTokens: null,
+    supportsSampling: true,
+    reasoningEffortOptions: [],
     options: [],
     ...over,
   };

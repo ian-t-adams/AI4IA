@@ -28,6 +28,13 @@ export interface ModelEntry {
   // it for a model (e.g. model-router); callers fall back to fixed defaults.
   contextWindow: number | null;
   maxOutputTokens: number | null;
+  // Whether temperature/top_p actually reach the provider. False for reasoning
+  // models, whose sampling params the gateway strips because they 400 on
+  // non-default values. Server-computed so the UI never presents a control that
+  // is silently discarded.
+  supportsSampling: boolean;
+  // Allowed reasoning_effort values; empty when the model does not accept it.
+  reasoningEffortOptions: string[];
   options: DeploymentOption[];
 }
 
@@ -199,6 +206,10 @@ export interface ChatParams {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  // Only meaningful for reasoning models; the allowed values come from the
+  // model's reasoningEffortOptions rather than a hardcoded list here, because
+  // they differ by family (GPT-5 adds "minimal", o-series rejects it).
+  reasoning_effort?: string;
 }
 
 export interface ToolCatalogItem {

@@ -1286,6 +1286,72 @@ Swap the host for `https://<apim>.azure-api.net` with `Ocp-Apim-Subscription-Key
 Anything else routed through the proxy that returns a binary body (image or video bytes,
 file downloads) fails the same way, so fix the header rather than special-casing audio.
 
+### 7.14 A malformed request returns `429 Requeue Message` with an empty body
+
+The caller sends something Foundry genuinely rejects — an unsupported
+`reasoning_effort` value, a bad parameter for the model — and instead of the `400`
+explaining what is wrong, the client gets `429`, an empty body, `retry-after-ms:
+9999`, and (through the proxy) eventually `No active hosts were able to handle the
+request`. The request is not a capacity problem and no amount of retrying will make
+it succeed, so the status code sends every layer above it down the wrong path.
+
+**Cause.** APIM's outbound classifier treated *every* `400` as a temporary error.
+The intent was narrow: an Azure OpenAI `context_length_exceeded` 400 really does
+depend on which backend was chosen (a PTU deployment with a smaller window), and
+the retry loop deliberately skips PTU backends once `contextWindowExceeded` is set.
+That single legitimate case was implemented by widening the classifier to all 400s.
+
+Three harms compound from the one misclassification:
+
+1. The request is retried twice upstream even though it is deterministic.
+2. `isTempError` also gates the throttle block, so a malformed request **parks a
+   healthy backend for 10 seconds for every other caller in that region**. One
+   client looping on a bad parameter degrades the whole deployment.
+3. `Return429` replaces the response with `429 Requeue Message` and an empty body,
+   destroying the provider's own diagnostic. The proxy then correctly honours the
+   requeue headers and retries across backends, multiplying the cost.
+
+This is the same bug class as §7.10 (a `401` laundered into a retryable `429` in
+the *authorization* stage); this one is in the *backend-response* stage.
+
+**Fix (already in the policy).** `isRetryableBadRequest` parses the 400 body once
+for `error.code == "context_length_exceeded"`; `isTempError` gates its 400 disjunct
+on that variable; `contextWindowExceeded` reuses the same decision instead of
+re-parsing; and the throttle gate no longer lists a bare `400`. `isPermError`'s
+lower bound moved from `> 400` to `>= 400` at the same time — **this coupling is
+load-bearing.** A 400 excluded from `isTempError` but not admitted to `isPermError`
+would be *neither*, which leaves `RetryRemaining` true and reinstates the exact
+retry loop the change removes.
+
+**Confirm the fix is live** by sending a value the model rejects and checking that
+the real error survives, then that the backend was not parked:
+
+```powershell
+$dep  = "gpt-5.6-sol-<env>-<region>-glbl"
+$h    = @{ 'S7P-KEY' = $proxyKey; 'Content-Type' = 'application/json' }
+# NOTE: do not send x-LLMModel through the proxy - it derives and adds it itself
+# from the path, and a second copy returns 400 model_path_mismatch (see 7.11).
+$body = @{ messages=@(@{ role='user'; content='hi' }); reasoning_effort='minimal' } | ConvertTo-Json -Depth 5
+try {
+  Invoke-WebRequest -Method POST -Headers $h -Body $body `
+    -Uri "https://<proxy-host>/openai/deployments/$dep/chat/completions?api-version=2025-04-01-preview"
+} catch {
+  $_.Exception.Response.StatusCode.value__       # expect 400, NOT 429
+  (New-Object IO.StreamReader($_.Exception.Response.GetResponseStream())).ReadToEnd()
+}
+```
+
+Expect `400` with a body naming the unsupported value. A `429` with an empty body
+means the classification has regressed — see
+`test_a_malformed_400_is_a_permanent_error`. Immediately re-send a *valid* request
+to the same deployment: it must return `200`. If it returns `429` for ~10s, the
+throttle gate is still admitting plain 400s.
+
+**Side effect worth knowing:** while this bug was live, the system could not be
+probed for which parameter values a model accepts, because each rejection threw the
+backend into a throttle that made the *next* probe report a false `429`. Any such
+probe needed 11+ seconds of spacing between attempts.
+
 ## APIM Basic v2 migration guardrail
 
 The active model/realtime/MCP plane is the `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the additive `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the existing `/openai/realtime` API and subscription. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and both voice providers share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic — it never receives Speech Voice Live traffic either. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.

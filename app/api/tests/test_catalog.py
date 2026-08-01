@@ -80,3 +80,207 @@ def test_conversational_is_serialized():
     assert entry is not None
     assert entry.model_dump()["conversational"] is True
 
+
+
+# --- request-shape traits (reasoning effort / sampling support) ---
+#
+# These pin the CONTRACT between the gateway and the UI. The gateway strips
+# temperature/top_p for reasoning models, so a catalog that reported
+# supportsSampling=True for one of them would put the UI right back into the
+# state this replaced: two sliders that silently do nothing.
+
+
+def test_reasoning_models_do_not_advertise_sampling():
+    catalog = load_catalog()
+    for model_id in ("gpt-5.6-sol", "gpt-5.4", "gpt-5", "o3", "gpt-5-codex"):
+        entry = catalog.get(model_id)
+        assert entry is not None, model_id
+        assert entry.supportsSampling is False, model_id
+
+
+def test_non_reasoning_models_still_advertise_sampling():
+    catalog = load_catalog()
+    # model-router is the load-bearing case: it is deliberately excluded from the
+    # reasoning rule because it accepts the standard parameter set and drops what
+    # it cannot use when it routes onward.
+    for model_id in ("Mistral-Large-3", "grok-4-1-fast-reasoning", "model-router"):
+        entry = catalog.get(model_id)
+        assert entry is not None, model_id
+        assert entry.supportsSampling is True, model_id
+
+
+def test_gpt56_rejects_minimal_but_earlier_gpt5_accepts_it():
+    """The load-bearing case for reading these from the catalog, not the name.
+
+    A name-based rule put "minimal" in front of every ``gpt-5*`` model. Probing
+    the live deployments showed the whole GPT-5.6 family 400s on it while
+    GPT-5.4 accepts it -- two models one minor version apart, opposite answers,
+    and no naming convention that predicts it.
+    """
+    catalog = load_catalog()
+    for model_id in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+        entry = catalog.get(model_id)
+        assert entry is not None, model_id
+        assert "minimal" not in entry.reasoningEffortOptions, model_id
+        assert entry.reasoningEffortOptions == [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        ], model_id
+
+    for model_id in ("gpt-5", "gpt-5.1", "gpt-5.2", "gpt-5.4"):
+        entry = catalog.get(model_id)
+        assert entry is not None, model_id
+        assert "minimal" in entry.reasoningEffortOptions, model_id
+
+
+def test_o_series_excludes_minimal_reasoning_effort():
+    # Sending "minimal" or "none" to an o-series deployment is a 400, so the
+    # option list is per-model and must come from the server rather than a
+    # hardcoded UI array.
+    catalog = load_catalog()
+    entry = catalog.get("o3")
+    assert entry is not None
+    assert entry.reasoningEffortOptions == ["low", "medium", "high", "xhigh"]
+    assert "minimal" not in entry.reasoningEffortOptions
+    assert "none" not in entry.reasoningEffortOptions
+
+
+def test_gpt5_pro_offers_only_high():
+    """The narrowest model in the catalog, and the one a heuristic gets worst.
+
+    gpt-5-pro rejects every reasoning_effort except "high". A family-wide rule
+    would have offered it four values, three of which are a 400.
+    """
+    catalog = load_catalog()
+    entry = catalog.get("gpt-5-pro")
+    assert entry is not None
+    assert entry.reasoningEffortOptions == ["high"]
+
+
+def test_every_reasoning_model_has_probed_effort_values():
+    """No conversational reasoning model may fall back to the heuristic floor.
+
+    The fallback is deliberately conservative (low/medium/high), so relying on
+    it silently drops "xhigh" from every model that supports it and would have
+    offered gpt-5-pro two values it rejects. Adding a reasoning model means
+    probing it -- this is the gate that says so.
+    """
+    from ai4ia_api.model_traits import is_reasoning_deployment
+
+    catalog = load_catalog()
+    missing = [
+        entry.id
+        for entry in catalog.conversational_models()
+        if is_reasoning_deployment(entry.id) and entry.reasoningEffort is None
+    ]
+    assert not missing, (
+        "these reasoning models have no probed reasoningEffort in "
+        f"infra/models.json: {missing}"
+    )
+
+
+def test_catalog_effort_values_are_known_tokens():
+    catalog = load_catalog()
+    known = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    for entry in catalog.models:
+        assert set(entry.reasoningEffortOptions) <= known, entry.id
+
+
+def test_non_reasoning_models_offer_no_reasoning_effort():
+    catalog = load_catalog()
+    for model_id in ("Mistral-Large-3", "model-router", "DeepSeek-V3.2"):
+        entry = catalog.get(model_id)
+        assert entry is not None, model_id
+        assert entry.reasoningEffortOptions == [], model_id
+
+
+def test_catalog_values_win_over_the_heuristic():
+    """The heuristic is a floor for unprobed models, never an override."""
+    from ai4ia_api.catalog import ModelEntry
+    from ai4ia_api.model_traits import reasoning_effort_options
+
+    probed = ModelEntry(
+        id="gpt-5-pro",
+        displayName="x",
+        category="reasoning",
+        format="OpenAI",
+        reasoningEffort=["high"],
+        options=[],
+    )
+    assert probed.reasoningEffortOptions == ["high"]
+    assert reasoning_effort_options("gpt-5-pro") == ["low", "medium", "high"]
+
+    unprobed = ModelEntry(
+        id="gpt-5-pro",
+        displayName="x",
+        category="reasoning",
+        format="OpenAI",
+        options=[],
+    )
+    assert unprobed.reasoningEffortOptions == ["low", "medium", "high"]
+
+    # An empty list is data ("this model takes no effort value"), not absence,
+    # so it must NOT fall through to the floor.
+    none_taken = ModelEntry(
+        id="gpt-5-pro",
+        displayName="x",
+        category="reasoning",
+        format="OpenAI",
+        reasoningEffort=[],
+        options=[],
+    )
+    assert none_taken.reasoningEffortOptions == []
+
+
+def test_request_shape_traits_are_serialized():
+    catalog = load_catalog()
+    dumped = catalog.get("gpt-5.6-sol").model_dump()
+    assert dumped["supportsSampling"] is False
+    assert dumped["reasoningEffortOptions"] == [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    ]
+
+
+def test_catalog_traits_agree_with_the_gateway_normalizer():
+    """The catalog must not claim a control the gateway is about to remove.
+
+    Asserted against the gateway's real normalizer rather than a second copy of
+    the rule, so the two cannot drift.
+    """
+    from ai4ia_api.gateway.client import _normalize_params_for_deployment
+
+    catalog = load_catalog()
+    checked = 0
+    for entry in catalog.conversational_models():
+        deployment = entry.options[0].deploymentName
+        kept = {"temperature": 0.5, "top_p": 0.9}
+        _normalize_params_for_deployment(kept, deployment)
+        survived = "temperature" in kept and "top_p" in kept
+        assert survived is entry.supportsSampling, entry.id
+        checked += 1
+    assert checked >= 15, f"expected the full conversational set, saw {checked}"
+
+
+def test_reasoning_effort_survives_the_gateway_normalizer():
+    """A model that advertises the control must actually be able to use it."""
+    from ai4ia_api.gateway.client import _normalize_params_for_deployment
+
+    catalog = load_catalog()
+    checked = 0
+    for entry in catalog.conversational_models():
+        if not entry.reasoningEffortOptions:
+            continue
+        deployment = entry.options[0].deploymentName
+        effort = entry.reasoningEffortOptions[0]
+        kept = {"reasoning_effort": effort}
+        _normalize_params_for_deployment(kept, deployment)
+        assert kept.get("reasoning_effort") == effort, entry.id
+        checked += 1
+    assert checked >= 10, f"expected the reasoning models, saw {checked}"

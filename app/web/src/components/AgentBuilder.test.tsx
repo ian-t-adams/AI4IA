@@ -291,6 +291,8 @@ describe("AgentBuilder", () => {
         conversational: true,
         contextWindow: 128_000,
         maxOutputTokens: null,
+        supportsSampling: true,
+        reasoningEffortOptions: [],
         options: [],
       },
       {
@@ -301,6 +303,8 @@ describe("AgentBuilder", () => {
         conversational: true,
         contextWindow: 200_000,
         maxOutputTokens: null,
+        supportsSampling: true,
+        reasoningEffortOptions: [],
         options: [],
       },
       {
@@ -311,6 +315,8 @@ describe("AgentBuilder", () => {
         conversational: false,
         contextWindow: null,
         maxOutputTokens: null,
+        supportsSampling: true,
+        reasoningEffortOptions: [],
         options: [],
       },
     ];

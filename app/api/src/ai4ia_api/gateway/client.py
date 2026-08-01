@@ -9,7 +9,6 @@ be fixed at integration time without code changes.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -18,18 +17,15 @@ import httpx
 
 from ..config import GatewayAuthMode, GatewayProviderStyle, Settings
 from ..http_retry import request_with_retry
+from ..model_traits import is_reasoning_deployment
 from .priority import PRIORITY_HEADER, get_request_priority
 
 # Azure OpenAI reasoning models (the GPT-5 family and the o-series) reject the
-# classic Chat Completions sampling/limit parameters: they require
-# ``max_completion_tokens`` instead of ``max_tokens`` and 400 on non-default
-# ``temperature``/``top_p``/penalties/logprobs. A deployment name always begins
-# with the catalog model id (e.g. ``gpt-5.2-slurmfactory-eastus2-glbl``), so a
-# leading-id match is a reliable signal. ``model-router`` is deliberately
-# EXCLUDED: it accepts the standard parameter set and drops the unsupported ones
-# itself when it routes to an o-series model (per Microsoft Learn), so we must
-# not pre-transform it.
-_REASONING_DEPLOYMENT = re.compile(r"^(gpt-5|o1|o3|o4)\b", re.IGNORECASE)
+# classic Chat Completions sampling/limit parameters. The predicate lives in
+# ``model_traits`` because the catalog serializes the same answer to the web app;
+# a second copy here would drift and the UI would start offering controls this
+# module strips. See that module for the full rationale.
+_is_reasoning_deployment = is_reasoning_deployment
 
 # Sampling parameters the Chat Completions API rejects for reasoning models.
 _REASONING_UNSUPPORTED_PARAMS = (
@@ -41,10 +37,6 @@ _REASONING_UNSUPPORTED_PARAMS = (
     "top_logprobs",
     "logit_bias",
 )
-
-
-def _is_reasoning_deployment(deployment: str) -> bool:
-    return bool(_REASONING_DEPLOYMENT.match(deployment))
 
 
 def _normalize_params_for_deployment(body: dict[str, Any], deployment: str) -> None:

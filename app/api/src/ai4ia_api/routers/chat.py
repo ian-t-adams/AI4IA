@@ -143,25 +143,51 @@ def _doc_budget_for(entry: ModelEntry | None) -> int:
 
 
 def _effective_params(params: dict, entry: ModelEntry | None) -> dict:
-    """Adapt request params to the chosen model's max-output ceiling.
+    """Adapt request params to what the chosen model actually accepts.
 
-    The cap only ever *lowers* a too-high request. When the model exposes
-    ``maxOutputTokens``:
+    Two server-authoritative adjustments, both of which only ever *narrow* the
+    request:
+
+    ``max_tokens`` is capped to the model's ``maxOutputTokens``. The cap only
+    ever lowers a too-high request. When the model exposes that metadata:
 
     * if the caller left the global default (or sent nothing), adopt the model's
       own max-output as the per-turn ceiling, so a high-capacity model isn't
       pinned to the 1024-token default; and
     * otherwise clamp the requested value DOWN to that ceiling (never up).
 
-    When the model has no metadata (e.g. ``model-router``) the original params
-    are returned unchanged, so the turn is byte-for-byte identical to before.
-    This runs BEFORE the gateway, so it composes with the gateway's reasoning /
-    Responses param translation (which then maps ``max_tokens`` onward).
+    ``reasoning_effort`` is dropped when the model does not accept it, or when
+    the value is outside the model's allowed set. That set is per-model and not
+    predictable from the name (``gpt-5.6`` rejects the ``minimal`` that
+    ``gpt-5.4`` accepts; ``gpt-5-pro`` is narrower still), so it is read from the
+    catalog rather than inferred here. An unchecked value reaching Foundry
+    surfaces as an opaque mid-stream 400 rather than anything actionable.
+    Dropping degrades to the model's own default, which mirrors how the gateway
+    already strips sampling params it knows will be rejected. The UI only offers
+    valid values, so this fires for direct API callers and for a stale value left
+    over from switching models mid-session.
+
+    When the model has no metadata at all (e.g. ``model-router``) only the
+    reasoning-effort check applies.
     """
+    out = dict(params)
+
+    effort = out.get("reasoning_effort")
+    if effort is not None:
+        allowed = entry.reasoningEffortOptions if entry is not None else []
+        if effort not in allowed:
+            logger.info(
+                "chat.reasoning_effort_dropped",
+                extra={
+                    "model": entry.id if entry is not None else None,
+                    "requested": str(effort)[:32],
+                },
+            )
+            out.pop("reasoning_effort", None)
+
     model_max = entry.maxOutputTokens if entry is not None else None
     if model_max is None:
-        return params
-    out = dict(params)
+        return out
     requested = out.get("max_tokens")
     if requested is None or requested == GLOBAL_DEFAULT_MAX_TOKENS:
         out["max_tokens"] = model_max

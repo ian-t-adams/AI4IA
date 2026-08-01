@@ -404,6 +404,106 @@ class GatewayPolicyTests(unittest.TestCase):
             fragment,
         )
 
+    def test_a_malformed_400_is_a_permanent_error(self) -> None:
+        """A 400 must not be retried, throttle a backend, or become a 429.
+
+        The classifier used to call *every* 400 a temporary error. The intent was
+        narrow: an Azure OpenAI ``context_length_exceeded`` 400 really is worth
+        retrying, because it depends on which backend the request landed on (a PTU
+        deployment with a smaller window), and the retry loop deliberately skips
+        PTU backends once ``contextWindowExceeded`` is set.
+
+        Widening that to all 400s meant a merely malformed request (an unsupported
+        ``reasoning_effort`` value, say) was retried twice, parked a perfectly
+        healthy backend for 10 seconds for every other caller in the region, and
+        came back to the client as ``429 Requeue Message`` with an EMPTY body, so
+        the provider's own explanation of what was wrong was destroyed. The proxy
+        then honoured the 429 and retried across backends, multiplying the cost of
+        a request that could never succeed.
+        """
+        for path in (
+            ROOT / "infra/policies/simplel7proxy-priority-retry.xml",
+            ROOT / "infra/policies/simplel7proxy_backend_32.xml",
+        ):
+            text = path.read_text(encoding="utf-8")
+            root = ElementTree.fromstring(text)
+            setters = {
+                el.get("name"): (el.get("value") or "")
+                for el in root.iter("set-variable")
+            }
+
+            temp = setters.get("isTempError")
+            self.assertIsNotNone(temp, f"{path.name} no longer classifies isTempError")
+            assert temp is not None
+            # The bug was the bare `statusCode == 400` disjunct.
+            self.assertNotRegex(
+                temp.replace(" ", ""),
+                r"\|\|statusCode==400\|\|",
+                f"{path.name}: every 400 is classified as a temporary error again",
+            )
+            self.assertIn(
+                "isRetryableBadRequest",
+                temp,
+                f"{path.name}: isTempError must gate 400 on the context-length check",
+            )
+            # The legitimate case must still be retryable.
+            self.assertIn("statusCode == 400", temp)
+
+            gate = setters.get("isRetryableBadRequest")
+            self.assertIsNotNone(
+                gate, f"{path.name} lost the retryable-400 classification"
+            )
+            assert gate is not None
+            self.assertIn("context_length_exceeded", gate)
+
+            perm = setters.get("isPermError")
+            self.assertIsNotNone(perm)
+            assert perm is not None
+            # >= 400, not > 400: a malformed 400 that is neither temp nor perm
+            # leaves RetryRemaining true and the retry loop comes straight back.
+            self.assertIn(
+                "statusCode >= 400",
+                perm,
+                f"{path.name}: a malformed 400 is neither temporary nor permanent, "
+                "so it would still be retried",
+            )
+
+    def test_the_context_length_rule_is_defined_exactly_once(self) -> None:
+        """The retry decision and the PTU skip must read the same answer.
+
+        Two copies of the "is this 400 a context-length error" body parse could
+        disagree about the same response, retrying on a backend the skip logic
+        had already ruled out.
+        """
+        path = ROOT / "infra/policies/simplel7proxy-priority-retry.xml"
+        root = ElementTree.fromstring(path.read_text(encoding="utf-8"))
+        # Parse rather than grep the raw text: ElementTree drops comments, so
+        # prose explaining the rule is not miscounted as a second definition.
+        definitions = [
+            el.get("name")
+            for el in root.iter("set-variable")
+            if "context_length_exceeded" in (el.get("value") or "")
+        ]
+        self.assertEqual(
+            definitions,
+            ["isRetryableBadRequest"],
+            "the context-length rule must be evaluated in exactly one place",
+        )
+
+    def test_a_malformed_400_does_not_throttle_the_backend(self) -> None:
+        """Throttling parks a backend for all callers; only backend health may do it."""
+        for path in (
+            ROOT / "infra/policies/simplel7proxy-priority-retry.xml",
+            ROOT / "infra/policies/simplel7proxy_backend_32.xml",
+        ):
+            text = path.read_text(encoding="utf-8")
+            flat = " ".join(text.split())
+            self.assertNotIn(
+                "new[] { 429, 408, 400 }",
+                flat,
+                f"{path.name}: an unqualified 400 still parks a healthy backend",
+            )
+
     def test_tokenprocessor_is_only_set_for_text_response_bodies(self) -> None:
         """TOKENPROCESSOR must never be applied to a binary response body.
 
