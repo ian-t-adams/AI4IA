@@ -184,6 +184,30 @@ jobs:
         env:
           PYYAML_VERSION: 6.0.3
 
+      - name: Run portal contrast tests
+        run: |
+          set -euo pipefail
+          # site/ is a static GitHub Pages portal with no build and no test
+          # runner, so its palette had no gate at all -- unlike the app's, which
+          # vitest covers via globals.contrast.test.ts. It had silently drifted
+          # below WCAG AA in light mode in four places (brand-2 as eyebrow/code
+          # text at 2.80:1, --ok/--warn status text at ~3.15:1, and dark text on
+          # the button gradient at 3.94:1). Nothing fails when this happens; the
+          # page just renders slightly illegibly. stdlib-only, no network.
+          python3 -m unittest scripts.tests.test_portal_contrast
+
+      - name: Run brand asset tests
+        run: |
+          set -euo pipefail
+          # The brand images are committed OUTPUT of scripts/gen-brand-assets.py,
+          # which needs Pillow and a font and so deliberately does not run here.
+          # That leaves the committed bytes ungated: nothing checked that
+          # site/index.html's og:image dimensions match the real lettermark, and
+          # nothing objected when the portal icon was 1024x1024 / 750 KB behind a
+          # 30px box. Reads PNG IHDR and ICO directory entries directly, so it
+          # verifies Pillow's output without needing Pillow. stdlib-only, no network.
+          python3 -m unittest scripts.tests.test_brand_assets
+
       - name: Run Dependabot config coupling tests
         run: |
           set -euo pipefail

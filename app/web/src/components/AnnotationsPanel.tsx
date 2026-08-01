@@ -316,7 +316,7 @@ export default function AnnotationsPanel({
                           borderRadius: 8,
                           border: "none",
                           background: "var(--accent)",
-                          color: "#fff",
+                          color: "var(--accent-fg)",
                           fontSize: "0.8em",
                           cursor:
                             busy || editBody.trim().length === 0

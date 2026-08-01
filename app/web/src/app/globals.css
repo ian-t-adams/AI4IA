@@ -4,7 +4,15 @@
   --z-drawer: 50;
   --z-tooltip: 70;
 
-  /* Light theme (default) */
+  /* Light theme (default).
+
+     Brand palette is orange + blue (true complements) over a near-black sidebar.
+     --accent is load-bearing in BOTH directions: it is link/icon TEXT on --bg in
+     ~38 places and a button FILL under --accent-fg in ~13, so it must clear AA
+     against white *and* carry white text. A vivid orange cannot: #ea580c is only
+     3.3:1 on --bg and fails AA for text. Hence the deep #b4400f here (5.3:1 as
+     text, 5.7:1 under white) and the separate --brand below for decoration.
+     Re-check with globals.contrast.test.ts before changing any of these. */
   --bg: #f6f7f9;
   --bg-elevated: #ffffff;
   --bg-sidebar: #11161f;
@@ -13,16 +21,20 @@
   --fg: #1b2230;
   --fg-muted: #5a6675;
   --border: #e2e6ec;
-  --accent: #4f46e5;
+  --accent: #b4400f;
   --accent-fg: #ffffff;
-  --user-bubble: #4f46e5;
+  /* Decorative only -- gradients, logo tints, chart series. Never text on --bg. */
+  --brand: #ea580c;
+  --brand-2: #1d4ed8;
+  --user-bubble: #1e40af;
   --user-bubble-fg: #ffffff;
   --assistant-bubble: #ffffff;
   --assistant-bubble-fg: #1b2230;
-  --danger: #c0392b;
+  /* Distinctly crimson so destructive actions never read as the orange accent. */
+  --danger: #b91c1c;
   --danger-fg: #ffffff;
   --success: #166534;
-  --info: #0e7490;
+  --info: #1d4ed8;
   --focus-ring: #1d4ed8;
   --radius: 12px;
   --app-bg-image: none;
@@ -53,20 +65,29 @@
   --fg: #e6edf3;
   --fg-muted: #9aa7b4;
   --border: #232b36;
-  --accent: #7c83ff;
+  /* On dark the constraint inverts -- --accent carries dark text, so it must be
+     LIGHT. That frees a vivid orange: #fb923c is 8.4:1 both as text on --bg and
+     under --accent-fg, so brand and accent can be the same value here. */
+  --accent: #fb923c;
   --accent-fg: #0d1117;
-  --user-bubble: #3b3f8f;
+  --brand: #fb923c;
+  --brand-2: #7cc4ff;
+  --user-bubble: #2c4fbf;
   --user-bubble-fg: #ffffff;
   --assistant-bubble: #161b22;
   --assistant-bubble-fg: #e6edf3;
   --danger: #ff6b5e;
   --danger-fg: #0d1117;
   --success: #5ee28b;
-  --info: #67e8f9;
+  --info: #7cc4ff;
   --focus-ring: #93b4ff;
 }
 
-/* High-contrast accessibility theme (WCAG AAA-leaning, no subtle greys). */
+/* High-contrast accessibility theme (WCAG AAA-leaning, no subtle greys).
+   Deliberately NOT rebranded: it exists to maximise legibility, and every orange
+   that reads as "brand" measures worse on black than this yellow (#ffff00 is
+   19.6:1). Brand tokens are mapped into the existing palette so decorative rules
+   that reference them stay inside the AAA set instead of resolving to nothing. */
 [data-theme="contrast"] {
   --bg: #000000;
   --bg-elevated: #000000;
@@ -78,6 +99,8 @@
   --border: #ffffff;
   --accent: #ffff00;
   --accent-fg: #000000;
+  --brand: #ffff00;
+  --brand-2: #00ffff;
   --user-bubble: #000000;
   --user-bubble-fg: #ffff00;
   --assistant-bubble: #000000;

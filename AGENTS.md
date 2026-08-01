@@ -200,10 +200,12 @@ python3 -m unittest scripts.tests.test_voice_live_canary        # voice-live-can
 python3 -m unittest scripts.tests.test_subscription_preflight   # new-subscription provider/model preflight logic
 python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app bootstrap (runs once, by hand, so CI can't)
 python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deploy.yml's real run: block with `az` stubbed
+python3 -m unittest scripts.tests.test_portal_contrast          # WCAG gate for site/assets/styles.css (no build, no other runner)
+python3 -m unittest scripts.tests.test_brand_assets             # committed logo bytes vs their declared sizes
 python3 -m unittest scripts.tests.test_dependabot_config        # keeps dependabot.yml and the uv.lock gate in step
 ```
 
-The last two need `PyYAML` (pinned in the workflow); the rest are stdlib-only. `security-scan` runs Trivy filesystem/config scans and gitleaks.
+`test_custom_domain_preflight` and `test_dependabot_config` need `PyYAML` (pinned in the workflow); the rest are stdlib-only. `security-scan` runs Trivy filesystem/config scans and gitleaks.
 
 The vendored proxy plus AI4IA auth guard tests use .NET 10:
 
@@ -282,6 +284,45 @@ in `docs/roadmap.md`). If you add such an aggregate, add its context to the rule
   otherwise. Regenerate and commit `docs.js` alongside your Markdown change.
 - Judge a doc by post-build value: does it help a human or agent understand, use, deploy,
   govern, or extend the running app? Surface those; exclude build-time scaffolding.
+
+### Change the brand palette or a logo
+
+The brand is **orange + blue** (complements) over near-black. There are two
+independent palettes and two independent gates; changing one without the other is
+the drift this section exists to prevent.
+
+- **App**: `app/web/src/app/globals.css` — one `:root` (light) plus
+  `[data-theme="dark"]` and `[data-theme="contrast"]` blocks. Gated by
+  `app/web/src/app/globals.contrast.test.ts` under `npm test`.
+- **Portal**: `site/assets/styles.css` — `:root` (dark) plus a
+  `prefers-color-scheme: light` block. It is a static site with no build, so its
+  gate is `scripts/tests/test_portal_contrast.py`, run by `quality`.
+
+Three rules the gates encode, each of which was violated at some point:
+
+1. **`--accent` (app) and `--brand`/`--brand-2` (portal) are dual-purpose** — TEXT
+   on the page background *and* a fill under a foreground token. A vivid orange
+   satisfies only the second: `#ea580c` is 3.3:1 on white and fails AA as text.
+   That is why light mode uses the deeper `#b4400f` and the vivid value lives in
+   the separate, decoration-only `--brand`.
+2. **The foreground must follow the fill, not the theme.** `--accent-fg` is right
+   only for the accent shipped beside it; a *user-chosen* accent inverts the
+   requirement. `ThemeProvider.readableForeground` derives it per accent — do not
+   reintroduce a fixed per-theme value, and do not hardcode `color: "#fff"` on a
+   `var(--accent)` background.
+3. **Do not rebrand `[data-theme="contrast"]`.** It is an accessibility floor, not
+   a brand surface; its yellow-on-black measures better than any orange.
+
+Logos are generated, not hand-edited: `python scripts/gen-brand-assets.py` writes
+the app mark, portal icon, Open Graph lettermark, and the favicon ladder from one
+palette definition. It needs Pillow and a bold sans TTF, so it is deliberately not
+wired into CI — run it and commit the output. `scripts/tests/test_brand_assets.py`
+gates the committed bytes instead: it reads PNG IHDR / ICO directory entries with
+the stdlib and fails if an asset's real size stops matching `site/index.html`'s
+declared `og:image` dimensions, if the Open Graph card loses its ~1.91:1 ratio, or
+if the assets creep back toward the 1.65 MB they once totalled. Size each asset
+against how it is actually rendered; the portal icon was once 1024x1024 (750 KB)
+behind a 30 px box.
 
 ## Auth model and `apiFetch` contract
 

@@ -377,7 +377,7 @@ export default function SharePanel({
                   borderRadius: 8,
                   border: "none",
                   background: saving ? "var(--border)" : "var(--accent)",
-                  color: "#fff",
+                  color: saving ? "var(--fg)" : "var(--accent-fg)",
                   fontSize: "0.85em",
                   cursor: saving ? "default" : "pointer",
                 }}
