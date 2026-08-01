@@ -119,14 +119,31 @@ def build_mark(px: int) -> Image.Image:
     """The square app/portal mark: gradient squircle + AI4IA."""
     base = diagonal_gradient((px, px)).convert("RGBA")
     base.putalpha(squircle_mask((px, px), radius=round(px * 0.22)))
-    # Fit the wordmark to ~78% of the width regardless of the chosen font's metrics.
+    _fit_wordmark(base, px)
+    return base
+
+
+def build_apple_icon(px: int) -> Image.Image:
+    """Full-bleed square mark for iOS: no transparency, no rounding.
+
+    iOS applies its own corner mask and composites the icon over an opaque
+    background, so a squircle with transparent corners renders as the brand
+    shape floating inside a second, larger rounded rect. Bleeding the gradient
+    to the edges and letting the OS round it is the documented treatment.
+    """
+    base = diagonal_gradient((px, px)).convert("RGBA")
+    _fit_wordmark(base, px)
+    return base
+
+
+def _fit_wordmark(canvas: Image.Image, px: int) -> None:
+    """Fit the wordmark to ~78% of the width regardless of the font's metrics."""
     size = px // 4
     font = load_font(size)
     while font.getbbox("AI4IA")[2] > px * 0.78 and size > 6:
         size -= 1
         font = load_font(size)
-    draw_wordmark(base, "AI4IA", font, (px // 2, px // 2))
-    return base
+    draw_wordmark(canvas, "AI4IA", font, (px // 2, px // 2))
 
 
 def build_lettermark(width: int, height: int) -> Image.Image:
@@ -160,17 +177,43 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # (path, builder, note). Sizes track the rendered box at up to 4x DPI.
-    targets = [
+    # EVERY brand raster in the repo belongs here. The first rebrand generated
+    # only the four assets someone remembered, which left the web app's own
+    # favicon.ico -- the browser tab icon -- and all of assets/branding/ on the
+    # previous azure mark. Dimensions were unchanged, so nothing structural could
+    # have noticed; only a colour check would. scripts/tests/test_brand_assets.py
+    # now enforces both that this table is complete and that each output carries
+    # the brand hue.
+    #
+    # ICO ladders differ on purpose: the web favicons stop at 64 because a 256 px
+    # entry is never displayed in a tab and cost 86 KB, while the branding .ico is
+    # a Windows source (shortcuts, installers) where 256 genuinely is used.
+    png_targets = [
         (REPO / "app/web/public/ai4ia-mark.png", lambda: build_mark(128),
          "sidebar/sign-in mark, rendered 28 px"),
+        (REPO / "app/web/src/app/icon.png", lambda: build_mark(256),
+         "Next.js app icon (bookmarks, PWA install)"),
+        (REPO / "app/web/src/app/apple-icon.png", lambda: build_apple_icon(180),
+         "iOS home screen, full-bleed"),
         (REPO / "site/assets/ai4ia-icon.png", lambda: build_mark(128),
          "portal nav brand, rendered 30 px"),
         (REPO / "site/assets/ai4ia-lettermark.png", lambda: build_lettermark(1200, 630),
          "Open Graph preview card"),
+        (REPO / "assets/branding/ai4ia-icon-1024.png", lambda: build_mark(1024),
+         "high-resolution icon source"),
+        (REPO / "assets/branding/ai4ia-lettermark.png", lambda: build_lettermark(1200, 630),
+         "README hero; same card as the OG asset so the two cannot drift"),
+    ]
+    ico_targets = [
+        (REPO / "app/web/src/app/favicon.ico", 64, [16, 32, 48, 64],
+         "web app browser tab"),
+        (REPO / "site/assets/favicon.ico", 64, [16, 32, 48, 64],
+         "portal browser tab"),
+        (REPO / "assets/branding/ai4ia-icon.ico", 256, [16, 32, 48, 64, 128, 256],
+         "Windows icon source"),
     ]
 
-    for path, build, note in targets:
+    for path, build, note in png_targets:
         before = path.stat().st_size if path.exists() else 0
         if args.dry_run:
             print(f"would write {path.relative_to(REPO)} ({note})")
@@ -180,21 +223,20 @@ def main() -> int:
         image.save(path, "PNG", optimize=True)
         after = path.stat().st_size
         print(
-            f"wrote {str(path.relative_to(REPO)):40} {image.size[0]}x{image.size[1]:<5} "
+            f"wrote {path.relative_to(REPO)!s:40} {image.size[0]}x{image.size[1]:<5} "
             f"{before / 1024:8.1f} KB -> {after / 1024:6.1f} KB   ({note})"
         )
 
-    # Favicons carry their own size ladder; browsers pick the nearest. 256x256 in
-    # a favicon is never displayed and cost 86 KB.
-    ico = REPO / "site/assets/favicon.ico"
-    if args.dry_run:
-        print(f"would write {ico.relative_to(REPO)} (16/32/48/64 ladder)")
-    else:
+    for ico, source_px, ladder, note in ico_targets:
+        if args.dry_run:
+            print(f"would write {ico.relative_to(REPO)} ({'/'.join(map(str, ladder))})")
+            continue
         before = ico.stat().st_size if ico.exists() else 0
-        build_mark(64).save(ico, "ICO", sizes=[(16, 16), (32, 32), (48, 48), (64, 64)])
+        ico.parent.mkdir(parents=True, exist_ok=True)
+        build_mark(source_px).save(ico, "ICO", sizes=[(n, n) for n in ladder])
         print(
-            f"wrote {str(ico.relative_to(REPO)):40} 16/32/48/64  "
-            f"{before / 1024:8.1f} KB -> {ico.stat().st_size / 1024:6.1f} KB   (favicon ladder)"
+            f"wrote {ico.relative_to(REPO)!s:40} {'/'.join(map(str, ladder)):<20} "
+            f"{before / 1024:8.1f} KB -> {ico.stat().st_size / 1024:6.1f} KB   ({note})"
         )
     return 0
 

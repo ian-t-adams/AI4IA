@@ -106,8 +106,14 @@ deployed resources. The authoritative Markdown lives here:
 
 ![AI4IA lettermark](assets/branding/ai4ia-lettermark.png)
 
-Brand assets live in [`assets/branding/`](assets/branding/):
+Brand assets live in [`assets/branding/`](assets/branding/), and are all generated
+by `python scripts/gen-brand-assets.py` — never edit them by hand:
 
-- `ai4ia-lettermark.png` — primary lettermark (1024x1024, opaque background).
+- `ai4ia-lettermark.png` — primary lettermark (1200x630, opaque). Byte-identical to
+  the portal's Open Graph card so the two cannot drift.
 - `ai4ia-icon-1024.png` — 1024x1024 icon with transparent rounded corners.
 - `ai4ia-icon.ico` — multi-size Windows icon (16-256px).
+
+The generator also owns the web app and portal icons. `scripts/tests/test_brand_assets.py`
+fails if any committed image is not covered by it, or if one still carries the
+previous palette.
