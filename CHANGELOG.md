@@ -85,6 +85,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Proxy priority reservations now actually reserve workers. `gateway.bicep` emitted the
+  reservation as the container env var `PriorityWorker`, but the vendored proxy builds
+  `PriorityWorkerDict` — the dictionary `WorkerFactory` reserves from — only from the plural
+  `PriorityWorkers`. The singular name parsed, validated, and was discarded, leaving the
+  dictionary at its `2:1,3:1` default: band 1, which admins resolve to, got **zero** reserved
+  workers while every surface reported the feature enabled. Pinned from both sides.
+
 - Custom accent colours now derive their own foreground from luminance instead of using a
   fixed per-theme `--accent-fg`. Five of the six shipped accent swatches previously failed
   WCAG AA in dark theme (worst case 2.9:1 white-on-indigo); the worst case is now 5.0:1.

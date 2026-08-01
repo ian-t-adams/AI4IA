@@ -1547,6 +1547,28 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("LogAllRequestHeaders', value: 'false'", gateway)
         self.assertIn("LogAllResponseHeaders', value: 'false'", gateway)
 
+    def test_priority_reservation_uses_the_env_name_the_parser_reads(self) -> None:
+        """gateway.bicep must emit `PriorityWorkers` (plural), not `PriorityWorker`.
+
+        Only the plural key reaches `PriorityWorkerDict`, which is what
+        `WorkerFactory` reserves from. The singular name is a real property on
+        `ProxyConfig` but nothing converts it into that dictionary, so it parses,
+        validates, and is discarded -- leaving band 1 (admins) with zero reserved
+        workers while every surface reports the feature as enabled. The parser
+        side of this coupling is pinned by
+        `proxy/AI4IA.Proxy.Tests/PriorityWorkerConfigTests.cs`.
+        """
+        gateway = (ROOT / "infra/modules/gateway.bicep").read_text(encoding="utf-8")
+        self.assertIn(
+            "{ name: 'PriorityWorkers', value: proxyPrioritiesEnabled "
+            "? proxyPriorityWorkers : '' }",
+            gateway,
+        )
+        # The singular name must not come back, including as a second "belt and
+        # braces" entry -- two variables that look interchangeable but are not is
+        # exactly what made this inert the first time.
+        self.assertNotIn("name: 'PriorityWorker'", gateway)
+
     def test_async_iac_follows_diagnostics_and_private_data_posture(self) -> None:
         main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
         async_module = (ROOT / "infra/modules/proxyasync.bicep").read_text(

@@ -209,6 +209,22 @@ interval; Event Hub and async settings are cold and need a revision/restart.
     entitlement API uses, so the two cannot drift.
   - Under spoofable auth (dev provider outside `local`) nobody is promoted:
     identity is client-supplied there, so the feature fails closed.
+  - The reservation reaches the proxy as the **`PriorityWorkers`** container env
+    var — plural. `ProxyConfig` also declares a singular `PriorityWorker` string
+    property, but nothing converts it into `PriorityWorkerDict`, the dictionary
+    `WorkerFactory` actually reserves from, so the singular name parses, passes
+    validation, and is discarded. `gateway.bicep` emitted the singular name until
+    this was measured against the vendored parser: the dict stayed at its
+    `2:1,3:1` default, meaning band 1 — the band admins resolve to — got **zero**
+    reserved workers while every surface reported the feature as enabled. Pinned
+    from both sides by `PriorityWorkerConfigTests.cs` (parser) and
+    `test_priority_reservation_uses_the_env_name_the_parser_reads` (bicep).
+  - Reserve fewer workers than `Workers` (default 10) in total, or the unreserved
+    bands starve. The live value is `1:2` — two workers dedicated to band 1 so
+    operators keep capacity when users saturate the app. Band 3 gets no
+    reservation on purpose: nothing in this deployment emits it, and the
+    remaining workers run as `AnyPriority`, which dequeues the lowest band number
+    first and therefore already favours band 1.
   - Unrelated to Azure's paid **Priority Processing** meters, which bill at 2x
     standard. This is queue fairness inside our own proxy and costs nothing.
 - `proxyEventHubTelemetryEnabled=true` sends routing/status/latency metadata to
