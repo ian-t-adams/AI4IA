@@ -137,6 +137,18 @@ see `uv.lock`, so every Python dependency PR it opened failed CI until someone
 hand-ran `uv lock`. `scripts/tests/test_dependabot_config.py` fails if that
 pairing regresses.
 
+**A third-party module imported inside a function body still has to be declared
+in `pyproject.toml`.** The API imports heavy/optional SDKs lazily on purpose, so
+the app boots without every Azure service wired — but that also means neither
+gate notices when such a dependency goes missing. Measured, not assumed: with
+`azure-monitor-query` uninstalled outright, `pyright` reported `0 errors` (an
+unresolved submodule of the `azure` namespace package does not fail the type
+gate the way a missing top-level module does) and `pytest` stayed green (the
+tests inject a fake querier). The break would first appear as a production
+`ImportError`. `app/api/tests/test_lazy_imports_are_declared.py` re-derives the
+lazy imports from the source on every run and fails if any no longer resolves,
+so a newly added one is covered the day it is written.
+
 ### Docker image builds
 
 `docker-build` actually builds (never pushes) the `app/web` and `app/api` container images on any PR/push touching `app/web/**` or `app/api/**`, so a broken/renamed base image tag or an install failure specific to the pinned Node/Python version fails CI instead of only surfacing at `azd deploy`. It is separate from `quality`'s `hadolint` job, which only lints Dockerfile syntax and never resolves an image or installs anything:
