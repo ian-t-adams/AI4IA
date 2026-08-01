@@ -356,6 +356,19 @@ class ModelGatewayClient:
         body: dict[str, Any] = {
             "model": deployment,
             "input": input_items,
+            # Opt OUT of provider-side conversation storage. ``store`` defaults to
+            # TRUE on this surface (unlike chat completions, which has no such
+            # concept), so every Responses turn otherwise leaves a 30-day copy of
+            # the user's prompt and the model's output retrievable from
+            # ``GET /responses/{id}`` outside the app. Verified live, not assumed.
+            # AI4IA keeps conversation state in Cosmos, scoped per user, and this
+            # client re-sends the full history each turn rather than chaining with
+            # ``previous_response_id`` -- so the retained copy buys nothing and is
+            # purely a second, ungoverned store of user content.
+            # If turn chaining is ever added, do NOT flip this back: request
+            # ``include: ["reasoning.encrypted_content"]`` and pass the encrypted
+            # reasoning items forward, which is the stateless-mode equivalent.
+            "store": False,
             **_normalize_params_for_responses(params),
         }
         if instructions:
