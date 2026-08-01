@@ -77,9 +77,9 @@ gates because the failure mode is silent — the page renders, just illegibly.
 Logos are generated from a single palette definition rather than hand-edited.
 
 ```powershell
-python scripts\gen-brand-assets.py          # regenerate marks, lettermark, favicon
+python scripts\gen-brand-assets.py          # regenerate every committed raster
 python -m unittest scripts.tests.test_portal_contrast   # site/assets/styles.css
-python -m unittest scripts.tests.test_brand_assets      # committed image bytes
+python -m unittest scripts.tests.test_brand_assets      # image coverage, palette, size
 cd app\web; npm test                        # includes globals.contrast.test.ts
 ```
 
