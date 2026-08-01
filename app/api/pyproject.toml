@@ -98,7 +98,7 @@ dependencies = [
     "azure-monitor-querymetrics>=1,<2",
     # Read-only Log Analytics queries for the admin operations/security dashboard.
     # Fixed server-owned KQL only; no user-supplied query text.
-    "azure-monitor-query>=1.4,<2",
+    "azure-monitor-query>=2.0.0,<3",
     # Azure Monitor OpenTelemetry distro: exports request/dependency/exception
     # traces, metrics, and custom usage events to Application Insights. Initialized
     # ONCE at startup (logging_setup.configure_telemetry)
