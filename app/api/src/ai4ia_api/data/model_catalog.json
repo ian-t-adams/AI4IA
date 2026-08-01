@@ -40,6 +40,13 @@
       "api": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -63,6 +70,13 @@
       "api": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -86,6 +100,13 @@
       "api": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -109,6 +130,14 @@
       "api": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -132,6 +161,14 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -155,6 +192,14 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -178,6 +223,14 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -201,6 +254,14 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -224,6 +285,12 @@
       "api": "chat",
       "contextWindow": 200000,
       "maxOutputTokens": 100000,
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -247,6 +314,7 @@
       "api": "chat",
       "contextWindow": 256000,
       "maxOutputTokens": 32000,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -270,6 +338,9 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "high"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -293,6 +364,11 @@
       "api": "responses",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -316,6 +392,11 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -339,6 +420,13 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -362,6 +450,7 @@
       "api": "chat",
       "contextWindow": 128000,
       "maxOutputTokens": 32768,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -385,6 +474,14 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -408,6 +505,14 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -431,6 +536,14 @@
       "api": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "eastus2",
@@ -454,6 +567,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -477,6 +591,7 @@
       "api": "chat",
       "contextWindow": 163840,
       "maxOutputTokens": 32768,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -500,6 +615,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -523,6 +639,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -546,6 +663,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -569,6 +687,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "westus",
@@ -586,6 +705,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "westus",
@@ -603,6 +723,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "westus",
@@ -620,6 +741,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -643,6 +765,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -666,6 +789,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -689,6 +813,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -712,6 +837,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -729,6 +855,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -752,6 +879,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -775,6 +903,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -798,6 +927,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -821,6 +951,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -838,6 +969,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "swedencentral",
@@ -855,6 +987,7 @@
       "api": "chat",
       "contextWindow": null,
       "maxOutputTokens": null,
+      "reasoningEffort": null,
       "options": [
         {
           "region": "eastus2",
@@ -878,6 +1011,12 @@
       "api": "chat",
       "contextWindow": 200000,
       "maxOutputTokens": 100000,
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "options": [
         {
           "region": "westus",

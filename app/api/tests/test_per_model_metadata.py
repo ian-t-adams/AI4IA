@@ -183,3 +183,92 @@ def test_doc_budget_scales_between_bounds():
 def test_doc_budget_floored_at_constant_for_small_window():
     # 20_000 * 4 * 0.10 = 8_000, floored up to the fixed constant.
     assert _doc_budget_for(_entry(contextWindow=20000)) == DOC_CONTEXT_BUDGET
+
+
+# --- reasoning_effort is validated server-side ------------------------------
+#
+# The UI only offers valid values, so these guard the paths the UI cannot: a
+# direct API caller, and a value left stale in session params after the user
+# switches to a model with a different (or empty) allowed set. Forwarding an
+# invalid value produces an opaque mid-stream 400 from Foundry.
+
+
+def test_effective_params_keeps_a_valid_reasoning_effort():
+    entry = load_catalog().get("gpt-5.6-sol")
+    assert entry is not None
+    out = _effective_params({"reasoning_effort": "xhigh"}, entry)
+    assert out["reasoning_effort"] == "xhigh"
+
+
+def test_effective_params_drops_minimal_for_gpt56():
+    """The value the previous name-based rule would have offered this model.
+
+    gpt-5.6 400s on "minimal" while gpt-5.4 accepts it, so this is the case
+    where a wrong allowed-set reaches the user as an opaque provider error.
+    """
+    catalog = load_catalog()
+    entry = catalog.get("gpt-5.6-sol")
+    assert entry is not None
+    assert "minimal" not in entry.reasoningEffortOptions
+    assert "reasoning_effort" not in _effective_params({"reasoning_effort": "minimal"}, entry)
+
+    # ... and is NOT dropped for a model that does accept it.
+    older = catalog.get("gpt-5.4")
+    assert older is not None
+    assert _effective_params({"reasoning_effort": "minimal"}, older)["reasoning_effort"] == (
+        "minimal"
+    )
+
+
+def test_effective_params_drops_minimal_for_o_series():
+    # "minimal" is a GPT-5-only value; o-series deployments 400 on it.
+    entry = load_catalog().get("o3")
+    assert entry is not None
+    assert "minimal" not in entry.reasoningEffortOptions
+    out = _effective_params({"reasoning_effort": "minimal"}, entry)
+    assert "reasoning_effort" not in out
+    # a value o3 does accept survives
+    assert _effective_params({"reasoning_effort": "high"}, entry)["reasoning_effort"] == "high"
+
+
+def test_effective_params_narrows_to_the_single_value_gpt5_pro_takes():
+    entry = load_catalog().get("gpt-5-pro")
+    assert entry is not None
+    for rejected in ("none", "minimal", "low", "medium", "xhigh"):
+        assert "reasoning_effort" not in _effective_params(
+            {"reasoning_effort": rejected}, entry
+        ), rejected
+    assert _effective_params({"reasoning_effort": "high"}, entry)["reasoning_effort"] == "high"
+
+
+def test_effective_params_drops_reasoning_effort_for_non_reasoning_models():
+    entry = load_catalog().get("Mistral-Large-3")
+    assert entry is not None
+    out = _effective_params({"reasoning_effort": "high"}, entry)
+    assert "reasoning_effort" not in out
+
+
+def test_effective_params_drops_reasoning_effort_for_metadata_less_models():
+    # model-router returns early from the max_tokens branch; the effort check
+    # must still run, which it would not if it lived after that early return.
+    entry = load_catalog().get("model-router")
+    assert entry is not None
+    assert entry.maxOutputTokens is None
+    out = _effective_params({"reasoning_effort": "high"}, entry)
+    assert "reasoning_effort" not in out
+    assert "reasoning_effort" not in _effective_params({"reasoning_effort": "high"}, None)
+
+
+def test_effective_params_drops_a_nonsense_reasoning_effort():
+    entry = load_catalog().get("gpt-5.6-sol")
+    assert entry is not None
+    for bogus in ("ultra", "HIGH", "", 3, True):
+        out = _effective_params({"reasoning_effort": bogus}, entry)
+        assert "reasoning_effort" not in out, bogus
+
+
+def test_effective_params_leaves_absent_reasoning_effort_absent():
+    entry = load_catalog().get("gpt-5.6-sol")
+    assert entry is not None
+    out = _effective_params({"max_tokens": 100}, entry)
+    assert "reasoning_effort" not in out

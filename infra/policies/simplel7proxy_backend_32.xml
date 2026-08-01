@@ -349,18 +349,44 @@
 					<set-variable name="wasLimited" value="@(false)" />
 					<set-variable name="callCompleted" value="@(true)" />
 
-					<!-- Temporary Errors:  408, 429 and 50xx  -->
+					<!-- Is this 400 worth retrying on a DIFFERENT backend?
+					     Only one 400 is: "context_length_exceeded". That is a property of the
+					     backend the request landed on (a PTU deployment with a smaller window),
+					     so another backend can genuinely succeed, and the retry loop below
+					     deliberately skips PTU backends once this is set.
+					     Every other 400 is a malformed request: it is deterministic, it will
+					     fail identically on every backend, and retrying it costs three upstream
+					     calls, throttles a HEALTHY backend for 10s for all other callers, and
+					     replaces the provider's own diagnostic body with an empty 429. That is
+					     the same "client error laundered into a retryable capacity error" bug
+					     the pre-routing 401 guard fixes, one stage later.
+					     Computed here, once, because both isTempError (immediately below) and
+					     contextWindowExceeded (further down) need the same answer. -->
+					<set-variable name="isRetryableBadRequest" value="@{
+						if (context.Response == null || context.Response.StatusCode != 400) { return false; }
+						try {
+							var body = context.Response.Body.As&lt;JObject>(preserveContent: true);
+							return body[&quot;error&quot;]?[&quot;code&quot;]?.ToString() == &quot;context_length_exceeded&quot;;
+						} catch { return false; }
+					}" />
+
+					<!-- Temporary Errors: 408, 429, 50xx, and a context_length_exceeded 400 -->
 					<set-variable name="isTempError" value="@{
 						var statusCode = context.Response?.StatusCode ?? 500;
+						var retryableBadRequest = context.Variables.GetValueOrDefault&lt;bool>(&quot;isRetryableBadRequest&quot;, false);
 
-						bool isTempError = statusCode == 429 || statusCode == 408 || statusCode == 400 || statusCode >= 500;
+						bool isTempError = statusCode == 429 || statusCode == 408 || (statusCode == 400 &amp;&amp; retryableBadRequest) || statusCode >= 500;
 						return isTempError;
 					}" />
-					<!-- Permanent Errors:  >400 , !408, !429 , <500   -->
+					<!-- Permanent Errors: 4xx that is not 408, not 429, and not a retryable 400.
+					     The lower bound is >= 400, not > 400: a malformed 400 is now excluded
+					     from isTempError, and if it were excluded from isPermError as well it
+					     would be NEITHER, which leaves RetryRemaining true and reinstates the
+					     retry loop this classification exists to stop. -->
 					<set-variable name="isPermError" value="@{
 						var isTempError = context.Variables.GetValueOrDefault&lt;bool>(&quot;isTempError&quot;, false);
 						var statusCode = context.Response?.StatusCode ?? 500;
-						bool isPermError =  !isTempError &amp;&amp; (statusCode > 400 &amp;&amp; statusCode &lt; 500);
+						bool isPermError =  !isTempError &amp;&amp; (statusCode >= 400 &amp;&amp; statusCode &lt; 500);
 						return isPermError;
 					}" />
 					<set-variable name="activityLog" value="@{
@@ -418,32 +444,30 @@
 					}" />
 				</otherwise>
 			</choose>
-			<!-- Set contextWindowExceeded flag separately after checking isPermError -->
+			<!-- Set contextWindowExceeded flag separately after checking isPermError.
+			     Reuses the single isRetryableBadRequest decision above rather than parsing
+			     the body a second time; a second copy of the rule would let the retry
+			     classification and the PTU-skip disagree about the same response. -->
 			<set-variable name="contextWindowExceeded" value="@{
 				if (context.Response == null) { return context.Variables.GetValueOrDefault&lt;bool>(&quot;contextWindowExceeded&quot;, false); }
 
-				int statusCode = context.Response.StatusCode;
-
-				if (statusCode == 400) {
-					try {
-						var body = context.Response.Body.As&lt;JObject>(preserveContent: true);
-						var errorCode = body[&quot;error&quot;]?[&quot;code&quot;]?.ToString();
-
-						if (errorCode == &quot;context_length_exceeded&quot;) {
-							return true;
-						}
-					} catch { }
+				if (context.Response.StatusCode == 400 &amp;&amp; context.Variables.GetValueOrDefault&lt;bool>(&quot;isRetryableBadRequest&quot;, false)) {
+					return true;
 				}
 
 				// Keep existing value if not a context window error
 				return context.Variables.GetValueOrDefault&lt;bool>(&quot;contextWindowExceeded&quot;, false);
 			}" />
 
+			<!-- Throttle the backend only for signals that say the BACKEND is unhealthy.
+			     A malformed 400 says the REQUEST is wrong, so it must not park a healthy
+			     backend for 10s and degrade every other caller in the region. -->
 			<choose>
 				<when condition="@(context.Variables.GetValueOrDefault&lt;int>(&quot;backendIndex&quot;, -1) > -1 &amp;&amp;
 					(context.Variables.GetValueOrDefault&lt;bool>(&quot;isTempError&quot;, true) ||
 					(!context.Variables.GetValueOrDefault&lt;bool>(&quot;callCompleted&quot;, true) &amp;&amp;
-						(new[] { 429, 408, 400 }.Contains(context.Response?.StatusCode ?? 0) ||
+						(new[] { 429, 408 }.Contains(context.Response?.StatusCode ?? 0) ||
+						((context.Response?.StatusCode ?? 0) == 400 &amp;&amp; context.Variables.GetValueOrDefault&lt;bool>(&quot;isRetryableBadRequest&quot;, false)) ||
 						(context.Response?.StatusCode ?? 0) >= 500))))">
 					<cache-lookup-value key="@(&quot;throttle-&quot; + context.Api.Id)" variable-name="throttleState" />
 					<set-variable name="throttleState" value="@{

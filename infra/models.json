@@ -1,6 +1,6 @@
 {
   "$schema": "./models.schema.json",
-  "_comment": "Generated from live az cognitiveservices model list, reconciled to live catalog + quota (gen_catalog_v2). Each deployment pins an explicit model version.",
+  "_comment": "Generated from live az cognitiveservices model list, reconciled to live catalog + quota (gen_catalog_v2). Each deployment pins an explicit model version. `reasoningEffort` is the set of reasoning_effort values the model actually accepts, established on 2026-07-31 by sending each value to the live deployment and recording the status - NOT from documentation, which is wrong for this field, and not from the provider's own 'Supported values are: ...' error, which over-reports for gpt-5.4-pro and under-reports for gpt-5.4. Re-probe with a direct Foundry call (proxy/APIM retries hide the 400) when adding a reasoning model.",
   "naming": {
     "_comment": "Naming tokens for the whole stack (single source of truth). `subscriptionToken` is stamped into every model deployment name; `foundryToken` names the Foundry accounts/projects (mf-<foundryToken>-<env>-<region>). main.bicep, scripts/gen-model-catalog.py, scripts/validate-catalog.py, and app/api catalog.py all read these, so changing them here (plus AZURE_ENV_NAME) is what makes a subscription/tenant move 1:1. After changing, run scripts/gen-model-catalog.py to regenerate the runtime catalog. See docs/runbooks/deployment.md (Moving to a new subscription/tenant).",
     "subscriptionToken": "slurmfactory",
@@ -49,6 +49,7 @@
       "category": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["none", "low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -70,6 +71,7 @@
       "category": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["none", "low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -91,6 +93,7 @@
       "category": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["none", "low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -112,6 +115,7 @@
       "category": "chat",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -133,6 +137,7 @@
       "category": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -154,6 +159,7 @@
       "category": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -175,6 +181,7 @@
       "category": "chat",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -196,6 +203,7 @@
       "category": "chat-fast",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -217,6 +225,7 @@
       "category": "reasoning",
       "contextWindow": 200000,
       "maxOutputTokens": 100000,
+      "reasoningEffort": ["low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -260,6 +269,7 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["high"],
       "deployments": [
         {
           "region": "eastus2",
@@ -282,6 +292,7 @@
       "api": "responses",
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -304,6 +315,7 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["low", "medium", "high"],
       "deployments": [
         {
           "region": "eastus2",
@@ -326,6 +338,7 @@
       "api": "responses",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["none", "low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -368,6 +381,7 @@
       "category": "chat-fast",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -389,6 +403,7 @@
       "category": "chat-fast",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -410,6 +425,7 @@
       "category": "chat-fast",
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
+      "reasoningEffort": ["none", "minimal", "low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "eastus2",
@@ -777,6 +793,7 @@
       "category": "research",
       "contextWindow": 200000,
       "maxOutputTokens": 100000,
+      "reasoningEffort": ["low", "medium", "high", "xhigh"],
       "deployments": [
         {
           "region": "westus",

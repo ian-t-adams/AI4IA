@@ -41,6 +41,15 @@
           "category": { "type": "string" },
           "contextWindow": { "type": "integer", "minimum": 1 },
           "maxOutputTokens": { "type": "integer", "minimum": 1 },
+          "reasoningEffort": {
+            "description": "reasoning_effort values this model accepts, established by probing the live deployment rather than from documentation. Omit for non-reasoning models. An empty array means the model is a reasoning model that takes no reasoning_effort at all.",
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": ["none", "minimal", "low", "medium", "high", "xhigh"]
+            }
+          },
           "deployments": {
             "type": "array",
             "minItems": 1,
