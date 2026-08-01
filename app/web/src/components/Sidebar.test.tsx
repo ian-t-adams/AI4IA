@@ -118,9 +118,14 @@ describe("responsive sidebar", () => {
       overflowY: "auto",
       overflowX: "hidden",
     });
+    // Only `overflow` is asserted here. jsdom 30's CSSOM rejects viewport units
+    // on max-width/max-height, so `maxWidth: 100vw` / `maxHeight: 100dvh` --
+    // which Sidebar.tsx does set, and which real browsers honour -- are dropped
+    // rather than stored, leaving no DOM-observable trace to assert on. Those
+    // two were incidental to this test anyway: it covers background inertness
+    // and focus restoration, and jsdom has no layout engine, so asserting them
+    // only ever proved React passed a literal string through.
     expect(dialog).toHaveStyle({
-      maxWidth: "100vw",
-      maxHeight: "100dvh",
       overflow: "hidden",
     });
     expect(

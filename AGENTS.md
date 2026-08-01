@@ -51,14 +51,26 @@ No CI job exercised the built image at that Node version, and every runtime
 dependency (`next`, `typescript`, `vitest`) is satisfied by any Node 22.x.
 Reverted to `node:22-alpine` on audit; see the parallel Python incident below.
 
-`engines.node` is `>=22.13.0 <23`, not the wider `>=22.0.0`: the direct
-devDependencies `eslint@10.6.0` and `jsdom@29.1.1` both publish
-`engines.node: "^20.19.0 || ^22.13.0 || >=24"`, so Node 22.0.0–22.12.x
-satisfies a naive `>=22.0.0` floor but not their actual 22.x requirement.
-CI's `actions/setup-node@...` with `node-version: "22"` always resolves to
-the latest 22.x release (well above 22.13.0), so this has no CI/runtime
-impact today — it only makes the manifest's stated floor match what the
-declared dependencies actually require.
+`engines.node` is `>=22.22.2 <23`, not the wider `>=22.0.0`: the floor tracks
+whichever direct devDependency demands the most. `eslint@10.6.0` publishes
+`engines.node: "^20.19.0 || ^22.13.0 || >=24"`, which set the previous
+`>=22.13.0`; `jsdom@30.0.1` then raised it again with
+`^22.22.2 || ^24.15.0 || >=26.0.0`, so Node 22.13.0–22.22.1 satisfies the old
+floor but not jsdom's actual 22.x requirement. CI's `actions/setup-node@...`
+with `node-version: "22"` always resolves to the latest 22.x release (well
+above 22.22.2), and `app/web/Dockerfile`'s `node:22-alpine` does the same, so
+this has no CI/runtime impact today — it only makes the manifest's stated floor
+match what the declared dependencies actually require. There is no `.npmrc`
+setting `engine-strict`, so a mismatch would never have failed a build; it would
+just have been untrue. Re-check this whenever a devDependency major lands.
+
+jsdom 30 also tightened its CSSOM: it rejects viewport units on
+`max-width`/`max-height`, so `toHaveStyle({ maxWidth: "100vw" })` style
+assertions no longer see values React did set and real browsers do honour. One
+assertion in `Sidebar.test.tsx` relied on that and was narrowed rather than
+worked around — jsdom has no layout engine, so those assertions only ever
+proved a literal string was passed through. Prefer behavioural assertions over
+`toHaveStyle` for anything layout-related.
 
 `npm ci` also prints benign `npm warn ERESOLVE overriding peer dependency`
 warnings for `eslint-config-next`'s bundled `eslint-plugin-import` /
