@@ -1,8 +1,11 @@
 """Store + embedder seams for the memory layer.
 
 These Protocols define the *only* surface the legacy generic service depends on,
-so its in-memory and pgvector stores remain interchangeable. Every store method
-requires a ``user_id`` — isolation is structural, not a caller convention.
+so its stores remain interchangeable. The sole surviving implementation of this
+seam is :class:`~.in_memory.InMemoryVectorStore` (tests and local dev); canonical
+memory is Cosmos-native and goes through ``CosmosMemoryStore`` instead. Every
+store method requires a ``user_id`` — isolation is structural, not a caller
+convention.
 """
 from __future__ import annotations
 

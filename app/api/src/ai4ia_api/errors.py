@@ -23,7 +23,6 @@ from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .logging_setup import get_correlation_id
@@ -60,14 +59,6 @@ def error_code_for_status(status_code: int) -> str:
     if 500 <= status_code < 600:
         return "server_error"
     return "error"
-
-
-class ErrorResponse(BaseModel):
-    """The shared error body returned by every API error response."""
-
-    detail: str
-    code: str
-    correlation_id: str | None = None
 
 
 def build_error_payload(
