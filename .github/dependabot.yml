@@ -13,7 +13,7 @@
 # If those settings are turned off again, this file silently stops covering
 # security.
 #
-# Scope: the code we own (app/web npm, app/api pip), the GitHub Actions we run,
+# Scope: the code we own (app/web npm, app/api uv), the GitHub Actions we run,
 # and our service container base images. The vendored proxy/SimpleL7Proxy NuGet
 # tree is intentionally pinned to an upstream commit and is left unmanaged here.
 version: 2
@@ -28,7 +28,17 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
 
-  - package-ecosystem: pip
+  # `uv`, not `pip`, because app-ci gates `uv lock --check` (added in #222 after
+  # the lock silently rotted four pypdf releases behind a live CVE fix). The pip
+  # ecosystem edits pyproject.toml and has no knowledge of uv.lock -- and uv.lock
+  # records the *declared specifier*, not just resolved versions, so a pure
+  # ceiling bump desyncs it even when no package moves. Every Dependabot Python
+  # PR therefore failed CI and needed a hand-run `uv lock` (see #230). The uv
+  # ecosystem updates pyproject.toml AND uv.lock in one commit, so the gate is
+  # satisfied by construction. It supports security updates too, so nothing is
+  # given up by the switch. Do not revert to pip while that gate exists --
+  # scripts/tests/test_dependabot_config.py fails if the two drift apart.
+  - package-ecosystem: uv
     directory: /app/api
     schedule:
       interval: weekly
