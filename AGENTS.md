@@ -96,6 +96,7 @@ python scripts/gen-voice-provider-catalog.py --check
 Then it runs in `app/api`:
 
 ```powershell
+uv lock --check
 ruff check .
 pyright
 pytest -q
@@ -109,6 +110,20 @@ pytest -q scripts/tests/test_memory_cosmos_migration.py
 ```
 
 This repo has `app/api/uv.lock`; if using `uv` locally, sync the dev extra and run the same tools through `uv run`, but treat the workflow commands above as authoritative.
+
+**Any edit to `app/api/pyproject.toml` must be followed by `uv lock`**, in the
+same commit. `uv.lock` records the *declared specifier* alongside resolved
+versions, so even a change that moves no package — raising a ceiling from
+`fastapi<0.141` to `<0.142`, say — desyncs it and fails the `uv lock --check`
+gate. Nothing on the install path reads the lock (`Dockerfile` runs
+`pip install .`, CI runs `pip install -e ".[dev]"`), which is why it silently
+rotted four `pypdf` releases behind a live CVE fix before that gate existed.
+
+This is also why `.github/dependabot.yml` uses `package-ecosystem: uv` rather
+than `pip` for `/app/api`: the pip ecosystem edits `pyproject.toml` and cannot
+see `uv.lock`, so every Python dependency PR it opened failed CI until someone
+hand-ran `uv lock`. `scripts/tests/test_dependabot_config.py` fails if that
+pairing regresses.
 
 ### Docker image builds
 
@@ -154,7 +169,17 @@ bicep build infra/main.bicep --stdout > /dev/null
 
 `infra-validate` installs a pinned standalone Bicep CLI release (`BICEP_VERSION` env var in the workflow, matching the `ACTIONLINT_VERSION`/`HADOLINT_VERSION` pattern used elsewhere — never `releases/latest`, for reproducibility). Locally, if you don't have the standalone `bicep` CLI but already have Azure CLI, `az bicep build --file infra/main.bicep --stdout` produces equivalent output.
 
-`quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on `scripts`, hadolint on `app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile`, the proxy .NET build/auth tests, `python3 -m yamllint -c .yamllint .`, a docs-catalog drift gate (`python scripts/gen-docs-catalog.py --check`) that keeps `site/data/docs.js` in sync with `site/data/docs.manifest.json`, and stdlib-only unit tests for operator scripts not already covered by `app-ci`/`infra-validate` (currently `python3 -m unittest scripts.tests.test_voice_live_canary`, covering `scripts/voice-live-canary.py`'s URL/redaction safety rules). `security-scan` runs Trivy filesystem/config scans and gitleaks.
+`quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on `scripts`, hadolint on `app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile`, the proxy .NET build/auth tests, `python3 -m yamllint -c .yamllint .`, a docs-catalog drift gate (`python scripts/gen-docs-catalog.py --check`) that keeps `site/data/docs.js` in sync with `site/data/docs.manifest.json`, and stdlib-only unit tests for operator scripts and CI configuration not already covered by `app-ci`/`infra-validate`:
+
+```powershell
+python3 -m unittest scripts.tests.test_voice_live_canary        # voice-live-canary.py URL/redaction rules
+python3 -m unittest scripts.tests.test_subscription_preflight   # new-subscription provider/model preflight logic
+python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app bootstrap (runs once, by hand, so CI can't)
+python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deploy.yml's real run: block with `az` stubbed
+python3 -m unittest scripts.tests.test_dependabot_config        # keeps dependabot.yml and the uv.lock gate in step
+```
+
+The last two need `PyYAML` (pinned in the workflow); the rest are stdlib-only. `security-scan` runs Trivy filesystem/config scans and gitleaks.
 
 The vendored proxy plus AI4IA auth guard tests use .NET 10:
 

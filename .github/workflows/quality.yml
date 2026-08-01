@@ -183,3 +183,16 @@ jobs:
           python3 -m unittest scripts.tests.test_custom_domain_preflight
         env:
           PYYAML_VERSION: 6.0.3
+
+      - name: Run Dependabot config coupling tests
+        run: |
+          set -euo pipefail
+          # app-ci fails the `api` job on uv.lock drift, so whatever opens
+          # dependency PRs has to move pyproject.toml and uv.lock together.
+          # Dependabot's pip ecosystem does not, and uv.lock stores the declared
+          # specifier, so even a no-op ceiling bump desynced it and broke every
+          # Python PR. These checks stop the config drifting back to that pair.
+          python3 -m pip install --user --quiet "PyYAML==${PYYAML_VERSION}"
+          python3 -m unittest scripts.tests.test_dependabot_config
+        env:
+          PYYAML_VERSION: 6.0.3
