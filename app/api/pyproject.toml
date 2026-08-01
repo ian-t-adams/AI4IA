@@ -20,7 +20,7 @@ dependencies = [
     # CI-gated dependency bump instead of a silent type-gate break. The bounds
     # include the installed versions (fastapi 0.138.x, starlette 1.3.x), so
     # nothing is downgraded; raise them deliberately alongside a green pyright.
-    "fastapi>=0.115,<0.142",
+    "fastapi>=0.141.0,<0.142",
     # Starlette is FastAPI's ASGI foundation (otherwise pulled in transitively);
     # pinned directly so its upper bound is enforced independently of FastAPI's
     # loose `>=0.46.0` floor. See the fastapi note above.
@@ -36,10 +36,10 @@ dependencies = [
     # the dependency (and the alert) entirely rather than suppressing it.
     "pyjwt[crypto]>=2.8",
     "azure-identity>=1.17",
-    "azure-cosmos>=4.16.1,<5",
+    "azure-cosmos>=4.16.2,<5",
     # Async azure SDKs (azure.cosmos.aio + azure.identity.aio) require an async
     # HTTP transport at runtime; azure-core selects aiohttp by default.
-    "aiohttp>=3.10",
+    "aiohttp>=3.14.3",
     # Async Postgres driver for the pgvector memory store.
     # Imported lazily so the app/tests run without a live database.
     "asyncpg>=0.29",
@@ -82,7 +82,7 @@ dependencies = [
     # search capability (ai4ia_api.websearch). Imported lazily (only when
     # AI4IA_WEB_SEARCH_ENABLED=true and a search actually runs) so the app/tests
     # boot without it wired and the default-OFF path constructs nothing.
-    "webiq>=0.1",
+    "webiq>=0.1.4",
     # Azure Monitor metrics BATCH data plane (azure-monitor-querymetrics'
     # MetricsClient, the metrics:getBatch API) for the admin dashboard's resource
     # panels — AI Search / Postgres / Cosmos / Container Apps platform metrics.
@@ -105,7 +105,7 @@ dependencies = [
     # ONLY when APPLICATIONINSIGHTS_CONNECTION_STRING is set, so local/dev with no
     # connection string is a pure no-op and the SDK is never started. Pulls in the
     # OpenTelemetry API/SDK + the FastAPI/Azure-SDK instrumentations transitively.
-    "azure-monitor-opentelemetry>=1.6",
+    "azure-monitor-opentelemetry>=1.8.9",
     # The distro auto-instruments FastAPI (incoming) + the Azure SDKs, but NOT
     # httpx — the client the chat path uses for outbound model-gateway calls. Add
     # it so those outbound calls surface as App Insights dependencies. Activated
@@ -117,7 +117,7 @@ dependencies = [
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
-    "anyio>=4.4",
+    "anyio>=4.14.2",
     # Ruff's ceiling is deliberate, and mirrors the fastapi/starlette reasoning
     # above: a lint gate that floats is a gate whose contract can change without a
     # code change. Ruff 0.16.0 expanded its *default* rule set, and because this
@@ -128,8 +128,8 @@ dev = [
     # [tool.ruff.lint]), which closes that specific failure mode, and the ceiling
     # keeps the remaining surface (fix behavior, rule semantics within the
     # selected set) an explicit, CI-gated bump rather than a surprise.
-    "ruff>=0.5,<0.17",
-    "pyright>=1.1.400",
+    "ruff>=0.16.0,<0.17",
+    "pyright>=1.1.411",
     # Lets tests exercise real foundry/toolbox.manifest.schema.json validation (see
     # test_foundry_toolbox.py) instead of skipping via pytest.importorskip("jsonschema").
     "jsonschema>=4.18",
