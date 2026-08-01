@@ -404,6 +404,70 @@ class GatewayPolicyTests(unittest.TestCase):
             fragment,
         )
 
+    def test_tokenprocessor_is_only_set_for_text_response_bodies(self) -> None:
+        """TOKENPROCESSOR must never be applied to a binary response body.
+
+        The header tells SimpleL7Proxy to stream the response through
+        JsonStreamProcessor, which reads it with a StreamReader and re-emits it with
+        WriteLineAsync. That is lossy for non-text: bytes that are not valid UTF-8
+        become U+FFFD and raw 0x0D/0x0A bytes are rewritten as the platform newline.
+        Setting it unconditionally corrupted every /audio/speech response -- the mp3
+        reached the browser as UTF-8 mojibake while the audio/mpeg Content-Type
+        survived, so no content-type check anywhere in the chain could detect it and
+        playback failed with a bare MEDIA_ERR_SRC_NOT_SUPPORTED.
+        """
+        for path in (
+            ROOT / "infra/policies/simplel7proxy-priority-retry.xml",
+            ROOT / "infra/policies/simplel7proxy_outbound_32.xml",
+        ):
+            root = ElementTree.fromstring(path.read_text(encoding="utf-8"))
+            setters = [
+                el
+                for el in root.iter("set-header")
+                if el.get("name") == "TOKENPROCESSOR"
+                and el.get("exists-action") != "delete"
+            ]
+            self.assertTrue(setters, f"{path.name} no longer sets TOKENPROCESSOR")
+
+            # Every setter has to sit under a <when> that inspects the content type.
+            parents = {child: parent for parent in root.iter() for child in parent}
+            for setter in setters:
+                guards = []
+                node = setter
+                while node in parents:
+                    node = parents[node]
+                    if node.tag == "when":
+                        guards.append(node.get("condition") or "")
+                self.assertTrue(
+                    any("Content-Type" in g for g in guards),
+                    f"{path.name}: TOKENPROCESSOR is set without a Content-Type guard, "
+                    "so binary responses will be corrupted by the proxy's text "
+                    "stream processor",
+                )
+                guard = next(g for g in guards if "Content-Type" in g)
+                # A guard that does not admit JSON and SSE would silently drop token
+                # usage telemetry for every chat call.
+                self.assertIn("application/json", guard)
+                self.assertIn("text/", guard)
+
+    def test_policy_xml_is_ascii_only(self) -> None:
+        """Non-ASCII in a policy file breaks the ARM compile step on Windows.
+
+        ``az bicep build`` emits the embedded policy on stdout using the console
+        code page, so a single smart quote or em dash comes back as an undecodable
+        byte and the compile reads as an empty template rather than a syntax error.
+        Every policy file is ASCII today; keep it that way.
+        """
+        for path in sorted((ROOT / "infra/policies").glob("*.xml")):
+            text = path.read_text(encoding="utf-8")
+            offenders = sorted({c for c in text if ord(c) > 127})
+            self.assertEqual(
+                offenders,
+                [],
+                f"{path.name} contains non-ASCII characters: "
+                + ", ".join(f"U+{ord(c):04X}" for c in offenders),
+            )
+
     def test_documented_model_header_matches_the_policy(self) -> None:
         """deployment.md section 7.11 hardcodes the gateway's model header name.
 

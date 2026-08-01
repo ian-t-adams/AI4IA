@@ -1244,6 +1244,48 @@ Resolve-DnsName <host> -Type CNAME -Server (Resolve-DnsName $ns[0] -Type A).IPAd
 
 Full cutover sequence, including where this sits: §3 step 3a.
 
+### 7.13 "This browser can't play the returned audio format" (Speak / TTS)
+
+The browser reports `MEDIA_ERR_SRC_NOT_SUPPORTED` even though the response carries a
+valid `audio/*` `Content-Type`, so every content-type check between Foundry and the
+`<audio>` element passes and nothing logs an error.
+
+**Cause.** The APIM outbound policy sets the `TOKENPROCESSOR` response header, which
+tells SimpleL7Proxy to stream the body through `JsonStreamProcessor` to extract token
+usage. That processor reads the stream with a `StreamReader` and re-emits it with
+`WriteLineAsync`, which is **lossy for anything that is not text**: bytes that are not
+valid UTF-8 become U+FFFD (`ef bf bd`) and raw `0x0D`/`0x0A` bytes are consumed as line
+terminators and rewritten as the platform newline. Applied to an mp3 this produces UTF-8
+mojibake of roughly double the original size while the `Content-Type` survives intact.
+
+The policy now gates that header on a text content type (`application/json` or `text/*`),
+so binary bodies fall through to the proxy's byte-clean pass-through processor. The API
+additionally sniffs the container signature before labelling the response and returns
+`502 ... is not valid <fmt> audio` rather than serving a payload the browser can only
+reject opaquely.
+
+**Confirm which hop is at fault** by comparing the first bytes from APIM directly against
+the same call through the proxy. mp3 must start `ID3` or `ff fx`; `ef bf bd` is the
+corruption signature:
+
+```powershell
+# through the proxy (the path the API uses)
+$dep = "gpt-4o-mini-tts-<env>-<region>-glbl"
+$h = @{ 'S7P-KEY' = $proxyKey; 'Content-Type' = 'application/json' }
+$b  = @{ input='Hi.'; voice='alloy'; response_format='mp3'; model=$dep } | ConvertTo-Json
+Invoke-WebRequest -Method POST -Headers $h -Body $b -OutFile out.bin `
+  -Uri "https://<proxy-host>/openai/deployments/$dep/audio/speech?api-version=2025-03-01-preview"
+'{0:x2} {1:x2} {2:x2}' -f [IO.File]::ReadAllBytes('out.bin')[0..2]
+```
+
+Swap the host for `https://<apim>.azure-api.net` with `Ocp-Apim-Subscription-Key` and an
+`x-LLMModel` header to isolate APIM. If APIM is clean and the proxy is not, the
+`TOKENPROCESSOR` guard has regressed — see
+`test_tokenprocessor_is_only_set_for_text_response_bodies`.
+
+Anything else routed through the proxy that returns a binary body (image or video bytes,
+file downloads) fails the same way, so fix the header rather than special-casing audio.
+
 ## APIM Basic v2 migration guardrail
 
 The active model/realtime/MCP plane is the `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the additive `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the existing `/openai/realtime` API and subscription. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and both voice providers share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic — it never receives Speech Voice Live traffic either. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.
