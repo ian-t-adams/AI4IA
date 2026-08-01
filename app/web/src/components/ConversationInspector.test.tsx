@@ -55,6 +55,7 @@ function snapshot(id: string, prompt = `Prompt ${id}`): InspectorSnapshot {
       editable: true,
       value: prompt,
       agentName: null,
+      agentSource: null,
     },
     agent: { name: null, displayName: null, description: null, enabled: true },
     tools: {
@@ -695,6 +696,48 @@ describe("ConversationInspector", () => {
     );
     await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
     expect(await screen.findByText("Crunches numbers.")).toBeInTheDocument();
+  });
+
+  it("shows an agent's instructions read-only and points at where they can be changed", async () => {
+    // The panel used to render only the agent's name and "edit the agent in
+    // Agents & workflows" -- a dead end for a curated persona, which ships in the
+    // image and is not editable there. The instructions themselves were never
+    // sent to the browser at all, so "what is this agent told to do?" had no answer.
+    const curated = snapshot("s1");
+    curated.agent = { name: "analyst", displayName: "Analyst", description: "Crunches numbers.", enabled: true };
+    curated.instructions = {
+      source: "agent",
+      editable: false,
+      value: "You are a careful data analyst.",
+      agentName: "analyst",
+      agentSource: "curated",
+    };
+    mocks.getInspector.mockResolvedValue(curated);
+    const user = userEvent.setup();
+    const { rerender } = render(<ConversationInspector {...props()} />);
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+
+    const readOnly = await screen.findByLabelText("Agent instructions (read-only)");
+    expect(readOnly).toHaveValue("You are a careful data analyst.");
+    expect(readOnly).toHaveAttribute("readonly");
+    expect(screen.getByText(/built-in agent managed by your administrator/)).toBeInTheDocument();
+
+    const owned = snapshot("s2");
+    owned.agent = { name: "my-helper", displayName: "My Helper", description: "Mine.", enabled: true };
+    owned.instructions = {
+      source: "agent",
+      editable: false,
+      value: "Answer only in haiku.",
+      agentName: "my-helper",
+      agentSource: "user",
+    };
+    mocks.getInspector.mockResolvedValue(owned);
+    rerender(<ConversationInspector {...props("s2")} />);
+    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    expect(
+      await screen.findByLabelText("Agent instructions (read-only)"),
+    ).toHaveValue("Answer only in haiku.");
+    expect(screen.getByText(/You own this agent/)).toBeInTheDocument();
   });
 
   it("discards a late document association after switching conversations", async () => {

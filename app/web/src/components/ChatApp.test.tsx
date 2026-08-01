@@ -236,7 +236,7 @@ beforeEach(() => {
       contextWindow: 128000,
       maxOutputTokens: 32000,
     },
-    instructions: { source: "session", editable: true, value: "", agentName: null },
+    instructions: { source: "session", editable: true, value: "", agentName: null, agentSource: null },
     agent: { name: null, displayName: null, description: null },
     tools: {
       inherited: [],

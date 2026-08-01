@@ -1352,6 +1352,40 @@ probed for which parameter values a model accepts, because each rejection threw 
 backend into a throttle that made the *next* probe report a false `429`. Any such
 probe needed 11+ seconds of spacing between attempts.
 
+### 7.15 A terminal 4xx returns the right status with `Content-Length: 0`
+
+Fixing §7.14's classification exposed the second half of the same problem. Verified
+live immediately after that deploy: the malformed request returned
+
+```
+HTTP/1.1 400 Bad Request
+backendlog: ... 0.080s StatusCode: 400 - Perm Error
+content-length: 0
+```
+
+Correct status, correct classification, `THROTTLED: (none)`, one attempt, no
+`S7PREQUEUE` — and still no way to tell *what* was wrong.
+
+**Cause.** APIM's `<return-response>` **replaces the response wholesale**. The
+permanent-error branch set a status and three diagnostic headers but had no
+`<set-body>`, so the provider's body was silently discarded. This applied to every
+terminal 4xx from Foundry, not just the malformed-parameter case: an unsupported
+value, an unknown deployment, a content-filter block, an expired data-plane
+credential — all arrived as a bare status. The reason only ever lives in the body,
+so the effect was that no client-side error was actionable without reproducing the
+call outside the gateway.
+
+**Fix (already in the policy).** The permanent-error `<return-response>` now
+re-emits the upstream body and its `Content-Type`, falling back to the previous
+synthetic `{statusCode, statusReason}` JSON only when the upstream body is empty or
+unreadable. The body is read with `preserveContent: true` — the same read
+`isRetryableBadRequest` already performs — so no extra buffering is introduced.
+Pinned by `test_a_permanent_error_returns_the_upstream_body`.
+
+**Confirm.** Re-run §7.14's request and check `Content-Length` is non-zero and the
+body names the offending value. If the status is right but the body is empty, a
+`<set-body>` has been dropped from the permanent-error branch.
+
 ## APIM Basic v2 migration guardrail
 
 The active model/realtime/MCP plane is the `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>` Basic v2 service (capacity 1). `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` preserves the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the additive `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the existing `/openai/realtime` API and subscription. Reusing this paid service adds no roughly $150 APIM base cost, but MCP, HTTP/SSE, and both voice providers share its blast radius and resilience posture. The Consumption APIM and all children remain unchanged/inactive rollback with no active traffic — it never receives Speech Voice Live traffic either. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update. Review a zero-delete what-if; delete Consumption only in a separately approved post-stabilization change.
