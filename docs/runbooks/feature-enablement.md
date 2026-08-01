@@ -32,13 +32,17 @@ feature posture.
 | Proxy priority reservations | `AI4IA_PROXY_PRIORITIES_ENABLED` | none | `proxyPrioritiesEnabled`, `proxyPriorityWorkers` | Valid `priority:count` reservations; per-replica fairness only. The API and proxy read the **same** switch — see the note below the table |
 | Proxy metadata telemetry | proxy runtime only | none | `proxyEventHubTelemetryEnabled` | Existing Event Hub sender RBAC; no prompt/response/header logging |
 | Proxy durable async | proxy runtime only | none | `proxyAsyncEnabled` | Dedicated AVM Blob + Service Bus resources and proxy MI RBAC |
+| Azure Monitor alerting baseline | n/a (infra only) | none | `enableAlerts`, `alertEmail` | Action group + api-5xx / Cosmos-429 metric alerts. An action group with **no** receiver is legal ARM and notifies nobody — see the note below |
 
 The checked-in live parameters currently turn on image/video generation,
 document understanding, document compute, inline-attachment code interpreter, AI
 Search, Voice Live + tools, custom tools, Web IQ search, Cosmos-backed memory,
 and — as of the Foundry activation — the **official MCP plane, the Foundry toolbox
 bridge, and the private tool catalog** (`enableOfficialMcp` / `enableFoundryToolbox`
-/ `enablePrivateToolCatalog` are all `true`). The new proxy profile, priority,
+/ `enablePrivateToolCatalog` are all `true`). **Proxy priority reservations and the
+alerting baseline are now on too** (`AI4IA_PROXY_PRIORITIES_ENABLED=true` with
+`AI4IA_PROXY_PRIORITY_WORKERS=1:2`; `AI4IA_ENABLE_ALERTS=true`), so their
+checked-in `false` is a default rather than the live posture. The proxy profile,
 Event Hub, and durable-async controls remain `false`; their Bicep defaults are
 also off. `speechVoiceLiveEnabled` is the one flag whose checked-in value is a
 *default*, not the live posture: `main.parameters.json` carries
@@ -469,6 +473,32 @@ but Web IQ rejected it — usually the identity is not entitled), `permission`,
 headline hint turns `(authMode, recent categories)` into the likely root cause and
 fix — e.g. `managed_identity` + `auth` failures means the managed identity is not
 entitled to Web IQ, so set the API key secret.
+
+### Azure Monitor alerting baseline
+
+`enableAlerts=true` creates one action group plus two static metric alerts — api
+container-app `Requests` filtered to `5xx` (> 10 in 15 min) and Cosmos
+`TotalRequests` filtered to `429` (> 10 in 15 min). Both are severity 2, evaluate
+every 5 minutes, and auto-mitigate. The module is purely additive: no other
+resource depends on it, so turning it on cannot fail an otherwise-good deploy.
+
+**The receiver is the part that silently fails.** An action group with an empty
+`emailReceivers` array is valid ARM and deploys clean, so `enableAlerts=true` with
+no `alertEmail` gives you alert rules that evaluate, fire, and record in the
+portal's Alerts blade while notifying **nobody**. Nothing errors. That is why
+`validate-feature-prereqs.py` emits a warning for exactly that combination —
+degraded, not broken, so it is deliberately a warning and not a hard failure.
+
+This environment is currently in that state on purpose. The natural operator
+mailbox, `AI4IA_OWNER` / `AI4IA_APIM_PUBLISHER_EMAIL`
+(`ianadams@MngEnvMCAP795326.onmicrosoft.com`), is **not a deliverable address** —
+Graph reports `mail: null` and an empty `proxyAddresses`, because this MCAPS
+managed-environment account has no Exchange recipient. Wiring the action group to
+it would have produced a receiver that never delivers, which is worse than an
+obviously empty one: it looks configured. Set `AI4IA_ALERT_EMAIL` to a mailbox
+that actually receives (a nomad-analytics.com address, a distribution list, or a
+webhook-backed alternative) and redeploy; the receiver attaches automatically and
+the validator warning clears.
 
 ## Operational reminders
 

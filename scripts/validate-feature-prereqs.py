@@ -227,6 +227,19 @@ def main() -> int:
     elif publisher.endswith("@example.com"):
         warnings.append("apimPublisherEmail is still an example address; set it for live deploys.")
 
+    # An action group with no receiver is legal ARM and deploys clean, so nothing
+    # else fails when alerts are enabled without a recipient -- the rules evaluate
+    # and record, but no one is ever notified. That is the "looks enabled, is inert"
+    # shape, so warn rather than stay silent. Not an error: recording alert history
+    # is still worth having, and the remedy is one variable.
+    if truthy(parameter_value(parameters, "enableAlerts", False)) and not text(
+        parameter_value(parameters, "alertEmail")
+    ):
+        warnings.append(
+            "enableAlerts=true with no alertEmail: alert rules will record but "
+            "notify nobody. Set AI4IA_ALERT_EMAIL to a deliverable mailbox."
+        )
+
     for warning in warnings:
         print(f"WARNING: {warning}")
     if errors:
