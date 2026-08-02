@@ -120,10 +120,6 @@ def configure_telemetry(connection_string: str | None) -> bool:
     return True
 
 
-def telemetry_enabled() -> bool:
-    return _telemetry_configured
-
-
 def emit_custom_event(name: str, attributes: dict[str, object]) -> None:
     """Emit an Application Insights customEvent. No-op unless telemetry is
     configured; best-effort (never raises)."""

@@ -384,7 +384,12 @@ def build_mcp_turn_tools(
     """Build a merged (registry, executor, ctx) for a turn that attaches MCP tools.
 
     Single-plane convenience wrapper over :func:`build_mcp_turn_tools_multi` (one
-    plane built from the given seam), preserved for the common BYO-only path.
+    plane built from the given seam). **No production caller** -- ``routers/chat.py``
+    calls ``build_mcp_turn_tools_multi`` directly; this is exercised only by
+    ``tests/test_mcp_execution.py``, which uses it as the readable single-plane
+    entry point for the shared building logic. Kept deliberately rather than
+    deleted so that MCP approval/egress coverage is not rewritten in place; do not
+    assume it is on a live request path.
 
     Returns ``None`` when the agent attaches no owned MCP tools, so the caller can
     cheaply keep using the shared app singletons. When tools are present, the

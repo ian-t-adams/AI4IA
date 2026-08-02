@@ -18,7 +18,6 @@ healthy server's hot path performs **zero** extra writes.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from enum import Enum
 
 from .mcp_servers import UserMcpServer
 
@@ -31,15 +30,6 @@ QUARANTINE_BASE_SECONDS = 300  # 5 minutes
 QUARANTINE_MAX_SECONDS = 3600  # 1 hour
 # Bound on the stored, redacted error summary.
 MAX_HEALTH_ERROR_LEN = 280
-
-
-class McpHealthStatus(str, Enum):
-    """A server's coarse health, derived from its tracked failure state."""
-
-    healthy = "healthy"  # last observation succeeded (or never failed)
-    degraded = "degraded"  # some recent failures, not yet quarantined
-    quarantined = "quarantined"  # skipped until the window elapses
-    unknown = "unknown"  # never connected / no observation yet
 
 
 def _now(now: datetime | None) -> datetime:
@@ -90,19 +80,6 @@ def quarantine_reason(
     when = f"{secs // 60}m" if secs >= 60 else f"{secs}s"
     why = server.lastHealthError or "repeated connection failures"
     return f"quarantined for ~{when} after {server.consecutiveFailures} failures: {why}"
-
-
-def health_status(
-    server: UserMcpServer, *, now: datetime | None = None
-) -> McpHealthStatus:
-    """Derive the coarse :class:`McpHealthStatus` from the tracked state."""
-    if is_quarantined(server, now=now):
-        return McpHealthStatus.quarantined
-    if server.consecutiveFailures > 0:
-        return McpHealthStatus.degraded
-    if server.lastHealthCheck is None and server.lastConnectedAt is None:
-        return McpHealthStatus.unknown
-    return McpHealthStatus.healthy
 
 
 def summarize_error(error: object) -> str:
@@ -165,15 +142,3 @@ def record_failure(
     if server.consecutiveFailures >= QUARANTINE_THRESHOLD:
         server.quarantinedUntil = moment + quarantine_window(server.consecutiveFailures)
     return True
-
-
-def clear_quarantine(server: UserMcpServer) -> bool:
-    """Force a server out of quarantine and reset its failure count.
-
-    Returns ``True`` if anything changed. Used by the explicit user-initiated
-    reconnect path so a manual "Test" is never blocked by a stale quarantine.
-    """
-    changed = bool(server.consecutiveFailures or server.quarantinedUntil is not None)
-    server.consecutiveFailures = 0
-    server.quarantinedUntil = None
-    return changed

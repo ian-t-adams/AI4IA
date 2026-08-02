@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `codeInterpreterRawFilesEnabled` Bicep parameter, wiring the previously unreachable
+  `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` setting through `main.bicep` → `api.bicep`.
+  The feature was fully implemented (`library/compute_capability.py` uploads a document's
+  *original* bytes to the code-interpreter container instead of Content-Understanding
+  parsed text) but defaulted to `false` with zero Bicep wiring, so it could not be turned
+  on in production without a code change. Now enabled.
+- Guard test pinning the `owner` placeholder warning (`scripts/tests/test_feature_prereqs.py`),
+  negative-tested so it cannot go vacuous.
 - Root contributor guide, governance files, community templates, and third-party notices.
 - Orange/blue/near-black brand identity across the app and the GitHub Pages portal,
   replacing the indigo + blue-teal palette. Regenerated marks, Open Graph lettermark, and
@@ -49,6 +57,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Removed
 
+- Four dead symbols, each confirmed by a repo-wide search returning only its own
+  definition plus test call sites: `revokeDocumentShare` (`app/web/src/lib/api.ts` — the
+  UI removes a grantee by re-PUTting the full list via `setDocumentShares`, so the
+  per-grantee DELETE helper never had a caller), and `clear_quarantine`, `health_status`,
+  and the `McpHealthStatus` enum (`agents/mcp_health.py`) plus `telemetry_enabled`
+  (`logging_setup.py`). Two of these carried docstrings that actively *claimed* a
+  production caller — `clear_quarantine` said it was "used by the explicit user-initiated
+  reconnect path" when that path calls `record_success` instead. The coarse health-status
+  precedence now has a single owner, `app/web/src/lib/customTools.ts`, and its comment no
+  longer cites a deleted Python symbol. The server endpoint
+  `DELETE /documents/{id}/shares/{email}` was deliberately **kept**: it is public,
+  server-tested API surface, and removing it is a breaking change needing its own review.
 - Three unreferenced symbols and an unused Bicep parameter, each confirmed dead by a
   repo-wide search returning only its own definition: `ErrorResponse` in `errors.py`
   (never imported or constructed — every error body is a dict from `build_error_payload`),
@@ -124,6 +144,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Three silently-swallowed failures in the API. `routers/tools.py` wrapped both MCP
+  catalog-listing loops in a bare `except Exception: pass` and imported **no logger at
+  all**, so a Cosmos read error made a user's MCP tools vanish from `GET /api/tools` with
+  zero operator signal — the user simply concluded they had never been configured. Both
+  now log and append a visible "unavailable" row, matching the module's own existing
+  pattern for unresolvable tool metadata. `routers/inspector.py` dropped a document from
+  the inspector list on a serialization error with no log, while the handler immediately
+  above it logged correctly; it now logs too.
+- The `owner` deployment guard had gone inert. `validate-feature-prereqs.py` rejected
+  `ian-t-adams`, an older repo default, while `main.bicep` actually ships
+  `ai4ia-operator` — so a deploy that never set `AI4IA_OWNER` tagged every resource with
+  a placeholder and passed the check written to catch exactly that. Now warns on the
+  value actually shipped (a warning, not an error, because `infra-validate` runs with no
+  environment and legitimately resolves the default there).
+- Stale documentation corrected: `docs/roadmap.md` listed proactive alerting as an open
+  P1 when it has been live for some time (verified in Azure — action group
+  `ag-ai4ia-slurmfactory` has a real recipient, both threshold rules are enabled, and the
+  budget carries 50/80/100% notifications), and `app/web/README.md` pinned a Node floor
+  and jsdom version that both contradicted `package.json`. The README now defers to
+  `package.json`/`AGENTS.md` rather than restating versions that had already drifted once.
 - Three infrastructure controls were configured but inert — legal ARM that deploys
   clean, renders normally in the portal, and does nothing. The $1,500/month resource-group
   budget notified **nobody**: `cost.bicep` builds an empty notifications map when

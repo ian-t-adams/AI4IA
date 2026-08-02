@@ -173,6 +173,9 @@ param inlineDocumentComputeEnabled bool = false
 @description('Dedicated short-lived blob container holding inline-attachment original bytes (inline code interpreter). Emitted as AI4IA_INLINE_ATTACHMENT_BLOB_CONTAINER only when the feature is on.')
 param inlineAttachmentBlobContainer string = 'ephemeral-attachments'
 
+@description('Hand the library code interpreter each document\'s ORIGINAL bytes instead of its Content Understanding parsed text. Layered ON TOP of documentComputeEnabled and reuses the same code_interpreter endpoint/model. Ineligible files (unsupported type, oversize, missing original, upload failure) transparently fall back to parsed text, so this only ever adds fidelity. Default OFF.')
+param codeInterpreterRawFilesEnabled bool = false
+
 @description('Enable the agent-callable generate_image tool. Default OFF. When on (and an image blob account is provisioned) any agent may attach generate_image; produced images persist to dedicated blob storage and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
 
@@ -509,9 +512,21 @@ var computeCiEnv = (((documentUnderstandingEnabled && documentComputeEnabled) ||
     value: codeInterpreterModel
   }
 ] : []
+
 var computeEnv = (documentUnderstandingEnabled && documentComputeEnabled) ? [
   {
     name: 'AI4IA_DOCUMENT_COMPUTE_ENABLED'
+    value: 'true'
+  }
+] : []
+
+// Raw-file compute (default OFF). Only meaningful when the library code interpreter
+// is actually running, so it is gated on the same conditions as computeCiEnv rather
+// than on its own flag alone — that keeps the flag from being independently "on" in
+// an environment where nothing reads it. Ineligible files fall back to parsed text.
+var computeRawFilesEnv = (codeInterpreterRawFilesEnabled && documentUnderstandingEnabled && documentComputeEnabled && !empty(codeInterpreterBaseUrl)) ? [
+  {
+    name: 'AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED'
     value: 'true'
   }
 ] : []
@@ -708,7 +723,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName

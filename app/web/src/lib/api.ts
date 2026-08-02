@@ -741,19 +741,6 @@ export async function setDocumentShares(
   );
 }
 
-// Revoke one grantee's access (owner-only, idempotent). Returns the new state.
-export async function revokeDocumentShare(
-  documentId: string,
-  email: string,
-): Promise<ShareState> {
-  return jsonOrThrow(
-    await apiFetch(
-      `/api/library/documents/${documentId}/shares/${encodeURIComponent(email)}`,
-      { method: "DELETE" },
-    ),
-  );
-}
-
 export interface StreamHandlers {
   onDelta: (text: string) => void;
   onDone: () => void;

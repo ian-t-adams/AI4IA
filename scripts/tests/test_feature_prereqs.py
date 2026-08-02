@@ -142,6 +142,31 @@ class BudgetNotificationTests(unittest.TestCase):
         )
 
 
+class OwnerPlaceholderTests(unittest.TestCase):
+    """The owner guard had gone inert against the value it exists to catch.
+
+    It rejected `ian-t-adams`, an older repo default, while main.bicep actually
+    ships `ai4ia-operator`. So a deploy that never set AI4IA_OWNER tagged every
+    resource with a placeholder owner and sailed straight past the check meant to
+    stop exactly that. Same "configured but inert" shape as the empty budget above:
+    the guard existed, ran, and could never fire. These pin both directions.
+    """
+
+    def test_shipped_placeholder_owner_warns(self) -> None:
+        with _environment():
+            code, out, _ = _run(REAL_PARAMETERS)
+        self.assertEqual(
+            code, 0, "infra-validate runs with no env, so this must not be fatal"
+        )
+        self.assertIn("owner is still the shipped placeholder", out)
+
+    def test_real_owner_silences_the_warning(self) -> None:
+        with _environment(AI4IA_OWNER="platform-team@example.org"):
+            code, out, _ = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 0)
+        self.assertNotIn("owner is still the shipped placeholder", out)
+
+
 class RealtimeOriginTests(unittest.TestCase):
     def test_literal_realtime_origin_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

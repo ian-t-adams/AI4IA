@@ -435,7 +435,9 @@ export function isQuarantined(server: McpHealthFields, now: number = Date.now())
 }
 
 // Derive the coarse health status from the tracked state, mirroring the backend
-// mcp_health.health_status precedence (quarantined > degraded > unknown > healthy).
+// Coarse status precedence (quarantined > degraded > unknown > healthy). This is
+// the sole owner of that ordering: the API tracks the raw failure state but no
+// longer derives a coarse status server-side, so keep this authoritative.
 export function healthStatus(
   server: McpHealthFields,
   now: number = Date.now(),

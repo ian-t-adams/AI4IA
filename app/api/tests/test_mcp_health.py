@@ -16,7 +16,6 @@ from ai4ia_api.agents.mcp_health import (
     QUARANTINE_BASE_SECONDS,
     QUARANTINE_MAX_SECONDS,
     QUARANTINE_THRESHOLD,
-    McpHealthStatus,
 )
 from ai4ia_api.agents.mcp_servers import UserMcpServer
 
@@ -125,36 +124,6 @@ def test_quarantine_remaining_and_reason():
 def test_quarantine_reason_none_when_not_quarantined():
     assert health.quarantine_reason(_server(), now=_T0) is None
     assert health.quarantine_remaining(_server(), now=_T0) is None
-
-
-def test_clear_quarantine_resets_state():
-    server = _server()
-    for _ in range(QUARANTINE_THRESHOLD):
-        health.record_failure(server, "boom", now=_T0)
-    changed = health.clear_quarantine(server)
-    assert changed is True
-    assert server.consecutiveFailures == 0
-    assert server.quarantinedUntil is None
-    # Idempotent: a second clear reports no change.
-    assert health.clear_quarantine(server) is False
-
-
-# --- health_status ------------------------------------------------------------
-
-
-def test_health_status_unknown_then_healthy():
-    assert health.health_status(_server(), now=_T0) is McpHealthStatus.unknown
-    connected = _server(lastConnectedAt=_T0)
-    assert health.health_status(connected, now=_T0) is McpHealthStatus.healthy
-
-
-def test_health_status_degraded_then_quarantined():
-    server = _server()
-    health.record_failure(server, "boom", now=_T0)
-    assert health.health_status(server, now=_T0) is McpHealthStatus.degraded
-    for _ in range(QUARANTINE_THRESHOLD - 1):
-        health.record_failure(server, "boom", now=_T0)
-    assert health.health_status(server, now=_T0) is McpHealthStatus.quarantined
 
 
 # --- summarize_error redaction ------------------------------------------------
