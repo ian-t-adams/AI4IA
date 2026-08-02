@@ -74,6 +74,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Cosmos DB moved from `Periodic` backup to **`Continuous7Days`**, taking the recovery window
+  for the canonical store (sessions, messages, usage, memory, user agents, workflows, MCP
+  records, document manifests) from roughly **8 hours behind a support ticket** to **any second
+  in the last 7 days, self-service** via `az cosmosdb restore`. `Continuous7Days` is
+  deliberate: it is the only continuous tier Azure does not charge backup storage for, so this
+  is a ~21x larger recovery window at no recurring cost. Two properties of this knob make it
+  unusually easy to get wrong, so both are now pinned by
+  `scripts/tests/test_cosmos_backup_policy.py` (run by `infra-validate`): enabling continuous
+  mode is **irreversible**, and the tier is a **silent billing boundary** — `Continuous30Days`
+  and `Continuous35Days` are valid ARM that deploy and render identically while charging for
+  backup storage. Note that the mode change cannot be made by editing Bicep and redeploying:
+  Azure rejects a backup-mode change bundled with any other property update ("Cannot update
+  continuous backup mode and other properties at the same time"), so the live account was
+  migrated with a standalone `az cosmosdb update` and the Bicep restates the result to keep
+  redeploys a no-op.
+
 - The Voice Live Origin allowlist is now **derived in Bicep** from the web app each
   deployment creates, instead of being a hardcoded hostname in
   `infra/main.parameters.json`. `AI4IA_REALTIME_ALLOWED_ORIGINS` only adds extra origins.
@@ -109,12 +125,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `test_every_azd_parameter_token_is_reachable_from_ci` caught the omission that would have
   made it a fourth inert knob.
 - The Cosmos backup policy was never expressed in IaC, hiding how narrow recovery actually
-  is. The account is **serverless**, which rules out continuous backup and self-service
-  point-in-time restore entirely — Azure refuses to restore *into* a serverless account, so
-  recovery means a new provisioned account via support ticket. The live periodic policy is a
-  240-minute interval with **8-hour retention**, i.e. two snapshots. Pinned to the exact live
-  values (verified a no-op against the deployed account) and documented in the deployment
-  runbook so the number is found before an incident rather than during one.
+  was: a 240-minute interval with **8-hour retention**, i.e. two snapshots, recoverable only
+  by raising a support ticket. Now pinned in `infra/modules/data.bicep` and documented in the
+  deployment runbook so the number is found before an incident rather than during one.
+
+  **Superseded within the same unreleased cycle, and worth reading as a correction.** That
+  work also recorded — in the Bicep comment, the runbook, and this changelog — that the
+  account being **serverless** "rules out continuous backup and self-service point-in-time
+  restore entirely" and that "Azure refuses to restore *into* a serverless account". Both
+  claims were false. They were disproved empirically by creating a throwaway serverless
+  account, enabling continuous backup on it, and restoring it: the restore succeeded and
+  produced a **serverless** account (`createMode=Restore`) with the container and its
+  partition key intact. The real serverless restriction belongs to Azure Backup **vaulted**
+  backup (preview), which cannot restore to a serverless target — a different feature that is
+  easy to conflate. This mattered more than a normal doc error, because the failure mode was
+  to document the better posture as impossible: while it stood, no operator or agent would
+  have attempted the upgrade.
 - Documentation described the pre-Cosmos memory stack. The portal advertised "mem0 over
   Postgres + pgvector" and listed `mem0ai` and `psycopg` as dependencies, none of which the
   app still contains: zero `mem0`/`psycopg` imports in `app/api`, absent from `pyproject.toml`

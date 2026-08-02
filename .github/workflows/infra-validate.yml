@@ -118,5 +118,14 @@ jobs:
       - name: Globally unique resource naming tests
         run: python -m unittest scripts.tests.test_bicep_naming
 
+      # Cosmos holds the canonical store, and its backup policy is a one-way
+      # door: Azure cannot move a continuous account back to periodic. The tier
+      # is also a silent billing boundary — Continuous7Days stores backups for
+      # free, while Continuous30Days/35Days are valid ARM that deploy and render
+      # identically but start charging for backup storage. Neither a downgrade
+      # nor a costly upgrade produces any deployment-time signal, so pin both.
+      - name: Cosmos backup posture tests
+        run: python -m unittest scripts.tests.test_cosmos_backup_policy
+
       - name: Bicep build (lint)
         run: bicep build infra/main.bicep --stdout > /dev/null
