@@ -118,6 +118,10 @@ jobs:
       AI4IA_APIM_PUBLISHER_EMAIL: ${{ vars.AI4IA_APIM_PUBLISHER_EMAIL }}
       AI4IA_OWNER: ${{ vars.AI4IA_OWNER }}
       AI4IA_COST_CENTER: ${{ vars.AI4IA_COST_CENTER }}
+      # The workload token names the resource group and every APIM child credential.
+      # It is also read directly by the custom-domain preflight step below, which must
+      # look in the same resource group bicep creates.
+      AI4IA_WORKLOAD: ${{ vars.AI4IA_WORKLOAD }}
       # Regional escape hatches. These exist because Postgres, Search, and API Center
       # are each capacity/offer constrained per region and are the documented remedy
       # for LocationIsOfferRestricted (deployment.md section 7.1) -- a remedy that does
@@ -230,8 +234,28 @@ jobs:
           python scripts/gen-gateway-policy.py --check
           python scripts/validate-feature-prereqs.py
 
-      # Two jobs, both of which bicep cannot do for itself. Names are deterministic:
-      # workload `ai4ia` + AZURE_ENV_NAME.
+      # A resource provider that is not registered fails the deployment PARTWAY
+      # THROUGH, ~10+ minutes in, with `MissingSubscriptionRegistration` -- after
+      # real resources already exist. The runbook has always listed this as manual
+      # step 0, which protects a greenfield standup but not the routine path where
+      # a NEW provider arrives with a feature: enabling durable workflows added
+      # `Microsoft.DurableTask` to the derived set and it was NotRegistered in the
+      # live subscription, because a flag-gated module never submits its resource
+      # type while the flag is off, so ARM had no occasion to register it.
+      #
+      # The required set is derived from infra/**/*.bicep, so this covers providers
+      # added after this step was written without anyone remembering to edit a list.
+      # `--register` rather than report-only: registration is idempotent,
+      # subscription-scoped, non-destructive, and already granted by the deploy
+      # identity's Contributor role, so self-healing in ~a minute beats failing a
+      # change window over a one-line fix.
+      - name: Preflight resource provider registration
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
+        run: python scripts/check-resource-providers.py --register
+
+      # Two jobs, both of which bicep cannot do for itself. Container App names are
+      # deterministic from AZURE_ENV_NAME; the resource group additionally depends on
+      # the workload token, which is why it is derived rather than literal below.
       #
       # 1. Guard: a provision rewrites the Container App ingress from the bicep, which
       #    sets customDomains to [] when AI4IA_*_CUSTOM_DOMAIN is empty -> it WIPES an
@@ -248,7 +272,12 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
         run: |
           set -euo pipefail
-          rg="rg-ai4ia-${AZURE_ENV_NAME}"
+          # Must match infra/main.bicep's `rg-${workload}-${environmentName}`. Hardcoding
+          # the workload token here would send every lookup below to a resource group
+          # that does not exist for a renamed workload -- and `guard` treats a missing
+          # app as "nothing bound", so the whole step would silently no-op instead of
+          # failing. Default matches the bicep parameter default.
+          rg="rg-${AI4IA_WORKLOAD:-ai4ia}-${AZURE_ENV_NAME}"
           rc=0
           guard() {
             app="$1"; var_name="$2"; var_val="$3"

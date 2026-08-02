@@ -10,6 +10,9 @@ param gatewayBaseUrl string
 @description('Curated MCP servers to expose, loaded by main.bicep from infra/mcp-servers.json.')
 param servers array
 
+@description('Name of the MCP product on the shared APIM, emitted by apimcore.bicep. Passed in rather than re-derived so both modules agree on the shared plane\'s child namespace.')
+param mcpProductName string
+
 resource apim 'Microsoft.ApiManagement/service@2024-06-01-preview' existing = {
   name: apimName
 }
@@ -95,7 +98,7 @@ resource mcpPolicies 'Microsoft.ApiManagement/service/apis/policies@2024-06-01-p
 // when official MCP is disabled. This module only associates enabled MCP APIs.
 resource mcpProduct 'Microsoft.ApiManagement/service/products@2024-06-01-preview' existing = {
   parent: apim
-  name: 'ai4ia-mcp'
+  name: mcpProductName
 }
 
 resource mcpProductApis 'Microsoft.ApiManagement/service/products/apis@2024-06-01-preview' = [for (server, i) in servers: {

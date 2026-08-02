@@ -36,7 +36,7 @@ feature posture.
 | Raw-file compute (code interpreter) | `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` | none | `codeInterpreterRawFilesEnabled` | Requires document understanding + document compute + a code-interpreter base URL; `api.bicep` emits the env var only when all three hold. Uploads a document's **original bytes** to the sandbox instead of Content Understanding's parsed text, falling back transparently on unsupported/oversize/failed uploads. Had **no Bicep parameter at all** until now, so it was implemented but unreachable from a normal `azd` deploy |
 | Azure Monitor alerting baseline | n/a (infra only) | none | `enableAlerts`, `alertEmail` | Action group + api-5xx / Cosmos-429 metric alerts. An action group with **no** receiver is legal ARM and notifies nobody — see the note below |
 | Key Vault purge protection | n/a (infra only) | none | `keyVaultPurgeProtection` (`AI4IA_KEYVAULT_PURGE_PROTECTION`) | None — but enabling it is **irreversible**, and it reserves the vault name for the soft-delete retention window, which blocks teardown-and-redeploy of the same environment name. Default `false` for that reason; see the note below |
-| Durable workflow execution | `AI4IA_DURABLE_WORKFLOWS_ENABLED` | none | `enableDurableWorkflows`, `durableTaskSkuName`, `durableWorkflowTimeoutSeconds` (`AI4IA_ENABLE_DURABLE_WORKFLOWS`, `AI4IA_DURABLE_TASK_SKU`, `AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS`) | **Provisions a new paid Azure resource** (Durable Task Scheduler + task hub), so it is default `false` and enabling it is a deliberate, approved deploy. Also requires `AI4IA_SESSION_STORE=cosmos`. See the note below |
+| Durable workflow execution | `AI4IA_DURABLE_WORKFLOWS_ENABLED` | none | `enableDurableWorkflows`, `durableTaskSkuName`, `durableWorkflowTimeoutSeconds` (`AI4IA_ENABLE_DURABLE_WORKFLOWS`, `AI4IA_DURABLE_TASK_SKU`, `AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS`) | **Provisions a paid Azure resource** (Durable Task Scheduler + task hub). Approved and **enabled 2026-08-02**; the azd token still allows a per-environment opt-out. Also requires `AI4IA_SESSION_STORE=cosmos`, a region that offers `Microsoft.DurableTask`, and that provider registered. See the note below |
 
 The checked-in live parameters currently turn on image/video generation,
 document understanding, document compute, inline-attachment code interpreter, raw-file
@@ -541,7 +541,9 @@ purgeable by someone holding the purge permission.
 `enableDurableWorkflows` is the only feature flag in this repo that creates a new
 **billable Azure resource** when flipped: `infra/modules/durabletask.bicep` stands
 up a Durable Task Scheduler plus a task hub. Per AGENTS.md that is a stop-and-ask
-change, so it ships default-off and no scheduler is provisioned today.
+change; it was approved and **enabled on 2026-08-02**, so a scheduler is
+provisioned today. The `${AI4IA_ENABLE_DURABLE_WORKFLOWS=true}` token is retained
+so a second environment can still opt out without a code change.
 
 What it changes when on. `POST /api/workflows/{name}/run` gains an opt-in
 `"durable": true`, which returns **202** with a run id instead of executing the
@@ -551,8 +553,16 @@ synchronously on the existing in-request path — the two share one implementati
 (`run_workflow_step()` in `workflows/runner.py`), so a step cannot behave
 differently depending on which path invoked it.
 
-Enabling it, in order:
+Enabling it in a new environment, in order:
 
+0. Confirm `Microsoft.DurableTask` is registered in the target subscription and
+   that the **region supports it** — it is not available everywhere, and the
+   scheduler inherits the resource group's location. `azd` deploys run
+   `scripts/check-resource-providers.py --register` automatically; for a manual
+   provision run it yourself. This is not hypothetical: the provider was
+   `NotRegistered` in `sub-planetexpress-slurmfactory` right up until this flag
+   was flipped, because a flag-gated module never submits its resource type while
+   the flag is off, so nothing had ever caused ARM to register it.
 1. Set the repo variables `AI4IA_ENABLE_DURABLE_WORKFLOWS=true` and — only if you
    want something other than the defaults — `AI4IA_DURABLE_TASK_SKU`
    (`Consumption` | `Dedicated`, default `Consumption`) and
@@ -565,6 +575,13 @@ Enabling it, in order:
 3. Confirm `AI4IA_SESSION_STORE=cosmos`. `validate_runtime` fails closed if it is
    not: a resumed orchestration can land on any replica, so durable execution
    over an in-memory session store would silently lose state on resume.
+
+Note that steps 2 and 3 fail **closed and loudly**: `validate_runtime` raises if
+the endpoint, the hub name, or the Cosmos session store is missing, which stops
+the API from starting rather than accepting durable work nothing will execute.
+That is the intended trade, but it does mean a half-applied enable is an outage,
+not a degraded mode — so do not set `AI4IA_ENABLE_DURABLE_WORKFLOWS=true` without
+deploying the infrastructure that supplies the other two values.
 
 Failure posture is deliberate and worth knowing before you page someone:
 

@@ -841,12 +841,17 @@ class GatewayPolicyTests(unittest.TestCase):
         ):
             self.assertNotIn(retired, gateway)
         # gateway creates no APIM service now, so it needs neither the publisher
-        # fields nor the name tokens that only the Consumption service consumed.
+        # fields nor the uniqueSuffix that only the Consumption service name consumed.
+        # `workload` is deliberately NOT retired: gateway no longer uses it to build a
+        # service name, but it does use it to derive the APIM *child* entity names, which
+        # share one flat namespace on the shared plane.
         for retired_param in (
             "param apimPublisherEmail", "param apimPublisherName",
-            "param workload string", "param uniqueSuffix string",
+            "param uniqueSuffix string",
         ):
             self.assertNotIn(retired_param, gateway)
+        self.assertIn("param workload string", gateway)
+        self.assertNotIn("take('apim-mcp-${workload}", gateway)
         # apimcore still owns the one real service, its publisher identity, and the
         # uniqueSuffix that keeps globally-unique APIM names deployable elsewhere.
         self.assertIn("param apimPublisherEmail", apimcore)
@@ -904,8 +909,8 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertNotIn("take('apim-mcp-${workload}", mcp)
         self.assertIn("resource mcpProduct", mcp)
         self.assertIn("resource mcpProductApis", mcp)
-        self.assertIn("scope: '/products/ai4ia-mcp'", apimcore)
-        self.assertNotIn("scope: '/products/ai4ia-mcp'", mcp)
+        self.assertIn("scope: '/products/${mcpProductName}'", apimcore)
+        self.assertNotIn("scope: '/products/", mcp)
         self.assertNotIn("scope: '/apis'", mcp)
         self.assertIn("output mcpGatewayBaseUrl string = gatewayBaseUrl", mcp)
         self.assertIn(
@@ -919,7 +924,7 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("#disable-next-line no-unnecessary-dependson\n    gateway", main)
         # Product has no API association, making this ingress credential opaque.
         self.assertIn("resource sharedProxyIngressProduct", gateway)
-        self.assertIn("scope: '/products/ai4ia-proxy-ingress'", gateway)
+        self.assertIn("scope: '/products/${proxyIngressProductName}'", gateway)
         self.assertNotIn("sharedProxyIngressProductApi", gateway)
         self.assertIn("AI4IA_REALTIME_GATEWAY_API_KEY", api)
         self.assertIn("realtime-gateway-api-key", api)
@@ -973,7 +978,7 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("resource speechVoiceLiveWssEndpointValue", gateway)
         self.assertIn("resource speechVoiceLiveAudienceValue", gateway)
         self.assertIn("resource sharedSpeechVoiceLiveSubscription", gateway)
-        self.assertIn("name: 'ai4ia-api-speech-voice-live'", gateway)
+        self.assertIn("name: speechVoiceLiveSubscriptionName", gateway)
         for query_name in (
             "deployment",
             "subscription-key",
@@ -1110,7 +1115,7 @@ class GatewayPolicyTests(unittest.TestCase):
 
         # Distinct subscription scope/name from every other gateway credential.
         self.assertIn("scope: sharedSpeechVoiceLiveApi.id", gateway)
-        self.assertIn("name: 'ai4ia-api-speech-voice-live'", gateway)
+        self.assertIn("name: speechVoiceLiveSubscriptionName", gateway)
 
         # Cognitive Services User remains supplied by the existing account loop.
         # The additional Foundry User grant is scoped to ONE selected account,
@@ -1301,7 +1306,17 @@ class GatewayPolicyTests(unittest.TestCase):
             json.dumps(gateway_resources["sharedSpeechVoiceLiveApiPolicy"]["name"]),
         )
         speech_subscription = gateway_resources["sharedSpeechVoiceLiveSubscription"]["properties"]
-        self.assertIn("ai4ia-api-speech-voice-live", json.dumps(gateway_resources["sharedSpeechVoiceLiveSubscription"]["name"]))
+        self.assertIn(
+            "variables('speechVoiceLiveSubscriptionName')",
+            json.dumps(gateway_resources["sharedSpeechVoiceLiveSubscription"]["name"]),
+        )
+        # Resolving through the variable proves the workload-derived name still yields
+        # the original 'ai4ia-api-speech-voice-live' for the default workload, so the
+        # parameterization did not silently rename (and re-key) a live subscription.
+        self.assertEqual(
+            "[format('{0}-api-speech-voice-live', parameters('workload'))]",
+            gateway_template["variables"]["speechVoiceLiveSubscriptionName"],
+        )
         self.assertNotEqual(
             speech_subscription["scope"],
             gateway_resources["sharedApiRealtimeSubscription"]["properties"]["scope"],
@@ -1404,9 +1419,9 @@ class GatewayPolicyTests(unittest.TestCase):
             for resource in apimcore_values
             if resource["type"] == "Microsoft.ApiManagement/service/subscriptions"
         )
-        self.assertIn("/products/ai4ia-mcp", json.dumps(apimcore_resources))
+        self.assertIn("/products/", json.dumps(apimcore_resources))
         self.assertEqual(
-            "/products/ai4ia-mcp",
+            "[format('/products/{0}', variables('mcpProductName'))]",
             core_subscription["properties"]["scope"],
         )
         self.assertTrue(

@@ -576,5 +576,79 @@ class SharedQuotaTests(unittest.TestCase):
             )
 
 
+class ProviderPreflightRunsBeforeProvisionTests(unittest.TestCase):
+    """The preflight is only useful if the deploy runs it, and runs it FIRST.
+
+    Being registered is not something the template can assert for itself: an
+    unregistered provider fails ~10 minutes into `azd provision` with
+    `MissingSubscriptionRegistration`, after real resources exist. For a long
+    time this script was only ever a manual "step 0" in the runbook, which
+    protects a greenfield standup but not the routine path where a new provider
+    arrives with a feature — enabling durable workflows added
+    `Microsoft.DurableTask` to the derived set and it was NotRegistered live,
+    because a flag-gated module never submits its resource type while the flag is
+    off, so ARM had no occasion to register it.
+
+    Ordering is the part worth pinning. A step moved after `azd provision` still
+    reads as present in review and in the workflow file while doing nothing for
+    the deploy it was meant to protect — the same "configured but inert" shape
+    that has bitten this repo repeatedly.
+    """
+
+    def _deploy_steps(self) -> list[dict]:
+        import yaml
+
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+        )
+        return workflow["jobs"]["deploy"]["steps"]
+
+    def test_deploy_runs_the_provider_preflight_before_provisioning(self) -> None:
+        steps = self._deploy_steps()
+        preflight = [
+            i
+            for i, step in enumerate(steps)
+            if "check-resource-providers.py" in str(step.get("run", ""))
+        ]
+        provision = [
+            i for i, step in enumerate(steps) if "azd provision" in str(step.get("run", ""))
+        ]
+        self.assertEqual(
+            len(preflight),
+            1,
+            "deploy.yml must run scripts/check-resource-providers.py exactly once; "
+            "without it an unregistered provider fails partway through a provision "
+            "instead of in seconds with the namespace to register.",
+        )
+        self.assertTrue(provision, "deploy.yml no longer runs `azd provision`")
+        self.assertLess(
+            preflight[0],
+            min(provision),
+            "the resource-provider preflight must run BEFORE `azd provision`; after "
+            "it, the deployment has already failed on the thing it checks.",
+        )
+
+    def test_the_preflight_registers_rather_than_only_reporting(self) -> None:
+        """Report-only would fail the change window over a one-line fix.
+
+        Registration is idempotent, subscription-scoped, non-destructive, and
+        already granted by the deploy identity's Contributor role, so self-healing
+        is strictly better here than stopping. `--register` also waits for the
+        state to become Registered, which report-only cannot do.
+        """
+        runs = [
+            str(step.get("run", ""))
+            for step in self._deploy_steps()
+            if "check-resource-providers.py" in str(step.get("run", ""))
+        ]
+        self.assertTrue(runs, "no resource-provider preflight step found in deploy.yml")
+        self.assertIn(
+            "--register",
+            runs[0],
+            "the deploy preflight should pass --register so a newly added provider "
+            "self-heals instead of failing the run.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

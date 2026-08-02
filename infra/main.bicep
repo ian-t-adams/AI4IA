@@ -660,6 +660,7 @@ module gateway 'modules/gateway.bicep' = {
     location: location
     tags: tags
     environmentName: environmentName
+    workload: workload
     containerEnvId: platform.outputs.containerEnvId
     sharedApimName: apimcore.outputs.apimName
     sharedApimResourceId: apimcore.outputs.apimId
@@ -746,6 +747,7 @@ module mcpgateway 'modules/mcpgateway.bicep' = if (enableOfficialMcp) {
     apimName: apimcore.outputs.apimName
     gatewayBaseUrl: apimcore.outputs.gatewayUrl
     servers: officialMcpServers
+    mcpProductName: apimcore.outputs.mcpProductName
   }
 }
 

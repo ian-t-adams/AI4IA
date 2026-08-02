@@ -16,11 +16,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   crash. Both paths share one implementation (`run_workflow_step()`), so entitlement,
   tool-authorization, and step-budget guards cannot drift between them, and durable steps
   still route model calls proxy → APIM → Foundry.
-  **Default-off**: enabling it provisions a paid Azure resource, so it ships inert and
-  needs an approved deploy. With the flag off, `"durable": true` returns `422` rather than
+  **Enabled in production 2026-08-02** after an approved deploy; the
+  `${AI4IA_ENABLE_DURABLE_WORKFLOWS=true}` token is retained so another environment can
+  still opt out. With the flag off, `"durable": true` returns `422` rather than
   silently falling back to synchronous execution. Data-plane RBAC is granted at **task-hub**
   scope so a future second app on the same scheduler cannot read this app's payloads, and
   run ids are `<userId>:<uuid4>` so ownership is checked *before* any fetch.
+- **Resource-provider preflight in the deploy workflow** (`deploy.yml` →
+  `scripts/check-resource-providers.py --register`). An unregistered provider fails
+  `azd provision` roughly ten minutes in with `MissingSubscriptionRegistration`, after real
+  resources exist. The script already derived its required set from `infra/**/*.bicep`, but
+  nothing ran it outside a manual runbook step — so it protected a greenfield standup and
+  not the routine path where a new provider arrives with a feature. Enabling durable
+  workflows is exactly that case: `Microsoft.DurableTask` was `NotRegistered` in the live
+  subscription, because a flag-gated module never submits its resource type while the flag
+  is off. Pinned by tests asserting the step runs *before* `azd provision` — a step moved
+  after it still reads as present while doing nothing.
 - `codeInterpreterRawFilesEnabled` Bicep parameter, wiring the previously unreachable
   `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` setting through `main.bicep` → `api.bicep`.
   The feature was fully implemented (`library/compute_capability.py` uploads a document's
@@ -106,6 +117,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   (Consumption does not support WebSockets), so no capability was lost.
 
 ### Changed
+
+- **APIM child entity names are derived from `${workload}` instead of hardcoded**
+  (`apimcore.bicep`, `gateway.bicep`, `mcpgateway.bicep`). APIM children share one flat
+  namespace per service, so the six hardcoded `ai4ia-*` product and subscription names meant
+  a second workload onto the shared gateway would not fail loudly — it would *adopt and
+  overwrite* this app's credentials. `workload` also gained an `${AI4IA_WORKLOAD=ai4ia}`
+  override (previously the only parameter without one) and `deploy.yml` now derives
+  `rg-${AI4IA_WORKLOAD:-ai4ia}-${AZURE_ENV_NAME}` rather than hardcoding the workload, so a
+  renamed workload's post-deploy custom-domain steps look in the resource group that exists
+  instead of silently no-opping against one that does not.
+  **No live credential moved**: the default resolves byte-identically to the six deployed
+  names, verified against the running APIM before merge, so ARM performs no replacement and
+  no subscription key rotates (a rename would have re-keyed the proxy's model hop).
+  `ApimChildNamingTests` in `scripts/tests/test_bicep_naming.py` fails any child name that
+  reverts to a literal, and pins the `workload` default so a future edit cannot silently
+  re-key the live gateway. The shared `openai`/`realtime` **APIs** are deliberately excluded:
+  a second app reuses those rather than duplicating them.
 
 - Cosmos DB moved from `Periodic` backup to **`Continuous7Days`**, taking the recovery window
   for the canonical store (sessions, messages, usage, memory, user agents, workflows, MCP
