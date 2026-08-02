@@ -176,6 +176,18 @@ param inlineAttachmentBlobContainer string = 'ephemeral-attachments'
 @description('Hand the library code interpreter each document\'s ORIGINAL bytes instead of its Content Understanding parsed text. Layered ON TOP of documentComputeEnabled and reuses the same code_interpreter endpoint/model. Ineligible files (unsupported type, oversize, missing original, upload failure) transparently fall back to parsed text, so this only ever adds fidelity. Default OFF.')
 param codeInterpreterRawFilesEnabled bool = false
 
+@description('Run workflows durably on a Durable Task Scheduler rather than inside the HTTP request. Default OFF.')
+param durableWorkflowsEnabled bool = false
+
+@description('Durable Task Scheduler data-plane endpoint (https://<name>.<region>.durabletask.io). Empty unless the scheduler was provisioned.')
+param durableTaskEndpoint string = ''
+
+@description('Durable Task Scheduler task hub name. Runs in different hubs are fully isolated.')
+param durableTaskHubName string = ''
+
+@description('Upper bound in seconds on a single durable workflow run.')
+param durableWorkflowTimeoutSeconds int = 1800
+
 @description('Enable the agent-callable generate_image tool. Default OFF. When on (and an image blob account is provisioned) any agent may attach generate_image; produced images persist to dedicated blob storage and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
 
@@ -531,6 +543,30 @@ var computeRawFilesEnv = (codeInterpreterRawFilesEnabled && documentUnderstandin
   }
 ] : []
 
+// Durable workflow execution (default OFF). Emitted only when the scheduler was
+// actually provisioned AND its endpoint is non-empty: an enable flag without an
+// endpoint would fail startup validation, which is correct but a worse failure
+// than simply not claiming the feature is on. The task hub is the isolation
+// boundary, so both values must travel together.
+var durableWorkflowsEnv = (durableWorkflowsEnabled && !empty(durableTaskEndpoint)) ? [
+  {
+    name: 'AI4IA_DURABLE_WORKFLOWS_ENABLED'
+    value: 'true'
+  }
+  {
+    name: 'AI4IA_DURABLE_TASK_ENDPOINT'
+    value: durableTaskEndpoint
+  }
+  {
+    name: 'AI4IA_DURABLE_TASK_HUB_NAME'
+    value: durableTaskHubName
+  }
+  {
+    name: 'AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS'
+    value: string(durableWorkflowTimeoutSeconds)
+  }
+] : []
+
 // Inline-attachment code interpreter (default OFF). Emits its enable flag + the
 // dedicated ephemeral container name only when on; the code_interpreter endpoint it
 // uses comes from computeCiEnv above, and the blob account from documentBlobAccountEnv.
@@ -723,7 +759,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName

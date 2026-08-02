@@ -25,6 +25,7 @@ The run path mirrors the chat endpoint's hard invariants, in order:
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..auth.base import AuthenticatedUser
@@ -37,6 +38,10 @@ from ..logging_setup import get_correlation_id
 from ..sessions.models import Message, MessageRole, MessageStatus
 from ..sessions.repository import SessionNotFoundError, SessionRepository
 from ..usage.service import UsageService
+from ..workflows.durable import (
+    DurableWorkflowsUnavailableError,
+    build_orchestration_payload,
+)
 from ..workflows.models import (
     MAX_RUN_INPUT_LEN,
     Workflow,
@@ -62,6 +67,28 @@ class WorkflowRunRequest(BaseModel):
     model: str | None = None
     region: str | None = None
     dataZone: str | None = None
+    # Per-REQUEST opt-in to durable execution, not a behaviour switch on the
+    # operator flag: flipping a flag must never change the response shape an
+    # existing client already depends on. Ignored-with-a-422 rather than
+    # silently downgraded when the feature is off, so a caller that needs
+    # durability is never told "done" by a run that cannot survive a restart.
+    durable: bool = False
+
+
+class WorkflowRunAcceptedResponse(BaseModel):
+    """202 body for a durable run. The assistant message does not exist yet."""
+
+    sessionId: str
+    runId: str
+    status: str = "accepted"
+
+
+class WorkflowRunStatusResponse(BaseModel):
+    runId: str
+    status: str
+    ok: bool | None = None
+    text: str | None = None
+    error: str | None = None
 
 
 class WorkflowRunResponse(BaseModel):
@@ -130,13 +157,20 @@ async def delete_workflow(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/workflows/{name}/run", response_model=WorkflowRunResponse)
+@router.post(
+    "/workflows/{name}/run",
+    response_model=None,
+    responses={
+        200: {"model": WorkflowRunResponse},
+        202: {"model": WorkflowRunAcceptedResponse},
+    },
+)
 async def run_workflow_endpoint(
     request: Request,
     name: str,
     body: WorkflowRunRequest,
     user: AuthenticatedUser = Depends(get_current_user),
-) -> WorkflowRunResponse:
+) -> WorkflowRunResponse | JSONResponse:
     repo: SessionRepository = request.app.state.session_repo
     catalog: ModelCatalog = request.app.state.catalog
     gateway: ModelGatewayClient = request.app.state.gateway
@@ -219,6 +253,25 @@ async def run_workflow_endpoint(
     agent_attr = f"workflow:{workflow.name}"
     correlation_id = get_correlation_id()
 
+    # Bind the service only on the durable path so the branch below tests exactly
+    # one fact. Testing `body.durable` in one place and `durable is not None` in
+    # another leaves a silent-fallthrough shape: a mismatch would run the workflow
+    # synchronously and return 200, answering a different question than was asked.
+    durable_service = None
+    if body.durable:
+        durable_service = getattr(request.app.state, "durable_workflows", None)
+        if durable_service is None:
+            # Refuse rather than quietly running it synchronously. A caller asking
+            # for durability is telling us the run must survive a restart.
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "Durable workflow execution is not enabled on this deployment. "
+                    "Retry without 'durable', or ask an operator to set "
+                    "AI4IA_DURABLE_WORKFLOWS_ENABLED=true."
+                ),
+            )
+
     await repo.add_message(
         uid,
         Message(
@@ -230,6 +283,34 @@ async def run_workflow_endpoint(
             agent=agent_attr,
         ),
     )
+
+    if durable_service is not None:
+        # The user turn is already persisted above, so the caller sees their
+        # input immediately; the orchestration writes the assistant reply when
+        # it finishes, on whichever replica gets there.
+        payload = build_orchestration_payload(
+            workflow,
+            user_id=uid,
+            session_id=body.sessionId,
+            run_input=run_input,
+            model_id=model_id,
+            deployment=deployment.deploymentName,
+            correlation_id=correlation_id,
+        )
+        try:
+            run_id = await durable_service.schedule(payload, user_id=uid)
+        except DurableWorkflowsUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Durable workflow execution is temporarily unavailable.",
+            ) from exc
+        await repo.touch_session(uid, session.id)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content=WorkflowRunAcceptedResponse(
+                sessionId=body.sessionId, runId=run_id
+            ).model_dump(),
+        )
 
     # Compose the caller's user agents over the curated catalog so a step can
     # reference either. The runner is total: it never raises, returning ok=False
@@ -278,3 +359,41 @@ async def run_workflow_endpoint(
 
     await repo.touch_session(uid, session.id)
     return WorkflowRunResponse(sessionId=body.sessionId, ok=result.ok, message=assistant)
+
+
+@router.get("/workflows/runs/{run_id}", response_model=WorkflowRunStatusResponse)
+async def get_workflow_run(
+    request: Request,
+    run_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> WorkflowRunStatusResponse:
+    """Poll a durable run started with ``durable: true``.
+
+    The run's assistant message lands in the session like any other turn when it
+    completes; this endpoint exists so a caller can tell "still running" apart
+    from "finished and failed" without diffing the transcript.
+    """
+    durable = getattr(request.app.state, "durable_workflows", None)
+    if durable is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Durable workflow execution is not enabled on this deployment.",
+        )
+    try:
+        state = await durable.get_status(run_id, user_id=user.internal_user_id)
+    except DurableWorkflowsUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Durable workflow execution is temporarily unavailable.",
+        ) from exc
+    if state is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Unknown run."
+        )
+    return WorkflowRunStatusResponse(
+        runId=state.runId,
+        status=state.status,
+        ok=state.ok,
+        text=state.text,
+        error=state.error,
+    )

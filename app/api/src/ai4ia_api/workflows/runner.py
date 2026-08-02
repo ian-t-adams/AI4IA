@@ -36,7 +36,7 @@ from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
 from ..gateway.client import ModelGatewayClient
 from ..usage.models import TokenUsage
-from .models import INPUT_TOKEN, PREVIOUS_TOKEN, Workflow
+from .models import INPUT_TOKEN, PREVIOUS_TOKEN, Workflow, WorkflowStep
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,119 @@ def _render(instruction: str, *, run_input: str, previous: str) -> str:
     return instruction.replace(INPUT_TOKEN, run_input).replace(PREVIOUS_TOKEN, carried)
 
 
+@dataclass
+class StepOutcome:
+    """Result of one step plus what the caller needs to keep sequencing.
+
+    ``fatal`` means the pipeline must stop: the step could not be resolved, was
+    rejected by a guard, or raised. ``usage`` is what *this* step consumed, so a
+    caller can accumulate it even when ``fatal`` is set (a late failure must not
+    be a way to dodge billing).
+    """
+
+    result: WorkflowStepResult
+    usage: TokenUsage = field(default_factory=TokenUsage.empty)
+    fatal: bool = False
+
+
+async def run_workflow_step(
+    step: WorkflowStep,
+    *,
+    index: int,
+    workflow_name: str,
+    run_input: str,
+    previous: str,
+    composed: AgentCatalog,
+    deployment: str,
+    gateway: ModelGatewayClient,
+    registry: ToolRegistry,
+    executor: ToolExecutor,
+    correlation_id: str | None = None,
+) -> StepOutcome:
+    """Execute a single workflow step. Total: never raises.
+
+    Extracted so the in-request runner and the durable orchestration's activity
+    execute byte-identical logic. The guards below are load-bearing (orchestrator
+    rejection, prompt-amplification cap), and duplicating them per execution mode
+    is exactly how two paths drift into different security postures.
+
+    ``index`` is 0-based; user-facing messages report ``index + 1``.
+    """
+    target = composed.get(step.agent)
+    if target is None or not target.enabled:
+        err = f"Step {index + 1}: agent '{step.agent}' is unavailable."
+        return StepOutcome(
+            result=WorkflowStepResult(agent=step.agent, ok=False, error=err),
+            fatal=True,
+        )
+
+    # Reject orchestrator agents as steps: their delegation capability is only
+    # wired in the chat path, so running one here would silently lose it. This
+    # is a runtime check (links are dynamic, not known at write time).
+    if target.links:
+        err = (
+            f"Step {index + 1}: agent '{step.agent}' is an orchestrator (it links "
+            "to other agents) and can't be used as a workflow step. Use a "
+            "leaf agent here, or run the orchestrator via @mention in chat."
+        )
+        return StepOutcome(
+            result=WorkflowStepResult(agent=step.agent, ok=False, error=err),
+            fatal=True,
+        )
+
+    prompt = _render(step.instruction, run_input=run_input, previous=previous)
+    # Block placeholder amplification: a step that repeats {input}/{previous}
+    # could expand a bounded input into an unbounded request. Stop gracefully
+    # with the usage consumed so far rather than firing an oversized call.
+    if len(prompt) > MAX_RENDERED_PROMPT_LEN:
+        err = (
+            f"Step {index + 1}: rendered prompt exceeds {MAX_RENDERED_PROMPT_LEN} "
+            "characters. Reduce the instruction or avoid repeating the "
+            "{input}/{previous} placeholders."
+        )
+        return StepOutcome(
+            result=WorkflowStepResult(agent=step.agent, ok=False, error=err),
+            fatal=True,
+        )
+
+    messages = [
+        {"role": "system", "content": target.systemPrompt},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        run = await run_agent_turn(
+            deployment=deployment,
+            messages=messages,
+            tool_names=target.tools,
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(correlation_id=correlation_id),
+            params=None,
+            max_iters=_STEP_MAX_ITERS,
+        )
+    except Exception as exc:  # noqa: BLE001 — total runner: never propagate.
+        logger.warning(
+            "workflow '%s' step %d (agent=%s) failed: %s",
+            workflow_name,
+            index + 1,
+            step.agent,
+            exc,
+        )
+        err = f"Step {index + 1}: agent '{step.agent}' failed while running."
+        return StepOutcome(
+            result=WorkflowStepResult(agent=step.agent, ok=False, error=err),
+            fatal=True,
+        )
+
+    return StepOutcome(
+        result=WorkflowStepResult(
+            agent=step.agent, ok=True, text=run.text, iterations=run.iterations
+        ),
+        usage=run.usage,
+    )
+
+
 async def run_workflow(
     workflow: Workflow,
     *,
@@ -113,70 +226,28 @@ async def run_workflow(
     previous = ""
 
     for i, step in enumerate(workflow.steps):
-        target = composed.get(step.agent)
-        if target is None or not target.enabled:
-            err = f"Step {i + 1}: agent '{step.agent}' is unavailable."
-            trace.append(WorkflowStepResult(agent=step.agent, ok=False, error=err))
-            return WorkflowRunResult(ok=False, text=err, usage=usage, steps=trace)
-
-        # Reject orchestrator agents as steps: their delegation capability is only
-        # wired in the chat path, so running one here would silently lose it. This
-        # is a runtime check (links are dynamic, not known at write time).
-        if target.links:
-            err = (
-                f"Step {i + 1}: agent '{step.agent}' is an orchestrator (it links "
-                "to other agents) and can't be used as a workflow step. Use a "
-                "leaf agent here, or run the orchestrator via @mention in chat."
-            )
-            trace.append(WorkflowStepResult(agent=step.agent, ok=False, error=err))
-            return WorkflowRunResult(ok=False, text=err, usage=usage, steps=trace)
-
-        prompt = _render(step.instruction, run_input=run_input, previous=previous)
-        # Block placeholder amplification: a step that repeats {input}/{previous}
-        # could expand a bounded input into an unbounded request. Stop gracefully
-        # with the usage consumed so far rather than firing an oversized call.
-        if len(prompt) > MAX_RENDERED_PROMPT_LEN:
-            err = (
-                f"Step {i + 1}: rendered prompt exceeds {MAX_RENDERED_PROMPT_LEN} "
-                "characters. Reduce the instruction or avoid repeating the "
-                "{input}/{previous} placeholders."
-            )
-            trace.append(WorkflowStepResult(agent=step.agent, ok=False, error=err))
-            return WorkflowRunResult(ok=False, text=err, usage=usage, steps=trace)
-        messages = [
-            {"role": "system", "content": target.systemPrompt},
-            {"role": "user", "content": prompt},
-        ]
-        try:
-            run = await run_agent_turn(
-                deployment=deployment,
-                messages=messages,
-                tool_names=target.tools,
-                gateway=gateway,
-                registry=registry,
-                executor=executor,
-                ctx=ToolContext(correlation_id=correlation_id),
-                params=None,
-                max_iters=_STEP_MAX_ITERS,
-            )
-        except Exception as exc:  # noqa: BLE001 — total runner: never propagate.
-            logger.warning(
-                "workflow '%s' step %d (agent=%s) failed: %s",
-                workflow.name,
-                i + 1,
-                step.agent,
-                exc,
-            )
-            err = f"Step {i + 1}: agent '{step.agent}' failed while running."
-            trace.append(WorkflowStepResult(agent=step.agent, ok=False, error=err))
-            return WorkflowRunResult(ok=False, text=err, usage=usage, steps=trace)
-
-        usage = usage.add(run.usage)
-        previous = run.text
-        trace.append(
-            WorkflowStepResult(
-                agent=step.agent, ok=True, text=run.text, iterations=run.iterations
-            )
+        outcome = await run_workflow_step(
+            step,
+            index=i,
+            workflow_name=workflow.name,
+            run_input=run_input,
+            previous=previous,
+            composed=composed,
+            deployment=deployment,
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            correlation_id=correlation_id,
         )
+        usage = usage.add(outcome.usage)
+        trace.append(outcome.result)
+        if outcome.fatal:
+            return WorkflowRunResult(
+                ok=False,
+                text=outcome.result.error or "Workflow step failed.",
+                usage=usage,
+                steps=trace,
+            )
+        previous = outcome.result.text
 
     return WorkflowRunResult(ok=True, text=previous, usage=usage, steps=trace)

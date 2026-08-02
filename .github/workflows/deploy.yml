@@ -180,6 +180,16 @@ jobs:
       # for the soft-delete retention window, which blocks a teardown-and-redeploy of
       # the same environment name. See docs/runbooks/deployment.md.
       AI4IA_KEYVAULT_PURGE_PROTECTION: ${{ vars.AI4IA_KEYVAULT_PURGE_PROTECTION || 'false' }}
+      # Durable workflow execution (Azure Durable Task Scheduler). Default OFF
+      # because turning it on PROVISIONS A PAID RESOURCE (a DTS scheduler + task
+      # hub). Runs that do not pass "durable": true are unaffected either way.
+      # Do NOT add `|| 'false'` style fallbacks to the two below: azd's
+      # ${VAR=default} already behaves like POSIX ${VAR:-default}, so an unset
+      # repo variable correctly takes the parameter default (see deployment.md
+      # §3). See infra/modules/durabletask.bicep.
+      AI4IA_ENABLE_DURABLE_WORKFLOWS: ${{ vars.AI4IA_ENABLE_DURABLE_WORKFLOWS || 'false' }}
+      AI4IA_DURABLE_TASK_SKU: ${{ vars.AI4IA_DURABLE_TASK_SKU }}
+      AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS: ${{ vars.AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS }}
       # Web IQ API key. This is a SECRET (not a repo variable). Web search is
       # enabled in main.parameters.json, so if this is empty at provision time
       # bicep drops the webiq-api-key Container App secret and falls back to the

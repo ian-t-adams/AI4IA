@@ -126,9 +126,21 @@ param inlineDocumentComputeEnabled bool = false
 @description('Hand the code interpreter each library document\'s ORIGINAL bytes (the uploaded PDF/xlsx/csv) instead of its Content Understanding parsed text, so the sandbox reads the real file. Layered ON TOP of documentComputeEnabled and reuses the same code_interpreter endpoint/model. Only Azure-OpenAI-supported file types under the size cap are eligible; anything else — unsupported type, oversize, missing original, or an upload failure — transparently falls back to the parsed-text path, so this can never break an existing run. Default OFF (parsed text only).')
 param codeInterpreterRawFilesEnabled bool = false
 
+@description('Run multi-step workflows durably on an Azure Durable Task Scheduler instead of synchronously inside the HTTP request, so a run survives a replica restart, deploy, or scale-in. Default OFF: this PROVISIONS A PAID RESOURCE (a DTS scheduler + task hub), so enabling it is a deliberate, approved operator action. When on, callers may opt a single run in with "durable": true and poll GET /api/workflows/runs/{runId}; runs that do not ask for it are byte-for-byte unchanged. Model calls from a durable run still go proxy -> APIM -> Foundry.')
+param enableDurableWorkflows bool = false
+
+@description('Durable Task Scheduler SKU. Consumption is pay-per-use and right for intermittent workflow load; Dedicated buys reserved capacity and predictable latency for sustained load. Only used when enableDurableWorkflows is true.')
+@allowed([
+  'Consumption'
+  'Dedicated'
+])
+param durableTaskSkuName string = 'Consumption'
+
+@description('Upper bound in seconds on how long a single durable workflow run may take before it is treated as stuck. Only used when enableDurableWorkflows is true.')
+param durableWorkflowTimeoutSeconds int = 1800
+
 @description('Enable the agent-callable generate_image tool. Default OFF. When on, a dedicated image blob storage account is provisioned and any agent may attach generate_image; produced images persist durably and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
-
 @description('Enable the agent-callable generate_video tool. Default OFF. When on, a videos container is provisioned on the shared generated-media account and any agent may attach generate_video; produced clips persist durably and serve through an authenticated endpoint.')
 param videoGenerationEnabled bool = false
 
@@ -761,6 +773,28 @@ module apicenter 'modules/apicenter.bicep' = if (enablePrivateToolCatalog) {
   }
 }
 
+// --- Durable Task Scheduler (durable workflow execution) ---
+// Default OFF: this is a PAID resource, so the checked-in deploy provisions no
+// scheduler and enabling it is a deliberate, approved operator action. The API
+// hosts the orchestrator and activities in-process, so no extra compute here.
+module durabletask 'modules/durabletask.bicep' = if (enableDurableWorkflows) {
+  name: 'durabletask'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    workload: workload
+    environmentName: environmentName
+    uniqueSuffix: uniqueSuffix
+    skuName: durableTaskSkuName
+    // Only the API talks to the scheduler; the web and proxy identities get no
+    // grant, so a compromised front end cannot read orchestration payloads.
+    dataContributorPrincipalIds: [
+      apiIdentity.principalId
+    ]
+  }
+}
+
 // --- Backend API (FastAPI) Container App ---
 module api 'modules/api.bicep' = {
   name: 'api'
@@ -854,6 +888,13 @@ module api 'modules/api.bicep' = {
     // original bytes rather than its parsed text; falls back transparently when a
     // file is ineligible, so it only ever adds fidelity.
     codeInterpreterRawFilesEnabled: codeInterpreterRawFilesEnabled
+    durableWorkflowsEnabled: enableDurableWorkflows
+    // Read the endpoint off the provisioned scheduler rather than rebuilding it
+    // from name + region: a hand-built host would keep deploying happily while
+    // pointing nowhere if the service's hostname format ever changed.
+    durableTaskEndpoint: enableDurableWorkflows ? durabletask.outputs.endpoint : ''
+    durableTaskHubName: enableDurableWorkflows ? durabletask.outputs.taskHubName : ''
+    durableWorkflowTimeoutSeconds: durableWorkflowTimeoutSeconds
     // Agent-callable image tool. Default OFF; the dedicated image blob
     // account/container are emitted to the api env only when the feature is on and
     // the data module provisioned an account (else the api uses an in-memory store).

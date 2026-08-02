@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Durable workflow execution** (`workflows/durable.py`, `infra/modules/durabletask.bicep`).
+  `POST /api/workflows/{name}/run` accepts an opt-in `"durable": true` that schedules the
+  run on an Azure Durable Task Scheduler orchestration and returns `202` with a run id,
+  polled via `GET /api/workflows/runs/{run_id}`. Previously every workflow executed
+  synchronously inside the HTTP request and died with the replica on deploy, scale-in, or
+  crash. Both paths share one implementation (`run_workflow_step()`), so entitlement,
+  tool-authorization, and step-budget guards cannot drift between them, and durable steps
+  still route model calls proxy → APIM → Foundry.
+  **Default-off**: enabling it provisions a paid Azure resource, so it ships inert and
+  needs an approved deploy. With the flag off, `"durable": true` returns `422` rather than
+  silently falling back to synchronous execution. Data-plane RBAC is granted at **task-hub**
+  scope so a future second app on the same scheduler cannot read this app's payloads, and
+  run ids are `<userId>:<uuid4>` so ownership is checked *before* any fetch.
 - `codeInterpreterRawFilesEnabled` Bicep parameter, wiring the previously unreachable
   `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` setting through `main.bicep` → `api.bicep`.
   The feature was fully implemented (`library/compute_capability.py` uploads a document's

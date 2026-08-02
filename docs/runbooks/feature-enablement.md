@@ -36,6 +36,7 @@ feature posture.
 | Raw-file compute (code interpreter) | `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` | none | `codeInterpreterRawFilesEnabled` | Requires document understanding + document compute + a code-interpreter base URL; `api.bicep` emits the env var only when all three hold. Uploads a document's **original bytes** to the sandbox instead of Content Understanding's parsed text, falling back transparently on unsupported/oversize/failed uploads. Had **no Bicep parameter at all** until now, so it was implemented but unreachable from a normal `azd` deploy |
 | Azure Monitor alerting baseline | n/a (infra only) | none | `enableAlerts`, `alertEmail` | Action group + api-5xx / Cosmos-429 metric alerts. An action group with **no** receiver is legal ARM and notifies nobody — see the note below |
 | Key Vault purge protection | n/a (infra only) | none | `keyVaultPurgeProtection` (`AI4IA_KEYVAULT_PURGE_PROTECTION`) | None — but enabling it is **irreversible**, and it reserves the vault name for the soft-delete retention window, which blocks teardown-and-redeploy of the same environment name. Default `false` for that reason; see the note below |
+| Durable workflow execution | `AI4IA_DURABLE_WORKFLOWS_ENABLED` | none | `enableDurableWorkflows`, `durableTaskSkuName`, `durableWorkflowTimeoutSeconds` (`AI4IA_ENABLE_DURABLE_WORKFLOWS`, `AI4IA_DURABLE_TASK_SKU`, `AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS`) | **Provisions a new paid Azure resource** (Durable Task Scheduler + task hub), so it is default `false` and enabling it is a deliberate, approved deploy. Also requires `AI4IA_SESSION_STORE=cosmos`. See the note below |
 
 The checked-in live parameters currently turn on image/video generation,
 document understanding, document compute, inline-attachment code interpreter, raw-file
@@ -534,6 +535,61 @@ you can no longer rebuild it in place. Soft delete — the protection that actua
 recovers an accidentally deleted secret — is **always on** regardless, so leaving
 this false does not leave secrets unrecoverable; it only leaves the vault itself
 purgeable by someone holding the purge permission.
+
+### Durable workflow execution provisions a paid resource
+
+`enableDurableWorkflows` is the only feature flag in this repo that creates a new
+**billable Azure resource** when flipped: `infra/modules/durabletask.bicep` stands
+up a Durable Task Scheduler plus a task hub. Per AGENTS.md that is a stop-and-ask
+change, so it ships default-off and no scheduler is provisioned today.
+
+What it changes when on. `POST /api/workflows/{name}/run` gains an opt-in
+`"durable": true`, which returns **202** with a run id instead of executing the
+workflow inside the HTTP request; progress is polled from
+`GET /api/workflows/runs/{run_id}`. Requests without that field keep running
+synchronously on the existing in-request path — the two share one implementation
+(`run_workflow_step()` in `workflows/runner.py`), so a step cannot behave
+differently depending on which path invoked it.
+
+Enabling it, in order:
+
+1. Set the repo variables `AI4IA_ENABLE_DURABLE_WORKFLOWS=true` and — only if you
+   want something other than the defaults — `AI4IA_DURABLE_TASK_SKU`
+   (`Consumption` | `Dedicated`, default `Consumption`) and
+   `AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS` (default `1800`).
+2. Deploy. Bicep provisions the scheduler and hub, assigns the API's managed
+   identity **Durable Task Data Contributor scoped to the task hub** (not the
+   scheduler — a second app sharing the scheduler must not be able to read this
+   hub's payloads, which carry user prompts and model output), and injects
+   `AI4IA_DURABLE_TASK_ENDPOINT` / `AI4IA_DURABLE_TASK_HUB_NAME`.
+3. Confirm `AI4IA_SESSION_STORE=cosmos`. `validate_runtime` fails closed if it is
+   not: a resumed orchestration can land on any replica, so durable execution
+   over an in-memory session store would silently lose state on resume.
+
+Failure posture is deliberate and worth knowing before you page someone:
+
+- Flag **off**: `"durable": true` returns **422**. It never falls back to running
+  synchronously, because a silent fallback is indistinguishable from success and
+  would hide a misconfigured deploy.
+- Flag **on** but the scheduler is unreachable at startup: the app logs the
+  failure and keeps serving; durable requests then get the same 422. The feature
+  refuses rather than taking the whole API down.
+- `scheduler.properties.ipAllowlist` is `0.0.0.0/0`. Container Apps egress IPs are
+  dynamic without VNet integration, so any narrower literal list would silently
+  lock the API out on the next scale event. The data plane is still Entra-
+  authenticated and RBAC-gated at hub scope, so the allowlist is defence in depth
+  here, not the primary control.
+
+Payload ceiling: the Durable Task Scheduler caps each JSON-serialized
+orchestration payload at **1 MB**. The binding surface is the orchestrator's
+return value, which carries *every* step's output at once (the `previous` text
+handed to the next step is replaced each time, so it is bounded by a single
+result). Six steps of unbounded model output clear 1 MB easily — a reasoning
+model can emit well over 100k tokens in one turn — and the SDK would reject the
+payload only at the *end* of the run, after all the model work had been paid
+for. The orchestrator therefore truncates each step's text to a per-step budget
+**derived from `MAX_STEPS`**, with a visible `[truncated: durable run payload
+limit]` marker rather than a silent drop.
 
 ## Operational reminders
 
