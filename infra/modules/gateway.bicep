@@ -11,6 +11,9 @@ param tags object
 @description('Environment name (e.g. ai4ia-dev).')
 param environmentName string
 
+@description('Workload token (e.g. ai4ia). APIM child entities share one flat namespace per service, so every product/subscription name below is derived from this token -- a second workload on the same shared gateway would otherwise collide on all of them.')
+param workload string
+
 @description('Container Apps managed environment resource ID.')
 param containerEnvId string
 
@@ -126,6 +129,17 @@ param speechVoiceLiveAccountEndpoint string
 
 @description('Managed-identity audience (APIM authentication-managed-identity "resource", without the /.default suffix) APIM authenticates to the Speech Voice Live AIServices account with. Defaults to the audience the azure-ai-voicelive SDK requests by default (https://ai.azure.com/.default) for the fixed api-version this module pins. Kept overridable via a named value (never caller-influenced) so a future api-version or account can move it without a code change.')
 param speechVoiceLiveManagedIdentityAudience string = 'https://ai.azure.com'
+
+// APIM child entities (products, subscriptions) live in one flat namespace per APIM
+// service. This gateway is a shared plane intended to front more than one workload,
+// so each name is derived from ${workload} rather than hardcoded. For workload
+// 'ai4ia' these still emit the original 'ai4ia-*' names, so an existing deployment
+// sees no resource replacement and no subscription-key rotation.
+var proxyModelSubscriptionName = '${workload}-proxy-models'
+var proxyIngressProductName = '${workload}-proxy-ingress'
+var proxyIngressSubscriptionName = '${workload}-api-proxy-ingress'
+var realtimeSubscriptionName = '${workload}-api-realtime'
+var speechVoiceLiveSubscriptionName = '${workload}-api-speech-voice-live'
 
 var foundryBase = endsWith(primaryFoundryEndpoint, '/') ? primaryFoundryEndpoint : '${primaryFoundryEndpoint}/'
 var foundryOpenAiUrl = '${foundryBase}openai'
@@ -358,7 +372,7 @@ resource sharedModelsApiPolicy 'Microsoft.ApiManagement/service/apis/policies@20
 // This scoped key is injected only into SimpleL7Proxy's Host1 configuration.
 resource sharedProxyModelSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
   parent: sharedApim
-  name: 'ai4ia-proxy-models'
+  name: proxyModelSubscriptionName
   properties: {
     displayName: 'AI4IA SimpleL7Proxy model hop'
     scope: sharedModelsApi.id
@@ -375,7 +389,7 @@ resource sharedProxyModelSubscription 'Microsoft.ApiManagement/service/subscript
 // with no APIs. It authenticates only at SimpleL7Proxy and cannot invoke models.
 resource sharedProxyIngressProduct 'Microsoft.ApiManagement/service/products@2024-05-01' = {
   parent: sharedApim
-  name: 'ai4ia-proxy-ingress'
+  name: proxyIngressProductName
   properties: {
     displayName: 'AI4IA FastAPI proxy ingress'
     description: 'Opaque credential accepted only by SimpleL7Proxy.'
@@ -387,10 +401,10 @@ resource sharedProxyIngressProduct 'Microsoft.ApiManagement/service/products@202
 
 resource sharedProxyIngressSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
   parent: sharedApim
-  name: 'ai4ia-api-proxy-ingress'
+  name: proxyIngressSubscriptionName
   properties: {
     displayName: 'AI4IA FastAPI proxy ingress credential'
-    scope: '/products/ai4ia-proxy-ingress'
+    scope: '/products/${proxyIngressProductName}'
     state: 'active'
     allowTracing: false
   }
@@ -440,7 +454,7 @@ resource sharedRealtimeApiPolicy 'Microsoft.ApiManagement/service/apis/operation
 
 resource sharedApiRealtimeSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
   parent: sharedApim
-  name: 'ai4ia-api-realtime'
+  name: realtimeSubscriptionName
   properties: {
     displayName: 'AI4IA FastAPI realtime relay'
     scope: sharedRealtimeApi.id
@@ -523,7 +537,7 @@ resource sharedSpeechVoiceLiveApiPolicy 'Microsoft.ApiManagement/service/apis/op
 // each of those is a different subscription scope declared above.
 resource sharedSpeechVoiceLiveSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = if (speechVoiceLiveEnabled) {
   parent: sharedApim
-  name: 'ai4ia-api-speech-voice-live'
+  name: speechVoiceLiveSubscriptionName
   properties: {
     displayName: 'AI4IA FastAPI Speech Voice Live relay'
     scope: sharedSpeechVoiceLiveApi.id

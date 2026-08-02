@@ -221,5 +221,71 @@ class GloballyUniqueNamingTests(unittest.TestCase):
         self.assertIn("accountName: foundryAccountNames[i]", text)
 
 
+# APIM child entities (products, subscriptions) are NOT globally unique -- they only
+# have to be unique inside their APIM service. That is precisely the problem: the
+# shared Basic v2 plane is deliberately built to front more than one workload, so a
+# second workload deploying the same hardcoded child names does not fail loudly. It
+# adopts and overwrites the first workload's product/subscription, silently rotating
+# the key the running proxy authenticates with.
+#
+# The class above cannot catch this: it skips anything with a `parent:`, because such
+# names carry no global uniqueness requirement. So this is a separate property with a
+# separate rule -- per-workload, not per-subscription.
+#
+# APIs are deliberately excluded. A model/realtime API is shared infrastructure that a
+# second workload should reuse; only the credentials scoped to it must be per-workload.
+APIM_CHILD_CREDENTIALS = (
+    "Microsoft.ApiManagement/service/products",
+    "Microsoft.ApiManagement/service/subscriptions",
+)
+
+
+class ApimChildNamingTests(unittest.TestCase):
+    def test_apim_child_credential_names_are_workload_derived(self) -> None:
+        checked = 0
+        failures = []
+        for path in _bicep_files():
+            text = path.read_text(encoding="utf-8")
+            for symbol, rtype, body in _blocks(text):
+                # products/apis is a link table, not a credential; match exactly.
+                if not any(rtype.startswith(f"{t}@") for t in APIM_CHILD_CREDENTIALS):
+                    continue
+                if "existing" in body.splitlines()[0]:
+                    continue
+                expr = _first_name_expr(body)
+                if expr is None:
+                    failures.append(f"{path.name}: {symbol} has no name: property")
+                    continue
+                checked += 1
+                resolved = _resolve(expr, path)
+                if "workload" not in resolved:
+                    failures.append(
+                        f"{path.name}: {symbol} ({rtype}) name {expr!r} resolves to "
+                        f"{resolved!r}, which does not vary by workload. A second "
+                        "workload on the shared APIM plane would adopt and overwrite "
+                        "this credential, rotating the key its proxy is using."
+                    )
+        self.assertGreaterEqual(
+            checked, 6, "APIM child discovery regressed; the test is not looking"
+        )
+        self.assertEqual(failures, [], "\n" + "\n".join(failures))
+
+    def test_default_workload_preserves_the_deployed_child_names(self) -> None:
+        """The derived names must still emit the live 'ai4ia-*' names today.
+
+        Deriving these from ${workload} is only safe because the default workload is
+        unchanged. If someone edits that default, ARM does not rename an APIM
+        subscription in place -- it creates a new one and the primary key changes,
+        which breaks the running proxy's APIM hop until it picks up the new secret.
+        """
+        main = (INFRA / "main.bicep").read_text(encoding="utf-8")
+        self.assertIn(
+            "param workload string = 'ai4ia'",
+            main,
+            "the default workload changed; every APIM child credential would be "
+            "recreated under a new name and re-keyed on the next deploy",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

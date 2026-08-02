@@ -3,7 +3,7 @@
   "contentVersion": "1.0.0.0",
   "parameters": {
     "workload": {
-      "value": "ai4ia"
+      "value": "${AI4IA_WORKLOAD=ai4ia}"
     },
     "environmentName": {
       "value": "${AZURE_ENV_NAME}"
@@ -135,7 +135,7 @@
       "value": true
     },
     "enableDurableWorkflows": {
-      "value": "${AI4IA_ENABLE_DURABLE_WORKFLOWS=false}"
+      "value": "${AI4IA_ENABLE_DURABLE_WORKFLOWS=true}"
     },
     "durableTaskSkuName": {
       "value": "${AI4IA_DURABLE_TASK_SKU=Consumption}"
