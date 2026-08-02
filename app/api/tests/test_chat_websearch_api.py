@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 
 from ai4ia_api.gateway.client import ChatChunk
 from ai4ia_api.main import create_app
+from ai4ia_api.routers.chat import _RESPONSES_NO_TOOLS_NOTICE
 from ai4ia_api.websearch.factory import build_web_search_service
 from tests.conftest import make_settings
 
@@ -273,5 +274,100 @@ def test_research_slash_command_invokes_web_search_capability():
         assert {"role": "user", "content": "latest AI news"} in gw.first_messages
         assert gw.tool_result_messages
         assert "BEGIN RESULTS" in gw.tool_result_messages[0]
+    finally:
+        client.__exit__(None, None, None)
+
+
+# --- Responses-API models: capability loss is announced, not silent ---------
+#
+# The plain-chat tool loop is built against the chat-completions wire format, so a
+# Responses-API model (gpt-5-pro & friends) cannot be offered these tools. It used
+# to fall straight through, which meant a turn that should have been web-grounded
+# answered from parametric knowledge with nothing — not the model, not the user,
+# not the logs — indicating the capability had been dropped. Tool-*enabled* agents
+# already got a loud 422 for the same combination; plain turns got silence.
+
+
+def _session_with_model(client: TestClient, model: str) -> str:
+    resp = client.post("/api/sessions", json={"title": "Chat", "model": model})
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+def test_responses_model_is_told_its_grounding_tools_are_missing():
+    client = _make_client()
+    try:
+        web = FakeWebClient()
+        _inject_web(client, web)
+        gw = ScriptedWebGateway(call_tool=True)
+        client.app.state.gateway = gw
+
+        sid = _session_with_model(client, "gpt-5-pro")
+        resp = client.post(
+            "/api/chat",
+            json={"sessionId": sid, "content": "What happened in the news today?", "stream": False},
+        )
+        assert resp.status_code == 200, resp.text
+
+        # The tool loop genuinely cannot run here: no tools offered, no search made.
+        assert gw.tools_offered_first_call is False
+        assert web.calls == []
+
+        # ...but the model is TOLD so, so it can answer honestly instead of
+        # implying it searched. This is the whole point of the branch.
+        systems = [m["content"] for m in gw.first_messages if m.get("role") == "system"]
+        assert any(_RESPONSES_NO_TOOLS_NOTICE == s for s in systems)
+        notice = next(s for s in systems if s == _RESPONSES_NO_TOOLS_NOTICE)
+        assert "not available for this turn" in notice.lower()
+        assert "do not fabricate citations" in notice.lower()
+
+        # The notice precedes the user turn, so it is instruction and not content.
+        roles = [m["role"] for m in gw.first_messages]
+        assert roles.index("system") < roles.index("user")
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_responses_model_gets_no_notice_when_no_capabilities_were_possible():
+    # INERTNESS: with web search off and compute off there was nothing to lose, so
+    # the turn must be byte-for-byte what it always was — no spurious notice
+    # telling the model it lacks tools it was never going to be offered.
+    client = _make_client()
+    try:
+        gw = ScriptedWebGateway(call_tool=False)
+        client.app.state.gateway = gw
+        assert client.app.state.web_search is None
+
+        sid = _session_with_model(client, "gpt-5-pro")
+        resp = client.post(
+            "/api/chat",
+            json={"sessionId": sid, "content": "Say hello.", "stream": False},
+        )
+        assert resp.status_code == 200, resp.text
+        systems = [m["content"] for m in gw.first_messages if m.get("role") == "system"]
+        assert all(s != _RESPONSES_NO_TOOLS_NOTICE for s in systems)
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_chat_completions_model_still_gets_tools_not_a_notice():
+    # The chat-completions path must be untouched: real tools, and never the
+    # "you have no tools" notice (which would be an outright lie there).
+    client = _make_client()
+    try:
+        web = FakeWebClient()
+        _inject_web(client, web)
+        gw = ScriptedWebGateway(call_tool=True)
+        client.app.state.gateway = gw
+
+        sid = _new_session(client)  # gpt-5.2 -> chat completions
+        resp = client.post(
+            "/api/chat",
+            json={"sessionId": sid, "content": "What is happening today?", "stream": False},
+        )
+        assert resp.status_code == 200, resp.text
+        assert gw.tools_offered_first_call is True
+        systems = [m["content"] for m in gw.first_messages if m.get("role") == "system"]
+        assert all(s != _RESPONSES_NO_TOOLS_NOTICE for s in systems)
     finally:
         client.__exit__(None, None, None)

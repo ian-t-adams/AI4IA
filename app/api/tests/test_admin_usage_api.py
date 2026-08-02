@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
+from ai4ia_api.agents.mcp_servers import UserMcpServer
 from ai4ia_api.auth.base import AuthError
 from ai4ia_api.main import create_app
 from ai4ia_api.usage.models import UsageRecord
@@ -31,6 +32,7 @@ GATED_ROUTES = [
     "/api/admin/usage/by-user",
     "/api/admin/metrics/resources",
     "/api/admin/metrics/web-search",
+    "/api/admin/metrics/official-mcp",
     "/api/admin/metrics/operations",
     "/api/admin/metrics/security",
 ]
@@ -393,6 +395,69 @@ def test_web_search_health_authmode_managed_identity():
         assert body["authMode"] == "managed_identity"
     finally:
         c.__exit__(None, None, None)
+
+
+# ---- official MCP reachability ----
+
+
+class _StubOfficialMcp:
+    """Minimal stand-in for OfficialMcpService (only what the endpoint reads)."""
+
+    def __init__(self, servers):
+        self._servers = servers
+        self.refresh_calls = 0
+
+    def refresh(self) -> None:
+        self.refresh_calls += 1
+
+    async def list_all(self):
+        return self._servers
+
+
+def _official_server(name: str, *, tools: list, last_error: str | None):
+    return UserMcpServer(
+        id=name,
+        userId="__official__",
+        name=name,
+        displayName=f"Toolbox {name}",
+        endpoint=f"https://apim.example.net/{name}/mcp",
+        host="apim.example.net",
+        discoveredTools=tools,
+        lastError=last_error,
+    )
+
+
+def test_official_mcp_absent_service_reports_posture_not_500(client):
+    # Feature off in default test settings -> app.state.official_mcp_service is None.
+    # The endpoint must still answer, so "off" is distinguishable from "broken".
+    body = client.get("/api/admin/metrics/official-mcp", headers=ADMIN).json()
+    assert body["enabled"] is False
+    assert body["gatewayConfigured"] is False
+    assert body["servers"] == []
+
+
+def test_official_mcp_reports_unreachable_upstream(client):
+    # THE REGRESSION THIS ENDPOINT EXISTS FOR: APIM is healthy and `initialize`
+    # succeeds, but the upstream toolbox does not exist so `tools/list` fails.
+    # Discovery yields zero tools plus an error — that pair must be visible.
+    client.app.state.official_mcp_service = _StubOfficialMcp(
+        [_official_server("ai4ia-toolbox", tools=[], last_error="Toolbox not found")]
+    )
+    body = client.get("/api/admin/metrics/official-mcp", headers=ADMIN).json()
+    assert len(body["servers"]) == 1
+    server = body["servers"][0]
+    assert server["name"] == "ai4ia-toolbox"
+    assert server["toolCount"] == 0
+    assert server["lastError"] == "Toolbox not found"
+
+
+def test_official_mcp_refresh_is_opt_in(client):
+    stub = _StubOfficialMcp([_official_server("ai4ia-toolbox", tools=[], last_error=None)])
+    client.app.state.official_mcp_service = stub
+    client.get("/api/admin/metrics/official-mcp", headers=ADMIN)
+    assert stub.refresh_calls == 0  # cached read by default
+    client.get("/api/admin/metrics/official-mcp?refresh=true", headers=ADMIN)
+    assert stub.refresh_calls == 1  # explicit re-probe after a fix
 
 
 # ---- gating under spoofable dev auth in a deployed env ----

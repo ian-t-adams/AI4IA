@@ -18,10 +18,10 @@ admin surface remain the pre-existing entitlement PUT/DELETE (routers/entitlemen
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth.admin import evaluate_admin, require_admin
 from ..auth.base import AuthenticatedUser
@@ -55,6 +55,43 @@ _IDENTIFY = Query(
         "user directory. Defaults false so dashboard responses are demo-safe."
     ),
 )
+_MCP_REFRESH = Query(
+    default=False,
+    description=(
+        "When true, drop the official-MCP discovery cache before probing so the "
+        "report reflects the upstream right now rather than a cached verdict."
+    ),
+)
+
+
+class OfficialMcpServerHealth(BaseModel):
+    """Per-server outcome of a full MCP discovery (``initialize`` + ``tools/list``).
+
+    ``toolCount == 0`` alongside a non-null ``lastError`` means the server was
+    reachable through APIM but returned no usable tool list — the signature of a
+    missing/misprovisioned upstream. ``lastError`` is the connector's already
+    bounded, redacted summary; it never carries a credential.
+    """
+
+    name: str
+    displayName: str
+    toolCount: int
+    lastConnectedAt: datetime | None = None
+    lastError: str | None = None
+
+
+class OfficialMcpHealthReport(BaseModel):
+    """Admin-plane view of the curated official MCP plane for this replica.
+
+    ``enabled`` and ``gatewayConfigured`` are config posture, so an empty
+    ``servers`` list is never ambiguous: enabled+configured with no servers means
+    the catalog is empty, while ``enabled`` false means the plane is simply off.
+    """
+
+    enabled: bool = False
+    gatewayConfigured: bool = False
+    servers: list[OfficialMcpServerHealth] = []
+    generatedAt: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class WhoAmI(BaseModel):
@@ -340,3 +377,54 @@ async def metrics_web_search(
     else:
         report.authMode = "unconfigured"
     return report
+
+
+@router.get("/metrics/official-mcp", response_model=OfficialMcpHealthReport)
+async def metrics_official_mcp(
+    request: Request,
+    refresh: bool = _MCP_REFRESH,
+    _admin: AuthenticatedUser = Depends(require_admin),
+) -> OfficialMcpHealthReport:
+    """Live reachability of each curated official MCP server (diagnostics only).
+
+    The official-MCP plane fails *soft* by design — a server that cannot be
+    discovered is simply absent from the tool list so MCP never breaks a turn.
+    That softness hides a whole class of provisioning gaps, and one of them
+    shipped: the APIM MCP API, product, subscription and managed-identity policy
+    were all correct, but the upstream Foundry toolbox itself had never been
+    created, so every ``tools/list`` returned "Toolbox not found". Nothing
+    surfaced it, because the MCP ``initialize`` handshake still answered 200 —
+    only the follow-up ``tools/list`` fails. This endpoint therefore reports the
+    result of full discovery (``initialize`` + ``tools/list``), not a ping.
+
+    ``toolCount == 0`` with a non-null ``lastError`` is the signature of exactly
+    that failure. Pass ``refresh=true`` to drop the discovery cache first, so an
+    operator re-checks after fixing the upstream instead of reading a cached
+    verdict.
+    """
+    settings = request.app.state.settings
+    service = getattr(request.app.state, "official_mcp_service", None)
+    if service is None:
+        # Disabled (or enabled-but-unbuildable): report posture, never 500.
+        return OfficialMcpHealthReport(
+            enabled=bool(settings.official_mcp_enabled),
+            gatewayConfigured=bool(settings.official_mcp_gateway_url),
+            servers=[],
+        )
+    if refresh:
+        service.refresh()
+    servers = await service.list_all()
+    return OfficialMcpHealthReport(
+        enabled=bool(settings.official_mcp_enabled),
+        gatewayConfigured=bool(settings.official_mcp_gateway_url),
+        servers=[
+            OfficialMcpServerHealth(
+                name=s.name,
+                displayName=s.displayName,
+                toolCount=len(s.discoveredTools),
+                lastConnectedAt=s.lastConnectedAt,
+                lastError=s.lastError,
+            )
+            for s in servers
+        ],
+    )
