@@ -677,6 +677,42 @@ class GatewayPolicyTests(unittest.TestCase):
             f"they always take their placeholder default: {missing}",
         )
 
+    def test_no_azd_parameter_export_shadows_its_parameter_file_default(self) -> None:
+        """A ``|| 'fallback'`` in deploy.yml makes the parameter file's default dead.
+
+        ``${{ vars.X || 'y' }}`` always expands to something non-empty, so azd never
+        sees an empty value and never reaches the ``${X=default}`` default in
+        main.parameters.json. The workflow becomes a second, invisible source of
+        truth for the same setting.
+
+        This is not theoretical and it fails silently by construction. The durable
+        workflow flag was flipped to ``true`` in main.parameters.json, CI went green,
+        the deploy went green -- and no scheduler was ever provisioned, because
+        ``|| 'false'`` on the export pinned it off. Two of the fourteen shadowed
+        tokens had already drifted away from the default they shadowed. The comment
+        directly above the durable export even said not to add such a fallback,
+        while the very next line carried one.
+
+        The existing reachability test cannot catch this: the token IS exported, so
+        it looks correctly plumbed.
+        """
+        workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+        shadowed = re.findall(
+            r"^\s+([A-Z][A-Z0-9_]*):\s*\$\{\{\s*vars\.[A-Z0-9_]+\s*\|\|", workflow, re.M
+        )
+        exports = re.findall(r"^\s+([A-Z][A-Z0-9_]*):\s*\$\{\{\s*vars\.", workflow, re.M)
+        self.assertGreater(
+            len(exports), 25, "export scan looks vacuous; the pattern stopped matching"
+        )
+        self.assertEqual(
+            sorted(shadowed),
+            [],
+            "these deploy.yml exports carry a `|| fallback`, which shadows the "
+            "${VAR=default} in main.parameters.json and makes that default dead: "
+            f"{sorted(shadowed)}. Drop the fallback and let the parameter file own "
+            "the default -- azd already resolves an empty value to it.",
+        )
+
     def test_pre_routing_failures_are_not_reported_as_throttling(self) -> None:
         """A request that dies before backend selection must not be laundered into a 429.
 
