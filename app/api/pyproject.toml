@@ -124,6 +124,24 @@ dependencies = [
     # it so those outbound calls surface as App Insights dependencies. Activated
     # only when telemetry is configured (same connection-string gate).
     "opentelemetry-instrumentation-httpx>=0.48b0",
+    # Durable Task SDK + the Azure-managed (Durable Task Scheduler) backend, used
+    # by workflows/durable.py to run multi-step workflows out of the HTTP request
+    # so they survive a replica restart, deploy, or scale-in.
+    #
+    # A RUNTIME dependency, not an extra, even though the feature is default-off:
+    # the shipped image installs `.` with no extras, so putting it in an extra
+    # would make AI4IA_DURABLE_WORKFLOWS_ENABLED=true an ImportError at startup —
+    # a documented knob that cannot be turned on without rebuilding. The import
+    # itself is lazy (in DurableWorkflowService.start), so a flag-off deployment
+    # never pays for the grpc/protobuf import.
+    #
+    # NOTE: the SDK's activity executor is SYNCHRONOUS — it calls the activity
+    # function without awaiting and serializes the result, so an `async def`
+    # activity fails with "Failed to serialize object of type 'coroutine'".
+    # Verified against 1.9.0; durable.py's activities are sync bridges for exactly
+    # this reason. Re-check on a major bump.
+    "durabletask>=1.9.0,<2",
+    "durabletask-azuremanaged>=1.9.0,<2",
 ]
 
 [project.optional-dependencies]

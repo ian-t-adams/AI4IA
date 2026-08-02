@@ -134,6 +134,15 @@
     "codeInterpreterRawFilesEnabled": {
       "value": true
     },
+    "enableDurableWorkflows": {
+      "value": "${AI4IA_ENABLE_DURABLE_WORKFLOWS=false}"
+    },
+    "durableTaskSkuName": {
+      "value": "${AI4IA_DURABLE_TASK_SKU=Consumption}"
+    },
+    "durableWorkflowTimeoutSeconds": {
+      "value": "${AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS=1800}"
+    },
     "searchEnabled": {
       "value": true
     },

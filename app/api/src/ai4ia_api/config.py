@@ -500,6 +500,31 @@ class Settings(BaseSettings):
     web_search_max_results: int = 5
     web_search_max_content_chars: int = 6000
 
+    # --- Durable workflow execution (Azure Durable Task Scheduler) ---
+    # Default OFF. When off, ``POST /api/workflows/{name}/run`` behaves exactly as
+    # before (the whole multi-step pipeline runs synchronously inside the HTTP
+    # request) and NO Durable Task client, worker, or gRPC channel is constructed.
+    #
+    # When ON, a caller may additionally opt a single run into durable execution
+    # with ``"durable": true``; the endpoint then returns 202 + a run id and the
+    # orchestration survives replica loss. The opt-in is per-REQUEST rather than a
+    # behaviour switch on the flag, deliberately: flipping an operator flag must
+    # never change the response shape an existing client already depends on.
+    #
+    # Durable Task Scheduler is compute-decoupled (it is NOT Azure Functions), so
+    # the worker runs inside this same Container App and needs no new compute.
+    # Model calls issued from a durable run still go proxy -> APIM -> Foundry like
+    # every other turn; durability changes where the loop runs, not its egress.
+    durable_workflows_enabled: bool = False
+    # gRPC endpoint of the scheduler, e.g.
+    # ``https://<name>.<region>.durabletask.io``. Managed identity is the only
+    # supported credential — there is no key/connection-string mode here.
+    durable_task_endpoint: str | None = None
+    durable_task_hub_name: str | None = None
+    # Upper bound on how long a durable run may take before the status endpoint
+    # reports it failed. Bounds the orchestration, not a single model call.
+    durable_workflow_timeout_seconds: int = 1800
+
     # --- Rolling summarization: sustainable long conversations ---
     # Default OFF. When off, the chat path sends today's full history byte-for-byte
     # and never injects a summary block — the manual ``/summarize`` command still
@@ -939,6 +964,38 @@ class Settings(BaseSettings):
                 "Web search requires AI4IA_WEBIQ_API_KEY or "
                 "AI4IA_WEBIQ_USE_ENTRA=true outside local, or disable it with "
                 "AI4IA_WEB_SEARCH_ENABLED=false."
+            )
+        if (
+            self.durable_workflows_enabled
+            and self.env != Environment.local
+            and not (self.durable_task_endpoint and self.durable_task_hub_name)
+        ):
+            # The worker resolves work over gRPC against a specific scheduler and
+            # task hub; neither has a meaningful default. A deployed enable without
+            # them would accept ``durable: true``, hand back a run id, and then
+            # never start a worker to execute it — the caller polls a run that can
+            # never progress. Fail closed rather than issue receipts for work
+            # nothing will do. Local may enable against the emulator.
+            raise RuntimeError(
+                "Durable workflows require AI4IA_DURABLE_TASK_ENDPOINT and "
+                "AI4IA_DURABLE_TASK_HUB_NAME outside local, or disable them with "
+                "AI4IA_DURABLE_WORKFLOWS_ENABLED=false."
+            )
+        if (
+            self.durable_workflows_enabled
+            and self.env != Environment.local
+            and self.session_store != SessionStoreKind.cosmos
+        ):
+            # A durable run outlives the request that started it, so its result is
+            # persisted by whichever replica finishes it — not the one the caller
+            # talked to. With the in-memory session store those replicas share
+            # nothing: the run would complete and write its assistant message
+            # somewhere the caller can never read it. Durability without shared
+            # storage is theatre.
+            raise RuntimeError(
+                "Durable workflows require the Cosmos session store outside local "
+                "(AI4IA_SESSION_STORE=cosmos), or disable them with "
+                "AI4IA_DURABLE_WORKFLOWS_ENABLED=false."
             )
         if (
             self.custom_tools_enabled

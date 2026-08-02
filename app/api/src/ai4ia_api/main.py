@@ -338,6 +338,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # never taken and the turn is byte-for-byte unchanged; the manual
         # ``/summarize`` command still works regardless.
         app.state.summarizer = build_summarization_service(settings)
+        # Durable workflow execution. Built ONLY when enabled, so a default
+        # deployment constructs no gRPC channel and starts no worker thread.
+        # A start failure must not take the app down: every other surface still
+        # works, and the run endpoint refuses `durable: true` with a clear 422
+        # rather than accepting work nothing will execute.
+        app.state.durable_workflows = None
+        if settings.durable_workflows_enabled:
+            from .workflows.durable import DurableWorkflowService
+
+            durable = DurableWorkflowService(
+                endpoint=settings.durable_task_endpoint or "",
+                task_hub=settings.durable_task_hub_name or "",
+                app_state=app.state,
+                timeout_seconds=settings.durable_workflow_timeout_seconds,
+            )
+            try:
+                await durable.start()
+                app.state.durable_workflows = durable
+            except Exception:  # noqa: BLE001 - never fail startup over it
+                logger.exception(
+                    "durable workflows failed to start; durable runs will be "
+                    "refused until the next restart"
+                )
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
         try:
@@ -386,6 +409,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.workflow_service.close()
             except Exception:  # noqa: BLE001
                 logger.warning("workflow service close failed", exc_info=True)
+            durable_workflows = getattr(app.state, "durable_workflows", None)
+            if durable_workflows is not None:
+                try:
+                    await durable_workflows.stop()
+                except Exception:  # noqa: BLE001
+                    logger.warning("durable workflows stop failed", exc_info=True)
             mcp_service = getattr(app.state, "mcp_service", None)
             if mcp_service is not None:
                 try:

@@ -206,6 +206,33 @@ are admin-curated and reached through an MCP-only APIM product. Foundry Toolbox 
 one official MCP upstream; WebIQ search is a separate feature-gated server-side
 capability whose bounded output is treated as untrusted model context.
 
+### Durable workflow execution
+
+Multi-step workflows run **synchronously inside the HTTP request** by default, so
+they die with the replica on deploy, scale-in, or crash. A default-off flag
+(`durableWorkflowsEnabled`) moves an opt-in run onto an **Azure Durable Task
+Scheduler** orchestration instead: `POST /api/workflows/{name}/run` with
+`"durable": true` returns `202` and a run id, polled from
+`GET /api/workflows/runs/{run_id}`.
+
+Three properties are load-bearing:
+
+- **One implementation, two entry points.** Both paths call `run_workflow_step()`
+  in `workflows/runner.py`, so entitlement, tool-authorization, and step-budget
+  guards cannot drift between them.
+- **Model traffic still goes through the gateway.** The orchestration runs on the
+  same Container Apps replicas as the API, so a durable step's model calls take
+  the identical proxy → APIM → Foundry path. Durable execution adds a scheduler,
+  not a second egress route (invariant 1 is unchanged).
+- **Ownership is in the run id.** Run ids are `<internalUserId>:<uuid4>` minted
+  server-side; `GET /workflows/runs/{run_id}` parses the owner and rejects a
+  mismatch **before** fetching anything, so a guessed id cannot confirm existence.
+
+The scheduler is a **paid resource**, so the flag ships off and no scheduler is
+provisioned. Data-plane RBAC is granted at **task-hub** scope, not scheduler
+scope, so a second application sharing a scheduler cannot read this app's
+orchestration payloads.
+
 ### Activity visibility
 
 The activity contract is **not chain-of-thought**: user-facing activity and
@@ -230,6 +257,8 @@ stored with the completed turn.
 | Concurrent forget/write | Epoch fence rejects stale writes; conditional purge preserves post-forget records |
 | Derived memory/search failure | Canonical chat can continue where safe; degraded context is observable and rebuildable |
 | Canonical persistence failure | Surface an error/partial state; do not claim durable completion |
+| Durable workflows off or scheduler unreachable | `"durable": true` returns `422`; never a silent synchronous fallback, which would be indistinguishable from success |
+| Durable run payload nears the scheduler's 1 MB ceiling | Step text is truncated with a visible marker so the run completes; a rejected payload would discard model work already paid for |
 | Voice socket/provider failure | Close with bounded safe details and correlation metadata; preserve the typed-chat session |
 | Telemetry backend unavailable | User path continues; operator panel reports partial/stale/unavailable rather than zero |
 

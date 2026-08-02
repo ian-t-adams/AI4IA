@@ -48,6 +48,10 @@ GLOBALLY_UNIQUE = (
     "Microsoft.EventHub/namespaces",
     "Microsoft.AppConfiguration/configurationStores",
     "Microsoft.DBforPostgreSQL/flexibleServers",
+    # The Durable Task Scheduler's data plane is public DNS
+    # (https://<name>.<region>.durabletask.io), so its name is globally unique.
+    # Its taskHubs child is excluded automatically by the `parent:` check below.
+    "Microsoft.DurableTask/schedulers",
 )
 
 # Anything that makes a name vary per subscription is acceptable evidence.
