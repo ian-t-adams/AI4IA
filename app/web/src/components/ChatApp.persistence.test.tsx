@@ -401,12 +401,12 @@ describe("ChatApp uploads", () => {
     const user = userEvent.setup();
     render(<ChatApp />);
 
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(
       screen.getByRole("textbox", { name: "System prompt" }),
       "Draft prompt",
     );
-    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
     await user.selectOptions(
       screen.getByRole("combobox", { name: "Agent" }),
       "researcher",

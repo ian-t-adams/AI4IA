@@ -337,9 +337,16 @@ button:disabled {
   font-size: 0.78rem;
 }
 
+/* Three groups, three fixed columns. The old rule was `flex: 1 1 86px` with
+   wrapping, which at the 344px nav content box (360 − 2×8 padding) fit
+   exactly three 86px items per row (3×86 + 2×4 gap = 266; a fourth needs
+   356) — so seven tabs wrapped 3/3/1 and the orphan stretched full width.
+   A fixed 3-column grid makes row count structural rather than a
+   consequence of basis vs. intrinsic label width, so it cannot go ragged
+   at any width or font scale. */
 .inspector-nav {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   padding: 8px;
   overflow: visible;
@@ -347,14 +354,24 @@ button:disabled {
 }
 
 .inspector-nav button {
-  white-space: nowrap;
   border: 0;
   border-radius: 7px;
   background: transparent;
   color: var(--fg-muted);
   padding: 6px 8px;
-  font-size: 0.78rem;
-  flex: 1 1 86px;
+  font-size: 0.85rem;
+  /* No `white-space: nowrap`: --font-scale can double the type, and a
+     label that cannot wrap would overflow its track instead of growing
+     taller (WCAG 1.4.4 / 1.4.10). `min-width: 0` lets the track shrink
+     below the button's min-content width rather than forcing overflow.
+     Three tabs at 44px still occupy less vertical space than the three
+     wrapped rows of seven did, so the targets get bigger and the nav
+     gets shorter at the same time. */
+  min-width: 0;
+  min-height: 44px;
+  text-align: center;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
 }
 
 .inspector-nav button[aria-selected="true"] {
@@ -399,6 +416,70 @@ button:disabled {
   margin: 0;
   font-size: 1rem;
   text-wrap: balance;
+}
+
+/* Second level: WAI-ARIA accordion inside a group's tabpanel. */
+.inspector-accordion {
+  display: flex;
+  flex-direction: column;
+}
+
+.inspector-accordion-item + .inspector-accordion-item {
+  border-top: 1px solid var(--border);
+}
+
+.inspector-accordion-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.inspector-accordion-header h2 {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 1rem;
+}
+
+.inspector-accordion-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  padding: 10px 0;
+  text-align: start;
+  text-wrap: balance;
+}
+
+/* The caret is drawn, not typed. Generated *text* content participates in
+   the accessible name, so a "▸" glyph here would silently rename every
+   trigger; `content: ""` contributes nothing to the name. */
+.inspector-accordion-trigger::before {
+  content: "";
+  flex: 0 0 auto;
+  inline-size: 8px;
+  block-size: 8px;
+  background: currentColor;
+  clip-path: polygon(15% 0%, 100% 50%, 15% 100%);
+  transition: transform 120ms ease;
+}
+
+.inspector-accordion-trigger[aria-expanded="true"]::before {
+  transform: rotate(90deg);
+}
+
+.inspector-accordion-region {
+  padding-bottom: 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inspector-accordion-trigger::before {
+    transition: none;
+  }
 }
 
 .inspector-actions {
@@ -764,11 +845,6 @@ button:disabled {
 
   .composer-submit-button {
     grid-column: 3;
-  }
-
-  .inspector-nav {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
   }
 }
 
