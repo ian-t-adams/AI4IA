@@ -42,7 +42,7 @@ def test_configure_telemetry_noop_without_connection_string(monkeypatch):
     monkeypatch.setattr(logging_setup, "_telemetry_configured", False)
     assert logging_setup.configure_telemetry(None) is False
     assert logging_setup.configure_telemetry("") is False
-    assert logging_setup.telemetry_enabled() is False
+    assert logging_setup._telemetry_configured is False
 
 
 def test_emit_custom_event_noop_when_disabled(monkeypatch):
@@ -161,7 +161,7 @@ def test_configure_telemetry_initializes_once(monkeypatch):
     monkeypatch.setattr(otel_httpx, "HTTPXClientInstrumentor", _FakeInstrumentor)
 
     assert logging_setup.configure_telemetry("InstrumentationKey=abc") is True
-    assert logging_setup.telemetry_enabled() is True
+    assert logging_setup._telemetry_configured is True
     # Custom-event records are kept out of the root stdout handler once exported.
     assert logging_setup._telemetry_logger.propagate is False
     # Idempotent: a second call must not reconfigure the exporter.
@@ -180,7 +180,7 @@ def test_configure_telemetry_swallows_init_failure(monkeypatch):
     monkeypatch.setattr(amo, "configure_azure_monitor", _boom)
     # Telemetry init failure must never break startup.
     assert logging_setup.configure_telemetry("InstrumentationKey=abc") is False
-    assert logging_setup.telemetry_enabled() is False
+    assert logging_setup._telemetry_configured is False
 
 
 async def test_record_completion_emits_chat_completion_event(monkeypatch):

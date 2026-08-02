@@ -131,6 +131,9 @@
     "inlineDocumentComputeEnabled": {
       "value": true
     },
+    "codeInterpreterRawFilesEnabled": {
+      "value": true
+    },
     "searchEnabled": {
       "value": true
     },

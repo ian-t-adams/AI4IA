@@ -222,6 +222,17 @@ def main() -> int:
     publisher = text(parameter_value(parameters, "apimPublisherEmail"))
     if owner in {"", "ian-t-adams"}:
         errors.append("owner must be set to the current accountable operator, not a personal default.")
+    elif owner == "ai4ia-operator":
+        # The guard above was written against an older repo default and had gone
+        # inert: `ai4ia-operator` is what main.bicep actually ships, so a deploy
+        # that never sets AI4IA_OWNER sailed straight past the check meant to
+        # catch exactly that. Warn rather than error -- infra-validate runs this
+        # with no environment, so the token legitimately resolves to the default
+        # there, and erroring would fail every PR instead of the real deploy.
+        warnings.append(
+            "owner is still the shipped placeholder 'ai4ia-operator'; set the "
+            "AI4IA_OWNER repo variable so cost and ownership tags are accountable."
+        )
     if publisher in {"", "ianadams@microsoft.com"}:
         errors.append("apimPublisherEmail must be deployment-owned, not a personal mailbox.")
     elif publisher.endswith("@example.com"):

@@ -1,6 +1,8 @@
 """Display-safe, caller-aware tool governance catalog."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
@@ -11,6 +13,8 @@ from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..conversations.policy import resolve_conversation_policy
 from ..sessions.repository import SessionNotFoundError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
@@ -126,7 +130,24 @@ async def list_tools(
                         )
                     )
         except Exception:
-            pass
+            # Never let one broken catalog blank the whole tool list — but do not
+            # drop it silently either. A bare ``pass`` here made a user's MCP tools
+            # vanish from the UI with no trace, so the user concluded they had never
+            # been configured. Log for the operator AND surface an unavailable row,
+            # mirroring the "governance metadata is unavailable" rows below.
+            logger.warning("user MCP tool catalog listing failed", exc_info=True)
+            items.append(
+                ToolCatalogItem(
+                    name="mcp:user:unavailable",
+                    label="Your MCP tools",
+                    description="Your MCP servers could not be listed just now.",
+                    source="MCP",
+                    available=False,
+                    selectable=False,
+                    detail="The server could not read your MCP servers. Existing tools are unaffected; retry shortly.",
+                    ownership="user",
+                )
+            )
     official = getattr(request.app.state, "official_mcp_service", None)
     if official is not None:
         try:
@@ -153,7 +174,21 @@ async def list_tools(
                         )
                     )
         except Exception:
-            pass
+            # Same reasoning as the user-MCP catalog above: log for the operator and
+            # show the degradation instead of silently returning a short list.
+            logger.warning("official MCP tool catalog listing failed", exc_info=True)
+            items.append(
+                ToolCatalogItem(
+                    name="mcp:official:unavailable",
+                    label="Official MCP tools",
+                    description="The official MCP catalog could not be listed just now.",
+                    source="Official MCP",
+                    available=False,
+                    selectable=False,
+                    detail="The server could not read the official MCP catalog. Retry shortly.",
+                    ownership="application",
+                )
+            )
     inherited_tools: tuple[str, ...] = ()
     if session_id:
         try:

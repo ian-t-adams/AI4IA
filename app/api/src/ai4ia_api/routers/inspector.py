@@ -142,6 +142,12 @@ async def get_inspector(
             try:
                 library_documents.append(UserDocumentSummary.of(document))
             except Exception:
+                # The neighbouring handler above logs; this one used to drop a
+                # document from the inspector with no trace at all.
+                logger.warning(
+                    "inspector summary build failed; omitting one document",
+                    exc_info=True,
+                )
                 continue
 
     usage = request.app.state.usage

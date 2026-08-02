@@ -123,6 +123,9 @@ param codeInterpreterModel string = ''
 @description('Enable the inline-attachment code interpreter (analyze_attachment): the chat agent can crack/analyze an INLINE composer attachment (PDF layout / xlsx cells / image) in the Responses API code_interpreter sandbox. Reuses the same code_interpreter endpoint/model as document compute. Default OFF: no original bytes are retained, the tool is never advertised, and no ephemeral container is provisioned, so the chat hot path is byte-for-byte unchanged.')
 param inlineDocumentComputeEnabled bool = false
 
+@description('Hand the code interpreter each library document\'s ORIGINAL bytes (the uploaded PDF/xlsx/csv) instead of its Content Understanding parsed text, so the sandbox reads the real file. Layered ON TOP of documentComputeEnabled and reuses the same code_interpreter endpoint/model. Only Azure-OpenAI-supported file types under the size cap are eligible; anything else — unsupported type, oversize, missing original, or an upload failure — transparently falls back to the parsed-text path, so this can never break an existing run. Default OFF (parsed text only).')
+param codeInterpreterRawFilesEnabled bool = false
+
 @description('Enable the agent-callable generate_image tool. Default OFF. When on, a dedicated image blob storage account is provisioned and any agent may attach generate_image; produced images persist durably and serve through an authenticated endpoint.')
 param imageGenerationEnabled bool = false
 
@@ -847,6 +850,10 @@ module api 'modules/api.bicep' = {
     // endpoint/model above; emits its enable flag + ephemeral container name only when on.
     inlineDocumentComputeEnabled: inlineDocumentComputeEnabled
     inlineAttachmentBlobContainer: data.outputs.inlineAttachmentBlobContainerName
+    // Raw-file compute (default OFF). Gives the code interpreter the document's
+    // original bytes rather than its parsed text; falls back transparently when a
+    // file is ineligible, so it only ever adds fidelity.
+    codeInterpreterRawFilesEnabled: codeInterpreterRawFilesEnabled
     // Agent-callable image tool. Default OFF; the dedicated image blob
     // account/container are emitted to the api env only when the feature is on and
     // the data module provisioned an account (else the api uses an in-memory store).
