@@ -91,15 +91,15 @@ jobs:
       # Multi-application gateway controls are default-off. The profile projection
       # is a secret and validation refuses profile enablement until the edge has a
       # verified workload identity rather than the temporary shared-key contract.
-      AI4IA_PROXY_PROFILES_ENABLED: ${{ vars.AI4IA_PROXY_PROFILES_ENABLED || 'false' }}
+      AI4IA_PROXY_PROFILES_ENABLED: ${{ vars.AI4IA_PROXY_PROFILES_ENABLED }}
       AI4IA_PROXY_PROFILE_PROJECTION_JSON: ${{ secrets.AI4IA_PROXY_PROFILE_PROJECTION_JSON }}
-      AI4IA_PROXY_PRIORITIES_ENABLED: ${{ vars.AI4IA_PROXY_PRIORITIES_ENABLED || 'false' }}
+      AI4IA_PROXY_PRIORITIES_ENABLED: ${{ vars.AI4IA_PROXY_PRIORITIES_ENABLED }}
       AI4IA_PROXY_PRIORITY_WORKERS: ${{ vars.AI4IA_PROXY_PRIORITY_WORKERS }}
-      AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED: ${{ vars.AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED || 'false' }}
-      AI4IA_PROXY_ASYNC_ENABLED: ${{ vars.AI4IA_PROXY_ASYNC_ENABLED || 'false' }}
-      AI4IA_PROXY_WORKERS: ${{ vars.AI4IA_PROXY_WORKERS || '10' }}
-      AI4IA_PROXY_MIN_REPLICAS: ${{ vars.AI4IA_PROXY_MIN_REPLICAS || '1' }}
-      AI4IA_PROXY_MAX_REPLICAS: ${{ vars.AI4IA_PROXY_MAX_REPLICAS || '3' }}
+      AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED: ${{ vars.AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED }}
+      AI4IA_PROXY_ASYNC_ENABLED: ${{ vars.AI4IA_PROXY_ASYNC_ENABLED }}
+      AI4IA_PROXY_WORKERS: ${{ vars.AI4IA_PROXY_WORKERS }}
+      AI4IA_PROXY_MIN_REPLICAS: ${{ vars.AI4IA_PROXY_MIN_REPLICAS }}
+      AI4IA_PROXY_MAX_REPLICAS: ${{ vars.AI4IA_PROXY_MAX_REPLICAS }}
       AI4IA_PROXY_APPCONFIG_LABEL: ${{ vars.AI4IA_PROXY_APPCONFIG_LABEL }}
       AI4IA_APP_ENVIRONMENT: ${{ vars.AI4IA_APP_ENVIRONMENT }}
       AI4IA_AUTH_PROVIDER: ${{ vars.AI4IA_AUTH_PROVIDER }}
@@ -143,13 +143,14 @@ jobs:
       AI4IA_ADMIN_API_SECRET: ${{ secrets.AI4IA_ADMIN_API_SECRET }}
       # Canonical memory backend selection for the staged mem0 -> Cosmos cutover.
       # main.parameters.json resolves memoryStore from ${AI4IA_MEMORY_STORE=cosmos};
-      # CI can't run `azd env set`, so plumb it here or every deploy silently takes
-      # the 'cosmos' default and activates memory against an empty container (also
-      # deadlocking the migration's post-cutover safety guard). Fail-closed default
-      # 'disabled' keeps the provisioned Cosmos `memories` container inactive until
-      # the mem0 -> Cosmos migration is applied/verified; then set this repo variable
-      # to 'cosmos' and redeploy. See docs/runbooks/memory-migration.md.
-      AI4IA_MEMORY_STORE: ${{ vars.AI4IA_MEMORY_STORE || 'disabled' }}
+      # CI can't run `azd env set`, so plumb it here or the parameter never sees the
+      # repo variable at all. This carried a `|| 'disabled'` fallback while the
+      # migration was staged, to keep the provisioned Cosmos `memories` container
+      # inactive until the cutover was applied and verified. That cutover is done --
+      # the repo variable and the live container app are both `cosmos` -- and the
+      # fallback had become a second, divergent default shadowing the parameter file
+      # (which says `cosmos`), so it is gone. See docs/runbooks/memory-migration.md.
+      AI4IA_MEMORY_STORE: ${{ vars.AI4IA_MEMORY_STORE }}
       # Speech Voice Live is a second, additive realtime provider fronted by the
       # SAME shared active APIM (a dedicated /speech/voice-live/realtime
       # WebSocket API + distinct subscription key; see infra/modules/gateway.bicep).
@@ -162,9 +163,9 @@ jobs:
       # base URL/gateway key are NOT set here; they come from gateway.bicep's
       # dedicated APIM subscription output, matching the realtime provider
       # pattern (never a repo variable/secret).
-      AI4IA_SPEECH_VOICE_LIVE_ENABLED: ${{ vars.AI4IA_SPEECH_VOICE_LIVE_ENABLED || 'false' }}
-      AI4IA_VOICE_PROVIDER_ALLOWLIST: ${{ vars.AI4IA_VOICE_PROVIDER_ALLOWLIST || 'azure_openai' }}
-      AI4IA_VOICE_DEFAULT_PROVIDER: ${{ vars.AI4IA_VOICE_DEFAULT_PROVIDER || 'azure_openai' }}
+      AI4IA_SPEECH_VOICE_LIVE_ENABLED: ${{ vars.AI4IA_SPEECH_VOICE_LIVE_ENABLED }}
+      AI4IA_VOICE_PROVIDER_ALLOWLIST: ${{ vars.AI4IA_VOICE_PROVIDER_ALLOWLIST }}
+      AI4IA_VOICE_DEFAULT_PROVIDER: ${{ vars.AI4IA_VOICE_DEFAULT_PROVIDER }}
       AI4IA_SPEECH_VOICE_LIVE_MI_AUDIENCE: ${{ vars.AI4IA_SPEECH_VOICE_LIVE_MI_AUDIENCE }}
       # Budget start date pin. Empty -> bicep uses the first of the current month
       # (drifts, so the first deploy of each new month fails on the immutable
@@ -176,22 +177,28 @@ jobs:
       # AI4IA_ENABLE_ALERTS repo variable to 'true' AND set AI4IA_ALERT_EMAIL to a
       # recipient (an enabled action group with no receiver notifies no one). See
       # infra/modules/alerts.bicep and docs/roadmap.md.
-      AI4IA_ENABLE_ALERTS: ${{ vars.AI4IA_ENABLE_ALERTS || 'false' }}
+      AI4IA_ENABLE_ALERTS: ${{ vars.AI4IA_ENABLE_ALERTS }}
       AI4IA_ALERT_EMAIL: ${{ vars.AI4IA_ALERT_EMAIL }}
       # Key Vault purge protection. Default OFF so the wipe-and-rebuild workflow can
       # purge and recreate the vault under the same name. Setting this to 'true' is
       # IRREVERSIBLE -- Azure offers no way back, and the vault name stays reserved
       # for the soft-delete retention window, which blocks a teardown-and-redeploy of
       # the same environment name. See docs/runbooks/deployment.md.
-      AI4IA_KEYVAULT_PURGE_PROTECTION: ${{ vars.AI4IA_KEYVAULT_PURGE_PROTECTION || 'false' }}
-      # Durable workflow execution (Azure Durable Task Scheduler). Default OFF
-      # because turning it on PROVISIONS A PAID RESOURCE (a DTS scheduler + task
-      # hub). Runs that do not pass "durable": true are unaffected either way.
-      # Do NOT add `|| 'false'` style fallbacks to the two below: azd's
+      AI4IA_KEYVAULT_PURGE_PROTECTION: ${{ vars.AI4IA_KEYVAULT_PURGE_PROTECTION }}
+      # Durable workflow execution (Azure Durable Task Scheduler). Turning it on
+      # PROVISIONS A PAID RESOURCE (a DTS scheduler + task hub), so the posture
+      # lives in main.parameters.json and this only carries the override. Runs
+      # that do not pass "durable": true are unaffected either way.
+      # Do NOT add `|| 'false'` style fallbacks to the three below: azd's
       # ${VAR=default} already behaves like POSIX ${VAR:-default}, so an unset
       # repo variable correctly takes the parameter default (see deployment.md
-      # §3). See infra/modules/durabletask.bicep.
-      AI4IA_ENABLE_DURABLE_WORKFLOWS: ${{ vars.AI4IA_ENABLE_DURABLE_WORKFLOWS || 'false' }}
+      # §3). This line carried one anyway, directly under this comment, and it
+      # silently pinned the deploy to `false` for a full release after the
+      # parameter default was changed to `true` -- the parameter file said the
+      # feature was on, no scheduler was ever provisioned, and the deploy stayed
+      # green because a shadowed default fails silently by construction.
+      # See infra/modules/durabletask.bicep.
+      AI4IA_ENABLE_DURABLE_WORKFLOWS: ${{ vars.AI4IA_ENABLE_DURABLE_WORKFLOWS }}
       AI4IA_DURABLE_TASK_SKU: ${{ vars.AI4IA_DURABLE_TASK_SKU }}
       AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS: ${{ vars.AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS }}
       # Web IQ API key. This is a SECRET (not a repo variable). Web search is

@@ -16,9 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   crash. Both paths share one implementation (`run_workflow_step()`), so entitlement,
   tool-authorization, and step-budget guards cannot drift between them, and durable steps
   still route model calls proxy → APIM → Foundry.
-  **Enabled in production 2026-08-02** after an approved deploy; the
-  `${AI4IA_ENABLE_DURABLE_WORKFLOWS=true}` token is retained so another environment can
-  still opt out. With the flag off, `"durable": true` returns `422` rather than
+  **Enabled in production 2026-08-02**; the `${AI4IA_ENABLE_DURABLE_WORKFLOWS=true}`
+  token is retained so another environment can still opt out. (The first attempt at
+  enabling it did not take effect — see the shadowed-default fix under Fixed — so the
+  scheduler was actually provisioned by the follow-up deploy.) With the flag off,
+  `"durable": true` returns `422` rather than
   silently falling back to synchronous execution. Data-plane RBAC is granted at **task-hub**
   scope so a future second app on the same scheduler cannot read this app's payloads, and
   run ids are `<userId>:<uuid4>` so ownership is checked *before* any fetch.
@@ -184,6 +186,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   before the bump.
 
 ### Fixed
+
+- **Fourteen deploy-workflow exports silently shadowed their parameter-file defaults.**
+  `${{ vars.X || 'fallback' }}` always expands to something non-empty, so azd never saw an
+  empty value and never reached the `${X=default}` in `infra/main.parameters.json` — the
+  workflow was a second, invisible source of truth for the same setting. Two had already
+  drifted apart from the default they shadowed. This is what made the first attempt at
+  enabling durable workflows inert: the parameter file said `true`, CI was green, the deploy
+  was green, and `|| 'false'` pinned it off, so no scheduler was ever provisioned and
+  nothing anywhere reported a problem. (`AI4IA_MEMORY_STORE` was the other, latent because
+  the repo variable happens to be set — deleting that variable would have quietly disabled
+  memory while the parameter file claimed `cosmos`.) The comment directly above the durable
+  export already said not to add such a fallback, while the next line carried one. All
+  fourteen removed; the parameter file now owns every default, since azd resolves an empty
+  variable to it (proven live: `AI4IA_POSTGRES_LOCATION` is unset and has no fallback, and
+  Postgres sits in the parameter default's `centralus`). Pinned by
+  `test_no_azd_parameter_export_shadows_its_parameter_file_default`, which the existing
+  reachability test could not catch — a shadowed token *is* exported, so it looks correctly
+  plumbed.
 
 - Three silently-swallowed failures in the API. `routers/tools.py` wrapped both MCP
   catalog-listing loops in a bare `except Exception: pass` and imported **no logger at
