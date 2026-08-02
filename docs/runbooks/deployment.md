@@ -769,23 +769,58 @@ side is the weaker of the two — see below before you need it.
 
 ### Data recovery posture (know this before you need it)
 
-The Cosmos account is **serverless**, which constrains recovery more than most
-people expect:
+The Cosmos account is **serverless**, and this is the single most important
+operational fact in this runbook, so it is worth stating precisely.
 
 | | Reality |
 | --- | --- |
-| Backup mode | `Periodic` — pinned explicitly in `infra/modules/data.bicep` |
-| Snapshot interval | every 4 hours, 8 hours retained (**two snapshots**) |
-| Redundancy | Geo |
-| Self-service point-in-time restore | **Not available.** Continuous backup is not usable on a serverless account |
-| How you restore | Raise an Azure **support ticket** |
-| Where it restores to | A **new provisioned-throughput account** — Azure refuses to restore *into* a serverless account |
+| Backup mode | `Continuous` (tier `Continuous7Days`) — pinned in `infra/modules/data.bicep` |
+| Recovery granularity | **any second** within the last 7 days |
+| Self-service point-in-time restore | **Yes** — `az cosmosdb restore`, no support ticket |
+| Where it restores to | A **new serverless account** (`createMode=Restore`); the source account is left untouched |
+| Cost | **No backup-storage charge.** `Continuous7Days` is the only continuous tier that is free to store; 30/35-day tiers bill for it. Restore *operations* are billed when you run one |
+| Reversible? | **No.** Continuous mode cannot be switched back to periodic |
 
 So the effective recovery window for sessions, messages, usage, memory, and user
-agents is roughly **eight hours**, and exercising it is a support engagement that
-lands the data in a differently-shaped account, not an in-place undo. Anything
-older than that window is gone. Treat destructive data operations accordingly:
-there is no "restore yesterday".
+agents is **seven days**, and exercising it is a self-service operation you can
+run yourself. "Restore yesterday" is a supported request.
+
+> **Correction, recorded deliberately.** This table previously stated the
+> opposite — that continuous backup was "not usable on a serverless account",
+> that restore required a support ticket, and that Azure "refuses to restore
+> *into* a serverless account", leaving an ~8-hour window. That was wrong. It was
+> disproved by building a throwaway serverless account, enabling continuous
+> backup on it, and restoring it: the restore succeeded and produced a
+> *serverless* account with the container and partition key intact. The claim is
+> called out rather than quietly edited because its failure mode was to document
+> the better posture as impossible, so nobody would attempt it. Where a
+> serverless restriction genuinely does exist is Azure Backup **vaulted** backup
+> (preview), which cannot restore to a serverless target — a different feature
+> that is easy to conflate with continuous backup.
+
+To restore, pick a timestamp and a *new* target account name:
+
+```bash
+az cosmosdb restore \
+  --resource-group rg-ai4ia-slurmfactory \
+  --account-name cosmos-ai4ia-slurmfactory-vypvgrncoed2o \
+  --target-database-account-name <new-account-name> \
+  --restore-timestamp 2026-08-02T13:40:00Z \
+  --location eastus2
+```
+
+Then repoint `AI4IA_COSMOS_ENDPOINT` at the restored account, or copy the
+affected documents back. Two gotchas learned the hard way: the source must be
+non-empty *at the chosen timestamp* (an empty account fails with "No databases or
+collections found"), and a failed restore leaves the target name in a failed
+provisioning state that must be deleted before you can reuse it.
+
+**Changing the backup mode is a standalone operation.** Azure rejects a
+mode change bundled with any other property update ("Cannot update continuous
+backup mode and other properties at the same time"), so it cannot be done by
+editing `data.bicep` and redeploying. The live account was migrated with a
+dedicated `az cosmosdb update --backup-policy-type Continuous --continuous-tier
+Continuous7Days`; the Bicep only restates the result so redeploys stay no-ops.
 
 Derived stores are exempt by design — document chunks, the AI Search index, and
 parsed artifacts are all rebuildable from the canonical manifests, so they need

@@ -99,23 +99,38 @@ resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
     ]
     disableLocalAuth: true
     // Pinned rather than left to Azure's default, because this account holds the
-    // canonical store (sessions, messages, usage, memory, user agents) and its
-    // recovery posture was previously an unstated inherited default. These are
-    // the values the live account already carries, so this is a no-op on deploy.
+    // canonical store (sessions, messages, usage, memory, user agents).
     //
-    // Serverless constrains the options: continuous backup / self-service
-    // point-in-time restore is not usable here, and Azure will not restore INTO a
-    // serverless account at all -- a restore targets a NEW provisioned-throughput
-    // account and is raised through support. That makes the effective recovery
-    // window the 8 hours below (two 4-hourly snapshots), which is the number to
-    // reason about before assuming data is recoverable. See "Data recovery
-    // posture" in docs/runbooks/deployment.md.
+    // Continuous, not Periodic: self-service point-in-time restore to any second
+    // in the last 7 days, versus the two 4-hourly snapshots (an ~8 hour window,
+    // recoverable only by raising a support ticket) this account carried before.
+    // An earlier revision of this comment asserted that serverless could not use
+    // continuous backup and could not be a restore target. That was wrong, and
+    // wrong in the costly direction -- it documented the better posture as
+    // impossible. Disproved on a throwaway serverless account: continuous mode
+    // enabled cleanly, and a restore of it produced a *serverless* account
+    // (createMode=Restore) with the container and partition key intact.
+    //
+    // Continuous7Days is deliberate: it is the only continuous tier with no
+    // backup-storage charge (30/35-day tiers bill for it), so this buys a ~21x
+    // larger recovery window for no recurring cost.
+    //
+    // Two constraints before editing this block:
+    //   1. Enabling continuous mode is IRREVERSIBLE. Azure offers no path back to
+    //      periodic once an account is migrated.
+    //   2. Azure rejects a backup-MODE change bundled with any other property
+    //      change ("Cannot update continuous backup mode and other properties at
+    //      the same time"). The live account was therefore migrated by a
+    //      standalone `az cosmosdb update --backup-policy-type Continuous
+    //      --continuous-tier Continuous7Days`, and this block only restates the
+    //      result so the IaC stays honest and redeploys are a no-op. A future
+    //      mode change must be made the same way -- editing this block alone
+    //      would fail the deploy.
+    // See "Data recovery posture" in docs/runbooks/deployment.md.
     backupPolicy: {
-      type: 'Periodic'
-      periodicModeProperties: {
-        backupIntervalInMinutes: 240
-        backupRetentionIntervalInHours: 8
-        backupStorageRedundancy: 'Geo'
+      type: 'Continuous'
+      continuousModeProperties: {
+        tier: 'Continuous7Days'
       }
     }
     minimalTlsVersion: 'Tls12'
