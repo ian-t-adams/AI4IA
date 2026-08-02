@@ -693,10 +693,25 @@ Procedure:
    wiping it (§2.5). Phase one is a one-time bootstrap per hostname, not a
    recurring step: afterwards the hostname is already registered and the preflight
    is a no-op.
-4. **Foundry toolbox (data-plane, if used):** the toolbox is not created by `azd up`. After the
-   deploy, run `python scripts/provision-foundry-toolbox.py --create` against the new project (the
+4. **Foundry toolbox (data-plane, REQUIRED whenever `AI4IA_ENABLE_FOUNDRY_TOOLBOX=true`):** the
+   toolbox is a data-plane resource and is **not** created by `azd up`. After the deploy, run
+   `python scripts/provision-foundry-toolbox.py --create` against the new project (the
    `infra/mcp-servers.json` entry is already portable — its APIM upstream URL is computed by bicep
    from the new project endpoint). See [`../foundry-toolbox.md`](../foundry-toolbox.md).
+
+   **Skipping this leaves the official-MCP plane green but empty**, which is why it is worth
+   verifying rather than assuming. Every control-plane layer (APIM MCP API, backend, managed-identity
+   policy, product, subscription key) provisions correctly without a toolbox, and the MCP
+   `initialize` handshake still returns **200** — only the follow-up `tools/list` 404s with
+   `Toolbox '<name>' not found`. Any ping-style health check reports healthy. Confirm with the
+   admin endpoint, which performs full discovery rather than a ping:
+
+   ```bash
+   curl -sS -H "Authorization: Bearer $TOKEN" \
+     "https://<web-host>/api/admin/metrics/official-mcp?refresh=true"
+   ```
+
+   `toolCount: 0` together with a populated `lastError` is the signature of a missing toolbox.
 5. **Break-glass ops scripts** (`scripts/inventory.ps1`, `teardown.ps1`,
    `purge-soft-deleted.ps1`, `seed-models.ps1`) take their target explicitly — they have
    no default subscription, resource group, or purge filter, so they cannot silently act

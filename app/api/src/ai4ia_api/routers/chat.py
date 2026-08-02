@@ -97,6 +97,22 @@ class ChatRequest(BaseModel):
     params: dict = {}
 
 
+# Injected as a system block when a plain (agent-less or tool-less-agent) turn
+# WOULD have been offered synthetic capabilities but the model is served through
+# the Responses API, which this app's tool loop does not speak. Without it the
+# capability loss is invisible: the model answers from parametric knowledge with
+# no idea it was supposed to have grounding, and the user cannot tell the
+# difference from a genuinely grounded answer.
+_RESPONSES_NO_TOOLS_NOTICE = (
+    "SYSTEM NOTICE: Web search, document retrieval, and code execution are NOT "
+    "available for this turn because the selected model is served through an API "
+    "this deployment cannot yet supply tools over. Answer from your own knowledge, "
+    "and state plainly that you could not search or read documents for this answer "
+    "and that it may be out of date. Do not claim to have searched, browsed, "
+    "retrieved, or run code, and do not fabricate citations or sources."
+)
+
+
 def _history(messages: list[Message], system_prompt: str | None) -> list[dict]:
     out: list[dict] = []
     if system_prompt:
@@ -1579,24 +1595,26 @@ async def chat(
     # TRADE-OFF (opt-in, default-OFF): when web search is on, every chat-completions
     # main-chat turn runs through this tool loop and returns a single-delta reply
     # instead of token-streaming, because this app's tool path is non-streaming
-    # internally — the same trade-off the compute path already makes. Only
-    # chat-completions models can tool-call, so Responses-API models (api != "chat")
-    # fall through, exactly like compute. ANY failure — or an empty answer — falls
-    # through to the normal RAG path below: the tool loop never breaks a turn and is
-    # never the forced front door.
+    # internally — the same trade-off the compute path already makes. This loop is
+    # built against the chat-completions wire format, so Responses-API models
+    # (api != "chat") cannot use it and take the ``elif`` below, which tells the
+    # model its grounding tools are missing instead of dropping them in silence.
+    # ANY failure — or an empty answer — falls through to the normal RAG path
+    # below: the tool loop never breaks a turn and is never the forced front door.
     #
     # INERTNESS: when web search is off AND compute is off/not-classified,
-    # ``plain_compute_active`` is False and ``web_search`` is None, so the entry
-    # condition reduces to EXACTLY the original compute-only condition, this block is
-    # skipped, and a no-web/no-compute plain turn takes the streaming path below
-    # byte-for-byte unchanged.
+    # ``plain_compute_active`` is False and ``web_search`` is None, so
+    # ``plain_capabilities_possible`` is False, BOTH branches are skipped (no tool
+    # loop and no notice), and a no-web/no-compute plain turn takes the streaming
+    # path below byte-for-byte unchanged.
     plain_compute_active = (
         compute is not None
         and compute_decision is not None
         and compute_decision.offers_compute
         and library_tools_enabled
     )
-    if (plain_compute_active or web_search is not None) and api == "chat":
+    plain_capabilities_possible = plain_compute_active or web_search is not None
+    if plain_capabilities_possible and api == "chat":
         try:
             ctx = ToolContext(correlation_id=correlation_id)
             plain_tools: list[dict] = []
@@ -1756,6 +1774,23 @@ async def chat(
                 "plain-chat tool loop failed; falling back to normal answer",
                 exc_info=True,
             )
+    elif plain_capabilities_possible:
+        # Same capabilities were available, but the model is served through the
+        # Responses API and the loop above speaks chat-completions only, so it was
+        # skipped. Tool-*enabled* agents get a loud 422 for this combination much
+        # earlier; a plain turn had no equivalent and simply lost web search,
+        # document retrieval, and compute in silence. That is worst for the curated
+        # tool-less agents (@researcher above all), which always take this path.
+        # Make the loss explicit to the model rather than refusing the turn:
+        # refusing would make these models unusable for ordinary chat whenever web
+        # search is on, while an honest, ungrounded answer is still useful.
+        logger.info(
+            "plain-chat capabilities unavailable: model is served via the Responses API",
+            extra={"ai4ia_model": model_id, "ai4ia_correlation_id": correlation_id},
+        )
+        payload_messages.insert(
+            insert_at, {"role": "system", "content": _RESPONSES_NO_TOOLS_NOTICE}
+        )
 
     if not body.stream:
         try:
