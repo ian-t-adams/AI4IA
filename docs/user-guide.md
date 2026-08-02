@@ -11,9 +11,10 @@ and tool safety; the web app is the user interface.
 2. Sign in with Entra when prompted. Local/dev environments may use a configured
    dev identity instead.
 3. Start a chat session or reopen an existing session from the sidebar.
-4. Open the Conversation Inspector to change the model, instructions, agent,
-   tools, context, memory, usage, or Voice Live settings. The app clamps model
-   parameters, including reasoning effort, to catalog limits.
+4. Open the Conversation Inspector. It has three tabs — **Setup** (model,
+   instructions, agent and tools, Voice Live), **Context** (documents and
+   memory), and **Usage** — and each tab's sections expand one at a time. The
+   app clamps model parameters, including reasoning effort, to catalog limits.
 
 ## Chat well
 
@@ -106,9 +107,10 @@ stale id remains in an older session record.
 - The orange live microphone starts and stops Voice Live inside the current chat.
   The normal transcript and composer stay available, and finalized spoken turns
   are saved into that same session.
-- Open **Voice** in the Conversation Inspector to choose the provider, provider
-  model, voice, locale, temperature, turn detection, transcription, noise/echo,
-  and interruption behavior. Settings apply to the next connection.
+- Open **Voice** under the Conversation Inspector's **Setup** tab to choose the
+  provider, provider model, voice, locale, temperature, turn detection,
+  transcription, noise/echo, and interruption behavior. Settings apply to the
+  next connection.
 - Voice has no separate instructions field. The selected agent persona is
   authoritative; otherwise the saved conversation system prompt is injected by
   the API for both providers.

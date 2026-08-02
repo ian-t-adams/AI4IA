@@ -96,6 +96,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Operator scripts (`teardown.ps1`, `purge-soft-deleted.ps1`, `status-snapshot.ps1`,
   `inventory.ps1`, `seed-models.ps1`) no longer carry tenant-specific defaults; each
   requires its target explicitly or resolves it from the selected azd environment.
+- The Conversation Inspector is now two levels instead of seven peer tabs. Seven tabs
+  never fit the 360px rail — at `flex: 1 1 86px` with a 4px gap only three fit per
+  344px row, so they wrapped 3/3/1 and the orphaned seventh stretched to full width.
+  They are now three groups (**Setup**: model, instructions, agent & tools, Voice;
+  **Context**: documents, memory; **Usage**) rendered as a fixed three-column grid,
+  with each former tab becoming a WAI-ARIA accordion section inside its group,
+  exclusive within the group so one section's content is on screen at a time exactly
+  as before. Row count is now structural rather than a consequence of flex-basis vs.
+  intrinsic label width, so the nav cannot go ragged at any width or font scale; the
+  `@media (max-width: 720px)` two-column override was removed for the same reason
+  (three items in two columns is ragged again). Tab labels also lost
+  `white-space: nowrap` — with `--font-scale` at 2x a non-wrapping label overflowed
+  its track instead of growing taller — and gained 44px touch targets, which still
+  occupy less vertical space than three wrapped rows did.
 - Curated and user-agent instruction sources are now visible read-only in the
   Conversation Inspector so inherited prompts can be audited without making those layers
   editable in the session panel.

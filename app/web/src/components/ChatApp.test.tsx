@@ -364,12 +364,12 @@ describe("ChatApp uploads", () => {
     const user = userEvent.setup();
     render(<ChatApp />);
 
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(
       screen.getByRole("textbox", { name: "System prompt" }),
       "Draft prompt",
     );
-    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
     await user.selectOptions(
       screen.getByRole("combobox", { name: "Agent" }),
       "researcher",
@@ -898,7 +898,7 @@ describe("ChatApp uploads", () => {
     // creation. The first is already discarded by the time it asks (e.g.
     // Voice Live's "Stop waiting"); the second still wants whatever session
     // that shared creation produces (e.g. a plain send/upload).
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Later prompt");
     const laterCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
       ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
@@ -1134,10 +1134,10 @@ describe("ChatApp uploads", () => {
       await screen.findByText("New conversation", { selector: "strong" }),
     ).toBeInTheDocument();
 
-    // Switch the real inspector to its Instructions tab and set a draft
+    // Switch the real inspector to its Instructions section and set a draft
     // system prompt -- while still in "new chat" (no session yet), this
     // writes straight through to ChatApp's systemPrompt state.
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     const promptBox = screen.getByLabelText("System prompt");
     await user.type(promptBox, "Prompt A");
 
@@ -1281,7 +1281,7 @@ describe("ChatApp uploads", () => {
       await screen.findByText("New conversation", { selector: "strong" }),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     const promptBox = screen.getByLabelText("System prompt");
     await user.type(promptBox, "Voice prompt");
 
@@ -1303,8 +1303,8 @@ describe("ChatApp uploads", () => {
     // prompt back to blank.
     await user.click(screen.getByRole("button", { name: "+ New chat" }));
 
-    // The user then types a different prompt before sending.
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    // The user then types a different prompt before sending. Instructions is
+    // still the inspector's open section, so there is nothing to re-navigate.
     await user.type(screen.getByLabelText("System prompt"), "Send prompt");
 
     const secondCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
@@ -1386,7 +1386,7 @@ describe("ChatApp uploads", () => {
     // A concurrent, differently-configured intent (e.g. a typed send after
     // editing the draft system prompt) fires its OWN creation rather than
     // sharing voice's in-flight one -- proven by the round-10 fix above.
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Send prompt");
     const sendCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
       ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
@@ -1466,7 +1466,7 @@ describe("ChatApp uploads", () => {
     // A concurrent, differently-configured intent (e.g. a typed send after
     // editing the draft system prompt) fires its OWN, genuinely LATER (by
     // sequence) creation.
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Send prompt");
     const sendCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
       ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
@@ -1554,7 +1554,7 @@ describe("ChatApp uploads", () => {
 
     // The user edits settings and sends a REAL message -- a genuinely
     // LATER intent (by sequence) that fires its own concurrent creation.
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Send prompt");
     await user.click(screen.getByRole("button", { name: "Send draft message" }));
     await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(2));
@@ -1631,7 +1631,7 @@ describe("ChatApp uploads", () => {
     // The user edits the draft system prompt and sends a real message
     // before voice's creation resolves -- send()'s own ensureSession()
     // call, with different settings, fires its own concurrent creation.
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Send prompt");
     await user.click(screen.getByRole("button", { name: "Send draft message" }));
     await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(2));
@@ -1713,7 +1713,7 @@ describe("ChatApp uploads", () => {
     // The user then edits the draft system prompt and sends a real message
     // -- send()'s own ensureSession() call, under different settings,
     // fires its own concurrent creation rather than sharing voice's.
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Send prompt");
     await user.click(screen.getByRole("button", { name: "Send draft message" }));
     await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(2));
@@ -1831,7 +1831,7 @@ describe("ChatApp uploads", () => {
     // send()'s own ensureSession() call, under genuinely different
     // settings, fires its own concurrent creation rather than sharing
     // voice's.
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Send prompt");
     await user.click(screen.getByRole("button", { name: "Send draft message" }));
     await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(2));
@@ -1948,7 +1948,7 @@ describe("ChatApp uploads", () => {
     // protection in isolation, the challenger must be the one created
     // later (and thus hold the higher sequence) while still losing the
     // race to be the one that actually activates first.
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Voice prompt");
     const voiceCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
       ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
@@ -2081,7 +2081,7 @@ describe("ChatApp uploads", () => {
     // edit settings and voice starts its own, later, differently-keyed
     // creation -- entry #2, a HIGHER activation sequence number than
     // send's.
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Voice prompt");
     const voiceCall = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
       ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
@@ -2524,7 +2524,7 @@ describe("ChatApp uploads", () => {
     // WITHOUT navigating away, the user edits the draft system prompt and
     // sends a real message -- a genuinely different intent key, so it
     // fires its own, separate creation rather than sharing voice's.
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Send prompt");
     await user.click(screen.getByRole("button", { name: "Send draft message" }));
     await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(2));
@@ -2638,7 +2638,7 @@ describe("ChatApp uploads", () => {
     // A concurrent intent enables a tool override and attaches a library
     // document -- no system prompt change at all -- and fires its own
     // creation rather than sharing voice's in-flight one.
-    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
     await user.click(await screen.findByRole("checkbox", { name: /Calculator/ }));
     await user.click(screen.getByRole("tab", { name: "Context" }));
     await user.click(await screen.findByRole("button", { name: "Add brief.pdf" }));
@@ -2714,7 +2714,7 @@ describe("ChatApp uploads", () => {
     await user.click(screen.getByRole("button", { name: "Send draft message" }));
     expect(mocks.createSession).toHaveBeenCalledTimes(1);
 
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Later voice");
     const lateVoiceOptions = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
       ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
@@ -2808,7 +2808,7 @@ describe("ChatApp uploads", () => {
     act(() => {
       activeVoice = activeVoiceOptions.ensureSession(() => true);
     });
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Late settings");
     const lateVoiceOptions = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
       ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
@@ -2886,7 +2886,7 @@ describe("ChatApp uploads", () => {
 
     // Only now does settings change and a differently-keyed, LATER voice
     // call start its own, separate entry #2.
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.type(screen.getByLabelText("System prompt"), "Later prompt");
     const lateOptions = mocks.useInlineVoiceLive.mock.calls.at(-1)![0] as {
       ensureSession: (isStillWanted?: () => boolean) => Promise<string>;
@@ -3023,7 +3023,7 @@ describe("ChatApp uploads", () => {
       screen.getByRole("combobox", { name: "Model" }),
       "gpt-new",
     );
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     const prompt = await screen.findByRole("textbox", { name: "System prompt" });
     await user.clear(prompt);
     await user.type(prompt, "Fresh prompt");
@@ -3078,7 +3078,7 @@ describe("ChatApp uploads", () => {
     expect(screen.getByRole("textbox", { name: "System prompt" })).toHaveValue(
       "Fresh prompt",
     );
-    await user.click(screen.getByRole("tab", { name: "Model" }));
+    await user.click(screen.getByRole("button", { name: "Model" }));
     expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-new");
   });
 
@@ -3168,7 +3168,7 @@ describe("ChatApp uploads", () => {
       screen.getByRole("combobox", { name: "Model" }),
       "gpt-new",
     );
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     const prompt = await screen.findByRole("textbox", { name: "System prompt" });
     await user.clear(prompt);
     await user.type(prompt, "Fresh prompt");
@@ -3207,7 +3207,7 @@ describe("ChatApp uploads", () => {
     expect(screen.getByRole("textbox", { name: "System prompt" })).toHaveValue(
       "Fresh prompt",
     );
-    await user.click(screen.getByRole("tab", { name: "Model" }));
+    await user.click(screen.getByRole("button", { name: "Model" }));
     expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-new");
   });
 });

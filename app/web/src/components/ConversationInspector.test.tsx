@@ -245,7 +245,7 @@ describe("ConversationInspector", () => {
 
     expect(screen.getByText("New conversation defaults")).toBeInTheDocument();
     expect(screen.getByText(/Draft — applied when the conversation starts/)).toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "analyst");
     expect(onDraftDefaultsChange).toHaveBeenLastCalledWith({
       ...draftDefaults,
@@ -288,16 +288,44 @@ describe("ConversationInspector", () => {
     expect(mocks.associateLibraryDocument).not.toHaveBeenCalled();
   });
 
-  it("supports roving keyboard tabs and one editable instruction source", async () => {
+  it("roves the group tablist and the section accordion by their own rules", async () => {
     const user = userEvent.setup();
     render(<ConversationInspector {...props()} />);
-    const modelTab = screen.getByRole("tab", { name: "Model" });
-    await user.click(modelTab);
+
+    // Top level (ARIA tabs): three groups, selection follows focus.
+    const setupTab = screen.getByRole("tab", { name: "Setup" });
+    await user.click(setupTab);
     await user.keyboard("{End}");
-    expect(screen.getByRole("tab", { name: "Voice" })).toHaveFocus();
+    const usageTab = screen.getByRole("tab", { name: "Usage" });
+    expect(usageTab).toHaveFocus();
+    expect(usageTab).toHaveAttribute("aria-selected", "true");
     await user.keyboard("{Home}");
-    expect(modelTab).toHaveFocus();
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    expect(setupTab).toHaveFocus();
+    expect(setupTab).toHaveAttribute("aria-selected", "true");
+
+    // Second level (APG accordion): activation is explicit and exclusive
+    // within the group, so one section's content is on screen at a time.
+    const modelTrigger = screen.getByRole("button", { name: "Model" });
+    expect(modelTrigger).toHaveAttribute("aria-expanded", "true");
+    const instructionsTrigger = screen.getByRole("button", {
+      name: "Instructions",
+    });
+    await user.click(instructionsTrigger);
+    expect(instructionsTrigger).toHaveAttribute("aria-expanded", "true");
+    expect(modelTrigger).toHaveAttribute("aria-expanded", "false");
+
+    // Arrows move focus between headers only — deliberately the opposite of
+    // the tablist, where the same keys change selection.
+    const toolsTrigger = screen.getByRole("button", { name: "Agent & tools" });
+    await user.keyboard("{ArrowDown}");
+    expect(toolsTrigger).toHaveFocus();
+    expect(toolsTrigger).toHaveAttribute("aria-expanded", "false");
+    expect(instructionsTrigger).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{End}");
+    expect(screen.getByRole("button", { name: "Voice" })).toHaveFocus();
+    await user.keyboard("{Home}");
+    expect(modelTrigger).toHaveFocus();
+
     expect(
       await screen.findByRole("textbox", { name: "System prompt" }),
     ).toHaveValue("Prompt s1");
@@ -313,7 +341,7 @@ describe("ConversationInspector", () => {
     );
     const { rerender } = render(<ConversationInspector {...props("A")} />);
     rerender(<ConversationInspector {...props("B")} />);
-    await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    await userEvent.click(screen.getByRole("button", { name: "Instructions" }));
     expect(
       await screen.findByRole("textbox", { name: "System prompt" }),
     ).toHaveValue("Prompt B");
@@ -327,7 +355,7 @@ describe("ConversationInspector", () => {
   it("blocks mutations until the current snapshot is loaded", async () => {
     mocks.getInspector.mockImplementation(() => new Promise(() => {}));
     render(<ConversationInspector {...props()} />);
-    await userEvent.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await userEvent.click(screen.getByRole("button", { name: "Agent & tools" }));
     expect(screen.getByRole("combobox", { name: "Agent" })).toBeDisabled();
     expect(mocks.updateSession).not.toHaveBeenCalled();
   });
@@ -401,7 +429,8 @@ describe("ConversationInspector", () => {
   it("shows independent unavailable and empty states", async () => {
     mocks.listMemories.mockRejectedValue(new Error("memory source offline"));
     render(<ConversationInspector {...props()} />);
-    await userEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Context" }));
+    await userEvent.click(screen.getByRole("button", { name: "Memory" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "memory source offline",
     );
@@ -410,11 +439,11 @@ describe("ConversationInspector", () => {
   it("renders snapshot sections while an unrelated tool catalog is still loading", async () => {
     mocks.listTools.mockImplementation(() => new Promise(() => {}));
     render(<ConversationInspector {...props()} />);
-    await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    await userEvent.click(screen.getByRole("button", { name: "Instructions" }));
     expect(
       await screen.findByRole("textbox", { name: "System prompt" }),
     ).toHaveValue("Prompt s1");
-    await userEvent.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await userEvent.click(screen.getByRole("button", { name: "Agent & tools" }));
     expect(screen.getByText("Loading tools…")).toBeInTheDocument();
   });
 
@@ -423,7 +452,7 @@ describe("ConversationInspector", () => {
     render(<ConversationInspector {...props()} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("snapshot offline");
     expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
-    await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    await userEvent.click(screen.getByRole("button", { name: "Instructions" }));
     expect(screen.getByRole("alert")).toHaveTextContent("snapshot offline");
     expect(screen.queryByRole("textbox", { name: "System prompt" })).toBeNull();
     await userEvent.click(screen.getByRole("tab", { name: "Usage" }));
@@ -444,7 +473,7 @@ describe("ConversationInspector", () => {
     const { rerender } = render(
       <ConversationInspector {...props("A")} onSessionUpdated={onSessionUpdated} />,
     );
-    await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    await userEvent.click(screen.getByRole("button", { name: "Instructions" }));
     await userEvent.click(await screen.findByRole("button", { name: "Save" }));
     rerender(
       <ConversationInspector {...props("B")} onSessionUpdated={onSessionUpdated} />,
@@ -466,7 +495,7 @@ describe("ConversationInspector", () => {
     const { rerender } = render(
       <ConversationInspector {...props()} onSessionUpdated={onSessionUpdated} />,
     );
-    await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    await userEvent.click(screen.getByRole("button", { name: "Instructions" }));
     await userEvent.click(await screen.findByRole("button", { name: "Save" }));
     expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
     rerender(
@@ -515,7 +544,7 @@ describe("ConversationInspector", () => {
     const { rerender } = render(
       <ConversationInspector {...props("A")} onSessionUpdated={onSessionUpdated} />,
     );
-    await userEvent.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await userEvent.click(screen.getByRole("button", { name: "Agent & tools" }));
     await userEvent.click(await screen.findByRole("checkbox"));
     rerender(
       <ConversationInspector {...props("B")} onSessionUpdated={onSessionUpdated} />,
@@ -547,7 +576,7 @@ describe("ConversationInspector", () => {
       },
     ]);
     render(<ConversationInspector {...props()} />);
-    await userEvent.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await userEvent.click(screen.getByRole("button", { name: "Agent & tools" }));
     expect(await screen.findByText(/risk unknown/)).toHaveTextContent(
       "approval unknown",
     );
@@ -574,7 +603,7 @@ describe("ConversationInspector", () => {
     ]);
     const user = userEvent.setup();
     render(<ConversationInspector {...props()} />);
-    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
     const checkbox = await screen.findByRole("checkbox", { name: "Shell" });
     // The row is a <div>, not a <label> — a HelpTooltip's own button lives
     // alongside it instead of nested inside a control's label.
@@ -617,7 +646,7 @@ describe("ConversationInspector", () => {
     ]);
     const user = userEvent.setup();
     render(<ConversationInspector {...props()} />);
-    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
     const checkbox = await screen.findByRole("checkbox", { name: "Foo Bar" });
 
     // Regression test: ids built from the raw tool name (e.g.
@@ -653,7 +682,7 @@ describe("ConversationInspector", () => {
     ]);
     const user = userEvent.setup();
     render(<ConversationInspector {...props()} />);
-    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
     await screen.findByText("Calculator");
     await user.click(
       screen.getByRole("button", { name: "Help: How to read the tool list" }),
@@ -674,7 +703,7 @@ describe("ConversationInspector", () => {
         ]}
       />,
     );
-    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
     expect(await screen.findByText("Crunches numbers.")).toBeInTheDocument();
     expect(
       screen.getByRole("option", { name: "Analyst" }),
@@ -694,7 +723,11 @@ describe("ConversationInspector", () => {
         draftDefaults={draftDefaults}
       />,
     );
-    await user.click(screen.getByRole("tab", { name: "Agent & tools" }));
+    // The open section survives the switch to draft mode, so the draft path
+    // renders in place rather than needing to be re-opened.
+    expect(
+      screen.getByRole("button", { name: "Agent & tools" }),
+    ).toHaveAttribute("aria-expanded", "true");
     expect(await screen.findByText("Crunches numbers.")).toBeInTheDocument();
   });
 
@@ -715,7 +748,7 @@ describe("ConversationInspector", () => {
     mocks.getInspector.mockResolvedValue(curated);
     const user = userEvent.setup();
     const { rerender } = render(<ConversationInspector {...props()} />);
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
 
     const readOnly = await screen.findByLabelText("Agent instructions (read-only)");
     expect(readOnly).toHaveValue("You are a careful data analyst.");
@@ -733,7 +766,7 @@ describe("ConversationInspector", () => {
     };
     mocks.getInspector.mockResolvedValue(owned);
     rerender(<ConversationInspector {...props("s2")} />);
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    // Instructions is still the open section, so the switch re-renders in place.
     expect(
       await screen.findByLabelText("Agent instructions (read-only)"),
     ).toHaveValue("Answer only in haiku.");
@@ -811,7 +844,8 @@ describe("ConversationInspector", () => {
       detail: null,
     });
     render(<ConversationInspector {...props()} />);
-    await userEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Context" }));
+    await userEvent.click(screen.getByRole("button", { name: "Memory" }));
     const remove = await screen.findByRole("button", {
       name: "Delete memory: Prefers concise answers",
     });
@@ -870,7 +904,8 @@ describe("ConversationInspector", () => {
     });
     const user = userEvent.setup();
     render(<ConversationInspector {...props()} />);
-    await user.click(screen.getByRole("tab", { name: "Memory" }));
+    await user.click(screen.getByRole("tab", { name: "Context" }));
+    await user.click(screen.getByRole("button", { name: "Memory" }));
 
     await user.type(
       await screen.findByRole("textbox", { name: "Add a memory" }),
@@ -897,7 +932,7 @@ describe("ConversationInspector", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<ConversationInspector {...props()} />);
-    await user.click(screen.getByRole("tab", { name: "Instructions" }));
+    await user.click(screen.getByRole("button", { name: "Instructions" }));
     await user.click(await screen.findByRole("button", { name: "Save" }));
     expect(await screen.findByText("Saved")).toBeInTheDocument();
     await act(async () => {
