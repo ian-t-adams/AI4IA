@@ -71,11 +71,50 @@ files in `Shared/`, `Shared-parser/`, and `SimpleL7Proxy/`:
   counterpart.
 
 142 + 28 + 4 = 174, matching the upstream file count exactly (174 + 1 new file = 175 local files).
-Also confirmed via `git ls-remote https://github.com/microsoft/SimpleL7Proxy.git main` that upstream
-`main` is still exactly `d9eb1d1fa42820792a9699bfc253562fba07d977` — the pin is the current
-upstream tip, not a stale snapshot, so there is no newer commit to refresh to. Re-run the blob-level
-comparison (not a working-tree hash) whenever the pin or the deviation list changes, and update
-this note.
+
+**Pin currency (measured 2026-08-02): the pin is now STALE, and deliberately so.**
+An earlier version of this note recorded that upstream `main` was still exactly
+`d9eb1d1f…`, "so there is no newer commit to refresh to". That is no longer true, and the
+note is corrected here rather than left to mislead. Per the GitHub compare API, upstream
+`main` (`ea212ba563f54aa8de2aca35ae9f5c97baffe94a`, 2026-07-31) is **171 commits ahead and
+0 behind** the pin. The same response lists 300 changed files, but 300 is the compare
+endpoint's file cap — treat it as a floor, not a count. Latest upstream release at that
+tip is **v2.2.17**.
+
+Staying on the audited pin is a choice, not an oversight: the deployed gateway is healthy,
+the local patches are written against this exact tree, and a refresh of this size is a
+reviewed change with its own deploy — not a drive-by bump.
+
+Verified drift in the files that matter (commits touching each path since the pin date;
+every path below was confirmed to exist at the upstream tip first, because a path filter
+that no longer matches returns a silent, misleading `0`):
+
+| File | Upstream commits since pin | Refresh implication |
+| --- | --- | --- |
+| `Config/IncomingAuthValidator.cs` | **0** | The two behaviors this patch works around are **still unfixed upstream**, so the "re-evaluate and drop" note above is not yet actionable. Keep the patch. |
+| `Config/ConfigFactory.cs` | 1 | Re-apply onto changed code. |
+| `RequestData.cs` | 2 | Re-apply onto changed code; this is the `x-LLMModel` derivation AI4IA depends on. |
+| `server.cs` | 1 | Re-apply onto changed code. |
+
+Two upstream changes overlap behavior AI4IA has already had to fix, and should be read
+before any refresh:
+
+- **`rename priority to priorityGroup`**, plus `add priority tests`. AI4IA's Bicep sets
+  `PriorityWorkers`, `DefaultPriority`, `PriorityKeys`, and `PriorityValues` (see
+  `gateway.bicep`, and the `PriorityWorker`/`PriorityWorkers` singular-vs-plural trap
+  documented there). All four names still appear upstream, so the rename looks additive
+  rather than a removal — but priority semantics changed, and these keys are exactly where
+  a silent no-op regression would land. Re-validate them against
+  `PriorityWorkerConfigTests.cs` on refresh.
+- **`fix probe dequeue bug, add tests`** and **`requeue bug fix`** — the proxy's requeue path
+  is load-bearing for AI4IA's 429/`S7PREQUEUE` contract with APIM.
+
+Also merged since the pin: the `feature/async` branch (several times, #205–#218) and a large
+volume of documentation/UI work.
+
+Re-run the blob-level comparison (not a working-tree hash) whenever the pin or the deviation
+list changes, and update this note — including the drift figures above, which are a
+point-in-time measurement.
 
 To refresh the vendored copy, check out the audited upstream commit and mirror the three project
 directories from upstream `src/` (excluding `bin/`/`obj/`). Keep this README and the root
