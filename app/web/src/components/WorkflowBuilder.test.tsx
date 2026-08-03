@@ -110,9 +110,12 @@ describe("WorkflowBuilder", () => {
   // actually used. A capability with no caller is indistinguishable from a
   // broken one, and nothing failed to say so.
 
+  // Selects by accessible name, not placeholder: the builder's step-1 field
+  // prompts with the {input} token, so a /input/i placeholder match is ambiguous
+  // across the two columns that render side by side.
   async function openRunForm(user: ReturnType<typeof userEvent.setup>) {
     await user.click(await screen.findByRole("button", { name: "▶ Run" }));
-    await user.type(await screen.findByPlaceholderText(/input/i), "hello");
+    await user.type(await screen.findByLabelText(`Input for ${WORKFLOWS[0].name}`), "hello");
   }
 
   it("hides the durable option and never sends the flag when the server cannot honour it", async () => {
@@ -150,7 +153,8 @@ describe("WorkflowBuilder", () => {
     // Default OFF must mean byte-identical behaviour to before the feature
     // existed -- no flag, and no polling round-trip.
     expect(mocks.runWorkflow.mock.calls[0][1]).not.toHaveProperty("durable");
-    expect(mocks.getWorkflowRun).not.toHaveBeenCalled();  });
+    expect(mocks.getWorkflowRun).not.toHaveBeenCalled();
+  });
 
   it("polls a scheduled run to completion before handing off to the chat view", async () => {
     mocks.listWorkflows.mockResolvedValue({
