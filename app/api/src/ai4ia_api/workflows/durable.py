@@ -483,9 +483,13 @@ def build_orchestration_payload(
     session edited mid-run widen or narrow an in-flight run's data access.
     """
     return {
-        "steps": [
-            {"agent": s.agent, "instruction": s.instruction} for s in workflow.steps
-        ],
+        # Serialized by the model itself, not a hand-listed subset: a field added
+        # to WorkflowStep later must survive the durable boundary automatically.
+        # `extraTools` was dropped here when it was added, so a durable run
+        # executed with fewer tools than the identical in-request run — silently,
+        # because a step with no tools still answers 200 and the model narrates
+        # what it would have done.
+        "steps": [s.model_dump(mode="json") for s in workflow.steps],
         "context": {
             "userId": user_id,
             "sessionId": session_id,
@@ -501,9 +505,16 @@ def build_orchestration_payload(
 
 
 def _step_from_dict(raw: dict[str, Any]):
+    """Rebuild a step from its orchestration payload.
+
+    Validated by the model rather than reconstructed field by field, so this
+    stays the exact inverse of :func:`build_orchestration_payload`. An
+    orchestration whose history predates a new field still replays: the field
+    is absent from the stored dict and falls back to its default.
+    """
     from .models import WorkflowStep
 
-    return WorkflowStep(agent=raw["agent"], instruction=raw["instruction"])
+    return WorkflowStep.model_validate(raw)
 
 
 def _usage_to_dict(usage: TokenUsage) -> dict[str, Any]:
