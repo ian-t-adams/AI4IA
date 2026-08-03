@@ -8,6 +8,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Workflow runner UI: run, see the result, and know what a step can do**
+  (`WorkflowBuilder.tsx`, `WorkflowRunReport.tsx`, `workflowCapabilities.ts`,
+  `workflowRun.ts`). Running a workflow used to appear to produce nothing: the builder
+  called `onRun(sessionId)` the instant a run returned, which unmounted the panel and
+  took the output with it. The result now renders **in place** — a per-step trace, the
+  elapsed time, and explicit `Open in chat` / `Run again` buttons — so hand-off is a
+  choice rather than a side effect. Alongside it:
+  - **Per-step capability chips.** A workflow step's tool surface is *not* its agent's
+    tool list, and nothing said so. Document reading and web search are ambient (every
+    step gets them); the two memory tools are the only ones that must be deliberately
+    attached; and `generate_image` / `process_document` / MCP tools work in chat and are
+    structurally absent from a step. That asymmetry is why a workflow asked to
+    "remember the decisions" ran, replied that it could not save anything, and was
+    recorded as a **success**. Each step now states which of these it has, with a route
+    to the Agents tab when the remedy is "attach it". Where the server genuinely does
+    not report a capability (Web IQ is injected unconditionally and never listed by
+    `/api/tools`) the chip says "if configured" rather than inventing a verdict.
+  - **Per-step failure attribution.** `runner.py` prefixes every fatal step error with
+    `Step {n}: `, so the trace can say "step 2 failed, step 1 succeeded, step 3 never
+    started" instead of "the workflow failed". No backend change. Where the prefix is
+    absent the failure came from outside a step, and the trace deliberately claims
+    nothing per-step rather than blaming an innocent row.
+  - **Document scoping.** A run can be restricted to selected library documents. The key
+    is omitted entirely when nothing is selected, because `[]` is not "no preference" —
+    the API reads `allowed_document_ids is None or bool(...)`, so an empty array switches
+    document reading *off* for the whole run.
+  - **Build / Run & test tabs** replacing a single scrolling column. The durable
+    "Keep running if the app restarts" checkbox previously sat in a 200px nav column and
+    wrapped its label across five lines; a run form does not belong in a nav list, so the
+    fix is structural rather than a wider column.
+
 - **`remember_memory` tool** (`memory/remember_capability.py`). Agents can now *write* a
   short durable fact to the caller's own memory, not just recall one. Until now memory was
   only ever written by the passive path in the chat router (which stores the user's own
@@ -207,6 +238,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   before the bump.
 
 ### Fixed
+
+- **`remember_memory` had no checkbox.** The tool shipped correct in the API, in the
+  allowlist, and in tests — and was unreachable from the product, because
+  `app/web/src/lib/studio.ts` holds a hand-maintained mirror of the backend allowlist and
+  the new tool was never added to it. The drift is silent in exactly one direction: a web
+  list naming a tool the API rejects fails loudly with a 422 on save, while an API tool
+  the web omits produces no error and no control. The existing guard could not see it
+  (`toolHelp.test.ts` checks the web list against web help text — both sides live in the
+  web, and a web missing a tool entirely is self-consistent), so
+  `app/api/tests/test_attachable_tools_mirror.py` now compares the two across the
+  language boundary.
 
 - **Workflow steps ran with almost no tools.** `run_workflow_step` called
   `run_agent_turn` with no `extra_tools`/`extra_handlers` at all, so every step
