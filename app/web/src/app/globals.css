@@ -1090,3 +1090,597 @@ select {
     transition: none;
   }
 }
+
+/* --- Studio (Agents / Workflows / Custom tools) two-pane shell ---------------
+
+   The pane lives inside StudioPanel's modal: `min(880px, 95vw)` wide with 24px
+   padding, so the content box is 832px at best and ~322px on a 390px phone.
+   Two explicit tracks, never flex-wrap -- the same reasoning as .inspector-nav
+   above: a wrapping layout's row count is a consequence of basis vs. intrinsic
+   width and goes ragged at some widths, a fixed track set cannot.
+
+   13.75rem (= 220px) deliberately does NOT scale with --font-scale: `rem`
+   resolves against the untouched 16px root, not body's calc() size, so the
+   track stays put while the text inside it wraps and the rows grow taller. */
+.studio-pane {
+  display: grid;
+  grid-template-columns: minmax(0, 13.75rem) minmax(0, 1fr);
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+}
+
+.studio-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.studio-list-scroll {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.studio-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.studio-list-select {
+  min-width: 0;
+  min-height: 44px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  padding: 8px 10px;
+  text-align: start;
+  cursor: pointer;
+  /* No nowrap/ellipsis: at --font-scale 2 an ellipsis hides the whole name.
+     Let it wrap and let the row grow, exactly as .inspector-nav button does. */
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.studio-list-select[aria-current="true"] {
+  background: var(--bg);
+  font-weight: 650;
+}
+
+.studio-list-delete {
+  min-width: 44px;
+  min-height: 44px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  padding: 0;
+  cursor: pointer;
+}
+
+.studio-list-off {
+  color: var(--fg-muted);
+}
+
+.studio-work {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Two panels, two tracks. Same rule as .inspector-nav: track count is
+   structural, so it cannot reflow into a ragged second row. */
+.studio-worktabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.studio-worktabs button {
+  min-width: 0;
+  min-height: 44px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg-muted);
+  padding: 6px 8px;
+  font-size: 0.9em;
+  text-align: center;
+  cursor: pointer;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+
+.studio-worktabs button[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 650;
+}
+
+.studio-workpanel {
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-right: 4px; /* keeps focus rings off the scrollbar */
+}
+
+.studio-alert {
+  margin: 0;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--danger);
+  font-size: 0.82em;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 700px) {
+  .studio-pane {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .studio-list-scroll {
+    max-height: 30vh;
+  }
+}
+
+/* --- Workflow disclosures (WAI-ARIA accordion, same shape as the inspector's)
+   Deliberately a copy of .inspector-accordion-* rather than an extension of it:
+   comma-appending to those selectors would put the inspector -- a recently
+   stabilised, a11y-sensitive surface -- in the blast radius of every workflow
+   tweak. Worth extracting into one shared block if a third consumer appears. */
+.workflow-disclosure + .workflow-disclosure {
+  border-top: 1px solid var(--border);
+}
+
+.workflow-disclosure-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.workflow-disclosure-header h3 {
+  margin: 0;
+  min-width: 0;
+  font-size: 0.95em;
+}
+
+.workflow-disclosure-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  padding: 10px 0;
+  text-align: start;
+  cursor: pointer;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+
+/* Drawn, not typed. Generated TEXT content participates in the accessible
+   name, so a caret glyph here would silently rename every trigger. */
+.workflow-disclosure-trigger::before {
+  content: "";
+  flex: 0 0 auto;
+  inline-size: 8px;
+  block-size: 8px;
+  background: currentColor;
+  clip-path: polygon(15% 0%, 100% 50%, 15% 100%);
+  transition: transform 120ms ease;
+}
+
+.workflow-disclosure-trigger[aria-expanded="true"]::before {
+  transform: rotate(90deg);
+}
+
+.workflow-disclosure-summary {
+  color: var(--fg-muted);
+  font-size: 0.82em;
+  font-weight: 400;
+}
+
+.workflow-disclosure-region {
+  padding-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workflow-disclosure-trigger::before {
+    transition: none;
+  }
+}
+/* --- Workflow step editor -------------------------------------------------- */
+.workflow-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.workflow-step {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Was a flex row holding a badge, a full-width <select>, and three icon
+   buttons. At --font-scale 2 the select's intrinsic width pushed the buttons
+   out. Two explicit tracks with the select as the only flexible one, and the
+   action cluster on its own row, so the buttons are never displaced. */
+.workflow-step-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.workflow-step-index {
+  font-size: 0.85em;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.workflow-step-head select {
+  width: 100%;
+  min-width: 0;
+}
+
+.workflow-step-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 44px);
+  justify-content: end;
+  gap: 4px;
+}
+
+.workflow-step-actions button {
+  min-width: 44px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  padding: 0;
+  cursor: pointer;
+}
+
+.workflow-step-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* --- Capability chips ------------------------------------------------------
+   auto-FILL, not auto-fit: auto-fit collapses empty tracks and stretches the
+   survivors, which is precisely the "lone orphan spans the whole row" failure
+   the inspector nav hit. auto-fill leaves empty tracks empty, so a strip of one
+   chip looks like a strip of one chip. min() guards a container narrower than
+   the track minimum. */
+.workflow-step-tools {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(11rem, 100%), 1fr));
+  gap: 6px;
+}
+
+.workflow-tool-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  padding: 3px 9px;
+  font-size: 0.75em;
+  line-height: 1.35;
+  /* Pill.tsx uses white-space: nowrap; at --font-scale 2 that punches out of
+     the track. Chips wrap and grow taller instead. */
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.workflow-tool-chip::before {
+  content: "";
+  flex: 0 0 auto;
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.workflow-tool-chip[data-state="on"] { color: var(--success); }
+.workflow-tool-chip[data-state="ambient"] { color: var(--info); }
+.workflow-tool-chip[data-state="off"] {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.workflow-tool-chip[data-state="conditional"],
+.workflow-tool-chip[data-state="absent"],
+.workflow-tool-chip[data-state="chat-only"] {
+  color: var(--fg-muted);
+  border-style: dashed;
+}
+
+.workflow-tool-fix {
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--accent);
+  padding: 4px 10px;
+  font-size: 0.78em;
+  cursor: pointer;
+  text-wrap: balance;
+}
+
+/* --- Run form -------------------------------------------------------------- */
+.workflow-run-target {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workflow-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.workflow-field-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--fg-muted);
+  font-size: 0.8em;
+}
+
+.workflow-field textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  padding: 8px 10px;
+}
+
+/* THE fix. The durable option used to share a flex row with the submit button
+   inside a 188px column, leaving ~51px for a 32-character label -- five ragged
+   lines. It is an option, not an action: it gets its own full-width row. */
+.workflow-run-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+
+.workflow-run-option label {
+  min-width: 0;
+  font-size: 0.88em;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+/* Exactly three tracks, always one row: [Run] [Save & run] [hint]. minmax(0,...)
+   on the auto tracks lets the buttons shrink and wrap their own labels rather
+   than overflow the grid at large font scales. */
+.workflow-run-actions {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.workflow-run-actions button {
+  min-height: 44px;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.workflow-run-hint {
+  min-width: 0;
+  color: var(--fg-muted);
+  font-size: 0.8em;
+  overflow-wrap: anywhere;
+}
+
+.workflow-run-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 8px 10px;
+  color: var(--fg-muted);
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+
+.workflow-run-status:empty {
+  padding: 0;
+  background: none;
+}
+
+/* --- Documents ------------------------------------------------------------- */
+.workflow-doc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 15rem;
+  overflow-y: auto;
+}
+
+.workflow-doc-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  border-bottom: 1px solid var(--border);
+  padding: 4px 0;
+}
+
+.workflow-doc-row label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.workflow-doc-row small {
+  display: block;
+  color: var(--fg-muted);
+  font-size: 0.75em;
+}
+
+.workflow-doc-state {
+  color: var(--fg-muted);
+  font-size: 0.75em;
+  white-space: nowrap;
+}
+
+/* --- Result ---------------------------------------------------------------- */
+.workflow-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  min-width: 0;
+}
+
+.workflow-result-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.workflow-result-head h3 {
+  margin: 0;
+  min-width: 0;
+  font-size: 0.95em;
+}
+
+.workflow-result-head h3:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.workflow-result-verdict {
+  font-size: 0.8em;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.workflow-result-verdict[data-phase="succeeded"] { color: var(--success); }
+.workflow-result-verdict[data-phase="failed"] { color: var(--danger); }
+.workflow-result-verdict[data-phase="timedOut"] { color: var(--info); }
+
+/* Explains a timeout without alarming: the run is alive, this page just stopped
+   waiting. Reads as prose, not as an error. */
+.workflow-result-note {
+  margin: 0;
+  font-size: 0.82em;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.workflow-trace {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.workflow-trace-item + .workflow-trace-item {
+  border-top: 1px solid var(--border);
+}
+
+/* baseline alignment so the step number and its state read as one line even when
+   the agent label wraps to two. */
+.workflow-trace-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 8px 0;
+  font-size: 0.82em;
+  overflow-wrap: anywhere;
+}
+
+.workflow-trace-state {
+  font-size: 0.78em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.workflow-trace-state[data-state="succeeded"] { color: var(--success); }
+.workflow-trace-state[data-state="failed"] { color: var(--danger); }
+.workflow-trace-state[data-state="running"] { color: var(--accent); }
+.workflow-trace-state[data-state="skipped"],
+.workflow-trace-state[data-state="pending"],
+.workflow-trace-state[data-state="unknown"] { color: var(--fg-muted); }
+
+.workflow-trace-body {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px 12px;
+  max-height: 22rem;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+.workflow-result-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(9rem, 100%), 1fr));
+  gap: 8px;
+}
+
+.workflow-result-actions button {
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 6px 10px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+@media (max-width: 700px) {
+  .workflow-run-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

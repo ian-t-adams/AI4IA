@@ -44,19 +44,38 @@ and tool safety; the web app is the user interface.
   governed tool path as chat, and each step is offered the same capabilities a
   chat turn gets: reading your document library, Web IQ search and browsing, and
   — when the step's agent has them attached — recalling and saving memories.
+- The workflow editor has two tabs. **Build** is where you name the workflow and
+  order its steps; **Run & test** is where you run one and read the result. The
+  result stays in the panel — a per-step trace showing which steps succeeded,
+  which one failed, and which never started — so you can adjust a step and run
+  again without losing the output. Use **Open in chat** when you want the run's
+  conversation.
+- **Each step lists what it can actually do.** A step's tool surface is not the
+  same as its agent's tool list, so the editor states the difference per step:
+  document reading is always on, web search is offered whenever the deployment
+  has Web IQ configured, the two memory tools appear only when attached to that
+  step's agent, and anything that returns a chat attachment (image and video
+  generation, document processing, MCP tools) is marked **chat only** because a
+  workflow step has no way to deliver one.
 - **Memory is a tool, and it has to be attached.** `remember_memory` saves a
   short durable fact; `recall_memory` reads them back. A step whose agent has
   neither attached cannot write to your memory, and the model will say so rather
-  than pretending. Attach them in Agents & workflows on the agent the step uses.
-  Saves are reported honestly: a fact already covered by an existing memory is
-  reported as "nothing new stored", not as a save.
+  than pretending. Attach them in Agents & workflows on the agent the step uses —
+  the step's capability list links straight there. Saves are reported honestly: a
+  fact already covered by an existing memory is reported as "nothing new stored",
+  not as a save.
+- **A run can be scoped to specific documents.** Under **Documents**, select the
+  library documents the run should be restricted to. Select nothing and every
+  step can read any of your ready documents.
 - When the deployment provides durable execution, the workflow runner offers
   **Keep running if the app restarts**. Leave it off for quick runs: the reply
   comes back in the request as usual. Turn it on for long multi-step work, and
   the run is handed to an orchestration that survives a restart, scale-in, or
-  crash — the runner then waits for it to finish before opening the chat, because
-  the reply is written when the run completes rather than held open in the
-  request. The option is hidden entirely on deployments that cannot honour it.
+  crash — the runner then waits for it to finish, because the reply is written
+  when the run completes rather than held open in the request. If it is still
+  going after two minutes the page stops waiting and says so; the run is *not*
+  cancelled, and its reply appears in the run's chat when it finishes. The option
+  is hidden entirely on deployments that cannot honour it.
 - Attach only the tools an agent needs. Tool output is metered, logged, bounded,
   and redacted where applicable.
 - A selected agent is the standing conversation persona. An explicit `@agent`

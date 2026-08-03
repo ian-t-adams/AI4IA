@@ -1,16 +1,24 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { AgentSummary, Workflow } from "@/lib/types";
 import { WorkflowBuilder } from "./WorkflowBuilder";
 
+// The factory returns ONLY what is listed here, so every api.* the component
+// reaches on mount must appear or the first render throws "is not a function"
+// and every test in the file dies on the same line.
 const mocks = vi.hoisted(() => ({
   listWorkflows: vi.fn(),
   createSession: vi.fn(),
   runWorkflow: vi.fn(),
   getWorkflowRun: vi.fn(),
+  getToolCatalog: vi.fn(),
+  listLibraryDocuments: vi.fn(),
+  createWorkflow: vi.fn(),
+  updateWorkflow: vi.fn(),
+  deleteWorkflow: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -18,6 +26,11 @@ vi.mock("@/lib/api", () => ({
   createSession: mocks.createSession,
   runWorkflow: mocks.runWorkflow,
   getWorkflowRun: mocks.getWorkflowRun,
+  getToolCatalog: mocks.getToolCatalog,
+  listLibraryDocuments: mocks.listLibraryDocuments,
+  createWorkflow: mocks.createWorkflow,
+  updateWorkflow: mocks.updateWorkflow,
+  deleteWorkflow: mocks.deleteWorkflow,
   // Not mocked: the real terminal-state predicate is the contract under test.
   // Stubbing it would let the component "poll to completion" against a fake
   // rule and pass while disagreeing with the API's actual statuses.
@@ -47,6 +60,20 @@ const WORKFLOWS: Workflow[] = [
     createdAt: "2024-01-01T00:00:00Z",
     updatedAt: "2024-01-01T00:00:00Z",
   },
+  {
+    id: "w2",
+    userId: "u1",
+    name: "research-then-write",
+    displayName: "Research then write",
+    description: "Two-step",
+    steps: [
+      { agent: "research", instruction: "Research: {input}" },
+      { agent: "helper", instruction: "Write up: {previous}" },
+    ],
+    enabled: true,
+    createdAt: "2024-01-01T00:00:00Z",
+    updatedAt: "2024-01-01T00:00:00Z",
+  },
 ];
 
 beforeEach(() => {
@@ -57,14 +84,28 @@ beforeEach(() => {
   mocks.createSession.mockResolvedValue({ id: "s1" });
   mocks.runWorkflow.mockResolvedValue({
     scheduled: false,
-    result: { sessionId: "s1", ok: true, message: { id: "m1" } },
+    result: { sessionId: "s1", ok: true, message: { id: "m1", content: "the summary" } },
   });
+  // An agent with nothing attached: the default that produced the original bug
+  // report, where a workflow was asked to remember something and silently could
+  // not.
+  mocks.getToolCatalog.mockResolvedValue({ tools: [], inheritedTools: [] });
+  mocks.listLibraryDocuments.mockResolvedValue([]);
 });
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
+
+/** Selects a saved workflow and switches to the run tab. */
+async function openRunTab(
+  user: ReturnType<typeof userEvent.setup>,
+  name = "Summarize",
+) {
+  await user.click(await screen.findByRole("button", { name }));
+  await user.click(screen.getByRole("tab", { name: "Run & test" }));
+}
 
 describe("WorkflowBuilder", () => {
   it("shows the selected step agent's description and explains step chaining on demand", async () => {
@@ -90,16 +131,108 @@ describe("WorkflowBuilder", () => {
   it("explains why Run is disabled when no model is picked, without relying on a disabled-button title", async () => {
     const user = userEvent.setup();
     render(<WorkflowBuilder agents={AGENTS} runModel={null} onRun={() => {}} />);
-    await waitFor(() => expect(mocks.listWorkflows).toHaveBeenCalled());
+    await openRunTab(user);
 
-    await user.click(await screen.findByRole("button", { name: "▶ Run" }));
-
-    const runButton = await screen.findByRole("button", { name: "Run in new chat" });
+    const runButton = await screen.findByRole("button", { name: "Run" });
     expect(runButton).toBeDisabled();
     // Native disabled-button titles aren't reliably exposed to keyboard/AT
     // users, so the reason must be visible text, not a hover-only attribute.
     expect(runButton).not.toHaveAttribute("title");
     expect(screen.getByText("Pick a model in the chat header first.")).toBeInTheDocument();
+  });
+
+  // --- Capability visibility -------------------------------------------------
+  //
+  // The bug this answers: a workflow step's tool surface is not its agent's tool
+  // list, and nothing said so. A workflow told to "remember the decisions" ran,
+  // replied that it could not save anything, and was recorded as a success.
+
+  it("warns on the step itself that memory is not attached, and says document reading is ambient", async () => {
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+
+    const strip = await screen.findByRole("group", { name: "Step 1 capabilities" });
+    expect(strip).toHaveTextContent(/Save memory · not attached/i);
+    expect(strip).toHaveTextContent(/Recall memory · not attached/i);
+    // Web search and document reading are ambient/conditional, never attached —
+    // stating that is the whole point, because the asymmetry is invisible.
+    expect(strip).toHaveTextContent(/Web search/i);
+    expect(strip).toHaveTextContent(/Read documents/i);
+  });
+
+  it("offers a route to fix an unattached tool only when the surrounding panel can navigate", async () => {
+    const onEditAgent = vi.fn();
+    const { rerender } = render(
+      <WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />,
+    );
+    await screen.findByRole("group", { name: "Step 1 capabilities" });
+    expect(screen.queryByRole("button", { name: /attach tools/i })).not.toBeInTheDocument();
+
+    rerender(
+      <WorkflowBuilder
+        agents={AGENTS}
+        runModel="gpt-4"
+        onRun={() => {}}
+        onEditAgent={onEditAgent}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /attach tools/i }));
+    expect(onEditAgent).toHaveBeenCalledWith("helper");
+  });
+
+  it("says so when a step's agent cannot be resolved, rather than rendering an empty strip", async () => {
+    // An empty capability strip and an unresolvable agent look identical, and
+    // the first reads as "this step has no tools" — a wrong answer, not a
+    // missing one.
+    mocks.getToolCatalog.mockRejectedValue(new Error("422"));
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    expect(
+      await screen.findByText(/capabilities unavailable/i),
+    ).toBeInTheDocument();
+  });
+
+  // --- Results stay in place -------------------------------------------------
+
+  it("renders the result in the panel instead of navigating away, and hands off only on request", async () => {
+    const onRun = vi.fn();
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={onRun} />);
+    await openRunTab(user);
+    await user.type(await screen.findByLabelText("Input"), "hello");
+    await user.click(screen.getByRole("button", { name: "Run" }));
+
+    expect(await screen.findByText("the summary")).toBeInTheDocument();
+    // Auto-navigating unmounts this panel and takes the output with it, which is
+    // why a run appeared to produce nothing at all.
+    expect(onRun).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Open in chat" }));
+    expect(onRun).toHaveBeenCalledWith("s1");
+  });
+
+  it("attributes a failure to the step that raised it and marks later steps as skipped", async () => {
+    mocks.runWorkflow.mockResolvedValue({
+      scheduled: false,
+      result: {
+        sessionId: "s1",
+        ok: false,
+        message: { id: "m1", content: "Step 2: the model refused" },
+      },
+    });
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await openRunTab(user, "Research then write");
+    await user.type(await screen.findByLabelText("Input"), "hello");
+    await user.click(screen.getByRole("button", { name: "Run" }));
+
+    const trace = await screen.findByRole("list", { name: "Step results" });
+    const items = within(trace).getAllByRole("listitem");
+    // Step 1 ran before the failure; step 2 is the one that raised it; nothing
+    // after a failure ever started.
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent(/succeeded/i);
+    expect(items[1]).toHaveTextContent(/failed/i);
+    expect(await screen.findByText(/the model refused/i)).toBeInTheDocument();
   });
 
   // --- Durable execution opt-in ---------------------------------------------
@@ -110,18 +243,11 @@ describe("WorkflowBuilder", () => {
   // actually used. A capability with no caller is indistinguishable from a
   // broken one, and nothing failed to say so.
 
-  // Selects by accessible name, not placeholder: the builder's step-1 field
-  // prompts with the {input} token, so a /input/i placeholder match is ambiguous
-  // across the two columns that render side by side.
-  async function openRunForm(user: ReturnType<typeof userEvent.setup>) {
-    await user.click(await screen.findByRole("button", { name: "▶ Run" }));
-    await user.type(await screen.findByLabelText(`Input for ${WORKFLOWS[0].name}`), "hello");
-  }
-
   it("hides the durable option and never sends the flag when the server cannot honour it", async () => {
     const user = userEvent.setup();
     render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
-    await openRunForm(user);
+    await openRunTab(user);
+    await user.type(await screen.findByLabelText("Input"), "hello");
 
     // Hidden rather than disabled: a visible-but-dead control invites the user
     // to ask for durability the deployment would answer with a 422.
@@ -129,7 +255,7 @@ describe("WorkflowBuilder", () => {
       screen.queryByLabelText(/keep running if the app restarts/i),
     ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Run in new chat" }));
+    await user.click(screen.getByRole("button", { name: "Run" }));
     await waitFor(() => expect(mocks.runWorkflow).toHaveBeenCalled());
     expect(mocks.runWorkflow.mock.calls[0][1]).not.toHaveProperty("durable");
   });
@@ -139,24 +265,24 @@ describe("WorkflowBuilder", () => {
       workflows: WORKFLOWS,
       durableAvailable: true,
     });
-    const onRun = vi.fn();
     const user = userEvent.setup();
-    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={onRun} />);
-    await openRunForm(user);
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await openRunTab(user);
+    await user.type(await screen.findByLabelText("Input"), "hello");
 
     expect(
       await screen.findByLabelText(/keep running if the app restarts/i),
     ).not.toBeChecked();
 
-    await user.click(screen.getByRole("button", { name: "Run in new chat" }));
-    await waitFor(() => expect(onRun).toHaveBeenCalledWith("s1"));
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    expect(await screen.findByText("the summary")).toBeInTheDocument();
     // Default OFF must mean byte-identical behaviour to before the feature
     // existed -- no flag, and no polling round-trip.
     expect(mocks.runWorkflow.mock.calls[0][1]).not.toHaveProperty("durable");
     expect(mocks.getWorkflowRun).not.toHaveBeenCalled();
   });
 
-  it("polls a scheduled run to completion before handing off to the chat view", async () => {
+  it("polls a scheduled run to completion and reports it in place", async () => {
     mocks.listWorkflows.mockResolvedValue({
       workflows: WORKFLOWS,
       durableAvailable: true,
@@ -167,25 +293,29 @@ describe("WorkflowBuilder", () => {
     });
     mocks.getWorkflowRun
       .mockResolvedValueOnce({ runId: "u1:abc", status: "RUNNING" })
-      .mockResolvedValueOnce({ runId: "u1:abc", status: "COMPLETED", ok: true });
+      .mockResolvedValueOnce({
+        runId: "u1:abc",
+        status: "COMPLETED",
+        ok: true,
+        text: "durable output",
+      });
 
-    const onRun = vi.fn();
     const user = userEvent.setup();
-    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={onRun} />);
-    await openRunForm(user);
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await openRunTab(user);
+    await user.type(await screen.findByLabelText("Input"), "hello");
     await user.click(await screen.findByLabelText(/keep running if the app restarts/i));
-    await user.click(screen.getByRole("button", { name: "Run in new chat" }));
+    await user.click(screen.getByRole("button", { name: "Run" }));
 
     await waitFor(() => expect(mocks.runWorkflow).toHaveBeenCalled());
     expect(mocks.runWorkflow.mock.calls[0][1]).toMatchObject({ durable: true });
-    // The chat view loads a session's messages once and does not watch for
-    // later arrivals, so handing off before the run finishes would show the
-    // user their own input and nothing else.
-    await waitFor(() => expect(onRun).toHaveBeenCalledWith("s1"), { timeout: 10000 });
+    expect(
+      await screen.findByText("durable output", {}, { timeout: 10000 }),
+    ).toBeInTheDocument();
     expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(2);
   }, 15000);
 
-  it("reports a failed durable run instead of handing off as if it succeeded", async () => {
+  it("reports a failed durable run instead of presenting it as a success", async () => {
     mocks.listWorkflows.mockResolvedValue({
       workflows: WORKFLOWS,
       durableAvailable: true,
@@ -202,10 +332,27 @@ describe("WorkflowBuilder", () => {
 
     const user = userEvent.setup();
     render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
-    await openRunForm(user);
+    await openRunTab(user);
+    await user.type(await screen.findByLabelText("Input"), "hello");
     await user.click(await screen.findByLabelText(/keep running if the app restarts/i));
-    await user.click(screen.getByRole("button", { name: "Run in new chat" }));
+    await user.click(screen.getByRole("button", { name: "Run" }));
 
-    expect(await screen.findByText(/step 2 timed out/i, {}, { timeout: 10000 })).toBeInTheDocument();
+    expect(
+      await screen.findByText(/step 2 timed out/i, {}, { timeout: 10000 }),
+    ).toBeInTheDocument();
   }, 15000);
+
+  it("scopes a run to the selected documents, and omits the key entirely when none are chosen", async () => {
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await openRunTab(user);
+    await user.type(await screen.findByLabelText("Input"), "hello");
+    await user.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalled());
+    // `[]` is NOT "no preference": the API reads `allowed_document_ids is None
+    // or bool(...)`, so sending an empty array switches document reading OFF
+    // for the whole run.
+    expect(mocks.createSession.mock.calls[0][0]).not.toHaveProperty("libraryDocumentIds");
+  });
 });
