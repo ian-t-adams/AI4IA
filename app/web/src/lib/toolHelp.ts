@@ -3,7 +3,8 @@
 // and is grounded in — the exact descriptions and risk levels the API
 // registers server-side (agents/tool_exec.py's ToolSpec entries and
 // routers/tools.py's _SYNTHETIC_DESCRIPTIONS + ToolRisk.safe assignment for
-// generate_image/generate_video/process_document/recall_memory). Keeping one
+// generate_image/generate_video/process_document/recall_memory/remember_memory).
+// Keeping one
 // typed copy here means every checkbox/row that lets a user attach a
 // built-in tool can show the same accurate what/when/tradeoffs explanation
 // instead of a bare label or no help at all.
@@ -56,6 +57,13 @@ export const BUILT_IN_TOOL_HELP: Record<string, ToolHelpCopy> = {
     what: "Searches memories the signed-in user has previously saved and returns the relevant ones.",
     when: "Use when the agent should recall something saved earlier instead of relying only on the current conversation.",
     tradeoffs: "Only ever returns the current user's own memories, never another user's.",
+    risk: "safe",
+  },
+  remember_memory: {
+    what: "Saves a short, durable fact to the signed-in user's own memory so later conversations can recall it.",
+    when: "Use when the agent should retain a preference, decision, or detail beyond the current conversation — for example a workflow that reads notes and keeps the decisions.",
+    tradeoffs:
+      "Writes only to your own memory, a few short facts per turn. A fact already covered by an existing memory is reported as nothing new stored rather than saved again. Without this tool attached an agent cannot save anything, no matter how it is instructed.",
     risk: "safe",
   },
 };

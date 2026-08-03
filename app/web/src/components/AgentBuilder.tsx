@@ -49,6 +49,7 @@ const TOOL_LABELS: Record<string, string> = {
   generate_video: "Generate video",
   process_document: "Process document",
   recall_memory: "Recall memory",
+  remember_memory: "Save memory",
 };
 
 interface AgentForm {
