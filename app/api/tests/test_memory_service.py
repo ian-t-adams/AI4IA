@@ -142,7 +142,7 @@ async def test_noop_service_is_inert():
     svc = NoopMemoryService()
     assert svc.enabled is False
     assert await svc.recall("u1", "q") == []
-    assert await svc.remember("u1", "s1", "x" * 100) is None
+    assert await svc.remember("u1", "s1", "x" * 100) is False
     assert await svc.remember_document("u1", items=["x" * 100]) == 0
     assert await svc.forget_user("u1") == 0
     assert svc.format_context([MemoryRecord(user_id="u1", text="x")]) is None

@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **`remember_memory` tool** (`memory/remember_capability.py`). Agents can now *write* a
+  short durable fact to the caller's own memory, not just recall one. Until now memory was
+  only ever written by the passive path in the chat router (which stores the user's own
+  utterance after a turn), so an agent asked to "read these notes and remember the
+  decisions" correctly answered that it could not — and a workflow built for that job could
+  never have worked. The tool is user-attachable, closure-bound to the authenticated user
+  (the model cannot name a different one), capped per turn and per fact, and reports its
+  outcome **honestly**: `MemoryService.remember` now returns whether anything was durably
+  written, so a skipped or failed write is never reported as "saved". A fact already covered
+  by an existing memory is reported as "nothing new stored" — a distinct outcome from a
+  failure, so the model does not retry a write that was correctly declined.
+- **Shared agent capabilities** (`agents/capabilities.py`). The execution-mode-independent
+  synthetic tools — `fetch_document`, the five Web IQ tools, `recall_memory`,
+  `remember_memory` — are now assembled in one place used by plain chat, agent turns, and
+  workflow steps alike, so the three surfaces cannot drift into different tool sets.
+  Deliberately excluded and still chat-only: `generate_image` / `generate_video` /
+  `process_document` (they deliver results as message attachments through a per-turn sink
+  that only the chat router drains), compute/inline-analysis (gated on a per-turn
+  classification), MCP (it replaces the registry rather than adding to it), and
+  `delegate_to_agent` (workflows reject orchestrator steps by construction).
+
 - **Durable workflow execution** (`workflows/durable.py`, `infra/modules/durabletask.bicep`).
   `POST /api/workflows/{name}/run` accepts an opt-in `"durable": true` that schedules the
   run on an Azure Durable Task Scheduler orchestration and returns `202` with a run id,
@@ -186,6 +207,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   before the bump.
 
 ### Fixed
+
+- **Workflow steps ran with almost no tools.** `run_workflow_step` called
+  `run_agent_turn` with no `extra_tools`/`extra_handlers` at all, so every step
+  executed with only the two registry built-ins (`calculator`, `get_current_time`)
+  no matter which tools its agent declared. All the real capabilities — document
+  retrieval, Web IQ, memory recall — are *synthetic*: closure-bound to the
+  authenticated user and therefore assembled per turn rather than registered, and
+  that assembly existed only in the chat router. Nothing errored. The model simply
+  answered that it could not read documents, search the web, or remember anything,
+  and the run persisted that answer as a **successful** result — the reported
+  symptom being a workflow that replied "I can't directly create persistent
+  memories in the user account from this interface." Steps now receive the same
+  shared capability set chat does, built once in `agents/capabilities.py` and
+  injected identically by the in-request runner and the durable activity.
+  `email` and `libraryDocumentIds` are frozen into the durable orchestration
+  payload rather than re-read inside the activity, so a session edited mid-run
+  cannot widen or narrow an in-flight run's document access.
 
 - **Durable workflow execution had no way to reach it from the product.** The
   backend shipped, the paid Durable Task Scheduler was provisioned, the flag read

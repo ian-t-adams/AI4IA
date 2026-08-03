@@ -41,7 +41,15 @@ and tool safety; the web app is the user interface.
 - Create a user agent when you repeatedly need a specific role, instruction set,
   model, or tool bundle.
 - Use workflows for repeatable multi-step work. Workflows run through the same
-  governed tool path as chat.
+  governed tool path as chat, and each step is offered the same capabilities a
+  chat turn gets: reading your document library, Web IQ search and browsing, and
+  — when the step's agent has them attached — recalling and saving memories.
+- **Memory is a tool, and it has to be attached.** `remember_memory` saves a
+  short durable fact; `recall_memory` reads them back. A step whose agent has
+  neither attached cannot write to your memory, and the model will say so rather
+  than pretending. Attach them in Agents & workflows on the agent the step uses.
+  Saves are reported honestly: a fact already covered by an existing memory is
+  reported as "nothing new stored", not as a save.
 - When the deployment provides durable execution, the workflow runner offers
   **Keep running if the app restarts**. Leave it off for quick runs: the reply
   comes back in the request as usual. Turn it on for long multi-step work, and

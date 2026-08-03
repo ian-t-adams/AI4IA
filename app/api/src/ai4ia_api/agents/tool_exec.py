@@ -322,13 +322,22 @@ USER_ATTACHABLE_TOOL_NAMES: frozenset[str] = frozenset({"calculator", "get_curre
 # Synthetic, service-backed capabilities a *user* may attach to an agent. Unlike
 # the builtin registry tools above, these are NOT executed through the registry
 # executor (their handlers need real services + the authenticated user, which an
-# empty agent-turn ``ToolContext`` cannot carry). The chat router builds and
-# injects the backing capability per turn when the tool is present AND its
-# services are available; if they are not, the agent simply runs without it. They
-# are listed here so a user agent may reference them and the Agent Builder can
-# offer them, governed by the same per-user agent validation as builtin tools.
+# empty agent-turn ``ToolContext`` cannot carry). Whichever surface owns the turn
+# builds and injects the backing capability when the tool is present AND its
+# services are available; if they are not, the agent simply runs without it. The
+# execution-mode-independent ones live in :mod:`ai4ia_api.agents.capabilities` so
+# chat and workflows offer the same surface; the rest are chat-only because they
+# deliver results as message attachments through a per-turn sink. They are listed
+# here so a user agent may reference them and the Agent Builder can offer them,
+# governed by the same per-user agent validation as builtin tools.
 SELECTABLE_SYNTHETIC_TOOL_NAMES: frozenset[str] = frozenset(
-    {"generate_image", "generate_video", "process_document", "recall_memory"}
+    {
+        "generate_image",
+        "generate_video",
+        "process_document",
+        "recall_memory",
+        "remember_memory",
+    }
 )
 
 

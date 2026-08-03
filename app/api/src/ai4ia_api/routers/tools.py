@@ -23,6 +23,7 @@ _SYNTHETIC_DESCRIPTIONS = {
     "generate_video": "Generate a video and attach the authenticated artifact to the chat.",
     "process_document": "Process a ready library document with governed document tools.",
     "recall_memory": "Recall relevant memories owned by the current user.",
+    "remember_memory": "Save a short, durable fact to the current user's own memory.",
 }
 
 
@@ -81,6 +82,8 @@ async def list_tools(
         available = True
         detail = None
         if name == "recall_memory":
+            available = bool(getattr(request.app.state.memory, "enabled", False))
+        elif name == "remember_memory":
             available = bool(getattr(request.app.state.memory, "enabled", False))
         elif name == "process_document":
             available = getattr(request.app.state, "document_retrieval", None) is not None
