@@ -174,6 +174,25 @@ describe("WorkflowBuilder", () => {
   });
 
   it("grants a tool to the step and reports it as on, without touching the agent", async () => {
+    // The default fixture has no memory service, which would render the chip as
+    // "store disabled" no matter what is ticked — a pass/fail that says nothing
+    // about the grant. Give it a working store so the chip reflects the tool.
+    mocks.getToolCatalog.mockResolvedValue({
+      tools: [
+        {
+          name: "remember_memory",
+          label: "Save memory",
+          description: "Saves a short durable fact.",
+          source: "synthetic",
+          risk: "safe",
+          requiresApproval: false,
+          scopes: [],
+          available: true,
+          selectable: true,
+        },
+      ],
+      inheritedTools: [],
+    });
     render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
     const strip = await screen.findByRole("group", { name: "Step 1 capabilities" });
     // Control: the chip is off BEFORE the box is ticked, so a passing assertion
@@ -211,10 +230,11 @@ describe("WorkflowBuilder", () => {
     const user = userEvent.setup();
 
     await user.type(await screen.findByLabelText(/^name/i), "notes");
-    await user.type(
-      screen.getByLabelText("Step 1 instruction"),
-      "Record the decisions in {input}",
-    );
+    // `user.type` parses "{...}" as a key descriptor, so typing the {input}
+    // token silently produces the wrong text and the first-step validation
+    // rejects the save. `paste` inserts the string verbatim.
+    await user.click(screen.getByLabelText("Step 1 instruction"));
+    await user.paste("Record the decisions in {input}");
     await user.click(screen.getByRole("checkbox", { name: "Save memory" }));
     await user.click(screen.getByRole("button", { name: /create workflow/i }));
 
