@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "@/lib/api";
-import type { AgentSummary, Workflow } from "@/lib/types";
+import type { AgentSummary, Workflow, WorkflowRunStatus } from "@/lib/types";
 import {
   INPUT_TOKEN,
   MAX_DESCRIPTION_LEN,
@@ -61,6 +61,30 @@ function formFrom(w: Workflow): WorkflowForm {
   };
 }
 
+// Poll cadence for a scheduled durable run. The ceiling is a UI patience budget,
+// NOT a run deadline: giving up here abandons the poll, never the orchestration,
+// which keeps going server-side and writes its assistant turn to the session
+// whenever it finishes. The API enforces the real timeout.
+const RUN_POLL_INTERVAL_MS = 1500;
+const RUN_POLL_MAX_ATTEMPTS = 80; // ~2 minutes
+
+// Polls until the run reaches a terminal state. Returns null if the patience
+// budget runs out first, which the caller reports as "still running" rather than
+// as a failure — the two are genuinely different and conflating them would tell
+// the user a healthy long run had broken.
+async function pollRun(
+  runId: string,
+  onStatus: (status: string) => void,
+): Promise<WorkflowRunStatus | null> {
+  for (let attempt = 0; attempt < RUN_POLL_MAX_ATTEMPTS; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, RUN_POLL_INTERVAL_MS));
+    const status = await api.getWorkflowRun(runId);
+    onStatus(status.status);
+    if (api.isTerminalRunStatus(status.status)) return status;
+  }
+  return null;
+}
+
 export function WorkflowBuilder({
   agents,
   runModel,
@@ -81,13 +105,23 @@ export function WorkflowBuilder({
   const [runTarget, setRunTarget] = useState<string | null>(null);
   const [runInput, setRunInput] = useState("");
   const [running, setRunning] = useState(false);
+  // Server-reported: whether this deployment can honour a durable run at all.
+  // The control is hidden (not merely disabled) when it cannot, so the UI never
+  // offers an option whose only possible outcome is a 422.
+  const [durableAvailable, setDurableAvailable] = useState(false);
+  const [runDurable, setRunDurable] = useState(false);
+  // Surfaced while polling a scheduled run so the button is not silently busy
+  // for what may be minutes.
+  const [runStatus, setRunStatus] = useState<string | null>(null);
 
   const agentNames = useMemo(() => new Set(agents.map((a) => a.name)), [agents]);
   const agentsByName = useMemo(() => new Map(agents.map((a) => [a.name, a])), [agents]);
 
   const refreshMine = useCallback(async () => {
     try {
-      setMine(await api.listWorkflows());
+      const listed = await api.listWorkflows();
+      setMine(listed.workflows);
+      setDurableAvailable(listed.durableAvailable);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -231,13 +265,42 @@ export function WorkflowBuilder({
         title: `Run: ${runTarget}`,
         model: runModel,
       });
-      await api.runWorkflow(runTarget, {
+      const outcome = await api.runWorkflow(runTarget, {
         sessionId: session.id,
         input: runInput,
         model: runModel,
+        // Only ever sent when the server said it can honour it, so the request
+        // cannot be rejected for asking.
+        ...(durableAvailable && runDurable ? { durable: true } : {}),
       });
+      if (outcome.scheduled) {
+        // A durable run returns before the assistant turn exists. Poll here
+        // rather than navigating immediately: the chat view loads a session's
+        // messages once and does not watch for later arrivals, so handing off
+        // early would show the user their own input and nothing else, with no
+        // indication a reply was still coming.
+        const status = await pollRun(outcome.run.runId, setRunStatus);
+        // Stay put on anything other than a clean finish. Navigating away
+        // unmounts this panel and takes the message with it, so the user would
+        // land in a session with no reply and no explanation for why.
+        if (status === null) {
+          setError(
+            `The run is still going after ${Math.round(
+              (RUN_POLL_INTERVAL_MS * RUN_POLL_MAX_ATTEMPTS) / 1000,
+            )}s. It has not been cancelled — its reply will appear in "Run: ${runTarget}" when it finishes.`,
+          );
+          setRunStatus(null);
+          return;
+        }
+        if (status.error || status.ok === false) {
+          setError(`Run failed: ${status.error ?? "the workflow reported a failure."}`);
+          setRunStatus(null);
+          return;
+        }
+      }
       setRunInput("");
       setRunTarget(null);
+      setRunStatus(null);
       onRun(session.id); // hand off to chat so the user sees the result (or the
       // persisted failure message if the run returned ok=false)
     } catch (e) {
@@ -245,7 +308,7 @@ export function WorkflowBuilder({
     } finally {
       setRunning(false);
     }
-  }, [runTarget, runInput, runModel, onRun]);
+  }, [runTarget, runInput, runModel, onRun, durableAvailable, runDurable]);
 
   function agentOptions(current: string) {
     // Preserve a stored agent name that's no longer in the composed catalog so
@@ -335,8 +398,26 @@ export function WorkflowBuilder({
                       disabled={running || !runInput.trim() || !runModel}
                       style={primaryBtn}
                     >
-                      {running ? "Running…" : "Run in new chat"}
+                      {running
+                        ? runStatus
+                          ? `Running… (${runStatus.toLowerCase()})`
+                          : "Running…"
+                        : "Run in new chat"}
                     </button>
+                    {durableAvailable && (
+                      <label
+                        style={{ ...labelStyle, margin: 0, display: "flex", alignItems: "center", gap: 6 }}
+                        title="Runs the workflow on a durable orchestration so it survives an app restart, scale-in, or crash. Slower to hand off, because the reply is written when the run finishes rather than held open in the request."
+                      >
+                        <input
+                          type="checkbox"
+                          checked={runDurable}
+                          disabled={running}
+                          onChange={(e) => setRunDurable(e.target.checked)}
+                        />
+                        Keep running if the app restarts
+                      </label>
+                    )}
                     {!runModel && (
                       <span style={{ ...labelStyle, margin: 0 }}>
                         Pick a model in the chat header first.

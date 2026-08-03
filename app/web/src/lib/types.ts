@@ -202,6 +202,38 @@ export interface WorkflowRunResult {
   message: Message;
 }
 
+export interface WorkflowListResult {
+  workflows: Workflow[];
+  // Whether this deployment can honour a durable run. Server-derived from the
+  // live orchestration client, so it never claims a capability the run endpoint
+  // would reject.
+  durableAvailable: boolean;
+}
+
+// 202 body: the run was SCHEDULED, not completed. The assistant message does not
+// exist yet — poll getWorkflowRun(runId) until the status is terminal.
+export interface WorkflowRunAccepted {
+  sessionId: string;
+  runId: string;
+  status: string;
+}
+
+export interface WorkflowRunStatus {
+  runId: string;
+  status: string;
+  ok?: boolean | null;
+  text?: string | null;
+  error?: string | null;
+}
+
+// Discriminated on the HTTP status the server actually returned rather than on
+// the body's shape, so a partially-populated payload can never be mistaken for
+// the other branch: a durable run reported as synchronous would tell the caller
+// "done" while the orchestration is still running.
+export type WorkflowRunOutcome =
+  | { scheduled: false; result: WorkflowRunResult }
+  | { scheduled: true; run: WorkflowRunAccepted };
+
 export interface ChatParams {
   temperature?: number;
   top_p?: number;

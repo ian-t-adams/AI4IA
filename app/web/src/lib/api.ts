@@ -19,7 +19,11 @@ import type {
   VoiceTurnInput,
   Workflow,
   WorkflowCreate,
+  WorkflowListResult,
+  WorkflowRunAccepted,
+  WorkflowRunOutcome,
   WorkflowRunResult,
+  WorkflowRunStatus,
   WorkflowUpdate,
 } from "./types";
 import type { VoiceLiveProviderCatalogResponse } from "./voiceLive";
@@ -147,11 +151,18 @@ export async function deleteAgent(name: string): Promise<void> {
   }
 }
 
-export async function listWorkflows(): Promise<Workflow[]> {
-  const data = await jsonOrThrow<{ workflows: Workflow[] }>(
-    await apiFetch("/api/workflows", { cache: "no-store" }),
-  );
-  return data.workflows;
+export async function listWorkflows(): Promise<WorkflowListResult> {
+  const data = await jsonOrThrow<{
+    workflows: Workflow[];
+    durableAvailable?: boolean;
+  }>(await apiFetch("/api/workflows", { cache: "no-store" }));
+  // Default false, not true: an older API that does not send the field cannot
+  // honour a durable request either, and offering the control anyway would turn
+  // a missing capability into a 422 in the user's face.
+  return {
+    workflows: data.workflows,
+    durableAvailable: data.durableAvailable === true,
+  };
 }
 
 export async function createWorkflow(input: WorkflowCreate): Promise<Workflow> {
@@ -188,15 +199,50 @@ export async function deleteWorkflow(name: string): Promise<void> {
 
 // Runs a saved workflow against a chat session. The backend persists the user
 // input + the pipeline's assistant result to the session like a normal turn.
+//
+// `durable` opts THIS run into orchestrated execution so it survives a replica
+// restart, scale-in, or crash. It is a per-request opt-in rather than a mode the
+// server flips, so the response shape only changes when the caller asked for it:
+// a durable run answers 202 with a run id and no message, because the assistant
+// turn genuinely does not exist yet. Asking for durability on a deployment that
+// cannot provide it is a 422, never a silent downgrade.
 export async function runWorkflow(
   name: string,
-  input: { sessionId: string; input: string; model?: string | null },
-): Promise<WorkflowRunResult> {
+  input: {
+    sessionId: string;
+    input: string;
+    model?: string | null;
+    durable?: boolean;
+  },
+): Promise<WorkflowRunOutcome> {
+  const resp = await apiFetch(`/api/workflows/${encodeURIComponent(name)}/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (resp.status === 202) {
+    return { scheduled: true, run: await jsonOrThrow<WorkflowRunAccepted>(resp) };
+  }
+  return { scheduled: false, result: await jsonOrThrow<WorkflowRunResult>(resp) };
+}
+
+// Terminal orchestration states, upper-cased to match the durabletask runtime
+// status names the API forwards verbatim. An UNRECOGNISED status is treated as
+// still-running on purpose: the caller's poll is attempt-bounded, so an unknown
+// state degrades to "took too long" rather than reporting a run finished when it
+// has not.
+const TERMINAL_RUN_STATUSES = new Set(["COMPLETED", "FAILED", "TERMINATED"]);
+
+export function isTerminalRunStatus(status: string): boolean {
+  return TERMINAL_RUN_STATUSES.has(status.trim().toUpperCase());
+}
+
+// Polls a durable run started with `durable: true`. Distinguishes "still running"
+// from "finished and failed" without diffing the transcript.
+export async function getWorkflowRun(runId: string): Promise<WorkflowRunStatus> {
   return jsonOrThrow(
-    await apiFetch(`/api/workflows/${encodeURIComponent(name)}/run`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
+    await apiFetch(`/api/workflows/runs/${encodeURIComponent(runId)}`, {
+      cache: "no-store",
     }),
   );
 }
