@@ -187,6 +187,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Durable workflow execution had no way to reach it from the product.** The
+  backend shipped, the paid Durable Task Scheduler was provisioned, the flag read
+  `true` everywhere — and the web app's run payload never carried `durable`, so
+  the scheduler sat idle and no caller could ever opt in. The capability was
+  indistinguishable from a broken one, and nothing failed to say so. The workflow
+  runner now offers **Keep running if the app restarts** (default off), and
+  `GET /api/workflows` advertises `durableAvailable` derived from the *same*
+  `app.state.durable_workflows` the run endpoint checks — so the advertisement
+  cannot disagree with what the request will do. A separately-plumbed web-side
+  flag was written first and deliberately reverted: a second copy of a feature's
+  posture is the shadowing defect below, one layer up. Because a durable run
+  answers `202` before the assistant turn exists, and the chat view loads a
+  session's messages once without watching for later arrivals, the runner polls
+  the run to a terminal state before handing off; a failed or still-running run
+  keeps the user in the runner with a visible reason rather than dropping them
+  into a session with no reply and no explanation.
+
 - **Fourteen deploy-workflow exports silently shadowed their parameter-file defaults.**
   `${{ vars.X || 'fallback' }}` always expands to something non-empty, so azd never saw an
   empty value and never reached the `${X=default}` in `infra/main.parameters.json` — the

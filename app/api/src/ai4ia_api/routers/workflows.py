@@ -59,6 +59,11 @@ router = APIRouter(prefix="/api", tags=["workflows"])
 
 class WorkflowListResponse(BaseModel):
     workflows: list[Workflow]
+    # Whether THIS deployment can honour `durable: true` on a run. Derived from the
+    # same app.state.durable_workflows the run endpoint checks, so the advertisement
+    # cannot disagree with what the request will actually do -- a separately-plumbed
+    # web-side flag could, and would leave the runner offering an option that 422s.
+    durableAvailable: bool = False
 
 
 class WorkflowRunRequest(BaseModel):
@@ -107,7 +112,11 @@ async def list_workflows(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> WorkflowListResponse:
     workflows = await _service(request).list_for(user.internal_user_id)
-    return WorkflowListResponse(workflows=workflows)
+    return WorkflowListResponse(
+        workflows=workflows,
+        durableAvailable=getattr(request.app.state, "durable_workflows", None)
+        is not None,
+    )
 
 
 @router.post(

@@ -42,6 +42,13 @@ and tool safety; the web app is the user interface.
   model, or tool bundle.
 - Use workflows for repeatable multi-step work. Workflows run through the same
   governed tool path as chat.
+- When the deployment provides durable execution, the workflow runner offers
+  **Keep running if the app restarts**. Leave it off for quick runs: the reply
+  comes back in the request as usual. Turn it on for long multi-step work, and
+  the run is handed to an orchestration that survives a restart, scale-in, or
+  crash — the runner then waits for it to finish before opening the chat, because
+  the reply is written when the run completes rather than held open in the
+  request. The option is hidden entirely on deployments that cannot honour it.
 - Attach only the tools an agent needs. Tool output is metered, logged, bounded,
   and redacted where applicable.
 - A selected agent is the standing conversation persona. An explicit `@agent`

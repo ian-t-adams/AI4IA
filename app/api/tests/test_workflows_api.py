@@ -294,3 +294,36 @@ def test_partial_failure_persists_and_meters_consumed_usage(client):
     assert summary["totalRequests"] == 1
     assert summary["totalTokens"] == 7
 
+
+
+def test_workflow_list_advertises_durable_availability_from_live_state(client):
+    """The list's durableAvailable must agree with what a run would actually do.
+
+    A client can only opt into durable execution if it knows the deployment
+    supports it, and the only honest source for that is the same
+    ``app.state.durable_workflows`` the run endpoint checks. A separately-plumbed
+    web-side flag can drift from the API's real posture, which is how the feature
+    shipped with a provisioned scheduler and no caller: nothing disagreed loudly
+    enough to notice.
+    """
+    # Off: the field is present and false, and a durable run is refused. Asserting
+    # both together is the point -- either alone would pass while the advertisement
+    # and the behaviour disagreed.
+    client.app.state.durable_workflows = None
+    assert client.get("/api/workflows").json()["durableAvailable"] is False
+
+    client.app.state.gateway = _EchoGateway()
+    assert _mk_agent(client, "drafter").status_code == 201
+    assert _mk_agent(client, "editor").status_code == 201
+    assert client.post("/api/workflows", json=_wf_body()).status_code == 201
+    sid = _session(client)
+    refused = client.post(
+        "/api/workflows/summarize/run",
+        json={"sessionId": sid, "input": "otters", "durable": True},
+    )
+    assert refused.status_code == 422
+
+    # On: flipping the same attribute the run endpoint reads flips the
+    # advertisement, so the two cannot disagree by construction.
+    client.app.state.durable_workflows = object()
+    assert client.get("/api/workflows").json()["durableAvailable"] is True
