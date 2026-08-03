@@ -147,15 +147,19 @@ export function WorkflowBuilder({
   const [docs, setDocs] = useState<LibraryDocument[]>([]);
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
 
-  // Per-agent tool catalog, so a six-step workflow using two agents makes two
-  // requests rather than six. "error" is a recorded outcome, not an absence: a
-  // step whose agent cannot be resolved must say so rather than render an empty
-  // strip, which reads as "this step has no tools".
+  // Per-agent tool catalog, so a step whose agent cannot be resolved can say so.
+  // "error" is a recorded outcome, not an absence: an empty strip reads as "this
+  // step has no tools", which is a wrong answer rather than a missing one.
   const [catalogs, setCatalogs] = useState<
     Map<string, { tools: ToolCatalogItem[]; inheritedTools: string[] } | "error">
   >(new Map());
-  const catalogsRef = useRef(catalogs);
-  catalogsRef.current = catalogs;
+  // Agent names already requested. Held in a ref and mutated only inside the
+  // effect below — reading `catalogs` there instead would have to list it as a
+  // dependency, and it changes on every fetch, so the effect would re-run
+  // forever. Tracking the request rather than the result also means an agent
+  // added to a second step while its first fetch is still in flight does not
+  // fire a duplicate.
+  const requestedAgents = useRef<Set<string>>(new Set());
 
   const agentNames = useMemo(() => new Set(agents.map((a) => a.name)), [agents]);
   const agentsByName = useMemo(() => new Map(agents.map((a) => [a.name, a])), [agents]);
@@ -194,12 +198,14 @@ export function WorkflowBuilder({
   }, [library.enabled]);
 
   // Fetch the tool catalog for each distinct agent referenced by a step.
-  // Already-fetched agents are skipped, so editing an instruction costs nothing.
+  // Already-requested agents are skipped, so editing an instruction costs
+  // nothing and a six-step workflow using two agents makes two requests.
   const stepAgentKey = form.steps.map((s) => s.agent).join("\u0000");
   useEffect(() => {
     const wanted = new Set(stepAgentKey.split("\u0000").filter(Boolean));
-    const missing = [...wanted].filter((n) => !catalogsRef.current.has(n));
+    const missing = [...wanted].filter((n) => !requestedAgents.current.has(n));
     if (missing.length === 0) return;
+    for (const name of missing) requestedAgents.current.add(name);
     void (async () => {
       const fetched = await Promise.all(
         missing.map(async (name) => {
