@@ -239,7 +239,9 @@ describe("WorkflowBuilder", () => {
     await user.click(screen.getByRole("button", { name: /create workflow/i }));
 
     await waitFor(() => expect(mocks.createWorkflow).toHaveBeenCalled());
-    const [, body] = mocks.createWorkflow.mock.calls[0];
+    // createWorkflow takes ONE argument: the name is merged into the body.
+    const [body] = mocks.createWorkflow.mock.calls[0];
+    expect(body.name).toBe("notes");
     expect(body.steps[0].extraTools).toEqual(["remember_memory"]);
   });
 
