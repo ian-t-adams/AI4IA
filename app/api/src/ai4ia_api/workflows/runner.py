@@ -143,6 +143,12 @@ async def run_workflow_step(
     registry built-ins no matter what its agent declares, and the model answers
     that it cannot do the job — a wrong answer persisted as a successful run.
 
+    The tool list handed to both the capability builder and the turn is the
+    agent's own plus ``step.extraTools``. The memory tools in particular are
+    *attach-gated* — offered only when named — so a step targeting a curated
+    agent (whose tool list is fixed and not user-editable) cannot save a memory
+    unless the step adds the tool itself.
+
     ``index`` is 0-based; user-facing messages report ``index + 1``.
     """
     target = composed.get(step.agent)
@@ -186,11 +192,18 @@ async def run_workflow_step(
         {"role": "system", "content": target.systemPrompt},
         {"role": "user", "content": prompt},
     ]
+    # A step runs with its agent's declared tools PLUS whatever it adds. Order is
+    # preserved and duplicates dropped so a tool the agent already declares is not
+    # offered to the model twice.
+    effective_tools = list(target.tools)
+    for extra in step.extraTools:
+        if extra not in effective_tools:
+            effective_tools.append(extra)
     extra_tools: list[dict[str, Any]] = []
     extra_handlers: dict[str, Handler] = {}
     if capabilities is not None:
         try:
-            extra_tools, extra_handlers = capabilities(target.tools)
+            extra_tools, extra_handlers = capabilities(effective_tools)
         except Exception:  # noqa: BLE001 — a capability must never break a step.
             # Degrade to registry-only rather than failing the run: the step may
             # not need the synthetic tools at all. Logged so a systematically
@@ -207,7 +220,7 @@ async def run_workflow_step(
         run = await run_agent_turn(
             deployment=deployment,
             messages=messages,
-            tool_names=target.tools,
+            tool_names=effective_tools,
             gateway=gateway,
             registry=registry,
             executor=executor,

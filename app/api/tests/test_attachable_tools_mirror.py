@@ -47,7 +47,7 @@ from ai4ia_api.agents.tool_exec import (
 _WEB_SRC = Path(__file__).resolve().parents[2] / "web" / "src"
 _STUDIO_TS = _WEB_SRC / "lib" / "studio.ts"
 _TOOL_HELP_TS = _WEB_SRC / "lib" / "toolHelp.ts"
-_AGENT_BUILDER_TSX = _WEB_SRC / "components" / "AgentBuilder.tsx"
+_WORKFLOW_CAPS_TS = _WEB_SRC / "components" / "workflowCapabilities.ts"
 
 # The union the API can ever offer. ``attachable_tool_names()`` filters the
 # registry half at runtime (a tool must be executable, enabled, allowlisted,
@@ -79,6 +79,14 @@ def _keys_of_record(path: Path, opener: str) -> set[str]:
     return set(re.findall(r"^\s{2}([a-z_]+):", block, flags=re.MULTILINE))
 
 
+def _members_of_set(path: Path, opener: str) -> set[str]:
+    """Quoted members of a `new Set([...])` literal — a different shape to
+    `_keys_of_record`, which matches `key:` pairs and would silently return an
+    empty set here (and so pass vacuously)."""
+    block = _extract_block(path.read_text(encoding="utf-8"), opener, "]);")
+    return set(re.findall(r'"([a-z_]+)"', block))
+
+
 def test_the_api_allowlist_is_not_empty() -> None:
     """Non-vacuity floor.
 
@@ -91,7 +99,7 @@ def test_the_api_allowlist_is_not_empty() -> None:
     assert "remember_memory" in _API_ATTACHABLE
     # A moved web tree would otherwise surface as a FileNotFoundError raised deep
     # inside a helper, which reads like a broken test rather than a real finding.
-    for path in (_STUDIO_TS, _TOOL_HELP_TS, _AGENT_BUILDER_TSX):
+    for path in (_STUDIO_TS, _TOOL_HELP_TS, _WORKFLOW_CAPS_TS):
         assert path.is_file(), f"{path} not found — update the paths in this test."
 
 
@@ -117,7 +125,7 @@ def test_no_web_tool_is_unknown_to_the_api() -> None:
 @pytest.mark.parametrize(
     ("path", "opener", "what"),
     [
-        (_AGENT_BUILDER_TSX, "const TOOL_LABELS: Record<string, string> = {", "a label"),
+        (_TOOL_HELP_TS, "export const TOOL_LABELS: Record<string, string> = {", "a label"),
         (
             _TOOL_HELP_TS,
             "export const BUILT_IN_TOOL_HELP: Record<string, ToolHelpCopy> = {",
@@ -130,3 +138,30 @@ def test_every_attachable_tool_has_supporting_copy(
 ) -> None:
     missing = _API_ATTACHABLE - _keys_of_record(path, opener)
     assert not missing, f"{sorted(missing)} have no {what} in {path.name}."
+
+
+def test_the_step_tool_picker_excludes_only_what_cannot_work_in_a_step() -> None:
+    """``STEP_ATTACHABLE_TOOLS`` is derived, and this pins what it derives to.
+
+    The workflow step picker must never offer a tool that a step structurally
+    cannot use — a checkbox that saves, validates, and then does nothing is the
+    inert-control failure this whole feature exists to remove. It must equally
+    not hide one that *does* work, which is how the memory tools became
+    unreachable in the first place.
+    """
+    excluded = _members_of_set(
+        _WORKFLOW_CAPS_TS, "export const NOT_IN_WORKFLOW_STEPS = new Set(["
+    )
+    assert excluded, "NOT_IN_WORKFLOW_STEPS parsed as empty — the extractor is stale."
+    offered = _API_ATTACHABLE - excluded
+
+    assert offered == {
+        "calculator",
+        "get_current_time",
+        "recall_memory",
+        "remember_memory",
+    }, (
+        "The set of tools a workflow step can be given changed. If a tool became "
+        "usable in a step, remove it from NOT_IN_WORKFLOW_STEPS; if a new tool is "
+        "chat-only, add it there. Then update this expectation deliberately."
+    )

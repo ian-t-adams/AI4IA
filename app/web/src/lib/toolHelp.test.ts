@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ATTACHABLE_TOOLS } from "./studio";
-import { BUILT_IN_TOOL_HELP, toolRiskSummary } from "./toolHelp";
+import { BUILT_IN_TOOL_HELP, TOOL_LABELS, toolRiskSummary } from "./toolHelp";
 
 describe("BUILT_IN_TOOL_HELP", () => {
   it("has help copy for every attachable built-in tool, with non-empty what/when/tradeoffs", () => {
@@ -19,6 +19,16 @@ describe("BUILT_IN_TOOL_HELP", () => {
     const attachable = new Set<string>(ATTACHABLE_TOOLS);
     for (const name of Object.keys(BUILT_IN_TOOL_HELP)) {
       expect(attachable.has(name), `${name} is not in ATTACHABLE_TOOLS`).toBe(true);
+    }
+  });
+});
+
+describe("TOOL_LABELS", () => {
+  it("labels every attachable tool, so no checkbox falls back to a raw tool name", () => {
+    // Shared by the agent builder and the workflow step tool picker. A tool with
+    // no entry silently renders its snake_case name in both.
+    for (const name of ATTACHABLE_TOOLS) {
+      expect(TOOL_LABELS[name], `missing label for ${name}`).toBeTruthy();
     }
   });
 });

@@ -148,7 +148,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # steps. Own Cosmos container ("workflows", PK /userId) + own invocation
         # surface, so a workflow and an agent may share a name. Not on the chat hot
         # path, so reads do NOT fail open — a store error surfaces to the caller.
-        app.state.workflow_service = WorkflowService(build_workflow_store(settings))
+        # Steps may add tools on top of their agent's own, from the same
+        # server-approved allowlist user agents draw on.
+        app.state.workflow_service = WorkflowService(
+            build_workflow_store(settings),
+            attachable_tools=attachable_tool_names(registry, executor),
+        )
         # User-registered MCP servers / BYO custom tools. Feature-
         # flagged + default-OFF: when settings.custom_tools_enabled is false the
         # service is None, so the ``/api/agents/mcp-servers`` API refuses (404) and

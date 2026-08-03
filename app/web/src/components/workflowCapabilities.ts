@@ -20,6 +20,7 @@
 // report something (see `web_search` below) the chip says so rather than
 // inventing a verdict.
 
+import { ATTACHABLE_TOOLS } from "@/lib/studio";
 import type { ToolCatalogItem } from "@/lib/types";
 
 export type ChipState =
@@ -60,6 +61,22 @@ export function isMcpToolName(name: string): boolean {
   return name.includes("/");
 }
 
+// The tools a *step* may add to itself, DERIVED rather than hand-listed: every
+// user-attachable tool, minus the ones that cannot work in a workflow step.
+//
+// Deriving it is the point. A hand-written list would happily offer
+// `generate_image`, which would save cleanly, validate cleanly, and then do
+// nothing — a checkbox for a capability that is structurally absent. Because
+// this subtracts `NOT_IN_WORKFLOW_STEPS`, adding a tool to either list keeps the
+// checkboxes honest with no second edit.
+//
+// The server deliberately accepts the *wider* agent-attachable set: it is one
+// allowlist instead of two that can drift, and a step carrying a chat-only tool
+// already renders an explicit "chat only" chip rather than a silent no-op.
+export const STEP_ATTACHABLE_TOOLS: string[] = ATTACHABLE_TOOLS.filter(
+  (t) => !NOT_IN_WORKFLOW_STEPS.has(t) && !isMcpToolName(t),
+);
+
 const MEMORY_TOOLS: Record<string, string> = {
   recall_memory: "Recall memory",
   remember_memory: "Save memory",
@@ -73,6 +90,8 @@ const REGISTRY_TOOLS: Record<string, string> = {
 export interface StepCapabilityInput {
   /** `inheritedTools` from GET /api/tools?agentName=… — the agent's own list. */
   attached: string[];
+  /** This step's own `extraTools`, granted on top of the agent's list. */
+  extra: string[];
   /** `tools` from the same response, for server-reported availability. */
   catalog: ToolCatalogItem[];
   /** How many library documents the run is scoped to; 0 means unscoped. */
@@ -86,8 +105,13 @@ function availability(catalog: ToolCatalogItem[], name: string): ToolCatalogItem
 }
 
 export function stepCapabilities(input: StepCapabilityInput): CapabilityChip[] {
-  const { attached, catalog, selectedDocCount, agentLabel } = input;
-  const attachedSet = new Set(attached);
+  const { attached, extra, catalog, selectedDocCount, agentLabel } = input;
+  // What the step ACTUALLY runs with. `extraTools` is additive, so this union is
+  // exactly the `effective_tools` the runner builds — the chips describe the run,
+  // not the agent.
+  const effective = [...attached, ...extra.filter((t) => !attached.includes(t))];
+  const attachedSet = new Set(effective);
+  const extraSet = new Set(extra);
   const chips: CapabilityChip[] = [];
 
   // `process_document`'s availability is computed from exactly the same object
@@ -144,13 +168,13 @@ export function stepCapabilities(input: StepCapabilityInput): CapabilityChip[] {
     if (!attachedSet.has(name)) {
       chips.push({
         key: name,
-        label: `${label} · not attached`,
+        label: `${label} · off`,
         state: "absent",
         fixable: true,
         help:
           name === "remember_memory"
-            ? `This step's agent (${agentLabel}) does not have the Save memory tool, so this workflow cannot write anything to your memories — it will say it is unable to, and the run will still be recorded as successful. Unlike web search and document reading, the two memory tools are only switched on when you deliberately attach them to an agent.`
-            : `This step's agent (${agentLabel}) does not have the Recall memory tool, so it cannot look anything up in your saved memories.`,
+            ? `Neither this step nor its agent (${agentLabel}) has the Save memory tool, so this workflow cannot write anything to your memories. Worse, the model is not told that: it will reply as though it saved them, and the run will be recorded as successful. Switch it on under "Tools for this step". Unlike web search and document reading, the memory tools are only ever available when deliberately switched on.`
+            : `Neither this step nor its agent (${agentLabel}) has the Recall memory tool, so it cannot look anything up in your saved memories. Switch it on under "Tools for this step".`,
       });
       continue;
     }
@@ -159,7 +183,7 @@ export function stepCapabilities(input: StepCapabilityInput): CapabilityChip[] {
         key: name,
         label: `${label} · store disabled`,
         state: "off",
-        help: `Attached to ${agentLabel}, but this deployment has the memory store disabled, so nothing will be read or written.${
+        help: `Switched on for this step, but this deployment has the memory store disabled, so nothing will be read or written.${
           memoryDetail ? ` ${memoryDetail}` : ""
         }`,
       });
@@ -167,12 +191,12 @@ export function stepCapabilities(input: StepCapabilityInput): CapabilityChip[] {
     }
     chips.push({
       key: name,
-      label,
+      label: extraSet.has(name) ? `${label} · this step` : label,
       state: "on",
       help:
         name === "remember_memory"
-          ? "Attached and available. This step can save short facts to your own memory, and reports honestly when a fact was already covered and nothing new was stored."
-          : "Attached and available. This step can search the memories you have saved.",
+          ? "Available. This step can save short facts to your own memory, and reports honestly when a fact was already covered and nothing new was stored."
+          : "Available. This step can search the memories you have saved.",
     });
   }
 
@@ -180,13 +204,13 @@ export function stepCapabilities(input: StepCapabilityInput): CapabilityChip[] {
     if (!attachedSet.has(name)) continue;
     chips.push({
       key: name,
-      label,
+      label: extraSet.has(name) ? `${label} · this step` : label,
       state: "on",
-      help: "Attached and available in every execution mode.",
+      help: "Available in every execution mode.",
     });
   }
 
-  for (const name of attached) {
+  for (const name of effective) {
     if (!NOT_IN_WORKFLOW_STEPS.has(name) && !isMcpToolName(name)) continue;
     chips.push({
       key: name,

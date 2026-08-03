@@ -7,6 +7,7 @@ from ai4ia_api.agents.agent_catalog import AgentCatalog, AgentSpec
 from ai4ia_api.agents.tool_exec import build_tools
 from ai4ia_api.workflows.models import (
     MAX_INSTRUCTION_LEN,
+    MAX_STEP_TOOLS,
     MAX_STEPS,
     MAX_WORKFLOWS_PER_USER,
     WorkflowConflictError,
@@ -22,8 +23,11 @@ _USAGE = {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
 _UID = "u1"
 
 
-def _svc() -> WorkflowService:
-    return WorkflowService(InMemoryWorkflowStore())
+def _svc(attachable: frozenset[str] | None = None) -> WorkflowService:
+    return WorkflowService(
+        InMemoryWorkflowStore(),
+        attachable_tools=frozenset() if attachable is None else attachable,
+    )
 
 
 def _step(agent: str, instruction: str) -> WorkflowStep:
@@ -103,6 +107,57 @@ async def test_create_rejects_bad_step_agent_name():
 async def test_create_rejects_blank_instruction():
     with pytest.raises(WorkflowValidationError):
         await _svc().create(_UID, _create(steps=[_step("a1", "   ")]))
+
+
+# --- Per-step extra tools ------------------------------------------------------
+
+
+def _tool_step(tools: list[str]) -> WorkflowStep:
+    return WorkflowStep(agent="a1", instruction="Do {input}", extraTools=tools)
+
+
+async def test_a_step_may_add_an_allowlisted_tool():
+    svc = _svc(frozenset({"remember_memory", "calculator"}))
+    wf = await svc.create(_UID, _create(steps=[_tool_step([" remember_memory "])]))
+    assert wf.steps[0].extraTools == ["remember_memory"]
+
+
+async def test_a_step_may_not_add_a_tool_outside_the_allowlist():
+    svc = _svc(frozenset({"calculator"}))
+    with pytest.raises(WorkflowValidationError, match="remember_memory"):
+        await svc.create(_UID, _create(steps=[_tool_step(["remember_memory"])]))
+
+
+async def test_mcp_tool_names_are_rejected_as_step_extras():
+    """``mcp:`` names are per-user and dynamic, so this service cannot resolve
+    them. Rejecting costs nothing: ``extraTools`` is additive, so an agent's own
+    MCP tools still reach the step."""
+    svc = _svc(frozenset({"remember_memory"}))
+    with pytest.raises(WorkflowValidationError):
+        await svc.create(_UID, _create(steps=[_tool_step(["mcp:srv/do_thing"])]))
+
+
+async def test_duplicate_step_tools_are_rejected():
+    svc = _svc(frozenset({"remember_memory"}))
+    with pytest.raises(WorkflowValidationError, match="duplicate"):
+        await svc.create(
+            _UID, _create(steps=[_tool_step(["remember_memory", "remember_memory"])])
+        )
+
+
+async def test_step_tools_are_capped():
+    allowed = frozenset(f"t{i}" for i in range(MAX_STEP_TOOLS + 1))
+    svc = _svc(allowed)
+    with pytest.raises(WorkflowValidationError, match=str(MAX_STEP_TOOLS)):
+        await svc.create(_UID, _create(steps=[_tool_step(sorted(allowed))]))
+
+
+async def test_a_step_saved_without_extra_tools_stays_unchanged():
+    """Back-compat floor: every workflow stored before this field existed
+    round-trips with an empty list, so its behaviour is bit-for-bit the same."""
+    svc = _svc(frozenset({"remember_memory"}))
+    wf = await svc.create(_UID, _create())
+    assert wf.steps[0].extraTools == []
 
 
 async def test_duplicate_name_conflicts():

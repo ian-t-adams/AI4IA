@@ -15,6 +15,10 @@ export const MAX_LINKS = 5;
 
 export const MAX_STEPS = 6;
 export const MAX_INSTRUCTION_LEN = 4000;
+// The backend also caps a step's `extraTools` (MAX_STEP_TOOLS), deliberately NOT
+// mirrored here: the step picker only ever offers the handful of tools that work
+// inside a workflow step, so a client-side cap could never fire. An unreachable
+// guard reads as protection while providing none.
 export const MAX_RUN_INPUT_LEN = 8000;
 export const INPUT_TOKEN = "{input}";
 export const PREVIOUS_TOKEN = "{previous}";

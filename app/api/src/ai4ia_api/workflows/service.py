@@ -23,6 +23,7 @@ from .models import (
     MAX_DESCRIPTION_LEN,
     MAX_DISPLAY_NAME_LEN,
     MAX_INSTRUCTION_LEN,
+    MAX_STEP_TOOLS,
     MAX_STEPS,
     MAX_WORKFLOWS_PER_USER,
     NAME_RE,
@@ -39,8 +40,22 @@ from .store import WorkflowStore
 
 
 class WorkflowService:
-    def __init__(self, store: WorkflowStore) -> None:
+    def __init__(
+        self, store: WorkflowStore, *, attachable_tools: frozenset[str] = frozenset()
+    ) -> None:
         self._store = store
+        self._attachable = attachable_tools
+
+    @property
+    def attachable_tools(self) -> frozenset[str]:
+        """Server-approved tools a step may add on top of its agent's own.
+
+        Same allowlist :class:`~ai4ia_api.agents.service.AgentService` enforces —
+        computed once from the seeded tools by
+        :func:`~ai4ia_api.agents.tool_exec.attachable_tool_names`, so a step can
+        never reach a tool a user could not attach to an agent they authored.
+        """
+        return self._attachable
 
     async def close(self) -> None:
         await self._store.close()
@@ -178,5 +193,47 @@ class WorkflowService:
                     f"The first step's instruction must include the {INPUT_TOKEN} "
                     "placeholder so the run input reaches the workflow."
                 )
-            clean.append(WorkflowStep(agent=agent, instruction=instruction))
+            clean.append(
+                WorkflowStep(
+                    agent=agent,
+                    instruction=instruction,
+                    extraTools=self._validate_step_tools(i, step.extraTools),
+                )
+            )
+        return clean
+
+    def _validate_step_tools(self, index: int, tools: list[str]) -> list[str]:
+        """Normalize and allowlist a step's extra tools.
+
+        Rejects anything outside the server-approved attachable set, including
+        ``mcp:`` names: those are per-user and dynamic, and this service has no
+        way to resolve them. That costs nothing, because ``extraTools`` is
+        *additive* — an agent's own ``mcp:`` tools already reach the step.
+        """
+        if not tools:
+            return []
+        if len(tools) > MAX_STEP_TOOLS:
+            raise WorkflowValidationError(
+                f"Step {index + 1}: at most {MAX_STEP_TOOLS} extra tools."
+            )
+        seen: set[str] = set()
+        clean: list[str] = []
+        for raw in tools:
+            tool = (raw or "").strip()
+            if not tool:
+                raise WorkflowValidationError(
+                    f"Step {index + 1}: an extra tool name cannot be empty."
+                )
+            if tool in seen:
+                raise WorkflowValidationError(
+                    f"Step {index + 1}: duplicate tool '{tool}'."
+                )
+            if tool not in self._attachable:
+                allowed = ", ".join(sorted(self._attachable)) or "(none)"
+                raise WorkflowValidationError(
+                    f"Step {index + 1}: tool '{tool}' cannot be added to a "
+                    f"workflow step. Allowed: {allowed}."
+                )
+            seen.add(tool)
+            clean.append(tool)
         return clean

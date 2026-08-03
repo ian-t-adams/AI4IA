@@ -14,11 +14,16 @@ import {
   nameError,
 } from "@/lib/studio";
 import { HelpTooltip } from "./HelpTooltip";
+import { TOOL_LABELS } from "@/lib/toolHelp";
 import { WorkflowDisclosure } from "./WorkflowDisclosure";
 import { WorkflowRunReport } from "./WorkflowRunReport";
 import { deriveSteps, pendingSteps, type RunState } from "./workflowRun";
 import { useLibraryConfig } from "./LibraryProvider";
-import { stepCapabilities, type CapabilityChip } from "./workflowCapabilities";
+import {
+  stepCapabilities,
+  STEP_ATTACHABLE_TOOLS,
+  type CapabilityChip,
+} from "./workflowCapabilities";
 import { checkRow, ghostBtn, inputStyle, labelStyle, primaryBtn, secondaryBtn } from "./builderStyles";
 
 // Client-only stable key so React can track step rows across reorder/remove
@@ -35,6 +40,7 @@ interface StepRow {
   key: string;
   agent: string;
   instruction: string;
+  extraTools: string[];
 }
 
 interface WorkflowForm {
@@ -51,7 +57,7 @@ function blankForm(firstAgent: string): WorkflowForm {
     displayName: "",
     description: "",
     enabled: true,
-    steps: [{ key: genKey(), agent: firstAgent, instruction: "" }],
+    steps: [{ key: genKey(), agent: firstAgent, instruction: "", extraTools: [] }],
   };
 }
 
@@ -62,8 +68,14 @@ function formFrom(w: Workflow): WorkflowForm {
     description: w.description,
     enabled: w.enabled,
     steps: w.steps.length
-      ? w.steps.map((s) => ({ key: genKey(), agent: s.agent, instruction: s.instruction }))
-      : [{ key: genKey(), agent: "", instruction: "" }],
+      ? w.steps.map((s) => ({
+          key: genKey(),
+          agent: s.agent,
+          instruction: s.instruction,
+          // Absent on workflows saved before per-step tools existed.
+          extraTools: s.extraTools ?? [],
+        }))
+      : [{ key: genKey(), agent: "", instruction: "", extraTools: [] }],
   };
 }
 
@@ -114,13 +126,10 @@ export function WorkflowBuilder({
   agents,
   runModel,
   onRun,
-  onEditAgent,
 }: {
   agents: AgentSummary[];
   runModel: string | null;
   onRun: (sessionId: string) => void;
-  /** Switches the surrounding builder to Agents, for the "not attached" remedy. */
-  onEditAgent?: (agentName: string) => void;
 }) {
   const [mine, setMine] = useState<Workflow[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
@@ -252,7 +261,7 @@ export function WorkflowBuilder({
       setSteps((s) =>
         s.length >= MAX_STEPS
           ? s
-          : [...s, { key: genKey(), agent: firstAgentName, instruction: "" }],
+          : [...s, { key: genKey(), agent: firstAgentName, instruction: "", extraTools: [] }],
       ),
     [setSteps, firstAgentName],
   );
@@ -275,6 +284,22 @@ export function WorkflowBuilder({
   const patchStep = useCallback(
     (key: string, patch: Partial<Pick<StepRow, "agent" | "instruction">>) =>
       setSteps((s) => s.map((r) => (r.key === key ? { ...r, ...patch } : r))),
+    [setSteps],
+  );
+  const toggleStepTool = useCallback(
+    (key: string, tool: string) =>
+      setSteps((s) =>
+        s.map((r) =>
+          r.key === key
+            ? {
+                ...r,
+                extraTools: r.extraTools.includes(tool)
+                  ? r.extraTools.filter((t) => t !== tool)
+                  : [...r.extraTools, tool],
+              }
+            : r,
+        ),
+      ),
     [setSteps],
   );
 
@@ -314,7 +339,11 @@ export function WorkflowBuilder({
       setError(`The first step's instruction must include ${INPUT_TOKEN}.`);
       return null;
     }
-    const steps = form.steps.map((s) => ({ agent: s.agent, instruction: s.instruction }));
+    const steps = form.steps.map((s) => ({
+      agent: s.agent,
+      instruction: s.instruction,
+      extraTools: s.extraTools,
+    }));
     const body = {
       displayName: form.displayName || null,
       description: form.description,
@@ -490,21 +519,35 @@ export function WorkflowBuilder({
     );
   }
 
-  function chipsFor(agentName: string): CapabilityChip[] | "error" | null {
+  function chipsFor(agentName: string, extra: string[]): CapabilityChip[] | "error" | null {
     if (!agentName) return null;
     const entry = catalogs.get(agentName);
     if (entry === undefined) return null;
     if (entry === "error") return "error";
     return stepCapabilities({
       attached: entry.inheritedTools,
+      extra,
       catalog: entry.tools,
       selectedDocCount: selectedDocIds.length,
       agentLabel: agentLabel(agentName),
     });
   }
 
-  function renderChips(agentName: string, groupLabel: string) {
-    const chips = chipsFor(agentName);
+  // `onFix`, when given, renders the remedy button. The Build tab passes nothing:
+  // its checkboxes sit directly below the chips, so a button would be noise. The
+  // Run tab's steps are read-only, so there it routes back to Build.
+  //
+  // It deliberately no longer offers "open Agents to attach tools". That was the
+  // dead end this whole feature exists to remove: the memory tools are gated on
+  // the step's effective tool list, and a *curated* agent's list cannot be edited
+  // in Agents at all — so the old button sent users somewhere that could not help.
+  function renderChips(
+    agentName: string,
+    groupLabel: string,
+    extra: string[],
+    onFix?: () => void,
+  ) {
+    const chips = chipsFor(agentName, extra);
     if (chips === null) return null;
     if (chips === "error") {
       return (
@@ -529,13 +572,9 @@ export function WorkflowBuilder({
             </span>
           ))}
         </div>
-        {fixable && onEditAgent && (
-          <button
-            type="button"
-            className="workflow-tool-fix"
-            onClick={() => onEditAgent(agentName)}
-          >
-            Open Agents to attach tools
+        {fixable && onFix && (
+          <button type="button" className="workflow-tool-fix" onClick={onFix}>
+            Edit steps to switch tools on
           </button>
         )}
       </>
@@ -747,7 +786,7 @@ export function WorkflowBuilder({
                         {selectedAgent?.description && (
                           <p style={{ ...labelStyle, margin: 0 }}>{selectedAgent.description}</p>
                         )}
-                        {renderChips(s.agent, `Step ${i + 1} capabilities`)}
+                        {renderChips(s.agent, `Step ${i + 1} capabilities`, s.extraTools)}
                         <textarea
                           aria-label={`Step ${i + 1} instruction`}
                           value={s.instruction}
@@ -765,6 +804,34 @@ export function WorkflowBuilder({
                             First step must include {INPUT_TOKEN}.
                           </p>
                         )}
+                        {/* aria-label pins the group's accessible name. Without
+                            it the name comes from the <legend>, which would fold
+                            in the tooltip button's text and read identically for
+                            every step. */}
+                        <fieldset
+                          className="workflow-step-toolpicker"
+                          aria-label={`Step ${i + 1} tools`}
+                        >
+                          <legend>
+                            Tools for this step
+                            <HelpTooltip label="About step tools" size="sm">
+                              These are granted on top of whatever the step&apos;s agent already
+                              has — they never replace them. Use this when the agent you picked is
+                              one of the built-in ones, whose tools you cannot edit. Only tools
+                              that actually work inside a workflow step are listed here.
+                            </HelpTooltip>
+                          </legend>
+                          {STEP_ATTACHABLE_TOOLS.map((t) => (
+                            <label key={t} className="workflow-step-tool">
+                              <input
+                                type="checkbox"
+                                checked={s.extraTools.includes(t)}
+                                onChange={() => toggleStepTool(s.key, t)}
+                              />
+                              {TOOL_LABELS[t] ?? t}
+                            </label>
+                          ))}
+                        </fieldset>
                       </div>
                     );
                   })}
@@ -897,7 +964,15 @@ export function WorkflowBuilder({
                     <span style={{ ...labelStyle, margin: 0 }}>
                       Step {i + 1} · {agentLabel(s.agent)}
                     </span>
-                    {renderChips(s.agent, `Step ${i + 1} capabilities`)}
+                    {renderChips(
+                      s.agent,
+                      `Step ${i + 1} capabilities`,
+                      // The SAVED step's tools — a run executes what the server
+                      // stored, so reading the in-progress form here would claim
+                      // a capability an unsaved edit has not granted yet.
+                      s.extraTools ?? [],
+                      () => setTab("build"),
+                    )}
                   </div>
                 ))}
               </WorkflowDisclosure>

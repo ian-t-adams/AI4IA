@@ -22,6 +22,19 @@ export interface ToolHelpCopy {
   risk: ToolRiskLevel;
 }
 
+// Short display labels for the built-in tools. Shared by the agent builder and
+// the workflow step tool picker so the same tool cannot be called two different
+// things in two places — the exact drift a second local copy invites.
+export const TOOL_LABELS: Record<string, string> = {
+  calculator: "Calculator",
+  get_current_time: "Current time",
+  generate_image: "Generate image",
+  generate_video: "Generate video",
+  process_document: "Process document",
+  recall_memory: "Recall memory",
+  remember_memory: "Save memory",
+};
+
 export const BUILT_IN_TOOL_HELP: Record<string, ToolHelpCopy> = {
   calculator: {
     what: "Evaluates a basic arithmetic expression (+ − × ÷ // %, parentheses, unary minus).",
