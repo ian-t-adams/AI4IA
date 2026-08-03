@@ -20,8 +20,15 @@ export const INPUT_TOKEN = "{input}";
 export const PREVIOUS_TOKEN = "{previous}";
 
 // The backend's user-attachable tool allowlist. Mirrored here so the builder can
-// offer the tools as checkboxes; unknown tools are rejected server-side (422), so
-// drift fails safe rather than silently.
+// offer the tools as checkboxes.
+//
+// Drift is NOT symmetric, which is why `test_attachable_tools_mirror.py` exists:
+// a tool listed here but unknown to the API is rejected server-side with a 422,
+// so it fails loudly. A tool the API allows but that is missing here has no
+// checkbox, so it can never be attached to any agent — the capability is simply
+// unreachable from the product with nothing to say so. That happened: the API
+// gained `remember_memory` while this list did not, and agents correctly replied
+// that they could not save memories.
 export const ATTACHABLE_TOOLS = [
   "calculator",
   "get_current_time",
@@ -29,6 +36,7 @@ export const ATTACHABLE_TOOLS = [
   "generate_video",
   "process_document",
   "recall_memory",
+  "remember_memory",
 ] as const;
 
 // Returns a human-readable reason the name is invalid, or null if it's valid.
