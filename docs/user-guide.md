@@ -43,7 +43,7 @@ and tool safety; the web app is the user interface.
 - Use workflows for repeatable multi-step work. Workflows run through the same
   governed tool path as chat, and each step is offered the same capabilities a
   chat turn gets: reading your document library, Web IQ search and browsing, and
-  — when the step's agent has them attached — recalling and saving memories.
+  — when switched on for that step — recalling and saving memories.
 - The workflow editor has two tabs. **Build** is where you name the workflow and
   order its steps; **Run & test** is where you run one and read the result. The
   result stays in the panel — a per-step trace showing which steps succeeded,
@@ -53,17 +53,23 @@ and tool safety; the web app is the user interface.
 - **Each step lists what it can actually do.** A step's tool surface is not the
   same as its agent's tool list, so the editor states the difference per step:
   document reading is always on, web search is offered whenever the deployment
-  has Web IQ configured, the two memory tools appear only when attached to that
-  step's agent, and anything that returns a chat attachment (image and video
+  has Web IQ configured, the two memory tools appear only when switched on for
+  that step, and anything that returns a chat attachment (image and video
   generation, document processing, MCP tools) is marked **chat only** because a
   workflow step has no way to deliver one.
-- **Memory is a tool, and it has to be attached.** `remember_memory` saves a
-  short durable fact; `recall_memory` reads them back. A step whose agent has
-  neither attached cannot write to your memory, and the model will say so rather
-  than pretending. Attach them in Agents & workflows on the agent the step uses —
-  the step's capability list links straight there. Saves are reported honestly: a
-  fact already covered by an existing memory is reported as "nothing new stored",
-  not as a save.
+- **Tools are switched on per step, under "Tools for this step".** They are added
+  on top of whatever the step's agent already carries — never instead of them.
+  This is how you give a capability to one of the built-in agents, whose own tool
+  lists you cannot edit. Only the tools that genuinely work inside a workflow step
+  are offered, so there is no checkbox that saves and then does nothing.
+- **Memory has to be switched on, and a step without it will not tell you.**
+  `remember_memory` saves a short durable fact; `recall_memory` reads them back.
+  A step with neither cannot write to your memory — and, importantly, the model is
+  not told that it lacks the tool, so it will often reply as though it saved your
+  notes and the run will still be recorded as successful. Tick **Save memory**
+  under **Tools for this step**; the step's capability list flags it until you do.
+  Saves are then reported honestly: a fact already covered by an existing memory
+  is reported as "nothing new stored", not as a save.
 - **A run can be scoped to specific documents.** Under **Documents**, select the
   library documents the run should be restricted to. Select nothing and every
   step can read any of your ready documents.

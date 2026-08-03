@@ -107,12 +107,7 @@ export function StudioPanel({
           ) : tab === "tools" ? (
             <McpServerBuilder />
           ) : (
-            <WorkflowBuilder
-              agents={agents}
-              runModel={runModel}
-              onRun={onRun}
-              onEditAgent={() => setTab("agents")}
-            />
+            <WorkflowBuilder agents={agents} runModel={runModel} onRun={onRun} />
           )}
         </div>
       </div>

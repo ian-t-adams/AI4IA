@@ -92,11 +92,13 @@ def _agent(name: str, tools: list[str] | None = None) -> AgentSpec:
     )
 
 
-async def _run_step(*, agent: AgentSpec, capabilities=None):
+async def _run_step(*, agent: AgentSpec, capabilities=None, extra_tools=None):
     gw = _CapturingGateway()
     registry, executor = build_tools()
     outcome = await run_workflow_step(
-        WorkflowStep(agent=agent.name, instruction="Do {input}"),
+        WorkflowStep(
+            agent=agent.name, instruction="Do {input}", extraTools=extra_tools or []
+        ),
         index=0,
         workflow_name="flow",
         run_input="hello",
@@ -160,6 +162,78 @@ async def test_a_failing_capability_builder_degrades_instead_of_failing_the_run(
     assert outcome.result.ok, "a capability failure must never fail the step"
     assert outcome.fatal is False
     assert gw.tool_names[0] == []
+
+
+# --- Per-step extra tools ------------------------------------------------------
+#
+# The curated agents ship with fixed tool lists that a user cannot edit — `general`
+# declares only `get_current_time`. Because the memory tools are attach-gated, a
+# workflow step targeting a curated agent could never save a memory: the model was
+# offered no such tool, so it wrote a confident summary claiming it had recorded
+# everything while the user's memory store stayed empty. Observed in production
+# against a real workflow before these tests existed.
+
+
+async def test_a_step_can_add_a_tool_its_curated_agent_does_not_declare():
+    memory = _FakeMemory()
+    state = type("S", (), {"document_retrieval": None, "web_search": None, "memory": memory})()
+    builder = capability_builder_for_state(state, user_id="u1", session_id="s1")
+    curated = _agent("general", tools=["get_current_time"])
+
+    outcome, gw = await _run_step(
+        agent=curated, capabilities=builder, extra_tools=[REMEMBER_TOOL_NAME]
+    )
+
+    assert outcome.result.ok
+    offered = gw.tool_names[0]
+    assert REMEMBER_TOOL_NAME in offered
+    # The agent's own tool survives: extraTools adds, it does not replace.
+    assert "get_current_time" in offered
+
+
+async def test_the_same_step_without_extra_tools_is_not_offered_the_tool():
+    """Non-vacuity control: proves the assertion above observes ``extraTools``.
+
+    Without this, the test would still pass if the memory tool were offered to
+    every step unconditionally — which would be a different bug, not a fix.
+    """
+    memory = _FakeMemory()
+    state = type("S", (), {"document_retrieval": None, "web_search": None, "memory": memory})()
+    builder = capability_builder_for_state(state, user_id="u1", session_id="s1")
+    curated = _agent("general", tools=["get_current_time"])
+
+    _outcome, gw = await _run_step(agent=curated, capabilities=builder, extra_tools=[])
+
+    assert REMEMBER_TOOL_NAME not in gw.tool_names[0]
+
+
+async def test_a_step_can_add_a_registry_tool_too():
+    """Pins ``tool_names``, not just the capability builder.
+
+    ``remember_memory`` is *synthetic* — it reaches the model through
+    ``extra_tools``, which ``run_agent_turn`` appends wholesale. A registry tool
+    is resolved from ``tool_names`` instead, so only this test proves the second
+    half of the fix.
+    """
+    agent = _agent("a1", tools=[])
+
+    _outcome, gw = await _run_step(agent=agent, extra_tools=["calculator"])
+
+    assert "calculator" in gw.tool_names[0]
+
+
+async def test_a_tool_the_agent_already_declares_is_not_offered_twice():
+    memory = _FakeMemory()
+    state = type("S", (), {"document_retrieval": None, "web_search": None, "memory": memory})()
+    builder = capability_builder_for_state(state, user_id="u1", session_id="s1")
+    agent = _agent("a1", tools=[REMEMBER_TOOL_NAME])
+
+    _outcome, gw = await _run_step(
+        agent=agent, capabilities=builder, extra_tools=[REMEMBER_TOOL_NAME]
+    )
+
+    offered = gw.tool_names[0]
+    assert offered.count(REMEMBER_TOOL_NAME) == 1
 
 
 # --- Gating -------------------------------------------------------------------

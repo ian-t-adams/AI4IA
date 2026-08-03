@@ -1438,6 +1438,44 @@ select {
   text-wrap: balance;
 }
 
+/* Per-step tool picker. Mirrors .workflow-step-tools' auto-fill grid so the
+   checkboxes line up with the capability chips they change. */
+.workflow-step-toolpicker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(11rem, 100%), 1fr));
+  gap: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 10px 8px;
+  margin: 0;
+  min-width: 0;
+}
+
+.workflow-step-toolpicker legend {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 4px;
+  color: var(--fg-muted);
+  font-size: 0.78em;
+}
+
+.workflow-step-tool {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Full-row target: the checkbox glyph alone is well under 44px. */
+  min-height: 32px;
+  min-width: 0;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.workflow-step-tool input {
+  flex: none;
+  cursor: pointer;
+}
+
 /* --- Run form -------------------------------------------------------------- */
 .workflow-run-target {
   display: flex;

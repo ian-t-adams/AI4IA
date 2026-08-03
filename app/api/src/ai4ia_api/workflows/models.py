@@ -33,6 +33,10 @@ MAX_DISPLAY_NAME_LEN = 80
 MAX_DESCRIPTION_LEN = 280
 MAX_STEPS = 6
 MAX_INSTRUCTION_LEN = 4000
+# Per-step extra tools. Bounded so one step can't push an unbounded tool schema
+# into every model call it makes; the ceiling is comfortably above the size of
+# the whole user-attachable allowlist, so it caps abuse without capping use.
+MAX_STEP_TOOLS = 12
 # Hard cap on the per-run input a caller may submit, so the prompt that flows
 # into step 1 (and is then amplified across the pipeline) can't be unbounded.
 MAX_RUN_INPUT_LEN = 8000
@@ -50,6 +54,7 @@ __all__ = [
     "MAX_DESCRIPTION_LEN",
     "MAX_STEPS",
     "MAX_INSTRUCTION_LEN",
+    "MAX_STEP_TOOLS",
     "MAX_RUN_INPUT_LEN",
     "INPUT_TOKEN",
     "PREVIOUS_TOKEN",
@@ -92,10 +97,22 @@ class WorkflowStep(BaseModel):
     agent ``links``) — an unknown/disabled/unsupported target surfaces as a
     structured run error. ``instruction`` may reference ``{input}`` and
     ``{previous}`` placeholders.
+
+    ``extraTools`` grants this step tools *in addition to* whatever its agent
+    declares. Additive rather than a replacement for two reasons: an empty list
+    means "unchanged", so every workflow saved before this field existed keeps
+    its exact behaviour; and a step can never silently drop a tool the agent
+    already had (notably the caller's own ``mcp:`` tools, which are per-user and
+    dynamic and so are not re-validatable here). It exists because the curated
+    agents ship with fixed, non-editable tool lists — ``general`` declares only
+    ``get_current_time`` — so without it a workflow step targeting a curated
+    agent can never be given a capability like ``remember_memory``, and the model
+    responds by *narrating* the work it cannot actually do.
     """
 
     agent: str
     instruction: str
+    extraTools: list[str] = Field(default_factory=list)
 
 
 class Workflow(BaseModel):

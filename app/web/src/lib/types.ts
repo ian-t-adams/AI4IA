@@ -167,6 +167,12 @@ export interface UserAgentUpdate {
 export interface WorkflowStep {
   agent: string;
   instruction: string;
+  // Tools granted to this step ON TOP OF whatever its agent already declares —
+  // additive, never a replacement. Curated agents ship fixed tool lists a user
+  // cannot edit (`general` declares only `get_current_time`), so without this a
+  // step targeting one could never save a memory or run a calculation.
+  // Optional on read so workflows stored before the field existed still parse.
+  extraTools?: string[];
 }
 
 export interface Workflow {

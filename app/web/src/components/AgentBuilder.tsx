@@ -24,7 +24,7 @@ import {
   type AttachableMcpTool,
   type UserMcpServer,
 } from "@/lib/customTools";
-import { BUILT_IN_TOOL_HELP, toolRiskSummary } from "@/lib/toolHelp";
+import { BUILT_IN_TOOL_HELP, TOOL_LABELS, toolRiskSummary } from "@/lib/toolHelp";
 import { HelpTooltip } from "./HelpTooltip";
 import {
   formatContextWindow,
@@ -42,16 +42,6 @@ import {
 } from "./builderStyles";
 
 // Friendly names for the attachable tools (the registry uses snake_case ids).
-const TOOL_LABELS: Record<string, string> = {
-  calculator: "Calculator",
-  get_current_time: "Current time",
-  generate_image: "Generate image",
-  generate_video: "Generate video",
-  process_document: "Process document",
-  recall_memory: "Recall memory",
-  remember_memory: "Save memory",
-};
-
 interface AgentForm {
   name: string;
   displayName: string;

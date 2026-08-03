@@ -147,37 +147,102 @@ describe("WorkflowBuilder", () => {
   // list, and nothing said so. A workflow told to "remember the decisions" ran,
   // replied that it could not save anything, and was recorded as a success.
 
-  it("warns on the step itself that memory is not attached, and says document reading is ambient", async () => {
+  it("warns on the step itself that memory is off, and says document reading is ambient", async () => {
     render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
 
     const strip = await screen.findByRole("group", { name: "Step 1 capabilities" });
-    expect(strip).toHaveTextContent(/Save memory · not attached/i);
-    expect(strip).toHaveTextContent(/Recall memory · not attached/i);
+    expect(strip).toHaveTextContent(/Save memory · off/i);
+    expect(strip).toHaveTextContent(/Recall memory · off/i);
     // Web search and document reading are ambient/conditional, never attached —
     // stating that is the whole point, because the asymmetry is invisible.
     expect(strip).toHaveTextContent(/Web search/i);
     expect(strip).toHaveTextContent(/Read documents/i);
   });
 
-  it("offers a route to fix an unattached tool only when the surrounding panel can navigate", async () => {
-    const onEditAgent = vi.fn();
-    const { rerender } = render(
-      <WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />,
-    );
+  it("routes a missing tool to the step editor, not to Agents", async () => {
+    // The old remedy opened the Agents panel. That was a dead end: the memory
+    // tools are gated on the STEP's effective tool list, and a curated agent's
+    // tools cannot be edited in Agents at all — which is precisely why a
+    // workflow could claim to save memories while saving none.
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
     await screen.findByRole("group", { name: "Step 1 capabilities" });
-    expect(screen.queryByRole("button", { name: /attach tools/i })).not.toBeInTheDocument();
 
-    rerender(
-      <WorkflowBuilder
-        agents={AGENTS}
-        runModel="gpt-4"
-        onRun={() => {}}
-        onEditAgent={onEditAgent}
-      />,
-    );
+    expect(screen.queryByRole("button", { name: /attach tools/i })).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("checkbox", { name: "Save memory" }),
+    ).toBeInTheDocument();
+  });
+
+  it("grants a tool to the step and reports it as on, without touching the agent", async () => {
+    // The default fixture has no memory service, which would render the chip as
+    // "store disabled" no matter what is ticked — a pass/fail that says nothing
+    // about the grant. Give it a working store so the chip reflects the tool.
+    mocks.getToolCatalog.mockResolvedValue({
+      tools: [
+        {
+          name: "remember_memory",
+          label: "Save memory",
+          description: "Saves a short durable fact.",
+          source: "synthetic",
+          risk: "safe",
+          requiresApproval: false,
+          scopes: [],
+          available: true,
+          selectable: true,
+        },
+      ],
+      inheritedTools: [],
+    });
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    const strip = await screen.findByRole("group", { name: "Step 1 capabilities" });
+    // Control: the chip is off BEFORE the box is ticked, so a passing assertion
+    // below cannot be the default state.
+    expect(strip).toHaveTextContent(/Save memory · off/i);
+
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: /attach tools/i }));
-    expect(onEditAgent).toHaveBeenCalledWith("helper");
+    await user.click(await screen.findByRole("checkbox", { name: "Save memory" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("group", { name: "Step 1 capabilities" }),
+      ).toHaveTextContent(/Save memory · this step/i),
+    );
+  });
+
+  it("never offers a tool that cannot work inside a workflow step", async () => {
+    // A checkbox for `generate_image` would save and validate cleanly and then
+    // do nothing: those tools deliver through a per-turn chat attachment sink a
+    // step cannot drain. Offering one would be a brand-new inert control.
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await screen.findByRole("checkbox", { name: "Save memory" });
+
+    for (const absent of ["Generate image", "Generate video", "Process document"]) {
+      expect(screen.queryByRole("checkbox", { name: absent })).not.toBeInTheDocument();
+    }
+    // Non-vacuity: the picker really is rendered, so the absences above mean
+    // "excluded", not "nothing rendered at all".
+    expect(screen.getByRole("checkbox", { name: "Calculator" })).toBeInTheDocument();
+  });
+
+  it("sends the step's tools when saving", async () => {
+    mocks.createWorkflow.mockResolvedValue(WORKFLOWS[0]);
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.type(await screen.findByLabelText(/^name/i), "notes");
+    // `user.type` parses "{...}" as a key descriptor, so typing the {input}
+    // token silently produces the wrong text and the first-step validation
+    // rejects the save. `paste` inserts the string verbatim.
+    await user.click(screen.getByLabelText("Step 1 instruction"));
+    await user.paste("Record the decisions in {input}");
+    await user.click(screen.getByRole("checkbox", { name: "Save memory" }));
+    await user.click(screen.getByRole("button", { name: /create workflow/i }));
+
+    await waitFor(() => expect(mocks.createWorkflow).toHaveBeenCalled());
+    // createWorkflow takes ONE argument: the name is merged into the body.
+    const [body] = mocks.createWorkflow.mock.calls[0];
+    expect(body.name).toBe("notes");
+    expect(body.steps[0].extraTools).toEqual(["remember_memory"]);
   });
 
   it("says so when a step's agent cannot be resolved, rather than rendering an empty strip", async () => {
