@@ -79,18 +79,21 @@ class CosmosMemoryService:
         emit_memory_operation("recall", "ok", "cosmos", started, count=len(records))
         return records
 
-    async def remember(self, user_id: str, session_id: str | None, text: str) -> None:
+    async def remember(self, user_id: str, session_id: str | None, text: str) -> bool:
+        """Plan-and-apply a durable memory write. Returns True only if the plan
+        actually changed the store — the planner legitimately decides ``noop`` when
+        the utterance adds nothing, and reporting that as a save would be a lie."""
         started = time.monotonic()
         cleaned = (text or "").strip()
         if len(cleaned) < self._min_chars_to_store:
             emit_memory_operation("save", "skipped", "cosmos", started, count=0)
-            return
+            return False
         try:
             state = await self._store.capture_state(user_id)
             query_vector = await self._embedder.embed_one(cleaned)
             if not query_vector:
                 emit_memory_operation("save", "skipped", "cosmos", started, count=0)
-                return
+                return False
             candidates = await self._store.search(
                 user_id, query_vector, 8, state=state
             )
@@ -101,10 +104,11 @@ class CosmosMemoryService:
         except Exception as exc:  # noqa: BLE001 - remember must not break chat
             logger.warning("cosmos memory remember failed (%s)", type(exc).__name__)
             emit_memory_operation("save", "failed", "cosmos", started)
-            return
+            return False
         emit_memory_operation(
             "save", "ok" if changed else "skipped", "cosmos", started, count=int(changed)
         )
+        return changed
 
     async def _apply_plan(
         self,

@@ -37,7 +37,11 @@ class MemoryServiceProtocol(Protocol):
 
     async def recall(self, user_id: str, query: str) -> list[MemoryRecord]: ...
 
-    async def remember(self, user_id: str, session_id: str | None, text: str) -> None: ...
+    # Returns True only when something was durably stored. Callers on the passive
+    # path ignore it (a skipped save must never disturb a turn); the agent-callable
+    # ``remember_memory`` tool needs it, because reporting "saved" for a write that
+    # was skipped or failed is a silent lie the model would repeat to the user.
+    async def remember(self, user_id: str, session_id: str | None, text: str) -> bool: ...
 
     async def remember_document(
         self,
@@ -69,8 +73,8 @@ class NoopMemoryService:
     async def recall(self, user_id: str, query: str) -> list[MemoryRecord]:
         return []
 
-    async def remember(self, user_id: str, session_id: str | None, text: str) -> None:
-        return None
+    async def remember(self, user_id: str, session_id: str | None, text: str) -> bool:
+        return False
 
     async def remember_document(
         self,
@@ -147,25 +151,30 @@ class MemoryService:
         emit_memory_operation("recall", "ok", "custom", started, count=len(records))
         return records
 
-    async def remember(self, user_id: str, session_id: str | None, text: str) -> None:
-        """Best-effort: store a durable user utterance. Skips trivia + failures."""
+    async def remember(self, user_id: str, session_id: str | None, text: str) -> bool:
+        """Best-effort: store a durable user utterance. Skips trivia + failures.
+
+        Returns True only if a record was actually written, so an agent-callable
+        caller can tell the user the truth rather than assuming success.
+        """
         started = time.monotonic()
         cleaned = (text or "").strip()
         if len(cleaned) < self._min_chars_to_store:
             emit_memory_operation("save", "skipped", "custom", started, count=0)
-            return
+            return False
         try:
             vector = await self._embedder.embed_one(cleaned)
             if not vector:
                 emit_memory_operation("save", "skipped", "custom", started, count=0)
-                return
+                return False
             record = MemoryRecord(user_id=user_id, session_id=session_id, text=cleaned)
             await self._store.add(record, vector)
         except Exception:  # noqa: BLE001 - memory must never break chat
             logger.warning("memory remember failed", exc_info=True)
             emit_memory_operation("save", "failed", "custom", started)
-            return
+            return False
         emit_memory_operation("save", "ok", "custom", started, count=1)
+        return True
 
     async def remember_document(
         self,

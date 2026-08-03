@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..agents.agent_catalog import AgentCatalog
+from ..agents.capabilities import capability_builder_for_state
 from ..catalog import ModelCatalog
 from ..entitlements.service import EntitlementService
 from ..gateway.client import ModelGatewayClient
@@ -305,6 +306,12 @@ async def run_workflow_endpoint(
             model_id=model_id,
             deployment=deployment.deploymentName,
             correlation_id=correlation_id,
+            email=user.email,
+            library_document_ids=(
+                list(session.libraryDocumentIds)
+                if session.libraryDocumentIds is not None
+                else None
+            ),
         )
         try:
             run_id = await durable_service.schedule(payload, user_id=uid)
@@ -335,6 +342,17 @@ async def run_workflow_endpoint(
         gateway=gateway,
         registry=registry,
         executor=executor,
+        capabilities=capability_builder_for_state(
+            request.app.state,
+            user_id=uid,
+            session_id=body.sessionId,
+            email=user.email,
+            allowed_document_ids=(
+                set(session.libraryDocumentIds)
+                if session.libraryDocumentIds is not None
+                else None
+            ),
+        ),
         correlation_id=correlation_id,
     )
 

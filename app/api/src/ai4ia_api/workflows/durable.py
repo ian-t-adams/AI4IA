@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from ..agents.capabilities import capability_builder_for_state
 from ..sessions.models import Message, MessageRole, MessageStatus
 from ..usage.models import TokenUsage
 from .models import MAX_STEPS, Workflow
@@ -380,6 +381,7 @@ class DurableWorkflowService:
         state = self._state
         uid = context["userId"]
         composed = await state.agent_service.catalog_for(uid, state.agents)
+        library_ids = context.get("libraryDocumentIds")
         outcome = await run_workflow_step(
             step,
             index=index,
@@ -391,6 +393,17 @@ class DurableWorkflowService:
             gateway=state.gateway,
             registry=state.tool_registry,
             executor=state.tool_executor,
+            # Same builder the in-request path uses, off the same app state, so a
+            # step's tool surface cannot depend on which execution mode ran it.
+            capabilities=capability_builder_for_state(
+                state,
+                user_id=uid,
+                session_id=context.get("sessionId"),
+                email=context.get("email"),
+                allowed_document_ids=(
+                    set(library_ids) if library_ids is not None else None
+                ),
+            ),
             correlation_id=context.get("correlationId"),
         )
         return {
@@ -455,12 +468,19 @@ def build_orchestration_payload(
     model_id: str,
     deployment: str,
     correlation_id: str | None,
+    email: str | None = None,
+    library_document_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Freeze everything a run needs into its orchestration input.
 
     A durable orchestration replays from history, so it must not re-resolve the
     workflow, the model, or the agent catalog later — a definition edited
     mid-run would otherwise change the meaning of an in-flight run.
+
+    That is also why ``email`` and ``libraryDocumentIds`` are frozen here rather
+    than re-read from the session inside the activity: they scope which documents
+    a step's ``fetch_document`` tool can reach, and re-reading them would let a
+    session edited mid-run widen or narrow an in-flight run's data access.
     """
     return {
         "steps": [
@@ -474,6 +494,8 @@ def build_orchestration_payload(
             "modelId": model_id,
             "deployment": deployment,
             "correlationId": correlation_id,
+            "email": email,
+            "libraryDocumentIds": library_document_ids,
         },
     }
 

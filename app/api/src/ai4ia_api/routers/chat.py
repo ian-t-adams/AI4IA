@@ -41,6 +41,7 @@ from ..sessions.repository import (
     SessionRepository,
 )
 from ..agents.agent_catalog import AgentCatalog, AgentSpec
+from ..agents.capabilities import build_shared_capabilities
 from ..agents.command_service import (
     DIRECT_SLASH_TOOLS,
     execute_command,
@@ -72,11 +73,11 @@ from ..docprocessing.service import (
     PROCESS_DOCUMENT_TOOL_NAME,
     DocumentProcessingService,
 )
-from ..library.chat_capability import build_document_capability
 from ..library.compute_factory import DocumentComputeService
 from ..library.retrieval import DocumentRetrievalService
 from ..documents.analyze_factory import InlineAttachmentAnalysisService
-from ..memory.recall_capability import RECALL_TOOL_NAME, build_recall_capability
+from ..memory.recall_capability import RECALL_TOOL_NAME
+from ..memory.remember_capability import REMEMBER_TOOL_NAME
 from ..memory.service import MemoryServiceProtocol
 from ..usage.models import TokenUsage
 from ..usage.service import UsageService
@@ -641,6 +642,12 @@ _TOOL_AGENT_PROMPTS: dict[str, str] = {
         "their request as the query, then report the relevant memories you found. "
         "Do not ask clarifying questions unless the request is empty."
     ),
+    REMEMBER_TOOL_NAME: (
+        "The user invoked memory saving directly. Call the remember_memory tool "
+        "once per distinct fact in their request, then report exactly what was "
+        "saved — and say so plainly if a write was skipped. Do not ask clarifying "
+        "questions unless the request is empty."
+    ),
 }
 
 _TOOL_COMMAND_USAGE: dict[str, str] = {
@@ -663,6 +670,10 @@ _TOOL_COMMAND_USAGE: dict[str, str] = {
     RECALL_TOOL_NAME: (
         "Usage: /recall_memory <what to look for> — e.g. /recall_memory my "
         "preferred programming language"
+    ),
+    REMEMBER_TOOL_NAME: (
+        "Usage: /remember_memory <fact to save> — e.g. /remember_memory I prefer "
+        "Python for data work"
     ),
 }
 
@@ -692,6 +703,8 @@ def _capability_tool_available(
     if name == PROCESS_DOCUMENT_TOOL_NAME:
         return document_artifacts is not None and retrieval is not None
     if name == RECALL_TOOL_NAME:
+        return memory is not None and memory.enabled
+    if name == REMEMBER_TOOL_NAME:
         return memory is not None and memory.enabled
     return False
 
@@ -1226,24 +1239,30 @@ async def chat(
             executor=executor,
             deployment=deployment.deploymentName,
         )
-        # Tier 3: give tool-enabled agents the fetch_document capability over the
-        # user's ready library, bound to this user + the turn's library nonce.
-        # Merged alongside delegate_to_agent (disjoint names) so an orchestrator
-        # can both delegate and read documents.
-        if retrieval is not None and library_tools_enabled:
-            doc_tools, doc_handlers = build_document_capability(
-                service=retrieval,
-                user_id=user.internal_user_id,
-                nonce=library_nonce,
-                email=user.email,
-                allowed_document_ids=(
-                    None
-                    if session.libraryDocumentIds is None
-                    else set(session.libraryDocumentIds)
-                ),
-            )
-            extra_tools = [*extra_tools, *doc_tools]
-            extra_handlers = {**extra_handlers, **doc_handlers}
+        # Tier 3 + Web IQ + memory come from the SHARED builder, so a tool-enabled
+        # agent turn, a plain turn, and a workflow step all offer the same
+        # execution-mode-independent surface. Everything below this block is
+        # chat-only by construction (it either replaces the registry, or delivers
+        # results as message attachments through a per-turn sink that only the
+        # chat router drains).
+        shared = build_shared_capabilities(
+            attached_tool_names=agent.tools,
+            user_id=user.internal_user_id,
+            nonce=library_nonce,
+            session_id=body.sessionId,
+            email=user.email,
+            retrieval=retrieval,
+            library_tools_enabled=library_tools_enabled,
+            allowed_document_ids=(
+                None
+                if session.libraryDocumentIds is None
+                else set(session.libraryDocumentIds)
+            ),
+            web_search=web_search,
+            memory=memory,
+        )
+        extra_tools = [*extra_tools, *shared.tools]
+        extra_handlers = {**extra_handlers, **shared.handlers}
         # When the router classifies this turn as compute/transform, additionally
         # offer the run_code + export_document capability over the
         # user's ready library, bound to this user + the turn's library nonce.
@@ -1446,45 +1465,6 @@ async def chat(
                     turn_registry, turn_executor, ctx = built
             except Exception:  # noqa: BLE001 - MCP must never break a turn
                 logger.warning("mcp capability build failed", exc_info=True)
-        # Web IQ search (default-OFF). Offered UNCONDITIONALLY on every tool-enabled
-        # turn when the service is present (like the doc tools, not gated by a
-        # classification) so any agent + the main chat can search the live web /
-        # news / videos / images and browse a URL. The five tools are bound to this
-        # user + session + the turn nonce; their results are nonce-fenced untrusted
-        # data. Disjoint tool names (the runtime asserts no collisions). Best-effort
-        # like its neighbors: a build failure leaves the agent with its other tools
-        # and must never break a turn. When the flag is off, ``web_search`` is None
-        # and this block is skipped, so the turn is byte-for-byte unchanged.
-        if web_search is not None:
-            try:
-                w_tools, w_handlers = web_search.build_capability(
-                    user_id=user.internal_user_id,
-                    session_id=body.sessionId,
-                    nonce=library_nonce,
-                )
-                extra_tools = [*extra_tools, *w_tools]
-                extra_handlers = {**extra_handlers, **w_handlers}
-            except Exception:  # noqa: BLE001 - web search must never break a turn
-                logger.warning("web search capability build failed", exc_info=True)
-        # When the agent attaches ``recall_memory`` and memory is enabled,
-        # inject the synthetic recall capability — same closure-bound pattern as
-        # the library/web tools. It is bound to THIS user (so it can only ever
-        # search the caller's own memory store) + this session (for ``scope=session``)
-        # and the turn nonce. Only offered when memory is on; otherwise skipped, so
-        # the turn is byte-for-byte unchanged. Best-effort: a build failure leaves
-        # the agent with its other tools.
-        if RECALL_TOOL_NAME in agent.tools and memory.enabled:
-            try:
-                r_tools, r_handlers = build_recall_capability(
-                    memory=memory,
-                    user_id=user.internal_user_id,
-                    nonce=library_nonce,
-                    session_id=body.sessionId,
-                )
-                extra_tools = [*extra_tools, *r_tools]
-                extra_handlers = {**extra_handlers, **r_handlers}
-            except Exception:  # noqa: BLE001 - recall must never break a turn
-                logger.warning("recall capability build failed", exc_info=True)
         if body.stream:
             # Live-stream the agent's activity, then its answer; the generator
             # persists the terminal row before signaling completion.
@@ -1631,28 +1611,27 @@ async def chat(
                 )
                 plain_tools = [*plain_tools, *c_tools]
                 plain_handlers = {**plain_handlers, **c_handlers}
-            if retrieval is not None and library_tools_enabled:
-                doc_tools, doc_handlers = build_document_capability(
-                    service=retrieval,
-                    user_id=user.internal_user_id,
-                    nonce=library_nonce,
-                    email=user.email,
-                    allowed_document_ids=(
-                        None
-                        if session.libraryDocumentIds is None
-                        else set(session.libraryDocumentIds)
-                    ),
-                )
-                plain_tools = [*plain_tools, *doc_tools]
-                plain_handlers = {**plain_handlers, **doc_handlers}
-            if web_search is not None:
-                w_tools, w_handlers = web_search.build_capability(
-                    user_id=user.internal_user_id,
-                    session_id=body.sessionId,
-                    nonce=library_nonce,
-                )
-                plain_tools = [*plain_tools, *w_tools]
-                plain_handlers = {**plain_handlers, **w_handlers}
+            # Library + Web IQ come from the shared builder so plain chat, agent
+            # turns, and workflow steps cannot drift into different surfaces.
+            # ``attached_tool_names=()`` because a plain turn has no agent, so the
+            # attach-gated memory tools are correctly not offered here.
+            shared = build_shared_capabilities(
+                attached_tool_names=(),
+                user_id=user.internal_user_id,
+                nonce=library_nonce,
+                session_id=body.sessionId,
+                email=user.email,
+                retrieval=retrieval,
+                library_tools_enabled=library_tools_enabled,
+                allowed_document_ids=(
+                    None
+                    if session.libraryDocumentIds is None
+                    else set(session.libraryDocumentIds)
+                ),
+                web_search=web_search,
+            )
+            plain_tools = [*plain_tools, *shared.tools]
+            plain_handlers = {**plain_handlers, **shared.handlers}
             # Fail loudly on any future tool-name collision across the merged
             # capabilities. ``tool_names=[]`` here, so the runtime's
             # executor-vs-handler assertion can't catch a clash *between* two
