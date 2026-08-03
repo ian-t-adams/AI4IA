@@ -28,8 +28,10 @@ from ai4ia_api.workflows.durable import (
     DurableRunStatus,
     DurableWorkflowService,
     _merge_usage,
+    _step_from_dict,
     _truncate_for_payload,
     _usage_to_dict,
+    build_orchestration_payload,
 )
 
 
@@ -478,3 +480,78 @@ def test_truncation_never_splits_a_multibyte_character() -> None:
     assert out.endswith(_TRUNCATION_MARKER)
     assert len(out.encode("utf-8")) <= _MAX_STEP_TEXT_BYTES
     out.encode("utf-8")  # a split sequence would not round-trip
+
+
+# --------------------------------------------------------------------------
+# step round-trip across the durable boundary
+# --------------------------------------------------------------------------
+
+
+def _workflow_with(step: Any):
+    from ai4ia_api.workflows.models import Workflow
+
+    return Workflow(
+        id="w1",
+        userId="u1",
+        name="wf",
+        displayName="Wf",
+        description="",
+        enabled=True,
+        steps=[step],
+        createdAt="2026-01-01T00:00:00Z",
+        updatedAt="2026-01-01T00:00:00Z",
+    )
+
+
+def _payload_step(step: Any) -> dict[str, Any]:
+    return build_orchestration_payload(
+        _workflow_with(step),
+        user_id="u1",
+        session_id="s1",
+        run_input="hi",
+        model_id="m",
+        deployment="d",
+        correlation_id=None,
+    )["steps"][0]
+
+
+def test_every_step_field_survives_the_durable_boundary() -> None:
+    """A durable run must execute the SAME step an in-request run does.
+
+    Both sides of this boundary once hand-listed fields, so `extraTools` was
+    dropped in transit: a durable run silently executed with fewer tools than
+    the identical synchronous run, and still answered 200 while the model
+    narrated work it had no tool to do.
+
+    Derived from the model's own fields rather than a fixed list, so a field
+    added to WorkflowStep later is covered on the day it is written.
+    """
+    from ai4ia_api.workflows.models import WorkflowStep
+
+    step = WorkflowStep(
+        agent="general",
+        instruction="Do {input}",
+        extraTools=["remember_memory", "calculator"],
+    )
+    fields = set(type(step).model_fields)
+    assert fields >= {"agent", "instruction", "extraTools"}  # non-vacuity
+
+    raw = _payload_step(step)
+    assert set(raw) == fields, "the payload must carry every field, not a subset"
+
+    assert _step_from_dict(raw) == step
+
+
+def test_a_payload_written_before_a_field_existed_still_replays() -> None:
+    """Orchestration history is immutable, so old payloads must still load.
+
+    A run started before `extraTools` shipped has only agent/instruction in its
+    history; rebuilding must fall back to the default rather than raise, or the
+    deploy that adds a field strands every in-flight run.
+    """
+    from ai4ia_api.workflows.models import WorkflowStep
+
+    old = _step_from_dict({"agent": "general", "instruction": "Do {input}"})
+
+    assert old == WorkflowStep(agent="general", instruction="Do {input}")
+    assert old.extraTools == []
