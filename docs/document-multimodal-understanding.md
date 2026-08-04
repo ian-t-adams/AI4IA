@@ -100,7 +100,10 @@ Annotations and saved memories remain owner-private and never travel with a shar
 
 ## Configuration
 
-Core flags and knobs:
+Core flags and knobs (these are the **runtime settings** the container receives,
+not repo variables — see
+[configuration reference](configuration-reference.md#feature-flags-and-prerequisites)
+for which of them a repo variable can actually change):
 
 - `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`
 - `AI4IA_CU_BASE_URL`, `AI4IA_CU_API_VERSION`, `AI4IA_CU_AUTH_MODE`

@@ -203,6 +203,7 @@ python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deplo
 python3 -m unittest scripts.tests.test_portal_contrast          # WCAG gate for site/assets/styles.css (no build, no other runner)
 python3 -m unittest scripts.tests.test_brand_assets             # every committed logo: coverage, palette, size
 python3 -m unittest scripts.tests.test_dependabot_config        # keeps dependabot.yml and the uv.lock gate in step
+python3 -m unittest scripts.tests.test_configuration_reference_reachability  # docs may only name azd vars a deploy can actually read
 ```
 
 `test_custom_domain_preflight` and `test_dependabot_config` need `PyYAML` (pinned in the workflow); the rest are stdlib-only. `security-scan` runs Trivy filesystem/config scans and gitleaks.

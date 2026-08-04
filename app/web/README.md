@@ -51,7 +51,7 @@ npm run build
 
 ## Runtime configuration
 
-Server-side env in `app/layout.tsx` controls auth and feature visibility; it is read
+Server-side env in `src/app/layout.tsx` controls auth and feature visibility; it is read
 at request time (not frozen at build), so deploy-time config can change without a
 rebuild. Avoid `NEXT_PUBLIC_*` for these gates.
 

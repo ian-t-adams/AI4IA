@@ -28,10 +28,13 @@ watch the Bicep parameter, and know which runtime setting appears in the app.
 
 | Purpose | azd / CI variable | Bicep parameter | Notes |
 | --- | --- | --- | --- |
+| Deployment posture | `AI4IA_APP_ENVIRONMENT` | `appEnvironment` | `dev` or `prod`; **defaults to `dev`**. Set it to `prod` for any real environment — a standup that only sets the *documented* flags deploys as `dev` and nothing fails. Reaches both the api and web container apps; `/health/ready` echoes it back, which is the cheapest way to confirm it landed. |
 | Accountable owner tag | `AI4IA_OWNER` | `owner` | Do not leave this as a personal fork default. It lands on resource tags. |
 | Cost center tag | `AI4IA_COST_CENTER` | `costCenter` | Defaults to `genai-demo`; override for real chargeback. |
 | APIM publisher email | `AI4IA_APIM_PUBLISHER_EMAIL` | `apimPublisherEmail` | Required by API Management. Use an operator-owned mailbox, not a person. |
 | Budget alert recipients | Bicep override only today | `budgetAlertEmails` | Empty means budget tracking without email notifications. |
+| Entitlement admin shared secret | `AI4IA_ADMIN_API_SECRET` | `adminApiSecret` (`@secure()`) | Optional; empty by default. Only meaningful under spoofable dev auth — empty means identity-only admin, which is the fail-closed posture under Entra. When set it flows to the api as the `admin-api-secret` Container App secret. Leave unset in a production tenant. |
+| Speech Voice Live MI audience | `AI4IA_SPEECH_VOICE_LIVE_MI_AUDIENCE` | `speechVoiceLiveManagedIdentityAudience` | Defaults to `https://ai.azure.com`, the audience the `azure-ai-voicelive` SDK requests for the api-version this stack pins. Surfaced as the APIM named value `speech-voice-live-mi-audience` so a future api-version can move it without a code change. Never caller-influenced; leave at the default unless Azure changes the audience. |
 
 ## Naming tokens (subscription / tenant portability)
 
@@ -47,16 +50,29 @@ procedure: [`runbooks/deployment.md` §3](runbooks/deployment.md#3-moving-to-a-n
 
 ## Feature flags and prerequisites
 
+A flag is set one of two ways, and they are not interchangeable.
+
+- **azd / CI variable** — a repo variable that `deploy.yml` forwards into the azd
+  environment and `infra/main.parameters.json` reads with a `${VAR=default}`
+  token. Both halves are required. Set it in repo settings; no code change.
+- **checked-in parameter** — a literal value in `infra/main.parameters.json`.
+  Changing it is a pull request, not a repo-variable edit.
+
+The distinction matters because getting it wrong is silent: setting a repo
+variable that no `${…}` token reads leaves the deploy green and the value
+ignored. The **Runtime setting emitted** column below is what Bicep writes into
+the container — those names are *outputs*, not knobs you set.
+
 | Feature | azd / CI variable | Bicep parameter | Runtime setting emitted | Required companion config |
 | --- | --- | --- | --- | --- |
-| Voice Live | `AI4IA_REALTIME_ENABLED` | `voiceLiveEnabled` | `AI4IA_REALTIME_ENABLED`, `VOICE_LIVE_ENABLED`, `API_PUBLIC_URL`, `AI4IA_REALTIME_ALLOWED_ORIGINS` | None. The Origin allowlist is derived in Bicep from the deployed web origins (ACA default FQDN + `webCustomDomain`); `AI4IA_REALTIME_ALLOWED_ORIGINS` is optional and only *adds* origins. |
-| Voice Live tools | `AI4IA_REALTIME_TOOLS_ENABLED` | `voiceLiveToolsEnabled` | `AI4IA_REALTIME_TOOLS_ENABLED`, `VOICE_LIVE_TOOLS_ENABLED` | Requires Voice Live. |
+| Voice Live | checked-in parameter | `voiceLiveEnabled` | `AI4IA_REALTIME_ENABLED`, `VOICE_LIVE_ENABLED`, `API_PUBLIC_URL`, `AI4IA_REALTIME_ALLOWED_ORIGINS` | None. The Origin allowlist is derived in Bicep from the deployed web origins (ACA default FQDN + `webCustomDomain`); `AI4IA_REALTIME_ALLOWED_ORIGINS` is optional and only *adds* origins. |
+| Voice Live tools | checked-in parameter | `voiceLiveToolsEnabled` | `AI4IA_REALTIME_TOOLS_ENABLED`, `VOICE_LIVE_TOOLS_ENABLED` | Requires Voice Live. |
 | Speech Voice Live (second voice provider) | checked-in parameter | `speechVoiceLiveEnabled` | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | Requires `AI4IA_REALTIME_ENABLED=true`, `AI4IA_VOICE_PROVIDER_ALLOWLIST` to include `speech_voice_live`, and both `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`. The six managed models and default are catalog-controlled. Default OFF; enablement additionally waits on the live-validation gate below. |
 | Voice provider allowlist / default | n/a (server-authoritative) | `voiceProviderAllowlist`, `voiceDefaultProvider` | `AI4IA_VOICE_PROVIDER_ALLOWLIST` (default `azure_openai`), `AI4IA_VOICE_DEFAULT_PROVIDER` (default `azure_openai`) | Allowlist must always include `azure_openai`; default provider must be an allowlist member. The browser may only select an advertised, allowlisted provider. |
-| Document library / Content Understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `documentUnderstandingEnabled` | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`, `DOCUMENT_LIBRARY_ENABLED` | Cosmos + blob storage; CU endpoint defaults to the primary Foundry endpoint unless overridden. |
-| Library compute / export | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | `documentComputeEnabled` | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | Requires document understanding. Code Interpreter endpoint/model default to primary Foundry + `gpt-5.4-mini-*` unless overridden. |
-| Inline attachment compute | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | `inlineDocumentComputeEnabled` | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | Uses the same Code Interpreter endpoint/model as library compute. |
-| Raw-file compute | `codeInterpreterRawFilesEnabled` | `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` | `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` (Bicep default `false`; **enabled** in `main.parameters.json`), `AI4IA_CODE_INTERPRETER_MAX_RAW_FILE_BYTES` (default 25 MiB) | Requires library compute (`documentUnderstandingEnabled` + `documentComputeEnabled` + a code-interpreter base URL; `api.bicep` emits the env var only when all of those hold). When off, `run_code` sees only Content Understanding's **parsed text**; when on it uploads the document's **original bytes** to the sandbox so the model reads the real PDF/xlsx/csv. Falls back to parsed text on any unsupported type, oversize original, or upload failure, so enabling it cannot break an existing run. |
+| Document library / Content Understanding | checked-in parameter | `documentUnderstandingEnabled` | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`, `DOCUMENT_LIBRARY_ENABLED` | Cosmos + blob storage; CU endpoint defaults to the primary Foundry endpoint unless overridden. |
+| Library compute / export | checked-in parameter | `documentComputeEnabled` | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | Requires document understanding. Code Interpreter endpoint/model default to primary Foundry + `gpt-5.4-mini-*` unless overridden. |
+| Inline attachment compute | checked-in parameter | `inlineDocumentComputeEnabled` | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | Uses the same Code Interpreter endpoint/model as library compute. |
+| Raw-file compute | checked-in parameter | `codeInterpreterRawFilesEnabled` | `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` (Bicep default `false`; **enabled** in `main.parameters.json`), `AI4IA_CODE_INTERPRETER_MAX_RAW_FILE_BYTES` (default 25 MiB) | Requires library compute (`documentUnderstandingEnabled` + `documentComputeEnabled` + a code-interpreter base URL; `api.bicep` emits the env var only when all of those hold). When off, `run_code` sees only Content Understanding's **parsed text**; when on it uploads the document's **original bytes** to the sandbox so the model reads the real PDF/xlsx/csv. Falls back to parsed text on any unsupported type, oversize original, or upload failure, so enabling it cannot break an existing run. |
 | Azure AI Search | `AI4IA_SEARCH_LOCATION` | `searchEnabled`, `searchLocation` | `AI4IA_SEARCH_ENDPOINT` when provisioned | Region must have Search SKU capacity. |
 | Durable workflow execution | `AI4IA_ENABLE_DURABLE_WORKFLOWS` | `enableDurableWorkflows`, `durableTaskSkuName`, `durableWorkflowTimeoutSeconds` | `AI4IA_DURABLE_WORKFLOWS_ENABLED`, `AI4IA_DURABLE_TASK_ENDPOINT`, `AI4IA_DURABLE_TASK_HUB_NAME`, `AI4IA_DURABLE_WORKFLOW_TIMEOUT_SECONDS` (default 1800) | **Provisions a paid Azure resource** (Durable Task Scheduler + task hub), so enabling it needs an approved deploy; approved and **on since 2026-08-02**, with the azd token retained for per-environment opt-out. Requires `AI4IA_SESSION_STORE=cosmos` — durability without shared storage is theatre, since a resumed orchestration on another replica must see the same session state. Both the endpoint and hub name are required outside `local`; `validate_runtime` fails closed if either is missing. When off, `POST /api/workflows/{name}/run` with `"durable": true` returns **422**, never a silent synchronous fallback. |
 | Image generation | checked-in parameter | `imageGenerationEnabled` | `AI4IA_IMAGE_BLOB_ACCOUNT_URL` when provisioned | Image-capable model deployment and generated-media storage. |
@@ -67,7 +83,7 @@ procedure: [`runbooks/deployment.md` §3](runbooks/deployment.md#3-moving-to-a-n
 | Private tool catalog (API Center) | `AI4IA_API_CENTER_LOCATION` | `enablePrivateToolCatalog`, `apiCenterLocation` | `AZURE_API_CENTER_NAME` output feeds `scripts/provision-private-tool-catalog.py` | Provisions an Azure API Center to inventory the APIM-fronted MCP servers (admin/IaC only, no app runtime setting). `apiCenterLocation` defaults to `eastus` because API Center is unavailable in some regions (notably `eastus2`). Asset registration is a documented script step; preview. See [`foundry-toolbox.md`](foundry-toolbox.md). |
 | Web IQ search tools | `AI4IA_WEBIQ_API_KEY` (secret) | `webSearchEnabled`, `webIqApiKey` | `AI4IA_WEB_SEARCH_ENABLED`, `AI4IA_WEBIQ_API_KEY` (secret) | API key **or** an Entra managed identity entitled to Web IQ. In CI the key is a `production` environment secret; if unset, the api falls back to the managed identity and calls 401 unless it is entitled. Diagnose with the admin **Web search health** panel. |
 | Memory / semantic recall | `AI4IA_MEMORY_STORE` | `memoryStore` (default `cosmos`) | `AI4IA_MEMORY_STORE` | Use `disabled` for the migration freeze and `cosmos` after verification. Cosmos requires its endpoint/database, `EnableNoSQLVectorSearch`, the `/userId`-partitioned `memories` container, and catalog entries for the embedding and extraction models. |
-| Rolling conversation summarization | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | `autoSummarizationEnabled` | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | None beyond the active chat model. Off sends the full transcript and leaves manual `/summarize` working; on folds the oldest turns into a running summary once the transcript passes the model-derived threshold, keeping the newest turns verbatim and the full transcript in storage. |
+| Rolling conversation summarization | checked-in parameter | `autoSummarizationEnabled` | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | None beyond the active chat model. Off sends the full transcript and leaves manual `/summarize` working; on folds the oldest turns into a running summary once the transcript passes the model-derived threshold, keeping the newest turns verbatim and the full transcript in storage. |
 | Legacy memory source / document-index fallback | `AI4IA_POSTGRES_LOCATION` | `postgresLocation` | `AI4IA_POSTGRES_*` while retained | PostgreSQL is not a memory backend. It remains temporarily for migration and as the document-chunk fallback when Azure AI Search is absent. |
 | Proxy application profiles | `AI4IA_PROXY_PROFILES_ENABLED`, `AI4IA_PROXY_PROFILE_PROJECTION_JSON` (secret) | `proxyProfilesEnabled`, `proxyProfileProjectionJson` | `UseProfiles`, `UserConfigRequired`, secret-mounted `file:/mnt/ai4ia-profiles/profiles.json` | **Blocked by validation while shared-key ingress is used.** Requires a verified identity-aware application header; no public/unauthenticated profile URL is permitted. |
 | Proxy priority reservations | `AI4IA_PROXY_PRIORITIES_ENABLED`, `AI4IA_PROXY_PRIORITY_WORKERS` | `proxyPrioritiesEnabled`, `proxyPriorityWorkers` | `PriorityWorkers`, `PriorityKeys`, `PriorityValues`; API emits `x-S7PPriority` | Worker map must use `priority:count` pairs. Off means no reserved workers and no band header. Band is derived server-side from the authenticated principal (admins -> 1, other users -> 2); an inbound `x-S7PPriority` is never trusted. Queue fairness is per replica. Not Azure paid Priority Processing. |
@@ -152,7 +168,7 @@ server-authoritative default). It routes
   `eastus2` AIServices account at stable `2026-04-10` — the same account already
   used as a Foundry model backend, not a new resource. The managed-model selector
   accepts only the six catalog entries documented in the
-  [region matrix](region-capability-matrix.md#speech-voice-live-managed-model-matrix).
+  [region matrix](region-capability-matrix.md#speech-voice-live-managed-model-catalog).
   Native-audio models use `gpt-4o-transcribe`; GPT text response models use the
   Azure Speech chain and `azure-speech` transcription. Voice/locale/VAD/noise/echo
   capabilities come from the generated voice provider catalog
