@@ -22,8 +22,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
     structurally absent from a step. That asymmetry is why a workflow asked to
     "remember the decisions" ran, replied that it could not save anything, and was
     recorded as a **success**. Each step now states which of these it has, with a route
-    to the Agents tab when the remedy is "attach it". Where the server genuinely does
-    not report a capability (Web IQ is injected unconditionally and never listed by
+    back to the **Build** tab — where the per-step tool checkboxes live — when the
+    remedy is "switch it on". (The Build tab itself renders no button: its checkboxes
+    sit directly below the chips, so one would be noise.) Where the server genuinely
+    does not report a capability (Web IQ is injected unconditionally and never listed by
     `/api/tools`) the chip says "if configured" rather than inventing a verdict.
   - **Per-step failure attribution.** `runner.py` prefixes every fatal step error with
     `Step {n}: `, so the trace can say "step 2 failed, step 1 succeeded, step 3 never
@@ -133,6 +135,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A `uv lock --check` gate in `app-ci`, so `app/api/uv.lock` can no longer rot unnoticed
   behind `pyproject.toml`.
 
+- **Per-step tool grants for workflows** (`workflows/models.py`, `workflows/runner.py`,
+  `WorkflowBuilder.tsx`). A step can now be granted tools its agent does not carry, via
+  a per-step `extraTools` list rendered as **Tools for this step**. This closes a gap
+  that was unreachable by construction rather than merely awkward: `remember_memory` is
+  attach-gated, the curated agents ship **fixed** tool lists in `data/agents.json`
+  (`researcher` and `writer` carry none at all) and are not editable in the agent
+  builder, and `/api/agents` does not expose `tools`. So for the agents most users pick,
+  the capability could not be switched on from anywhere in the product — and the model,
+  never told it lacked the tool, narrated a memory save it had not performed while the
+  run was recorded as a success.
+  - Grants are **additive**: `[]` is exactly today's behaviour, so nothing migrates, and
+    a step can never silently drop the agent's own `mcp:` tools (those are per-user and
+    dynamic, so `WorkflowService` cannot re-validate them).
+  - The allowlist is **server-authoritative**. The web offers a derived
+    `STEP_ATTACHABLE_TOOLS` (attachable minus chat-only minus MCP) rather than a
+    hand-written list, which would have offered `generate_image` — a control that saves
+    and validates cleanly and then does nothing, i.e. a brand-new inert control of
+    precisely the class being fixed.
+  - Synthetic tools (`remember_memory`) and registry tools (`calculator`) reach the model
+    by **two independent paths** (`extra_tools` vs `tool_names`); each has its own test,
+    because reverting either leaves the other's test green.
+
 ### Removed
 
 - Four dead symbols, each confirmed by a repo-wide search returning only its own
@@ -238,6 +262,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   before the bump.
 
 ### Fixed
+
+- **Durable workflow runs silently dropped per-step fields** (`workflows/durable.py`).
+  Both sides of the orchestration payload hand-listed the fields they carried —
+  `build_orchestration_payload` emitted `{agent, instruction}` and `_step_from_dict`
+  rebuilt from the same two — so a step's `extraTools` vanished in transit. A durable
+  run therefore executed a **different step** than the byte-identical synchronous run,
+  and did so silently: a step with no tools still returns 200. Both sides now use
+  `model_dump(mode="json")` / `model_validate`, so payload and rebuild are exact
+  inverses and any field added to `WorkflowStep` survives by construction. The
+  regression test derives its expectations from `WorkflowStep.model_fields` rather than
+  a hand-written list, because a hand-written list is what caused the bug; a second test
+  pins that orchestration history written before a field existed still replays.
+  Measured end to end: the same workflow that created **2** memories synchronously
+  created **0** durably beforehand (the model saying plainly that it had no such tool)
+  and **1** afterwards.
 
 - **`remember_memory` had no checkbox.** The tool shipped correct in the API, in the
   allowlist, and in tests — and was unreachable from the product, because

@@ -223,3 +223,15 @@ jobs:
           python3 -m unittest scripts.tests.test_dependabot_config
         env:
           PYYAML_VERSION: 6.0.3
+
+      - name: Run configuration-reference reachability tests
+        run: |
+          set -euo pipefail
+          # A repo variable only influences a deploy if deploy.yml forwards it AND
+          # main.parameters.json reads it via ${VAR=default}. Miss either half and
+          # the operator sets it, the deploy goes green, and nothing changes.
+          # Documentation is where that costs the most, because a clean-room tenant
+          # standup follows the docs -- six rows of the feature-flag table named
+          # variables no deploy could ever read, and AI4IA_APP_ENVIRONMENT (which
+          # must be `prod` for a real environment) appeared in no document at all.
+          python3 -m unittest scripts.tests.test_configuration_reference_reachability
