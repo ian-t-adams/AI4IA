@@ -18,7 +18,12 @@ import { SignInGate } from "./SignInGate";
 
 function FullScreenNote({ children }: { children: React.ReactNode }) {
   return (
-    <div
+    // <main id="main"> so the layout's "Skip to main content" link always has a
+    // target. The signed-out and initialising screens replace the whole app
+    // subtree, so before this the skip link pointed at nothing and the page
+    // exposed no main landmark at all.
+    <main
+      id="main"
       style={{
         display: "flex",
         alignItems: "center",
@@ -29,7 +34,7 @@ function FullScreenNote({ children }: { children: React.ReactNode }) {
       }}
     >
       {children}
-    </div>
+    </main>
   );
 }
 

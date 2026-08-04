@@ -63,11 +63,24 @@ variable that no `${…}` token reads leaves the deploy green and the value
 ignored. The **Runtime setting emitted** column below is what Bicep writes into
 the container — those names are *outputs*, not knobs you set.
 
+> **Template default vs observed state.** Every posture statement in this file
+> describes the **template default**: what a fresh `azd up` produces from the
+> checked-in Bicep and `infra/main.parameters.json`, including the `=default`
+> half of each `${VAR=default}` token. It does **not** describe what any
+> particular environment currently has, because azd environment variables
+> override these without changing a tracked file.
+>
+> Do not write "and live in this deployment" here. Claims of that form drifted
+> from the parameters they described (the Speech Voice Live row below is the
+> worked example) and cannot be verified from the repository. Live posture
+> belongs in generated deployment evidence, not in hand-maintained prose — see
+> `docs/repository-audit-2026-08-03.md`.
+
 | Feature | azd / CI variable | Bicep parameter | Runtime setting emitted | Required companion config |
 | --- | --- | --- | --- | --- |
 | Voice Live | checked-in parameter | `voiceLiveEnabled` | `AI4IA_REALTIME_ENABLED`, `VOICE_LIVE_ENABLED`, `API_PUBLIC_URL`, `AI4IA_REALTIME_ALLOWED_ORIGINS` | None. The Origin allowlist is derived in Bicep from the deployed web origins (ACA default FQDN + `webCustomDomain`); `AI4IA_REALTIME_ALLOWED_ORIGINS` is optional and only *adds* origins. |
 | Voice Live tools | checked-in parameter | `voiceLiveToolsEnabled` | `AI4IA_REALTIME_TOOLS_ENABLED`, `VOICE_LIVE_TOOLS_ENABLED` | Requires Voice Live. |
-| Speech Voice Live (second voice provider) | checked-in parameter | `speechVoiceLiveEnabled` | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | Requires `AI4IA_REALTIME_ENABLED=true`, `AI4IA_VOICE_PROVIDER_ALLOWLIST` to include `speech_voice_live`, and both `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`. The six managed models and default are catalog-controlled. Bicep default OFF; **enabled** in `infra/main.parameters.json` and live in this deployment. A narrower gate still applies to the managed-identity *audience* default — see [Speech Voice Live](#speech-voice-live-second-voice-provider) — but it does not gate enablement. |
+| Speech Voice Live (second voice provider) | checked-in parameter | `speechVoiceLiveEnabled` | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | Requires `AI4IA_REALTIME_ENABLED=true`, `AI4IA_VOICE_PROVIDER_ALLOWLIST` to include `speech_voice_live`, and both `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`. The six managed models and default are catalog-controlled. **Template default OFF** in both Bicep and `infra/main.parameters.json`, which resolves `${AI4IA_SPEECH_VOICE_LIVE_ENABLED=false}` — and the checked-in `voiceProviderAllowlist` (`${AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai}`) does not list `speech_voice_live`, so a standup that sets neither azd variable gets this provider off *and* unreachable. Turning it on takes both variables in the azd environment, not a file edit. (This row previously said "enabled in `infra/main.parameters.json` and live in this deployment"; the first half contradicted the file and the second was never generated from deployment evidence — see the observed-state note below.) A narrower gate still applies to the managed-identity *audience* default — see [Speech Voice Live](#speech-voice-live-second-voice-provider) — but it does not gate enablement. |
 | Voice provider allowlist / default | n/a (server-authoritative) | `voiceProviderAllowlist`, `voiceDefaultProvider` | `AI4IA_VOICE_PROVIDER_ALLOWLIST` (default `azure_openai`), `AI4IA_VOICE_DEFAULT_PROVIDER` (default `azure_openai`) | Allowlist must always include `azure_openai`; default provider must be an allowlist member. The browser may only select an advertised, allowlisted provider. |
 | Document library / Content Understanding | checked-in parameter | `documentUnderstandingEnabled` | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`, `DOCUMENT_LIBRARY_ENABLED` | Cosmos + blob storage; CU endpoint defaults to the primary Foundry endpoint unless overridden. |
 | Library compute / export | checked-in parameter | `documentComputeEnabled` | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | Requires document understanding. Code Interpreter endpoint/model default to primary Foundry + `gpt-5.4-mini-*` unless overridden. |

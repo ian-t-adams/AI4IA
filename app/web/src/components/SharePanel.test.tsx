@@ -110,4 +110,41 @@ describe("SharePanel", () => {
       expect(mocks.setDocumentShares).toHaveBeenCalledWith("doc1", "private", []),
     );
   });
+
+  it("does not offer a save that could overwrite an ACL it failed to read", async () => {
+    // The form initialises to private/no-grantees. Rendering it after a FAILED
+    // read gave the user a Save button that would write those defaults over the
+    // real sharing state -- a transient GET failure silently revoking access.
+    mocks.getDocumentShares.mockRejectedValue(new Error("network down"));
+    render(<SharePanel documentId="doc1" filename="notes.pdf" onClose={vi.fn()} />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(/network down/i),
+    );
+
+    // No editable form and no way to save.
+    expect(screen.queryByRole("radio", { name: /^private/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(mocks.setDocumentShares).not.toHaveBeenCalled();
+  });
+
+  it("recovers the real ACL when the retry succeeds", async () => {
+    mocks.getDocumentShares
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce(SHARED_STATE);
+    const user = userEvent.setup();
+    render(<SharePanel documentId="doc1" filename="notes.pdf" onClose={vi.fn()} />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    // The authoritative state is now loaded, so editing is safe again.
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: /^private/i })).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+    expect(screen.getByText("a@example.com")).toBeInTheDocument();
+  });
 });

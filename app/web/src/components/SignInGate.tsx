@@ -28,7 +28,11 @@ export function SignInGate({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div
+    // <main id="main"> so the layout's "Skip to main content" link has a target
+    // on the signed-out screen too; this subtree replaces the whole app, so
+    // without it the page exposed no main landmark at all.
+    <main
+      id="main"
       style={{
         display: "flex",
         flexDirection: "column",
@@ -80,7 +84,7 @@ export function SignInGate({ children }: { children: React.ReactNode }) {
       >
         {busy ? "Signing in…" : "Sign in"}
       </button>
-      {/* Reachable before sign-in: the self-documenting portal (docs + live status). */}
+      {/* Reachable before sign-in: the self-documenting portal (docs + status). */}
       <a
         href={DOCS_PORTAL_URL}
         target="_blank"
@@ -91,8 +95,11 @@ export function SignInGate({ children }: { children: React.ReactNode }) {
           textDecoration: "underline",
         }}
       >
+        {/* The new-tab behaviour is announced rather than left to sighted
+            inference from the icon-free link text. */}
         Docs &amp; status
+        <span className="visually-hidden"> (opens in a new tab)</span>
       </a>
-    </div>
+    </main>
   );
 }
