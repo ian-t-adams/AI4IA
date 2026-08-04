@@ -39,6 +39,37 @@ _REASONING_UNSUPPORTED_PARAMS = (
 )
 
 
+# Request-body fields the gateway always builds itself. A caller-supplied value
+# for any of these would replace the server's history, routing, prompt authority
+# or retention posture, so they are stripped from ``params`` before the server
+# value is written -- and the server value is written LAST, so ordering can never
+# silently reintroduce the override.
+#
+# ``tools``/``tool_choice``/``parallel_tool_calls`` are deliberately NOT here:
+# the agent runtime legitimately supplies a per-iteration tool schema through
+# ``params`` (agents/runtime.py), and it already strips those same keys from
+# *caller* params before doing so. External callers cannot reach these at all
+# because the chat router validates ``params`` against a strict allowlist
+# (routers/chat.py::ChatParams).
+_SERVER_OWNED_BODY_KEYS = (
+    "messages",
+    "model",
+    "input",
+    "instructions",
+    "store",
+    "stream",
+    "stream_options",
+)
+
+
+def _without_server_owned(params: dict[str, Any] | None) -> dict[str, Any]:
+    """Copy ``params`` without any field the gateway owns (see above)."""
+    out = dict(params or {})
+    for key in _SERVER_OWNED_BODY_KEYS:
+        out.pop(key, None)
+    return out
+
+
 def _normalize_params_for_deployment(body: dict[str, Any], deployment: str) -> None:
     """In place: adapt chat params to a reasoning model's constraints.
 
@@ -317,7 +348,13 @@ class ModelGatewayClient:
         path = self._chat_path.format(deployment=deployment)
         url = f"{self._base}{path if path.startswith('/') else '/' + path}"
 
-        body: dict[str, Any] = {"messages": list(messages), **(params or {})}
+        # Caller params first, then every server-owned field, so a crafted
+        # ``params`` can neither replace the server-built history nor smuggle in
+        # an alternate deployment/stream posture.
+        body: dict[str, Any] = {
+            **_without_server_owned(params),
+            "messages": list(messages),
+        }
         _normalize_params_for_deployment(body, deployment)
         if stream:
             body["stream"] = True
@@ -354,6 +391,12 @@ class ModelGatewayClient:
         url = f"{self._base}{_RESPONSES_PATH}"
         instructions, input_items = _messages_to_responses_input(messages)
         body: dict[str, Any] = {
+            # Caller params FIRST so every server-owned field below wins. This
+            # surface is the sharper of the two: ``model``, ``input`` and
+            # ``store`` are all real Responses fields, so spreading caller params
+            # last would let a caller re-target the deployment, replace the
+            # server-built input, and switch provider retention back on.
+            **_normalize_params_for_responses(_without_server_owned(params)),
             "model": deployment,
             "input": input_items,
             # Opt OUT of provider-side conversation storage. ``store`` defaults to
@@ -369,7 +412,6 @@ class ModelGatewayClient:
             # ``include: ["reasoning.encrypted_content"]`` and pass the encrypted
             # reasoning items forward, which is the stateless-mode equivalent.
             "store": False,
-            **_normalize_params_for_responses(params),
         }
         if instructions:
             body["instructions"] = instructions

@@ -194,6 +194,14 @@ class CodeInterpreterClient:
             "tools": [code_interpreter_tool(file_ids)],
             "instructions": instructions,
             "input": user_input,
+            # Match the Responses gateway's retention posture (see
+            # gateway/client.py::build_responses_request). ``store`` defaults to
+            # TRUE on this surface, so without this every compute turn leaves a
+            # provider-side copy of the user's instructions, input and output
+            # retrievable from ``GET /responses/{id}`` outside the app. This path
+            # is the documented direct-to-Foundry exception, which makes it the
+            # one place the gateway's opt-out would not otherwise apply.
+            "store": False,
         }
         client, owned = self._client()
         try:

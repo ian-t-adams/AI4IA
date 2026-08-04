@@ -52,11 +52,42 @@ def test_allows_public_ip_literal_without_resolving():
         "https://[::1]/rpc",  # IPv6 loopback
         "https://[::ffff:127.0.0.1]/rpc",  # IPv4-mapped loopback
         "https://[fd00::1]/rpc",  # IPv6 unique-local (private)
+        # Carrier-grade NAT (RFC 6598). Reported False by every is_private/
+        # is_loopback/is_link_local/is_reserved check, so it was reachable until
+        # the guard also required `is_global`. Routable inside CGNAT/hosting
+        # networks, which makes it a real internal-egress target.
+        "https://100.64.0.1/rpc",
+        "https://100.127.255.254/rpc",  # top of 100.64.0.0/10
+        "https://[64:ff9b::102:304]/rpc",  # NAT64 well-known prefix (is_global True)
+        "https://192.0.2.5/rpc",  # TEST-NET-1 documentation range
+        "https://198.18.0.1/rpc",  # benchmarking range
+        "https://[2001:db8::1]/rpc",  # IPv6 documentation range
+        "https://0.0.0.0/rpc",  # unspecified
     ],
 )
 def test_blocks_non_public_ip_literals(url):
     with pytest.raises(SsrfError):
         validate_public_https_url(url, resolver=_only(_PUBLIC))
+
+
+@pytest.mark.parametrize("addr", ["100.64.0.1", "100.100.100.100"])
+def test_blocks_hostname_resolving_to_carrier_grade_nat(addr):
+    """The rebinding path must reject CGNAT too, not just IP literals."""
+    with pytest.raises(SsrfError):
+        validate_public_https_url("https://mcp.example.com/rpc", resolver=_only([addr]))
+
+
+def test_pinned_ip_rejects_carrier_grade_nat():
+    with pytest.raises(SsrfError):
+        resolve_pinned_ip("mcp.example.com", resolver=_only(["100.64.0.1"]))
+
+
+@pytest.mark.parametrize("addr", ["93.184.216.34", "8.8.8.8", "2606:4700::1111"])
+def test_still_allows_genuinely_public_addresses(addr):
+    """Guard against over-blocking: tightening must not reject public unicast."""
+    assert validate_public_https_url(
+        "https://mcp.example.com/rpc", resolver=_only([addr])
+    ) == "mcp.example.com"
 
 
 def test_blocks_hostname_resolving_to_private():

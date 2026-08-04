@@ -26,7 +26,7 @@ Vendored (not a submodule) from microsoft/SimpleL7Proxy @
 
 ### Intentional source deviation
 
-Four files carry AI4IA security/correctness patches over the audited pin:
+Seven files carry AI4IA security/correctness patches over the audited pin:
 
 - `SimpleL7Proxy/Config/IncomingAuthValidator.cs` applies `ValidateAuthConfig`'s `header=` value to the actual key lookup (upstream otherwise keeps
   reading the default `S7P-KEY`, which rejects AI4IA's `Ocp-Apim-Subscription-Key` ingress);
@@ -34,7 +34,29 @@ Four files carry AI4IA security/correctness patches over the audited pin:
   implemented, rather than accepting unsigned JWTs.
 - `SimpleL7Proxy/Config/ConfigFactory.cs` removes an upstream warm-reload debug line that printed
   old and new configuration values, which could expose a secret if an operator ever placed one in
-  a warm App Configuration key.
+  a warm App Configuration key. It additionally honours a new
+  `ConfigOptionAttribute.Secret` flag when masking the startup "Configuration
+  loaded" event, and its per-property masking loop is extracted into a public
+  `BuildConfigSnapshot` so the redaction is directly testable. Upstream masks by
+  substring-matching the key path (`connectionstring`/`password`/`secret`/
+  `token`/`apikey`/`sas`); `Profiles:Auth:Key1` matches none of those, so the
+  deployed proxy-ingress APIM subscription key was written to that event verbatim
+  — and the default event client persists it to `eventslog.json`. Covered by
+  `AI4IA.Proxy.Tests/ConfigRedactionTests.cs`.
+- `SimpleL7Proxy/Config/ConfigMetadata.cs` adds the `Secret` flag described above.
+  An explicit opt-in is used rather than widening the substring heuristic to
+  `key`, because non-secret options legitimately contain that word
+  (`Request:Headers:PriorityKeyHeader`, `Request:Priority:PriorityKeys`).
+- `SimpleL7Proxy/Config/ProxyConfig.cs` marks `ValidateAuthKey1`/`ValidateAuthKey2`
+  with that flag. These are the only two options that hold a credential.
+- `Shared-parser/StreamProcessor/JsonStreamProcessor.cs` flushes the output
+  `StreamWriter` after each line. Upstream's comment says "write each line
+  immediately", but `WriteLineAsync` only fills the writer's 4 KiB char buffer,
+  and the proxy's periodic `StreamFlusher` flushes the *underlying* stream, which
+  cannot see characters still held in the writer. Because APIM sets
+  `TOKENPROCESSOR` for `text/*` responses, every streaming chat completion went
+  through this path and was withheld until ~4 KiB accumulated or the response
+  ended. Covered by `AI4IA.Proxy.Tests/StreamProcessorFlushTests.cs`.
 - `SimpleL7Proxy/RequestData.cs` derives Azure-native deployment names from
   `/deployments/{name}/...` when the request body correctly omits `model`. This
   supplies the generated APIM catalog header for chat, embeddings, image, and
@@ -71,6 +93,17 @@ files in `Shared/`, `Shared-parser/`, and `SimpleL7Proxy/`:
   counterpart.
 
 142 + 28 + 4 = 174, matching the upstream file count exactly (174 + 1 new file = 175 local files).
+
+> **Superseded by the 2026-08-04 patches.** The breakdown above was measured when
+> there were four intentional deviations. Three more files now deviate —
+> `Config/ConfigMetadata.cs`, `Config/ProxyConfig.cs` and
+> `Shared-parser/StreamProcessor/JsonStreamProcessor.cs` — so the deviation count
+> is **7**, and each of those three left whichever identical/normalized bucket it
+> was previously counted in. The totals are deliberately **not** re-stated here by
+> arithmetic guess: which of the 142/28 buckets each file came from was not
+> re-measured, and inventing the split would defeat the purpose of a provenance
+> record. Re-run the blob-level comparison described above at the next pin
+> refresh and restate all four numbers together.
 
 **Pin currency (measured 2026-08-02): the pin is now STALE, and deliberately so.**
 An earlier version of this note recorded that upstream `main` was still exactly

@@ -152,6 +152,20 @@ async def test_run_posts_code_interpreter_tool_payload():
     assert result.succeeded is True
 
 
+async def test_run_opts_out_of_provider_side_storage():
+    """This client is the documented direct-to-Foundry exception, so the
+    Responses gateway's ``store: false`` does not cover it. Without an explicit
+    opt-out here, ``store`` defaults to TRUE on this surface and every compute
+    turn leaves the user's instructions, input and output retrievable from
+    ``GET /responses/{id}`` for 30 days -- a second, ungoverned copy of user
+    content that the rest of the app is careful to avoid.
+    """
+    fake = FakeAsyncClient(FakeResponse(200, {"status": "completed", "output_text": "42"}))
+    c = _client(_settings(), fake)
+    await c.run(instructions="be careful", user_input="sum it", file_ids=["file-1"])
+    assert fake.calls[0]["json"]["store"] is False
+
+
 # --- code_interpreter_tool factory ---
 def test_code_interpreter_tool_default_is_auto_container():
     assert code_interpreter_tool() == CODE_INTERPRETER_TOOL

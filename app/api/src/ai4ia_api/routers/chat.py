@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
@@ -88,6 +88,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
 
 
+class ChatParams(BaseModel):
+    """Generation controls a CLIENT may set, as a strict allowlist.
+
+    FastAPI is the trust boundary: the browser only ever sends these four (see
+    ``app/web/src/lib/types.ts``), but direct API callers are supported, so an
+    open ``dict`` here meant a caller could smuggle arbitrary fields into the
+    provider request body -- including ``messages``/``input`` (replacing the
+    server-built history), ``model`` (re-targeting the deployment past catalog
+    routing), ``store`` (re-enabling provider-side retention) and ``tools``
+    (calling providers outside the governed tool registry).
+
+    ``extra="forbid"`` rejects anything else with a 422 rather than forwarding
+    it. Server-owned fields are additionally stripped and rewritten in the
+    gateway builders (``gateway/client.py::_SERVER_OWNED_BODY_KEYS``), so this
+    is one of two independent layers rather than the only one.
+
+    ``max_completion_tokens`` is intentionally absent: it is the reasoning-model
+    spelling of ``max_tokens`` and is derived server-side, so accepting it from a
+    client would bypass the per-model output cap applied in ``_effective_params``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_tokens: int | None = Field(default=None, ge=1)
+    # Validated against the model's own ``reasoningEffortOptions`` in
+    # ``_effective_params`` (and dropped when unsupported); bounded here only so
+    # an oversized value cannot reach that check or the logs.
+    reasoning_effort: str | None = Field(default=None, max_length=32)
+
+
 class ChatRequest(BaseModel):
     sessionId: str
     content: str
@@ -95,7 +127,7 @@ class ChatRequest(BaseModel):
     region: str | None = None
     dataZone: str | None = None
     stream: bool = True
-    params: dict = {}
+    params: ChatParams = ChatParams()
 
 
 # Injected as a system block when a plain (agent-less or tool-less-agent) turn
@@ -1024,7 +1056,7 @@ async def chat(
     # governs the turn; composes with the gateway's reasoning/Responses param
     # translation. When the model has no metadata this returns body.params
     # unchanged, so the turn is byte-for-byte identical to before.
-    effective_params = _effective_params(body.params, entry)
+    effective_params = _effective_params(body.params.model_dump(exclude_none=True), entry)
 
     # Capability models (image, video, tts, transcription, embedding, rerank) and
     # voice models (realtime, audio) aren't chat targets — they're driven through

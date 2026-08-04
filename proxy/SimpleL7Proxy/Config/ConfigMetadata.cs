@@ -37,6 +37,26 @@ public sealed class ConfigOptionAttribute : Attribute
 
     /// <summary>Reload mode. Default: Warm.</summary>
     public ConfigMode Mode { get; set; } = ConfigMode.Warm;
+
+    /// <summary>
+    /// AI4IA patch. Marks this option as carrying a credential, so
+    /// <c>ConfigFactory.OutputEnvVars</c> fully masks it in the startup
+    /// configuration event.
+    ///
+    /// The masking there is otherwise a substring heuristic over the key path
+    /// (connectionstring/password/secret/token/apikey/sas). That silently failed
+    /// open for <c>Profiles:Auth:Key1</c>, which matches none of those words and
+    /// so had the deployed proxy-ingress APIM subscription key written verbatim
+    /// into the "Configuration loaded" custom event (and, with the default file
+    /// event client, into eventslog.json).
+    ///
+    /// An explicit opt-in is used rather than adding "key" to the heuristic
+    /// because non-secret options legitimately contain that word
+    /// (<c>Request:Headers:PriorityKeyHeader</c>, <c>Request:Priority:PriorityKeys</c>),
+    /// and because a new secret should have to declare itself rather than
+    /// depend on someone choosing a lucky name.
+    /// </summary>
+    public bool Secret { get; set; }
 }
 
 /// <summary>

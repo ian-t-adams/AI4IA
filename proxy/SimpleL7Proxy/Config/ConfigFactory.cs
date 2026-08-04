@@ -317,6 +317,67 @@ public static class ConfigFactory
   }
 
   /// <summary>
+  /// AI4IA patch. Builds the redacted (mode, key, display) view of every managed
+  /// config option -- the exact values <see cref="OutputEnvVars"/> publishes.
+  ///
+  /// Extracted from OutputEnvVars purely so the redaction is directly testable:
+  /// the startup event is the one place every resolved config value, including
+  /// credentials, is serialized in one payload, and it silently leaked the
+  /// proxy-ingress key. See AI4IA.Proxy.Tests/ConfigRedactionTests.cs.
+  /// </summary>
+  public static IReadOnlyList<(ConfigMode Mode, string KeyPath, string Display)> BuildConfigSnapshot(
+    ProxyConfig backendOptions)
+  {
+    var snapshot = new List<(ConfigMode, string, string)>();
+    foreach (var prop in typeof(ProxyConfig).GetProperties(BindingFlags.Public | BindingFlags.Instance))
+    {
+      var attr = prop.GetCustomAttribute<ConfigOptionAttribute>();
+      if (attr == null) continue;
+
+      var value = FormatConfigValue(prop.GetValue(backendOptions));
+      snapshot.Add((attr.Mode, attr.KeyPath, MaskSensitive(attr.KeyPath, value, attr.Secret)));
+    }
+    return snapshot;
+  }
+
+  private static string MaskSensitive(string key, string value, bool declaredSecret)
+  {
+    if (string.IsNullOrEmpty(value)) return value;
+
+    // AI4IA patch: an option that declares itself secret is masked WHOLLY --
+    // no leading/trailing plaintext. The partial mask below is a debugging
+    // aid for connection strings, where the endpoint prefix is useful and the
+    // value is long; for a raw API key those 4 characters are just leaked key
+    // material, and APIM subscription keys are fixed-length hex, so any
+    // disclosure meaningfully narrows a brute force.
+    if (declaredSecret) return "****";
+
+    var lower = key.ToLowerInvariant();
+    if (lower.Contains("connectionstring") || lower.Contains("password") ||
+        lower.Contains("secret") || lower.Contains("token") ||
+        lower.Contains("apikey") || lower.Contains("sas"))
+    {
+      return value.Length <= 4 ? "****" : $"{value[..2]}***{value[^2..]}";
+    }
+    return value;
+  }
+
+  private static string FormatConfigValue(object? rawValue)
+  {
+    if (rawValue == null) return "";
+    return rawValue switch
+    {
+      string s => s,
+      int[] arr => string.Join(", ", arr),
+      IEnumerable<string> list => string.Join(", ", list),
+      IEnumerable<int> list => string.Join(", ", list),
+      IDictionary<string, string> dict => string.Join(", ", dict.Select(kvp => $"{kvp.Key}={kvp.Value}")),
+      IDictionary<int, int> dict => string.Join(", ", dict.Select(kvp => $"{kvp.Key}:{kvp.Value}")),
+      _ => rawValue.ToString() ?? ""
+    };
+  }
+
+  /// <summary>
   /// Emits a telemetry event with all resolved config values,
   /// masking sensitive keys (connection strings, secrets, etc.).
   /// </summary>
@@ -333,58 +394,19 @@ public static class ConfigFactory
     var cold = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     var hidden = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-    foreach (var prop in typeof(ProxyConfig).GetProperties(BindingFlags.Public | BindingFlags.Instance))
+    foreach (var (mode, keyPath, display) in BuildConfigSnapshot(backendOptions))
     {
-      var attr = prop.GetCustomAttribute<ConfigOptionAttribute>();
-      if (attr == null) continue;
-
-      var rawValue = prop.GetValue(backendOptions);
-      var value = FormatValue(rawValue);
-      var display = MaskSensitive(attr.KeyPath, value);
-
-      var bucket = attr.Mode switch
+      var bucket = mode switch
       {
         ConfigMode.Warm => warm,
         ConfigMode.Cold => cold,
         _ => hidden
       };
-      bucket[$"{attr.Mode}:{attr.KeyPath}"] = display;
-      pe[attr.KeyPath] = display;
+      bucket[$"{mode}:{keyPath}"] = display;
+      pe[keyPath] = display;
     }
 
     pe.SendEvent();
-
-    var all = warm.Concat(cold).Concat(hidden).ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-    string json = System.Text.Json.JsonSerializer.Serialize(all, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-
-    static string MaskSensitive(string key, string value)
-    {
-      if (string.IsNullOrEmpty(value)) return value;
-
-      var lower = key.ToLowerInvariant();
-      if (lower.Contains("connectionstring") || lower.Contains("password") ||
-          lower.Contains("secret") || lower.Contains("token") ||
-          lower.Contains("apikey") || lower.Contains("sas"))
-      {
-        return value.Length <= 4 ? "****" : $"{value[..2]}***{value[^2..]}";
-      }
-      return value;
-    }
-
-    static string FormatValue(object? rawValue)
-    {
-      if (rawValue == null) return "";
-      return rawValue switch
-      {
-        string s => s,
-        int[] arr => string.Join(", ", arr),
-        IEnumerable<string> list => string.Join(", ", list),
-        IEnumerable<int> list => string.Join(", ", list),
-        IDictionary<string, string> dict => string.Join(", ", dict.Select(kvp => $"{kvp.Key}={kvp.Value}")),
-        IDictionary<int, int> dict => string.Join(", ", dict.Select(kvp => $"{kvp.Key}:{kvp.Value}")),
-        _ => rawValue.ToString() ?? ""
-      };
-    }
   }
 
   /// <summary>

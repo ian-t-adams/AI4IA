@@ -72,7 +72,7 @@ namespace SimpleL7Proxy.StreamProcessor
                 {
                     string? currentLine;
 
-                    // Stream all content immediately while tracking meaningful lines
+                    // Write each line immediately - no delays
                     while ((currentLine = await reader.ReadLineAsync().ConfigureAwait(false)) != null)
                     {
                         //cancellationToken?.ThrowIfCancellationRequested();
@@ -94,6 +94,20 @@ namespace SimpleL7Proxy.StreamProcessor
                         }
 
                         await t.ConfigureAwait(false);
+
+                        // AI4IA patch: "write each line immediately" was not true.
+                        // WriteLineAsync only fills this StreamWriter's 4 KiB char
+                        // buffer, and the periodic StreamFlusher flushes the
+                        // UNDERLYING stream, which cannot see chars still held in
+                        // the writer. So a token-by-token SSE response was held
+                        // back until ~4 KiB accumulated or the writer was disposed
+                        // at end of response -- turning a live stream into bursts,
+                        // and defeating the point of streaming for short answers.
+                        // APIM sets TOKENPROCESSOR for text/event-stream, so this
+                        // is on the normal streaming chat path.
+                        // FlushAsync pushes the chars out AND flushes the stream,
+                        // which is what an SSE event boundary requires.
+                        await writer.FlushAsync().ConfigureAwait(false);
                     }
                     
                     _logger?.LogDebug("Finished streaming {LineCount} lines from source", lineCount);

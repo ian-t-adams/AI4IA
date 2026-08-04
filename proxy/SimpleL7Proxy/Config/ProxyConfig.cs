@@ -78,9 +78,9 @@ public class ProxyConfig
 
     [ConfigOption("Profiles:Auth:Config")]
     public string ValidateAuthConfig { get; set; } = "enabled=false, mode=none, header=S7P-KEY";
-    [ConfigOption("Profiles:Auth:Key1")]
+    [ConfigOption("Profiles:Auth:Key1", Secret = true)]
     public string ValidateAuthKey1 { get; set; } = "";
-    [ConfigOption("Profiles:Auth:Key2")]
+    [ConfigOption("Profiles:Auth:Key2", Secret = true)]
     public string ValidateAuthKey2 { get; set; } = "";
 
     [ConfigOption("Profiles:SuspendedUser:ConfigUrl")]
