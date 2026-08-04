@@ -56,6 +56,7 @@ window.AI4IA_DOCS = {
     {
       group: "Roadmap & changelog",
       docs: [
+        { path: "docs/repository-audit-2026-08-03.md", title: "Repository audit - 2026-08-03/04", desc: "Evidence-backed review of served capability, runtime behavior, security, Responsible AI, performance, code, documentation, IaC, operations, UX, and prioritized remediation." },
         { path: "docs/roadmap.md", title: "Roadmap & open items", desc: "Living list of outstanding work, accepted tradeoffs, and owner decisions \u2014 what is planned or still needed." },
         { path: "CHANGELOG.md", title: "Changelog", desc: "Notable, human-readable changes to the deployed application over time." },
       ],
