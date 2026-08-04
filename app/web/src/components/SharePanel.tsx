@@ -79,9 +79,10 @@ export default function SharePanel({
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    setLoaded(false);
-    setError(null);
+    // No state reset here: the initial state already IS the loading state, and
+    // the retry handler resets before bumping `reloadKey`. Resetting in the
+    // effect body would be a synchronous setState in an effect (cascading
+    // render) for no behavioural gain.
     (async () => {
       try {
         const state = await getDocumentShares(documentId);
@@ -99,6 +100,14 @@ export default function SharePanel({
       active = false;
     };
   }, [documentId, reloadKey]);
+
+  const retryLoad = useCallback(() => {
+    // Reset here, in an event handler, then re-run the effect via `reloadKey`.
+    setError(null);
+    setLoaded(false);
+    setLoading(true);
+    setReloadKey((n) => n + 1);
+  }, []);
 
   const addGrantee = useCallback(() => {
     const email = draftEmail.trim().toLowerCase();
@@ -226,13 +235,13 @@ export default function SharePanel({
               {error ?? "Couldn't load who this document is shared with."}
             </p>
             <p style={{ margin: 0, fontSize: "0.8em", color: "var(--fg-muted)" }}>
-              Current sharing is unchanged. Retry before editing, so a save can't
-              overwrite settings that weren't loaded.
+              Current sharing is unchanged. Retry before editing, so a save
+              cannot overwrite settings that were never loaded.
             </p>
             <div style={{ display: "flex", gap: 12 }}>
               <button
                 type="button"
-                onClick={() => setReloadKey((n) => n + 1)}
+                onClick={retryLoad}
                 style={{
                   padding: "6px 16px",
                   borderRadius: 8,
