@@ -31,6 +31,62 @@ def test_resolve_deployment_unknown_model_returns_none():
     assert catalog.resolve_deployment("does-not-exist") is None
 
 
+def test_resolve_deployment_rejects_unsatisfiable_region():
+    """An explicit region is a requirement, not a hint.
+
+    This used to fall through to ``options[0]``, so a caller asking for a region
+    the model is not deployed in was silently served from another one -- with
+    nothing in the response, the usage record or the logs saying so. For a
+    residency constraint, an error is safer than a silent relocation.
+    """
+    catalog = load_catalog()
+    entry = catalog.get("gpt-5.2")
+    assert entry is not None, "fixture model missing from the catalog"
+    assert not any(o.region == "antarctica-south" for o in entry.options)
+
+    assert catalog.resolve_deployment("gpt-5.2", region="antarctica-south") is None
+
+
+def test_resolve_deployment_rejects_unsatisfiable_data_zone():
+    catalog = load_catalog()
+    assert catalog.resolve_deployment("gpt-5.2", data_zone="ANTARCTICA") is None
+
+
+def test_resolve_deployment_requires_region_and_data_zone_together():
+    """Both supplied means both required: honouring whichever happened to match
+    first is the same silent relocation in a subtler form."""
+    catalog = load_catalog()
+    entry = catalog.get("gpt-5.2")
+    assert entry is not None
+    swedish = next((o for o in entry.options if o.region == "swedencentral"), None)
+    assert swedish is not None, "fixture model missing its swedencentral deployment"
+
+    # A real region paired with a data zone that region does not serve.
+    mismatched = "ANTARCTICA" if swedish.dataZone != "ANTARCTICA" else "US"
+    assert (
+        catalog.resolve_deployment(
+            "gpt-5.2", region="swedencentral", data_zone=mismatched
+        )
+        is None
+    )
+    # ...and the agreeing pair still resolves.
+    if swedish.dataZone:
+        chosen = catalog.resolve_deployment(
+            "gpt-5.2", region="swedencentral", data_zone=swedish.dataZone
+        )
+        assert chosen is not None and chosen.region == "swedencentral"
+
+
+def test_resolve_deployment_without_constraints_is_unchanged():
+    """Guard against over-tightening: the common no-constraint call must still
+    pick the model's first deployment."""
+    catalog = load_catalog()
+    entry = catalog.get("gpt-5.2")
+    assert entry is not None
+    chosen = catalog.resolve_deployment("gpt-5.2")
+    assert chosen is not None and chosen == entry.options[0]
+
+
 # --- conversational classification (model-surfacing redesign) ---
 
 

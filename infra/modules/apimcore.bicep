@@ -100,5 +100,11 @@ output mcpProductName string = mcpProductName
 output principalId string = apim.identity.principalId
 
 @description('Product-scoped subscription key for the optional official MCP APIs.')
-#disable-next-line outputs-should-not-contain-secrets
+// @secure() rather than the `outputs-should-not-contain-secrets` suppression this
+// previously carried: suppressing the linter silenced the warning but still wrote
+// the key into deployment history as a plain string, readable by anyone with
+// deployment-read on the resource group. A secure output is redacted there.
+// Matches how gateway.bicep already exports its four subscription keys, and the
+// consumer (api.bicep's officialMcpSubscriptionKey) is already @secure().
+@secure()
 output mcpSubscriptionKey string = mcpSubscription.listSecrets().primaryKey

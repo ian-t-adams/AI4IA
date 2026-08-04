@@ -122,19 +122,37 @@ class ModelCatalog(BaseModel):
     def resolve_deployment(
         self, model_id: str, *, region: str | None = None, data_zone: str | None = None
     ) -> DeploymentOption | None:
-        """Pick a deployment for a model, optionally honoring region/data-zone."""
+        """Pick a deployment for a model, honoring an explicit region/data zone.
+
+        An explicit constraint is treated as a REQUIREMENT, not a hint. This
+        previously fell through to ``entry.options[0]`` when the requested region
+        or data zone had no deployment, so a caller asking for EU processing
+        silently got a US one and nothing in the response, the usage record or
+        the logs said the request had been relocated. For a residency constraint
+        that failure mode is worse than an error, so an unsatisfiable constraint
+        now returns ``None``; every caller already maps that to a 400-class
+        "unknown or unavailable model" response.
+
+        Constraints combine with AND when both are supplied: asking for a region
+        *and* a data zone that disagree is contradictory, and answering from
+        whichever one happened to match first is exactly the silent relocation
+        this avoids.
+
+        NOTE: ``DeploymentOption.dataZone`` is derived from the endpoint's
+        geography (``infra/models.json`` ``regions``), not from the deployment's
+        SKU. A ``GlobalStandard`` deployment can process outside that geography,
+        so satisfying a ``data_zone`` constraint here is not by itself a
+        residency guarantee. Tracked in the repository audit as an open item.
+        """
         entry = self.get(model_id)
         if entry is None or not entry.options:
             return None
+        options = list(entry.options)
         if region:
-            match = next((o for o in entry.options if o.region == region), None)
-            if match:
-                return match
+            options = [o for o in options if o.region == region]
         if data_zone:
-            match = next((o for o in entry.options if o.dataZone == data_zone), None)
-            if match:
-                return match
-        return entry.options[0]
+            options = [o for o in options if o.dataZone == data_zone]
+        return options[0] if options else None
 
 
 def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:

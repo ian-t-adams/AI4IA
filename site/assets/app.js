@@ -15,7 +15,14 @@
   function h(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content; }
 
   function stateBadge(state, label) {
-    var map = { healthy: "ok", up: "ok", ok: "ok", degraded: "warn", unknown: "unknown", unavailable: "bad", down: "bad" };
+    var map = {
+      healthy: "ok", up: "ok", ok: "ok",
+      // "provisioned" means the resource exists and is not failed, but Resource
+      // Health published no availability state for it. That is NOT a positive
+      // health signal, so it must not render as a green "ok" badge.
+      provisioned: "unknown",
+      degraded: "warn", unknown: "unknown", unavailable: "bad", down: "bad"
+    };
     var cls = map[state] || "unknown";
     var text = label || state;
     return '<span class="badge ' + cls + '">' + esc(text) + "</span>";
@@ -90,13 +97,37 @@
     if (up) up.textContent = "Snapshot generated " + fmtDate(s.generatedAt);
 
     var sum = s.summary;
+    var resources = s.resources || [];
+
+    // Derive the displayed state from the availability signal rather than
+    // trusting the stored `state`. Two reasons:
+    //  1. snapshots generated before the healthy/provisioned split recorded
+    //     "healthy" for every resource that merely existed, which is how the
+    //     page came to claim "33 Healthy" while all 33 rows read
+    //     "Availability: Unknown"; and
+    //  2. it keeps the rendering honest even if the generator regresses.
+    // Failure states still win -- those are real signals.
+    function effectiveState(r) {
+      if (r.state === "unavailable" || r.state === "degraded") return r.state;
+      return String(r.availability || "").toLowerCase() === "available"
+        ? "healthy"
+        : "provisioned";
+    }
+
+    var counts = { healthy: 0, provisioned: 0, degraded: 0, unavailable: 0 };
+    resources.forEach(function (r) { counts[effectiveState(r)]++; });
+
     var stats = el("status-stats");
     if (stats) {
+      // "Health reported" is deliberately separate from "Provisioned": most Azure
+      // resource types publish no Resource Health availability state at all, and
+      // counting those as healthy turned an absent signal into a green number.
       stats.innerHTML =
-        stat(sum.total, "Azure resources") +
-        stat(sum.healthy, "Healthy") +
+        stat(resources.length || sum.total, "Azure resources") +
+        stat(counts.healthy, "Health reported available") +
+        stat(counts.provisioned, "Provisioned, no health signal") +
         stat(sum.endpointsUp + "/" + sum.endpointsTot, "Public endpoints up") +
-        stat((sum.degraded || 0) + (sum.unavailable || 0), "Degraded / unavailable");
+        stat(counts.degraded + counts.unavailable, "Degraded / unavailable");
     }
 
     var eps = el("endpoints");
@@ -110,12 +141,12 @@
 
     var body = el("resources-body");
     if (body) {
-      var groups = groupBy(s.resources, "group");
+      var groups = groupBy(resources, "group");
       var html = "";
       Object.keys(groups).sort().forEach(function (g) {
         html += '<tr class="grouprow"><td colspan="5"><strong>' + esc(g) + "</strong></td></tr>";
         groups[g].forEach(function (r) {
-          html += "<tr><td>" + stateBadge(r.state) + "</td><td><strong>" + esc(r.label) +
+          html += "<tr><td>" + stateBadge(effectiveState(r)) + "</td><td><strong>" + esc(r.label) +
             '</strong><br><span class="mono">' + esc(r.name) + "</span></td><td>" + esc(r.location) +
             '</td><td class="mono">' + esc(r.provisioningState) + "</td><td>" + esc(r.availability) + "</td></tr>";
         });
@@ -132,16 +163,31 @@
     if (!svc || !host) return;
     // Count live instances per service using the generated inventory (best effort).
     var inv = (window.AI4IA_INVENTORY && window.AI4IA_INVENTORY.resources) || [];
-    function liveCount(azureType) {
-      var t = String(azureType).toLowerCase();
-      return inv.filter(function (r) { return String(r.type).toLowerCase() === t; }).length;
+    // Match on BOTH the Azure type and the service's own name pattern. Matching
+    // type alone made every service sharing a type report the same number, so the
+    // web app, API and model proxy each claimed "3 live" when exactly one
+    // container app matches each of ca-web-*, ca-api-* and ca-proxy-*.
+    // `resourcePattern` uses shell-style `*` plus `{a,b}`/`{region}` placeholders,
+    // both of which become "any run of characters" here -- deliberately loose,
+    // because this is a display hint, not an authorization decision.
+    function patternToRegExp(pattern) {
+      var escaped = String(pattern).replace(/[.+^$()|[\]\\]/g, "\\$&");
+      var body = escaped.replace(/\{[^}]*\}/g, "*").replace(/\*/g, ".*");
+      return new RegExp("^" + body + "$", "i");
+    }
+    function liveCount(service) {
+      var t = String(service.azureType).toLowerCase();
+      var rx = patternToRegExp(service.resourcePattern);
+      return inv.filter(function (r) {
+        return String(r.type).toLowerCase() === t && rx.test(String(r.name));
+      }).length;
     }
     var groups = groupBy(svc, "group");
     var html = "";
     Object.keys(groups).sort().forEach(function (g) {
       html += '<h2 class="group-title">' + esc(g) + "</h2><div class='grid cols-2'>";
       groups[g].forEach(function (s) {
-        var n = liveCount(s.azureType);
+        var n = liveCount(s);
         var docs = (s.docs || []).map(function (d) { return '<a href="' + esc(d[1]) + '" target="_blank" rel="noopener">' + esc(d[0]) + "</a>"; }).join(" · ");
         html += '<div class="card"><h3><span class="icon">' + esc(s.icon) + "</span> " + esc(s.name) +
           (n ? ' <span class="tag">' + n + " live</span>" : "") + "</h3>" +

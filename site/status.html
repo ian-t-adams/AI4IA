@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI4IA — Live status &amp; health</title>
+  <title>AI4IA — Deployment snapshot &amp; health</title>
   <meta name="description" content="Live health of every deployed AI4IA Azure resource and public endpoint, generated from Azure Resource Graph and endpoint probes." />
   <link rel="icon" href="assets/favicon.ico" />
   <link rel="stylesheet" href="assets/styles.css" />
@@ -29,7 +29,7 @@
     <section class="hero" style="padding-top:40px">
       <div class="container">
         <p class="eyebrow">Deployment health</p>
-        <h1>Live status</h1>
+        <h1>Deployment snapshot</h1>
         <p class="lede">The deployed footprint of AI4IA in <span class="mono">rg-ai4ia-slurmfactory</span>, generated
           from Azure Resource Graph (the authoritative inventory), Azure Resource Health, and probes of the public
           web and model-proxy endpoints.</p>
@@ -60,8 +60,10 @@
     <section style="padding-top:6px">
       <div class="container">
         <h2 class="section-title">Azure resources</h2>
-        <p class="section-sub">Every resource in the resource group, grouped by role. A resource present in Resource
-          Graph and not failed/unavailable is healthy (existence means it is provisioned).</p>
+        <p class="section-sub">Every resource in the resource group, grouped by role. <strong>Health reported</strong>
+          means Azure Resource Health positively reported the resource as available; <strong>provisioned</strong>
+          means it exists and has not failed, but publishes no availability state — most Azure resource types never
+          do. Existence is not evidence of health, so the two are counted separately.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Health</th><th>Resource</th><th>Location</th><th>Provisioning</th><th>Availability</th></tr></thead>
@@ -70,9 +72,9 @@
         </div>
         <div class="legend">
           <span class="badge ok">healthy</span>
+          <span class="badge unknown">provisioned</span>
           <span class="badge warn">degraded</span>
           <span class="badge bad">unavailable</span>
-          <span class="badge unknown">unknown</span>
           <span>Availability = Azure Resource Health (blank/Unknown when the plane is not reported).</span>
         </div>
       </div>
@@ -81,7 +83,7 @@
 
   <footer class="site">
     <div class="container row">
-      <div>AI4IA · live status · <span class="mono">scripts/status-snapshot.ps1</span></div>
+      <div>AI4IA · deployment snapshot · <span class="mono">scripts/status-snapshot.ps1</span></div>
       <div><a href="https://github.com/ian-t-adams/AI4IA" target="_blank" rel="noopener">github.com/ian-t-adams/AI4IA</a> · &copy; <span id="year"></span></div>
     </div>
   </footer>
