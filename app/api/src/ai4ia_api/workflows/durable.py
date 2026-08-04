@@ -43,12 +43,14 @@ import asyncio
 import logging
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 from ..agents.capabilities import capability_builder_for_state
+from ..catalog import DeploymentOption
 from ..sessions.models import Message, MessageRole, MessageStatus
-from ..usage.models import TokenUsage
+from ..usage.models import TokenUsage, UsageTarget
 from .models import MAX_STEPS, Workflow
 from .runner import run_workflow_step
 
@@ -69,6 +71,11 @@ _ACTIVITY_BRIDGE_TIMEOUT_SECONDS = 900
 # appear in an internal user id (they are UUIDs), so ``partition`` recovers the
 # owner exactly rather than by prefix match.
 _RUN_ID_SEPARATOR = ":"
+
+# Orchestration states the scheduler will not move again. Mirrors the web's
+# TERMINAL_RUN_STATUSES (app/web/src/lib/api.ts) so the two ends agree on when a
+# run has stopped; an unrecognised status counts as still-running on both sides.
+_TERMINAL_RUN_STATUSES = frozenset({"COMPLETED", "FAILED", "TERMINATED"})
 
 # The Durable Task Scheduler rejects any single JSON-serialized orchestration
 # payload over 1 MB. The orchestrator's return value is the binding surface: it
@@ -256,6 +263,31 @@ class DurableWorkflowService:
         status = getattr(raw, "name", None) or str(raw)
         failure = state.failure_details
 
+        # Enforce the configured run budget. Until this existed,
+        # `durable_workflow_timeout_seconds` was plumbed all the way from Bicep
+        # through deploy.yml into Settings and then read by nothing: an operator
+        # lowering it to bound stuck runs got no behaviour change at all, and a
+        # wedged orchestration polled RUNNING forever. The status endpoint is the
+        # right place because that is what the setting's own documentation
+        # promises, and it is the only code that sees every poll.
+        if status not in _TERMINAL_RUN_STATUSES:
+            overdue = self._overdue_seconds(state)
+            if overdue is not None:
+                await self._terminate_overdue(run_id, overdue)
+                # Reported as TERMINATED rather than merely "late" because the
+                # run really was stopped — saying "failed" while leaving it to
+                # finish and write a message later would be the same
+                # failure-as-success lie in reverse.
+                return DurableRunStatus(
+                    runId=run_id,
+                    status="TERMINATED",
+                    ok=False,
+                    error=(
+                        f"The run exceeded its {self._timeout_seconds}s budget "
+                        "and was stopped."
+                    ),
+                )
+
         result = DurableRunStatus(runId=run_id, status=status)
         if failure is not None:
             result.error = getattr(failure, "message", str(failure))
@@ -264,6 +296,45 @@ class DurableWorkflowService:
             result.ok = parsed.get("ok")
             result.text = parsed.get("text")
         return result
+
+    def _overdue_seconds(self, state: Any) -> float | None:
+        """Seconds past the configured budget, or None while still inside it.
+
+        A non-positive budget disables enforcement rather than expiring every run
+        instantly, so a misconfigured 0 degrades to today's unbounded behaviour
+        instead of killing work.
+        """
+        if self._timeout_seconds <= 0:
+            return None
+        created = state.created_at
+        if not isinstance(created, datetime):
+            return None
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        overdue = (
+            datetime.now(timezone.utc) - created
+        ).total_seconds() - self._timeout_seconds
+        return overdue if overdue > 0 else None
+
+    async def _terminate_overdue(self, run_id: str, overdue_seconds: float) -> None:
+        """Stop an over-budget run, best-effort.
+
+        Best-effort because reporting the breach is what the caller can act on;
+        a scheduler that refuses the terminate must not also cost them the
+        status. The failure is logged rather than swallowed silently.
+        """
+        logger.warning(
+            "durable run %s exceeded its %ss budget by %.0fs; terminating",
+            run_id,
+            self._timeout_seconds,
+            overdue_seconds,
+        )
+        try:
+            await self._client.terminate_orchestration(run_id)
+        except Exception:  # noqa: BLE001 - the breach still has to be reported
+            logger.exception(
+                "failed to terminate over-budget durable run %s", run_id
+            )
 
     # -- orchestrator ------------------------------------------------------
 
@@ -338,6 +409,10 @@ class DurableWorkflowService:
         """
         loop = self._loop
         if loop is None:  # pragma: no cover - start() always sets it
+            # Close it explicitly: an abandoned coroutine is only reported at
+            # GC time, as a bare "was never awaited" RuntimeWarning with no
+            # traceback, which would obscure the real error being raised here.
+            coro.close()
             raise DurableWorkflowsUnavailableError("Durable worker is not started.")
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         try:
@@ -350,16 +425,49 @@ class DurableWorkflowService:
         service = self
 
         def ai4ia_workflow_step(ctx, payload: dict[str, Any]) -> dict[str, Any]:
-            context = payload["context"]
-            step = _step_from_dict(payload["step"])
-            return service._run_on_app_loop(
-                service._execute_step(
-                    step=step,
-                    index=payload["index"],
-                    previous=payload.get("previous") or "",
-                    context=context,
+            index = payload.get("index") or 0
+            try:
+                context = payload["context"]
+                step = _step_from_dict(payload["step"])
+                return service._run_on_app_loop(
+                    service._execute_step(
+                        step=step,
+                        index=index,
+                        previous=payload.get("previous") or "",
+                        context=context,
+                    )
                 )
-            )
+            except Exception as exc:  # noqa: BLE001 - the activity must be total
+                # `run_workflow_step` never raises, but this wrapper does work
+                # outside it that can: `_step_from_dict`, `catalog_for`, and the
+                # activity bridge's own timeout. Letting any of those escape
+                # fails the ORCHESTRATION, which skips the persist activity — so
+                # the session keeps a user message with no reply forever and the
+                # tokens already spent by earlier steps are never metered. The
+                # in-request path cannot lose either (it catches per step and
+                # always persists + meters), and accounting must not depend on
+                # which execution mode ran the workflow.
+                agent = (payload.get("step") or {}).get("agent")
+                logger.exception(
+                    "durable workflow step %s (agent %s) failed outside the runner",
+                    index + 1,
+                    agent,
+                )
+                return {
+                    "result": {
+                        "agent": agent,
+                        "ok": False,
+                        "text": "",
+                        # Same shape runner.py uses for a step that raised, so
+                        # the "Step N:" prefix stays parseable for attribution
+                        # and no internal detail reaches the user.
+                        "error": f"Step {index + 1}: the run could not continue "
+                        f"({type(exc).__name__}).",
+                        "iterations": 0,
+                    },
+                    "usage": _usage_to_dict(TokenUsage.empty()),
+                    "fatal": True,
+                }
 
         ai4ia_workflow_step.__name__ = _STEP_ACTIVITY
         return ai4ia_workflow_step
@@ -443,18 +551,19 @@ class DurableWorkflowService:
         # happened, so a zero-work failure neither consumes a request slot nor
         # pollutes the ledger.
         if usage.calls > 0:
-            deployment = state.catalog.resolve_deployment(context["modelId"])
-            if deployment is not None:
-                await state.usage.record_completion(
-                    user_id=uid,
-                    session_id=session_id,
-                    model_id=context["modelId"],
-                    deployment=deployment,
-                    usage=usage,
-                    status="complete",
-                    agent=agent_attr,
-                    correlation_id=context.get("correlationId"),
-                )
+            await state.usage.record_completion(
+                user_id=uid,
+                session_id=session_id,
+                model_id=context["modelId"],
+                # The descriptor frozen at schedule time, NOT a fresh resolve.
+                # Re-resolving dropped the caller's region/data-zone choice and
+                # skipped metering entirely when the id no longer resolved.
+                target=_usage_target_from_context(context, state.catalog),
+                usage=usage,
+                status="complete",
+                agent=agent_attr,
+                correlation_id=context.get("correlationId"),
+            )
         await state.session_repo.touch_session(uid, session_id)
         return {"persisted": True}
 
@@ -466,7 +575,7 @@ def build_orchestration_payload(
     session_id: str,
     run_input: str,
     model_id: str,
-    deployment: str,
+    deployment: DeploymentOption,
     correlation_id: str | None,
     email: str | None = None,
     library_document_ids: list[str] | None = None,
@@ -481,6 +590,13 @@ def build_orchestration_payload(
     than re-read from the session inside the activity: they scope which documents
     a step's ``fetch_document`` tool can reach, and re-reading them would let a
     session edited mid-run widen or narrow an in-flight run's data access.
+
+    The same rule governs the **usage target**. The whole ``DeploymentOption`` is
+    frozen, not just its name: the caller resolved it with an explicit region and
+    data zone, and most catalog entries have options in more than one data zone.
+    ``_persist`` used to re-resolve from ``modelId`` alone, which falls back to
+    the first option — so a run the user pinned to Sweden metered as East US,
+    and a model id that stopped resolving mid-run metered as nothing at all.
     """
     return {
         # Serialized by the model itself, not a hand-listed subset: a field added
@@ -496,7 +612,16 @@ def build_orchestration_payload(
             "workflowName": workflow.name,
             "runInput": run_input,
             "modelId": model_id,
-            "deployment": deployment,
+            "deployment": deployment.deploymentName,
+            # Frozen usage descriptor. Flat scalars rather than a nested object so
+            # the orchestration history stays plain JSON.
+            "usageTarget": {
+                "provider": "azure_openai",
+                "deployment": deployment.deploymentName,
+                "target": deployment.deploymentName,
+                "region": deployment.region,
+                "dataZone": deployment.dataZone,
+            },
             "correlationId": correlation_id,
             "email": email,
             "libraryDocumentIds": library_document_ids,
@@ -526,6 +651,47 @@ def _usage_to_dict(usage: TokenUsage) -> dict[str, Any]:
         "complete": usage.complete,
         "calls": usage.calls,
     }
+
+
+def _usage_target_from_context(context: dict[str, Any], catalog: Any) -> UsageTarget:
+    """Rebuild the usage descriptor frozen at schedule time.
+
+    Falls back to re-resolving from ``modelId`` ONLY for orchestrations whose
+    history predates the frozen descriptor — durability means a run scheduled by
+    the previous revision is still replaying after a deploy, and dropping its
+    metering would be exactly the hole this function exists to close. The
+    fallback is logged, because it is a lossy answer: it cannot recover the
+    region/data zone the caller originally asked for.
+    """
+    frozen = context.get("usageTarget")
+    if isinstance(frozen, dict):
+        return UsageTarget(
+            provider=frozen.get("provider") or "azure_openai",
+            deployment=frozen.get("deployment"),
+            target=frozen.get("target"),
+            region=frozen.get("region"),
+            dataZone=frozen.get("dataZone"),
+        )
+
+    model_id = context.get("modelId") or ""
+    option = catalog.resolve_deployment(model_id)
+    if option is not None:
+        logger.info(
+            "durable run has no frozen usage target; re-resolved %s "
+            "(region/data zone may differ from the scheduled run)",
+            model_id,
+        )
+        return UsageTarget.from_deployment(option)
+
+    # Last resort. The tokens were spent, so a ledger row with the deployment
+    # name we do know beats silently metering nothing.
+    logger.warning(
+        "durable run has no frozen usage target and %s no longer resolves; "
+        "metering with the recorded deployment name only",
+        model_id,
+    )
+    deployment_name = context.get("deployment")
+    return UsageTarget(deployment=deployment_name, target=deployment_name)
 
 
 def _usage_from_dict(raw: dict[str, Any]) -> TokenUsage:

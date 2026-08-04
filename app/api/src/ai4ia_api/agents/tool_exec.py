@@ -340,6 +340,21 @@ SELECTABLE_SYNTHETIC_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
+# The subset of the above that ONLY the chat router can build: they deliver their
+# results as message attachments through a per-turn sink, which has no meaning
+# outside a chat turn (and, in a durable run, lives in another process entirely).
+# Split out as its own constant so `build_shared_capabilities` can report them as
+# unavailable rather than silently ignoring them, and so
+# `tests/test_workflow_capabilities.py` can fail the build when a newly added
+# synthetic tool is classified as neither chat-only nor shared.
+CHAT_ONLY_SYNTHETIC_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "generate_image",
+        "generate_video",
+        "process_document",
+    }
+)
+
 
 def attachable_tool_names(
     registry: ToolRegistry, executor: ToolExecutor

@@ -304,7 +304,7 @@ async def run_workflow_endpoint(
             session_id=body.sessionId,
             run_input=run_input,
             model_id=model_id,
-            deployment=deployment.deploymentName,
+            deployment=deployment,
             correlation_id=correlation_id,
             email=user.email,
             library_document_ids=(

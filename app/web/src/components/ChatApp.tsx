@@ -2808,6 +2808,7 @@ export function ChatApp() {
             if (updated.model) setSelectedModel(updated.model);
           }}
           onOpenLibrary={libraryEnabled ? () => setLibraryOpen(true) : undefined}
+          libraryEnabled={libraryEnabled}
           attachmentCapabilities={attachmentCapabilities}
           voiceSettings={voiceSettingsProps}
           voiceLocked={voiceExitLocked}

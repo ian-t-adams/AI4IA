@@ -451,3 +451,80 @@ def test_memory_record_timestamps_are_timezone_aware() -> None:
     record = _record("alice", "text", memory_id="m1")
     assert record.created_at.tzinfo == timezone.utc
     assert isinstance(record.created_at, datetime)
+
+
+# --- remember() outcomes are distinguishable in the REAL service ----------------
+#
+# `CosmosMemoryService.remember` swallows every exception so a memory failure can
+# never break a chat turn. That makes the returned outcome the only channel that
+# can tell a caller what happened, so these drive the real service against a
+# failing store rather than a fake that raises — no real implementation raises,
+# so a fake that does would assert a branch production cannot reach.
+
+
+class _FixedPlanner:
+    def __init__(self, plan: MemoryPlan) -> None:
+        self._plan = plan
+
+    async def plan(
+        self, user_text: str, candidates: Sequence[MemoryRecord]
+    ) -> MemoryPlan:
+        return self._plan
+
+
+def _service_with_planner(
+    container: FakeCosmosContainer, plan: MemoryPlan
+) -> CosmosMemoryService:
+    return CosmosMemoryService(
+        store=CosmosMemoryStore(container=container, expected_dim=2),
+        embedder=FakeEmbedder(),
+        planner=_FixedPlanner(plan),  # type: ignore[arg-type]
+        embedding_model="embed",
+    )
+
+
+async def test_a_store_outage_reports_unavailable_rather_than_noop() -> None:
+    """Regression: a swallowed failure returned the same bare False as a planner
+    'noop', so the remember_memory tool told the model "already covered, do not
+    retry" during an outage."""
+    service = _service(FakeCosmosContainer())
+
+    async def boom(_user_id: str):
+        raise RuntimeError("Cosmos 503 ServiceUnavailable")
+
+    service._store.capture_state = boom  # type: ignore[method-assign]
+    assert await service.remember("alice", "s1", "a durable fact to keep") == "unavailable"
+
+
+async def test_a_planner_noop_still_reports_noop() -> None:
+    """Control for the test above: the deliberate decline must be unaffected."""
+    service = _service(FakeCosmosContainer())
+    assert await service.remember("alice", "s1", "a durable fact to keep") == "noop"
+
+
+async def test_a_planner_delete_reports_removed_not_saved() -> None:
+    """A delete changes the store while storing nothing. Reporting it as a save
+    named a fact that no later recall could ever find."""
+    container = FakeCosmosContainer()
+    store = CosmosMemoryStore(container=container, expected_dim=2)
+    await _create(store, _record("alice", "Uses Slack daily", memory_id="m1"), [1.0, 0.0])
+
+    service = _service_with_planner(
+        container, MemoryPlan(action="delete", memoryId="m1")
+    )
+    assert await service.remember("alice", "s1", "The user stopped using Slack.") == (
+        "removed"
+    )
+    assert await store.list_memories("alice") == []
+
+
+async def test_a_planner_add_reports_saved() -> None:
+    container = FakeCosmosContainer()
+    service = _service_with_planner(
+        container, MemoryPlan(action="add", text="The launch is in March.")
+    )
+    assert await service.remember("alice", "s1", "The launch is in March.") == "saved"
+    store = CosmosMemoryStore(container=container, expected_dim=2)
+    assert [item.text for item in await store.list_memories("alice")] == [
+        "The launch is in March."
+    ]

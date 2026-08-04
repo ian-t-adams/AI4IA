@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Sequence
-from typing import Protocol
+from typing import Literal, Protocol
 
 from .base import Embedder, MemoryStore
 from .formatting import format_memory_context
@@ -27,6 +27,21 @@ from .models import MemoryRecord
 from .telemetry import emit_memory_operation
 
 logger = logging.getLogger(__name__)
+
+# What a remember() attempt actually did. This is deliberately NOT a bool: the
+# three "nothing was stored" cases are not interchangeable, and collapsing them
+# is how a failed write comes to be reported to the model as a benign no-op.
+#
+#   saved       - the text is now durably stored (added, or updated in place).
+#   noop        - deliberately declined: too short, or already covered by an
+#                 existing memory. Correct behaviour; retrying is pointless.
+#   removed     - the text was NOT stored; it falsified an existing memory, which
+#                 was deleted instead. A store mutation, but not a save.
+#   unavailable - the write could not be performed (outage, conflict, embedder
+#                 failure). Swallowed so a chat turn never breaks, but reported
+#                 so an agent-callable caller can say so instead of claiming
+#                 the fact was remembered.
+MemoryWriteOutcome = Literal["saved", "noop", "removed", "unavailable"]
 
 
 class MemoryServiceProtocol(Protocol):
@@ -37,11 +52,14 @@ class MemoryServiceProtocol(Protocol):
 
     async def recall(self, user_id: str, query: str) -> list[MemoryRecord]: ...
 
-    # Returns True only when something was durably stored. Callers on the passive
-    # path ignore it (a skipped save must never disturb a turn); the agent-callable
+    # Reports what the write actually did. Callers on the passive path ignore it
+    # (a skipped save must never disturb a turn); the agent-callable
     # ``remember_memory`` tool needs it, because reporting "saved" for a write that
     # was skipped or failed is a silent lie the model would repeat to the user.
-    async def remember(self, user_id: str, session_id: str | None, text: str) -> bool: ...
+    # Implementations must never raise: return ``"unavailable"`` instead.
+    async def remember(
+        self, user_id: str, session_id: str | None, text: str
+    ) -> MemoryWriteOutcome: ...
 
     async def remember_document(
         self,
@@ -73,8 +91,13 @@ class NoopMemoryService:
     async def recall(self, user_id: str, query: str) -> list[MemoryRecord]:
         return []
 
-    async def remember(self, user_id: str, session_id: str | None, text: str) -> bool:
-        return False
+    async def remember(
+        self, user_id: str, session_id: str | None, text: str
+    ) -> MemoryWriteOutcome:
+        # "unavailable", not "noop": memory being switched off means the fact was
+        # genuinely not kept. "noop" would tell an agent-callable caller the text
+        # was already covered, which is the one answer that is never true here.
+        return "unavailable"
 
     async def remember_document(
         self,
@@ -151,30 +174,36 @@ class MemoryService:
         emit_memory_operation("recall", "ok", "custom", started, count=len(records))
         return records
 
-    async def remember(self, user_id: str, session_id: str | None, text: str) -> bool:
+    async def remember(
+        self, user_id: str, session_id: str | None, text: str
+    ) -> MemoryWriteOutcome:
         """Best-effort: store a durable user utterance. Skips trivia + failures.
 
-        Returns True only if a record was actually written, so an agent-callable
-        caller can tell the user the truth rather than assuming success.
+        Never raises. Reports which of those happened, so an agent-callable caller
+        can tell the user the truth rather than assuming success — and, just as
+        importantly, so a failure is never described as "already covered".
         """
         started = time.monotonic()
         cleaned = (text or "").strip()
         if len(cleaned) < self._min_chars_to_store:
             emit_memory_operation("save", "skipped", "custom", started, count=0)
-            return False
+            return "noop"
         try:
             vector = await self._embedder.embed_one(cleaned)
             if not vector:
-                emit_memory_operation("save", "skipped", "custom", started, count=0)
-                return False
+                # `cleaned` is non-empty by the check above, so an empty vector is
+                # an embedder that could not answer — the fact is lost, which is a
+                # failure and not a decision to decline.
+                emit_memory_operation("save", "failed", "custom", started)
+                return "unavailable"
             record = MemoryRecord(user_id=user_id, session_id=session_id, text=cleaned)
             await self._store.add(record, vector)
         except Exception:  # noqa: BLE001 - memory must never break chat
             logger.warning("memory remember failed", exc_info=True)
             emit_memory_operation("save", "failed", "custom", started)
-            return False
+            return "unavailable"
         emit_memory_operation("save", "ok", "custom", started, count=1)
-        return True
+        return "saved"
 
     async def remember_document(
         self,

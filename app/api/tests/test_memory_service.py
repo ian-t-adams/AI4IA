@@ -58,6 +58,57 @@ async def test_remember_skips_short_text():
     svc = _service(embedder, min_chars_to_store=12)
     await svc.remember("u1", "s1", "hi")  # below threshold -> not embedded/stored
     assert embedder.calls == 0
+
+
+# --- Write outcomes are distinguishable ----------------------------------------
+#
+# `remember` never raises, so the ONLY way a caller can tell a deliberate decline
+# from a failed write is the returned outcome. These drive the real service (not a
+# fake that raises, which no real implementation ever does) so the distinction is
+# asserted where production actually produces it.
+
+
+async def test_a_successful_write_reports_saved():
+    svc = _service(FakeEmbedder({"a durable fact worth keeping": [1.0, 0.0, 0.0]}))
+    assert await svc.remember("u1", "s1", "a durable fact worth keeping") == "saved"
+
+
+async def test_a_declined_write_reports_noop():
+    svc = _service(FakeEmbedder({}), min_chars_to_store=12)
+    assert await svc.remember("u1", "s1", "hi") == "noop"
+
+
+async def test_a_failed_store_write_reports_unavailable_not_noop():
+    """A store outage must not borrow the 'already covered' wording.
+
+    Regression: `remember` swallowed every exception and returned a bare False,
+    which the `remember_memory` tool rendered as "this is not an error; do not
+    retry" — so during an outage the model told the user the fact was already
+    remembered.
+    """
+
+    class BoomStore(InMemoryVectorStore):
+        async def add(self, record, vector):
+            raise RuntimeError("Cosmos 503 ServiceUnavailable")
+
+    svc = MemoryService(
+        store=BoomStore(),
+        embedder=FakeEmbedder({"a durable fact worth keeping": [1.0, 0.0, 0.0]}),
+        min_chars_to_store=12,
+    )
+    assert await svc.remember("u1", "s1", "a durable fact worth keeping") == "unavailable"
+
+
+async def test_an_embedder_that_returns_no_vector_reports_unavailable():
+    """The text is non-trivial by this point, so an empty vector is a failure."""
+
+    class EmptyEmbedder(FakeEmbedder):
+        async def embed_one(self, text: str) -> list[float]:
+            self.calls += 1
+            return []
+
+    svc = _service(EmptyEmbedder({}), min_chars_to_store=12)
+    assert await svc.remember("u1", "s1", "a durable fact worth keeping") == "unavailable"
     assert await svc.recall("u1", "anything") == []
 
 
@@ -142,7 +193,7 @@ async def test_noop_service_is_inert():
     svc = NoopMemoryService()
     assert svc.enabled is False
     assert await svc.recall("u1", "q") == []
-    assert await svc.remember("u1", "s1", "x" * 100) is False
+    assert await svc.remember("u1", "s1", "x" * 100) == "unavailable"
     assert await svc.remember_document("u1", items=["x" * 100]) == 0
     assert await svc.forget_user("u1") == 0
     assert svc.format_context([MemoryRecord(user_id="u1", text="x")]) is None

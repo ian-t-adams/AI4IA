@@ -13,11 +13,13 @@ from __future__ import annotations
 from typing import Any
 
 from ai4ia_api.agents.agent_catalog import AgentCatalog, AgentSpec
+from ai4ia_api.catalog import DeploymentOption
 from ai4ia_api.agents.capabilities import (
     build_shared_capabilities,
     capability_builder_for_state,
 )
 from ai4ia_api.agents.tool_exec import (
+    CHAT_ONLY_SYNTHETIC_TOOL_NAMES,
     SELECTABLE_SYNTHETIC_TOOL_NAMES,
     ToolContext,
     build_tools,
@@ -29,6 +31,7 @@ from ai4ia_api.memory.remember_capability import (
     REMEMBER_TOOL_NAME,
     build_remember_capability,
 )
+from ai4ia_api.memory.service import MemoryWriteOutcome
 from ai4ia_api.workflows.models import WorkflowStep
 from ai4ia_api.workflows.runner import run_workflow_step
 
@@ -57,17 +60,21 @@ class _CapturingGateway:
 class _FakeMemory:
     """Minimal MemoryServiceProtocol stand-in that records writes."""
 
-    def __init__(self, *, enabled: bool = True, stores: bool = True) -> None:
+    def __init__(
+        self, *, enabled: bool = True, outcome: MemoryWriteOutcome = "saved"
+    ) -> None:
         self.enabled = enabled
-        self._stores = stores
+        self._outcome: MemoryWriteOutcome = outcome
         self.writes: list[tuple[str, str | None, str]] = []
 
     async def recall(self, *_args, **_kwargs):  # pragma: no cover - unused here
         return []
 
-    async def remember(self, user_id: str, session_id: str | None, text: str) -> bool:
+    async def remember(
+        self, user_id: str, session_id: str | None, text: str
+    ) -> MemoryWriteOutcome:
         self.writes.append((user_id, session_id, text))
-        return self._stores
+        return self._outcome
 
 
 class _FakeWebSearch:
@@ -300,7 +307,7 @@ async def _call_remember(memory: _FakeMemory, text: str, *, times: int = 1):
 
 
 async def test_a_stored_write_reports_saved():
-    memory = _FakeMemory(stores=True)
+    memory = _FakeMemory(outcome="saved")
     out = await _call_remember(memory, "The launch is in March.")
     assert out == {"saved": True, "text": "The launch is in March."}
     assert memory.writes == [("u1", "s1", "The launch is in March.")]
@@ -308,15 +315,43 @@ async def test_a_stored_write_reports_saved():
 
 async def test_a_skipped_write_is_not_reported_as_saved():
     """A 'saved' that did not happen is a lie the model repeats to the user."""
-    memory = _FakeMemory(stores=False)
+    memory = _FakeMemory(outcome="noop")
     out = await _call_remember(memory, "Nothing new here.")
     assert out["saved"] is False
     assert "note" in out and "not an error" in out["note"]
 
 
+async def test_an_unavailable_write_is_reported_as_an_error_not_a_noop():
+    """The critical distinction: an outage must NOT read as 'already covered'.
+
+    The real services never raise — they swallow failures internally — so this
+    drives the outcome they actually return. Asserting only against a fake that
+    raises would leave the production path untested, which is how this shipped.
+    """
+    memory = _FakeMemory(outcome="unavailable")
+    out = await _call_remember(memory, "Some durable fact.")
+    assert out["saved"] is False
+    assert "unavailable" in out["error"]
+    # Must not tell the model the write was correctly declined.
+    assert "note" not in out
+
+
+async def test_a_planner_delete_is_not_reported_as_a_save():
+    """A delete mutates the store while storing nothing, so 'saved' would name a
+    fact that no later recall can find."""
+    memory = _FakeMemory(outcome="removed")
+    out = await _call_remember(memory, "The user stopped using Slack.")
+    assert out["saved"] is False
+    assert "removed" in out["note"]
+    assert "text" not in out  # never echo back text that was not stored
+
+
 async def test_a_raising_memory_service_reports_unavailable_rather_than_saved():
+    """Defense in depth: the protocol forbids raising, but a third-party
+    implementation is only as good as its word."""
+
     class _Boom(_FakeMemory):
-        async def remember(self, *_args, **_kwargs) -> bool:
+        async def remember(self, *_args, **_kwargs) -> MemoryWriteOutcome:
             raise RuntimeError("cosmos down")
 
     out = await _call_remember(_Boom(), "Some durable fact.")
@@ -396,7 +431,9 @@ def test_document_scoping_is_frozen_into_the_durable_payload():
         session_id="s1",
         run_input="hi",
         model_id="m",
-        deployment="dep-1",
+        deployment=DeploymentOption(
+            region="eastus2", dataZone="US", sku="GlobalStandard", deploymentName="dep-1"
+        ),
         correlation_id="cid",
         email="u@example.com",
         library_document_ids=["doc-1"],
@@ -404,3 +441,46 @@ def test_document_scoping_is_frozen_into_the_durable_payload():
 
     assert payload["context"]["email"] == "u@example.com"
     assert payload["context"]["libraryDocumentIds"] == ["doc-1"]
+
+
+# --- Chat-only tools are recorded, not silently dropped -------------------------
+
+
+def test_every_selectable_synthetic_tool_is_classified() -> None:
+    """A new synthetic tool must be declared chat-only or built here.
+
+    This is the guard that matters: the three chat-only names fell through
+    `build_shared_capabilities` with no branch and no `unavailable` entry, so a
+    workflow step carrying one ran with the tool simply absent.
+    """
+    shared = {RECALL_TOOL_NAME, REMEMBER_TOOL_NAME}
+    assert CHAT_ONLY_SYNTHETIC_TOOL_NAMES | shared == SELECTABLE_SYNTHETIC_TOOL_NAMES
+    assert not (CHAT_ONLY_SYNTHETIC_TOOL_NAMES & shared)
+
+
+def test_chat_only_tools_are_reported_unavailable_to_a_workflow_step() -> None:
+    built = build_shared_capabilities(
+        attached_tool_names=sorted(CHAT_ONLY_SYNTHETIC_TOOL_NAMES),
+        user_id="u1",
+        nonce="n",
+        session_id="s1",
+    )
+    # Nothing can be built for them...
+    assert built.tools == []
+    assert built.handlers == {}
+    # ...but the run is no longer left with zero signal.
+    assert set(built.unavailable) == set(CHAT_ONLY_SYNTHETIC_TOOL_NAMES)
+    assert all("chat only" in reason for reason in built.unavailable.values())
+
+
+def test_chat_only_reporting_does_not_disturb_tools_that_do_build() -> None:
+    """Control: a shared capability alongside a chat-only one still builds."""
+    built = build_shared_capabilities(
+        attached_tool_names=["remember_memory", "generate_image"],
+        user_id="u1",
+        nonce="n",
+        session_id="s1",
+        memory=_FakeMemory(),
+    )
+    assert [t["function"]["name"] for t in built.tools] == [REMEMBER_TOOL_NAME]
+    assert set(built.unavailable) == {"generate_image"}

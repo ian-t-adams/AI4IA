@@ -20,6 +20,7 @@ from .cosmos_store import (
 from .formatting import format_memory_context
 from .models import MemoryRecord
 from .planner import MemoryPlan, MemoryPlanner
+from .service import MemoryWriteOutcome
 from .telemetry import emit_memory_operation
 
 logger = logging.getLogger(__name__)
@@ -79,36 +80,52 @@ class CosmosMemoryService:
         emit_memory_operation("recall", "ok", "cosmos", started, count=len(records))
         return records
 
-    async def remember(self, user_id: str, session_id: str | None, text: str) -> bool:
-        """Plan-and-apply a durable memory write. Returns True only if the plan
-        actually changed the store — the planner legitimately decides ``noop`` when
-        the utterance adds nothing, and reporting that as a save would be a lie."""
+    async def remember(
+        self, user_id: str, session_id: str | None, text: str
+    ) -> MemoryWriteOutcome:
+        """Plan-and-apply a durable memory write, reporting what actually happened.
+
+        Three different things can leave the text unstored and they are NOT
+        interchangeable: the planner can legitimately decline (``noop``), it can
+        decide the new text falsifies an existing memory and delete that instead
+        (``removed``), or the write can fail outright (``unavailable``). Failures
+        are still swallowed here — memory must never break a chat turn — but they
+        are no longer indistinguishable from a deliberate decline, because telling
+        the model "already covered, do not retry" after an outage is a lie it will
+        confidently repeat to the user.
+        """
         started = time.monotonic()
         cleaned = (text or "").strip()
         if len(cleaned) < self._min_chars_to_store:
             emit_memory_operation("save", "skipped", "cosmos", started, count=0)
-            return False
+            return "noop"
         try:
             state = await self._store.capture_state(user_id)
             query_vector = await self._embedder.embed_one(cleaned)
             if not query_vector:
-                emit_memory_operation("save", "skipped", "cosmos", started, count=0)
-                return False
+                # No vector means no candidate search and therefore no plan: the
+                # write was never attempted, which is a failure, not a decline.
+                emit_memory_operation("save", "failed", "cosmos", started)
+                return "unavailable"
             candidates = await self._store.search(
                 user_id, query_vector, 8, state=state
             )
             plan = await self._planner.plan(cleaned, candidates)
-            changed = await self._apply_plan(
+            applied = await self._apply_plan(
                 user_id, session_id, plan, candidates, state
             )
         except Exception as exc:  # noqa: BLE001 - remember must not break chat
             logger.warning("cosmos memory remember failed (%s)", type(exc).__name__)
             emit_memory_operation("save", "failed", "cosmos", started)
-            return False
+            return "unavailable"
+        if applied == "unavailable":
+            emit_memory_operation("save", "failed", "cosmos", started)
+            return applied
+        changed = applied != "noop"
         emit_memory_operation(
             "save", "ok" if changed else "skipped", "cosmos", started, count=int(changed)
         )
-        return changed
+        return applied
 
     async def _apply_plan(
         self,
@@ -117,9 +134,16 @@ class CosmosMemoryService:
         plan: MemoryPlan,
         candidates: Sequence[MemoryRecord],
         state: MemoryState,
-    ) -> bool:
+    ) -> MemoryWriteOutcome:
+        """Apply ``plan``, returning the outcome from the *caller's* point of view.
+
+        Note this answers "was this fact saved", not "did the store change" — a
+        delete mutates the store while storing nothing, so it reports ``removed``.
+        Returning a bare "changed" bool here is what let a delete surface to the
+        model as a successful save of text that was never written.
+        """
         if plan.action == "noop":
-            return False
+            return "noop"
         by_id = {record.id: record for record in candidates}
         target = by_id.get(plan.memory_id or "")
         text = (plan.text or "").strip()
@@ -127,7 +151,8 @@ class CosmosMemoryService:
         if plan.action in {"add", "update"}:
             vector = await self._embedder.embed_one(text)
             if not vector:
-                return False
+                # The plan intended to write and could not; the fact is lost.
+                return "unavailable"
 
         if plan.action == "add":
             record = MemoryRecord(
@@ -146,10 +171,12 @@ class CosmosMemoryService:
                     fence, record, vector or []
                 ),
             )
-            return True
+            return "saved"
 
+        # The planner named a memory that is gone, or one this path may not touch
+        # (explicit or locked memories are user-owned). Declining is correct.
         if target is None or target.origin != "implicit" or target.locked:
-            return False
+            return "noop"
         if not target.etag:
             raise MemoryConflictError(target.id)
 
@@ -174,7 +201,7 @@ class CosmosMemoryService:
                     fence, updated, vector or [], expected_etag=target.etag or ""
                 ),
             )
-            return True
+            return "saved"
 
         await self._commit_with_stable_epoch(
             state,
@@ -182,7 +209,7 @@ class CosmosMemoryService:
                 fence, target.id, expected_etag=target.etag or ""
             ),
         )
-        return True
+        return "removed"
 
     async def create_memory(
         self,

@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from ai4ia_api.config import Settings
+from ai4ia_api.catalog import DeploymentOption
 from ai4ia_api.usage.models import TokenUsage
 from ai4ia_api.workflows.models import MAX_STEPS
 from ai4ia_api.workflows.durable import (
@@ -510,7 +511,9 @@ def _payload_step(step: Any) -> dict[str, Any]:
         session_id="s1",
         run_input="hi",
         model_id="m",
-        deployment="d",
+        deployment=DeploymentOption(
+            region="eastus2", dataZone="US", sku="GlobalStandard", deploymentName="d"
+        ),
         correlation_id=None,
     )["steps"][0]
 
@@ -555,3 +558,252 @@ def test_a_payload_written_before_a_field_existed_still_replays() -> None:
 
     assert old == WorkflowStep(agent="general", instruction="Do {input}")
     assert old.extraTools == []
+
+
+# --------------------------------------------------------------------------
+# metering + failure containment (the persist path had no coverage at all)
+# --------------------------------------------------------------------------
+
+
+def _deployment(name: str, region: str, zone: str | None) -> DeploymentOption:
+    return DeploymentOption(
+        region=region, dataZone=zone, sku="GlobalStandard", deploymentName=name
+    )
+
+
+class _RecordingUsage:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def record_completion(self, **kwargs: Any) -> None:
+        self.calls.append(kwargs)
+
+
+class _RecordingRepo:
+    def __init__(self) -> None:
+        self.messages: list[Any] = []
+        self.touched: list[tuple[str, str]] = []
+
+    async def add_message(self, uid: str, message: Any) -> None:
+        self.messages.append(message)
+
+    async def touch_session(self, uid: str, session_id: str) -> None:
+        self.touched.append((uid, session_id))
+
+
+class _CatalogThatWouldPickTheWrongOption:
+    """Mirrors ModelCatalog.resolve_deployment's options[0] fallback."""
+
+    def __init__(self, option: DeploymentOption | None) -> None:
+        self._option = option
+        self.calls = 0
+
+    def resolve_deployment(self, model_id: str, **_kwargs: Any) -> Any:
+        self.calls += 1
+        return self._option
+
+
+class _State:
+    def __init__(self, catalog: Any) -> None:
+        self.catalog = catalog
+        self.usage = _RecordingUsage()
+        self.session_repo = _RecordingRepo()
+
+
+def _service_for(state: Any) -> DurableWorkflowService:
+    return DurableWorkflowService(
+        endpoint="https://x.durabletask.io", task_hub="h", app_state=state
+    )
+
+
+def _persist_payload(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "context": context,
+        "ok": True,
+        "text": "done",
+        "usage": _usage_to_dict(
+            TokenUsage(prompt=10, completion=5, total=15, known=True, calls=1)
+        ),
+    }
+
+
+def _context_from_payload(deployment: DeploymentOption) -> dict[str, Any]:
+    from ai4ia_api.workflows.models import WorkflowStep
+
+    return build_orchestration_payload(
+        _workflow_with(WorkflowStep(agent="a", instruction="do {input}")),
+        user_id="u1",
+        session_id="s1",
+        run_input="hi",
+        model_id="m",
+        deployment=deployment,
+        correlation_id=None,
+    )["context"]
+
+
+async def test_metering_uses_the_deployment_frozen_at_schedule_time() -> None:
+    """Regression: `_persist` re-resolved from modelId alone, which falls back to
+    options[0]. A run the caller pinned to Sweden metered as the first option's
+    region and data zone."""
+    scheduled = _deployment("m-swedencentral-glbl", "swedencentral", "EU")
+    wrong = _deployment("m-eastus2-glbl", "eastus2", "US")
+    state = _State(_CatalogThatWouldPickTheWrongOption(wrong))
+
+    await _service_for(state)._persist(_persist_payload(_context_from_payload(scheduled)))
+
+    assert len(state.usage.calls) == 1
+    target = state.usage.calls[0]["target"]
+    assert target.deployment == "m-swedencentral-glbl"
+    assert target.region == "swedencentral"
+    assert target.dataZone == "EU"
+    # The frozen descriptor makes re-resolution unnecessary entirely.
+    assert state.catalog.calls == 0
+
+
+async def test_metering_still_happens_when_the_model_no_longer_resolves() -> None:
+    """A catalog change mid-run must not silently skip the ledger row: the tokens
+    were spent either way."""
+    state = _State(_CatalogThatWouldPickTheWrongOption(None))
+    context = _context_from_payload(_deployment("m-eastus2-glbl", "eastus2", "US"))
+
+    await _service_for(state)._persist(_persist_payload(context))
+
+    assert len(state.usage.calls) == 1
+    assert state.usage.calls[0]["target"].deployment == "m-eastus2-glbl"
+
+
+async def test_a_legacy_orchestration_without_a_frozen_target_still_meters() -> None:
+    """An in-flight run scheduled by the previous revision has no `usageTarget` in
+    its history. Durability means it is still replaying after the deploy, so it
+    must fall back rather than lose its ledger row."""
+    fallback = _deployment("m-eastus2-glbl", "eastus2", "US")
+    state = _State(_CatalogThatWouldPickTheWrongOption(fallback))
+    context = _context_from_payload(fallback)
+    del context["usageTarget"]  # pre-upgrade history
+
+    await _service_for(state)._persist(_persist_payload(context))
+
+    assert len(state.usage.calls) == 1
+    assert state.usage.calls[0]["target"].region == "eastus2"
+    assert state.catalog.calls == 1
+
+
+async def test_a_zero_call_run_still_meters_nothing() -> None:
+    """Control: the 'no model call happened' rule is unchanged."""
+    state = _State(_CatalogThatWouldPickTheWrongOption(None))
+    payload = _persist_payload(_context_from_payload(_deployment("d", "eastus2", "US")))
+    payload["usage"] = _usage_to_dict(TokenUsage.empty())
+
+    await _service_for(state)._persist(payload)
+
+    assert state.usage.calls == []
+    assert len(state.session_repo.messages) == 1  # the reply is still written
+
+
+def test_a_step_activity_that_raises_is_returned_as_a_fatal_step() -> None:
+    """Regression: an exception escaping the activity failed the ORCHESTRATION, so
+    the persist activity never ran — no assistant message, and usage already
+    spent by earlier steps was discarded. The in-request path cannot lose either.
+    """
+    state = _State(_CatalogThatWouldPickTheWrongOption(None))
+    service = _service_for(state)
+    # `_run_on_app_loop` raises when the worker was never started, which is the
+    # same shape as the activity-bridge timeout this must contain.
+    activity = service._build_step_activity()
+
+    out = activity(None, {"step": {"agent": "a", "instruction": "i"}, "index": 2,
+                          "context": {"userId": "u1"}})
+
+    assert out["fatal"] is True
+    assert out["result"]["ok"] is False
+    assert out["result"]["agent"] == "a"
+    # Keeps runner.py's "Step N:" prefix so failure attribution still works.
+    assert out["result"]["error"].startswith("Step 3:")
+    assert out["usage"]["calls"] == 0
+
+
+# --------------------------------------------------------------------------
+# the run budget (durable_workflow_timeout_seconds was read by nothing)
+# --------------------------------------------------------------------------
+
+
+class _FakeState:
+    def __init__(self, status: str, age_seconds: float) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        self.runtime_status = status
+        self.created_at = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+        self.last_updated_at = self.created_at
+        self.failure_details = None
+        self.serialized_output = None
+
+    def get_output(self) -> Any:
+        return None
+
+
+class _FakeClient:
+    def __init__(self, state: Any) -> None:
+        self._state = state
+        self.terminated: list[str] = []
+
+    async def get_orchestration_state(self, run_id: str) -> Any:
+        return self._state
+
+    async def terminate_orchestration(self, instance_id: str, **_kw: Any) -> None:
+        self.terminated.append(instance_id)
+
+
+def _service_with_client(state: Any, *, timeout: int) -> DurableWorkflowService:
+    svc = DurableWorkflowService(
+        endpoint="https://x.durabletask.io",
+        task_hub="h",
+        app_state=None,
+        timeout_seconds=timeout,
+    )
+    svc._client = _FakeClient(state)
+    return svc
+
+
+async def test_an_overdue_run_is_stopped_and_reported_terminated() -> None:
+    svc = _service_with_client(_FakeState("RUNNING", 600), timeout=300)
+
+    out = await svc.get_status("u1::abc", user_id="u1")
+
+    assert out is not None
+    assert out.status == "TERMINATED"
+    assert out.ok is False
+    assert "300s budget" in (out.error or "")
+    assert svc._client.terminated == ["u1::abc"]
+
+
+async def test_a_run_inside_its_budget_is_left_alone() -> None:
+    """Control: without this, a get_status that terminated everything would pass
+    the test above just as well."""
+    svc = _service_with_client(_FakeState("RUNNING", 10), timeout=300)
+
+    out = await svc.get_status("u1::abc", user_id="u1")
+
+    assert out is not None
+    assert out.status == "RUNNING"
+    assert svc._client.terminated == []
+
+
+async def test_a_finished_run_is_never_terminated_however_old() -> None:
+    """A COMPLETED run that predates the budget must keep its result."""
+    svc = _service_with_client(_FakeState("COMPLETED", 99_999), timeout=300)
+
+    out = await svc.get_status("u1::abc", user_id="u1")
+
+    assert out is not None
+    assert out.status == "COMPLETED"
+    assert svc._client.terminated == []
+
+
+async def test_a_non_positive_budget_disables_enforcement() -> None:
+    svc = _service_with_client(_FakeState("RUNNING", 99_999), timeout=0)
+
+    out = await svc.get_status("u1::abc", user_id="u1")
+
+    assert out is not None
+    assert out.status == "RUNNING"
+    assert svc._client.terminated == []

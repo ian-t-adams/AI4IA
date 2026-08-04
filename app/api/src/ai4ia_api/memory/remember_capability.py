@@ -15,14 +15,20 @@ Safety posture (matches :func:`~ai4ia_api.memory.recall_capability.build_recall_
 - A per-turn write budget bounds how much one turn can persist.
 - Text is capped, so a single call cannot store an unbounded blob.
 
-**Honest results.** :meth:`MemoryService.remember` is deliberately fail-soft and
-returns whether anything was durably written. This handler forwards that verdict
-verbatim instead of assuming success: a skipped or failed write reported as
-"saved" is a lie the model would confidently repeat to the user. The Cosmos-backed
-service legitimately answers "no change" when its planner decides the text adds
-nothing already known, and that is reported as such rather than as a failure —
-the two are different outcomes and conflating them would teach the model to
-retry a write that was already correctly declined.
+**Honest results.** :meth:`MemoryService.remember` is deliberately fail-soft: it
+never raises, so a memory outage cannot break a chat turn. It reports *which* of
+the several "nothing was stored" outcomes occurred, and this handler forwards
+that verdict verbatim instead of flattening it. That distinction is the whole
+point. The Cosmos-backed service legitimately answers "no change" when its
+planner decides the text adds nothing already known, and that is reported as
+such rather than as a failure — but an outage, a write conflict, or an embedder
+failure must NOT borrow that same reassuring wording. Telling the model "this is
+not an error; do not retry" after a failed write produces a confident report to
+the user that a fact is remembered when nothing was written.
+
+Likewise a planner ``delete`` mutates the store without storing the text, so it
+is reported as its own outcome rather than as a save — echoing the text back as
+``saved`` would name a fact that no ``recall_memory`` will ever find.
 """
 from __future__ import annotations
 
@@ -111,8 +117,15 @@ def build_remember_capability(
         try:
             # user_id is closure-bound, NEVER taken from tool args, so the model
             # cannot write into another user's memory.
-            stored = await memory.remember(user_id, session_id, text)
+            outcome = await memory.remember(user_id, session_id, text)
         except Exception:  # noqa: BLE001 - memory must never break a turn
+            # The protocol forbids raising, but a third-party implementation is
+            # still only as good as its word, so treat a breach as unavailable
+            # rather than letting it escape into the turn.
+            outcome = "unavailable"
+        if outcome == "saved":
+            return {"saved": True, "text": text}
+        if outcome == "unavailable":
             return {
                 "saved": False,
                 "error": (
@@ -120,8 +133,15 @@ def build_remember_capability(
                     "rather than claiming the fact was remembered."
                 ),
             }
-        if stored:
-            return {"saved": True, "text": text}
+        if outcome == "removed":
+            return {
+                "saved": False,
+                "note": (
+                    "This fact was not stored. It contradicted an existing memory, "
+                    "so that outdated memory was removed instead. Tell the user the "
+                    "old note was cleared and this fact was not kept."
+                ),
+            }
         return {
             "saved": False,
             "note": (

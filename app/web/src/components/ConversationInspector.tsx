@@ -249,6 +249,7 @@ export function ConversationInspector({
   onDraftDefaultsChange,
   onSessionUpdated,
   onOpenLibrary,
+  libraryEnabled,
   attachmentCapabilities,
   voiceSettings,
   voiceLocked,
@@ -270,6 +271,11 @@ export function ConversationInspector({
   onDraftDefaultsChange: (value: ConversationDraftDefaults) => void;
   onSessionUpdated: (session: Session) => void;
   onOpenLibrary?: () => void;
+  // Required, not defaulted: `/api/library/summary` 404s when the feature is
+  // off, so an inspector that guesses renders a permanent error with a retry
+  // button that can never succeed. A default would let a new call site inherit
+  // that silently — the caller genuinely knows and must say.
+  libraryEnabled: boolean;
   attachmentCapabilities: AttachmentCapabilities | null;
   voiceSettings?: Omit<VoiceSettingsPanelProps, "locked">;
   voiceLocked: boolean;
@@ -442,6 +448,14 @@ export function ConversationInspector({
   }, []);
 
   const loadLibrary = useCallback(async () => {
+    // Left at "idle", not "error": the endpoint is gated, so calling it when
+    // the feature is off produces a 404 the user can do nothing about. "Not
+    // enabled" and "failed to load" are different facts and the panel says so.
+    if (!libraryEnabled) {
+      setLibrary(null);
+      setPhases((current) => ({ ...current, library: "idle" }));
+      return;
+    }
     const generation = ++sectionGenerationRef.current.library;
     setLibrary(null);
     setPhases((current) => ({ ...current, library: "loading" }));
@@ -455,7 +469,7 @@ export function ConversationInspector({
       setSectionErrors((current) => ({ ...current, library: (reason as Error).message }));
       setPhases((current) => ({ ...current, library: "error" }));
     }
-  }, []);
+  }, [libraryEnabled]);
 
   const load = useCallback(async () => {
     await Promise.allSettled([
@@ -1122,7 +1136,12 @@ export function ConversationInspector({
                 ) : null}
                 {phases.snapshot === "error" || phases.library === "error" ? (
                   <div className="inspector-error" role="alert">
-                    {sectionErrors.snapshot ?? sectionErrors.library}
+                    {/* Both messages, not `??`: when both sections fail the
+                        library's reason was silently discarded, so a user saw
+                        one cause and a retry button for a different one. */}
+                    {[sectionErrors.snapshot, sectionErrors.library]
+                      .filter(Boolean)
+                      .join(" · ")}
                     {phases.snapshot === "error" ? (
                       <button type="button" onClick={() => void loadSnapshot()}>Retry conversation context</button>
                     ) : null}
@@ -1130,6 +1149,13 @@ export function ConversationInspector({
                       <button type="button" onClick={() => void loadLibrary()}>Retry library insight</button>
                     ) : null}
                   </div>
+                ) : null}
+                {!libraryEnabled ? (
+                  <p className="inspector-note">
+                    The document library is not enabled in this environment, so
+                    there is no library insight to show. Conversation context
+                    below is unaffected.
+                  </p>
                 ) : null}
                 {snapshot ? (
                   <p className="inspector-note">
