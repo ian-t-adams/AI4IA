@@ -6,9 +6,18 @@ Azure infrastructure all live here and deploy through `azd`.
 
 ## Current state
 
+*Deployed state below verified against live Azure and repo variables on
+2026-08-04. Flag values can be changed after that date without touching this
+file — `infra/main.parameters.json` plus the repo variables are authoritative,
+and a repo variable overrides the parameter file's default. See
+[`docs/configuration-reference.md`](docs/configuration-reference.md) for which
+mechanism governs each flag.*
+
 Implemented: governed HTTP/SSE model traffic through SimpleL7Proxy -> APIM,
 realtime through the FastAPI relay -> APIM, Entra/MSAL auth, agents
-and workflows, per-user memory, usage metering and entitlements, voice/STT/TTS +
+and workflows (with opt-in durable execution on Durable Task Scheduler, so a
+run survives a deploy, scale-in, or crash), per-user memory, usage metering and
+entitlements, voice/STT/TTS +
 Voice Live, image/video generation, document and multimodal understanding,
 custom remote MCP tools, admin usage/resource dashboards, and Azure Monitor /
 Application Insights telemetry.
@@ -25,8 +34,10 @@ Advanced capabilities are feature-gated. Code defaults stay safe and mostly OFF;
 the deployed environment is controlled by `infra/main.parameters.json` and azd
 environment values. The checked-in live parameters enable the application
 capabilities, including Web IQ search (the `/research` command) and the
-inline-attachment Code Interpreter, while the new multi-application profile,
-priority, Event Hub, and durable-async gateway controls remain off. Web IQ
+inline-attachment Code Interpreter. Request-priority banding is also live
+(`AI4IA_PROXY_PRIORITIES_ENABLED=true` overrides the parameter file's `false`
+default, so admins get the reserved band), while the multi-application profile,
+Event Hub telemetry, and durable-async gateway controls remain off. Web IQ
 authenticates with the API's managed identity unless `AI4IA_WEBIQ_API_KEY` is set. See
 [`docs/runbooks/feature-enablement.md`](docs/runbooks/feature-enablement.md).
 
