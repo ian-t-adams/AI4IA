@@ -95,13 +95,20 @@ const MAX_DOCS_PER_RUN = 20;
 // budget runs out first, which the caller reports as "still running" rather than
 // as a failure — the two are genuinely different, and conflating them would tell
 // the user a healthy long run had broken.
+//
+// `isCancelled` is checked on both sides of every await: without it an unmounted
+// panel kept polling for up to two minutes, calling setState on a dead component
+// and holding a request in flight per navigation away from a running workflow.
 async function pollRun(
   runId: string,
   onStatus: (status: string) => void,
+  isCancelled: () => boolean = () => false,
 ): Promise<WorkflowRunStatus | null> {
   for (let attempt = 0; attempt < RUN_POLL_MAX_ATTEMPTS; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, RUN_POLL_INTERVAL_MS));
+    if (isCancelled()) return null;
     const status = await api.getWorkflowRun(runId);
+    if (isCancelled()) return null;
     onStatus(status.status);
     if (api.isTerminalRunStatus(status.status)) return status;
   }
@@ -169,6 +176,19 @@ export function WorkflowBuilder({
   // added to a second step while its first fetch is still in flight does not
   // fire a duplicate.
   const requestedAgents = useRef<Set<string>>(new Set());
+
+  // A durable run polls for up to two minutes. Without this the loop kept
+  // running after the panel closed — setState on an unmounted component, plus a
+  // request in flight per navigation away from a running workflow. Cleanup runs
+  // on unmount only; the ref is never reset to true, so a poll started by a
+  // previous mount can never resume against a new one.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const agentNames = useMemo(() => new Set(agents.map((a) => a.name)), [agents]);
   const agentsByName = useMemo(() => new Map(agents.map((a) => [a.name, a])), [agents]);
@@ -316,9 +336,10 @@ export function WorkflowBuilder({
     [editing, mine],
   );
 
-  // Returns the saved name so "Save & run" can run what was just written rather
-  // than diffing the form against the server copy to decide whether it is dirty.
-  const submit = useCallback(async (): Promise<string | null> => {
+  // Returns the saved workflow so "Save & run" can run exactly what was just
+  // written rather than diffing the form against the server copy to decide
+  // whether it is dirty.
+  const submit = useCallback(async (): Promise<Workflow | null> => {
     setError(null);
     if (!editing) {
       const ne = nameError(form.name);
@@ -358,7 +379,12 @@ export function WorkflowBuilder({
       await refreshMine();
       setEditing(saved.name);
       setForm(formFrom(saved));
-      return saved.name;
+      // The saved workflow itself, not its name: `doRun` would otherwise look
+      // the name up in `mine`, whose value its closure captured BEFORE this
+      // save. Save-and-run then executed the previous definition while the
+      // result card reported the new one — and returning the object is immune
+      // to `refreshMine()` having failed, which a ref would not be.
+      return saved;
     } catch (e) {
       setError((e as Error).message);
       return null;
@@ -385,8 +411,10 @@ export function WorkflowBuilder({
   );
 
   const doRun = useCallback(
-    async (targetName: string) => {
-      const target = mine.find((w) => w.name === targetName);
+    async (targetName: string, justSaved?: Workflow) => {
+      // Prefer the definition handed in by save-and-run: `mine` is whatever this
+      // closure captured, which for an edit-then-run is the PRE-save version.
+      const target = justSaved ?? mine.find((w) => w.name === targetName);
       if (!target || !runInput.trim()) return;
       setError(null);
       // Validate before creating a session so a rejected run never leaves an
@@ -426,7 +454,11 @@ export function WorkflowBuilder({
           // A durable run answers before the assistant turn exists, so poll here
           // rather than handing off: the chat view loads a session's messages
           // once and does not watch for later arrivals.
-          const status = await pollRun(outcome.run.runId, setRunStatus);
+          const status = await pollRun(outcome.run.runId, setRunStatus, () => !mountedRef.current);
+          // Unmounted mid-poll: the orchestration is still running server-side
+          // and will write its turn to the session, so there is nothing to
+          // report and no state worth setting.
+          if (!mountedRef.current) return;
           setRunStatus(null);
           if (status === null) {
             setRunState({
@@ -484,7 +516,7 @@ export function WorkflowBuilder({
 
   const saveAndRun = useCallback(async () => {
     const saved = await submit();
-    if (saved) await doRun(saved);
+    if (saved) await doRun(saved.name, saved);
   }, [submit, doRun]);
 
   const toggleSection = useCallback((id: string) => {

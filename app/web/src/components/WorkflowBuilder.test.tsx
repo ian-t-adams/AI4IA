@@ -420,4 +420,35 @@ describe("WorkflowBuilder", () => {
     // for the whole run.
     expect(mocks.createSession.mock.calls[0][0]).not.toHaveProperty("libraryDocumentIds");
   });
+
+  // --- Save & run runs what was just saved -----------------------------------
+
+  it("runs the definition it just saved, not the copy it loaded", async () => {
+    // The bug: `doRun` looked the workflow up by name in `mine`, which its
+    // closure captured BEFORE the save. Editing a workflow and hitting
+    // "Save & run" therefore executed the PREVIOUS definition while the result
+    // card described the new one — a silently wrong run reported as a success.
+    const saved: Workflow = {
+      ...WORKFLOWS[0],
+      steps: [
+        { agent: "helper", instruction: "Summarize: {input}" },
+        { agent: "research", instruction: "Fact-check: {previous}" },
+      ],
+    };
+    mocks.updateWorkflow.mockResolvedValue(saved);
+    // The server list deliberately keeps returning the ONE-step version, which
+    // is what a save followed by a lagging refresh looks like. Without it the
+    // assertion could pass on a re-render rather than on the fix.
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await openRunTab(user);
+    await user.type(await screen.findByLabelText("Input"), "hello");
+    await user.click(screen.getByRole("button", { name: "Save & run" }));
+
+    await waitFor(() => expect(mocks.updateWorkflow).toHaveBeenCalled());
+    const trace = await screen.findByRole("list", { name: "Step results" });
+    const items = within(trace).getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[1]).toHaveTextContent("Research Assistant");
+  });
 });

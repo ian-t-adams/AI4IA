@@ -119,6 +119,7 @@ function props(sessionId: string | null = "s1") {
     draftDefaults,
     onDraftDefaultsChange: vi.fn(),
     onSessionUpdated: vi.fn(),
+    libraryEnabled: true,
     attachmentCapabilities: null,
     voiceLocked: false,
     collapsed: false,
@@ -985,5 +986,58 @@ describe("ConversationInspector", () => {
       screen.getByText("Known subtotal 120 (3/4 requests reported)"),
     ).toBeInTheDocument();
     expect(screen.getByText("Last 30 days tokens")).toBeInTheDocument();
+  });
+
+  it("does not call the gated library endpoint when the library is disabled", async () => {
+    // Regression: the inspector called `/api/library/summary` unconditionally.
+    // The endpoint 404s when the feature is off, so the Documents section
+    // rendered a permanent error with a "Retry library insight" button that
+    // could never succeed — a configuration fact reported as a fault.
+    mocks.getLibrarySummary.mockRejectedValue(new Error("Not found"));
+    const user = userEvent.setup();
+    render(<ConversationInspector {...props()} libraryEnabled={false} />);
+    // "documents" is the Context group's default-open section, so opening the
+    // group is enough — clicking the header would collapse it.
+    await user.click(screen.getByRole("tab", { name: "Context" }));
+
+    expect(await screen.findByText(/library is not enabled/i)).toBeInTheDocument();
+    expect(mocks.getLibrarySummary).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "Retry library insight" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("still reports a real library failure when the library IS enabled", async () => {
+    // Control. Without it the test above would pass just as well against an
+    // inspector that had stopped loading the library altogether.
+    mocks.getLibrarySummary.mockRejectedValue(new Error("Boom"));
+    const user = userEvent.setup();
+    render(<ConversationInspector {...props()} libraryEnabled />);
+    // "documents" is the Context group's default-open section, so opening the
+    // group is enough — clicking the header would collapse it.
+    await user.click(screen.getByRole("tab", { name: "Context" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Retry library insight" }),
+    ).toBeInTheDocument();
+    expect(mocks.getLibrarySummary).toHaveBeenCalled();
+    expect(screen.queryByText(/library is not enabled/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps both reasons when the snapshot and the library both fail", async () => {
+    // `sectionErrors.snapshot ?? sectionErrors.library` discarded the library's
+    // message whenever the snapshot had also failed, leaving a retry button
+    // whose cause was never shown.
+    mocks.getInspector.mockRejectedValue(new Error("snapshot-down"));
+    mocks.getLibrarySummary.mockRejectedValue(new Error("library-down"));
+    const user = userEvent.setup();
+    render(<ConversationInspector {...props()} libraryEnabled />);
+    // "documents" is the Context group's default-open section, so opening the
+    // group is enough — clicking the header would collapse it.
+    await user.click(screen.getByRole("tab", { name: "Context" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/snapshot-down/);
+    expect(alert).toHaveTextContent(/library-down/);
   });
 });

@@ -47,7 +47,7 @@ from ..memory.remember_capability import (
     build_remember_capability,
 )
 from ..memory.service import MemoryServiceProtocol
-from .tool_exec import ToolContext
+from .tool_exec import CHAT_ONLY_SYNTHETIC_TOOL_NAMES, ToolContext
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +184,16 @@ def build_shared_capabilities(
                 unavailable[REMEMBER_TOOL_NAME] = "memory writes are unavailable"
         else:
             unavailable[REMEMBER_TOOL_NAME] = "memory is not enabled"
+
+    # Chat-only capabilities. A workflow step may legitimately carry one, because
+    # `attachable_tool_names` governs what a user may attach to an *agent*, not
+    # which execution mode later runs it. Nothing here can build them, so record
+    # them: until this existed the step simply ran without the tool, the model
+    # narrated work it had not done, and the run was persisted as a success with
+    # zero server-side signal — precisely the failure `unavailable` exists to
+    # make visible, and the one documented at the top of this module.
+    for name in sorted(CHAT_ONLY_SYNTHETIC_TOOL_NAMES & set(attached_tool_names)):
+        unavailable[name] = "chat only: results are delivered as message attachments"
 
     return SharedCapabilities(tools=tools, handlers=handlers, unavailable=unavailable)
 
