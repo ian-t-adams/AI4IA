@@ -550,8 +550,19 @@ What it changes when on. `POST /api/workflows/{name}/run` gains an opt-in
 workflow inside the HTTP request; progress is polled from
 `GET /api/workflows/runs/{run_id}`. Requests without that field keep running
 synchronously on the existing in-request path — the two share one implementation
-(`run_workflow_step()` in `workflows/runner.py`), so a step cannot behave
-differently depending on which path invoked it.
+(`run_workflow_step()` in `workflows/runner.py`).
+
+Sharing that function is necessary but **not sufficient**, and this was learned
+the hard way. A durable run reaches it through a serialized orchestration
+payload, which is a second place the two paths can diverge: both sides once
+hand-listed the fields they carried, so a step's `extraTools` vanished in
+transit and a durable step silently ran with different tools than the
+byte-identical synchronous step. `build_orchestration_payload` and
+`_step_from_dict` therefore use `model_dump(mode="json")` / `model_validate`,
+which are exact inverses — any field added to `WorkflowStep` survives by
+construction. **Do not reintroduce an explicit field list at that boundary**;
+adding a field and forgetting to list it fails no test and raises no error, it
+just quietly changes what a durable run executes.
 
 Enabling it in a new environment, in order:
 
