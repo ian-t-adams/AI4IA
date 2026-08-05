@@ -19,7 +19,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from .models import UsageRecord, UsageSummary, summarize_records
+from .models import ROLLUP_FIELDS, UsageRecord, UsageRollupRow, UsageSummary, summarize_records
+
+#: Projected ``SELECT`` list for the admin rollup scan, derived from the field
+#: tuple the row type owns so the query and the parser can never drift.
+_ROLLUP_SELECT = ", ".join(f"c.{field}" for field in ROLLUP_FIELDS)
 
 
 class CosmosUsageRepository:
@@ -86,6 +90,37 @@ class CosmosUsageRepository:
         try:
             return [
                 UsageRecord.model_validate(doc)
+                async for doc in self._usage.query_items(query=query, parameters=params)
+            ]
+        except CosmosResourceNotFoundError:
+            return []
+
+    async def query_rollup_rows(
+        self, *, since: datetime, now: datetime, limit: int
+    ) -> list[UsageRollupRow]:
+        """Same bounded admin scan as :meth:`query_records`, but *projected*.
+
+        Identical filter, ordering and ``TOP`` cap, so the RU shape and
+        truncation semantics are unchanged — only the shape of each row differs:
+        the ``SELECT`` names the sixteen fields the rollups read instead of ``*``,
+        so ten unread fields per document (``id``, ``sessionId``, ``target``,
+        ``usageComplete``, ``calls``, ``currency``, the three price snapshot
+        fields, ``correlationId``) never cross the wire or get materialized.
+        """
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        query = (
+            f"SELECT TOP {int(limit)} {_ROLLUP_SELECT} FROM c "
+            "WHERE c.createdAt >= @since AND c.createdAt <= @now "
+            "ORDER BY c.createdAt DESC"
+        )
+        params = [
+            {"name": "@since", "value": since.isoformat()},
+            {"name": "@now", "value": now.isoformat()},
+        ]
+        try:
+            return [
+                UsageRollupRow.from_document(doc)
                 async for doc in self._usage.query_items(query=query, parameters=params)
             ]
         except CosmosResourceNotFoundError:

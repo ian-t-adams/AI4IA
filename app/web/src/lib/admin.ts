@@ -166,6 +166,51 @@ export interface AdminByUserResponse {
   byUser: AdminUserRow[];
 }
 
+// Mirrors ai4ia_api.routers.admin_usage.AdminUsageOverviewResponse: every usage
+// rollup for one window, produced by ONE bounded ledger scan. The dashboard used
+// to fan out to seven of the endpoints above at once and each independently
+// pulled up to 50,000 full ledger rows for the same window, which could consume
+// most of a 1 GiB API replica (audit P1-15).
+//
+// Each section is the same shape its single-panel endpoint returns, so the panel
+// components are unchanged. `partialSections` names any rollup that failed while
+// the scan itself succeeded — that is what keeps one request from turning seven
+// independently-degrading panels into an all-or-nothing failure.
+export interface AdminUsageOverviewReport {
+  sinceDays: number;
+  fromTime: string;
+  toTime: string;
+  truncated: boolean;
+  scannedRecords: number;
+  summary: AdminUsageSummary;
+  byModel: ModelUsageBucket[];
+  byDay: DayUsageBucket[];
+  totalUsers: number;
+  userLimit: number;
+  userOffset: number;
+  byUser: AdminUserRow[];
+  agents: AgentUsageBucket[];
+  userAgents: UserAgentBucket[];
+  byRegion: DimensionBucket[];
+  byDataZone: DimensionBucket[];
+  byProvider: DimensionBucket[];
+  byDeployment: DimensionBucket[];
+  byStatus: DimensionBucket[];
+  partialSections: string[];
+}
+
+// Panel label for each server-reported partial section, so a degraded rollup
+// reads the same in the error list as a wholly failed data source used to.
+export const OVERVIEW_SECTION_LABELS: Record<string, string> = {
+  summary: "usage summary",
+  byModel: "model usage",
+  byDay: "daily usage",
+  byUser: "users",
+  agents: "agents",
+  userAgents: "user agents",
+  distributions: "distributions",
+};
+
 // Mirrors ai4ia_api.metrics.models.PanelStatus. "partial" means at least one
 // (but not all) of the panel's metrics failed its own query -- the panel
 // still carries every point (successful ones with a value, failed ones with
@@ -319,6 +364,22 @@ export function fetchByUser(
 ): Promise<AdminByUserResponse> {
   return getJson<AdminByUserResponse>(
     `/api/admin/usage/by-user?days=${days}&limit=${limit}&offset=${offset}&identify=${identify ? "true" : "false"}`,
+    signal,
+  );
+}
+
+// One request for every usage panel. Prefer this over the seven fetchers above:
+// each of those is its own full ledger scan of the same window, so calling them
+// together multiplies both Cosmos RU and API memory by seven (audit P1-15).
+export function fetchOverview(
+  days: number,
+  limit = 20,
+  offset = 0,
+  identify = false,
+  signal?: AbortSignal,
+): Promise<AdminUsageOverviewReport> {
+  return getJson<AdminUsageOverviewReport>(
+    `/api/admin/usage/overview?days=${days}&limit=${limit}&offset=${offset}&identify=${identify ? "true" : "false"}`,
     signal,
   );
 }

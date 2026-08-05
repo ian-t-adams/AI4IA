@@ -7,18 +7,15 @@ import { AdminDashboard } from "./AdminDashboard";
 
 // Keep the real pure helpers (errorLabel, groupUserAgents, statusLabel, …) and
 // override only the network fetchers so we exercise the panels' real rendering.
+// Note there is ONE usage fetcher: every rollup panel is served by the single
+// consolidated /api/admin/usage/overview request (audit P1-15), not by seven
+// concurrent per-panel scans of the same ledger window.
 vi.mock("@/lib/admin", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/admin")>();
   return {
     ...actual,
     fetchWhoAmI: vi.fn(),
-    fetchSummary: vi.fn(),
-    fetchByModel: vi.fn(),
-    fetchByDay: vi.fn(),
-    fetchByUser: vi.fn(),
-    fetchAgents: vi.fn(),
-    fetchUserAgents: vi.fn(),
-    fetchDistributions: vi.fn(),
+    fetchOverview: vi.fn(),
     fetchResources: vi.fn(),
     fetchWebSearchHealth: vi.fn(),
     fetchOperations: vi.fn(),
@@ -27,14 +24,9 @@ vi.mock("@/lib/admin", async (importOriginal) => {
 });
 
 import {
-  fetchAgents,
-  fetchByDay,
-  fetchByModel,
-  fetchByUser,
-  fetchDistributions,
+  type AdminUsageOverviewReport,
+  fetchOverview,
   fetchResources,
-  fetchSummary,
-  fetchUserAgents,
   fetchWebSearchHealth,
   fetchOperations,
   fetchSecurityMetrics,
@@ -79,6 +71,43 @@ const summary = {
   distinctAgents: 2,
 };
 
+// The one response that now backs every usage panel.
+const overview: AdminUsageOverviewReport = {
+  sinceDays: 30,
+  fromTime: "2024-06-01T00:00:00Z",
+  toTime: "2024-06-30T00:00:00Z",
+  truncated: false,
+  scannedRecords: 6,
+  summary,
+  byModel: [],
+  byDay: [],
+  totalUsers: 0,
+  userLimit: 20,
+  userOffset: 0,
+  byUser: [],
+  agents: [
+    { agent: "research", requests: 3, erroredRequests: 2, cancelledRequests: 1, totalTokens: 10, costMicroUsd: 0, users: 2 },
+    { agent: "coder", requests: 1, erroredRequests: 0, cancelledRequests: 0, totalTokens: 5, costMicroUsd: 0, users: 1 },
+  ],
+  userAgents: [
+    { userId: "alice-0000-1111-2222-3333", agent: "research", requests: 2, totalTokens: 30, erroredRequests: 1 },
+    { userId: "alice-0000-1111-2222-3333", agent: "coder", requests: 1, totalTokens: 5, erroredRequests: 0 },
+  ],
+  byRegion: [
+    { key: "eastus", requests: 4, erroredRequests: 2, totalTokens: 30, costMicroUsd: 0, costKnown: true },
+    { key: "westus", requests: 2, erroredRequests: 0, totalTokens: 15, costMicroUsd: 0, costKnown: true },
+  ],
+  byDataZone: [{ key: "us", requests: 6, erroredRequests: 2, totalTokens: 45, costMicroUsd: 0, costKnown: true }],
+  byProvider: [{ key: "azure_openai", requests: 6, erroredRequests: 2, totalTokens: 45, costMicroUsd: 0, costKnown: true }],
+  byDeployment: [{ key: "dep-a", requests: 6, erroredRequests: 2, totalTokens: 45, costMicroUsd: 0, costKnown: true }],
+  byStatus: [
+    { key: "complete", requests: 3, erroredRequests: 0, totalTokens: 45, costMicroUsd: 0, costKnown: true },
+    { key: "error", requests: 2, erroredRequests: 2, totalTokens: 0, costMicroUsd: 0, costKnown: true },
+    { key: "cancelled", requests: 1, erroredRequests: 0, totalTokens: 0, costMicroUsd: 0, costKnown: true },
+  ],
+  partialSections: [],
+};
+
 beforeEach(() => {
   Object.defineProperty(window, "localStorage", {
     value: localStorageMock,
@@ -86,54 +115,7 @@ beforeEach(() => {
   });
   window.localStorage.clear();
   vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "alice", isAdmin: true });
-  vi.mocked(fetchSummary).mockResolvedValue(summary);
-  vi.mocked(fetchByModel).mockResolvedValue({ sinceDays: 30, truncated: false, scannedRecords: 6, byModel: [] });
-  vi.mocked(fetchByDay).mockResolvedValue({ sinceDays: 30, truncated: false, scannedRecords: 6, byDay: [] });
-  vi.mocked(fetchByUser).mockResolvedValue({
-    sinceDays: 30,
-    fromTime: "",
-    toTime: "",
-    truncated: false,
-    scannedRecords: 6,
-    totalUsers: 0,
-    limit: 20,
-    offset: 0,
-    byUser: [],
-  });
-  vi.mocked(fetchAgents).mockResolvedValue({
-    sinceDays: 30,
-    truncated: false,
-    scannedRecords: 6,
-    agents: [
-      { agent: "research", requests: 3, erroredRequests: 2, cancelledRequests: 1, totalTokens: 10, costMicroUsd: 0, users: 2 },
-      { agent: "coder", requests: 1, erroredRequests: 0, cancelledRequests: 0, totalTokens: 5, costMicroUsd: 0, users: 1 },
-    ],
-  });
-  vi.mocked(fetchUserAgents).mockResolvedValue({
-    sinceDays: 30,
-    truncated: false,
-    scannedRecords: 6,
-    userAgents: [
-      { userId: "alice-0000-1111-2222-3333", agent: "research", requests: 2, totalTokens: 30, erroredRequests: 1 },
-      { userId: "alice-0000-1111-2222-3333", agent: "coder", requests: 1, totalTokens: 5, erroredRequests: 0 },
-    ],
-  });
-  vi.mocked(fetchDistributions).mockResolvedValue({
-    sinceDays: 30,
-    truncated: false,
-    scannedRecords: 6,
-    byRegion: [
-      { key: "eastus", requests: 4, erroredRequests: 2, totalTokens: 30, costMicroUsd: 0, costKnown: true },
-      { key: "westus", requests: 2, erroredRequests: 0, totalTokens: 15, costMicroUsd: 0, costKnown: true },
-    ],
-    byDataZone: [{ key: "us", requests: 6, erroredRequests: 2, totalTokens: 45, costMicroUsd: 0, costKnown: true }],
-    byDeployment: [{ key: "dep-a", requests: 6, erroredRequests: 2, totalTokens: 45, costMicroUsd: 0, costKnown: true }],
-    byStatus: [
-      { key: "complete", requests: 3, erroredRequests: 0, totalTokens: 45, costMicroUsd: 0, costKnown: true },
-      { key: "error", requests: 2, erroredRequests: 2, totalTokens: 0, costMicroUsd: 0, costKnown: true },
-      { key: "cancelled", requests: 1, erroredRequests: 0, totalTokens: 0, costMicroUsd: 0, costKnown: true },
-    ],
-  });
+  vi.mocked(fetchOverview).mockResolvedValue(overview);
   vi.mocked(fetchResources).mockResolvedValue({ generatedAt: "", windowMinutes: 5, panels: [] });
   vi.mocked(fetchWebSearchHealth).mockResolvedValue({
     enabled: true,
@@ -320,15 +302,10 @@ describe("AdminDashboard new analytics panels", () => {
   });
 
   it("defaults to de-identified mode and fetches hash-only rows", async () => {
-    vi.mocked(fetchByUser).mockResolvedValue({
-      sinceDays: 30,
-      fromTime: "",
-      toTime: "",
-      truncated: false,
+    vi.mocked(fetchOverview).mockResolvedValue({
+      ...overview,
       scannedRecords: 1,
       totalUsers: 1,
-      limit: 20,
-      offset: 0,
       byUser: [
         {
           userId: "alice-0000-1111-2222-3333",
@@ -353,7 +330,7 @@ describe("AdminDashboard new analytics panels", () => {
     expect(within(panel).queryByText("ada@example.com")).toBeNull();
     expect(screen.getByRole("checkbox", { name: "Show real identities" })).not.toBeChecked();
     await waitFor(() =>
-      expect(fetchByUser).toHaveBeenLastCalledWith(
+      expect(fetchOverview).toHaveBeenLastCalledWith(
         30,
         20,
         0,
@@ -361,11 +338,49 @@ describe("AdminDashboard new analytics panels", () => {
         expect.any(AbortSignal),
       ),
     );
-    expect(fetchUserAgents).toHaveBeenLastCalledWith(
-      30,
-      false,
-      expect.any(AbortSignal),
-    );
+  });
+
+  it("loads every usage panel with a single request, not a seven-way fan-out", async () => {
+    // Audit P1-15: seven concurrent reports each scanned up to 50,000 full
+    // ledger rows for the same window. One request now backs all of them.
+    render(<AdminDashboard />);
+    await panelByHeading("Top users");
+    expect(fetchOverview).toHaveBeenCalledTimes(1);
+  });
+
+  it("names every affected usage panel when the one usage request fails", async () => {
+    // Consolidating seven requests into one must not degrade into a single
+    // opaque failure the operator cannot map back to the page.
+    vi.mocked(fetchOverview).mockRejectedValueOnce(new Error("ledger unavailable"));
+    render(<AdminDashboard />);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Some admin data sources failed to load.");
+    for (const panel of [
+      "usage summary",
+      "model usage",
+      "daily usage",
+      "users",
+      "agents",
+      "user agents",
+      "distributions",
+    ]) {
+      expect(screen.getByText(`${panel}: ledger unavailable`)).toBeInTheDocument();
+    }
+    // Independent sources are unaffected and still render their real data.
+    expect(await screen.findByText("Requests and route latency")).toBeInTheDocument();
+  });
+
+  it("reports a server-side partial rollup without blanking the sections that resolved", async () => {
+    vi.mocked(fetchOverview).mockResolvedValue({
+      ...overview,
+      agents: [],
+      partialSections: ["agents"],
+    });
+    render(<AdminDashboard />);
+    expect(await screen.findByText("agents: unavailable")).toBeInTheDocument();
+    // The distributions rollup still resolved, so its panel is real data.
+    const region = await panelByHeading("Requests by region");
+    expect(within(region).getByText("eastus")).toBeInTheDocument();
   });
 
   it("refetches and persists when real identities are enabled", async () => {
@@ -375,7 +390,7 @@ describe("AdminDashboard new analytics panels", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Show real identities" }));
 
     await waitFor(() =>
-      expect(fetchByUser).toHaveBeenLastCalledWith(
+      expect(fetchOverview).toHaveBeenLastCalledWith(
         30,
         20,
         0,
@@ -383,36 +398,35 @@ describe("AdminDashboard new analytics panels", () => {
         expect.any(AbortSignal),
       ),
     );
-    expect(fetchUserAgents).toHaveBeenLastCalledWith(
-      30,
-      true,
-      expect.any(AbortSignal),
-    );
     await waitFor(() =>
       expect(window.localStorage.getItem("ai4ia.admin.showRealIdentities")).toBe("true"),
     );
   });
 
   it("does not let a slow older window overwrite the latest request", async () => {
-    let resolveOld!: (value: typeof summary) => void;
-    const oldRequest = new Promise<typeof summary>((resolve) => {
+    let resolveOld!: (value: AdminUsageOverviewReport) => void;
+    const oldRequest = new Promise<AdminUsageOverviewReport>((resolve) => {
       resolveOld = resolve;
     });
 
-    vi.mocked(fetchSummary).mockImplementation((days) =>
+    vi.mocked(fetchOverview).mockImplementation((days) =>
       days === 30
         ? oldRequest
-        : Promise.resolve({ ...summary, sinceDays: days, activeUsers: 7 }),
+        : Promise.resolve({
+            ...overview,
+            sinceDays: days,
+            summary: { ...summary, sinceDays: days, activeUsers: 7 },
+          }),
     );
     render(<AdminDashboard />);
-    await waitFor(() => expect(fetchSummary).toHaveBeenCalled());
+    await waitFor(() => expect(fetchOverview).toHaveBeenCalled());
     fireEvent.change(screen.getByLabelText("Window"), { target: { value: "7" } });
     const activeUsers = await screen.findByText("Active users");
     await waitFor(() =>
       expect(within(activeUsers.parentElement as HTMLElement).getByText("7")).toBeInTheDocument(),
     );
     await act(async () => {
-      resolveOld({ ...summary, activeUsers: 30 });
+      resolveOld({ ...overview, summary: { ...summary, activeUsers: 30 } });
       await oldRequest;
     });
     expect(
@@ -421,15 +435,18 @@ describe("AdminDashboard new analytics panels", () => {
   });
 
   it("renders wholly unknown and mixed usage without fake zero totals", async () => {
-    vi.mocked(fetchSummary).mockResolvedValue({
-      ...summary,
-      totalRequests: 4,
-      totalTokens: 0,
-      totalPromptTokens: 0,
-      totalCompletionTokens: 0,
-      unknownUsageRequests: 4,
-      totalCostMicroUsd: 0,
-      costUnknownRequests: 4,
+    vi.mocked(fetchOverview).mockResolvedValue({
+      ...overview,
+      summary: {
+        ...summary,
+        totalRequests: 4,
+        totalTokens: 0,
+        totalPromptTokens: 0,
+        totalCompletionTokens: 0,
+        unknownUsageRequests: 4,
+        totalCostMicroUsd: 0,
+        costUnknownRequests: 4,
+      },
     });
     vi.mocked(fetchOperations).mockResolvedValue({
       generatedAt: "2026-07-17T00:00:00Z",
@@ -476,13 +493,16 @@ describe("AdminDashboard new analytics panels", () => {
     ).toHaveLength(2);
 
     cleanup();
-    vi.mocked(fetchSummary).mockResolvedValue({
-      ...summary,
-      totalRequests: 4,
-      totalTokens: 120,
-      unknownUsageRequests: 1,
-      totalCostMicroUsd: 250,
-      costUnknownRequests: 1,
+    vi.mocked(fetchOverview).mockResolvedValue({
+      ...overview,
+      summary: {
+        ...summary,
+        totalRequests: 4,
+        totalTokens: 120,
+        unknownUsageRequests: 1,
+        totalCostMicroUsd: 250,
+        costUnknownRequests: 1,
+      },
     });
     render(<AdminDashboard />);
     expect(await screen.findByText("Known subtotal 120")).toBeInTheDocument();
@@ -499,8 +519,8 @@ describe("AdminDashboard new analytics panels", () => {
         within(activeUsers.parentElement as HTMLElement).getByText("2"),
       ).toBeInTheDocument(),
     );
-    let resolveLatest!: (value: typeof summary) => void;
-    vi.mocked(fetchSummary).mockImplementation(
+    let resolveLatest!: (value: AdminUsageOverviewReport) => void;
+    vi.mocked(fetchOverview).mockImplementation(
       () =>
         new Promise((resolve) => {
           resolveLatest = resolve;
@@ -513,7 +533,11 @@ describe("AdminDashboard new analytics panels", () => {
       }),
     ).toBeInTheDocument();
     expect(screen.queryByText("Active users")).toBeNull();
-    resolveLatest({ ...summary, sinceDays: 7, activeUsers: 7 });
+    resolveLatest({
+      ...overview,
+      sinceDays: 7,
+      summary: { ...summary, sinceDays: 7, activeUsers: 7 },
+    });
     await waitFor(() =>
       expect(
         screen.queryByRole("status", {
@@ -526,15 +550,10 @@ describe("AdminDashboard new analytics panels", () => {
 
   it("shows the directory display name + email in Top users when identified, keeping the hash", async () => {
     window.localStorage.setItem("ai4ia.admin.showRealIdentities", "true");
-    vi.mocked(fetchByUser).mockResolvedValue({
-      sinceDays: 30,
-      fromTime: "",
-      toTime: "",
-      truncated: false,
+    vi.mocked(fetchOverview).mockResolvedValue({
+      ...overview,
       scannedRecords: 2,
       totalUsers: 2,
-      limit: 20,
-      offset: 0,
       byUser: [
         {
           userId: "alice-0000-1111-2222-3333",
@@ -574,15 +593,10 @@ describe("AdminDashboard new analytics panels", () => {
 
   it("discloses a user's full id (and email) via focus/click, not hover-only title", async () => {
     window.localStorage.setItem("ai4ia.admin.showRealIdentities", "true");
-    vi.mocked(fetchByUser).mockResolvedValue({
-      sinceDays: 30,
-      fromTime: "",
-      toTime: "",
-      truncated: false,
+    vi.mocked(fetchOverview).mockResolvedValue({
+      ...overview,
       scannedRecords: 1,
       totalUsers: 1,
-      limit: 20,
-      offset: 0,
       byUser: [
         {
           userId: "alice-0000-1111-2222-3333",
@@ -614,15 +628,10 @@ describe("AdminDashboard new analytics panels", () => {
   });
 
   it("falls back to the short hash in Top users when no name is known", async () => {
-    vi.mocked(fetchByUser).mockResolvedValue({
-      sinceDays: 30,
-      fromTime: "",
-      toTime: "",
-      truncated: false,
+    vi.mocked(fetchOverview).mockResolvedValue({
+      ...overview,
       scannedRecords: 1,
       totalUsers: 1,
-      limit: 20,
-      offset: 0,
       byUser: [
         {
           userId: "carol-0000-1111-2222-5555",
@@ -643,9 +652,8 @@ describe("AdminDashboard new analytics panels", () => {
 
   it("shows the display name in the user×agent panel when identified", async () => {
     window.localStorage.setItem("ai4ia.admin.showRealIdentities", "true");
-    vi.mocked(fetchUserAgents).mockResolvedValue({
-      sinceDays: 30,
-      truncated: false,
+    vi.mocked(fetchOverview).mockResolvedValue({
+      ...overview,
       scannedRecords: 3,
       userAgents: [
         {

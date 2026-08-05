@@ -9,13 +9,19 @@ it); a failing ledger write must never break a chat response.
 record-capped scan over the whole ledger used by the admin aggregation API. It is
 read-only and best-effort, and its ``limit`` caps the RU/rows a single dashboard
 request can ever consume.
+
+``query_rollup_rows`` is the same scan with a *projection*: it returns only the
+fields the admin rollups actually read (:data:`~.models.ROLLUP_FIELDS`), as slim
+:class:`~.models.UsageRollupRow` values. Same window, same cap, same
+cross-partition posture — materially less memory and response payload per row,
+which is what keeps a full 50,000-row admin window inside the API's memory limit.
 """
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from .models import UsageRecord, UsageSummary
+from .models import UsageRecord, UsageRollupRow, UsageSummary
 
 
 @runtime_checkable
@@ -33,5 +39,9 @@ class UsageRepository(Protocol):
     async def query_records(
         self, *, since: datetime, now: datetime, limit: int
     ) -> list[UsageRecord]: ...
+
+    async def query_rollup_rows(
+        self, *, since: datetime, now: datetime, limit: int
+    ) -> list[UsageRollupRow]: ...
 
     async def close(self) -> None: ...

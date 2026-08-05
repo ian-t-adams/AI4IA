@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from .models import UsageRecord, UsageSummary, summarize_records
+from .models import UsageRecord, UsageRollupRow, UsageSummary, summarize_records
 
 
 class InMemoryUsageRepository:
@@ -38,6 +38,20 @@ class InMemoryUsageRepository:
         if limit >= 0:
             records = records[:limit]
         return records
+
+    async def query_rollup_rows(
+        self, *, since: datetime, now: datetime, limit: int
+    ) -> list[UsageRollupRow]:
+        """Projected form of :meth:`query_records` (same window, order and cap).
+
+        The in-memory ledger already holds full records, so this projects rather
+        than re-queries — it exists so local/dev and tests exercise the exact code
+        path production takes, and so repo/aggregate parity is testable.
+        """
+        return [
+            UsageRollupRow.from_record(record)
+            for record in await self.query_records(since=since, now=now, limit=limit)
+        ]
 
     async def list_for_session(
         self, user_id: str, session_id: str, *, limit: int
