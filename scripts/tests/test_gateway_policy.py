@@ -36,6 +36,122 @@ docs_generator = load_script("gen_docs_catalog", "scripts/gen-docs-catalog.py")
 
 
 class GatewayPolicyTests(unittest.TestCase):
+    def test_backend_labels_are_unique_within_every_deployment_block(self) -> None:
+        """A duplicate backend label is a production outage, not a cosmetic clash.
+
+        Each label becomes a JSON *property name* in the APIM catalog. Newtonsoft
+        throws `Can not add property EASTUS2 ... Property with the same name
+        already exists` when the expression runs, so APIM answers 500
+        (`ExpressionValueEvaluationFailure`) for **every** request through the
+        gateway -- chat and embeddings alike -- and SimpleL7Proxy's circuit
+        breaker then reports "No active hosts".
+
+        This happened. Adding DataZoneStandard deployments gave 28 model/region
+        pairs two deployments in the same region, the label was the region alone,
+        and the collision took the whole model plane down. Nothing caught it:
+        `--check` only proves the generated file matches its source, and the
+        policy is *syntactically* valid C# so the APIM compiler harness accepts
+        it too. Only executing a real request finds it.
+        """
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        blocks, _ = gateway_generator.render_catalog(models)
+        for block in blocks:
+            deployment = re.search(r'new JProperty\("([^"]+)", new JObject', block)
+            self.assertIsNotNone(deployment)
+            assert deployment is not None
+            labels = re.findall(r'new JProperty\("([A-Z0-9]+)", new JObject', block)
+            self.assertEqual(
+                sorted(labels),
+                sorted(set(labels)),
+                f"duplicate backend label in the block for {deployment.group(1)}",
+            )
+
+    def test_generator_rejects_colliding_labels(self) -> None:
+        """The guard must fire, not just happen to be satisfied today."""
+        models = {
+            "naming": {"subscriptionToken": "tok", "skuShort": {"GlobalStandard": "glbl"}},
+            "regions": {"eastus2": {"dataZone": "US"}},
+            "catalog": [
+                {
+                    "name": "m",
+                    "category": "chat",
+                    # Two GlobalStandard deployments in one region: same label twice.
+                    "deployments": [
+                        {"region": "eastus2", "sku": "GlobalStandard"},
+                        {"region": "eastus2", "sku": "GlobalStandard"},
+                    ],
+                }
+            ],
+        }
+        with self.assertRaises(ValueError) as caught:
+            gateway_generator.render_catalog(models)
+        self.assertIn("labels collide", str(caught.exception))
+
+    def test_failover_never_leaves_the_requested_residency(self) -> None:
+        """A non-global deployment must not fail over outside its own SKU/zone.
+
+        The residency ladder promises that a `DataZoneStandard` request stays in
+        its data zone. Listing a `GlobalStandard` deployment as a failover
+        backend would quietly serve that request from anywhere the moment the
+        first backend hiccuped -- a residency breach with no signal, which is
+        worse than an error.
+        """
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        regions = models["regions"]
+        blocks, _ = gateway_generator.render_catalog(models)
+        sku_short = models["naming"]["skuShort"]
+        global_suffix = sku_short["GlobalStandard"]
+
+        for block in blocks:
+            requested = re.search(r'new JProperty\("([^"]+)", new JObject', block)
+            assert requested is not None
+            name = requested.group(1)
+            suffix = name.rsplit("-", 1)[-1]
+            backends = re.findall(r'new JProperty\("deployment", "([^"]+)"', block)
+            if suffix == global_suffix:
+                continue
+            for backend in backends:
+                self.assertEqual(
+                    backend.rsplit("-", 1)[-1],
+                    suffix,
+                    f"{name} may fail over to {backend}, which changes residency",
+                )
+            # And within the same data zone.
+            requested_zone = next(
+                regions[r]["dataZone"] for r in regions if f"-{r}-" in name
+            )
+            for backend in backends:
+                backend_zone = next(
+                    regions[r]["dataZone"] for r in regions if f"-{r}-" in backend
+                )
+                self.assertEqual(
+                    backend_zone,
+                    requested_zone,
+                    f"{name} may fail over to {backend}, crossing data zones",
+                )
+
+    def test_global_deployments_still_fail_over_across_regions(self) -> None:
+        """Non-vacuity control.
+
+        Without this, grouping candidates too tightly would satisfy every
+        assertion above by giving each deployment exactly one backend and
+        silently removing all redundancy.
+        """
+        models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+        blocks, _ = gateway_generator.render_catalog(models)
+        global_suffix = models["naming"]["skuShort"]["GlobalStandard"]
+        multi = 0
+        for block in blocks:
+            requested = re.search(r'new JProperty\("([^"]+)", new JObject', block)
+            assert requested is not None
+            if requested.group(1).rsplit("-", 1)[-1] != global_suffix:
+                continue
+            if len(re.findall(r'new JProperty\("deployment", "', block)) > 1:
+                multi += 1
+        self.assertGreater(
+            multi, 0, "no GlobalStandard deployment has a cross-region failover left"
+        )
+
     def test_policy_fragments_normalize_crlf_before_hashing_and_storage(
         self,
     ) -> None:

@@ -57,15 +57,15 @@
     <set-variable name="priorityCfg" value="@{
         return new JObject(
             new JProperty(&quot;1&quot;, new JObject(
-                new JProperty(&quot;retryCount&quot;, 4),
+                new JProperty(&quot;retryCount&quot;, 2),
                 new JProperty(&quot;requeue&quot;, true)
             )),
             new JProperty(&quot;2&quot;, new JObject(
-                new JProperty(&quot;retryCount&quot;, 4),
+                new JProperty(&quot;retryCount&quot;, 2),
                 new JProperty(&quot;requeue&quot;, true)
             )),
             new JProperty(&quot;3&quot;, new JObject(
-                new JProperty(&quot;retryCount&quot;, 4),
+                new JProperty(&quot;retryCount&quot;, 2),
                 new JProperty(&quot;requeue&quot;, true)
             ))
         );
