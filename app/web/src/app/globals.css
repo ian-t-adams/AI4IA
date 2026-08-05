@@ -35,6 +35,13 @@
   --danger-fg: #ffffff;
   --success: #166534;
   --info: #1d4ed8;
+  /* Warn is deeper here for the same reason --accent is (#b4400f, not the vivid
+     orange): these are TEXT colours on a light surface. The vivid #b45309 that
+     components used to hardcode is only 5.02:1 on white and 3.44:1 on the dark
+     surface -- it was chosen for one theme and applied to all three.
+     Pushed to amber (hue 40) rather than the obvious orange: at hue 23 it sat
+     5 degrees from --accent and a warning read as brand chrome. */
+  --warn: #7a5200;
   --focus-ring: #1d4ed8;
   --radius: 12px;
   --app-bg-image: none;
@@ -80,6 +87,10 @@
   --danger-fg: #0d1117;
   --success: #5ee28b;
   --info: #7cc4ff;
+  /* Pale gold, not a hard saturated yellow: it has to sit in the same
+     desaturated-bright family as --success/--info here, while staying clear of
+     --accent's orange (hue 27). */
+  --warn: #ffe066;
   --focus-ring: #93b4ff;
 }
 
@@ -109,6 +120,9 @@
   --danger-fg: #000000;
   --success: #00ff66;
   --info: #00ffff;
+  /* Distinct from --accent (#ffff00) so a warning is never mistaken for a
+     brand/interactive element in the theme that has the fewest other cues. */
+  --warn: #ffb700;
   --focus-ring: #ffff00;
   --app-bg-image: none;
 }

@@ -44,9 +44,9 @@ const STATUS_LABEL: Record<LibraryDocument["status"], string> = {
 const STATUS_COLOR: Record<LibraryDocument["status"], string> = {
   pending: "var(--fg-muted)",
   stored: "var(--fg-muted)",
-  analyzing: "#0e7490",
-  ready: "#15803d",
-  failed: "#b91c1c",
+  analyzing: "var(--info)",
+  ready: "var(--success)",
+  failed: "var(--danger)",
 };
 
 // Documents in these states are still being ingested, so we poll for changes.
@@ -306,8 +306,8 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
             role="alert"
             style={{
               fontSize: "0.8em",
-              color: "#b91c1c",
-              border: "1px solid #b91c1c",
+              color: "var(--danger)",
+              border: "1px solid var(--danger)",
               borderRadius: 8,
               padding: "8px 10px",
             }}
@@ -361,28 +361,28 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
                       if (!m) return null;
                       if (m.status === "saving")
                         return (
-                          <span style={{ color: "#0e7490" }}> · saving to memory…</span>
+                          <span style={{ color: "var(--info)" }}> · saving to memory…</span>
                         );
                       if (m.status === "saved")
                         return (
-                          <span style={{ color: "#15803d" }}>
+                          <span style={{ color: "var(--success)" }}>
                             {" "}
                             · saved {m.saved} to memory ✓
                           </span>
                         );
                       if (m.status === "forgetting")
                         return (
-                          <span style={{ color: "#0e7490" }}> · forgetting…</span>
+                          <span style={{ color: "var(--info)" }}> · forgetting…</span>
                         );
                       if (m.status === "forgotten")
                         return (
-                          <span style={{ color: "#15803d" }}>
+                          <span style={{ color: "var(--success)" }}>
                             {" "}
                             · forgot {m.forgotten} from memory ✓
                           </span>
                         );
                       return (
-                        <span style={{ color: "#b91c1c" }}> · {m.error}</span>
+                        <span style={{ color: "var(--danger)" }}> · {m.error}</span>
                       );
                     })()}
                   </div>

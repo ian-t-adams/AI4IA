@@ -43,6 +43,35 @@ const AA = 4.5;
 // Non-text UI (focus rings, borders) is held to WCAG 1.4.11 rather than 1.4.3.
 const AA_NON_TEXT = 3;
 
+/**
+ * Shortest angular distance between two hues, in degrees (0-180).
+ *
+ * Uses circular distance deliberately: a plain `Math.abs(a - b)` reports hue 350
+ * and hue 10 as 340 apart when they are 20 apart and visually near-identical,
+ * so a red-violet accent could have slipped past the distinctness checks below.
+ * Every current pair sits near hue 0-60, so this is behaviour-preserving today.
+ */
+function hueSeparation(a: string, b: string): number {
+  const hue = (hex: string) => {
+    const [r, g, b_] = [0, 2, 4].map(
+      (i) => Number.parseInt(hex.slice(1 + i, 3 + i), 16) / 255,
+    );
+    const max = Math.max(r, g, b_);
+    const min = Math.min(r, g, b_);
+    if (max === min) return 0;
+    const d = max - min;
+    const h =
+      max === r
+        ? (g - b_) / d + (g < b_ ? 6 : 0)
+        : max === g
+          ? (b_ - r) / d + 2
+          : (r - g) / d + 4;
+    return h * 60;
+  };
+  const delta = Math.abs(hue(a) - hue(b));
+  return Math.min(delta, 360 - delta);
+}
+
 describe("danger token contrast", () => {
   it.each([
     [":root", "#b91c1c", "#ffffff"],
@@ -105,14 +134,21 @@ describe("brand accent contrast", () => {
     },
   );
 
-  it.each([":root", '[data-theme="dark"]'])(
-    "%s keeps --info and --success legible as text",
+  it.each([":root", '[data-theme="dark"]', '[data-theme="contrast"]'])(
+    "%s keeps --info, --success and --warn legible as text on both surfaces",
     (selector) => {
-      for (const name of ["info", "success"]) {
-        expect(
-          contrast(token(selector, name), token(selector, "bg")),
-          `--${name} on --bg in ${selector}`,
-        ).toBeGreaterThanOrEqual(AA);
+      // These three are status TEXT (a failed upload, a saved memory, a degraded
+      // health pill), so they need the full AA text ratio on whichever surface
+      // they land on -- not the 3:1 non-text floor. Components used to hardcode
+      // light-theme hexes for all of these; #b91c1c for an error message scored
+      // 2.67:1 on the dark surface, below even the large-text floor.
+      for (const name of ["info", "success", "warn"]) {
+        for (const surface of ["bg", "bg-elevated"]) {
+          expect(
+            contrast(token(selector, name), token(selector, surface)),
+            `--${name} on --${surface} in ${selector}`,
+          ).toBeGreaterThanOrEqual(AA);
+        }
       }
     },
   );
@@ -126,26 +162,28 @@ describe("brand accent contrast", () => {
       const accent = token(selector, "accent");
       const danger = token(selector, "danger");
       expect(accent).not.toEqual(danger);
-      const hue = (hex: string) => {
-        const [r, g, b] = [0, 2, 4].map(
-          (i) => Number.parseInt(hex.slice(1 + i, 3 + i), 16) / 255,
-        );
-        const max = Math.max(r, g, b);
-        const min = Math.min(r, g, b);
-        if (max === min) return 0;
-        const d = max - min;
-        const h =
-          max === r
-            ? ((g - b) / d + (g < b ? 6 : 0))
-            : max === g
-              ? (b - r) / d + 2
-              : (r - g) / d + 4;
-        return h * 60;
-      };
       expect(
-        Math.abs(hue(accent) - hue(danger)),
+        hueSeparation(accent, danger),
         `--accent ${accent} and --danger ${danger} are too close in hue`,
       ).toBeGreaterThanOrEqual(10);
+    },
+  );
+
+  // Same failure mode one step over: the light theme's brand accent IS an
+  // orange, so an amber warn drifts into it. --warn started at #92400e, five
+  // degrees off --accent, which would have made a warning read as brand chrome.
+  it.each([":root", '[data-theme="dark"]', '[data-theme="contrast"]'])(
+    "%s keeps --warn visually distinct from --accent and --danger",
+    (selector) => {
+      const warn = token(selector, "warn");
+      for (const other of ["accent", "danger"] as const) {
+        const value = token(selector, other);
+        expect(warn).not.toEqual(value);
+        expect(
+          hueSeparation(warn, value),
+          `--warn ${warn} and --${other} ${value} are too close in hue`,
+        ).toBeGreaterThanOrEqual(15);
+      }
     },
   );
 });

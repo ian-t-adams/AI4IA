@@ -3,17 +3,29 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { Pill, pillToneColor } from "./Pill";
+import { Pill, pillToneColor, type PillTone } from "./Pill";
 
 afterEach(cleanup);
 
 describe("pillToneColor", () => {
-  it("maps every tone to a distinct, stable color", () => {
-    expect(pillToneColor("ok")).toBe("#15803d");
-    expect(pillToneColor("warn")).toBe("#b45309");
+  it("maps every tone to a distinct theme token, never a literal color", () => {
+    expect(pillToneColor("ok")).toBe("var(--success)");
+    expect(pillToneColor("warn")).toBe("var(--warn)");
     expect(pillToneColor("error")).toBe("var(--danger)");
     expect(pillToneColor("neutral")).toBe("var(--fg)");
     expect(pillToneColor("muted")).toBe("var(--fg-muted)");
+  });
+
+  // Literal hexes are what this mapping used to contain: #15803d for "ok" and
+  // #b45309 for "warn". Both were picked against the light theme and are only
+  // 3.45:1 and 3.44:1 on the dark surface, so a pill silently failed AA for
+  // anyone not using the default theme. Tokens re-resolve per theme; a literal
+  // cannot. Assert the shape so a literal can't creep back in.
+  it("returns no literal colors for any tone", () => {
+    const tones: PillTone[] = ["ok", "warn", "error", "neutral", "muted"];
+    for (const tone of tones) {
+      expect(pillToneColor(tone)).toMatch(/^var\(--[a-z-]+\)$/);
+    }
   });
 });
 

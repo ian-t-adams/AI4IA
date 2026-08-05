@@ -19,7 +19,7 @@ consistency without rebranding the product.
 - Reserve the existing orange live-voice treatment for microphone/live-session
   state; it is a functional signal, not decoration.
 - Use `--danger` only for errors, destructive actions, and active stop/recording
-  states.
+  states; `--success`, `--info`, and `--warn` carry the remaining status text.
 - Never use gradients, glass effects, colored side-stripe cards, or decorative
   saturation.
 
@@ -33,10 +33,23 @@ The committed CSS custom properties are authoritative:
 - Action: `--accent`, `--accent-fg`, `--focus-ring`
 - Conversation: `--user-bubble`, `--user-bubble-fg`,
   `--assistant-bubble`, `--assistant-bubble-fg`
-- Semantic: `--danger`
+- Semantic: `--danger`, `--success`, `--info`, `--warn`
 
 Danger surfaces always pair `--danger` with `--danger-fg`; every theme must retain
 at least 4.5:1 contrast for normal-size text.
+
+Status text uses `--success` (completed, healthy, saved), `--info` (in progress),
+and `--warn` (degraded, needs attention). Never write a literal hex for a
+foreground color. A literal is fixed at author time, so it is correct only in the
+theme it was authored against: `#b91c1c` for an error message measures 2.67:1 on
+the dark surface, and `#fff` on a `var(--accent)` fill measures 1.07:1 in the
+high-contrast theme. Pair a `var(--accent)` background with `var(--accent-fg)`,
+which `ThemeProvider.readableForeground` derives from the accent actually in use
+so it also holds for a user-chosen accent.
+
+Both rules are enforced: `globals.contrast.test.ts` checks the token values and
+their hue separation, and `components/themeTokens.test.ts` scans the sources for
+literal foreground colors.
 
 Muted and placeholder text must retain at least 4.5:1 contrast. State must never
 depend on color alone.

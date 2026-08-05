@@ -299,7 +299,7 @@ the drift this section exists to prevent.
   `prefers-color-scheme: light` block. It is a static site with no build, so its
   gate is `scripts/tests/test_portal_contrast.py`, run by `quality`.
 
-Three rules the gates encode, each of which was violated at some point:
+Four rules the gates encode, each of which was violated at some point:
 
 1. **`--accent` (app) and `--brand`/`--brand-2` (portal) are dual-purpose** — TEXT
    on the page background *and* a fill under a foreground token. A vivid orange
@@ -310,9 +310,22 @@ Three rules the gates encode, each of which was violated at some point:
    only for the accent shipped beside it; a *user-chosen* accent inverts the
    requirement. `ThemeProvider.readableForeground` derives it per accent — do not
    reintroduce a fixed per-theme value, and do not hardcode `color: "#fff"` on a
-   `var(--accent)` background.
+   `var(--accent)` background. This was prose here and was violated anyway, in
+   three panels' primary action button: white on the high-contrast theme's yellow
+   accent measures **1.07:1**, and 2.26:1 in dark. It is now enforced by
+   `app/web/src/components/themeTokens.test.ts`, which brace-matches each
+   `style={{ ... }}` object (a fixed-width window spans sibling JSX elements and
+   reports false positives) and fails on any literal hex assigned to a `color:`
+   property. The same gate covers status colors: `#b91c1c` for an error message
+   is 2.67:1 on the dark surface, below even the large-text floor, because the
+   literal was chosen against light mode. Use `--danger`/`--success`/`--info`/`--warn`.
 3. **Do not rebrand `[data-theme="contrast"]`.** It is an accessibility floor, not
    a brand surface; its yellow-on-black measures better than any orange.
+4. **Keep `--warn` clear of `--accent`.** In light mode the brand accent *is* an
+   orange, so the obvious amber collides with it — `#92400e` sat 5 degrees away in
+   hue and read as brand chrome. `globals.contrast.test.ts` asserts at least 15
+   degrees of separation from both `--accent` and `--danger`, using circular hue
+   distance so a red-violet cannot pass by wrapping past 360.
 
 Logos are generated, not hand-edited: `python scripts/gen-brand-assets.py` writes
 **every** committed raster — the app mark, both favicon ladders, the Next.js app

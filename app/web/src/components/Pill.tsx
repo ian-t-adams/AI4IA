@@ -10,9 +10,9 @@ export type PillTone = "ok" | "warn" | "error" | "muted" | "neutral";
 export function pillToneColor(tone: PillTone): string {
   switch (tone) {
     case "ok":
-      return "#15803d";
+      return "var(--success)";
     case "warn":
-      return "#b45309";
+      return "var(--warn)";
     case "error":
       return "var(--danger)";
     case "neutral":

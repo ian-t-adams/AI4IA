@@ -231,7 +231,7 @@ export default function SharePanel({
           // Saving from here would write the component's private/no-grantees
           // defaults over an ACL that was never successfully read.
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <p role="alert" style={{ margin: 0, fontSize: "0.85em", color: "var(--danger, #dc2626)" }}>
+            <p role="alert" style={{ margin: 0, fontSize: "0.85em", color: "var(--danger)" }}>
               {error ?? "Couldn't load who this document is shared with."}
             </p>
             <p style={{ margin: 0, fontSize: "0.8em", color: "var(--fg-muted)" }}>
@@ -317,7 +317,7 @@ export default function SharePanel({
                 style={{
                   margin: 0,
                   fontSize: "0.8em",
-                  color: "var(--danger, #dc2626)",
+                  color: "var(--danger)",
                 }}
               >
                 Saving now will remove access for the {grantees.length}{" "}
@@ -332,7 +332,7 @@ export default function SharePanel({
                 style={{
                   margin: 0,
                   fontSize: "0.8em",
-                  color: "var(--danger, #dc2626)",
+                  color: "var(--danger)",
                 }}
               >
                 Saving now will clear your list of {grantees.length} named{" "}
@@ -377,7 +377,7 @@ export default function SharePanel({
                         draftEmail.trim().length === 0
                           ? "var(--border)"
                           : "var(--accent)",
-                      color: "#fff",
+                      color: "var(--accent-fg)",
                       fontSize: "0.85em",
                       cursor:
                         draftEmail.trim().length === 0 ? "default" : "pointer",
@@ -433,7 +433,7 @@ export default function SharePanel({
             )}
 
             {error && (
-              <p style={{ margin: 0, fontSize: "0.8em", color: "var(--danger, #dc2626)" }}>
+              <p style={{ margin: 0, fontSize: "0.8em", color: "var(--danger)" }}>
                 {error}
               </p>
             )}
@@ -455,7 +455,7 @@ export default function SharePanel({
                 {saving ? "Saving…" : "Save"}
               </button>
               {saved && (
-                <span style={{ fontSize: "0.8em", color: "#15803d" }}>
+                <span style={{ fontSize: "0.8em", color: "var(--success)" }}>
                   Sharing updated ✓
                 </span>
               )}
