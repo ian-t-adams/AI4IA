@@ -224,6 +224,26 @@ jobs:
         env:
           PYYAML_VERSION: 6.0.3
 
+      - name: Run post-deploy verification tests
+        run: |
+          set -euo pipefail
+          # deploy.yml's post-deploy gate is the only thing that will ever tell
+          # this repo that a deploy did not work, and it runs exclusively against
+          # live Azure at the one moment nobody is watching -- so every branch in
+          # it is untested unless it is tested here. `az` is stubbed at the
+          # process boundary and HTTP at the request function, so this makes no
+          # network calls and mutates nothing. The three branches that matter
+          # most: the unchanged-revision assertion (the "azd said 0, Container
+          # Apps promoted nothing" case the audit named), rollback target
+          # selection (Single vs Multiple revision mode need different az
+          # primitives, and the wrong one is a silent no-op), and redaction (the
+          # canary holds a bearer token and receives model output). PyYAML is
+          # needed only for the workflow-wiring assertions.
+          python3 -m pip install --user --quiet "PyYAML==${PYYAML_VERSION}"
+          python3 -m unittest scripts.tests.test_post_deploy_verify
+        env:
+          PYYAML_VERSION: 6.0.3
+
       - name: Run configuration-reference reachability tests
         run: |
           set -euo pipefail

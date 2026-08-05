@@ -141,6 +141,15 @@ jobs:
       # Secret, not a variable (cf. AI4IA_WEBIQ_API_KEY). Empty keeps the admin API on
       # Entra managed identity rather than a shared key.
       AI4IA_ADMIN_API_SECRET: ${{ secrets.AI4IA_ADMIN_API_SECRET }}
+      # Post-deploy verification (audit finding P1-6). NOT an azd parameter -- it is
+      # read only by the steps at the bottom of this job, so it deliberately has no
+      # ${...} token in main.parameters.json. Set it to `false` to drop the
+      # authenticated FastAPI -> SimpleL7Proxy -> APIM -> Foundry canary; the
+      # rollout, health, web, proxy, and custom-domain assertions still run and are
+      # not optional. Turning the canary off means a deploy is proven only as far as
+      # the ingress: an APIM key, gateway policy, or model-deployment regression will
+      # ship green. See docs/runbooks/deployment.md section 6.
+      AI4IA_DEPLOY_VERIFY_CANARY: ${{ vars.AI4IA_DEPLOY_VERIFY_CANARY }}
       # Canonical memory backend selection for the staged mem0 -> Cosmos cutover.
       # main.parameters.json resolves memoryStore from ${AI4IA_MEMORY_STORE=cosmos};
       # CI can't run `azd env set`, so plumb it here or the parameter never sees the
@@ -222,10 +231,17 @@ jobs:
             --federated-credential-provider "github" \
             --tenant-id "$AZURE_TENANT_ID"
 
-      # az login for the guard step below (azd auth doesn't authenticate the az
+      # az login for the guard steps below (azd auth doesn't authenticate the az
       # CLI). Same OIDC identity, no secrets.
+      #
+      # Unconditional, unlike the provision-only preflights that follow. The
+      # post-deploy verification and rollback steps at the bottom of this job read
+      # revisions and, on failure, restore one -- and they must work on a
+      # `workflow_dispatch` run that skips provisioning, which is exactly the run an
+      # operator uses to redeploy app images against unchanged infra. Gating this
+      # login on `inputs.provision` would leave those runs with no verification at
+      # all and no way to roll back.
       - name: Log in to Azure CLI (OIDC)
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
         with:
           client-id: ${{ env.AZURE_CLIENT_ID }}
@@ -341,5 +357,123 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
         run: azd provision --no-prompt
 
+      # ---------------------------------------------------------------------
+      # Post-deploy proof and rollback (audit finding P1-6).
+      #
+      # `azd deploy` exiting 0 means an image built, pushed, and ARM accepted a
+      # new Container App template. It does NOT mean the app runs. A crash-looping
+      # image, an unbound secret, a Python import error, a stale APIM route or a
+      # gateway policy that no longer matches the catalog all finish as a GREEN
+      # deploy, and the first person to find out is a user. azure.yaml's
+      # postprovision hook cannot close this: it runs BEFORE application
+      # deployment, when the api container may still be the azd placeholder image,
+      # which is exactly why it treats app probes as best-effort.
+      #
+      # So: capture the rollback target first, deploy, then assert, then restore
+      # on failure.
+      # ---------------------------------------------------------------------
+      - name: Capture pre-deploy revisions (rollback target)
+        id: capture
+        run: |
+          set -euo pipefail
+          python scripts/post-deploy-verify.py capture \
+            --state "${RUNNER_TEMP}/ai4ia-deploy-state.json"
+
+      # Deliberately BEFORE `azd deploy`. If the deploy identity cannot obtain a
+      # token for the API audience, that is a gate misconfiguration, not a bad
+      # release -- and discovering it after deployment would roll back a healthy
+      # app for a reason that has nothing to do with it. Failing here costs
+      # nothing: no image has moved yet.
+      #
+      # The token acquired here is DISCARDED. Verification acquires a fresh one,
+      # because a three-image `azd deploy` plus a retried rollout can put a long
+      # gap between this step and the canary, and an expired token would present
+      # as a 401 -- i.e. would roll back a healthy release.
+      - name: Preflight the post-deploy canary token
+        run: |
+          set -euo pipefail
+          if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ]; then
+            echo "::warning::AI4IA_DEPLOY_VERIFY_CANARY=false, so this deploy will not be proven end to end. The rollout, health, web, proxy and custom-domain assertions still run, but nothing will exercise SimpleL7Proxy -> APIM -> Foundry."
+            exit 0
+          fi
+          if [ -z "${AI4IA_ENTRA_AUDIENCE:-}" ]; then
+            echo "::error::AI4IA_ENTRA_AUDIENCE is empty, so there is no API audience to request a token for and the post-deploy canary cannot run. A deploy that silently skips its own end-to-end proof is the failure mode this gate exists to remove. Set the variable (docs/runbooks/deployment.md section 2.7), or set AI4IA_DEPLOY_VERIFY_CANARY=false to skip the canary deliberately and visibly."
+            exit 1
+          fi
+          if ! az account get-access-token --resource "$AI4IA_ENTRA_AUDIENCE" --query accessToken -o tsv >/dev/null 2>&1; then
+            echo "::error::The deploy identity could not obtain an access token for the API audience in AI4IA_ENTRA_AUDIENCE, so the post-deploy canary could not run. The API app registration needs a service principal in this tenant (scripts/provision-entra-apps.ps1 runs 'az ad sp create'), and if that app requires assignment, the deploy identity needs an app role on it. Fix the grant, or set AI4IA_DEPLOY_VERIFY_CANARY=false to ship without end-to-end proof."
+            exit 1
+          fi
+          echo "The deploy identity can obtain a token for the API audience."
+
       - name: Deploy application
         run: azd deploy --no-prompt
+
+      # Separate from the verification step on purpose. A token problem here is
+      # not evidence the release is bad, and the rollback below is gated on this
+      # step's outcome so it cannot revert a healthy deploy over one. The
+      # preflight above already proved the grant exists, so a failure at this
+      # point is transient -- hence the retries.
+      - name: Acquire the canary token for verification
+        id: canary_token
+        run: |
+          set -euo pipefail
+          if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ]; then
+            echo "Canary disabled; no token needed."
+            exit 0
+          fi
+          token=""
+          for _ in 1 2 3; do
+            if token="$(az account get-access-token --resource "$AI4IA_ENTRA_AUDIENCE" --query accessToken -o tsv 2>/dev/null)" && [ -n "$token" ]; then
+              break
+            fi
+            token=""
+            sleep 10
+          done
+          if [ -z "$token" ]; then
+            echo "::error::Could not obtain a canary token even though the pre-deploy preflight could. That is an Entra or network problem, not a bad release, so this run stops WITHOUT rolling back. The deploy is live but unverified -- check it, then re-run the workflow."
+            exit 1
+          fi
+          # Masked as defence in depth. The verification script never prints the
+          # token, but anything else in this job that echoed it would be scrubbed.
+          echo "::add-mask::$token"
+          echo "AI4IA_DEPLOY_CANARY_TOKEN=$token" >> "$GITHUB_ENV"
+
+      # Every assertion here is a hard gate. A failure fails the job AND triggers
+      # the rollback step below.
+      - name: Verify the deploy actually landed
+        id: verify
+        # Bounded so a hung probe can never consume the job budget that a cold
+        # provision needs (see the timeout-minutes comment at the top of this
+        # job). If this step is killed by its own timeout, `failure()` still
+        # fires and the rollback below still runs.
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ]; then
+            python scripts/post-deploy-verify.py verify \
+              --state "${RUNNER_TEMP}/ai4ia-deploy-state.json" \
+              --skip-canary
+            exit 0
+          fi
+          python scripts/post-deploy-verify.py verify \
+            --state "${RUNNER_TEMP}/ai4ia-deploy-state.json"
+
+      # `failure()` rather than a check on `steps.verify` alone: a deploy that dies
+      # partway through has already replaced some services and is exactly as much
+      # of a split-brain as a failed assertion. The capture guard keeps this inert
+      # when the run failed before there was anything to restore, and the token
+      # guard keeps a gate-side Entra problem from reverting a healthy release.
+      #
+      # Known gap: this covers a failed step, including the verification step
+      # hitting its own timeout. It does NOT cover a cancelled run or the job
+      # timeout, both of which kill the runner outright. See
+      # docs/runbooks/deployment.md section 6.
+      - name: Roll back to the captured revisions
+        if: ${{ failure() && steps.capture.outcome == 'success' && steps.canary_token.outcome != 'failure' }}
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          echo "::error::Post-deploy verification failed. Restoring the revisions captured before this deploy."
+          python scripts/post-deploy-verify.py rollback \
+            --state "${RUNNER_TEMP}/ai4ia-deploy-state.json"

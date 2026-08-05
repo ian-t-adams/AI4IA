@@ -32,7 +32,13 @@ push to main (app/infra/proxy/azure.yaml)        manual: Actions -> deploy -> Ru
                                         ▼
               azd provision --no-prompt   (Bicep: infra/main.bicep, idempotent)
                                         ▼
+       post-deploy-verify.py capture     (record the revision each app is serving)
+                                        ▼
               azd deploy --no-prompt      (build + push web / api / proxy images)
+                                        ▼
+       post-deploy-verify.py verify      (rollout, health, web, proxy, domains, canary)
+                                        ▼
+       post-deploy-verify.py rollback    (only on failure — restore the captured revisions)
 ```
 
 - **Concurrency:** runs are serialized on the `deploy-production` group and **not** cancelled
@@ -109,6 +115,7 @@ Settings → Secrets and variables → Actions → **Variables** (these are iden
 | `AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED` | Optional, default off metadata telemetry. |
 | `AI4IA_PROXY_ASYNC_ENABLED` | Optional, default off dedicated Blob + Service Bus durable async plane. |
 | `AI4IA_PROXY_PROFILES_ENABLED` / `AI4IA_PROXY_PROFILE_PROJECTION_JSON` | Keep disabled until Entra workload identity is wired at the proxy edge; validation intentionally fails otherwise. The JSON value is a secret. |
+| `AI4IA_DEPLOY_VERIFY_CANARY` | *(optional)* Set to `false` to skip the post-deploy model canary. CI-only — it is **not** an azd parameter and has no `${...}` token in `main.parameters.json`. See [§6](#6-post-deploy-verification-and-rollback). |
 
 The moment `AZURE_CLIENT_ID` is set, the next qualifying push to `main` deploys.
 
@@ -766,19 +773,137 @@ azd deploy
 > Validate in a parallel resource group before reprovisioning a live stack — see
 > [`teardown.md`](./teardown.md).
 
-## 6. Rollback
+## 6. Post-deploy verification and rollback
 
-There is no automatic rollback. To revert, deploy a known-good commit:
+Every deploy is gated. `.github/workflows/deploy.yml` captures the revision each
+Container App is serving **before** `azd deploy`, asserts a list of things
+afterwards, and restores the captured revisions when any assertion fails.
+The logic lives in [`scripts/post-deploy-verify.py`](../../scripts/post-deploy-verify.py)
+and is unit-tested in `scripts/tests/test_post_deploy_verify.py`.
+
+### Why the gate exists
+
+`azd deploy` exiting 0 means an image built, pushed, and ARM accepted a new
+Container App template. It does **not** mean the app runs. A crash-looping image,
+an unbound secret, a Python import error, a stale APIM route, or a gateway policy
+that no longer matches the catalog all finish as a **green** deploy. `azure.yaml`'s
+postprovision hook cannot close this: it runs before application deployment, when
+the `api` container may still be the azd placeholder image, which is exactly why
+it treats app probes as best-effort.
+
+### What is asserted, and what each assertion catches
+
+| Assertion | Catches |
+|---|---|
+| The revision taking traffic changed | `azd deploy` reported success but Container Apps never promoted a new template |
+| That revision runs a different image than before | A new revision that is not this deploy's — the container was never replaced |
+| That revision is `active`, `healthState: Healthy`, `runningState: Running` | A revision that provisioned but never became ready. **Polled**, because ARM lags `azd deploy` by seconds to a minute |
+| Running replicas > 0 (apps with `minReplicas >= 1`) | A crash-looping image: the revision exists, no replica survives |
+| API `GET /health/live` = 200 | The process is up |
+| API `GET /health/ready` = 200 | Startup validation and dependency binding succeeded |
+| Web `GET /` = 2xx or 3xx | The Next.js server renders rather than 500ing. Redirects are never followed — that would replay an `Authorization` header at whatever host a response named |
+| Proxy ingress answers with anything below 500 | A replica is serving. A 401/404 from the authenticating gateway is a **pass**; every 5xx is a failure, and 503 is retried because that is what `/startup` returns during a cold start |
+| Custom domains still bound and `SniEnabled` | A provision that wiped a vanity hostname, or a managed certificate that failed to bind |
+| One authenticated turn: `/api/models` → `/api/sessions` → `/api/chat` (non-streaming) → cleanup | The **whole governed path** — Entra validation, catalog resolution, SimpleL7Proxy, the APIM subscription key, the gateway policy, and a real Foundry model deployment. Nothing else here touches any of that |
+
+All of it runs under one shared wall-clock budget (`--deadline-seconds`, 20
+minutes by default) inside a 30-minute step timeout, because per-check retry
+budgets multiply and would otherwise let the step be killed mid-flight rather
+than finish and report.
+
+The canary picks its model from `infra/models.json`, intersected with what the
+live API says it will route to, so it never names a deployment and a
+data-residency change produces a clear message instead of a mystery 400. It
+never prints the bearer token or the model's reply — only the reply's length.
+
+### What it still cannot catch
+
+- **Correctness.** A model that answers is not a model that answers *well*, and
+  no assertion here evaluates content.
+- **Anything past the first turn.** Streaming (SSE), tools, MCP, documents,
+  memory, images, video, and the realtime/Voice Live WebSocket relay are all
+  unexercised. `scripts/voice-live-canary.py` is the separate, operator-invoked
+  canary for the realtime path.
+- **The window before it runs.** The new revision takes traffic the moment ARM
+  promotes it. Verification and rollback happen after that, so a bad release is
+  live for the length of the checks (typically well under a minute, longer if a
+  cold start is being retried).
+- **Data.** Rollback restores code, not Cosmos. See below.
+- **Per-user or per-tenant failures.** The canary is one identity: the deploy
+  identity. An entitlement, admin, or per-user ownership regression is invisible
+  to it.
+- **A cancelled or job-timed-out run.** See "On failure" below.
+- **Content in an upstream error body.** A failing call logs a bounded, redacted
+  200-character snippet of the response so the failure is diagnosable. Redaction
+  covers credential shapes, not arbitrary prose. Successful responses are never
+  logged — the model's reply is reported only as a character count.
+
+### On failure
+
+The rollback step runs on **any** failure once a capture exists — including
+`azd deploy` itself dying partway through, which leaves some services replaced
+and others not. For each app whose active revision moved, it restores the
+captured one, **confirms** the app is actually serving the captured image again,
+and then the job fails loudly. A restore that Azure accepted but that did not
+take is reported as `unconfirmed` and still exits non-zero: `az` returning 0 only
+means ARM accepted the request, and believing that would be the same unverified
+success this gate exists to stop.
+
+The primitive differs by revision mode, and using the wrong one is a silent
+no-op:
+
+| Mode | Command |
+|---|---|
+| `Single` (what this stack uses) | `az containerapp revision copy --from-revision <captured>` — clones the captured revision's whole template into a new active revision. `ingress traffic set` is rejected in this mode |
+| `Multiple` | `az containerapp ingress traffic set --revision-weight <captured>=100` |
+
+An app that did not move is left alone. A greenfield app has no captured
+revision and is skipped — there is nothing to roll back **to** on a first deploy.
+
+**Rollback does not cover a cancelled or job-timed-out run.** `if: failure()`
+fires for a failed step, including the verification step hitting its own
+`timeout-minutes`, but a manual cancellation or the 180-minute job timeout kills
+the runner outright and no rollback runs. Recover those by hand (below).
+
+### Turning the canary off
+
+Set the `AI4IA_DEPLOY_VERIFY_CANARY` repository variable to `false`. Everything
+else still runs; only the end-to-end model turn is skipped, and the workflow says
+so with a warning. Do this if your tenant refuses to issue the deploy identity an
+app-only token for `AI4IA_ENTRA_AUDIENCE` — a deploy proven only as far as the
+ingress is worth more than a gate somebody disabled entirely.
+
+**That variable is the only way to skip it.** An empty `AI4IA_ENTRA_AUDIENCE`
+(or a grant the deploy identity does not have) **fails the run before anything is
+deployed**, rather than quietly shipping without end-to-end proof. Skipping has
+to be a decision someone made and can see.
+
+The grant is preflighted **before** `azd deploy`, and the token that preflight
+obtains is discarded: a separate step acquires a fresh one after the deploy. A
+missing grant is a gate misconfiguration, not a bad release, and discovering it
+afterwards would roll back a healthy app; and a three-image deploy plus a retried
+rollout can outlive an access token, which would present as a 401 and do exactly
+the same thing. That second acquisition is its own step so the rollback gate can
+exclude it — an Entra blip stops the run *without* reverting anything, leaving
+the deploy live but explicitly unverified.
+
+### Rolling back by hand
 
 ```powershell
-# re-run the deploy workflow from a previous green commit, or locally:
-git checkout <good-sha>
-azd deploy
+$rg = 'rg-ai4ia-slurmfactory'
+az containerapp revision list -g $rg -n ca-api-slurmfactory `
+  --query "[].{name:name, created:properties.createdTime, active:properties.active}" -o table
+az containerapp revision copy -g $rg -n ca-api-slurmfactory --from-revision <previous>
 ```
 
-Container Apps keeps prior revisions. The proxy is configured for single active
-revision, so rollback means reactivating/redeploying the prior revision rather
-than weighted traffic splitting.
+Or redeploy a known-good commit. Note that a **local** `azd deploy` does not run
+the gate — it lives only in `deploy.yml` — so re-running the workflow is the
+option that re-verifies:
+
+```powershell
+git checkout <good-sha>
+azd deploy            # ships the images; does NOT verify or roll back
+```
 
 **Rollback recovers code, not data.** The two are separate problems, and the data
 side is the weaker of the two — see below before you need it.
