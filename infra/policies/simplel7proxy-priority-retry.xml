@@ -73,6 +73,10 @@ REFACTOR:
 		<include-fragment fragment-id="endpoint_selection_catalog_5_32" />
 		<include-fragment fragment-id="endpoint_selection_catalog_6_32" />
 		<include-fragment fragment-id="endpoint_selection_catalog_7_32" />
+		<include-fragment fragment-id="endpoint_selection_catalog_8_32" />
+		<include-fragment fragment-id="endpoint_selection_catalog_9_32" />
+		<include-fragment fragment-id="endpoint_selection_catalog_10_32" />
+		<include-fragment fragment-id="endpoint_selection_catalog_11_32" />
 		<include-fragment fragment-id="endpoint_selection_setup_32" />
 		<set-variable name="pathDeploymentMatchesModel" value="@{
 			string path = context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;);

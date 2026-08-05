@@ -725,17 +725,19 @@ class Settings(BaseSettings):
         }.get(modality, self.cu_document_analyzer)
 
     def _validate_data_residency(self) -> None:
-        """Reject a residency policy that is malformed or leaves no chat models.
+        """Reject a residency policy that is malformed, leaves no chat models, or
+        would silently disable a feature that is switched on.
 
         Deliberately fails startup rather than degrading: a sovereignty control
         that silently produces an empty model picker looks like an outage, and a
         control that silently does nothing is worse than not having one.
 
-        This is the check that surfaces the real constraint in this deployment --
-        nearly every model is deployed ``GlobalStandard``, which by definition
-        satisfies no zone. Restricting to ``us``/``eu`` therefore needs regional
-        or ``DataZoneStandard`` chat deployments to exist first; the error says
-        exactly that instead of leaving an operator to infer it.
+        The capability-model check matters as much as the chat one. Both the
+        memory service and the library ingestor resolve their embedding model and,
+        on ``None``, log a warning and carry on with the feature turned off
+        (``memory/factory.py``, ``library/ingest_factory.py``). Under a residency
+        policy that is a governance-relevant silent failure: memory and RAG would
+        appear enabled and simply never work. Fail loudly instead.
         """
         from .catalog import RESIDENCY_POLICIES, load_catalog
 
@@ -745,25 +747,71 @@ class Settings(BaseSettings):
                 f"AI4IA_DATA_RESIDENCY={self.data_residency!r} is not a valid policy. "
                 f"Use one of: {', '.join(sorted(RESIDENCY_POLICIES))}."
             )
-        if policy != "global":
-            catalog = load_catalog(self.model_catalog_path, policy)
-            if not catalog.conversational_models():
-                offered = sorted(
-                    {
-                        option.residency
-                        for entry in catalog.models
-                        if entry.conversational
-                        for option in entry.options
-                    }
+        if policy == "global":
+            return
+
+        catalog = load_catalog(self.model_catalog_path, policy)
+        if not catalog.conversational_models():
+            offered = sorted(
+                {
+                    option.residency
+                    for entry in catalog.models
+                    if entry.conversational
+                    for option in entry.options
+                }
+            )
+            raise RuntimeError(
+                f"AI4IA_DATA_RESIDENCY={policy!r} leaves no conversational model "
+                "reachable. Only deployments whose processing is bounded to that "
+                "zone qualify, and a GlobalStandard deployment never is "
+                f"(available chat residencies: {', '.join(offered) or 'none'}). "
+                "Add a regional or DataZoneStandard chat deployment for that zone "
+                "in infra/models.json, or set the policy back to 'global'."
+            )
+
+        # (model id, env var, what breaks) for each ENABLED feature. Only
+        # features that are actually on are checked, so a zone policy is not
+        # blocked by a model belonging to something switched off.
+        required: list[tuple[str, str, str]] = []
+        if self.memory_store != MemoryStoreKind.disabled:
+            required.append(
+                (self.memory_embedding_model, "AI4IA_MEMORY_EMBEDDING_MODEL", "memory recall")
+            )
+            required.append(
+                (
+                    self.memory_extraction_model,
+                    "AI4IA_MEMORY_EXTRACTION_MODEL",
+                    "memory extraction",
                 )
-                raise RuntimeError(
-                    f"AI4IA_DATA_RESIDENCY={policy!r} leaves no conversational model "
-                    "reachable. Only deployments whose processing is bounded to that "
-                    "zone qualify, and a GlobalStandard deployment never is "
-                    f"(available chat residencies: {', '.join(offered) or 'none'}). "
-                    "Add a regional or DataZoneStandard chat deployment for that zone "
-                    "in infra/models.json, or set the policy back to 'global'."
+            )
+        if self.document_understanding_enabled:
+            # The library reuses the memory embedding model for its chunk index.
+            required.append(
+                (
+                    self.memory_embedding_model,
+                    "AI4IA_MEMORY_EMBEDDING_MODEL",
+                    "document retrieval (library RAG)",
                 )
+            )
+
+        unreachable = [
+            (model_id, env_var, feature)
+            for model_id, env_var, feature in required
+            if catalog.resolve_deployment(model_id) is None
+        ]
+        if unreachable:
+            detail = "; ".join(
+                f"{feature} needs {model_id!r} ({env_var})"
+                for model_id, env_var, feature in unreachable
+            )
+            raise RuntimeError(
+                f"AI4IA_DATA_RESIDENCY={policy!r} leaves an enabled feature without a "
+                f"compliant model: {detail}. These features fail OPEN at runtime (they "
+                "log a warning and switch themselves off), so this would look like the "
+                "feature silently not working. Add a DataZoneStandard deployment for "
+                "that model in infra/models.json, disable the feature, or set the "
+                "policy back to 'global'."
+            )
 
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""

@@ -32,7 +32,7 @@ OUTPUT_PATH = ROOT / "infra" / "policies" / "simplel7proxy-endpoints.xml"
 # shards from gateway routing — a data-loss bug with no error anywhere. The
 # three files are pinned together by
 # test_gateway_policy.test_catalog_fragment_count_matches_bicep_and_compiler_script.
-CATALOG_FRAGMENT_COUNT = 8
+CATALOG_FRAGMENT_COUNT = 12
 CATALOG_OUTPUT_PATHS = tuple(
     ROOT / "infra" / "policies" / f"simplel7proxy-endpoints-catalog-{index}.xml"
     for index in range(CATALOG_FRAGMENT_COUNT)

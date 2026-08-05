@@ -11,6 +11,8 @@ sovereignty guarantee the platform is not making.
 """
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from ai4ia_api.catalog import DeploymentOption, ModelCatalog, ModelEntry, load_catalog
@@ -133,17 +135,106 @@ def test_invalid_policy_fails_startup():
         settings.validate_runtime()
 
 
-def test_policy_with_no_reachable_chat_model_fails_startup_with_guidance():
-    """The live constraint, pinned.
+@pytest.mark.parametrize("policy", ["us", "eu"])
+def test_zone_policies_are_usable_with_datazone_deployments(policy):
+    """The lever has to actually work, not merely exist.
 
-    Every chat deployment in infra/models.json is GlobalStandard today, so 'eu'
-    and 'us' leave nothing conversational reachable. Coming up with an empty
-    model picker would look like a broken deployment, so startup refuses and
-    names the fix.
+    infra/models.json carries DataZoneStandard deployments in both eastus2 (US)
+    and swedencentral (EU), so a zone policy must leave a real working set: chat
+    models to pick from, plus the embedding model memory and library RAG depend
+    on. If this fails, the catalog lost its zone-bounded deployments.
     """
-    settings = make_settings(data_residency="eu")
+    catalog = load_catalog(None, policy)
+
+    chat = catalog.conversational_models()
+    assert chat, f"{policy} left no conversational model"
+    assert {m.category for m in chat} >= {"chat", "chat-fast", "reasoning"}
+
+    embedding = catalog.resolve_deployment("text-embedding-3-large")
+    assert embedding is not None, "memory + library RAG would silently switch off"
+    assert embedding.sku == "DataZoneStandard"
+    assert embedding.residency == policy
+
+
+@pytest.mark.parametrize("policy", ["us", "eu"])
+def test_zone_policies_never_route_to_a_global_deployment(policy):
+    """The guarantee, asserted over the real catalog rather than a fixture."""
+    catalog = load_catalog(None, policy)
+
+    for entry in catalog.models:
+        for option in catalog.eligible_options(entry):
+            assert option.sku != "GlobalStandard", (
+                f"{entry.id} would serve {policy} from a GlobalStandard deployment"
+            )
+            assert option.residency == policy
+
+
+def test_startup_fails_when_an_enabled_feature_loses_its_model():
+    """Memory and library RAG fail OPEN at runtime -- they log and switch
+    themselves off. Under a residency policy that silent degradation is the
+    failure mode this check exists to convert into a loud one."""
+    settings = make_settings(
+        data_residency="eu",
+        memory_store="cosmos",
+        cosmos_endpoint="https://example.documents.azure.com/",
+        # A model with no zone-bounded deployment anywhere.
+        memory_embedding_model="embed-v-4-0",
+    )
     with pytest.raises(RuntimeError) as err:
         settings.validate_runtime()
+
+    message = str(err.value)
+    assert "enabled feature without a compliant model" in message
+    assert "embed-v-4-0" in message
+    assert "fail OPEN" in message, "the error must explain why silence is the danger"
+
+
+def test_disabled_features_do_not_block_a_zone_policy():
+    """Only features that are switched ON are checked."""
+    settings = make_settings(
+        data_residency="eu",
+        memory_store="disabled",
+        document_understanding_enabled=False,
+        memory_embedding_model="embed-v-4-0",  # unreachable, but unused
+    )
+    settings.validate_runtime()
+
+
+def test_policy_with_no_reachable_chat_model_fails_startup_with_guidance():
+    """A tenant whose catalog has only GlobalStandard chat deployments.
+
+    This was AI4IA's own situation before the DataZoneStandard deployments were
+    added, and remains the situation for any fresh subscription that has not
+    added them. Booting with an empty model picker would look like a broken
+    deployment, so startup refuses and names the fix.
+    """
+    import json
+    import tempfile
+
+    catalog = {
+        "models": [
+            {
+                "id": "only-global",
+                "displayName": "Only Global",
+                "category": "chat",
+                "format": "OpenAI",
+                "options": [
+                    {
+                        "region": "swedencentral",
+                        "dataZone": "EU",
+                        "sku": "GlobalStandard",
+                        "deploymentName": "only-global-eu-glbl",
+                    }
+                ],
+            }
+        ]
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp) / "catalog.json"
+        path.write_text(json.dumps(catalog), encoding="utf-8")
+        settings = make_settings(data_residency="eu", model_catalog_path=str(path))
+        with pytest.raises(RuntimeError) as err:
+            settings.validate_runtime()
 
     message = str(err.value)
     assert "no conversational model" in message

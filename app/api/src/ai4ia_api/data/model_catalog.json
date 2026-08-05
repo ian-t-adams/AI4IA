@@ -55,10 +55,22 @@
           "deploymentName": "gpt-5.6-sol-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5.6-sol-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-5.6-sol-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5.6-sol-slurmfactory-swedencentral-dz"
         }
       ]
     },
@@ -85,10 +97,22 @@
           "deploymentName": "gpt-5.6-terra-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5.6-terra-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-5.6-terra-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5.6-terra-slurmfactory-swedencentral-dz"
         }
       ]
     },
@@ -115,10 +139,22 @@
           "deploymentName": "gpt-5.6-luna-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5.6-luna-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-5.6-luna-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5.6-luna-slurmfactory-swedencentral-dz"
         }
       ]
     },
@@ -146,10 +182,22 @@
           "deploymentName": "gpt-5.4-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5.4-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-5.4-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5.4-slurmfactory-swedencentral-dz"
         }
       ]
     },
@@ -270,10 +318,22 @@
           "deploymentName": "gpt-5-nano-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5-nano-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-5-nano-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5-nano-slurmfactory-swedencentral-dz"
         }
       ]
     },
@@ -299,10 +359,22 @@
           "deploymentName": "o3-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "o3-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "o3-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "deploymentName": "o3-slurmfactory-swedencentral-dz"
         }
       ]
     },
@@ -459,10 +531,22 @@
           "deploymentName": "Mistral-Large-3-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "Mistral-Large-3-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "Mistral-Large-3-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "deploymentName": "Mistral-Large-3-slurmfactory-swedencentral-dz"
         }
       ]
     },
@@ -490,10 +574,22 @@
           "deploymentName": "gpt-5.4-mini-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5.4-mini-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-5.4-mini-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5.4-mini-slurmfactory-swedencentral-dz"
         }
       ]
     },
@@ -552,10 +648,22 @@
           "deploymentName": "gpt-5-mini-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5-mini-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-5-mini-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5-mini-slurmfactory-swedencentral-dz"
         }
       ]
     },
@@ -576,10 +684,22 @@
           "deploymentName": "model-router-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "model-router-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "model-router-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "deploymentName": "model-router-slurmfactory-swedencentral-dz"
         }
       ]
     },
@@ -624,10 +744,22 @@
           "deploymentName": "gpt-image-1.5-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-image-1.5-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-image-1.5-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-image-1.5-slurmfactory-swedencentral-dz"
         }
       ]
     },
@@ -750,10 +882,22 @@
           "deploymentName": "text-embedding-3-large-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "text-embedding-3-large-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
           "deploymentName": "text-embedding-3-large-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "deploymentName": "text-embedding-3-large-slurmfactory-swedencentral-dz"
         }
       ]
     },

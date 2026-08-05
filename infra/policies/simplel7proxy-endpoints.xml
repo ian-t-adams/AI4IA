@@ -43,6 +43,10 @@
         catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk5&quot;]);
         catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk6&quot;]);
         catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk7&quot;]);
+        catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk8&quot;]);
+        catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk9&quot;]);
+        catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk10&quot;]);
+        catalog.Merge((JObject)context.Variables[&quot;backendCatalogChunk11&quot;]);
         return catalog;
     }" />
 
@@ -53,15 +57,15 @@
     <set-variable name="priorityCfg" value="@{
         return new JObject(
             new JProperty(&quot;1&quot;, new JObject(
-                new JProperty(&quot;retryCount&quot;, 2),
+                new JProperty(&quot;retryCount&quot;, 4),
                 new JProperty(&quot;requeue&quot;, true)
             )),
             new JProperty(&quot;2&quot;, new JObject(
-                new JProperty(&quot;retryCount&quot;, 2),
+                new JProperty(&quot;retryCount&quot;, 4),
                 new JProperty(&quot;requeue&quot;, true)
             )),
             new JProperty(&quot;3&quot;, new JObject(
-                new JProperty(&quot;retryCount&quot;, 2),
+                new JProperty(&quot;retryCount&quot;, 4),
                 new JProperty(&quot;requeue&quot;, true)
             ))
         );
