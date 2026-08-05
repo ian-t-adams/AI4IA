@@ -1,3 +1,5 @@
+import pytest
+
 from ai4ia_api.agents.tools import (
     DenyReason,
     ToolRegistry,
@@ -123,6 +125,45 @@ def test_redact_long_opaque_token():
 
 def test_redact_leaves_short_words_alone():
     assert redact("hello world 1/2") == "hello world 1/2"
+
+
+# The shape a credential actually arrives in when a tool fails: a decoded JSON
+# error body from the API, the gateway, or an MCP server. `\s*[=:]` cannot cross
+# the label's own closing quote, so `"api_key": "..."` was not matched at all.
+#
+# `_LONG_TOKEN_RE` hid how wide that gap was, because a real APIM subscription
+# key is 32 hex characters and a JWT is longer, so both were masked by the
+# length rule whatever their shape. What passed through intact was every
+# credential *under* 32 characters -- a user's BYO MCP password, a base64
+# basic-auth blob -- which is precisely the class the length rule cannot help
+# with. Parametrized over the short values for that reason.
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "hunter2!",  # short password
+        "dXNlcjpwYXNzd29yZA==",  # base64 basic-auth, 20 chars
+        "sk-短い",  # non-ASCII, still short
+    ],
+)
+@pytest.mark.parametrize(
+    "template",
+    [
+        '{{"api_key": "{}"}}',
+        '{{"password": "{}"}}',
+        '{{"subscriptionKey": "{}"}}',
+        '{{"authorization": "{}"}}',
+        "Ocp-Apim-Subscription-Key: {}",
+        "S7P-KEY: {}",
+    ],
+)
+def test_redact_masks_short_credentials_in_json_and_header_shapes(template, secret):
+    assert secret not in redact(template.format(secret))
+
+
+def test_redact_does_not_mask_ordinary_json():
+    """The fix must not turn every quoted JSON value into a redaction."""
+    payload = '{"model": "gpt-5.2", "tokens": 41, "region": "eastus2"}'
+    assert redact(payload) == payload
 
 
 def test_redact_obj_masks_secret_keys_and_nested():

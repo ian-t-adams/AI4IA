@@ -73,8 +73,16 @@ _SECRET_QUERY_RE = re.compile(
     re.IGNORECASE,
 )
 _SECRET_VALUE_RE = re.compile(
-    r"(\b(?:api[_-]?key|access[_-]?token|token|authorization|secret|password)"
-    r"\b\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+    # `\"?` before the separator is load-bearing: in JSON the label's own closing
+    # quote sits between the name and the colon (`"api_key": "..."`), and
+    # `\s*[:=]` cannot cross it. This script's inputs are parsed frames rather
+    # than raw bodies, so the shape is less likely here than in
+    # `post-deploy-verify.py` -- but the same omission left a real gap in the
+    # API's `redact()` for credentials under 32 characters, so the three copies
+    # are kept consistent rather than each relying on its own inputs staying
+    # narrow. If you unify these, unify toward the stricter pattern.
+    r"(\b(?:api[_-]?key|subscription[_-]?key|access[_-]?token|token|authorization"
+    r"|secret|password)\b\"?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;}]+)",
     re.IGNORECASE,
 )
 

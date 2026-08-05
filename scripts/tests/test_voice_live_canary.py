@@ -297,6 +297,40 @@ class VoiceLiveCanaryTests(unittest.TestCase):
         )
         self.assertNotIn(token, close.reason or "")
 
+    def test_credentials_are_redacted_in_json_and_header_shapes(self) -> None:
+        """The label's own closing quote must not hide the value behind it.
+
+        `\\s*[:=]` cannot cross the `"` in `{"api_key": "..."}`, so without an
+        optional quote before the separator the most common shape a credential
+        arrives in is not matched at all. The same omission left a real gap in
+        the API's `redact()` for credentials under 32 characters -- longer ones
+        were masked by an unrelated length rule, which hid how wide it was.
+
+        Short values on purpose: a 32+ character token is caught by `_JWT_RE` or
+        by length elsewhere, so only short ones prove this pattern works.
+        """
+        for secret in ("hunter2!", "dXNlcjpwYXNzd29yZA=="):
+            for template in (
+                '{{"api_key": "{}"}}',
+                '{{"subscription_key": "{}"}}',
+                '{{"authorization": "{}"}}',
+                '{{"password": "{}"}}',
+                "api_key: {}",
+                "api_key={}",
+            ):
+                text = template.format(secret)
+                masked = canary._SECRET_VALUE_RE.sub(
+                    lambda m: m.group(1) + "******", text
+                )
+                self.assertNotIn(secret, masked, f"leaked from {text!r}")
+
+    def test_redaction_leaves_ordinary_json_alone(self) -> None:
+        payload = '{"type": "session.updated", "event_id": "event-1"}'
+        self.assertEqual(
+            canary._SECRET_VALUE_RE.sub(lambda m: m.group(1) + "******", payload),
+            payload,
+        )
+
     def test_close_while_waiting_for_history_ack_is_not_success(self) -> None:
         expected_ids = canary.expected_history_item_ids()
 
