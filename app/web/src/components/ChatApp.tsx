@@ -24,7 +24,9 @@ import type {
   DocumentSummary,
   Message,
   ModelEntry,
+  PendingToolApprovalPrompt,
   Session,
+  ToolApprovalDecision,
   VoiceTurnInput,
 } from "@/lib/types";
 import type { LibraryDocument } from "@/lib/library";
@@ -60,6 +62,7 @@ import { LibraryPanel } from "./LibraryPanel";
 import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage } from "./MessageList";
 import { Composer, type UploadItem } from "./Composer";
+import { ToolApprovalPanel } from "./ToolApprovalPanel";
 import {
   InlineVoiceLiveStatus,
   mergeDisplayMessages,
@@ -383,6 +386,13 @@ export function ChatApp() {
   );
   // Live agent activity for the in-flight turn (tool steps streamed as they run).
   const [liveSteps, setLiveSteps] = useState<ActivityStep[]>([]);
+  // Tool calls the server held pending this user's approval, with their
+  // one-time grants. Kept in component state only: the grant is delivered once
+  // on the stream and never persisted, so a reload deliberately drops it and
+  // the user is asked again rather than silently holding a live capability.
+  const [toolApprovals, setToolApprovals] = useState<
+    PendingToolApprovalPrompt[]
+  >([]);
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
@@ -2104,13 +2114,16 @@ export function ChatApp() {
   }, [libraryEnabled, libraryDocs]);
 
   const send = useCallback(
-    async (content: string) => {
+    async (content: string, approvals?: ToolApprovalDecision[]) => {
       if (streamingRef.current) return;
       if (!selectedModel) {
         setError("Select a model first.");
         return;
       }
       setError(null);
+      // A new turn supersedes any outstanding prompt: the grants not redeemed
+      // in `approvals` are simply abandoned, which is the denial path.
+      setToolApprovals([]);
       // Claim the in-flight slot synchronously so a rapid second submit can't
       // create a duplicate session or start an overlapping stream.
       streamingRef.current = true;
@@ -2367,7 +2380,7 @@ export function ChatApp() {
       };
 
       abortRef.current = api.streamChat(
-        { sessionId, content, model: selectedModel, params },
+        { sessionId, content, model: selectedModel, params, approvals },
         {
           onMetadata: (value) => {
             metadata = value;
@@ -2389,6 +2402,9 @@ export function ChatApp() {
           onStep: (step) => {
             bufferedSteps = [...bufferedSteps, step];
             if (ownsTurn()) setLiveSteps(bufferedSteps);
+          },
+          onApprovals: (prompts) => {
+            if (ownsTurn()) setToolApprovals(prompts);
           },
           onDone: () =>
             void finalize("complete", {
@@ -2721,6 +2737,23 @@ export function ChatApp() {
           onCitation={libraryEnabled ? handleCitation : undefined}
         />
         <InlineVoiceLiveStatus voice={inlineVoice} />
+        <ToolApprovalPanel
+          prompts={toolApprovals}
+          busy={streaming}
+          onApprove={(prompt) => {
+            void send(
+              `Approved: run ${prompt.label} with exactly the arguments I was shown.`,
+              [{ requestId: prompt.id, grant: prompt.grant }],
+            );
+          }}
+          onDeny={(prompt) => {
+            // Denial is the absence of a grant: drop it and never send it. No
+            // server round trip means no failure mode and nothing to hang on.
+            setToolApprovals((previous) =>
+              previous.filter((item) => item.id !== prompt.id),
+            );
+          }}
+        />
         <Composer
           disabled={streaming || !selectedModel}
           streaming={streaming}

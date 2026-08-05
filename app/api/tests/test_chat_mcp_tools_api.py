@@ -128,7 +128,14 @@ class _McpToolThenAnswerGateway:
 # --- Flag ON -----------------------------------------------------------------
 
 
-def test_trusted_mcp_tool_runs_in_chat_turn():
+def test_trusted_mcp_tool_needs_this_call_approved_then_runs(): 
+    """The P1-13 flow end-to-end: hold, prompt, approve, run.
+
+    A ``trusted`` server used to mean "execute with whatever arguments the model
+    produced", which is precisely the authority an indirect prompt injection
+    borrows. Now the first turn holds the call and mints a server-side approval
+    record; only a turn that presents the matching one-time grant executes it.
+    """
     connector = FakeMcpConnector(
         [_FORECAST],
         call_results={"forecast": McpToolResult(content="Sunny and 75F")},
@@ -137,18 +144,47 @@ def test_trusted_mcp_tool_runs_in_chat_turn():
     try:
         _register_server(c, trusted=True)
         _create_agent(c)
-        gw = _McpToolThenAnswerGateway()
-        c.app.state.gateway = gw
+        c.app.state.gateway = _McpToolThenAnswerGateway()
         sid = _create_session(c)
 
-        resp = c.post(
+        held = c.post(
             "/api/chat",
             json={"sessionId": sid, "content": "@weatherbot forecast?", "stream": False},
         )
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["message"]["content"] == "Clear skies."
-        assert gw.calls == 2
-        assert gw.saw_tool_result is True
+        assert held.status_code == 200, held.text
+        # Nothing left the network, and the user was asked.
+        assert connector.tool_calls == []
+        approvals = held.json()["approvals"]
+        assert len(approvals) == 1
+        prompt = approvals[0]
+        assert prompt["label"] == "mcp:weather/forecast"
+        assert prompt["host"] == "mcp.example.com"
+        assert prompt["risk"] == "external"
+        assert prompt["grant"]
+
+        # The durable record is on the assistant message -- and carries only the
+        # grant's hash, so reading the conversation confers no ability to approve.
+        messages = c.get(f"/api/sessions/{sid}/messages").json()
+        stored = messages[-1]["pendingApprovals"]
+        assert len(stored) == 1
+        assert stored[0]["id"] == prompt["id"]
+        assert "grant" not in stored[0]
+        assert prompt["grant"] not in json.dumps(messages)
+
+        c.app.state.gateway = _McpToolThenAnswerGateway()
+        approved = c.post(
+            "/api/chat",
+            json={
+                "sessionId": sid,
+                "content": "@weatherbot yes, go ahead",
+                "stream": False,
+                "approvals": [
+                    {"requestId": prompt["id"], "grant": prompt["grant"]}
+                ],
+            },
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["message"]["content"] == "Clear skies."
         # The remote tool was actually invoked against its own endpoint.
         assert len(connector.tool_calls) == 1
         endpoint, tool, _args, _auth = connector.tool_calls[0]

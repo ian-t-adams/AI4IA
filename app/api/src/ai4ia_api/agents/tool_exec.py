@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from .approvals import ApprovalPolicy, ApprovalSink
 from .tools import ToolRegistry, ToolRisk, ToolSpec
 
 # A handler maps validated arguments + context to a JSON-serializable result. It
@@ -44,6 +45,14 @@ class ToolContext:
     ``target_hosts`` is required by the registry's egress allowlist check; built-in
     tools reach no network and pass an empty set, but egress-capable tools must
     derive their target hosts and supply them so authorization can gate them.
+
+    ``approvals`` is the **standing** set (a tool the caller blessed for the whole
+    turn); ``invocation_approvals`` is the per-call set keyed by
+    ``approvals.approval_key(tool, arguments_digest)``. They are separate on
+    purpose: the standing set decides what the model is even *shown*
+    (:meth:`ToolExecutor.schema_for`), because a tool the model can never request
+    is a tool the user can never be asked to approve; the per-call set decides
+    what actually *runs*. See :mod:`ai4ia_api.agents.approvals`.
     """
 
     granted_scopes: frozenset[str] = field(default_factory=frozenset)
@@ -54,6 +63,21 @@ class ToolContext:
     # Empty for built-ins. The runtime resolves selected names through this
     # map before it produces the first gateway tool schema.
     tool_aliases: Mapping[str, str] = field(default_factory=dict)
+    # --- Per-invocation approval (see agents/approvals.py) -------------------
+    # Defaults reproduce the pre-existing behavior exactly, so every construction
+    # site that has not opted in (workflows, built-in-only agent turns, tests)
+    # is byte-for-byte unchanged. The chat router opts in for MCP turns.
+    approval_policy: ApprovalPolicy = ApprovalPolicy.off
+    # True when this turn carried untrusted content (documents, recalled memory,
+    # library excerpts). The runtime additionally sets its own local taint once
+    # any tool result has come back inside the turn.
+    untrusted_context: bool = False
+    # ``approval_key(tool, digest)`` entries the user has already approved for
+    # THIS turn, redeemed server-side from durable pending records.
+    invocation_approvals: frozenset[str] = field(default_factory=frozenset)
+    # Collector the runtime records denied-pending-approval calls into, so the
+    # surface owning the turn can mint, persist and stream them.
+    approval_sink: ApprovalSink | None = None
 
 
 @dataclass(frozen=True)

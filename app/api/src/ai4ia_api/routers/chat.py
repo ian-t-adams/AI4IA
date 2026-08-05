@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 import secrets
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -26,7 +26,7 @@ from ..auth.dependencies import get_current_user
 from ..catalog import DeploymentOption, ModelCatalog, ModelEntry
 from ..conversations.policy import resolve_conversation_policy
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
-from ..logging_setup import get_correlation_id
+from ..logging_setup import emit_custom_event, emit_security_block, get_correlation_id
 from ..sessions.models import (
     ActivityStep,
     Message,
@@ -50,6 +50,15 @@ from ..agents.command_service import (
 from ..agents.commands import CommandKind, parse_input
 from ..agents.runtime import AgentRunResult, AgentStep, run_agent_turn
 from ..agents.activity import persisted_trace, serialize_step
+from ..agents.approvals import (
+    ApprovalDraft,
+    ApprovalPolicy,
+    ApprovalSink,
+    PendingToolApproval,
+    consume_grant,
+    invocation_approvals_for,
+    mint_pending_approval,
+)
 from ..agents.summarization import SummarizationService
 from ..agents.mcp_execution import McpPlane, build_mcp_turn_tools_multi
 from ..agents.mcp_servers import is_mcp_tool_name
@@ -121,6 +130,24 @@ class ChatParams(BaseModel):
     reasoning_effort: str | None = Field(default=None, max_length=32)
 
 
+class ToolApprovalDecision(BaseModel):
+    """One redeemed per-invocation tool approval, as a strict allowlist.
+
+    FastAPI is the trust boundary (same reasoning as :class:`ChatParams`): the
+    client may present only a request id and the one-time grant string the server
+    handed it. Everything the approval actually authorizes — which tool, which
+    exact arguments, whose session, until when, and whether it has been used —
+    is read from the server's own durable record, never from this payload. A
+    caller who invents fields, or edits the arguments it "approved", changes
+    nothing; see ``agents/approvals.py``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    requestId: str = Field(min_length=1, max_length=64)
+    grant: str = Field(min_length=1, max_length=256)
+
+
 class ChatRequest(BaseModel):
     sessionId: str
     content: str
@@ -129,6 +156,10 @@ class ChatRequest(BaseModel):
     dataZone: str | None = None
     stream: bool = True
     params: ChatParams = ChatParams()
+    # Per-invocation tool approvals the user granted in response to a prompt
+    # raised by an earlier turn in THIS session. Bounded so a caller cannot make
+    # the redemption pass unbounded work.
+    approvals: list[ToolApprovalDecision] = Field(default_factory=list, max_length=8)
 
 
 # Injected as a system block when a plain (agent-less or tool-less-agent) turn
@@ -329,6 +360,89 @@ def _has_gateway_stream_error(raw: str) -> bool:
     return isinstance(payload, dict) and bool(payload.get("error"))
 
 
+# --- Per-invocation tool approval (see agents/approvals.py) --------------------
+
+
+def _mint_approval_events(
+    assistant: Message, drafts: Sequence[ApprovalDraft]
+) -> list[dict[str, object]]:
+    """Attach durable pending-approval records to ``assistant`` and return the
+    client payloads (record + its one-time grant).
+
+    Splitting mint from persist is the point: the record that lands in Cosmos
+    carries only ``grantHash``, while the grant itself exists solely in the
+    payload returned to the caller, once. Nothing else can reconstruct it.
+    """
+    if not drafts:
+        return []
+    records: list[PendingToolApproval] = []
+    events: list[dict[str, object]] = []
+    for draft in drafts:
+        record, grant = mint_pending_approval(draft)
+        records.append(record)
+        events.append({**record.model_dump(mode="json"), "grant": grant})
+    assistant.pendingApprovals = records
+    return events
+
+
+async def _redeem_tool_approvals(
+    *,
+    repo: SessionRepository,
+    user_id: str,
+    prior: Sequence[Message],
+    decisions: Sequence[ToolApprovalDecision],
+) -> frozenset[str]:
+    """Redeem presented grants into this turn's per-invocation approval set.
+
+    ``prior`` is the caller's own session transcript as returned by
+    ``list_messages``, which ownership-checks every read — that is what binds an
+    approval to a user *and* a conversation: a grant minted in another session or
+    for another user simply has no record here, and the lookup fails closed.
+
+    Every rejection path is non-fatal by construction: an unknown, tampered,
+    expired, already-used or unpersistable approval yields no invocation key, the
+    gated call is denied again, and the turn ends normally with the model
+    explaining what it needs. Nothing here raises, and nothing here ever trusts
+    the client for *what* was approved.
+    """
+    if not decisions:
+        return frozenset()
+    index: dict[str, tuple[Message, PendingToolApproval]] = {}
+    for message in prior:
+        for record in message.pendingApprovals or []:
+            index.setdefault(record.id, (message, record))
+
+    granted: list[PendingToolApproval] = []
+    for decision in decisions:
+        found = index.get(decision.requestId)
+        message, record = found if found is not None else (None, None)
+        outcome = consume_grant(record, decision.grant)
+        if not outcome.granted or message is None or record is None:
+            reason = outcome.reason.value if outcome.reason else "denied"
+            emit_security_block("tool_approval", reason, "chat_router")
+            logger.info("tool approval rejected: reason=%s", reason)
+            continue
+        # Burn it BEFORE the turn runs. If that write fails we must not proceed:
+        # an approval we cannot record as spent is an approval that can be spent
+        # again, so persistence failure denies rather than degrades.
+        record.consumed = True
+        try:
+            await repo.upsert_message(user_id, message)
+        except Exception:  # noqa: BLE001 - fail closed, never break the turn
+            record.consumed = False
+            emit_security_block("tool_approval", "consume_failed", "chat_router")
+            logger.warning(
+                "could not record tool approval as consumed; denying", exc_info=True
+            )
+            continue
+        granted.append(record)
+        emit_custom_event(
+            "tool_approval",
+            {"tool": record.label, "source": "chat_router", "outcome": "granted"},
+        )
+    return invocation_approvals_for(granted)
+
+
 async def _persist_terminal_assistant(
     repo: SessionRepository,
     user_id: str,
@@ -445,6 +559,7 @@ async def _agentic_stream(
     extra_usage: list[TokenUsage] | None = None,
     fallback: Callable[[], Awaitable[tuple[str, TokenUsage]]] | None = None,
     get_attachments: Callable[[], list[MessageAttachment]] | None = None,
+    get_approval_drafts: Callable[[], list[ApprovalDraft]] | None = None,
 ) -> AsyncGenerator[str, None]:
     queue: asyncio.Queue = asyncio.Queue()
     sentinel = object()
@@ -510,6 +625,15 @@ async def _agentic_stream(
         assistant.steps = persisted
         if get_attachments is not None:
             assistant.attachments = get_attachments()
+        # Mint BEFORE the terminal write so the durable record and the message it
+        # belongs to land in one upsert, but hand the grants to the client only
+        # AFTER that write succeeds — a grant whose record was never saved would
+        # be unredeemable, and worse, would look approvable to the user.
+        approval_events = (
+            _mint_approval_events(assistant, get_approval_drafts())
+            if get_approval_drafts is not None
+            else []
+        )
         if content:
             yield f"data: {json.dumps({'choices': [{'delta': {'content': content}}]})}\n\n"
         terminal_persisted = await _persist_terminal_assistant(
@@ -518,6 +642,8 @@ async def _agentic_stream(
         if not terminal_persisted:
             yield f"data: {json.dumps({'error': 'The reply could not be saved.', 'persistenceFailed': True})}\n\n"
         else:
+            if approval_events:
+                yield f"data: {json.dumps({'approvals': approval_events})}\n\n"
             yield "data: [DONE]\n\n"
     except ModelGatewayError as exc:
         final = MessageStatus.error
@@ -1111,6 +1237,17 @@ async def chat(
         )
 
     prior = await repo.list_messages(user.internal_user_id, body.sessionId)
+    # Redeem any per-invocation tool approvals the user granted for a prompt this
+    # session raised earlier. Done here because it needs ``prior`` (the ownership-
+    # checked transcript that *is* the user+session binding) and must burn each
+    # grant before anything can run with it. Rejections are silent-and-safe: the
+    # turn proceeds with no approval and the gated call is denied again.
+    invocation_approvals = await _redeem_tool_approvals(
+        repo=repo,
+        user_id=user.internal_user_id,
+        prior=prior,
+        decisions=body.approvals,
+    )
     user_msg = Message(
         sessionId=body.sessionId,
         userId=user.internal_user_id,
@@ -1206,6 +1343,20 @@ async def chat(
             payload_messages.insert(insert_at, {"role": "system", "content": block})
             insert_at += 1
 
+    # Turn-level provenance taint. These four blocks are exactly the untrusted
+    # content this turn promoted into system messages: a rolling summary of prior
+    # turns, recalled per-user memory, session-uploaded documents, and library
+    # retrieval excerpts. Each is nonce-fenced, which stops delimiter forgery but
+    # is not an information-flow boundary — text inside a fence can still steer
+    # what the model decides to *do*. The runtime latches this ON further once any
+    # tool result comes back mid-turn.
+    #
+    # SEAM (stated plainly): this is a turn-level bit, not per-argument
+    # provenance. It answers "did untrusted content enter this turn", not "did
+    # THIS argument derive from it". Real dataflow tracking would tag each
+    # retrieved span and follow it into argument construction.
+    untrusted_context = bool(summary_block or memory_block or doc_block or library_block)
+
     payload_messages.append({"role": "user", "content": content_for_model})
 
     # Intent routing (best-effort, flag-gated). Deterministically
@@ -1258,7 +1409,26 @@ async def chat(
     # when streaming). Plain agents (no tools, no links) fall through to the direct
     # model path below, which keeps true token streaming.
     if agent is not None and (agent.tools or agent.links):
-        ctx = ToolContext(correlation_id=correlation_id)
+        # One sink per turn: the runtime records every call it held for approval,
+        # and the streaming/non-streaming tails below mint, persist and return
+        # them. Bounded and de-duplicating (see agents/approvals.py) so injected
+        # text cannot paper the UI with prompts until one is clicked through.
+        # Fail-secure lookup: if settings were somehow absent, gate everything
+        # rather than silently running ungated. A security control must not be
+        # switchable off by an attribute that isn't there.
+        approval_policy: ApprovalPolicy = getattr(
+            getattr(request.app.state, "settings", None),
+            "tool_approval_mode",
+            ApprovalPolicy.always,
+        )
+        approval_sink = ApprovalSink()
+        ctx = ToolContext(
+            correlation_id=correlation_id,
+            approval_policy=approval_policy,
+            untrusted_context=untrusted_context,
+            invocation_approvals=invocation_approvals,
+            approval_sink=approval_sink,
+        )
         # The registry/executor used for THIS turn. Default to the shared app
         # singletons; replaced below with a merged (built-ins + per-user MCP tools)
         # pair when the agent attaches any owned MCP tools and the feature is on.
@@ -1493,6 +1663,10 @@ async def chat(
                     planes=planes,
                     attached_tool_names=agent.tools,
                     correlation_id=correlation_id,
+                    approval_policy=approval_policy,
+                    untrusted_context=untrusted_context,
+                    invocation_approvals=invocation_approvals,
+                    approval_sink=approval_sink,
                 )
                 if built is not None:
                     turn_registry, turn_executor, ctx = built
@@ -1546,6 +1720,7 @@ async def chat(
                         user_message_id=user_msg.id,
                         extra_usage=usage_sink,
                         get_attachments=lambda: [*image_sink, *video_sink, *doc_sink],
+                        get_approval_drafts=approval_sink.drafts,
                     ),
                 ),
                 media_type="text/event-stream",
@@ -1580,6 +1755,7 @@ async def chat(
             attachments=[*image_sink, *video_sink, *doc_sink],
             steps=persisted_trace(run.steps) or None,
         )
+        approval_events = _mint_approval_events(assistant, approval_sink.drafts())
         await repo.add_message(user.internal_user_id, assistant)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
         await metering.record_completion(
@@ -1592,7 +1768,12 @@ async def chat(
             agent=agent_name,
             correlation_id=correlation_id,
         )
-        return {"sessionId": body.sessionId, "message": assistant}
+        reply: dict[str, object] = {"sessionId": body.sessionId, "message": assistant}
+        if approval_events:
+            # The one and only delivery of these grants; the persisted record
+            # keeps just their hashes.
+            reply["approvals"] = approval_events
+        return reply
 
     # Plain-chat tool loop (document compute + Web IQ search) — the MAIN chat's
     # coverage. The main chat (no @mentioned agent) has ``agent is None`` and never
