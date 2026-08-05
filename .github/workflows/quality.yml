@@ -266,3 +266,14 @@ jobs:
           # script records the Cosmos restorable-instance id, which stops being
           # queryable the moment the account is deleted.
           python3 -m unittest scripts.tests.test_teardown_data_loss_gate
+
+      - name: Run documented-path reachability tests
+        run: |
+          set -euo pipefail
+          # The Markdown link checker only validates [text](path) links. A bare
+          # `app/api/tests/foo.py` in backticks is not a link, so a rename leaves the
+          # doc rendering perfectly while citing a file that no longer exists -- which
+          # is exactly what happened to the repository audit. For a document whose
+          # value is that its claims are checkable, a citation resolving to nothing is
+          # worse than no citation. Globs and CHANGELOG.md are excluded by design.
+          python3 -m unittest scripts.tests.test_documented_paths_exist

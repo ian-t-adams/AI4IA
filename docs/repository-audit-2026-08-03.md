@@ -394,8 +394,16 @@ search, Voice Live/tools, summarization, custom tools, and Web IQ
 > `appEnvironment == 'prod'` is the only thing that forces it closed, and `prod` is
 > not the default. The lesson recorded for the next reader: a defaulted `False` in
 > `config.py` proves nothing on its own, because the deployment layer sets the
-> variable. `app/api/tests/test_deploy_defaults_fail_closed.py` now pins this
-> composition so it cannot drift silently in either direction.
+> variable. `app/api/tests/test_deploy_posture.py` now pins this composition so it
+> cannot drift silently in either direction.
+>
+> **Scope, so this is not misread.** This is a defect in the *default* path — what a
+> third party gets from a clean-room `azd up`, which is exactly the "click a button
+> and create the app from scratch" property this repo claims. It is **not** a
+> statement about the maintainer's running deployment, which was checked and is
+> correctly configured: `AI4IA_ENV=prod`, `AI4IA_AUTH_PROVIDER=entra`,
+> `AI4IA_ALLOW_DEV_AUTH=False`. The operator knew to set those. The finding is that
+> nothing makes a new operator set them, and nothing tells them they did not.
 
 This is suitable only as an explicitly labeled demo profile. Introduce
 `demo|production` profiles. Production must fail unless Entra, owner, publisher,
