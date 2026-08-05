@@ -22,10 +22,30 @@ $rg  = azd env get-value AZURE_RESOURCE_GROUP
   `DefaultResourceGroup-*`
 
 ## 0. Pre-flight (read-only)
+
+Two captures, and they cover different things. `inventory.ps1` records the
+**infrastructure** so `azd provision` can rebuild it.
+`capture-data-recovery-state.ps1` records the **data facts that stop existing when
+the resource group does** — the Cosmos restorable-instance id and restore window,
+a blob manifest, and Key Vault secret names.
+
 ```powershell
 ./scripts/inventory.ps1 -Subscription $sub -ResourceGroup $rg
+./scripts/capture-data-recovery-state.ps1 -Subscription $sub -ResourceGroup $rg
 ```
-Archive the resulting summary outside the target resource group so the rebuild is auditable and reversible.
+
+Archive both outside the target resource group so the rebuild is auditable and
+reversible.
+
+Read the capture summary rather than filing it. Two of its outputs decide whether
+step 2 is safe:
+
+- **`Blob: SIZE UNKNOWN`** means the probe could not read a container, not that
+  the container is empty. Listing blobs needs data-plane rights (Storage Blob
+  Data Reader); subscription Owner alone is not enough. Re-run with those rights
+  before treating "no blobs" as true.
+- **`secret names NOT captured`** means you will not know which users to tell that
+  their MCP credentials were purged.
 
 ## 1. Validate IaC in a PARALLEL resource group (no deletion yet)
 ```powershell
@@ -40,16 +60,22 @@ quota/capacity is sufficient in every region in `infra/models.json`. Fix IaC unt
 
 > **Stop.** This step is irreversible for data, not just for infrastructure. It
 > deletes canonical Cosmos state and uploaded blobs, and **purges** the Key Vault
-> holding per-user MCP credentials. Read [Rollback](#rollback) below and capture
-> the Cosmos account name plus a restore timestamp first.
+> holding per-user MCP credentials. Read [Rollback](#rollback) below and run the
+> step 0 capture first.
 
 ```powershell
 # Dry run first (lists resources, deletes nothing):
 ./scripts/teardown.ps1 -Subscription $sub -ResourceGroups $rg -PurgeNameFilter ai4ia
 
 # Execute:
-./scripts/teardown.ps1 -Subscription $sub -ResourceGroups $rg -PurgeNameFilter ai4ia -Force
+./scripts/teardown.ps1 -Subscription $sub -ResourceGroups $rg -PurgeNameFilter ai4ia -Force -AcknowledgeDataLoss
 ```
+
+`-Force` alone is refused (exit 2). `-Force` only ever acknowledged deleting the
+**infrastructure**, which this repo can rebuild; `-AcknowledgeDataLoss`
+acknowledges the part it cannot. Keeping them separate stops the irreversible
+acknowledgement from riding along with the routine one.
+
 This deletes the resource group and purges soft-deleted Cognitive/Key Vault resources
 matching the filter. The purge lists are **subscription-wide**, so choose a filter that
 matches only this stack — `-PurgeNameFilter` is mandatory for exactly that reason.
@@ -80,12 +106,12 @@ There is no in-place rollback after step 2. The inventory snapshot from step 0 p
 >   manifests)** has continuous backup with point-in-time restore, and the
 >   procedure is tested — see
 >   [`deployment.md`](./deployment.md#data-recovery-posture-know-this-before-you-need-it).
->   Restore targets a **new account**, so capture the source account name and a
->   restore timestamp *before* deleting the resource group; after deletion the
->   window is whatever that document states, not indefinite.
+>   Restore targets a **new account** and is addressed by the restorable-instance
+>   id, not the account name, so the step 0 capture records that id, the location
+>   and the window. After deletion those are no longer queryable.
 > - **Blob (uploaded source documents, generated images/videos)** has no restore
->   path here. Export anything you need to keep, outside the target resource
->   group, before step 2.
+>   path here. The step 0 capture lists what is there; export anything you need to
+>   keep, outside the target resource group, before step 2.
 > - **Key Vault (per-user BYO MCP credentials)** is soft-deleted, and step 2
 >   **purges** it. Purged secrets are unrecoverable; users must re-enter them.
 > - **Derived stores** (document chunks, the AI Search index, parsed artifacts)

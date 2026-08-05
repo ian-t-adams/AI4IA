@@ -8,6 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Data residency control** (`AI4IA_DATA_RESIDENCY`, #266/#267/#268). A four-tier
+  ladder — `global`, `zonal`, `us`, `eu` — enforced on `app.state.catalog`, the single
+  choke point every route resolves a deployment through, so no call site can widen it.
+  The key correction: residency derives from the deployment **SKU**, not endpoint
+  geography. A `GlobalStandard` deployment in Sweden Central is not EU-resident, so
+  labelling by region would have produced a residency claim the platform could not
+  honour. 24 `DataZoneStandard` deployments were added to make `us`/`eu` viable, plus
+  a `zonal` tier for models that offer a data zone in only one region. Startup refuses
+  rather than silently disabling an enabled feature whose model the policy excludes:
+  memory and library RAG previously failed *open* when their embedding model would not
+  resolve. The weakest true claim is surfaced in the model picker.
+- **Content-safety annotations are visible** (`safety.py`, `SafetyPanel`, #266). Foundry
+  returns a verdict for every category on every turn and the application discarded all
+  of it, so the safety system ran on every request and was invisible. Annotations are
+  now normalized, persisted on the message, and shown in a per-turn panel that states
+  plainly that nothing was blocked. `filtered: true` is always treated as notable, so
+  changing the policy to blocking would surface rather than change behaviour silently.
+- **`scripts/capture-data-recovery-state.ps1`** — records the Cosmos restore
+  coordinates, blob manifest and Key Vault secret names that stop being knowable once
+  the resource group is deleted. See Security below.
+- **`docs/repository-audit-2026-08-03.md`** (#265) — a dated, evidence-backed audit of
+  claimed versus served capability, code, docs, IaC, CI and UX, carrying a living
+  disposition table (#269) that records each finding's current status. The findings
+  themselves are deliberately not edited as they are fixed; an audit that rewrites
+  itself cannot be audited.
+
 - **Workflow runner UI: run, see the result, and know what a step can do**
   (`WorkflowBuilder.tsx`, `WorkflowRunReport.tsx`, `workflowCapabilities.ts`,
   `workflowRun.ts`). Running a workflow used to appear to produce nothing: the builder
@@ -263,6 +289,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Status and accent foregrounds are theme-aware** (#271). Every inline foreground
+  colour was a literal hex chosen against the light theme and applied to all three, so
+  it failed silently elsewhere. `color: "#fff"` on a `var(--accent)` fill measures
+  **1.07:1** in the high-contrast theme (white on its yellow accent) and 2.26:1 in
+  dark — and it sat on the primary action button of three panels, so the least legible
+  text on screen was in the theme that exists as the accessibility floor. `#b91c1c` for
+  an error message measures 2.67:1 on the dark surface, below even the large-text
+  floor. All 14 literals now resolve through tokens, and the missing `--warn` token was
+  added (it had no definition in any theme). Enforced by
+  `components/themeTokens.test.ts` and an extended `globals.contrast.test.ts`, which
+  also gained circular hue distance — `Math.abs` reported hue 350 and hue 10 as 340
+  apart rather than 20.
+- **Sharing no longer revokes an ACL when a read fails** (#266, `SharePanel`).
+- **The portal no longer presents stale evidence as live health** (#266): `healthy` now
+  requires a positive Resource Health signal rather than treating unknown as up. The
+  service count and narrow-screen reflow were corrected at the same time.
+- **The proxy flushes each SSE event** rather than buffering (#266), and the missing
+  `main` landmark was added.
+- **Region and data-zone constraints no longer relax silently** (#266). A request that
+  named an unavailable region previously fell back to any deployment.
+
 - **Durable workflow runs silently dropped per-step fields** (`workflows/durable.py`).
   Both sides of the orchestration payload hand-listed the fields they carried —
   `build_orchestration_payload` emitted `{agent, instruction}` and `_step_from_dict`
@@ -492,6 +539,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   compiler, zero-delete what-if for APIM changes, and the outstanding manual mic canary).
 
 ### Security
+
+- **Proxy-ingress credential no longer emitted, and the key was rotated** (#266).
+  `ProxyConfig.ValidateAuthKey1` held the proxy-ingress APIM subscription key and was
+  serialized unredacted into a startup config event, because the redactor matched key
+  paths by substring and `Key1` matches none of its terms. Fixed with an explicit
+  `ConfigOptionAttribute.Secret` flag plus a canary-based test that fails if any
+  secret-marked option reaches the serialized event. The key was then rotated in
+  production with zero downtime using the proxy's `ValidateAuthKey2` dual-accept slot
+  (old key verified 403, new key 200); the procedure is in
+  [`docs/runbooks/key-rotation.md`](docs/runbooks/key-rotation.md).
+  Measured scope, rather than assumed: `EVENT_LOGGERS` is unset in this deployment, so
+  the event went to an ephemeral in-container file, and searches of Application
+  Insights (`traces`, `customEvents`, `exceptions`) and `ContainerAppConsoleLogs_CL`
+  found no occurrence of either key. Both preconditions are configurable — re-check
+  before relying on that.
+- **Teardown now requires a separate data-loss acknowledgement** (`teardown.ps1`,
+  `capture-data-recovery-state.ps1`). `-Force` only ever acknowledged deleting the
+  *infrastructure*, which `azd provision` rebuilds. It also deleted blobs that have no
+  restore path and purged the Key Vault holding per-user BYO MCP credentials.
+  `-Force` without `-AcknowledgeDataLoss` is now refused before any `az` call (exit 2),
+  and the new capture script records what stops being knowable once the resource group
+  is gone: the Cosmos restorable-instance id, location and restore window; a blob
+  manifest; and Key Vault secret **names** (never values — the manifest is meant to be
+  copied out of the environment). It distinguishes "could not read" from "empty",
+  because reporting `0 blobs` for a container the caller lacked data-plane rights to
+  list would say "nothing to lose" immediately before an irreversible delete.
+- Client requests can no longer override server-owned model routing fields, and the
+  Responses-API Code Interpreter path sets `store: false` (#266).
+- SSRF host validation now rejects the CGNAT range `100.64.0.0/10` (#266).
+- The APIM subscription key is emitted as a `securestring` ARM output (#266).
 
 - `pypdf` raised past four CVEs, two HIGH. `CVE-2026-59935` / `CVE-2026-59936` are
   infinite loops in `page.extract_text()` during inline-image end-marker detection, which
