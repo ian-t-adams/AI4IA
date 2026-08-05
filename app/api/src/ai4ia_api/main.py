@@ -127,7 +127,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # tests (a fake socket) the same way app.state.gateway is.
         app.state.realtime_connector = AiohttpRealtimeConnector()
         app.state.voice_provider_catalog = load_voice_provider_catalog()
-        app.state.catalog = load_catalog(settings.model_catalog_path)
+        app.state.catalog = load_catalog(
+            settings.model_catalog_path, settings.data_residency
+        )
         app.state.agents = load_agent_catalog(settings.agent_catalog_path)
         # Tool-safety registry (governs) + executor (runs). Separate objects,
         # seeded together so a tool's safety contract and handler never drift.

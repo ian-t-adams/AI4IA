@@ -26,12 +26,62 @@ CONVERSATIONAL_CATEGORIES = frozenset(
     {"chat", "chat-fast", "reasoning", "reasoning-oss", "router", "research"}
 )
 
+# Data-residency policy tokens. ``global`` is the permissive default (any
+# deployment is usable); the others restrict routing to deployments whose
+# processing is bounded to that zone. Lowercase so they compare directly against
+# both the settings value and ``DeploymentOption.residency``.
+GLOBAL_RESIDENCY = "global"
+RESIDENCY_POLICIES = frozenset({GLOBAL_RESIDENCY, "us", "eu"})
+
 
 class DeploymentOption(BaseModel):
     region: str
     dataZone: str | None = None
     sku: str
     deploymentName: str
+
+    @computed_field
+    @property
+    def residency(self) -> str:
+        """Where this deployment's processing may actually occur.
+
+        This is deliberately NOT ``dataZone``. ``dataZone`` describes the
+        *endpoint's geography*; residency describes the *processing scope*, and
+        the two diverge for the SKU that serves almost every model here:
+
+        * ``GlobalStandard`` -- Azure may process the request in any region
+          worldwide, whatever the endpoint's geography. A GlobalStandard
+          deployment in Sweden Central is therefore ``global``, not ``eu``.
+          Labelling it ``eu`` (as ``dataZone`` alone does) is the exact claim a
+          sovereignty control must not make.
+        * ``DataZoneStandard`` -- bounded to the endpoint's data zone.
+        * ``Standard`` -- regional; processing stays in that region, which is
+          strictly stronger than its data zone, so reporting the data zone is
+          correct and conservative.
+
+        Values are lowercase (``global`` / ``us`` / ``eu``) so they compare
+        directly against :class:`~ai4ia_api.config.Settings.data_residency`.
+        """
+        if self.sku == "GlobalStandard":
+            return GLOBAL_RESIDENCY
+        if not self.dataZone:
+            # No recorded zone: fail OPEN on the label, not on the guarantee --
+            # "global" is the weakest claim, so an unknown zone can never be
+            # mistaken for a residency promise.
+            return GLOBAL_RESIDENCY
+        return self.dataZone.strip().lower()
+
+    def satisfies(self, policy: str) -> bool:
+        """Whether this deployment is usable under a residency ``policy``.
+
+        ``global`` accepts everything. A specific zone accepts only deployments
+        whose processing is bounded to that zone -- a ``global`` deployment does
+        NOT satisfy ``us`` or ``eu``, because "may process anywhere" cannot
+        satisfy "must stay here".
+        """
+        if policy == GLOBAL_RESIDENCY:
+            return True
+        return self.residency == policy
 
 
 class ModelEntry(BaseModel):
@@ -111,13 +161,34 @@ class ModelEntry(BaseModel):
 
 class ModelCatalog(BaseModel):
     models: list[ModelEntry]
+    # App-wide data-residency policy, set once at startup from
+    # ``Settings.data_residency``. It lives on the catalog rather than being
+    # passed per call because EVERY consumer reaches routing through the single
+    # ``app.state.catalog`` instance -- so the policy cannot be forgotten at a
+    # call site, which is what "server-authoritative" has to mean for a
+    # sovereignty control.
+    residencyPolicy: str = GLOBAL_RESIDENCY
 
     def get(self, model_id: str) -> ModelEntry | None:
         return next((m for m in self.models if m.id == model_id), None)
 
+    def eligible_options(self, entry: ModelEntry) -> list[DeploymentOption]:
+        """This model's deployments that are usable under the active policy."""
+        return [o for o in entry.options if o.satisfies(self.residencyPolicy)]
+
+    def available(self, entry: ModelEntry) -> bool:
+        """Whether the policy leaves this model reachable at all."""
+        return bool(self.eligible_options(entry))
+
     def conversational_models(self) -> list[ModelEntry]:
-        """Models the chat/agent pickers should offer (excludes capability models)."""
-        return [m for m in self.models if m.conversational]
+        """Models the chat/agent pickers should offer.
+
+        Excludes capability models, and -- under a restrictive residency policy
+        -- any model with no compliant deployment. Offering a model the policy
+        forbids would produce a confusing failure at send time instead of an
+        honest absence at selection time.
+        """
+        return [m for m in self.models if m.conversational and self.available(m)]
 
     def resolve_deployment(
         self, model_id: str, *, region: str | None = None, data_zone: str | None = None
@@ -138,16 +209,18 @@ class ModelCatalog(BaseModel):
         whichever one happened to match first is exactly the silent relocation
         this avoids.
 
-        NOTE: ``DeploymentOption.dataZone`` is derived from the endpoint's
-        geography (``infra/models.json`` ``regions``), not from the deployment's
-        SKU. A ``GlobalStandard`` deployment can process outside that geography,
-        so satisfying a ``data_zone`` constraint here is not by itself a
-        residency guarantee. Tracked in the repository audit as an open item.
+        The app-wide ``residencyPolicy`` is applied FIRST and cannot be widened
+        by a caller: a request may narrow routing further, never escape the
+        deployment's configured sovereignty envelope.
+
+        NOTE: a caller-supplied ``data_zone`` filters on the endpoint's
+        geography (``DeploymentOption.dataZone``), which is a weaker statement
+        than ``residency``. Use the policy for an actual guarantee.
         """
         entry = self.get(model_id)
         if entry is None or not entry.options:
             return None
-        options = list(entry.options)
+        options = self.eligible_options(entry)
         if region:
             options = [o for o in options if o.region == region]
         if data_zone:
@@ -205,6 +278,15 @@ def _load_raw(explicit_path: str | None) -> dict[str, Any]:
 
 
 @lru_cache
-def load_catalog(explicit_path: str | None = None) -> ModelCatalog:
+def load_catalog(
+    explicit_path: str | None = None, residency: str = GLOBAL_RESIDENCY
+) -> ModelCatalog:
+    """Load the catalog under a data-residency ``policy``.
+
+    An unrecognised policy fails closed to the most permissive value rather than
+    silently filtering everything out; ``Settings`` validates the value first, so
+    reaching that branch means a caller bypassed configuration.
+    """
     raw = _load_raw(explicit_path)
-    return ModelCatalog(models=raw["models"])
+    policy = residency if residency in RESIDENCY_POLICIES else GLOBAL_RESIDENCY
+    return ModelCatalog(models=raw["models"], residencyPolicy=policy)
