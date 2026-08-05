@@ -140,8 +140,21 @@ class ToolRegistry:
 _REDACTED = "***REDACTED***"
 # key=value / key: value pairs where the key names a credential.
 _KV_SECRET_RE = re.compile(
-    r"(?i)\b(api[_-]?key|secret|token|password|passwd|authorization|client[_-]?secret)\b"
-    r"(\s*[=:]\s*)(\S+)"
+    # Label alternation covers the names this stack actually carries, not only
+    # generic ones: APIM's `Ocp-Apim-Subscription-Key` and the bare
+    # `subscription-key` form appear in gateway error bodies, and the proxy's
+    # `S7P-KEY` in proxy errors. None of them contains a substring that
+    # `api[_-]?key` matches.
+    r"(?i)\b(api[_-]?key|subscription[_-]?key|ocp-apim-subscription-key|s7p-key"
+    r"|secret|token|password|passwd|authorization|client[_-]?secret)\b"
+    # `\"?` is load-bearing. In JSON the label's own closing quote sits between
+    # the name and the colon (`"api_key": "..."`), and `\s*[=:]` cannot cross it,
+    # so without this the most common shape a credential arrives in -- a decoded
+    # JSON error body from the API, the gateway or an MCP server -- was not
+    # matched at all. `_LONG_TOKEN_RE` masked the >=32-char cases (real APIM
+    # keys, JWTs) and hid how wide the gap was; short credentials such as a
+    # user's BYO MCP password or a base64 basic-auth blob passed through intact.
+    r"(\"?\s*[=:]\s*\"?)([^\"\s,;}]+)"
 )
 # Opaque high-entropy tokens (PATs, keys). Dotted values like JWTs are redacted
 # segment-by-segment, which still removes the sensitive material.
