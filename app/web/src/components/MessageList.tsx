@@ -6,7 +6,13 @@
 // through the same-origin API proxy, never directly from storage.
 
 import { useEffect, useRef, useState } from "react";
-import type { ActivityStep, Message, MessageAttachment } from "@/lib/types";
+import type {
+  ActivityStep,
+  Message,
+  MessageAttachment,
+  MessageSafety,
+  SafetySignal,
+} from "@/lib/types";
 import { fetchImageArtifact, fetchVideoArtifact, fetchDocumentArtifact } from "@/lib/api";
 import { useSpeechPlayback, type SpeechState } from "@/lib/voice";
 import { Markdown } from "@/components/Markdown";
@@ -23,6 +29,87 @@ interface DisplayMessage {
   source?: Message["source"];
   // Agent activity: streamed live while pending, persisted for the finished turn.
   steps?: ActivityStep[] | null;
+  // Annotate-only content-safety verdicts for the turn.
+  safety?: MessageSafety | null;
+}
+
+// Human-readable names for the categories Foundry reports. Unknown categories
+// fall back to their raw key rather than being hidden, so a newly added filter
+// still surfaces.
+const SAFETY_LABELS: Record<string, string> = {
+  hate: "Hate",
+  sexual: "Sexual",
+  selfharm: "Self-harm",
+  self_harm: "Self-harm",
+  violence: "Violence",
+  jailbreak: "Jailbreak attempt",
+  protected_material_text: "Protected material (text)",
+  protected_material_code: "Protected material (code)",
+};
+
+function safetyLabel(category: string): string {
+  return SAFETY_LABELS[category] ?? category.replace(/_/g, " ");
+}
+
+function isNotable(s: SafetySignal): boolean {
+  if (s.filtered) return true;
+  if (s.detected != null) return s.detected;
+  return s.severity != null && s.severity !== "safe";
+}
+
+// Renders the content-safety verdicts for a turn.
+//
+// Every model runs under an annotate-only policy: the filters are enabled but
+// never block. That makes this panel the ONLY place the safety system is
+// observable — without it the filters run on every turn and no one can see or
+// judge what they found. It is deliberately descriptive: it reports what the
+// platform observed and never implies the answer was withheld or altered.
+function SafetyPanel({ safety }: { safety: MessageSafety }) {
+  const signals = safety.signals ?? [];
+  if (signals.length === 0) return null;
+
+  const notable = signals.filter(isNotable);
+  const summary =
+    notable.length > 0
+      ? `Content safety · ${notable.length} flagged`
+      : "Content safety · nothing flagged";
+
+  const rows = [...signals]
+    .sort((a, b) => Number(isNotable(b)) - Number(isNotable(a)))
+    .map((s, i) => {
+      const verdict =
+        s.detected != null
+          ? s.detected
+            ? "detected"
+            : "not detected"
+          : (s.severity ?? "unknown");
+      return (
+        <div key={i} className={`safety-row${isNotable(s) ? " flagged" : ""}`}>
+          {/* Never colour alone: the flagged state is carried by text too. */}
+          <span className="safety-glyph" aria-hidden="true">
+            {isNotable(s) ? "▲" : "•"}
+          </span>
+          <span className="safety-label">{safetyLabel(s.category)}</span>
+          <span className="safety-scope">
+            {s.scope === "prompt" ? "your message" : "the reply"}
+          </span>
+          <span className="safety-verdict">{verdict}</span>
+        </div>
+      );
+    });
+
+  return (
+    <details className="activity activity-trace safety-trace">
+      <summary>{summary}</summary>
+      <div className="activity-rows">
+        <p className="safety-note">
+          These are advisory labels from the model platform. Nothing was blocked
+          or rewritten — the full response is shown as generated.
+        </p>
+        {rows}
+      </div>
+    </details>
+  );
 }
 
 // A small glyph for a finalized step's outcome (running steps show a spinner).
@@ -434,6 +521,9 @@ function Bubble({
         ) : msg.steps && msg.steps.length > 0 ? (
           <ActivityPanel steps={msg.steps} live={false} />
         ) : null}
+        {/* Annotate-only safety verdicts, shown once the turn is settled so a
+            partial verdict is never presented as final. */}
+        {!msg.pending && msg.safety ? <SafetyPanel safety={msg.safety} /> : null}
         {msg.attachments?.map((att) =>
           att.kind === "image" ? (
             <ImageAttachmentView key={att.id} attachment={att} />

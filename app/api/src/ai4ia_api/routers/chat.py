@@ -79,6 +79,7 @@ from ..documents.analyze_factory import InlineAttachmentAnalysisService
 from ..memory.recall_capability import RECALL_TOOL_NAME
 from ..memory.remember_capability import REMEMBER_TOOL_NAME
 from ..memory.service import MemoryServiceProtocol
+from ..safety import MessageSafety, merge_safety, parse_safety
 from ..usage.models import TokenUsage
 from ..usage.service import UsageService
 from ..websearch.capability import WEB_SEARCH_TOOL_NAME
@@ -1823,6 +1824,9 @@ async def chat(
             status=MessageStatus.complete,
             model=deployment.deploymentName,
             agent=agent_name,
+            # Annotate-only safety verdicts. Under a non-blocking RAI policy
+            # these are the only visible evidence the filters ran at all.
+            safety=parse_safety(result),
         )
         await repo.add_message(user.internal_user_id, assistant)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
@@ -1856,6 +1860,7 @@ async def chat(
         final = MessageStatus.complete
         saw_done = False
         stream_usage: dict | None = None
+        stream_safety: MessageSafety | None = None
         terminal_persisted = False
         try:
             yield _stream_metadata(user_msg.id, assistant.id)
@@ -1868,6 +1873,12 @@ async def chat(
             ):
                 if chunk.usage:
                     stream_usage = chunk.usage
+                if chunk.safety is not None:
+                    # Prompt verdicts arrive on an early chunk and completion
+                    # verdicts on a later one, so the full picture only exists
+                    # after merging across the stream.
+                    stream_safety = merge_safety(stream_safety, chunk.safety)
+                    assistant.safety = stream_safety
                 if chunk.raw and _has_gateway_stream_error(chunk.raw):
                     final = MessageStatus.error
                     assistant.content = "".join(parts)

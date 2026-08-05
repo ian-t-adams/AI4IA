@@ -15,6 +15,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from ..safety import MessageSafety
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -126,6 +128,17 @@ class Message(BaseModel):
     # Present only on the assistant reply produced by /summarize. Repositories
     # use it to fence and purge replies superseded by clear/newer summaries.
     summaryVersion: int | None = None
+    # Annotate-only content-safety verdicts Foundry reported for this turn.
+    # Every model runs under a non-blocking RAI policy, so these are the ONLY
+    # visible output of the safety system: nothing is refused, so nothing is
+    # apparent unless it is shown. ``None`` means the provider reported no
+    # annotations (older rows, non-Azure surfaces, or tool-only turns) and is
+    # deliberately distinct from an empty list, which would mean "the filters
+    # ran and found nothing".
+    #
+    # Additive and optional, exactly like ``steps``/``summaryVersion``: existing
+    # Cosmos documents lack the field and deserialize to None, so no migration.
+    safety: MessageSafety | None = None
     createdAt: datetime = Field(default_factory=_now)
 
 

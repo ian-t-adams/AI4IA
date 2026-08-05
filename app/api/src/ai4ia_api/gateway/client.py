@@ -18,6 +18,7 @@ import httpx
 from ..config import GatewayAuthMode, GatewayProviderStyle, Settings
 from ..http_retry import request_with_retry
 from ..model_traits import is_reasoning_deployment
+from ..safety import MessageSafety, parse_safety
 from .priority import PRIORITY_HEADER, get_request_priority
 
 # Azure OpenAI reasoning models (the GPT-5 family and the o-series) reject the
@@ -239,6 +240,10 @@ class ChatChunk:
     raw: str = ""
     done: bool = False
     usage: dict[str, Any] | None = None
+    # Annotate-only content-safety verdicts reported on this chunk, if any.
+    # Azure reports prompt annotations early and completion annotations later in
+    # the stream, so callers merge across chunks (``safety.merge_safety``).
+    safety: MessageSafety | None = None
 
 
 def _default_chat_path(style: GatewayProviderStyle) -> str:
@@ -941,7 +946,9 @@ def parse_sse_line(line: str) -> ChatChunk | None:
             delta += piece
     # The final usage chunk (when include_usage is set) has empty ``choices`` and
     # a populated ``usage`` object; surface it so the caller can meter the turn.
-    return ChatChunk(delta=delta, raw=payload, usage=obj.get("usage"))
+    return ChatChunk(
+        delta=delta, raw=payload, usage=obj.get("usage"), safety=parse_safety(obj)
+    )
 
 
 def _parse_responses_event(payload: str) -> ChatChunk | None:
