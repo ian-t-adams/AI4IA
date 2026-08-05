@@ -35,6 +35,9 @@
     "apiAuthProvider": {
       "value": "${AI4IA_AUTH_PROVIDER=dev}"
     },
+    "apiAllowDevAuth": {
+      "value": "${AI4IA_ALLOW_DEV_AUTH=false}"
+    },
     "entraTenantId": {
       "value": "${AI4IA_ENTRA_TENANT_ID=}"
     },

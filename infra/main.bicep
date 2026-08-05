@@ -67,7 +67,7 @@ param appEnvironment string = 'dev'
 param apiAuthProvider string = 'dev'
 
 @description('Permit dev auth outside local (non-prod demos without Entra). Forced false in prod.')
-param apiAllowDevAuth bool = true
+param apiAllowDevAuth bool = false
 
 @description('Entra tenant ID (required when apiAuthProvider == entra).')
 param entraTenantId string = ''

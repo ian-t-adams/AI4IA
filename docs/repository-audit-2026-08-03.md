@@ -102,7 +102,7 @@ Verified against the tree at `main` on 2026-08-05, not from memory.
 | P0-2 annotation-only filters | **Accepted**; annotations now surfaced | #266 + owner decision |
 | P1-1 client can override server-owned model fields | **Fixed** | #266 |
 | P1-2 Code Interpreter retention/metering | **Partially fixed** — `store:false` locked; entitlement/usage accounting still absent | #266 |
-| P1-3 fresh azd deploy is public + dev auth | **Open** — re-verified 2026-08-05: `apiAllowDevAuth` defaults **true** in `main.bicep:70` and reaches the container, so stock defaults *serve* with client-controlled `X-Dev-User` identity. Only `appEnvironment == 'prod'` forces it closed | — |
+| P1-3 fresh azd deploy is public + dev auth | **Auth half fixed** — `apiAllowDevAuth` now defaults `false` and is a real azd variable, so a clean-room deploy refuses to start instead of trusting `X-Dev-User`. **Still open**: every feature flag defaults on, and there is no budget/alert gate — the `demo|production` profile split | #279 |
 | P1-4 gateway-only routing is convention, not IAM | **Open** — `disableLocalAuth` still defaults false | — |
 | P1-5 APIM key is a non-secure output | **Fixed** — compiled ARM emits `securestring` | #266 |
 | P1-6 no post-deploy proof or rollback | **Fixed** — pre-deploy revision capture, hard rollout/health/web/proxy/domain assertions, an authenticated gateway canary, and automatic rollback. Does not cover a cancelled run or job timeout | #274 |
@@ -122,16 +122,16 @@ Selected P2 items also closed: CGNAT SSRF gap, portal service counts, portal
 narrow-screen reflow, the missing `main` landmark, the APIM compiler harness
 rejecting its own shards, and two documentation current-state contradictions.
 
-**What is still open, and why.** Four of the five remaining items are one decision,
-not four: `main.parameters.json` still defaults to `${AI4IA_APP_ENVIRONMENT=dev}` and
-`${AI4IA_AUTH_PROVIDER=dev}`, and `apiAllowDevAuth` defaults `true`, so a stock
-`azd up` serves publicly with client-controlled identity (mechanism verified in
-[P1-3](#p1-3-a-fresh-azd-deployment-is-public-dev-authenticated-and-expensive)).
-That single default is the root of P1-3, and it is what makes P1-4 (gateway-only
-routing is convention, not IAM — `disableLocalAuth` still defaults false) and P1-7
-(the tested artifact is not the deployed artifact) matter as much as they do. They
-need production-versus-demo deploy profiles, which is a posture decision for the
-owner rather than a defect to patch.
+**What is still open, and why.** `main.parameters.json` still defaults to
+`${AI4IA_APP_ENVIRONMENT=dev}` and hard-enables every feature flag. The *auth* half of
+that posture is now closed — `apiAllowDevAuth` defaults `false`, so a clean-room deploy
+refuses to start rather than trusting a client-supplied identity header
+([P1-3](#p1-3-a-fresh-azd-deployment-is-public-dev-authenticated-and-expensive)) — but
+the cost and feature-surface halves are not, and neither is P1-4 (gateway-only routing
+is convention, not IAM; `disableLocalAuth` still defaults false) or P1-7 (the tested
+artifact is not the deployed artifact). Those need production-versus-demo deploy
+profiles, plus RBAC and image-promotion changes that are posture decisions for the
+owner rather than defects to patch.
 
 The other two are feature work with no safe shortcut: P1-10 (tenant-public means
 application-public) stays latent until a second tenant is onboarded, and P1-14
@@ -376,52 +376,51 @@ compute cannot hide inside the parent chat charge.
 
 #### P1-3: A fresh azd deployment is public, dev-authenticated, and expensive
 
+> **Closed 2026-08-05 for the auth half.** `apiAllowDevAuth` now defaults to
+> `false` and is a first-class azd variable (`AI4IA_ALLOW_DEV_AUTH`, forwarded by
+> `deploy.yml`), so a clean-room `azd up` **refuses to start** rather than serving
+> with client-controlled identity. A demo without an Entra tenant opts in
+> deliberately by setting the variable, instead of receiving it by default.
+> `app/api/tests/test_deploy_posture.py` pins the composition. The
+> *feature-enablement* and *cost* halves of this finding are unchanged — see
+> below — so the `demo|production` profile split remains the full remedy.
+
 `infra/main.parameters.json:32-37` defaults the app environment and auth provider to
 `dev`, while API/web/proxy ingress is public. The same file hard-enables official MCP,
 Toolbox/API Center, image/video, document understanding/compute, raw-file compute,
 search, Voice Live/tools, summarization, custom tools, and Web IQ
 (`infra/main.parameters.json:65-180`).
 
-> **Re-verified 2026-08-05 and the exact mechanism recorded, after a first attempt at
-> "correcting" this finding was itself wrong.** Reading `config.py` alone suggests the
-> stack is fail-closed: `validate_runtime()` refuses dev auth unless
-> `dev_auth_permitted`, which is `env == local or allow_dev_auth`, and `allow_dev_auth`
-> defaults to `False` *in code*. It is not fail-closed, because infra overrides that
-> default. The chain, all on stock values:
+> **How the auth half actually worked, recorded because a first attempt at
+> "correcting" this finding was itself wrong.** Reading `config.py` alone suggests
+> the stack was already fail-closed: `validate_runtime()` refuses dev auth unless
+> `dev_auth_permitted`, which is `env == local or allow_dev_auth`, and
+> `allow_dev_auth` defaults to `False` *in code*. It was not, because infra
+> overrode that default:
 >
-> - `infra/main.bicep:70` — `param apiAllowDevAuth bool = true`, and it is **not**
->   present in `main.parameters.json`, so the Bicep default is what applies.
+> - `infra/main.bicep:70` — `param apiAllowDevAuth bool = true`, and it was **not**
+>   present in `main.parameters.json`, so the Bicep default applied.
 > - `infra/main.bicep:845` —
 >   `allowDevAuth: appEnvironment == 'prod' ? false : apiAllowDevAuth`. With
->   `appEnvironment` defaulting to `dev`, this evaluates to `true`.
+>   `appEnvironment` defaulting to `dev`, this evaluated to `true`.
 > - `infra/modules/api.bicep:731-732` — that value is injected as the container
 >   variable `AI4IA_ALLOW_DEV_AUTH`.
 >
-> Constructing `Settings` from that exact container environment:
-> `allow_dev_auth=True`, `dev_auth_permitted=True`, `auth_provider_is_spoofable=True`,
-> and `validate_runtime()` **passes**. The app starts and serves, deriving identity
-> from the client-supplied `X-Dev-User` header on public ingress.
+> The lesson for the next reader: a defaulted `False` in `config.py` proves nothing
+> on its own, because the deployment layer sets the variable.
 >
-> `appEnvironment == 'prod'` is the only thing that forces it closed, and `prod` is
-> not the default. The lesson recorded for the next reader: a defaulted `False` in
-> `config.py` proves nothing on its own, because the deployment layer sets the
-> variable. `app/api/tests/test_deploy_posture.py` now pins this composition so it
-> cannot drift silently in either direction.
->
-> **Scope, so this is not misread.** This is a defect in the *default* path — what a
-> third party gets from a clean-room `azd up`, which is exactly the "click a button
-> and create the app from scratch" property this repo claims. It is **not** a
-> statement about the maintainer's running deployment, which was checked and is
+> **Scope, so this is not misread.** This was a defect in the *default* path — what
+> a third party gets from a clean-room `azd up`, which is exactly the "click a
+> button and create the app from scratch" property this repo claims. It was **not**
+> a statement about the maintainer's running deployment, which was checked and is
 > correctly configured: `AI4IA_ENV=prod`, `AI4IA_AUTH_PROVIDER=entra`,
-> `AI4IA_ALLOW_DEV_AUTH=False`. The operator knew to set those. The finding is that
-> nothing makes a new operator set them, and nothing tells them they did not.
+> `AI4IA_ALLOW_DEV_AUTH=False`.
 
-This is suitable only as an explicitly labeled demo profile. Introduce
+Still open: this is suitable only as an explicitly labeled demo profile. Introduce
 `demo|production` profiles. Production must fail unless Entra, owner, publisher,
-budgets/alerts, durable storage, and other prerequisites are complete; it must never
-permit dev auth in Azure. Flipping `apiAllowDevAuth` to default `false` would close
-the immediate exposure, at the cost of making a no-Entra demo deploy fail at startup
-instead of serving — which is the tradeoff the profile split exists to make explicit.
+budgets/alerts, durable storage, and other prerequisites are complete. The auth
+prerequisite is now enforced; the remaining ones — every feature flag defaulting on,
+and no budget/alert gate — are not.
 
 #### P1-4: Gateway-only routing is a code convention, not an IAM boundary
 
