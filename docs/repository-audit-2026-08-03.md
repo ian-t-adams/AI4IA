@@ -112,7 +112,7 @@ Verified against the tree at `main` on 2026-08-05, not from memory.
 | P1-10 "tenant-public" is application-public | **Open** — latent until a second tenant is onboarded | — |
 | P1-11 portal presents stale evidence as live health | **Fixed** — `healthy` now requires a positive Resource Health signal | #266 |
 | P1-12 hard-coded colors bypass theme tokens | **Fixed**, and the severity was understated: measuring the literals made this an accessibility defect, not a style nit. `#fff` on a `var(--accent)` fill is **1.07:1** in the high-contrast theme and sat on three panels' primary action button. All 14 literals now resolve through tokens, `--warn` was added, and two gates enforce it | #266, #271 |
-| P1-13 indirect prompt injection drives preapproved MCP | **In review** — approval is bound to an argument digest recomputed at dispatch, which is sound; returned for three defects found in review (one grant authorized up to 8 executions; the preview card silently drops attacker-chosen keys; the single-use burn is a non-atomic read-modify-write) | #272 |
+| P1-13 indirect prompt injection drives preapproved MCP | **Fixed** — approval is bound to an argument digest recomputed at dispatch and spent on use. Review caught three defects before merge (one grant authorized up to 8 executions; the preview card silently dropped attacker-chosen keys; the burn was a non-atomic read-modify-write); all three were fixed and mutation-verified. Does **not** cover synthetic `extra_handlers` capabilities — `browse_url` remains an ungated egress channel, disclosed in `approvals.py` | #272 |
 | P1-14 citations are presentation, not provenance | **Open** | — |
 | P1-15 admin refresh can exhaust a 1 GiB replica | **Fixed** — the dashboard is served from one projected ledger scan instead of seven | #270 |
 | P1-16 live-default chat is not token-streaming | **Partially fixed** — proxy now flushes per SSE event; the non-streaming tool loop remains | #266 |
@@ -138,6 +138,17 @@ application-public) stays latent until a second tenant is onboarded, and P1-14
 (citations are presentation, not provenance) needs real span-level provenance —
 `untrusted_context` in the new approval work is a *turn-level* taint bit and is
 deliberately not claimed as more than that.
+
+One partially-closed item deserves naming rather than burying in the table. P1-13's
+per-invocation approval covers every MCP tool on both planes, because those carry a
+`ToolSpec` through the registry. It does **not** cover the synthetic capabilities the
+runtime dispatches from `extra_handlers` before the registry path — web search,
+`browse_url`, code execution, document processing — which have no `ToolSpec` to read
+a risk from. `browse_url` is therefore still an ungated egress channel reachable by a
+model whose context an attacker has influenced. That is disclosed in the module
+docstring of `app/api/src/ai4ia_api/agents/approvals.py` and the seam for closing it
+is marked in `runtime.run_agent_turn`; closing it means giving each synthetic
+capability a governed spec.
 
 Two items are honestly partial rather than done. P1-2 locks `store: false` but has no
 entitlement or usage accounting for Code Interpreter, and P1-16 fixed the proxy's SSE
