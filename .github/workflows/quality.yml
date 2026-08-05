@@ -235,3 +235,14 @@ jobs:
           # variables no deploy could ever read, and AI4IA_APP_ENVIRONMENT (which
           # must be `prod` for a real environment) appeared in no document at all.
           python3 -m unittest scripts.tests.test_configuration_reference_reachability
+
+      - name: Run teardown data-loss gate tests
+        run: |
+          set -euo pipefail
+          # teardown.ps1 deletes an RG and PURGES the Key Vault holding per-user MCP
+          # credentials. -Force only ever acknowledged the infrastructure, which azd
+          # can rebuild; blobs have no restore path and purged secrets are gone. The
+          # gate makes the data acknowledgement separate and explicit, and the capture
+          # script records the Cosmos restorable-instance id, which stops being
+          # queryable the moment the account is deleted.
+          python3 -m unittest scripts.tests.test_teardown_data_loss_gate

@@ -539,8 +539,9 @@ Deliberately **not** in that list, because they need no per-tenant edit:
   tenant.
 - **Operator scripts.** None carry a default subscription, resource group, or purge
   filter. `status-snapshot.ps1` resolves its target from the selected azd environment
-  (falling back to the current `az` context); `inventory.ps1`, `teardown.ps1`,
-  `purge-soft-deleted.ps1`, and `seed-models.ps1` require the target explicitly.
+  (falling back to the current `az` context); `inventory.ps1`,
+  `capture-data-recovery-state.ps1`, `teardown.ps1`, `purge-soft-deleted.ps1`, and
+  `seed-models.ps1` require the target explicitly.
 
 Procedure:
 
@@ -712,8 +713,8 @@ Procedure:
    ```
 
    `toolCount: 0` together with a populated `lastError` is the signature of a missing toolbox.
-5. **Break-glass ops scripts** (`scripts/inventory.ps1`, `teardown.ps1`,
-   `purge-soft-deleted.ps1`, `seed-models.ps1`) take their target explicitly — they have
+5. **Break-glass ops scripts** (`scripts/inventory.ps1`, `capture-data-recovery-state.ps1`,
+   `teardown.ps1`, `purge-soft-deleted.ps1`, `seed-models.ps1`) take their target explicitly — they have
    no default subscription, resource group, or purge filter, so they cannot silently act
    on the environment you moved away from. `purge-soft-deleted.ps1` reads
    **subscription-wide** soft-delete lists, so its mandatory `-NameFilter` is what keeps
