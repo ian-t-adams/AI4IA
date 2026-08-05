@@ -4,7 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ModelPicker } from "./ModelPicker";
-import type { ModelEntry } from "@/lib/types";
+import type { DeploymentOption, ModelEntry } from "@/lib/types";
 
 afterEach(cleanup);
 
@@ -144,5 +144,128 @@ describe("ModelPicker", () => {
       />,
     );
     expect(select).not.toHaveAttribute("aria-describedby");
+  });
+});
+
+// The residency note is the point where a user decides whether a model is
+// acceptable for their data. It reports the residency the SERVER derived from
+// each deployment's SKU — never the endpoint's geography, because a
+// GlobalStandard deployment in an EU region may still be processed anywhere and
+// calling that "EU" would assert a guarantee Azure is not making.
+describe("ModelPicker data-residency note", () => {
+  function option(over: Partial<DeploymentOption> & Pick<DeploymentOption, "residency">) {
+    return {
+      region: "eastus2",
+      dataZone: "US",
+      sku: "DataZoneStandard",
+      deploymentName: "d",
+      ...over,
+    } satisfies DeploymentOption;
+  }
+
+  it("names the single zone a bounded model stays in", () => {
+    render(
+      <ModelPicker
+        value="m"
+        onChange={vi.fn()}
+        models={[model({ id: "m", displayName: "M", options: [option({ residency: "eu" })] })]}
+      />,
+    );
+    expect(screen.getByText(/Processing stays in the EU data zone/)).toBeInTheDocument();
+  });
+
+  it("names every zone when a model could land in more than one", () => {
+    // Under the `zonal` policy a model may have a compliant deployment in each
+    // zone. Naming only one would be a guess; the user needs the set.
+    render(
+      <ModelPicker
+        value="m"
+        onChange={vi.fn()}
+        models={[
+          model({
+            id: "m",
+            displayName: "M",
+            options: [option({ residency: "us" }), option({ residency: "eu" })],
+          }),
+        ]}
+      />,
+    );
+    expect(
+      screen.getByText(/Processing stays in the EU or US data zone/),
+    ).toBeInTheDocument();
+  });
+
+  it("says plainly when a model may process anywhere", () => {
+    render(
+      <ModelPicker
+        value="m"
+        onChange={vi.fn()}
+        models={[
+          model({
+            id: "m",
+            displayName: "M",
+            options: [option({ residency: "global", sku: "GlobalStandard" })],
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/May process in any Azure region worldwide/)).toBeInTheDocument();
+  });
+
+  it("does not claim a boundary when any eligible deployment is global", () => {
+    // A model with one bounded and one global deployment could be served by
+    // either, so the honest statement is the weaker one.
+    render(
+      <ModelPicker
+        value="m"
+        onChange={vi.fn()}
+        models={[
+          model({
+            id: "m",
+            displayName: "M",
+            options: [option({ residency: "eu" }), option({ residency: "global" })],
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/May process in any Azure region worldwide/)).toBeInTheDocument();
+    expect(screen.queryByText(/stays in the/)).toBeNull();
+  });
+
+  it("renders nothing without a selection or deployment metadata", () => {
+    const { rerender } = render(
+      <ModelPicker value={null} onChange={vi.fn()} models={[model({ id: "m", displayName: "M" })]} />,
+    );
+    expect(screen.queryByText(/Data residency/)).toBeNull();
+
+    // Selected, but the catalog carried no deployment metadata: say nothing
+    // rather than guessing a residency.
+    rerender(
+      <ModelPicker value="m" onChange={vi.fn()} models={[model({ id: "m", displayName: "M" })]} />,
+    );
+    expect(screen.queryByText(/Data residency/)).toBeNull();
+  });
+
+  it("is announced to screen readers alongside the category help", () => {
+    render(
+      <ModelPicker
+        value="m"
+        onChange={vi.fn()}
+        models={[
+          model({
+            id: "m",
+            displayName: "M",
+            category: "chat",
+            options: [option({ residency: "us" })],
+          }),
+        ]}
+      />,
+    );
+    const describedBy = screen.getByLabelText("Model").getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    // Both notes are referenced, and every referenced id exists in the DOM.
+    const ids = (describedBy ?? "").split(" ").filter(Boolean);
+    expect(ids.length).toBe(2);
+    for (const id of ids) expect(document.getElementById(id)).not.toBeNull();
   });
 });

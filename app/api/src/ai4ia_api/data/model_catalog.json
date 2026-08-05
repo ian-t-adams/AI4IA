@@ -225,6 +225,12 @@
           "deploymentName": "gpt-5.2-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5.2-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
@@ -395,6 +401,12 @@
           "deploymentName": "grok-4-1-fast-reasoning-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "grok-4-1-fast-reasoning-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
@@ -507,6 +519,12 @@
           "deploymentName": "gpt-5.3-codex-slurmfactory-eastus2-glbl"
         },
         {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5.3-codex-slurmfactory-eastus2-dz"
+        },
+        {
           "region": "swedencentral",
           "dataZone": "EU",
           "sku": "GlobalStandard",
@@ -615,6 +633,12 @@
           "dataZone": "US",
           "sku": "GlobalStandard",
           "deploymentName": "gpt-5.4-nano-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "deploymentName": "gpt-5.4-nano-slurmfactory-eastus2-dz"
         },
         {
           "region": "swedencentral",

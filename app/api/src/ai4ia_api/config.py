@@ -626,12 +626,15 @@ class Settings(BaseSettings):
     # Optional path override for the bundled model catalog (tests/dev).
     model_catalog_path: str | None = None
 
-    # Data-residency policy for model routing: "global" | "us" | "eu".
+    # Data-residency policy for model routing: "global" | "zonal" | "us" | "eu".
     #
     # "global" (default) preserves existing behaviour: any deployment may serve.
-    # "us"/"eu" restrict routing to deployments whose PROCESSING is bounded to
-    # that zone -- which, per DeploymentOption.residency, excludes every
-    # GlobalStandard deployment regardless of where its endpoint sits.
+    # "zonal" requires processing to stay inside SOME data zone without caring
+    # which -- useful because DataZoneStandard availability is uneven between
+    # regions, so it keeps model choice wide while still excluding "may process
+    # anywhere". "us"/"eu" restrict to that specific zone, which per
+    # DeploymentOption.residency excludes every GlobalStandard deployment
+    # regardless of where its endpoint sits.
     #
     # Enforced in the catalog (one choke point, app.state.catalog) rather than
     # per call site, so no route can bypass it. Startup validation refuses an
