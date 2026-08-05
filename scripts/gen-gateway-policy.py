@@ -127,16 +127,18 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
     naming = models["naming"]
     subscription_token = naming["subscriptionToken"]
     sku_short = naming["skuShort"]
+    regions = models["regions"]
     blocks: list[str] = []
     max_attempts = 1
 
     for model in models["catalog"]:
         deployments = model["deployments"]
-        max_attempts = max(max_attempts, len(deployments))
         timeout = timeout_seconds(model["category"])
         resolved = [
             {
                 "region": deployment["region"],
+                "sku": deployment["sku"],
+                "dataZone": regions[deployment["region"]]["dataZone"],
                 "name": deployment_name(
                     model=model["name"],
                     subscription_token=subscription_token,
@@ -149,10 +151,50 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
         ]
 
         for requested in resolved:
+            # Failover candidates must preserve the requested deployment's
+            # residency guarantee, so the set is grouped rather than "every
+            # deployment of this model".
+            #
+            # `GlobalStandard` carries no residency constraint, so it may fail
+            # over to any region -- this reproduces the behaviour that existed
+            # before DataZoneStandard deployments were added. Every other SKU
+            # *is* the residency claim: failing a `DataZoneStandard` request
+            # over to a `GlobalStandard` deployment, or across data zones,
+            # would serve a request that asked to stay in one zone from
+            # somewhere else, silently, which is the whole thing the residency
+            # ladder exists to prevent.
+            if requested["sku"] == "GlobalStandard":
+                candidates = [c for c in resolved if c["sku"] == "GlobalStandard"]
+            else:
+                candidates = [
+                    c
+                    for c in resolved
+                    if c["sku"] == requested["sku"]
+                    and c["dataZone"] == requested["dataZone"]
+                ]
             ordered = sorted(
-                resolved,
+                candidates,
                 key=lambda candidate: candidate["region"] != requested["region"],
             )
+            max_attempts = max(max_attempts, len(ordered))
+            # The backend label is a JSON property name, so a duplicate is not a
+            # cosmetic clash -- APIM throws `Can not add property X ... Property
+            # with the same name already exists` at REQUEST time and every call
+            # through the gateway returns 500. That is exactly how this broke in
+            # production: adding a second deployment per region made the
+            # region-only label collide, `--check` still passed because the
+            # generated file matched its source, and nothing exercised the model
+            # path until a post-deploy canary existed. Assert here so the failure
+            # is a generator error rather than a live outage.
+            labels = [candidate["region"].upper() for candidate in ordered]
+            if len(labels) != len(set(labels)):
+                duplicates = sorted({label for label in labels if labels.count(label) > 1})
+                raise ValueError(
+                    f"{model['name']}: backend labels collide for deployment "
+                    f"{requested['name']}: {duplicates}. Each label becomes a JSON "
+                    "property name in the APIM catalog, so duplicates make every "
+                    "gateway request fail at runtime."
+                )
             rows = [
                 backend_row(
                     label=candidate["region"].upper(),
