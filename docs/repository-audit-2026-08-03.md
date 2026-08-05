@@ -92,6 +92,19 @@ to blocking would surface rather than change behaviour silently.
 (accountable owner, scope, expiry, review cadence, compensating-control
 assessment). A code comment and a CI test are not an approval record.
 
+> **Partially addressed 2026-08-05.** [`rai-decision-record.md`](./rai-decision-record.md)
+> now records the implemented state: the exact filter configuration, the two
+> details that are easy to misread (`severityThreshold: 'High'` does not mean
+> "block at high" when `blocking: false`, and the jailbreak/protected-material
+> filters ship blocking by default and are non-blocking only because they are
+> explicitly overridden), the compensating control that exists, and the four that
+> do not. **Owner, approval reference and expiry are deliberately unfilled** —
+> only a named human can supply those, so the document is a draft awaiting
+> signature rather than a decision. It also flags that `test_rai_policy.py`
+> asserts an "approved Azure guardrails-modification exception" for which no
+> reference exists anywhere in the repository; either the reference goes in the
+> record or the claim should come out of the test.
+
 ### Disposition of the P0/P1 findings
 
 Verified against the tree at `main` on 2026-08-05, not from memory.
