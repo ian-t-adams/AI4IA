@@ -7,6 +7,16 @@ Reads are governed by :func:`can_access`; mutations stay owner-only via
 authenticates against a single tenant, so "public" is tenant-walled — there is no
 unauthenticated path). Ownership and storage partitioning stay keyed on the
 owner's ``userId``; only the *grant* dimension is email-based.
+
+The single-tenant premise is load-bearing and is **enforced**, not assumed:
+``Settings._validate_library_sharing_is_tenant_walled`` refuses to start when
+``AI4IA_ENTRA_ALLOWED_TENANTS`` names more than one tenant. Without that, adding a
+second tenant would retroactively turn every existing ``public`` document into
+cross-tenant readable, since those documents were shared under the old meaning of
+the word. Making this genuinely multi-tenant means persisting the owner's tenant
+and comparing it in :func:`can_access`, or renaming the visibility to
+``application_public`` so the name stops implying a wall that is not there
+(audit finding P1-10).
 """
 from __future__ import annotations
 
