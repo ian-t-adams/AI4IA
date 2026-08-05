@@ -177,6 +177,17 @@ Telemetry and secondary-index updates are best-effort and may be partial, but
 canonical message/session writes must report failures rather than presenting a
 false success.
 
+The admin usage dashboard is the one deliberate cross-partition ledger read. It
+is a **single** window-bounded, row-capped, field-projected scan per page load
+(`GET /api/admin/usage/overview`), from which every rollup is folded in one pass;
+the per-panel endpoints remain for single-report callers. Consolidation is a
+memory bound, not a nicety: seven concurrent full-row scans of the same window
+could hold roughly seven copies of a 50,000-row window in an API replica capped
+at 1 GiB that is also serving chat. When the row cap is hit the response reports
+`truncated`, so totals are shown as a lower bound rather than a wrong total, and
+a rollup that fails is named in `partialSections` so panels still degrade
+individually.
+
 Cosmos memory stores plaintext and its embedding in one item. Explicit create,
 update, and delete use idempotency receipts and ETags; user-created or edited
 records are locked against automatic planner mutation. Forget first advances a

@@ -7,6 +7,7 @@ so the web client can *hide* a nav entry — it never gates anything.
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -30,6 +31,7 @@ GATED_ROUTES = [
     "/api/admin/usage/user-agents",
     "/api/admin/usage/distributions",
     "/api/admin/usage/by-user",
+    "/api/admin/usage/overview",
     "/api/admin/metrics/resources",
     "/api/admin/metrics/web-search",
     "/api/admin/metrics/official-mcp",
@@ -313,6 +315,169 @@ def test_by_user_joins_entitlement_override(client):
     row = next(r for r in body["byUser"] if r["userId"] == uid)
     assert row["entitlement"] is not None
     assert row["entitlement"]["tokensPerDay"] == 5000
+
+
+# ---- consolidated overview (audit P1-15: one scan, not seven) ----
+
+
+def test_overview_returns_every_panel_the_fan_out_used_to_fetch(client):
+    _seed(
+        client,
+        [
+            _rec("alice", model="big", totalTokens=100, agent="research", region="eastus", dataZone="us"),
+            _rec("bob", model="small", totalTokens=5, agent="coder", region="westus"),
+            _rec("bob", status="error", billable=False, totalTokens=0, deployment=None),
+        ],
+    )
+    body = client.get("/api/admin/usage/overview", headers=ADMIN).json()
+
+    assert body["summary"]["activeUsers"] == 2
+    assert body["summary"]["totalRequests"] == 3
+    assert body["byModel"][0]["model"] == "big"
+    assert body["byDay"] and body["byDay"][0]["requests"] >= 1
+    assert body["totalUsers"] == 2
+    assert body["byUser"][0]["userId"] == "alice"
+    # No entitlement override seeded -> the unlimited default (entitlement None).
+    assert body["byUser"][0]["entitlement"] is None
+    assert {a["agent"] for a in body["agents"]} == {"research", "coder"}
+    assert {(c["userId"], c["agent"]) for c in body["userAgents"]} == {
+        ("alice", "research"),
+        ("bob", "coder"),
+    }
+    assert {b["key"]: b["requests"] for b in body["byRegion"]} == {
+        "eastus": 1,
+        "westus": 1,
+        "(unknown)": 1,
+    }
+    assert {b["key"] for b in body["byDeployment"]} == {"dep", "(unknown)"}
+    assert {b["key"]: b["requests"] for b in body["byStatus"]} == {"complete": 2, "error": 1}
+    assert body["byProvider"][0]["key"] == "azure_openai"
+    # Every section resolved from the single scan.
+    assert body["partialSections"] == []
+    assert body["scannedRecords"] == 3
+    assert body["truncated"] is False
+
+
+def test_overview_agrees_with_the_seven_endpoints_it_replaces(client):
+    _seed(
+        client,
+        [
+            _rec("alice", model="big", totalTokens=100, agent="research", region="eastus"),
+            _rec("bob", model="small", totalTokens=5, agent="coder"),
+            _rec("carol", status="cancelled", billable=False, costKnown=False, estCostMicroUsd=None),
+        ],
+    )
+    overview = client.get("/api/admin/usage/overview", headers=ADMIN).json()
+    summary = client.get("/api/admin/usage/summary", headers=ADMIN).json()
+    by_model = client.get("/api/admin/usage/by-model", headers=ADMIN).json()
+    by_day = client.get("/api/admin/usage/by-day", headers=ADMIN).json()
+    by_user = client.get("/api/admin/usage/by-user", headers=ADMIN).json()
+    agents = client.get("/api/admin/usage/agents", headers=ADMIN).json()
+    user_agents = client.get("/api/admin/usage/user-agents", headers=ADMIN).json()
+    distributions = client.get("/api/admin/usage/distributions", headers=ADMIN).json()
+
+    window = {"fromTime", "toTime"}
+    assert {k: v for k, v in overview["summary"].items() if k not in window} == {
+        k: v for k, v in summary.items() if k not in window
+    }
+    assert overview["byModel"] == by_model["byModel"]
+    assert overview["byDay"] == by_day["byDay"]
+    assert overview["byUser"] == by_user["byUser"]
+    assert overview["totalUsers"] == by_user["totalUsers"]
+    assert overview["agents"] == agents["agents"]
+    assert overview["userAgents"] == user_agents["userAgents"]
+    for key in ("byRegion", "byDataZone", "byProvider", "byDeployment", "byStatus"):
+        assert overview[key] == distributions[key]
+
+
+def test_overview_never_renders_unknown_cost_as_zero(client):
+    _seed(
+        client,
+        [
+            _rec("alice", totalTokens=15, estCostMicroUsd=1000),
+            # Billable, metered, but unpriced -> cost unknown, not zero.
+            _rec("alice", totalTokens=15, costKnown=False, estCostMicroUsd=None),
+            # No usage reported at all -> tokens unknown, not zero.
+            _rec(
+                "bob",
+                usageKnown=False,
+                promptTokens=None,
+                completionTokens=None,
+                totalTokens=None,
+                costKnown=False,
+                estCostMicroUsd=None,
+            ),
+        ],
+    )
+    body = client.get("/api/admin/usage/overview", headers=ADMIN).json()
+    assert body["summary"]["costUnknownRequests"] == 2
+    assert body["summary"]["unknownUsageRequests"] == 1
+    assert body["summary"]["totalCostMicroUsd"] == 1000
+    assert body["summary"]["totalTokens"] == 30
+    alice = next(r for r in body["byUser"] if r["userId"] == "alice")
+    assert alice["costKnown"] is False
+    assert next(b for b in body["byModel"] if b["model"] == "gpt-5.2")["costKnown"] is False
+
+
+def test_overview_honours_window_and_user_paging(client):
+    _seed(client, [_rec(f"user-{i}", totalTokens=100 - i) for i in range(5)])
+
+    body = client.get("/api/admin/usage/overview?days=7&limit=2&offset=1", headers=ADMIN).json()
+    assert body["sinceDays"] == 7
+    assert body["userLimit"] == 2
+    assert body["userOffset"] == 1
+    assert [r["userId"] for r in body["byUser"]] == ["user-1", "user-2"]
+    assert body["totalUsers"] == 5
+
+    # Same bounds as every other admin route.
+    assert client.get("/api/admin/usage/overview?days=9999", headers=ADMIN).status_code == 422
+    assert client.get("/api/admin/usage/overview?limit=0", headers=ADMIN).status_code == 422
+    assert client.get("/api/admin/usage/overview?limit=201", headers=ADMIN).status_code == 422
+    assert client.get("/api/admin/usage/overview?offset=-1", headers=ADMIN).status_code == 422
+
+
+def test_overview_joins_entitlement_override(client):
+    uid = client.get("/api/entitlement", headers={"X-Dev-User": "target"}).json()["userId"]
+    _seed(client, [_rec(uid, totalTokens=15, agent="research")])
+    assert client.put(
+        f"/api/admin/entitlements/{uid}", json={"tokensPerDay": 5000}, headers=ADMIN
+    ).status_code == 200
+    body = client.get("/api/admin/usage/overview", headers=ADMIN).json()
+    row = next(r for r in body["byUser"] if r["userId"] == uid)
+    assert row["entitlement"]["tokensPerDay"] == 5000
+
+
+def test_overview_is_de_identified_by_default_and_enriches_on_request(client):
+    uid = client.get("/api/entitlement", headers={"X-Dev-User": "dave"}).json()["userId"]
+    # Directory capture is fire-and-forget on the server loop; wait for it to land.
+    repo = client.app.state.user_directory._repo
+    for _ in range(50):
+        if uid in repo._by_user:
+            break
+        time.sleep(0.02)
+    assert uid in repo._by_user, "capture did not populate the directory"
+    _seed(client, [_rec(uid, totalTokens=42, agent="research")])
+
+    anonymous = client.get("/api/admin/usage/overview", headers=ADMIN).json()
+    assert next(r for r in anonymous["byUser"] if r["userId"] == uid)["displayName"] is None
+    assert next(c for c in anonymous["userAgents"] if c["userId"] == uid)["displayName"] is None
+
+    identified = client.get("/api/admin/usage/overview?identify=true", headers=ADMIN).json()
+    user_row = next(r for r in identified["byUser"] if r["userId"] == uid)
+    agent_cell = next(c for c in identified["userAgents"] if c["userId"] == uid)
+    # One directory read serves both user-keyed sections.
+    assert user_row["displayName"] == "dave"
+    assert user_row["email"] == "dave@example.com"
+    assert agent_cell["displayName"] == "dave"
+    assert agent_cell["email"] == "dave@example.com"
+
+
+def test_overview_marks_truncation_like_the_endpoints_it_replaces(client):
+    client.app.state.admin_usage._max_records = 2
+    _seed(client, [_rec("alice"), _rec("bob"), _rec("carol")])
+    body = client.get("/api/admin/usage/overview", headers=ADMIN).json()
+    assert body["truncated"] is True
+    assert body["scannedRecords"] == 2
 
 
 # ---- resource metrics degrade gracefully when no resource ids configured ----

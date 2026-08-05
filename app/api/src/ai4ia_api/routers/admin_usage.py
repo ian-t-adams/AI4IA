@@ -38,9 +38,12 @@ from ..usage.aggregate import (
     AdminUsageService,
     AdminUsageSummary,
     AdminUsageWindow,
+    AgentUsageBucket,
+    DimensionBucket,
     UserAgentBucket,
     UserUsageBucket,
 )
+from ..usage.models import DayUsageBucket, ModelUsageBucket
 from ..directory.model import UserDirectoryEntry
 from .entitlements import EntitlementView
 
@@ -144,6 +147,51 @@ class AdminUserAgentRow(UserAgentBucket):
 
 class AdminUserAgentsResponse(AdminUsageWindow):
     userAgents: list[AdminUserAgentRow] = []
+
+
+class AdminUsageOverviewResponse(AdminUsageWindow):
+    """Every usage rollup for one window, from ONE bounded ledger scan.
+
+    Exists because the dashboard used to fan out to seven of the endpoints below
+    at once, each of which independently pulled up to ``MAX_ADMIN_RECORDS`` full
+    ledger rows for the *same* window — roughly seven copies of the window
+    resident at once, against a 1 GiB replica also serving chat (audit P1-15).
+
+    Section shapes deliberately match their single-panel endpoints one-for-one so
+    the web client reuses the same types. ``partialSections`` carries the names of
+    any rollups that failed while the scan succeeded, so consolidating seven
+    requests into one still degrades per panel instead of all-or-nothing.
+    """
+
+    summary: AdminUsageSummary
+    byModel: list[ModelUsageBucket] = []
+    byDay: list[DayUsageBucket] = []
+    totalUsers: int = 0
+    userLimit: int = 20
+    userOffset: int = 0
+    byUser: list[AdminUserRow] = []
+    agents: list[AgentUsageBucket] = []
+    userAgents: list[AdminUserAgentRow] = []
+    byRegion: list[DimensionBucket] = []
+    byDataZone: list[DimensionBucket] = []
+    byProvider: list[DimensionBucket] = []
+    byDeployment: list[DimensionBucket] = []
+    byStatus: list[DimensionBucket] = []
+    partialSections: list[str] = []
+
+
+async def _entitlement_overrides(request: Request) -> dict[str, EntitlementView]:
+    """Best-effort userId -> entitlement override map (one store read).
+
+    Users with no override are on the shipped unlimited default, so an absent key
+    is meaningful, not an error. Any store failure degrades to an empty map — the
+    join is advisory and must never fail the report.
+    """
+    try:
+        overrides = await request.app.state.entitlements.list_overrides()
+    except Exception:  # noqa: BLE001 - the join is advisory; never fail the read
+        return {}
+    return {ent.userId: EntitlementView.of(ent.userId, ent) for ent in overrides}
 
 
 async def _resolve_directory(
@@ -265,6 +313,78 @@ async def usage_distributions(
     return await _service(request).distributions(days=days)
 
 
+@router.get("/usage/overview", response_model=AdminUsageOverviewResponse)
+async def usage_overview(
+    request: Request,
+    days: int = _DAYS,
+    limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    identify: bool = _IDENTIFY,
+    _admin: AuthenticatedUser = Depends(require_admin),
+) -> AdminUsageOverviewResponse:
+    """One bounded ledger scan; every usage rollup the dashboard renders.
+
+    Same window, cap, truncation semantics and admin gate as the seven
+    single-panel endpoints — this just refuses to read the same window seven
+    times to answer one page load. Enrichment (entitlement overrides, and the
+    directory join in identified mode) is applied once for both user-keyed
+    sections instead of once per endpoint.
+    """
+    report = await _service(request).overview(
+        days=days, user_limit=limit, user_offset=offset
+    )
+    overrides_by_user = await _entitlement_overrides(request)
+    # Resolve every user id both sections need in ONE directory read.
+    directory = (
+        await _resolve_directory(
+            request,
+            [bucket.userId for bucket in report.byUser]
+            + [cell.userId for cell in report.userAgents],
+        )
+        if identify
+        else {}
+    )
+    user_rows = []
+    for bucket in report.byUser:
+        name, email = _directory_fields(directory.get(bucket.userId))
+        user_rows.append(
+            AdminUserRow(
+                **bucket.model_dump(),
+                entitlement=overrides_by_user.get(bucket.userId),
+                displayName=name,
+                email=email,
+            )
+        )
+    agent_rows = []
+    for cell in report.userAgents:
+        name, email = _directory_fields(directory.get(cell.userId))
+        agent_rows.append(
+            AdminUserAgentRow(**cell.model_dump(), displayName=name, email=email)
+        )
+    return AdminUsageOverviewResponse(
+        sinceDays=report.sinceDays,
+        fromTime=report.fromTime,
+        toTime=report.toTime,
+        truncated=report.truncated,
+        scannedRecords=report.scannedRecords,
+        summary=report.summary,
+        byModel=report.byModel,
+        byDay=report.byDay,
+        totalUsers=report.totalUsers,
+        userLimit=report.userLimit,
+        userOffset=report.userOffset,
+        byUser=user_rows,
+        agents=report.agents,
+        userAgents=agent_rows,
+        byRegion=report.byRegion,
+        byDataZone=report.byDataZone,
+        byProvider=report.byProvider,
+        byDeployment=report.byDeployment,
+        byStatus=report.byStatus,
+        partialSections=report.partialSections,
+    )
+
+
 @router.get("/usage/by-user", response_model=AdminByUserResponse)
 async def usage_by_user(
     request: Request,
@@ -277,13 +397,7 @@ async def usage_by_user(
     report = await _service(request).by_user(days=days, limit=limit, offset=offset)
     # Join the page to entitlement overrides in a single store read (users with
     # no override are the unlimited default -> entitlement stays None).
-    overrides_by_user: dict[str, EntitlementView] = {}
-    try:
-        overrides = await request.app.state.entitlements.list_overrides()
-        for ent in overrides:
-            overrides_by_user[ent.userId] = EntitlementView.of(ent.userId, ent)
-    except Exception:  # noqa: BLE001 - the join is advisory; never fail the report
-        overrides_by_user = {}
+    overrides_by_user = await _entitlement_overrides(request)
 
     # Best-effort enrich the page with directory display names only in identified
     # mode. De-identified mode leaves PII null so the UI shows only the short hash.

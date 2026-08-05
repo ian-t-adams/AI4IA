@@ -4,9 +4,17 @@
 //  1. Confirms the viewer is an admin via /api/admin/whoami (cosmetic — the API
 //     still enforces require_admin, so a non-admin only ever sees the forbidden
 //     view and empty 403s).
-//  2. Loads org-level rollups (summary / by-model / by-day / top-users / agents)
-//     and best-effort resource panels for a selectable window, each independently
-//     (Promise.allSettled) so one failing panel never blanks the page.
+//  2. Loads every org-level rollup (summary / by-model / by-day / top-users /
+//     agents / user-agents / distributions) in ONE request, plus the best-effort
+//     resource, operations, security and web-search panels alongside it
+//     (Promise.allSettled) so one failing source never blanks the page.
+//
+// The single usage request is deliberate. This used to fan out to seven admin
+// usage endpoints at once, and each one independently scanned up to 50,000 full
+// ledger rows for the same window — roughly seven copies resident at once in an
+// API replica capped at 1 GiB that is also serving chat (audit P1-15). The
+// consolidated endpoint scans once and reports `partialSections` for any rollup
+// that failed, so panels still degrade independently rather than all-or-nothing.
 // All display logic lives in pure helpers in lib/admin.ts (unit-tested); this file
 // is presentation only. Charts are inline SVG (no charting dependency).
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -25,21 +33,16 @@ import {
   type ResourcePanel,
   type UserAgentBucket,
   type WebSearchHealthReport,
+  OVERVIEW_SECTION_LABELS,
   barScale,
   canShowAdmin,
   dimensionShare,
   entitlementLabel,
   errorLabel,
-  fetchAgents,
-  fetchByDay,
-  fetchByModel,
-  fetchByUser,
-  fetchDistributions,
+  fetchOverview,
   fetchResources,
   fetchOperations,
   fetchSecurityMetrics,
-  fetchSummary,
-  fetchUserAgents,
   fetchWebSearchHealth,
   fetchWhoAmI,
   formatCompact,
@@ -58,6 +61,19 @@ import {
 
 const WINDOWS = [7, 30, 90];
 const IDENTITY_STORAGE_KEY = "ai4ia.admin.showRealIdentities";
+const USER_PAGE_SIZE = 20;
+// Panels served by the one usage request. Named individually so a failure of that
+// request still reports which panels are affected, exactly as the seven separate
+// requests did.
+const USAGE_PANELS = [
+  "usage summary",
+  "model usage",
+  "daily usage",
+  "users",
+  "agents",
+  "user agents",
+  "distributions",
+] as const;
 
 const card: React.CSSProperties = {
   background: "var(--bg-elevated)",
@@ -689,77 +705,59 @@ export function AdminDashboard() {
     setLoading(true);
     setData(EMPTY);
     setError(null);
-    const [
-      summary,
-      byModel,
-      byDay,
-      byUser,
-      agents,
-      userAgents,
-      distributions,
-      resources,
-      webSearch,
-      operations,
-      security,
-    ] =
-      await Promise.allSettled([
-        fetchSummary(window, controller.signal),
-        fetchByModel(window, controller.signal),
-        fetchByDay(window, controller.signal),
-        fetchByUser(window, 20, 0, identify, controller.signal),
-        fetchAgents(window, controller.signal),
-        fetchUserAgents(window, identify, controller.signal),
-        fetchDistributions(window, controller.signal),
-        fetchResources(controller.signal),
-        fetchWebSearchHealth(controller.signal),
-        fetchOperations(60, controller.signal),
-        fetchSecurityMetrics(60, controller.signal),
-      ]);
+    const [overview, resources, webSearch, operations, security] = await Promise.allSettled([
+      fetchOverview(window, USER_PAGE_SIZE, 0, identify, controller.signal),
+      fetchResources(controller.signal),
+      fetchWebSearchHealth(controller.signal),
+      fetchOperations(60, controller.signal),
+      fetchSecurityMetrics(60, controller.signal),
+    ]);
     if (controller.signal.aborted || generation !== loadGenerationRef.current) return;
     const next: DashboardData = { ...EMPTY };
-    if (summary.status === "fulfilled") next.summary = summary.value;
-    if (byModel.status === "fulfilled") next.byModel = byModel.value.byModel;
-    if (byDay.status === "fulfilled") next.byDay = byDay.value.byDay;
-    if (byUser.status === "fulfilled") {
-      next.byUser = byUser.value.byUser;
-      next.truncated = next.truncated || byUser.value.truncated;
-    }
-    if (agents.status === "fulfilled") next.agents = agents.value.agents;
-    if (userAgents.status === "fulfilled") next.userAgents = userAgents.value.userAgents;
-    if (distributions.status === "fulfilled") {
-      next.byRegion = distributions.value.byRegion;
-      next.byDataZone = distributions.value.byDataZone;
-      next.byDeployment = distributions.value.byDeployment;
-      next.byStatus = distributions.value.byStatus;
-      next.truncated = next.truncated || distributions.value.truncated;
+    const failures: string[] = [];
+    if (overview.status === "fulfilled") {
+      const report = overview.value;
+      next.summary = report.summary;
+      next.byModel = report.byModel;
+      next.byDay = report.byDay;
+      next.byUser = report.byUser;
+      next.agents = report.agents;
+      next.userAgents = report.userAgents;
+      next.byRegion = report.byRegion;
+      next.byDataZone = report.byDataZone;
+      next.byDeployment = report.byDeployment;
+      next.byStatus = report.byStatus;
+      next.truncated = report.truncated;
+      // The scan succeeded but a rollup did not: name only those panels, and
+      // keep every section that did resolve.
+      for (const section of report.partialSections ?? []) {
+        failures.push(`${OVERVIEW_SECTION_LABELS[section] ?? section}: unavailable`);
+      }
+    } else {
+      // One request now backs seven panels, so name all seven rather than
+      // reporting a single opaque failure the operator cannot map to the page.
+      const reason =
+        overview.reason instanceof Error ? overview.reason.message : "unavailable";
+      for (const panel of USAGE_PANELS) failures.push(`${panel}: ${reason}`);
     }
     if (resources.status === "fulfilled") next.resources = resources.value.panels;
     if (webSearch.status === "fulfilled") next.webSearch = webSearch.value;
     if (operations.status === "fulfilled") next.operations = operations.value;
     if (security.status === "fulfilled") next.security = security.value;
-    if (summary.status === "fulfilled") next.truncated = next.truncated || summary.value.truncated;
     const namedResults = [
-      ["usage summary", summary],
-      ["model usage", byModel],
-      ["daily usage", byDay],
-      ["users", byUser],
-      ["agents", agents],
-      ["user agents", userAgents],
-      ["distributions", distributions],
       ["resources", resources],
       ["web search", webSearch],
       ["operations", operations],
       ["security", security],
     ] as const;
-    next.loadErrors = namedResults
-      .filter(([, result]) => result.status === "rejected")
-      .map(([name, result]) =>
-        `${name}: ${
-          result.status === "rejected" && result.reason instanceof Error
-            ? result.reason.message
-            : "unavailable"
-        }`,
-      );
+    for (const [name, result] of namedResults) {
+      if (result.status === "rejected") {
+        failures.push(
+          `${name}: ${result.reason instanceof Error ? result.reason.message : "unavailable"}`,
+        );
+      }
+    }
+    next.loadErrors = failures;
     if (next.loadErrors.length) setError("Some admin data sources failed to load.");
     setData(next);
     setLoading(false);

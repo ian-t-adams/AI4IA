@@ -13,10 +13,11 @@ aggregate shape returned by ``GET /api/usage``.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -171,6 +172,201 @@ class UsageRecord(BaseModel):
         if self.estCostMicroUsd is None:
             return None
         return round(self.estCostMicroUsd / 1_000_000, 6)
+
+
+@runtime_checkable
+class UsageRollupSource(Protocol):
+    """Exactly the ledger fields the admin rollups read — nothing else.
+
+    This is the *contract* between :mod:`ai4ia_api.usage.aggregate` and whatever
+    is handed to it. :class:`UsageRecord` (the full ledger row) satisfies it, and
+    so does :class:`UsageRollupRow` (the projected row an admin scan actually
+    fetches), so the aggregation math is written once and runs unchanged over
+    either. Members are read-only properties on purpose: the aggregates never
+    mutate a row, and covariance lets ``status`` accept the narrower
+    :data:`UsageStatus` literal that ``UsageRecord`` declares.
+
+    Adding a field to an aggregate means adding it here *and* to
+    :class:`UsageRollupRow` and the projection in the Cosmos repo — otherwise the
+    projected path would silently read a default instead of the stored value.
+    """
+
+    @property
+    def userId(self) -> str: ...
+    @property
+    def model(self) -> str: ...
+    @property
+    def provider(self) -> str: ...
+    @property
+    def status(self) -> str: ...
+    @property
+    def billable(self) -> bool: ...
+    @property
+    def usageKnown(self) -> bool: ...
+    @property
+    def costKnown(self) -> bool: ...
+    @property
+    def createdAt(self) -> datetime: ...
+    @property
+    def agent(self) -> str | None: ...
+    @property
+    def deployment(self) -> str | None: ...
+    @property
+    def region(self) -> str | None: ...
+    @property
+    def dataZone(self) -> str | None: ...
+    @property
+    def promptTokens(self) -> int | None: ...
+    @property
+    def completionTokens(self) -> int | None: ...
+    @property
+    def totalTokens(self) -> int | None: ...
+    @property
+    def estCostMicroUsd(self) -> int | None: ...
+
+
+def _coerce_datetime(value: Any) -> datetime:
+    """Parse a ledger ``createdAt`` the same way pydantic would, but cheaply.
+
+    Rows are always written through ``model_dump(mode="json")``, so the stored
+    value is an ISO-8601 string (``…Z`` for UTC). A naive value is treated as UTC,
+    matching how the rest of the ledger is written. An unparseable value raises,
+    so a corrupt row fails loudly rather than silently landing in the wrong day
+    bucket — the same posture as ``UsageRecord.model_validate`` today.
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+    if isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    raise ValueError(f"unparseable ledger createdAt: {type(value).__name__}")
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
+@dataclass(frozen=True, slots=True)
+class UsageRollupRow:
+    """A ledger row projected down to the fields :mod:`.aggregate` reads.
+
+    Why this exists: the admin dashboard scans up to ``MAX_ADMIN_RECORDS`` rows
+    per request, and a full :class:`UsageRecord` carries ten fields no rollup
+    touches (``id``, ``sessionId``, ``target``, ``usageComplete``, ``calls``,
+    ``currency``, the three price snapshot fields, ``correlationId``) plus
+    pydantic's per-instance ``__dict__`` and ``__pydantic_fields_set__``. A frozen
+    slotted dataclass drops both, which is what keeps a 50,000-row admin window
+    inside a 1 GiB replica (see tests/test_admin_usage_overview.py for the
+    measured figures).
+
+    Accuracy is not traded away for that: :func:`from_record` and
+    :func:`from_document` are asserted to produce byte-identical rollups to the
+    full-record path, and the ``usageKnown``/``costKnown`` honesty flags are
+    carried verbatim so unknown never collapses into zero.
+    """
+
+    userId: str
+    model: str
+    provider: str
+    status: str
+    billable: bool
+    usageKnown: bool
+    costKnown: bool
+    createdAt: datetime
+    agent: str | None = None
+    deployment: str | None = None
+    region: str | None = None
+    dataZone: str | None = None
+    promptTokens: int | None = None
+    completionTokens: int | None = None
+    totalTokens: int | None = None
+    estCostMicroUsd: int | None = None
+
+    @classmethod
+    def from_record(cls, record: UsageRollupSource) -> "UsageRollupRow":
+        """Project an already-materialized row (used by the in-memory ledger)."""
+        return cls(
+            userId=record.userId,
+            model=record.model,
+            provider=record.provider,
+            status=record.status,
+            billable=record.billable,
+            usageKnown=record.usageKnown,
+            costKnown=record.costKnown,
+            createdAt=record.createdAt,
+            agent=record.agent,
+            deployment=record.deployment,
+            region=record.region,
+            dataZone=record.dataZone,
+            promptTokens=record.promptTokens,
+            completionTokens=record.completionTokens,
+            totalTokens=record.totalTokens,
+            estCostMicroUsd=record.estCostMicroUsd,
+        )
+
+    @classmethod
+    def from_document(cls, doc: Mapping[str, Any]) -> "UsageRollupRow":
+        """Build from a projected Cosmos document.
+
+        A projection omits keys the stored document did not have, so every
+        optional field defaults exactly as :class:`UsageRecord` would. ``provider``
+        keeps the same historical default (rows written before ``provider``
+        existed are Azure OpenAI turns).
+        """
+        return cls(
+            userId=str(doc.get("userId") or ""),
+            model=str(doc.get("model") or ""),
+            provider=str(doc.get("provider") or "azure_openai"),
+            status=str(doc.get("status") or "complete"),
+            billable=bool(doc.get("billable", False)),
+            usageKnown=bool(doc.get("usageKnown", False)),
+            costKnown=bool(doc.get("costKnown", False)),
+            createdAt=_coerce_datetime(doc.get("createdAt")),
+            agent=_coerce_optional_str(doc.get("agent")),
+            deployment=_coerce_optional_str(doc.get("deployment")),
+            region=_coerce_optional_str(doc.get("region")),
+            dataZone=_coerce_optional_str(doc.get("dataZone")),
+            promptTokens=_coerce_int(doc.get("promptTokens")),
+            completionTokens=_coerce_int(doc.get("completionTokens")),
+            totalTokens=_coerce_int(doc.get("totalTokens")),
+            estCostMicroUsd=_coerce_int(doc.get("estCostMicroUsd")),
+        )
+
+
+#: Ledger fields a rollup scan projects. Ordered for a stable, reviewable
+#: ``SELECT`` list; kept beside the row it fills so the two cannot drift.
+ROLLUP_FIELDS: tuple[str, ...] = (
+    "userId",
+    "model",
+    "provider",
+    "status",
+    "billable",
+    "usageKnown",
+    "costKnown",
+    "createdAt",
+    "agent",
+    "deployment",
+    "region",
+    "dataZone",
+    "promptTokens",
+    "completionTokens",
+    "totalTokens",
+    "estCostMicroUsd",
+)
 
 
 class WindowTotals(BaseModel):
