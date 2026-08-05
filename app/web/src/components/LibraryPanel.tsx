@@ -625,6 +625,10 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
       )}
       {sharing && (
         <SharePanel
+          // Remount per document: SharePanel's load effect deliberately does not
+          // reset state in its body, so a fresh instance is what guarantees a
+          // second document never inherits the first one's loaded ACL.
+          key={sharing.id}
           documentId={sharing.id}
           filename={sharing.filename}
           onClose={() => setSharing(null)}

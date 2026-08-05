@@ -37,6 +37,12 @@ Confirm Foundry accounts, model deployments, and core services come up cleanly a
 quota/capacity is sufficient in every region in `infra/models.json`. Fix IaC until green.
 
 ## 2. Tear down the live stack
+
+> **Stop.** This step is irreversible for data, not just for infrastructure. It
+> deletes canonical Cosmos state and uploaded blobs, and **purges** the Key Vault
+> holding per-user MCP credentials. Read [Rollback](#rollback) below and capture
+> the Cosmos account name plus a restore timestamp first.
+
 ```powershell
 # Dry run first (lists resources, deletes nothing):
 ./scripts/teardown.ps1 -Subscription $sub -ResourceGroups $rg -PurgeNameFilter ai4ia
@@ -64,4 +70,26 @@ covered in [`deployment.md`](./deployment.md#25-custom-domains-vanity-hostnames-
 
 ## Rollback
 There is no in-place rollback after step 2. The inventory snapshot from step 0 plus
-`infra/models.json` are the recovery source — re-run `azd provision` to rebuild.
+`infra/models.json` rebuild the **infrastructure** — re-run `azd provision`.
+
+> **They do not rebuild your data.** Neither input contains a single session,
+> message, memory, usage row, user agent/workflow, uploaded document or secret.
+> Read this before step 2, not after it:
+>
+> - **Cosmos (sessions, messages, usage, memory, agents, workflows, document
+>   manifests)** has continuous backup with point-in-time restore, and the
+>   procedure is tested — see
+>   [`deployment.md`](./deployment.md#data-recovery-posture-know-this-before-you-need-it).
+>   Restore targets a **new account**, so capture the source account name and a
+>   restore timestamp *before* deleting the resource group; after deletion the
+>   window is whatever that document states, not indefinite.
+> - **Blob (uploaded source documents, generated images/videos)** has no restore
+>   path here. Export anything you need to keep, outside the target resource
+>   group, before step 2.
+> - **Key Vault (per-user BYO MCP credentials)** is soft-deleted, and step 2
+>   **purges** it. Purged secrets are unrecoverable; users must re-enter them.
+> - **Derived stores** (document chunks, the AI Search index, parsed artifacts)
+>   are intentionally rebuildable and need no backup.
+>
+> Treat "rebuild the environment, keep the data" and "dispose of the environment"
+> as two different operations. Only the second one is what this runbook does.

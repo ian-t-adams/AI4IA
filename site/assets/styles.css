@@ -87,7 +87,15 @@ header.site {
   background: color-mix(in srgb, var(--bg) 82%, transparent);
   border-bottom: 1px solid var(--border);
 }
-.nav { display: flex; align-items: center; gap: 18px; height: 62px; }
+.nav {
+  display: flex; align-items: center; gap: 18px;
+  /* min-height, not height: .nav-links wraps to a second row on narrow screens
+     and at 200% zoom. With a fixed 62px the wrapped row escaped the header and
+     overlapped the page content instead of pushing it down. */
+  min-height: 62px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+}
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: 0.3px; color: var(--text); }
 .brand img { width: 30px; height: 30px; border-radius: 8px; }
 .brand span { font-size: 1.15rem; }
@@ -168,7 +176,14 @@ table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
 th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
 thead th { position: sticky; top: 0; background: var(--panel-2); color: var(--text); font-weight: 700; }
 tbody tr:hover { background: var(--panel-2); }
-td code, .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 0.85em; color: var(--brand-2); }
+td code, .mono {
+  font-family: "Cascadia Code", Consolas, monospace; font-size: 0.85em; color: var(--brand-2);
+  /* Long unbroken identifiers (resource names, CI variable names) were forcing
+     the whole document wider than a 320-360px viewport, so the page scrolled
+     horizontally instead of reflowing. Breaking inside these tokens is the
+     lesser evil: WCAG 1.4.10 forbids the horizontal scroll, not the wrap. */
+  overflow-wrap: anywhere;
+}
 
 /* ---------- Diagram ---------- */
 .diagram { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; overflow-x: auto; }

@@ -625,6 +625,20 @@ class Settings(BaseSettings):
 
     # Optional path override for the bundled model catalog (tests/dev).
     model_catalog_path: str | None = None
+
+    # Data-residency policy for model routing: "global" | "us" | "eu".
+    #
+    # "global" (default) preserves existing behaviour: any deployment may serve.
+    # "us"/"eu" restrict routing to deployments whose PROCESSING is bounded to
+    # that zone -- which, per DeploymentOption.residency, excludes every
+    # GlobalStandard deployment regardless of where its endpoint sits.
+    #
+    # Enforced in the catalog (one choke point, app.state.catalog) rather than
+    # per call site, so no route can bypass it. Startup validation refuses an
+    # unusable combination instead of letting the app come up with an empty
+    # model picker.
+    data_residency: str = "global"
+
     # Optional path override for the bundled agent catalog (tests/dev).
     agent_catalog_path: str | None = None
 
@@ -710,8 +724,50 @@ class Settings(BaseSettings):
             "video": self.cu_video_analyzer,
         }.get(modality, self.cu_document_analyzer)
 
+    def _validate_data_residency(self) -> None:
+        """Reject a residency policy that is malformed or leaves no chat models.
+
+        Deliberately fails startup rather than degrading: a sovereignty control
+        that silently produces an empty model picker looks like an outage, and a
+        control that silently does nothing is worse than not having one.
+
+        This is the check that surfaces the real constraint in this deployment --
+        nearly every model is deployed ``GlobalStandard``, which by definition
+        satisfies no zone. Restricting to ``us``/``eu`` therefore needs regional
+        or ``DataZoneStandard`` chat deployments to exist first; the error says
+        exactly that instead of leaving an operator to infer it.
+        """
+        from .catalog import RESIDENCY_POLICIES, load_catalog
+
+        policy = (self.data_residency or "").strip().lower()
+        if policy not in RESIDENCY_POLICIES:
+            raise RuntimeError(
+                f"AI4IA_DATA_RESIDENCY={self.data_residency!r} is not a valid policy. "
+                f"Use one of: {', '.join(sorted(RESIDENCY_POLICIES))}."
+            )
+        if policy != "global":
+            catalog = load_catalog(self.model_catalog_path, policy)
+            if not catalog.conversational_models():
+                offered = sorted(
+                    {
+                        option.residency
+                        for entry in catalog.models
+                        if entry.conversational
+                        for option in entry.options
+                    }
+                )
+                raise RuntimeError(
+                    f"AI4IA_DATA_RESIDENCY={policy!r} leaves no conversational model "
+                    "reachable. Only deployments whose processing is bounded to that "
+                    "zone qualify, and a GlobalStandard deployment never is "
+                    f"(available chat residencies: {', '.join(offered) or 'none'}). "
+                    "Add a regional or DataZoneStandard chat deployment for that zone "
+                    "in infra/models.json, or set the policy back to 'global'."
+                )
+
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
+        self._validate_data_residency()
         if self.auth_provider == AuthProviderKind.dev and not self.dev_auth_permitted:
             raise RuntimeError(
                 "Dev auth is disabled outside local. Set AI4IA_AUTH_PROVIDER=entra "

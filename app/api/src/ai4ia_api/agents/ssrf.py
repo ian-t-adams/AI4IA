@@ -13,9 +13,9 @@ leave our trust boundary. It is deliberately *fail-closed* and dependency-free
 * HTTPS only (no ``http``/``file``/``gopher``/…), no embedded credentials.
 * The host is resolved to **every** A/AAAA address and each one must be a
   global, public unicast address — private, loopback, link-local (incl. the
-  metadata range), multicast, reserved, and unspecified ranges are rejected.
-  Resolving *all* records defeats DNS-rebinding tricks where one record is
-  public and another is internal.
+  metadata range), carrier-grade NAT, multicast, reserved, and unspecified
+  ranges are rejected. Resolving *all* records defeats DNS-rebinding tricks
+  where one record is public and another is internal.
 
 The resolver is injectable so tests never touch real DNS, and so a caller can
 re-validate at connect time (the recommended posture against rebinding).
@@ -55,8 +55,22 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     mapped = getattr(ip, "ipv4_mapped", None)
     if mapped is not None:
         return _is_blocked_ip(mapped)
+    # ``not is_global`` and the explicit category checks are BOTH required --
+    # each one catches a range the other misses, verified against CPython's
+    # ``ipaddress`` rather than assumed:
+    #
+    # * ``not is_global`` alone adds carrier-grade NAT (``100.64.0.0/10``), which
+    #   every explicit check below reports False for. That range is routable
+    #   inside many hosting/CGNAT networks, so it was a real egress hole.
+    # * the explicit checks alone are still needed because ``is_global`` returns
+    #   True for the NAT64 well-known prefix (``64:ff9b::/96``), whose embedded
+    #   IPv4 destination is not visible to it; ``is_reserved`` catches that.
+    #
+    # Combining them is strictly more restrictive than either, so this can only
+    # ever reject more, never newly allow.
     return (
-        ip.is_private
+        not ip.is_global
+        or ip.is_private
         or ip.is_loopback
         or ip.is_link_local  # includes 169.254.0.0/16 cloud metadata
         or ip.is_multicast

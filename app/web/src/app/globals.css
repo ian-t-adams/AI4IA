@@ -1082,6 +1082,63 @@ select {
 .activity-rows {
   margin-top: 4px;
 }
+
+/* --- Content-safety annotations ---------------------------------------------
+
+   The element carries `activity activity-trace safety-trace`, so the disclosure
+   chrome (marker, cursor, rotation) comes from .activity-trace and this block
+   only adds the row layout and the flagged treatment.
+
+   Every model runs under an annotate-only Responsible AI policy: filters are
+   enabled, nothing is blocked. So this panel is the only place the safety
+   system is visible, and it must read as INFORMATION rather than as an
+   enforcement action -- hence muted-by-default rows and no danger-red framing
+   for the panel itself. */
+.safety-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+}
+.safety-glyph {
+  width: 1em;
+  text-align: center;
+}
+.safety-scope,
+.safety-verdict {
+  font-size: 0.92em;
+  white-space: nowrap;
+}
+.safety-verdict {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+/* A flagged row is carried by the glyph and the verdict text as well as weight,
+   never by colour alone (the panel must stay readable in forced-colors). */
+.safety-row.flagged {
+  color: var(--fg);
+  font-weight: 600;
+}
+.safety-note {
+  margin: 0 0 6px;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+}
+@media (max-width: 560px) {
+  /* Four columns do not survive a phone width; stack the metadata under the
+     category rather than truncating it. */
+  .safety-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .safety-scope,
+  .safety-verdict {
+    grid-column: 2;
+    white-space: normal;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .activity-spinner {
     animation: none;

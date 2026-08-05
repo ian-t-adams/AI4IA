@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
@@ -79,6 +79,7 @@ from ..documents.analyze_factory import InlineAttachmentAnalysisService
 from ..memory.recall_capability import RECALL_TOOL_NAME
 from ..memory.remember_capability import REMEMBER_TOOL_NAME
 from ..memory.service import MemoryServiceProtocol
+from ..safety import MessageSafety, merge_safety, parse_safety
 from ..usage.models import TokenUsage
 from ..usage.service import UsageService
 from ..websearch.capability import WEB_SEARCH_TOOL_NAME
@@ -88,6 +89,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
 
 
+class ChatParams(BaseModel):
+    """Generation controls a CLIENT may set, as a strict allowlist.
+
+    FastAPI is the trust boundary: the browser only ever sends these four (see
+    ``app/web/src/lib/types.ts``), but direct API callers are supported, so an
+    open ``dict`` here meant a caller could smuggle arbitrary fields into the
+    provider request body -- including ``messages``/``input`` (replacing the
+    server-built history), ``model`` (re-targeting the deployment past catalog
+    routing), ``store`` (re-enabling provider-side retention) and ``tools``
+    (calling providers outside the governed tool registry).
+
+    ``extra="forbid"`` rejects anything else with a 422 rather than forwarding
+    it. Server-owned fields are additionally stripped and rewritten in the
+    gateway builders (``gateway/client.py::_SERVER_OWNED_BODY_KEYS``), so this
+    is one of two independent layers rather than the only one.
+
+    ``max_completion_tokens`` is intentionally absent: it is the reasoning-model
+    spelling of ``max_tokens`` and is derived server-side, so accepting it from a
+    client would bypass the per-model output cap applied in ``_effective_params``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_tokens: int | None = Field(default=None, ge=1)
+    # Validated against the model's own ``reasoningEffortOptions`` in
+    # ``_effective_params`` (and dropped when unsupported); bounded here only so
+    # an oversized value cannot reach that check or the logs.
+    reasoning_effort: str | None = Field(default=None, max_length=32)
+
+
 class ChatRequest(BaseModel):
     sessionId: str
     content: str
@@ -95,7 +128,7 @@ class ChatRequest(BaseModel):
     region: str | None = None
     dataZone: str | None = None
     stream: bool = True
-    params: dict = {}
+    params: ChatParams = ChatParams()
 
 
 # Injected as a system block when a plain (agent-less or tool-less-agent) turn
@@ -1024,7 +1057,7 @@ async def chat(
     # governs the turn; composes with the gateway's reasoning/Responses param
     # translation. When the model has no metadata this returns body.params
     # unchanged, so the turn is byte-for-byte identical to before.
-    effective_params = _effective_params(body.params, entry)
+    effective_params = _effective_params(body.params.model_dump(exclude_none=True), entry)
 
     # Capability models (image, video, tts, transcription, embedding, rerank) and
     # voice models (realtime, audio) aren't chat targets — they're driven through
@@ -1791,6 +1824,9 @@ async def chat(
             status=MessageStatus.complete,
             model=deployment.deploymentName,
             agent=agent_name,
+            # Annotate-only safety verdicts. Under a non-blocking RAI policy
+            # these are the only visible evidence the filters ran at all.
+            safety=parse_safety(result),
         )
         await repo.add_message(user.internal_user_id, assistant)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
@@ -1824,6 +1860,7 @@ async def chat(
         final = MessageStatus.complete
         saw_done = False
         stream_usage: dict | None = None
+        stream_safety: MessageSafety | None = None
         terminal_persisted = False
         try:
             yield _stream_metadata(user_msg.id, assistant.id)
@@ -1836,6 +1873,12 @@ async def chat(
             ):
                 if chunk.usage:
                     stream_usage = chunk.usage
+                if chunk.safety is not None:
+                    # Prompt verdicts arrive on an early chunk and completion
+                    # verdicts on a later one, so the full picture only exists
+                    # after merging across the stream.
+                    stream_safety = merge_safety(stream_safety, chunk.safety)
+                    assistant.safety = stream_safety
                 if chunk.raw and _has_gateway_stream_error(chunk.raw):
                     final = MessageStatus.error
                     assistant.content = "".join(parts)

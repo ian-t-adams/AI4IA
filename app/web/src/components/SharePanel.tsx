@@ -65,18 +65,31 @@ export default function SharePanel({
   const [grantees, setGrantees] = useState<string[]>([]);
   const [draftEmail, setDraftEmail] = useState("");
   const [loading, setLoading] = useState(true);
+  // Whether an AUTHORITATIVE read of the current ACL succeeded. The editable
+  // form is initialised to private/no-grantees, so rendering it after a FAILED
+  // read offers the user a Save button that silently rewrites a sharing state
+  // nobody has actually seen -- turning a transient GET failure into a real
+  // revocation. `loading` alone cannot express this: it only says the request
+  // finished, not that it worked.
+  const [loaded, setLoaded] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     let active = true;
+    // No state reset here: the initial state already IS the loading state, and
+    // the retry handler resets before bumping `reloadKey`. Resetting in the
+    // effect body would be a synchronous setState in an effect (cascading
+    // render) for no behavioural gain.
     (async () => {
       try {
         const state = await getDocumentShares(documentId);
         if (!active) return;
         setVisibility(state.visibility);
         setGrantees(state.grantees);
+        setLoaded(true);
       } catch (e) {
         if (active) setError(e instanceof Error ? e.message : "Failed to load sharing");
       } finally {
@@ -86,7 +99,15 @@ export default function SharePanel({
     return () => {
       active = false;
     };
-  }, [documentId]);
+  }, [documentId, reloadKey]);
+
+  const retryLoad = useCallback(() => {
+    // Reset here, in an event handler, then re-run the effect via `reloadKey`.
+    setError(null);
+    setLoaded(false);
+    setLoading(true);
+    setReloadKey((n) => n + 1);
+  }, []);
 
   const addGrantee = useCallback(() => {
     const email = draftEmail.trim().toLowerCase();
@@ -108,6 +129,10 @@ export default function SharePanel({
 
   const handleSave = useCallback(async () => {
     if (saving) return;
+    // Never write an ACL we never successfully read (see `loaded`). The UI
+    // already hides the form in that state; this is the second layer, because
+    // the consequence of getting it wrong is silently revoking real access.
+    if (!loaded) return;
     setSaving(true);
     setError(null);
     try {
@@ -125,7 +150,7 @@ export default function SharePanel({
     } finally {
       setSaving(false);
     }
-  }, [documentId, grantees, onChanged, saving, visibility]);
+  }, [documentId, grantees, loaded, onChanged, saving, visibility]);
 
   return (
     <div
@@ -201,6 +226,51 @@ export default function SharePanel({
           <p style={{ margin: 0, fontSize: "0.85em", color: "var(--fg-muted)" }}>
             Loading…
           </p>
+        ) : !loaded ? (
+          // Read failed: show the error and a retry instead of an editable form.
+          // Saving from here would write the component's private/no-grantees
+          // defaults over an ACL that was never successfully read.
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <p role="alert" style={{ margin: 0, fontSize: "0.85em", color: "var(--danger, #dc2626)" }}>
+              {error ?? "Couldn't load who this document is shared with."}
+            </p>
+            <p style={{ margin: 0, fontSize: "0.8em", color: "var(--fg-muted)" }}>
+              Current sharing is unchanged. Retry before editing, so a save
+              cannot overwrite settings that were never loaded.
+            </p>
+            <div style={{ display: "flex", gap: 12 }}>
+              <button
+                type="button"
+                onClick={retryLoad}
+                style={{
+                  padding: "6px 16px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: "var(--accent)",
+                  color: "var(--accent-fg)",
+                  fontSize: "0.85em",
+                  cursor: "pointer",
+                }}
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                style={{
+                  padding: "6px 16px",
+                  borderRadius: 8,
+                  border: "1px solid var(--border)",
+                  background: "transparent",
+                  color: "var(--fg)",
+                  fontSize: "0.85em",
+                  cursor: "pointer",
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
         ) : (
           <>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -363,7 +433,7 @@ export default function SharePanel({
             )}
 
             {error && (
-              <p style={{ margin: 0, fontSize: "0.8em", color: "#dc2626" }}>
+              <p style={{ margin: 0, fontSize: "0.8em", color: "var(--danger, #dc2626)" }}>
                 {error}
               </p>
             )}

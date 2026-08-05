@@ -2454,6 +2454,7 @@ export function ChatApp() {
         attachments: m.attachments,
         source: m.source,
         steps: m.steps,
+        safety: m.safety,
       }));
     if (streaming && !streamMaterialized) {
       base.push({

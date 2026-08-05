@@ -91,6 +91,25 @@ export interface ActivityStep {
   detail?: string | null;
 }
 
+// One content-safety category's verdict for one half of the exchange. AI4IA
+// runs every model under an annotate-only policy: nothing is ever blocked, so
+// these verdicts are the only visible evidence the filters ran.
+export interface SafetySignal {
+  category: string;
+  scope: "prompt" | "completion";
+  // Harm categories carry a severity; detection filters (jailbreak, protected
+  // material) carry `detected` instead. Exactly one is set.
+  severity?: string | null;
+  detected?: boolean | null;
+  // Whether the platform BLOCKED on this signal. Always false under the
+  // annotate-only policy.
+  filtered: boolean;
+}
+
+export interface MessageSafety {
+  signals: SafetySignal[];
+}
+
 export interface Message {
   id: string;
   sessionId: string;
@@ -105,6 +124,9 @@ export interface Message {
   source?: MessageSource;
   // Redacted activity trace for an agentic/tool turn; absent for plain turns.
   steps?: ActivityStep[] | null;
+  // Annotate-only content-safety verdicts. `null`/absent means the provider
+  // reported none, which is NOT the same as "the filters found nothing".
+  safety?: MessageSafety | null;
 }
 
 // A finalized Voice Live turn the web persists back into the shared session.

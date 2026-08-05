@@ -163,13 +163,21 @@ try {
 # state classification (drives the status colours on the site):
 #   unavailable -> Resource Health reports Unavailable
 #   degraded    -> provisioning Failed/Canceled
-#   healthy     -> present in Resource Graph and not failed/unavailable (existence == provisioned)
+#   healthy     -> Resource Health positively reports Available
+#   provisioned -> present in Resource Graph and not failed/unavailable, but
+#                  Resource Health has no opinion (most resource types never
+#                  publish an availability state at all)
+#
+# 'provisioned' is deliberately distinct from 'healthy'. This previously
+# collapsed both into 'healthy', so the portal could report "33 Healthy" while
+# every single row displayed "Availability: Unknown" -- existence was being
+# presented as health. Absence of a signal is not a positive signal.
 $resources = foreach ($r in ($invRaw.data | Sort-Object type, name)) {
     $meta  = Resolve-Type $r.type
     $rid   = ($r.id).ToLower()
     $avail = if ($health.ContainsKey($rid)) { $health[$rid] } else { 'Unknown' }
     $prov  = if ([string]::IsNullOrWhiteSpace($r.prov)) { 'n/a' } else { $r.prov }
-    $state = 'healthy'
+    $state = if ($avail -eq 'Available') { 'healthy' } else { 'provisioned' }
     if ($avail -eq 'Unavailable') { $state = 'unavailable' }
     elseif ($prov -in 'Failed','Canceled') { $state = 'degraded' }
     [pscustomobject]@{
@@ -220,6 +228,9 @@ $endpoints = @(
 $summary = [ordered]@{
     total        = $resources.Count
     healthy      = ($resources | Where-Object { $_.state -eq 'healthy' }).Count
+    # Provisioned-but-unreported. Counted separately so the portal can never
+    # again present "no availability signal" as "healthy".
+    provisioned  = ($resources | Where-Object { $_.state -eq 'provisioned' }).Count
     degraded     = ($resources | Where-Object { $_.state -eq 'degraded' }).Count
     unavailable  = ($resources | Where-Object { $_.state -eq 'unavailable' }).Count
     endpointsUp  = ($endpoints | Where-Object { $_.ok }).Count

@@ -236,3 +236,143 @@ describe("MessageList", () => {
     expect(container.querySelector("b")).toBeNull();
   });
 });
+
+// Every model runs under an annotate-only Responsible AI policy: the filters are
+// enabled but never block. That makes this panel the only place the safety
+// system is observable, so these tests pin that it reports honestly — it must
+// never imply the answer was withheld or altered, because it never was.
+describe("MessageList content-safety panel", () => {
+  const safe = { category: "hate", scope: "prompt" as const, severity: "safe", filtered: false };
+  const flagged = {
+    category: "violence",
+    scope: "completion" as const,
+    severity: "medium",
+    filtered: false,
+  };
+  const jailbreak = {
+    category: "jailbreak",
+    scope: "prompt" as const,
+    detected: true,
+    filtered: false,
+  };
+
+  it("summarises how many verdicts were flagged", async () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "s1",
+            role: "assistant",
+            content: "answer",
+            safety: { signals: [safe, flagged, jailbreak] },
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("Content safety · 2 flagged")).toBeInTheDocument();
+
+    // Detail is collapsed until asked for, so a routine turn stays quiet.
+    await userEvent.click(screen.getByText("Content safety · 2 flagged"));
+    expect(screen.getByText("Violence")).toBeInTheDocument();
+    expect(screen.getByText("Jailbreak attempt")).toBeInTheDocument();
+    expect(screen.getByText("medium")).toBeInTheDocument();
+    expect(screen.getByText("detected")).toBeInTheDocument();
+  });
+
+  it("says so explicitly when nothing was flagged", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({ id: "s2", role: "assistant", content: "answer", safety: { signals: [safe] } }),
+        ]}
+      />,
+    );
+    // "The filters ran and found nothing" is a different statement from "no
+    // filters ran", and the panel has to make the first one visible.
+    expect(screen.getByText("Content safety · nothing flagged")).toBeInTheDocument();
+  });
+
+  it("states that nothing was blocked or rewritten", async () => {
+    render(
+      <MessageList
+        messages={[
+          msg({ id: "s3", role: "assistant", content: "answer", safety: { signals: [flagged] } }),
+        ]}
+      />,
+    );
+    await userEvent.click(screen.getByText("Content safety · 1 flagged"));
+    expect(
+      screen.getByText(/Nothing was blocked or rewritten/i),
+    ).toBeInTheDocument();
+  });
+
+  it("distinguishes the prompt from the reply", async () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "s4",
+            role: "assistant",
+            content: "answer",
+            safety: { signals: [safe, flagged] },
+          }),
+        ]}
+      />,
+    );
+    await userEvent.click(screen.getByText("Content safety · 1 flagged"));
+    expect(screen.getByText("your message")).toBeInTheDocument();
+    expect(screen.getByText("the reply")).toBeInTheDocument();
+  });
+
+  it("renders nothing when the provider reported no annotations", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({ id: "s5", role: "assistant", content: "answer" }),
+          msg({ id: "s6", role: "assistant", content: "answer", safety: { signals: [] } }),
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/Content safety/)).toBeNull();
+  });
+
+  it("stays hidden while the turn is still streaming", () => {
+    // A partial verdict must never be presented as the final one.
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "s7",
+            role: "assistant",
+            content: "partial",
+            pending: true,
+            safety: { signals: [flagged] },
+          }),
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/Content safety/)).toBeNull();
+  });
+
+  it("falls back to the raw category name for an unknown filter", async () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "s8",
+            role: "assistant",
+            content: "answer",
+            safety: {
+              signals: [
+                { category: "new_filter", scope: "completion", severity: "high", filtered: false },
+              ],
+            },
+          }),
+        ]}
+      />,
+    );
+    // A newly added Foundry filter must still surface rather than vanish.
+    await userEvent.click(screen.getByText("Content safety · 1 flagged"));
+    expect(screen.getByText("new filter")).toBeInTheDocument();
+  });
+});
