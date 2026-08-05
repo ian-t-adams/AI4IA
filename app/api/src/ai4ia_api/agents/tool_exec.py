@@ -64,16 +64,23 @@ class ToolContext:
     # map before it produces the first gateway tool schema.
     tool_aliases: Mapping[str, str] = field(default_factory=dict)
     # --- Per-invocation approval (see agents/approvals.py) -------------------
-    # Defaults reproduce the pre-existing behavior exactly, so every construction
-    # site that has not opted in (workflows, built-in-only agent turns, tests)
-    # is byte-for-byte unchanged. The chat router opts in for MCP turns.
-    approval_policy: ApprovalPolicy = ApprovalPolicy.off
+    # Defaults to ``always``: a security control's default must be the safe one,
+    # so a construction site that forgets to pass a policy gets the gate rather
+    # than silently losing it. Paths that genuinely cannot reach a gated tool
+    # opt OUT explicitly (``approval_policy=ApprovalPolicy.off``) with a reason,
+    # which makes each exemption a reviewable decision instead of an omission.
+    # This only bites tools carrying an ``external``/``destructive`` ToolSpec —
+    # built-ins are ``safe`` and are never gated whatever the policy says.
+    approval_policy: ApprovalPolicy = ApprovalPolicy.always
     # True when this turn carried untrusted content (documents, recalled memory,
     # library excerpts). The runtime additionally sets its own local taint once
     # any tool result has come back inside the turn.
     untrusted_context: bool = False
     # ``approval_key(tool, digest)`` entries the user has already approved for
-    # THIS turn, redeemed server-side from durable pending records.
+    # THIS turn, redeemed server-side from durable pending records. Read-only
+    # here: the runtime copies it into a mutable per-turn set and REMOVES each
+    # key once it has authorized one dispatch, so a single approval buys exactly
+    # one execution rather than one per emission (see ``run_agent_turn``).
     invocation_approvals: frozenset[str] = field(default_factory=frozenset)
     # Collector the runtime records denied-pending-approval calls into, so the
     # surface owning the turn can mint, persist and stream them.

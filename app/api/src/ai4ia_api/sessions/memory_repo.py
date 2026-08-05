@@ -195,6 +195,31 @@ class InMemorySessionRepository:
             key=lambda message: message.createdAt,
         )
 
+    async def consume_tool_approval(
+        self, user_id: str, session_id: str, message_id: str, request_id: str
+    ) -> bool:
+        """Flip one pending tool approval to spent, atomically.
+
+        Held under the repository lock so the check and the write cannot
+        interleave — the in-memory analogue of the Cosmos ETag CAS. Getting this
+        right here matters even though this store is dev/test-only: it is the
+        store the approval tests run against, so a non-atomic version would make
+        those tests unable to observe the very race they exist to rule out.
+        """
+        async with self._lock:
+            await self._owned_session(user_id, session_id)
+            for message in self._messages.get(session_id, []):
+                if message.id != message_id:
+                    continue
+                for record in message.pendingApprovals or []:
+                    if record.id != request_id:
+                        continue
+                    if record.consumed:
+                        return False
+                    record.consumed = True
+                    return True
+            return False
+
     async def clear_messages(self, user_id: str, session_id: str) -> None:
         async with self._lock:
             await self._owned_session(user_id, session_id)

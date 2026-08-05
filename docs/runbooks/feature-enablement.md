@@ -58,10 +58,23 @@ web result or a previous tool response chooses an outbound call's arguments.
   deployment where users register their own MCP servers.
 
 Approvals are short-lived (10 minutes), single-use, and bound to user, session,
-tool and argument digest. The one-time grant is delivered once on the chat SSE
-stream and is never persisted, so a browser reload intentionally loses it and the
-user is asked again rather than silently holding a live capability. Denying is
-the absence of a grant: there is no deny endpoint to fail and no state to unstick.
+tool and argument digest. "Single-use" is enforced in two independent places,
+because they close different holes: the durable record is burned with a
+conditional (ETag) write, so two concurrent requests presenting the same grant
+cannot both redeem it; and the redeemed authorization is spent the moment it
+dispatches one call, so one approval cannot cover a model that emits the same
+call repeatedly in a single turn. The one-time grant is delivered once on the
+chat SSE stream and is never persisted, so a browser reload intentionally loses
+it and the user is asked again rather than silently holding a live capability.
+Denying is the absence of a grant: there is no deny endpoint to fail and no state
+to unstick.
+
+The approval card never silently shortens itself: per-value length shrinks before
+any key is dropped, masked values are labelled as hidden-but-sent rather than
+shown as content, and anything that still could not be displayed is counted and
+surfaced as a warning on the card. Otherwise a model-chosen argument set could
+push the destination of an exfiltration out of view while it still went on the
+wire.
 
 The checked-in live parameters currently turn on image/video generation,
 document understanding, document compute, inline-attachment code interpreter, raw-file

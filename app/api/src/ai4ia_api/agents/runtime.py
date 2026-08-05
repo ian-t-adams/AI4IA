@@ -178,6 +178,21 @@ async def run_agent_turn(
     # remote content that the model has now read. That is the exact chain the
     # audit describes: a hostile MCP/web response steering a later outbound call.
     untrusted_context = ctx.untrusted_context
+    # Mutable copy of the redeemed per-invocation approvals. A key is REMOVED
+    # the moment it authorizes a dispatch, so one approval buys exactly one
+    # execution.
+    #
+    # This is not a refinement — it is the difference between "one click, one
+    # call" and "one click, up to _MAX_TOOL_CALLS calls". ``PendingToolApproval
+    # .consumed`` makes *redemption* single-use, but redemption happens once per
+    # turn in the router while this set is consulted once per tool call, and the
+    # model's tool-call list is precisely what injected context influences. A
+    # membership test that never shrinks therefore lets the attacker choose the
+    # repeat count, which for a ``destructive`` tool is that many unauthorized
+    # side effects from a single human decision. Repeats fall through to the
+    # normal held-for-approval path, so the user is asked again rather than the
+    # model quietly retrying.
+    unspent_approvals: set[str] = set(ctx.invocation_approvals)
 
     async def record(step: AgentStep, *, persist: bool = True) -> None:
         """Append a finalized step to the trace and/or surface it live.
@@ -364,9 +379,9 @@ async def run_agent_turn(
                 untrusted_context=untrusted_context,
             )
             digest = arguments_digest(parsed) if needs_invocation_approval else ""
+            approval_token = approval_key(name, digest) if needs_invocation_approval else ""
             invocation_approved = (
-                needs_invocation_approval
-                and approval_key(name, digest) in ctx.invocation_approvals
+                needs_invocation_approval and approval_token in unspent_approvals
             )
             decision = registry.authorize(
                 name,
@@ -447,6 +462,16 @@ async def run_agent_turn(
                     force_final = True
                 denied_once.add(name)
                 continue
+
+            # Spend the approval BEFORE dispatching, not after a successful
+            # return. The handler is what makes the outbound call, so once it is
+            # entered the side effect may already have happened even if it then
+            # raises; treating the approval as "authorizes one attempt" means a
+            # failed call cannot be silently retried against the same click. The
+            # cost is that a genuinely failed call needs re-approval, which is
+            # the correct direction to err for an egress control.
+            if invocation_approved:
+                unspent_approvals.discard(approval_token)
 
             started = time.monotonic()
             try:

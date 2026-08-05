@@ -74,6 +74,9 @@ function ToolApprovalCard({
   busy: boolean;
 }) {
   const preview = Object.entries(prompt.argumentsPreview ?? {});
+  const masked = new Set(prompt.argumentsMasked ?? []);
+  const elided = new Set(prompt.argumentsElided ?? []);
+  const omitted = prompt.argumentsOmitted ?? 0;
   return (
     <div
       role="group"
@@ -142,9 +145,22 @@ function ToolApprovalCard({
                   margin: 0,
                   overflowWrap: "anywhere",
                   fontFamily: "monospace",
+                  // A masked value is NOT the value: say so visually as well as
+                  // textually, so "***REDACTED***" cannot read as literal content.
+                  fontStyle: masked.has(key) ? "italic" : undefined,
+                  color: masked.has(key) ? "var(--fg-muted)" : undefined,
                 }}
               >
                 {value}
+                {masked.has(key) ? (
+                  <span style={{ fontFamily: "inherit" }}>
+                    {" "}
+                    (hidden here, sent in full)
+                  </span>
+                ) : null}
+                {elided.has(key) ? (
+                  <span style={{ color: "var(--fg-muted)" }}> (shortened)</span>
+                ) : null}
               </dd>
             </div>
           ))}
@@ -154,6 +170,25 @@ function ToolApprovalCard({
           No arguments.
         </p>
       )}
+
+      {omitted > 0 ? (
+        // Never let the list end silently. The argument set is chosen by the
+        // model, so a quietly-shortened preview is exactly how a destination
+        // gets hidden from the person approving it.
+        <p
+          role="alert"
+          style={{
+            margin: 0,
+            fontSize: "0.82em",
+            color: "var(--danger)",
+            fontWeight: 600,
+          }}
+        >
+          {omitted} more argument{omitted === 1 ? "" : "s"} will be sent but{" "}
+          {omitted === 1 ? "is" : "are"} not shown here. You are not seeing the
+          whole call — deny unless you expected this.
+        </p>
+      ) : null}
 
       <div style={{ display: "flex", gap: 8 }}>
         <button

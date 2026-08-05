@@ -50,8 +50,16 @@ argument digest      :attr:`PendingToolApproval.argumentsDigest` -> the
                      of one argument and the key no longer matches.
 expiry               :attr:`PendingToolApproval.expiresAt`, checked at consume
                      time (:func:`consume_grant`).
-single use           :attr:`PendingToolApproval.consumed`, flipped and persisted
-                     when the grant is redeemed.
+single use           two independent mechanisms, closing different holes.
+                     ``PendingToolApproval.consumed`` is flipped through the
+                     repository's **conditional** (ETag) write, so two
+                     concurrent requests presenting the same grant cannot both
+                     redeem it; and ``run_agent_turn`` removes the redeemed key
+                     from its per-turn set on first dispatch, so one approval
+                     cannot cover a model that emits the same call repeatedly
+                     within one turn. The second is not a refinement of the
+                     first: redemption happens once per turn, while the model's
+                     tool-call list is exactly what injected context controls.
 possession           ``sha256(grant) == grantHash``, ``hmac.compare_digest``.
 ===================  ==========================================================
 
@@ -84,14 +92,21 @@ import hmac
 import json
 import secrets
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .tools import ToolRisk, ToolSpec, is_safe_tool_name, redact, redact_obj
+from .tools import (
+    ToolRisk,
+    ToolSpec,
+    is_fully_masked,
+    is_safe_tool_name,
+    redact,
+    redact_obj,
+)
 
 # How long a minted approval stays redeemable. Short on purpose: an approval is a
 # capability to make one specific outbound call, and the user is looking at the
@@ -107,9 +122,24 @@ MAX_APPROVAL_REQUESTS_PER_TURN = 4
 # Bounds on what reaches the approval card. These are user-facing strings built
 # from remote-server-supplied descriptions and model-supplied arguments, so they
 # are capped and redacted before they are persisted or streamed.
-_MAX_PURPOSE_CHARS = 240
-_MAX_PREVIEW_ENTRIES = 12
+#
+# ``_MAX_PREVIEW_ENTRIES`` is a *last-resort* cap, not a display budget. It used
+# to be 12 and silently dropped everything past it in sort order, which handed
+# the attacker the card: the argument set and the key names are both
+# model-controlled (``validate_args`` deliberately tolerates properties outside
+# the declared schema and the MCP handler forwards them verbatim), so padding
+# with filler keys that sort early pushed an exfiltration's ``to`` off the card
+# while it still went out on the wire. Keys are now shown to a much higher cap,
+# per-value length shrinks as the key count grows so the payload stays bounded,
+# and anything still dropped is counted and surfaced rather than vanishing.
+_MAX_PREVIEW_ENTRIES = 40
 _MAX_PREVIEW_VALUE_CHARS = 200
+# Total character budget across all preview values. Per-value length is this
+# divided by the number of keys shown (floored), so a 40-key call still fits in
+# a bounded payload without any key disappearing.
+_PREVIEW_VALUE_BUDGET = 1600
+_MIN_PREVIEW_VALUE_CHARS = 24
+_MAX_PURPOSE_CHARS = 240
 _MAX_LABEL_CHARS = 120
 
 # 256 bits. The grant is a bearer capability for exactly one call.
@@ -134,6 +164,19 @@ class ApprovalPolicy(str, Enum):
     turns with no injection surface.
 
     ``always`` (the default) raises a prompt for every external/destructive call.
+
+    **Approval identity vs. endpoint identity.** An approval is keyed on the
+    runtime tool alias, and :func:`~ai4ia_api.agents.mcp_servers.tool_alias`
+    hashes ``(plane, server_name, raw_tool_name)`` — deliberately *not* the
+    endpoint URL, because the alias must stay stable across a turn and the URL is
+    not part of the model-facing identity. Consequence: if the owner re-points a
+    registered server name at a different URL inside an approval's TTL, an
+    approval minted against the old endpoint still key-matches. That is outside
+    this module's threat model (it takes an authenticated action *by the
+    approver*, not injected text, and the destination host shown on the card came
+    from the spec at mint time), but it is the kind of thing that is much cheaper
+    to know than to rediscover. Shortening the TTL or folding the host into the
+    key would both close it if the threat model ever widens.
     """
 
     off = "off"
@@ -206,7 +249,8 @@ def requires_invocation_approval(
 # --- Redacted preview ----------------------------------------------------------
 
 
-def _preview_value(value: Any) -> str:
+def _preview_value(value: Any, limit: int) -> tuple[str, bool]:
+    """Single-line display form of one argument value, and whether it was cut."""
     if isinstance(value, str):
         text = value
     else:
@@ -215,30 +259,89 @@ def _preview_value(value: Any) -> str:
         except (TypeError, ValueError):  # pragma: no cover - default=str covers these
             text = str(value)
     collapsed = " ".join(text.split())
-    if len(collapsed) > _MAX_PREVIEW_VALUE_CHARS:
-        return collapsed[:_MAX_PREVIEW_VALUE_CHARS] + "…"
-    return collapsed
+    if len(collapsed) > limit:
+        return collapsed[:limit] + "…", True
+    return collapsed, False
 
 
-def build_preview(arguments: Mapping[str, Any] | None) -> dict[str, str]:
+@dataclass(frozen=True)
+class ArgumentPreview:
+    """What a human is shown about one call's arguments, and what they are not.
+
+    The digest binds the **whole** argument object; this preview is the only
+    part a person actually reads. Those two must not be allowed to disagree
+    silently, because the control's entire value is the human's judgement about
+    where data is going. So the preview reports its own incompleteness:
+
+    * ``shown`` — key -> display value, for every key that fits.
+    * ``masked`` — keys whose *value* was replaced by the shared redactor. The
+      card must render these differently from a value it is showing verbatim:
+      ``***REDACTED***`` means "hidden from you, but sent in full", which is a
+      materially different claim from "this is what will be sent".
+    * ``elided`` — keys whose value was length-capped (the value ends in ``…``).
+    * ``omitted`` — count of keys not shown **at all**. Non-zero means the card
+      is not the whole call and must say so.
+    """
+
+    shown: dict[str, str] = field(default_factory=dict)
+    masked: frozenset[str] = field(default_factory=frozenset)
+    elided: frozenset[str] = field(default_factory=frozenset)
+    omitted: int = 0
+
+    @property
+    def truncated(self) -> bool:
+        """Whether any key was dropped entirely — i.e. the card is incomplete."""
+        return self.omitted > 0
+
+
+def build_preview(arguments: Mapping[str, Any] | None) -> ArgumentPreview:
     """A bounded, credential-redacted, single-line view of the call's arguments.
 
     This is what a human is asked to judge, so it must show enough to spot an
-    exfiltration attempt (the destination, the payload's shape) without becoming a
-    new place secrets land. Redaction is ``tools.redact_obj`` — the same redactor
-    the runtime's trace and logs use — applied *before* stringification, so a
-    credential-named key is masked wholesale rather than merely truncated.
+    exfiltration attempt (the destination, the payload's shape) without becoming
+    a new place secrets land. Redaction is ``tools.redact_obj`` — the same
+    redactor the runtime's trace and logs use — applied *before* stringification,
+    so a credential-named key is masked wholesale rather than merely truncated.
+
+    Keys are **never silently dropped**: the per-value budget shrinks as the key
+    count grows, and anything beyond the hard cap is reported in ``omitted``
+    rather than disappearing. See ``_MAX_PREVIEW_ENTRIES``.
     """
-    redacted = redact_obj(dict(arguments or {}))
+    source = dict(arguments or {})
+    redacted = redact_obj(source)
     if not isinstance(redacted, Mapping):  # pragma: no cover - redact_obj preserves dicts
-        return {}
-    out: dict[str, str] = {}
-    for key in sorted(redacted, key=str)[:_MAX_PREVIEW_ENTRIES]:
+        return ArgumentPreview()
+
+    keys = [key for key in sorted(redacted, key=str) if " ".join(str(key).split())]
+    dropped = len(redacted) - len(keys)
+    visible, overflow = keys[:_MAX_PREVIEW_ENTRIES], keys[_MAX_PREVIEW_ENTRIES:]
+    per_value = _MAX_PREVIEW_VALUE_CHARS
+    if visible:
+        per_value = max(
+            _MIN_PREVIEW_VALUE_CHARS,
+            min(_MAX_PREVIEW_VALUE_CHARS, _PREVIEW_VALUE_BUDGET // len(visible)),
+        )
+
+    shown: dict[str, str] = {}
+    masked: set[str] = set()
+    elided: set[str] = set()
+    for key in visible:
         label = " ".join(str(key).split())[:_MAX_LABEL_CHARS]
-        if not label:
-            continue
-        out[label] = _preview_value(redacted[key])
-    return out
+        value, was_cut = _preview_value(redacted[key], per_value)
+        shown[label] = value
+        # ``redact_obj`` masks a credential-named key's value wholesale; compare
+        # against the redacted value rather than re-deriving which names count as
+        # credentials, so there is exactly one definition of that in the codebase.
+        if is_fully_masked(redacted[key]):
+            masked.add(label)
+        elif was_cut:
+            elided.add(label)
+    return ArgumentPreview(
+        shown=shown,
+        masked=frozenset(masked),
+        elided=frozenset(elided),
+        omitted=len(overflow) + dropped,
+    )
 
 
 def _bounded_purpose(text: str) -> str:
@@ -280,7 +383,7 @@ class ApprovalDraft:
     purpose: str
     risk: str
     arguments_digest: str
-    preview: dict[str, str]
+    preview: ArgumentPreview
 
     @property
     def key(self) -> str:
@@ -379,6 +482,15 @@ class PendingToolApproval(BaseModel):
     risk: str = ToolRisk.external.value
     argumentsDigest: str
     argumentsPreview: dict[str, str] = Field(default_factory=dict)
+    # Keys whose value the shared redactor masked wholesale. The card must show
+    # these as "hidden from you, but sent in full" rather than as the value.
+    argumentsMasked: list[str] = Field(default_factory=list)
+    # Keys whose value was length-capped for display (value ends in "…").
+    argumentsElided: list[str] = Field(default_factory=list)
+    # Count of arguments NOT shown at all. Non-zero means the card is not the
+    # whole call; the UI is required to say so, because a silently-shortened
+    # preview is exactly how a caller-chosen argument set hides a destination.
+    argumentsOmitted: int = 0
     grantHash: str
     consumed: bool = False
     expiresAt: datetime
@@ -417,7 +529,10 @@ def mint_pending_approval(
         purpose=draft.purpose,
         risk=draft.risk,
         argumentsDigest=draft.arguments_digest,
-        argumentsPreview=dict(draft.preview),
+        argumentsPreview=dict(draft.preview.shown),
+        argumentsMasked=sorted(draft.preview.masked),
+        argumentsElided=sorted(draft.preview.elided),
+        argumentsOmitted=draft.preview.omitted,
         grantHash=grant_hash(grant),
         expiresAt=moment + timedelta(seconds=max(1, ttl_seconds)),
         createdAt=moment,
@@ -460,7 +575,11 @@ def consume_grant(
 
     * finding ``record`` only within the authenticated user's session (that is
       what binds the approval to a user and a conversation), and
-    * persisting ``record.consumed`` once this returns a grant.
+    * **atomically** burning it. The ``consumed`` check below reads a snapshot
+      and is advisory only — two concurrent redeemers both see ``False``. The
+      authoritative single-use decision is
+      ``SessionRepository.consume_tool_approval``, a compare-and-set; a caller
+      that does not win it must deny even though every check here passed.
     """
     if record is None:
         return ApprovalOutcome(reason=ApprovalDenied.unknown_request)

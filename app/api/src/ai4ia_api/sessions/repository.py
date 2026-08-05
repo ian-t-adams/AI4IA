@@ -73,6 +73,21 @@ class SessionRepository(Protocol):
 
     async def upsert_message(self, user_id: str, message: Message) -> Message: ...
 
+    async def consume_tool_approval(
+        self, user_id: str, session_id: str, message_id: str, request_id: str
+    ) -> bool:
+        """Atomically mark one pending tool approval as spent.
+
+        Returns True only for the caller that actually flipped it from unspent to
+        spent; every loser (already spent, missing message, missing record, or a
+        lost race) gets False and must deny. This MUST be a single
+        compare-and-set, not a read-then-write: the approval is a one-shot
+        capability to make a real outbound call, so two concurrent requests
+        presenting the same grant both seeing ``consumed=False`` would both
+        redeem it. See :mod:`ai4ia_api.agents.approvals`.
+        """
+        ...
+
     async def list_messages(self, user_id: str, session_id: str) -> list[Message]: ...
 
     async def clear_messages(self, user_id: str, session_id: str) -> None: ...

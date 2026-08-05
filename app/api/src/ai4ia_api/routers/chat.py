@@ -51,6 +51,7 @@ from ..agents.commands import CommandKind, parse_input
 from ..agents.runtime import AgentRunResult, AgentStep, run_agent_turn
 from ..agents.activity import persisted_trace, serialize_step
 from ..agents.approvals import (
+    ApprovalDenied,
     ApprovalDraft,
     ApprovalPolicy,
     ApprovalSink,
@@ -389,6 +390,7 @@ async def _redeem_tool_approvals(
     *,
     repo: SessionRepository,
     user_id: str,
+    session_id: str,
     prior: Sequence[Message],
     decisions: Sequence[ToolApprovalDecision],
 ) -> frozenset[str]:
@@ -399,8 +401,14 @@ async def _redeem_tool_approvals(
     approval to a user *and* a conversation: a grant minted in another session or
     for another user simply has no record here, and the lookup fails closed.
 
+    The burn itself is delegated to ``repo.consume_tool_approval``, a single
+    compare-and-set, rather than done here as ``record.consumed = True`` followed
+    by an upsert. That read-modify-write let two concurrent requests presenting
+    the same grant both observe ``consumed=False`` from their own snapshots and
+    both redeem it. Only the caller that actually flips the record proceeds.
+
     Every rejection path is non-fatal by construction: an unknown, tampered,
-    expired, already-used or unpersistable approval yields no invocation key, the
+    expired, already-used or lost-the-race approval yields no invocation key, the
     gated call is denied again, and the turn ends normally with the model
     explaining what it needs. Nothing here raises, and nothing here ever trusts
     the client for *what* was approved.
@@ -416,25 +424,37 @@ async def _redeem_tool_approvals(
     for decision in decisions:
         found = index.get(decision.requestId)
         message, record = found if found is not None else (None, None)
+        # Cheap, local checks first so the reported reason is precise (bad grant
+        # vs expired vs already used). They are necessary but NOT sufficient:
+        # `consumed` read from a snapshot is advisory, and the authoritative
+        # single-use decision is the conditional write below.
         outcome = consume_grant(record, decision.grant)
         if not outcome.granted or message is None or record is None:
             reason = outcome.reason.value if outcome.reason else "denied"
             emit_security_block("tool_approval", reason, "chat_router")
             logger.info("tool approval rejected: reason=%s", reason)
             continue
-        # Burn it BEFORE the turn runs. If that write fails we must not proceed:
-        # an approval we cannot record as spent is an approval that can be spent
-        # again, so persistence failure denies rather than degrades.
-        record.consumed = True
         try:
-            await repo.upsert_message(user_id, message)
+            won = await repo.consume_tool_approval(
+                user_id, session_id, message.id, record.id
+            )
         except Exception:  # noqa: BLE001 - fail closed, never break the turn
-            record.consumed = False
             emit_security_block("tool_approval", "consume_failed", "chat_router")
             logger.warning(
                 "could not record tool approval as consumed; denying", exc_info=True
             )
             continue
+        if not won:
+            # Lost the race, or it was already spent: an approval we cannot
+            # prove we just burned must not authorize a call.
+            emit_security_block(
+                "tool_approval", ApprovalDenied.already_used.value, "chat_router"
+            )
+            logger.info(
+                "tool approval rejected: reason=%s", ApprovalDenied.already_used.value
+            )
+            continue
+        record.consumed = True
         granted.append(record)
         emit_custom_event(
             "tool_approval",
@@ -1245,6 +1265,7 @@ async def chat(
     invocation_approvals = await _redeem_tool_approvals(
         repo=repo,
         user_id=user.internal_user_id,
+        session_id=body.sessionId,
         prior=prior,
         decisions=body.approvals,
     )

@@ -20,6 +20,9 @@ function prompt(
     risk: "external",
     argumentsDigest: "d".repeat(64),
     argumentsPreview: { to: "attacker@evil.example", body: "quarterly figures" },
+    argumentsMasked: [],
+    argumentsElided: [],
+    argumentsOmitted: 0,
     grantHash: "h".repeat(64),
     consumed: false,
     expiresAt: "2026-08-05T13:10:00Z",
@@ -106,6 +109,51 @@ describe("ToolApprovalPanel", () => {
     );
     expect(screen.getByRole("button", { name: /^Approve/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^Deny/ })).toBeDisabled();
+  });
+
+  it("warns loudly when the card is not the whole call", () => {
+    // The argument set is model-controlled, so a silently-shortened preview is
+    // how an exfiltration's destination gets hidden from the approver. If the
+    // server could not show everything, the card must say so unmissably.
+    render(
+      <ToolApprovalPanel
+        prompts={[prompt({ argumentsOmitted: 7 })]}
+        onApprove={vi.fn()}
+        onDeny={vi.fn()}
+      />,
+    );
+    const warning = screen.getByRole("alert");
+    expect(warning).toHaveTextContent(/7 more arguments will be sent/);
+    expect(warning).toHaveTextContent(/not seeing the whole call/);
+  });
+
+  it("stays quiet when it is showing everything", () => {
+    render(
+      <ToolApprovalPanel
+        prompts={[prompt()]}
+        onApprove={vi.fn()}
+        onDeny={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("marks a masked value as hidden rather than as the value", () => {
+    // `***REDACTED***` means "hidden from you, but sent in full" — the user
+    // must not read it as the literal content of the outbound call.
+    render(
+      <ToolApprovalPanel
+        prompts={[
+          prompt({
+            argumentsPreview: { api_key: "***REDACTED***" },
+            argumentsMasked: ["api_key"],
+          }),
+        ]}
+        onApprove={vi.fn()}
+        onDeny={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/hidden here, sent in full/)).toBeInTheDocument();
   });
 
   it("renders one card per held call with distinct labels", () => {

@@ -180,6 +180,18 @@ def redact_obj(value: Any) -> Any:
     return value
 
 
+def is_fully_masked(value: Any) -> bool:
+    """Whether :func:`redact_obj` replaced this value wholesale.
+
+    A wholly-masked value means "hidden from you, but sent in full" — which a
+    human-facing surface (see :mod:`ai4ia_api.agents.approvals`) must present
+    differently from a value it is showing verbatim. Exposed as a predicate so
+    the definition of "masked" lives here with the redactor rather than being
+    re-derived by every caller that needs to tell the two states apart.
+    """
+    return value == _REDACTED
+
+
 # --- Tool-name safety (defense against forged log/activity entries) ------------
 
 # A tool *name* can originate from a source this codebase does not author or

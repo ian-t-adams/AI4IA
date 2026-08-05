@@ -144,6 +144,17 @@ export interface PendingToolApproval {
   // Redacted, bounded, single-line view of the arguments. Server-built with the
   // same redactor the activity trace uses; never re-derive it client-side.
   argumentsPreview?: Record<string, string>;
+  // Keys whose VALUE the redactor masked. `***REDACTED***` means "hidden from
+  // you, but sent in full" — a materially different claim from "this is the
+  // value", so the card must render the two differently.
+  argumentsMasked?: string[];
+  // Keys whose value was length-capped for display (value ends in "…").
+  argumentsElided?: string[];
+  // Count of arguments NOT shown at all. The digest covers the whole argument
+  // object but the card does not, and the argument set is model-controlled — so
+  // a non-zero count MUST be surfaced, or padding with filler keys becomes a
+  // way to push an exfiltration's destination off the card.
+  argumentsOmitted?: number;
   grantHash: string;
   consumed?: boolean;
   expiresAt: string;

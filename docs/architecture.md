@@ -236,11 +236,23 @@ held call ends the turn normally with a prompt showing the tool, the destination
 host, the purpose and a redacted argument preview; the user approves, and the
 next turn presents a one-time grant that the server redeems against its own
 durable record. The record is bound to user, session, tool, argument digest and a
-short expiry, and is burned on use — so it cannot be replayed for different
-arguments, in another conversation, by another user, after it expires, or twice.
-Only the grant's hash is persisted, so reading a conversation confers no ability
-to approve its outbound calls. Denial is the absence of a grant: there is no
-deny endpoint to fail and no state to unstick.
+short expiry. It is burned on use — with a conditional (ETag) write, so two
+concurrent requests presenting the same grant cannot both redeem it — and the
+resulting authorization is spent the moment it dispatches one call, so a single
+approval buys exactly one execution rather than one per emission. It therefore
+cannot be replayed for different arguments, in another conversation, by another
+user, after it expires, or twice. Only the grant's hash is persisted, so reading
+a conversation confers no ability to approve its outbound calls. Denial is the
+absence of a grant: there is no deny endpoint to fail and no state to unstick.
+
+The approval card is required to be honest about its own completeness. The digest
+covers the whole argument object but the card shows a bounded view, and the
+argument set is model-controlled — so keys are never silently dropped: values
+shrink before keys disappear, a masked value is labelled as hidden-but-sent
+rather than shown as content, and any argument the card could not display at all
+is counted and surfaced as a warning. Without that, padding a call with filler
+keys would push an exfiltration's destination off the card while it still went
+out on the wire.
 
 Two limits are deliberate and worth knowing. The gate covers registry-governed
 tools (every MCP tool on both planes) and **not** the synthetic capabilities the

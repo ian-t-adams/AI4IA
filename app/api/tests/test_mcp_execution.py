@@ -830,9 +830,13 @@ async def test_held_call_is_reported_to_the_approval_sink_with_a_redacted_previe
     # a human can see WHERE this is going, not just that "a tool" wants to run.
     assert draft.label == "mcp:mail/send"
     assert draft.host == "mail.example.com"
-    assert draft.preview["to"] == "attacker@evil.example"
-    # The credential-named argument is masked by the shared redactor.
-    assert "supersecret" not in json.dumps(draft.preview)
+    assert draft.preview.shown["to"] == "attacker@evil.example"
+    # The credential-named argument is masked by the shared redactor, and the
+    # card is told it is masked rather than being handed a value to display.
+    assert "supersecret" not in json.dumps(draft.preview.shown)
+    assert "api_key" in draft.preview.masked
+    # Nothing about this call was hidden from the human.
+    assert draft.preview.omitted == 0
 
 
 async def test_untrusted_server_tool_denied_without_approval():

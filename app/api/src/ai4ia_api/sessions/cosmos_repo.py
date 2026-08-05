@@ -456,6 +456,74 @@ class CosmosSessionRepository:
         await self._messages.upsert_item(self._to_doc(message))
         return message
 
+    async def consume_tool_approval(
+        self, user_id: str, session_id: str, message_id: str, request_id: str
+    ) -> bool:
+        """Flip one pending tool approval to spent with an ETag-conditional write.
+
+        An unconditional read-modify-write is not good enough here. The approval
+        is a one-shot capability to make a real outbound call, and two concurrent
+        ``POST /api/chat`` requests presenting the same ``{requestId, grant}``
+        would both read ``consumed=False`` from their own snapshot and both
+        redeem it — doubling every side effect a single human decision
+        authorized. The conditional replace makes exactly one of them win.
+
+        Retries a bounded number of times because a *different* concurrent write
+        to the same message (the terminal assistant upsert, for instance) also
+        invalidates the ETag without meaning the approval was spent. On re-read
+        the record is examined again, so a genuine loser sees ``consumed=True``
+        and returns False rather than retrying into a second redemption.
+        Mirrors the existing CAS loops in ``set_generated_title_if_eligible`` and
+        ``mutate_library_document_ids``.
+        """
+        from azure.core import MatchConditions
+        from azure.cosmos.exceptions import (
+            CosmosAccessConditionFailedError,
+            CosmosResourceNotFoundError,
+        )
+
+        await self._owned_session(user_id, session_id)
+        for _attempt in range(3):
+            try:
+                raw = await self._messages.read_item(
+                    item=message_id, partition_key=session_id
+                )
+            except CosmosResourceNotFoundError:
+                return False
+            approvals = raw.get("pendingApprovals") or []
+            index = next(
+                (
+                    position
+                    for position, record in enumerate(approvals)
+                    if isinstance(record, dict) and record.get("id") == request_id
+                ),
+                None,
+            )
+            if index is None:
+                return False
+            if approvals[index].get("consumed") is True:
+                return False
+            try:
+                await self._messages.patch_item(
+                    item=message_id,
+                    partition_key=session_id,
+                    patch_operations=[
+                        {
+                            "op": "set",
+                            "path": f"/pendingApprovals/{index}/consumed",
+                            "value": True,
+                        }
+                    ],
+                    etag=raw.get("_etag"),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+                return True
+            except CosmosAccessConditionFailedError:
+                continue
+        # Bounded retries exhausted under sustained contention: deny. An
+        # approval we cannot prove we spent must not authorize a call.
+        return False
+
     async def list_messages(self, user_id: str, session_id: str) -> list[Message]:
         await self._owned_session(user_id, session_id)
         query = "SELECT * FROM c WHERE c.sessionId = @sid ORDER BY c.createdAt ASC"
