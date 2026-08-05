@@ -27,7 +27,12 @@ def main() -> int:
     subscription_token = data["naming"]["subscriptionToken"]
     errors: list[str] = []
     seen_names: dict[str, str] = {}
-    seen_pairs: set[tuple[str, str]] = set()
+    # (model, region, sku). NOT (model, region): a model may legitimately have
+    # both a GlobalStandard and a DataZoneStandard deployment in one region --
+    # that is exactly how the data-residency policy gets a zone-bounded option
+    # to route to. The deployment NAME carries the skuShort token, so the two
+    # stay distinct; `seen_names` below is what actually enforces that.
+    seen_triples: set[tuple[str, str, str]] = set()
 
     for model in data["catalog"]:
         name = model["name"]
@@ -49,10 +54,12 @@ def main() -> int:
                     f"({sorted(sku_short)})"
                 )
                 continue
-            pair = (name, region)
-            if pair in seen_pairs:
-                errors.append(f"{name}: duplicate deployment for region '{region}'")
-            seen_pairs.add(pair)
+            triple = (name, region, sku)
+            if triple in seen_triples:
+                errors.append(
+                    f"{name}: duplicate deployment for region '{region}' sku '{sku}'"
+                )
+            seen_triples.add(triple)
             dep_name = f"{name}-{subscription_token}-{region}-{sku_short[sku]}"
             if dep_name in seen_names:
                 errors.append(

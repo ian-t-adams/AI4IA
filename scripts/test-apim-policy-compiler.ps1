@@ -86,6 +86,26 @@ $fragmentDefinitions = @(
         Path = 'infra/policies/simplel7proxy-endpoints-catalog-7.xml'
     }
     @{
+        ProductionId = 'endpoint_selection_catalog_8_32'
+        TemporaryId = "ai4ia-compiler-catalog-8-$suffix"
+        Path = 'infra/policies/simplel7proxy-endpoints-catalog-8.xml'
+    }
+    @{
+        ProductionId = 'endpoint_selection_catalog_9_32'
+        TemporaryId = "ai4ia-compiler-catalog-9-$suffix"
+        Path = 'infra/policies/simplel7proxy-endpoints-catalog-9.xml'
+    }
+    @{
+        ProductionId = 'endpoint_selection_catalog_10_32'
+        TemporaryId = "ai4ia-compiler-catalog-10-$suffix"
+        Path = 'infra/policies/simplel7proxy-endpoints-catalog-10.xml'
+    }
+    @{
+        ProductionId = 'endpoint_selection_catalog_11_32'
+        TemporaryId = "ai4ia-compiler-catalog-11-$suffix"
+        Path = 'infra/policies/simplel7proxy-endpoints-catalog-11.xml'
+    }
+    @{
         ProductionId = 'endpoint_selection_setup_32'
         TemporaryId = "ai4ia-compiler-setup-$suffix"
         Path = 'infra/policies/simplel7proxy-endpoints.xml'
@@ -249,10 +269,17 @@ Assert-DiagnosticName `
     -Name $speechWsApiName `
     -Pattern '^ai4ia-compiler-ws-[0-9a-f]{12}$'
 foreach ($definition in $fragmentDefinitions) {
+    # `catalog-\d+`, not a bounded character class. This previously read
+    # `catalog-[0-3]` while $fragmentDefinitions above defined shards 0-7, so the
+    # harness rejected four of its own fragment names -- a guard that fails on
+    # legitimate input trains people to bypass it. The shard count is now 12 and
+    # will keep growing with the catalog, so match the shape rather than a range
+    # that has to be maintained in lockstep. The `ai4ia-compiler-` prefix plus the
+    # 12-hex-digit suffix are what actually bound this to throwaway resources.
     Assert-DiagnosticName `
         -Name $definition.TemporaryId `
         -Pattern (
-            '^ai4ia-compiler-(catalog-[0-3]|setup|inbound-pre|' +
+            '^ai4ia-compiler-(catalog-\d+|setup|inbound-pre|' +
             'inbound-post|backend|outbound|on-error)-[0-9a-f]{12}$'
         )
 }

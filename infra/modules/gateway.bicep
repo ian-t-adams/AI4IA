@@ -209,6 +209,26 @@ var endpointSelectionFragmentDefinitions = [
     value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-7.xml')
   }
   {
+    baseName: 'endpoint_selection_catalog_8_32'
+    description: 'Generated model/deployment catalog chunk 8 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-8.xml')
+  }
+  {
+    baseName: 'endpoint_selection_catalog_9_32'
+    description: 'Generated model/deployment catalog chunk 9 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-9.xml')
+  }
+  {
+    baseName: 'endpoint_selection_catalog_10_32'
+    description: 'Generated model/deployment catalog chunk 10 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-10.xml')
+  }
+  {
+    baseName: 'endpoint_selection_catalog_11_32'
+    description: 'Generated model/deployment catalog chunk 11 for SimpleL7Proxy.'
+    value: loadTextContent('../policies/simplel7proxy-endpoints-catalog-11.xml')
+  }
+  {
     baseName: 'endpoint_selection_setup_32'
     description: 'Generated model routing setup for SimpleL7Proxy.'
     value: loadTextContent('../policies/simplel7proxy-endpoints.xml')

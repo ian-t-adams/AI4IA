@@ -82,7 +82,7 @@ the container — those names are *outputs*, not knobs you set.
 | Voice Live tools | checked-in parameter | `voiceLiveToolsEnabled` | `AI4IA_REALTIME_TOOLS_ENABLED`, `VOICE_LIVE_TOOLS_ENABLED` | Requires Voice Live. |
 | Speech Voice Live (second voice provider) | checked-in parameter | `speechVoiceLiveEnabled` | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | Requires `AI4IA_REALTIME_ENABLED=true`, `AI4IA_VOICE_PROVIDER_ALLOWLIST` to include `speech_voice_live`, and both `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`. The six managed models and default are catalog-controlled. **Template default OFF** in both Bicep and `infra/main.parameters.json`, which resolves `${AI4IA_SPEECH_VOICE_LIVE_ENABLED=false}` — and the checked-in `voiceProviderAllowlist` (`${AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai}`) does not list `speech_voice_live`, so a standup that sets neither azd variable gets this provider off *and* unreachable. Turning it on takes both variables in the azd environment, not a file edit. (This row previously said "enabled in `infra/main.parameters.json` and live in this deployment"; the first half contradicted the file and the second was never generated from deployment evidence — see the observed-state note below.) A narrower gate still applies to the managed-identity *audience* default — see [Speech Voice Live](#speech-voice-live-second-voice-provider) — but it does not gate enablement. |
 | Voice provider allowlist / default | n/a (server-authoritative) | `voiceProviderAllowlist`, `voiceDefaultProvider` | `AI4IA_VOICE_PROVIDER_ALLOWLIST` (default `azure_openai`), `AI4IA_VOICE_DEFAULT_PROVIDER` (default `azure_openai`) | Allowlist must always include `azure_openai`; default provider must be an allowlist member. The browser may only select an advertised, allowlisted provider. |
-| Data residency | azd / CI variable | n/a (API setting) | `AI4IA_DATA_RESIDENCY` (default `global`) | `global` \| `us` \| `eu`. Restricts model routing to deployments whose **processing** is bounded to that zone. See [Data residency](#data-residency) — turning it on today fails startup by design, because every chat deployment is `GlobalStandard`. |
+| Data residency | azd / CI variable | n/a (API setting) | `AI4IA_DATA_RESIDENCY` (default `global`) | `global` \| `us` \| `eu`. Restricts model routing to deployments whose **processing** is bounded to that zone. See [Data residency](#data-residency): `us`/`eu` each leave 10 conversational models plus embeddings, served from `DataZoneStandard` deployments. |
 | Document library / Content Understanding | checked-in parameter | `documentUnderstandingEnabled` | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`, `DOCUMENT_LIBRARY_ENABLED` | Cosmos + blob storage; CU endpoint defaults to the primary Foundry endpoint unless overridden. |
 | Library compute / export | checked-in parameter | `documentComputeEnabled` | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | Requires document understanding. Code Interpreter endpoint/model default to primary Foundry + `gpt-5.4-mini-*` unless overridden. |
 | Inline attachment compute | checked-in parameter | `inlineDocumentComputeEnabled` | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | Uses the same Code Interpreter endpoint/model as library compute. |
@@ -326,14 +326,36 @@ A caller may narrow routing further with `region`/`dataZone`, never widen it.
 `GET /api/models` returns only permitted models and echoes `residencyPolicy`, so
 the UI states the guarantee instead of inferring it.
 
-> **Turning this on fails startup today, by design.** Every conversational
-> deployment in `infra/models.json` is currently `GlobalStandard` (41 of 41), so
-> `us` and `eu` leave no chat model reachable. Startup refuses with a message
-> naming the fix rather than booting with an empty model picker. To actually use
-> a zone policy, first add `DataZoneStandard` (or regional `Standard`) chat
-> deployments for that zone in `infra/models.json` and redeploy — that is a
-> quota/capacity decision, not a config change.
->
-> Measured 2026-08-04: of 71 deployments, 68 are `GlobalStandard`; the only
-> zone-bounded ones are `whisper` (eastus2, swedencentral) and `tts-hd`
-> (swedencentral).
+**What each policy actually leaves you** (measured against `infra/models.json`):
+
+| Policy | Conversational models | Notable |
+| --- | --- | --- |
+| `global` | 21 | Everything; unchanged default |
+| `us` | 10 | eastus2 `DataZoneStandard` |
+| `eu` | 10 | swedencentral `DataZoneStandard` |
+
+`us` and `eu` are deliberately symmetric — the same 10 chat/chat-fast/reasoning
+models plus `model-router`, the `text-embedding-3-large` embedding model that
+memory and library RAG depend on, and `gpt-image-1.5`. Anything without a
+`DataZoneStandard` offer in *both* regions was left out rather than making the
+two zones behave differently: `gpt-5-pro`, `gpt-5.4-pro`, `gpt-5-codex`,
+`DeepSeek-V3.2`, `o3-deep-research`, and every voice/video/TTS model are
+therefore unavailable under a zone policy. `gpt-5.2`, `gpt-5.3-codex`,
+`gpt-5.4-nano` and `grok-4-1-fast-reasoning` offer DataZone in eastus2 only and
+were omitted for the same reason.
+
+Two consequences worth knowing before switching:
+
+- **Image throughput drops.** `gpt-image-1.5` DataZoneStandard quota is 3 TPM
+  against 9 for GlobalStandard, so a zone policy caps image generation lower.
+- **Startup fails closed if an enabled feature loses its model.** Memory and the
+  library ingestor resolve their embedding model and, on failure, log a warning
+  and switch themselves off. Under a residency policy that silent degradation is
+  a governance problem, so `validate_runtime` refuses to start instead, naming
+  the model and the env var. Features that are *off* are not checked.
+
+Adding a `DataZoneStandard` deployment does not itself cost anything: like
+`GlobalStandard` it is billed per token consumed, not for reserved capacity
+(unlike the `ProvisionedManaged` family). It does consume the model's
+per-region DataZoneStandard TPM quota, which is a separate bucket from the
+GlobalStandard quota and was verified to have headroom before these were added.
