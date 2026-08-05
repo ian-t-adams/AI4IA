@@ -200,8 +200,8 @@ export function MediaPlayer({
             role="alert"
             style={{
               fontSize: "0.8em",
-              color: "#b91c1c",
-              border: "1px solid #b91c1c",
+              color: "var(--danger)",
+              border: "1px solid var(--danger)",
               borderRadius: 8,
               padding: "8px 10px",
             }}
@@ -263,7 +263,7 @@ export function MediaPlayer({
                     border: "1px solid var(--border)",
                     background:
                       m.kind === "shot" ? "var(--accent)" : "var(--bg)",
-                    color: m.kind === "shot" ? "#fff" : "var(--fg)",
+                    color: m.kind === "shot" ? "var(--accent-fg)" : "var(--fg)",
                     borderRadius: 6,
                     padding: "4px 8px",
                     fontSize: "0.75em",

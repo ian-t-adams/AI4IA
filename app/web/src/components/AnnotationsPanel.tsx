@@ -239,7 +239,7 @@ export default function AnnotationsPanel({
                 busy || draftBody.trim().length === 0
                   ? "var(--border)"
                   : "var(--accent)",
-              color: "#fff",
+              color: "var(--accent-fg)",
               fontSize: "0.85em",
               cursor:
                 busy || draftBody.trim().length === 0 ? "default" : "pointer",
@@ -250,7 +250,7 @@ export default function AnnotationsPanel({
         </div>
 
         {error && (
-          <p style={{ margin: 0, fontSize: "0.8em", color: "#dc2626" }}>{error}</p>
+          <p style={{ margin: 0, fontSize: "0.8em", color: "var(--danger)" }}>{error}</p>
         )}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>

@@ -522,7 +522,7 @@ export function AgentBuilder({
                         <span
                           style={{
                             fontSize: "0.72em",
-                            color: approval.requiresApproval ? "var(--fg-muted)" : "#15803d",
+                            color: approval.requiresApproval ? "var(--fg-muted)" : "var(--success)",
                           }}
                         >
                           {approval.requiresApproval

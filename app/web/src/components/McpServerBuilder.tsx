@@ -430,7 +430,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
           </p>
         )}
         {notice && (
-          <p style={{ color: "#15803d", fontSize: "0.85em", margin: 0 }}>{notice}</p>
+          <p style={{ color: "var(--success)", fontSize: "0.85em", margin: 0 }}>{notice}</p>
         )}
 
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
