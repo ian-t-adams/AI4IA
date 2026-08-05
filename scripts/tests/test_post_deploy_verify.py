@@ -51,6 +51,9 @@ def load_script():
 pdv = load_script()
 
 STATE_FILE = "state.json"
+# The image a captured revision was running, and therefore the image the app must
+# be back on before a rollback may claim it restored anything.
+RESTORED_IMAGE = "acr.azurecr.io/x:1"
 
 
 def container_app(
@@ -143,6 +146,15 @@ class FakeAz:
         if "revision copy" in joined or "ingress traffic set" in joined:
             if name in self.failing_writes:
                 return 1, "", "ERROR: (RevisionOperationFailed) could not restore"
+            # Model the real effect: `revision copy` clones the SOURCE revision's
+            # template, so the app ends up on a new revision running the captured
+            # image. Without this, confirm_restored could never confirm and the
+            # tests would prove nothing about the confirmation path.
+            source = self._flag(argv, "--from-revision")
+            app = self.apps.get(name or "")
+            if app is not None and source:
+                app["properties"]["latestReadyRevisionName"] = f"{source}-restored"
+                app["properties"]["template"]["containers"][0]["image"] = RESTORED_IMAGE
             return 0, "", ""
         return 0, "", ""
 
@@ -152,6 +164,23 @@ class FakeAz:
             if value == flag and index + 1 < len(argv):
                 return argv[index + 1]
         return None
+
+
+def inert_az(base: FakeAz, handler) -> Any:
+    """Wrap a FakeAz with a custom handler while keeping its recorded calls."""
+
+    class WrappedAz:
+        apps = base.apps
+        failing_writes = base.failing_writes
+
+        @property
+        def calls(self) -> list[list[str]]:
+            return base.calls
+
+        def __call__(self, args, **kwargs):
+            return handler(args, **kwargs)
+
+    return WrappedAz()
 
 
 class FakeHttp:
@@ -378,6 +407,50 @@ class RolloutProblemTests(unittest.TestCase):
             )
         )
 
+    def test_a_new_revision_running_the_old_image_fails(self) -> None:
+        """A revision this deploy did not produce. azd tags every build uniquely,
+        so an unchanged image under a changed revision means something other than
+        this deploy's push created it."""
+        problems = pdv.rollout_problems(
+            service="api",
+            previous_revision="ca-api-x--r1",
+            current_revision="ca-api-x--r2",
+            revision_detail=revision_payload(),
+            require_replicas=True,
+            previous_image="acr.azurecr.io/api:azd-deploy-1",
+            current_image="acr.azurecr.io/api:azd-deploy-1",
+        )
+        self.assertEqual(len(problems), 1)
+        self.assertIn("still runs the pre-deploy image", problems[0])
+
+    def test_a_changed_image_under_a_changed_revision_passes(self) -> None:
+        self.assertEqual(
+            pdv.rollout_problems(
+                service="api",
+                previous_revision="ca-api-x--r1",
+                current_revision="ca-api-x--r2",
+                revision_detail=revision_payload(),
+                require_replicas=True,
+                previous_image="acr.azurecr.io/api:azd-deploy-1",
+                current_image="acr.azurecr.io/api:azd-deploy-2",
+            ),
+            [],
+        )
+
+    def test_an_unknown_previous_image_does_not_invent_a_failure(self) -> None:
+        self.assertEqual(
+            pdv.rollout_problems(
+                service="api",
+                previous_revision="ca-api-x--r1",
+                current_revision="ca-api-x--r2",
+                revision_detail=revision_payload(),
+                require_replicas=True,
+                previous_image=None,
+                current_image="acr.azurecr.io/api:azd-deploy-2",
+            ),
+            [],
+        )
+
     def test_a_revision_that_returns_no_state_is_a_failure_not_a_pass(self) -> None:
         problems = pdv.rollout_problems(
             service="api",
@@ -536,14 +609,64 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_the_proxy_probe_accepts_an_authenticating_gateways_rejection(self) -> None:
-        """401/404 prove a replica answered; 502/503/504 are the edge giving up."""
+        """401/404 prove a replica answered; every 5xx means the container is faulted."""
         for status in (200, 401, 403, 404):
             self.assertTrue(pdv.ingress_responds(pdv.HttpOutcome(status=status)), status)
-        for status in (502, 503, 504):
+        # 500 in particular: /startup is defined to answer 200 or 503, so a 500
+        # from it is a fault inside the proxy, not a healthy gateway saying no.
+        for status in (500, 502, 503, 504):
             self.assertFalse(pdv.ingress_responds(pdv.HttpOutcome(status=status)), status)
         self.assertFalse(
             pdv.ingress_responds(pdv.HttpOutcome(status=None, error="TimeoutError"))
         )
+
+    def test_the_web_root_may_redirect_but_not_error(self) -> None:
+        """Redirects are never followed, so a root that 307s must still count."""
+        for status in (200, 204, 301, 307, 308):
+            self.assertTrue(pdv.ingress_or_redirect(pdv.HttpOutcome(status=status)), status)
+        for status in (401, 404, 500, 503):
+            self.assertFalse(pdv.ingress_or_redirect(pdv.HttpOutcome(status=status)), status)
+
+    def test_redirects_are_not_followed(self) -> None:
+        """Following one would replay the canary's Authorization header at
+        whatever host the response named."""
+        handler = pdv._NoRedirect()
+        self.assertIsNone(
+            handler.redirect_request(None, None, 302, "Found", {}, "https://evil.test/")
+        )
+
+    def test_the_shared_deadline_stops_further_retries(self) -> None:
+        """Per-check budgets multiply; without this the step timeout kills the run."""
+        now = [0.0]
+        deadline = pdv.Deadline(seconds=30.0, clock=lambda: now[0])
+
+        def request(method, url, **kwargs):
+            now[0] += 20.0
+            return pdv.HttpOutcome(status=503)
+
+        outcome, attempts = pdv.probe(
+            "https://proxy.test/startup",
+            attempts=50,
+            delay=1.0,
+            request=request,
+            sleep=lambda _: None,
+            deadline=deadline,
+        )
+        self.assertEqual(outcome.status, 503)
+        self.assertEqual(attempts, 2)
+
+    def test_no_deadline_means_the_attempt_budget_still_applies(self) -> None:
+        def request(method, url, **kwargs):
+            return pdv.HttpOutcome(status=503)
+
+        _, attempts = pdv.probe(
+            "https://proxy.test/startup",
+            attempts=3,
+            request=request,
+            sleep=lambda _: None,
+            deadline=None,
+        )
+        self.assertEqual(attempts, 3)
 
     def test_base_urls_must_be_credential_free_https(self) -> None:
         self.assertEqual(
@@ -872,6 +995,55 @@ class CaptureTests(unittest.TestCase):
         self.assertTrue(all(a["exists"] is False for a in state["apps"]))
         self.assertTrue(all(a["revision"] is None for a in state["apps"]))
 
+    def test_a_transient_read_failure_fails_the_capture_rather_than_guessing(self) -> None:
+        """The worst outcome available here: a 403 or a blip becomes "absent",
+        which silently drops BOTH the unchanged-revision assertion and the
+        rollback target, and the gate then reports a clean run over a deploy it
+        never checked. Capture runs before the deploy, so failing costs nothing."""
+        import tempfile
+
+        calls: list[list[str]] = []
+
+        def flaky(args, **kwargs):
+            calls.append(list(args))
+            return 1, "", "ERROR: (AuthorizationFailed) does not have permission"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / STATE_FILE
+            with (
+                patch.object(pdv, "run_az", flaky),
+                patch.object(pdv.time, "sleep", lambda _: None),
+                redirect_stdout(io.StringIO()) as captured,
+            ):
+                code = pdv.main(
+                    ["capture", "--state", str(state_path), "--environment", ENV]
+                )
+            self.assertEqual(code, 2)
+            self.assertFalse(state_path.exists())
+        self.assertIn("::error::", captured.getvalue())
+        # Retried before giving up: a single blip should not fail a deploy.
+        self.assertGreater(len(calls), 1)
+
+    def test_a_genuine_not_found_is_absent_and_is_not_retried(self) -> None:
+        import tempfile
+
+        az = FakeAz(apps={})
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / STATE_FILE
+            with patch.object(pdv, "run_az", az), redirect_stdout(io.StringIO()):
+                code = pdv.main(
+                    ["capture", "--state", str(state_path), "--environment", ENV]
+                )
+        self.assertEqual(code, 0)
+        # One read per app, no retries: the app is simply not there yet.
+        self.assertEqual(len(az.calls), 3)
+
+    def test_not_found_detection(self) -> None:
+        self.assertTrue(pdv._is_not_found("ERROR: (ResourceNotFound) app not found"))
+        self.assertTrue(pdv._is_not_found("The Resource 'x' was not found"))
+        self.assertFalse(pdv._is_not_found("(AuthorizationFailed) no permission"))
+        self.assertFalse(pdv._is_not_found("Read timed out"))
+
     def test_a_hostile_environment_name_is_rejected(self) -> None:
         with redirect_stdout(io.StringIO()):
             self.assertEqual(
@@ -943,7 +1115,9 @@ class VerifyTests(unittest.TestCase):
                     "revision": previous[service],
                     "revisionsMode": "Single",
                     "minReplicas": 0 if service == "proxy" else 1,
-                    "image": "acr.azurecr.io/x:1",
+                    "image": (
+                        "acr.azurecr.io/x:1" if previous[service] is not None else None
+                    ),
                     "fqdn": (
                         {"api": "api.test", "web": "web.test", "proxy": "proxy.test"}[
                             service
@@ -1012,7 +1186,14 @@ class VerifyTests(unittest.TestCase):
         http.script["GET https://web.test/"] = [pdv.HttpOutcome(status=503)]
         code, out = self.verify(az=world(), http=http)
         self.assertEqual(code, 3)
-        self.assertIn("web: GET / is not 200", out)
+        self.assertIn("web: GET / did not render", out)
+
+    def test_a_web_root_that_redirects_still_passes(self) -> None:
+        """Redirects are not followed, so a root that 307s must not read as dead."""
+        http = healthy_http()
+        http.script["GET https://web.test/"] = [pdv.HttpOutcome(status=307)]
+        code, out = self.verify(az=world(), http=http)
+        self.assertEqual(code, 0, out)
 
     def test_an_unreachable_proxy_ingress_fails(self) -> None:
         http = healthy_http()
@@ -1224,7 +1405,7 @@ class RollbackTests(unittest.TestCase):
                     "revision": captured[service],
                     "revisionsMode": "Single",
                     "minReplicas": 1,
-                    "image": None,
+                    "image": RESTORED_IMAGE,
                     "fqdn": None,
                 }
                 for service in pdv.SERVICES
@@ -1234,7 +1415,18 @@ class RollbackTests(unittest.TestCase):
             state_path = Path(tmp) / STATE_FILE
             state_path.write_text(json.dumps(state), encoding="utf-8")
             with patch.object(pdv, "run_az", az), redirect_stdout(io.StringIO()) as cap:
-                code = pdv.main(["rollback", "--state", str(state_path)])
+                code = pdv.main(
+                    [
+                        "rollback",
+                        "--state",
+                        str(state_path),
+                        # No backoff: confirm_restored's polling has its own tests.
+                        "--confirm-attempts",
+                        "2",
+                        "--confirm-delay",
+                        "0",
+                    ]
+                )
         return code, cap.getvalue(), az
 
     def test_every_moved_app_is_restored(self) -> None:
@@ -1272,6 +1464,44 @@ class RollbackTests(unittest.TestCase):
         self.assertEqual(code, 4)
         self.assertIn("::error::", out)
         self.assertIn("still serving the failed deploy", out)
+
+    def test_a_restore_that_did_not_take_is_reported_as_unconfirmed(self) -> None:
+        """`revision copy` exiting 0 only means ARM accepted the request. Claiming
+        "restored" on that alone is the same unverified-success class this whole
+        gate exists to stop believing."""
+        az = world()
+        # Accept the copy but never actually move the app.
+        original_call = az.__call__
+
+        def inert(args, **kwargs):
+            if "revision copy" in " ".join(args):
+                az.calls.append(list(args))
+                return 0, "", ""
+            return original_call(args, **kwargs)
+
+        code, out, _ = self.rollback(inert_az(az, inert))
+        self.assertEqual(code, 4)
+        self.assertIn('"outcome":"unconfirmed"', out)
+        self.assertIn("::error::", out)
+
+    def test_a_restore_command_timeout_does_not_abandon_the_other_apps(self) -> None:
+        """An AzError escaping the loop would exit 2 and leave web and proxy on
+        the failed deploy."""
+        az = world()
+        original_call = az.__call__
+
+        def timeout_on_api(args, **kwargs):
+            argv = list(args)
+            if "revision copy" in " ".join(argv) and APPS["api"] in argv:
+                az.calls.append(argv)
+                raise pdv.AzError("az timed out")
+            return original_call(args, **kwargs)
+
+        code, out, _ = self.rollback(inert_az(az, timeout_on_api))
+        self.assertEqual(code, 4)
+        self.assertIn("az timed out", out)
+        # web and proxy were still attempted and restored.
+        self.assertEqual(out.count('"outcome":"restored"'), 2)
 
     def test_an_unreadable_app_is_reported_not_skipped(self) -> None:
         az = world()
@@ -1331,12 +1561,41 @@ class DeployWorkflowWiringTests(unittest.TestCase):
     def test_verification_runs_after_the_deploy(self) -> None:
         self.assertLess(self.index("Deploy application"), self.index("Verify the deploy"))
 
-    def test_the_canary_token_is_acquired_before_the_deploy(self) -> None:
+    def test_the_canary_token_is_preflighted_before_the_deploy(self) -> None:
         """A grant problem must not be discovered after deployment, where it would
         roll back a perfectly healthy release for a reason unrelated to it."""
         self.assertLess(
-            self.index("canary token"), self.index("Deploy application")
+            self.index("Preflight the post-deploy canary token"),
+            self.index("Deploy application"),
         )
+
+    def test_the_preflight_discards_its_token_and_verify_acquires_a_fresh_one(self) -> None:
+        """A three-image deploy plus a retried rollout can outlive an access token,
+        and an expired one presents as a 401 -- i.e. rolls back a healthy release."""
+        preflight = self.step("Preflight the post-deploy canary token").get("run", "")
+        fresh = self.step("Acquire the canary token").get("run", "")
+        self.assertNotIn("GITHUB_ENV", preflight)
+        self.assertIn("get-access-token", preflight)
+        self.assertIn("get-access-token", fresh)
+        self.assertIn("::add-mask::", fresh)
+        self.assertLess(
+            self.index("Deploy application"), self.index("Acquire the canary token")
+        )
+
+    def test_a_token_problem_does_not_roll_back_a_healthy_release(self) -> None:
+        """The token step is separate precisely so the rollback gate can exclude
+        it: an Entra blip is not evidence the deploy is bad."""
+        condition = str(self.step("Roll back").get("if", ""))
+        self.assertIn("steps.canary_token.outcome", condition)
+        self.assertIn("!=", condition)
+
+    def test_a_missing_audience_fails_rather_than_silently_skipping(self) -> None:
+        """Only the explicit opt-out may skip the canary. A deploy that quietly
+        drops its own end-to-end proof is the failure mode this gate removes."""
+        preflight = self.step("Preflight the post-deploy canary token").get("run", "")
+        self.assertIn("AI4IA_ENTRA_AUDIENCE", preflight)
+        audience_branch = preflight.split("AI4IA_ENTRA_AUDIENCE")[1]
+        self.assertIn("::error::", audience_branch.split("fi")[0])
 
     def test_rollback_is_gated_on_failure_and_on_having_a_capture(self) -> None:
         condition = str(self.step("Roll back").get("if", ""))
@@ -1371,10 +1630,14 @@ class DeployWorkflowWiringTests(unittest.TestCase):
         self.assertNotIn("||", env["AI4IA_DEPLOY_VERIFY_CANARY"])
 
     def test_the_opt_out_reaches_both_steps_that_must_honour_it(self) -> None:
-        """Only skipping it in `verify` would still fail the token step, and only
-        skipping it in the token step would leave `verify` warning about a token
+        """Only skipping it in `verify` would still fail the preflight, and only
+        skipping it in the preflight would leave `verify` warning about a token
         nobody meant to supply."""
-        for needle in ("canary token", "Verify the deploy"):
+        for needle in (
+            "Preflight the post-deploy canary token",
+            "Acquire the canary token",
+            "Verify the deploy",
+        ):
             with self.subTest(step=needle):
                 self.assertIn(
                     "AI4IA_DEPLOY_VERIFY_CANARY", self.step(needle).get("run", "")

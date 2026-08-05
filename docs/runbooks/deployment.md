@@ -795,14 +795,20 @@ it treats app probes as best-effort.
 | Assertion | Catches |
 |---|---|
 | The revision taking traffic changed | `azd deploy` reported success but Container Apps never promoted a new template |
-| That revision is `active`, `healthState: Healthy`, `runningState: Running` | A revision that provisioned but never became ready |
+| That revision runs a different image than before | A new revision that is not this deploy's — the container was never replaced |
+| That revision is `active`, `healthState: Healthy`, `runningState: Running` | A revision that provisioned but never became ready. **Polled**, because ARM lags `azd deploy` by seconds to a minute |
 | Running replicas > 0 (apps with `minReplicas >= 1`) | A crash-looping image: the revision exists, no replica survives |
 | API `GET /health/live` = 200 | The process is up |
 | API `GET /health/ready` = 200 | Startup validation and dependency binding succeeded |
-| Web `GET /` = 200 | The Next.js server renders rather than 500ing |
-| Proxy ingress answers with anything that is not 502/503/504 | A replica is serving. A 401/404 from the authenticating gateway is a **pass**; only the Container Apps edge giving up is a failure. Retried, because a `minReplicas=0` proxy cold-starts |
+| Web `GET /` = 2xx or 3xx | The Next.js server renders rather than 500ing. Redirects are never followed — that would replay an `Authorization` header at whatever host a response named |
+| Proxy ingress answers with anything below 500 | A replica is serving. A 401/404 from the authenticating gateway is a **pass**; every 5xx is a failure, and 503 is retried because that is what `/startup` returns during a cold start |
 | Custom domains still bound and `SniEnabled` | A provision that wiped a vanity hostname, or a managed certificate that failed to bind |
 | One authenticated turn: `/api/models` → `/api/sessions` → `/api/chat` (non-streaming) → cleanup | The **whole governed path** — Entra validation, catalog resolution, SimpleL7Proxy, the APIM subscription key, the gateway policy, and a real Foundry model deployment. Nothing else here touches any of that |
+
+All of it runs under one shared wall-clock budget (`--deadline-seconds`, 20
+minutes by default) inside a 30-minute step timeout, because per-check retry
+budgets multiply and would otherwise let the step be killed mid-flight rather
+than finish and report.
 
 The canary picks its model from `infra/models.json`, intersected with what the
 live API says it will route to, so it never names a deployment and a
@@ -825,13 +831,22 @@ never prints the bearer token or the model's reply — only the reply's length.
 - **Per-user or per-tenant failures.** The canary is one identity: the deploy
   identity. An entitlement, admin, or per-user ownership regression is invisible
   to it.
+- **A cancelled or job-timed-out run.** See "On failure" below.
+- **Content in an upstream error body.** A failing call logs a bounded, redacted
+  200-character snippet of the response so the failure is diagnosable. Redaction
+  covers credential shapes, not arbitrary prose. Successful responses are never
+  logged — the model's reply is reported only as a character count.
 
 ### On failure
 
 The rollback step runs on **any** failure once a capture exists — including
 `azd deploy` itself dying partway through, which leaves some services replaced
 and others not. For each app whose active revision moved, it restores the
-captured one and then the job fails loudly.
+captured one, **confirms** the app is actually serving the captured image again,
+and then the job fails loudly. A restore that Azure accepted but that did not
+take is reported as `unconfirmed` and still exits non-zero: `az` returning 0 only
+means ARM accepted the request, and believing that would be the same unverified
+success this gate exists to stop.
 
 The primitive differs by revision mode, and using the wrong one is a silent
 no-op:
@@ -844,6 +859,11 @@ no-op:
 An app that did not move is left alone. A greenfield app has no captured
 revision and is skipped — there is nothing to roll back **to** on a first deploy.
 
+**Rollback does not cover a cancelled or job-timed-out run.** `if: failure()`
+fires for a failed step, including the verification step hitting its own
+`timeout-minutes`, but a manual cancellation or the 180-minute job timeout kills
+the runner outright and no rollback runs. Recover those by hand (below).
+
 ### Turning the canary off
 
 Set the `AI4IA_DEPLOY_VERIFY_CANARY` repository variable to `false`. Everything
@@ -852,9 +872,19 @@ so with a warning. Do this if your tenant refuses to issue the deploy identity a
 app-only token for `AI4IA_ENTRA_AUDIENCE` — a deploy proven only as far as the
 ingress is worth more than a gate somebody disabled entirely.
 
-The token is acquired **before** `azd deploy` on purpose. A missing grant is a
-gate misconfiguration, not a bad release, and discovering it afterwards would
-roll back a healthy app for a reason unrelated to it.
+**That variable is the only way to skip it.** An empty `AI4IA_ENTRA_AUDIENCE`
+(or a grant the deploy identity does not have) **fails the run before anything is
+deployed**, rather than quietly shipping without end-to-end proof. Skipping has
+to be a decision someone made and can see.
+
+The grant is preflighted **before** `azd deploy`, and the token that preflight
+obtains is discarded: a separate step acquires a fresh one after the deploy. A
+missing grant is a gate misconfiguration, not a bad release, and discovering it
+afterwards would roll back a healthy app; and a three-image deploy plus a retried
+rollout can outlive an access token, which would present as a 401 and do exactly
+the same thing. That second acquisition is its own step so the rollback gate can
+exclude it — an Entra blip stops the run *without* reverting anything, leaving
+the deploy live but explicitly unverified.
 
 ### Rolling back by hand
 
@@ -865,11 +895,13 @@ az containerapp revision list -g $rg -n ca-api-slurmfactory `
 az containerapp revision copy -g $rg -n ca-api-slurmfactory --from-revision <previous>
 ```
 
-Or redeploy a known-good commit (this also re-runs the gate):
+Or redeploy a known-good commit. Note that a **local** `azd deploy` does not run
+the gate — it lives only in `deploy.yml` — so re-running the workflow is the
+option that re-verifies:
 
 ```powershell
 git checkout <good-sha>
-azd deploy
+azd deploy            # ships the images; does NOT verify or roll back
 ```
 
 **Rollback recovers code, not data.** The two are separate problems, and the data

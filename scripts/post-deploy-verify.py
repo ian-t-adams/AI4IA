@@ -95,16 +95,23 @@ _JWT_RE = re.compile(
 )
 _BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]+=*", re.IGNORECASE)
 _SECRET_QUERY_RE = re.compile(
-    r"([?&](?:api[_-]?key|access[_-]?token|token|sig|code)=)[^&#\s]+",
+    r"([?&](?:api[_-]?key|access[_-]?token|token|sig|code|subscription[_-]?key)=)[^&#\s]+",
     re.IGNORECASE,
 )
 _SECRET_VALUE_RE = re.compile(
+    # The label alternation covers the credential names this stack actually
+    # carries, not just generic ones: APIM's `Ocp-Apim-Subscription-Key`, the
+    # proxy's `S7P-KEY`, and the plain `subscription-key` form all appear in
+    # gateway error bodies, and none of them contains the word "key" in a shape
+    # `api[_-]?key` matches.
+    #
     # The optional quote before the separator is the difference from the voice
     # canary's copy, and it is load-bearing here: this script decodes JSON error
     # bodies from the API and the gateway, where a leaked credential arrives as
     # `"api_key": "..."` -- and `\s*[:=]` alone does not match across the closing
     # quote of the key. Do not "unify" these by dropping it.
-    r"(\b(?:api[_-]?key|access[_-]?token|token|authorization|secret|password)"
+    r"(\b(?:api[_-]?key|x-api-key|access[_-]?token|token|authorization|secret|password"
+    r"|ocp-apim-subscription-key|subscription[_-]?key|s7p[_-]?key)"
     r"\b[\"']?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
     re.IGNORECASE,
 )
@@ -235,7 +242,11 @@ def traffic_revision(app: Any) -> str | None:
     targets = ingress.get("traffic")
     targets = targets if isinstance(targets, list) else []
 
-    latest = props.get("latestReadyRevisionName") or props.get("latestRevisionName")
+    latest = props.get("latestReadyRevisionName")
+    # Deliberately NOT falling back to `latestRevisionName`: that names the most
+    # recently CREATED revision, ready or not. Using it would let a revision that
+    # never became ready be reported as the one serving traffic -- and, worse,
+    # be captured as a rollback target.
     latest = latest if isinstance(latest, str) and latest else None
 
     best: str | None = None
@@ -420,22 +431,70 @@ def _validate_environment(value: str | None) -> str:
     return candidate
 
 
-def snapshot_app(resource_group: str, service: str, name: str) -> AppSnapshot:
-    try:
-        app = az_json(["containerapp", "show", "-g", resource_group, "-n", name])
-    except AzError:
-        app = None
-    if not isinstance(app, dict):
-        return AppSnapshot(service=service, name=name, exists=False)
-    return AppSnapshot(
-        service=service,
-        name=name,
-        exists=True,
-        revision=traffic_revision(app),
-        revisionsMode=revisions_mode(app),
-        minReplicas=min_replicas(app),
-        image=container_image(app),
-        fqdn=ingress_fqdn(app),
+_NOT_FOUND_MARKERS = (
+    "resourcenotfound",
+    "was not found",
+    "could not be found",
+    "not found",
+    "does not exist",
+)
+
+
+def _is_not_found(message: str) -> bool:
+    """Distinguish "this app does not exist yet" from "the read failed".
+
+    Everything downstream turns on this. Treating a 403, a throttle, or a network
+    blip as "absent" is the worst outcome available at capture time: it silently
+    drops the unchanged-revision assertion AND the rollback target, so the gate
+    reports a clean run over a deploy it never actually checked.
+    """
+
+    lowered = message.lower()
+    return any(marker in lowered for marker in _NOT_FOUND_MARKERS)
+
+
+def snapshot_app(
+    resource_group: str,
+    service: str,
+    name: str,
+    *,
+    attempts: int = 3,
+    delay: float = 5.0,
+    sleep: Callable[[float], None] | None = None,
+) -> AppSnapshot:
+    """Read one app's pre-deploy state, or raise.
+
+    Raising is correct here: capture runs BEFORE `azd deploy`, so failing costs
+    nothing but a re-run, whereas guessing costs the whole gate.
+    """
+
+    do_sleep = sleep or time.sleep
+    last_error = ""
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            app = az_json(["containerapp", "show", "-g", resource_group, "-n", name])
+        except AzError as exc:
+            last_error = str(exc)
+            if _is_not_found(last_error):
+                return AppSnapshot(service=service, name=name, exists=False)
+        else:
+            if not isinstance(app, dict):
+                return AppSnapshot(service=service, name=name, exists=False)
+            return AppSnapshot(
+                service=service,
+                name=name,
+                exists=True,
+                revision=traffic_revision(app),
+                revisionsMode=revisions_mode(app),
+                minReplicas=min_replicas(app),
+                image=container_image(app),
+                fqdn=ingress_fqdn(app),
+            )
+        if attempt < attempts:
+            do_sleep(delay)
+    raise VerifyInputError(
+        f"could not read {name} in {resource_group} ({last_error}). Capture runs before "
+        "the deploy, so this fails now rather than silently disabling the rollback target."
     )
 
 
@@ -456,6 +515,8 @@ def rollout_problems(
     current_revision: str | None,
     revision_detail: Any,
     require_replicas: bool,
+    previous_image: str | None = None,
+    current_image: str | None = None,
 ) -> list[str]:
     """Everything wrong with this app's rollout, in operator-facing English.
 
@@ -473,6 +534,15 @@ def rollout_problems(
         problems.append(
             f"{service}: still serving the pre-deploy revision {current_revision} -- "
             "azd reported success but Container Apps never promoted a new template"
+        )
+    elif previous_image and current_image and previous_image == current_image:
+        # A NEW revision running the OLD image. Capture happens after
+        # `azd provision`, and `azd deploy` tags every build uniquely, so the
+        # image must move; an unchanged one means the revision was created by
+        # something other than this deploy's push.
+        problems.append(
+            f"{service}: revision {current_revision} is new but still runs the "
+            "pre-deploy image -- the deploy did not replace the container"
         )
 
     props = _revision_props(revision_detail)
@@ -607,6 +677,51 @@ def validate_https_base(value: str, *, label: str) -> str:
     return urlunsplit(("https", parsed.netloc, path, "", ""))
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Return the 3xx instead of following it.
+
+    ``urllib`` copies the request headers onto a redirect, so following one would
+    replay the canary's ``Authorization`` header at whatever host the response
+    named -- a credential handed to an arbitrary origin on the say-so of a
+    server we are in the middle of deciding we do not trust. None of the probed
+    endpoints should redirect, so the 3xx is surfaced as the answer instead.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+@dataclass
+class Deadline:
+    """A single wall-clock budget for the whole verification run.
+
+    Per-check retry budgets multiply: the configured attempts x delays across
+    three apps, four HTTP targets and the canary add up to considerably more
+    than the step timeout, so a run where several checks are slow could be killed
+    by the step timeout mid-flight rather than finishing and reporting. One
+    shared deadline bounds the total instead, and every check reports what it
+    last saw when the budget runs out.
+    """
+
+    seconds: float
+    clock: Callable[[], float] = time.monotonic
+    started: float = field(default=0.0)
+
+    def __post_init__(self) -> None:
+        self.started = self.clock()
+
+    def expired(self) -> bool:
+        return self.seconds > 0 and (self.clock() - self.started) >= self.seconds
+
+    def remaining(self) -> float:
+        if self.seconds <= 0:
+            return float("inf")
+        return max(0.0, self.seconds - (self.clock() - self.started))
+
+
 def http_request(
     method: str,
     url: str,
@@ -626,7 +741,7 @@ def http_request(
     for key, value in (headers or {}).items():
         request.add_header(key, value)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        with _OPENER.open(request, timeout=timeout) as response:
             return HttpOutcome(status=response.status, body=response.read(MAX_BODY_BYTES))
     except urllib.error.HTTPError as exc:
         try:
@@ -661,13 +776,14 @@ def probe(
     headers: dict[str, str] | None = None,
     body: bytes | None = None,
     accept: Callable[[HttpOutcome], bool] | None = None,
-    attempts: int = 12,
+    attempts: int = 10,
     delay: float = 5.0,
-    timeout: float = 30.0,
+    timeout: float = 25.0,
     request: Callable[..., HttpOutcome] | None = None,
     sleep: Callable[[float], None] | None = None,
+    deadline: Deadline | None = None,
 ) -> tuple[HttpOutcome, int]:
-    """Retry ``url`` until it is acceptable or the attempts run out."""
+    """Retry ``url`` until it is acceptable, the attempts run out, or time is up."""
 
     do_request = request or http_request
     do_sleep = sleep or time.sleep
@@ -682,21 +798,38 @@ def probe(
             return outcome, attempt
         if not is_retryable(outcome) or attempt >= attempts:
             return outcome, attempt
+        if deadline is not None and deadline.expired():
+            return outcome, attempt
         do_sleep(delay)
     return outcome, attempt
 
 
 def ingress_responds(outcome: HttpOutcome) -> bool:
-    """Proof that *something in the container* answered.
+    """Proof that *something in the container* answered, and answered sanely.
 
     Deliberately not ``status == 200``. The model proxy is an authenticating
     gateway: an unauthenticated probe legitimately gets 401/404, and both prove
-    the revision booted and is serving. What must NOT be accepted is Container
-    Apps' own 502/503/504, which is the edge saying no replica answered -- i.e.
-    exactly the crash-looping-image case this gate exists to catch.
+    the revision booted and is serving.
+
+    But every 5xx is rejected, not just Container Apps' own 502/503/504. The
+    proxy's probe routes are defined to answer 200 or 503, so a 500 from one is a
+    fault inside the container, and accepting it would pass a proxy that boots
+    and then fails every request. 503 in particular must stay in the retryable
+    set: it is what ``/startup`` returns while a cold replica is still coming up.
     """
 
-    return outcome.status is not None and outcome.status not in EDGE_FAILURE_STATUSES
+    return outcome.status is not None and outcome.status < 500
+
+
+def ingress_or_redirect(outcome: HttpOutcome) -> bool:
+    """Web-root acceptance: 2xx or a redirect, but never a followed one.
+
+    Redirects are not followed (see ``_OPENER``), so a framework that answers the
+    root with a 307/308 to a locale or landing route would otherwise read as a
+    failure. The redirect itself still proves the server rendered a decision.
+    """
+
+    return outcome.status is not None and 200 <= outcome.status < 400
 
 
 # --------------------------------------------------------------------------
@@ -786,6 +919,7 @@ def run_canary(
     request: Callable[..., HttpOutcome] | None = None,
     sleep: Callable[[float], None] | None = None,
     monotonic: Callable[[], float] | None = None,
+    deadline: Deadline | None = None,
 ) -> CanaryResult:
     """One authenticated turn down the whole governed path.
 
@@ -813,6 +947,7 @@ def run_canary(
         timeout=min(timeout, 60.0),
         request=do_request,
         sleep=sleep,
+        deadline=deadline,
     )
     if not models.ok:
         return CanaryResult(
@@ -842,6 +977,7 @@ def run_canary(
         timeout=min(timeout, 60.0),
         request=do_request,
         sleep=sleep,
+        deadline=deadline,
     )
     if created.status != 201:
         return CanaryResult(
@@ -876,6 +1012,7 @@ def run_canary(
             timeout=timeout,
             request=do_request,
             sleep=sleep,
+            deadline=deadline,
         )
         elapsed_ms = int((clock() - started) * 1000)
         if not chat.ok:
@@ -1001,6 +1138,7 @@ def await_rollout(
     attempts: int = 20,
     delay: float = 10.0,
     sleep: Callable[[float], None] | None = None,
+    deadline: Deadline | None = None,
 ) -> tuple[list[str], dict | None, str | None]:
     """Poll the rollout assertions until they pass or the budget runs out.
 
@@ -1067,10 +1205,15 @@ def await_rollout(
                 current_revision=current,
                 revision_detail=detail,
                 require_replicas=bool(configured_min and configured_min > 0),
+                previous_image=snapshot.image,
+                current_image=container_image(app),
             )
         if not problems:
             return [], app, current
         if attempt < attempts:
+            if deadline is not None and deadline.expired():
+                problems.append(f"{service}: ran out of verification time budget")
+                return problems, app, current
             do_sleep(delay)
     return problems, app, current
 
@@ -1078,6 +1221,7 @@ def await_rollout(
 def cmd_verify(args: argparse.Namespace) -> int:
     state = _load_state(args.state)
     failures: list[str] = []
+    deadline = Deadline(seconds=max(0.0, args.deadline_seconds))
 
     live: dict[str, Any] = {}
     for service in SERVICES:
@@ -1091,6 +1235,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             snapshot=snapshot,
             attempts=args.rollout_attempts,
             delay=args.rollout_delay,
+            deadline=deadline,
         )
         if app is not None:
             live[service] = app
@@ -1118,6 +1263,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
                 attempts=args.attempts,
                 delay=args.delay,
                 timeout=args.http_timeout,
+                deadline=deadline,
             )
             emit(
                 "probe",
@@ -1137,14 +1283,16 @@ def cmd_verify(args: argparse.Namespace) -> int:
     else:
         outcome, tries = probe(
             f"{web_base}/",
+            accept=ingress_or_redirect,
             attempts=args.attempts,
             delay=args.delay,
             timeout=args.http_timeout,
+            deadline=deadline,
         )
         emit("probe", target="web/", status=outcome.status, attempts=tries, error=outcome.error)
-        if not outcome.ok:
+        if not ingress_or_redirect(outcome):
             failures.append(
-                "web: GET / is not 200 "
+                "web: GET / did not render "
                 f"({outcome.status if outcome.status is not None else outcome.error})"
             )
 
@@ -1161,6 +1309,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             attempts=args.proxy_attempts,
             delay=args.delay,
             timeout=args.http_timeout,
+            deadline=deadline,
         )
         emit(
             "probe",
@@ -1177,7 +1326,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             )
 
     failures.extend(_custom_domain_failures(live))
-    failures.extend(_canary_failures(args, api_base))
+    failures.extend(_canary_failures(args, api_base, deadline))
 
     for failure in failures:
         annotate("error", failure)
@@ -1220,7 +1369,9 @@ def _custom_domain_failures(live: dict[str, Any]) -> list[str]:
     return failures
 
 
-def _canary_failures(args: argparse.Namespace, api_base: str | None) -> list[str]:
+def _canary_failures(
+    args: argparse.Namespace, api_base: str | None, deadline: Deadline | None = None
+) -> list[str]:
     if args.skip_canary:
         emit("canary", outcome="skipped", detail="--skip-canary was passed")
         annotate(
@@ -1233,6 +1384,9 @@ def _canary_failures(args: argparse.Namespace, api_base: str | None) -> list[str
         return ["canary: --token-env is not a valid environment variable name"]
     token = os.environ.get(args.token_env, "").strip()
     if not token:
+        # Reached only outside CI: deploy.yml refuses to start a run that would
+        # arrive here without a token unless AI4IA_DEPLOY_VERIFY_CANARY=false,
+        # which takes the --skip-canary branch above instead.
         emit("canary", outcome="skipped", detail=f"{args.token_env} is empty")
         annotate(
             "warning",
@@ -1252,6 +1406,7 @@ def _canary_failures(args: argparse.Namespace, api_base: str | None) -> list[str
         attempts=args.canary_attempts,
         delay=args.delay,
         timeout=args.canary_timeout,
+        deadline=deadline,
     )
     emit(
         "canary",
@@ -1269,6 +1424,46 @@ def _canary_failures(args: argparse.Namespace, api_base: str | None) -> list[str
     ]
 
 
+def confirm_restored(
+    *,
+    resource_group: str,
+    snapshot: AppSnapshot,
+    replaced_revision: str | None,
+    attempts: int = 12,
+    delay: float = 10.0,
+    sleep: Callable[[float], None] | None = None,
+) -> tuple[bool, str | None]:
+    """Prove the restore actually took, rather than trusting a zero exit code.
+
+    ``revision copy`` returning 0 means ARM accepted the request. Reporting
+    "restored" on that alone is the same class of claim this whole gate exists
+    to stop believing. What must be true is that the app is now serving a
+    revision that is NOT the failed one and that runs the captured image.
+
+    Returns (confirmed, revision now serving).
+    """
+
+    do_sleep = sleep or time.sleep
+    current: str | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            app = az_json(
+                ["containerapp", "show", "-g", resource_group, "-n", snapshot.name]
+            )
+        except AzError:
+            app = None
+        if isinstance(app, dict):
+            current = traffic_revision(app)
+            image = container_image(app)
+            moved_off_the_failure = bool(current) and current != replaced_revision
+            image_matches = snapshot.image is None or image == snapshot.image
+            if moved_off_the_failure and image_matches:
+                return True, current
+        if attempt < attempts:
+            do_sleep(delay)
+    return False, current
+
+
 def cmd_rollback(args: argparse.Namespace) -> int:
     state = _load_state(args.state)
     restored = 0
@@ -1277,56 +1472,97 @@ def cmd_rollback(args: argparse.Namespace) -> int:
         snapshot = state.app(service)
         if snapshot is None:
             continue
+        # Everything for one app is wrapped, so a timeout or a transient ARM
+        # error on the first app cannot abandon the other two mid-rollback.
         try:
-            app = az_json(
-                ["containerapp", "show", "-g", state.resourceGroup, "-n", snapshot.name]
+            try:
+                app = az_json(
+                    ["containerapp", "show", "-g", state.resourceGroup, "-n", snapshot.name]
+                )
+            except AzError as exc:
+                emit("rollback", service=service, outcome="unreadable", detail=str(exc))
+                annotate(
+                    "error",
+                    f"{service}: could not be read, so its revision was not restored.",
+                )
+                failed += 1
+                continue
+            current = traffic_revision(app) if isinstance(app, dict) else None
+            commands = rollback_commands(
+                resource_group=state.resourceGroup,
+                snapshot=snapshot,
+                current_revision=current,
             )
-        except AzError as exc:
-            emit("rollback", service=service, outcome="unreadable", detail=str(exc))
-            failed += 1
-            continue
-        current = traffic_revision(app) if isinstance(app, dict) else None
-        commands = rollback_commands(
-            resource_group=state.resourceGroup,
-            snapshot=snapshot,
-            current_revision=current,
-        )
-        if not commands:
-            emit(
-                "rollback",
-                service=service,
-                outcome="skipped",
-                current=current,
-                captured=snapshot.revision,
-                detail="nothing to restore",
-            )
-            continue
-        for command in commands:
-            code, _, err = run_az([*command, "-o", "none"])
-            if code != 0:
+            if not commands:
                 emit(
                     "rollback",
                     service=service,
-                    outcome="failed",
+                    outcome="skipped",
+                    current=current,
                     captured=snapshot.revision,
-                    detail=redact(err) or "az exited non-zero",
+                    detail="nothing to restore",
+                )
+                continue
+            issued = True
+            for command in commands:
+                # `revision copy` waits for the new revision to provision, which
+                # routinely exceeds the default read timeout.
+                code, _, err = run_az([*command, "-o", "none"], timeout=args.az_timeout)
+                if code != 0:
+                    emit(
+                        "rollback",
+                        service=service,
+                        outcome="failed",
+                        captured=snapshot.revision,
+                        detail=redact(err) or "az exited non-zero",
+                    )
+                    annotate(
+                        "error",
+                        f"{service}: could not restore revision {snapshot.revision}; "
+                        "the app is still serving the failed deploy.",
+                    )
+                    failed += 1
+                    issued = False
+                    break
+            if not issued:
+                continue
+            confirmed, serving = confirm_restored(
+                resource_group=state.resourceGroup,
+                snapshot=snapshot,
+                replaced_revision=current,
+                attempts=args.confirm_attempts,
+                delay=args.confirm_delay,
+            )
+            if confirmed:
+                restored += 1
+                emit(
+                    "rollback",
+                    service=service,
+                    outcome="restored",
+                    captured=snapshot.revision,
+                    replaced=current,
+                    serving=serving,
+                )
+            else:
+                failed += 1
+                emit(
+                    "rollback",
+                    service=service,
+                    outcome="unconfirmed",
+                    captured=snapshot.revision,
+                    replaced=current,
+                    serving=serving,
                 )
                 annotate(
                     "error",
-                    f"{service}: could not restore revision {snapshot.revision}; "
-                    "the app is still serving the failed deploy.",
+                    f"{service}: the restore was accepted but the app is not yet serving "
+                    f"the captured image. Check `az containerapp revision list -g "
+                    f"{state.resourceGroup} -n {snapshot.name}` before trusting this app.",
                 )
-                failed += 1
-                break
-        else:
-            restored += 1
-            emit(
-                "rollback",
-                service=service,
-                outcome="restored",
-                captured=snapshot.revision,
-                replaced=current,
-            )
+        except AzError as exc:
+            emit("rollback", service=service, outcome="failed", detail=str(exc))
+            annotate("error", f"{service}: rollback failed ({exc}).")
+            failed += 1
     emit("rollback_summary", restored=restored, failed=failed)
     return 4 if failed else 0
 
@@ -1389,6 +1625,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument("--delay", type=float, default=5.0, help="Seconds between attempts.")
     verify.add_argument("--http-timeout", type=float, default=25.0, help="Per-request timeout.")
+    verify.add_argument(
+        "--deadline-seconds",
+        type=float,
+        default=1200.0,
+        help=(
+            "Total wall-clock budget for all checks. Per-check attempt budgets multiply, "
+            "so this is what keeps the step inside its timeout. 0 disables."
+        ),
+    )
     verify.add_argument("--skip-canary", action="store_true", help="Do not run the model canary.")
     verify.add_argument(
         "--token-env",
@@ -1410,6 +1655,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     rollback = sub.add_parser("rollback", help="Restore the captured revisions.")
     rollback.add_argument("--state", required=True, help="Path to the capture JSON.")
+    rollback.add_argument(
+        "--az-timeout",
+        type=float,
+        default=900.0,
+        help="Seconds to allow a restore command; `revision copy` waits for provisioning.",
+    )
+    rollback.add_argument(
+        "--confirm-attempts",
+        type=int,
+        default=12,
+        help="Reads used to confirm the restore actually took.",
+    )
+    rollback.add_argument(
+        "--confirm-delay", type=float, default=10.0, help="Seconds between confirmation reads."
+    )
     rollback.set_defaults(func=cmd_rollback)
     return parser
 
