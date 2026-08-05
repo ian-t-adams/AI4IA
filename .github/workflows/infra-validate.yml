@@ -14,6 +14,7 @@ on:
       - "scripts/tests/test_feature_prereqs.py"
       - "scripts/gen-gateway-policy.py"
       - "scripts/tests/test_gateway_policy.py"
+      - "scripts/tests/test_policy_json_shape.py"
       - "scripts/gen-voice-provider-catalog.py"
       - "scripts/tests/test_voice_provider_catalog.py"
       - ".github/workflows/infra-validate.yml"
@@ -27,6 +28,7 @@ on:
       - "scripts/tests/test_feature_prereqs.py"
       - "scripts/gen-gateway-policy.py"
       - "scripts/tests/test_gateway_policy.py"
+      - "scripts/tests/test_policy_json_shape.py"
       - "scripts/gen-voice-provider-catalog.py"
       - "scripts/tests/test_voice_provider_catalog.py"
       - ".github/workflows/infra-validate.yml"
@@ -84,6 +86,19 @@ jobs:
         run: |
           python scripts/gen-gateway-policy.py --check
           python -m unittest scripts.tests.test_gateway_policy
+
+      # A duplicate property name in any policy JObject is a RUNTIME failure that
+      # compiles cleanly: Newtonsoft throws "Property with the same name already
+      # exists" when the expression evaluates, so APIM answers 500 for every
+      # request through the API. That is exactly how the model plane went down on
+      # 2026-08-05 -- `--check` passed (the generated file matched its source) and
+      # the policy compiler passed (the C# was valid). Only executing it failed.
+      # This scans every committed policy file, generated and hand-written, and
+      # understands both `new JObject(new JProperty(...))` and the
+      # `new JObject { { "k", v } }` collection-initialiser form the hand-written
+      # fragments use on the hot path.
+      - name: Policy JObject duplicate-property tests
+        run: python -m unittest scripts.tests.test_policy_json_shape
 
       - name: Validate generated voice provider catalog
         run: |
