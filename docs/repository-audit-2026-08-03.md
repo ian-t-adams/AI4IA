@@ -1,4 +1,4 @@
-# Repository audit - 2026-08-03 (continued 2026-08-04)
+# Repository audit - 2026-08-03 (continued 2026-08-04, disposition updated 2026-08-05)
 
 ## Audit status
 
@@ -13,6 +13,11 @@ platform or a one-command clean-room deployment. One confirmed credential-handli
 defect requires immediate incident response. Several other boundaries rely on
 cooperative clients, manual deployment work, mutable builds, or documentation that
 has drifted from the implementation and live environment.
+
+> **Written 2026-08-03. See [the disposition](#immediate-action--status-as-of-2026-08-05)
+> for what has since been fixed** — the credential defect is fixed and the key is
+> rotated, but the production-completeness verdict above still stands: the
+> deployment-posture findings (P1-3, P1-4, P1-7) are untouched.
 
 A second phase exercised the public deployment in a real browser, ran a controlled
 HTTP/SSE chat round trip through the actual FastAPI application, audited performance
@@ -33,31 +38,90 @@ model, search, document, tool, workflow, media, and voice data planes end to end
 | Performance/scalability | **Bounded and suitable for low-volume demos; no scale proof and several confirmed memory/latency multipliers** |
 | Agent/human comprehensibility | **Good maps and invariants; oversized modules and incident-heavy docs impose high cognitive load** |
 
-### Immediate action
+### Immediate action — status as of 2026-08-05
 
-`ProxyConfig.ValidateAuthKey1`, populated with the public proxy-ingress APIM
-subscription key, is emitted unredacted in a startup custom event. The default event
-client writes that event to `eventslog.json`; other configured event destinations can
-receive it too. Treat the key as disclosed:
+> **This section is the audit's living disposition. The findings below it are
+> preserved as originally written (2026-08-03/04) and are NOT edited when they
+> are fixed — an audit that quietly rewrites itself cannot be audited. Check
+> here for current status.**
 
-1. Prevent `Profiles:Auth:Key1` and `Key2` from entering any event.
-2. Inspect active and retained revisions and telemetry without printing the value.
-3. Rotate the proxy-ingress APIM subscription key and redeploy atomically.
-4. Stop revisions holding the old key and purge or restrict affected telemetry where
-   feasible.
-5. Add a regression test that serializes startup configuration and proves no secret
-   value appears.
+**1. Proxy-ingress credential disclosure (P0-1) — FIXED and the key is ROTATED.**
 
-Live rotation and telemetry deletion were not performed during this read-only audit;
-they require explicit production authorization.
+`ProxyConfig.ValidateAuthKey1`, populated with the proxy-ingress APIM
+subscription key, was emitted unredacted in a startup custom event because the
+redactor matched key paths by substring and `Key1` matches none of its terms.
 
-The second release-blocking decision is the intentionally annotation-only Foundry
-content policy. Every harm, jailbreak, and protected-material filter is enabled but
-configured not to block. Source comments call this an approved exception, but the
-repository has no accountable approval record, owner, expiry, review cadence, or
-independently tested compensating control. Before any production-safety claim, an
-authorized human must either restore blocking appropriate to the use cases or document
-and validate a replacement moderation/escalation boundary.
+- Fixed in #266: an explicit `ConfigOptionAttribute.Secret` flag, both auth keys
+  marked, and a canary-based regression test (`ConfigRedactionTests`) that fails
+  if any secret-marked option reaches the serialized event. Mutation-tested:
+  removing the flag makes three tests fail.
+- The key was **rotated in production on 2026-08-04** with zero downtime, using
+  the proxy's `ValidateAuthKey2` slot for dual-accept during switchover. The old
+  key was verified to return 403 and the new key 200. Procedure recorded in
+  [`runbooks/key-rotation.md`](./runbooks/key-rotation.md).
+
+**Severity correction, measured rather than assumed.** This finding was written
+on the assumption that the event reached durable telemetry. It did not, in this
+deployment: `EVENT_LOGGERS` is unset, so the config event goes to the default
+*file* client (`eventslog.json`) inside the container, which is ephemeral and
+dies with the revision. Searches of Application Insights (`traces`,
+`customEvents`, `exceptions`) and of `ContainerAppConsoleLogs_CL` found **no
+occurrence of either key**. The leak path was real and is fixed; its blast radius
+was narrower than this section originally implied. That depends on
+`EVENT_LOGGERS` and `AppInsightsConnectionString`, both configurable — re-check
+before relying on it.
+
+Ordering constraint worth knowing: the redaction fix must be *deployed* before a
+rotation, or the new key is written where the old one was.
+
+**2. Annotation-only content policy (P0-2) — ACCEPTED by the owner, with
+compensating visibility.**
+
+Every harm, jailbreak and protected-material filter remains enabled and
+non-blocking. This is a deliberate owner decision, not drift.
+
+The compensating control added in #266: Foundry returns a verdict for every
+category on every turn, and the application previously **discarded all of it** —
+so the safety system ran on every request and was completely invisible. Those
+annotations are now normalized, persisted on the message, and shown in a
+collapsed per-turn panel that states plainly that nothing was blocked or
+rewritten. `filtered: true` is always treated as notable, so flipping the policy
+to blocking would surface rather than change behaviour silently.
+
+**Still outstanding for this item:** a written Responsible-AI decision record
+(accountable owner, scope, expiry, review cadence, compensating-control
+assessment). A code comment and a CI test are not an approval record.
+
+### Disposition of the P0/P1 findings
+
+Verified against the tree at `main` on 2026-08-05, not from memory.
+
+| Finding | Status | Where |
+| --- | --- | --- |
+| P0-1 proxy credential in startup event | **Fixed + key rotated** | #266, live rotation |
+| P0-2 annotation-only filters | **Accepted**; annotations now surfaced | #266 + owner decision |
+| P1-1 client can override server-owned model fields | **Fixed** | #266 |
+| P1-2 Code Interpreter retention/metering | **Partially fixed** — `store:false` locked; entitlement/usage accounting still absent | #266 |
+| P1-3 fresh azd deploy is public + dev auth | **Open** — `${AI4IA_APP_ENVIRONMENT=dev}` and `${AI4IA_AUTH_PROVIDER=dev}` unchanged | — |
+| P1-4 gateway-only routing is convention, not IAM | **Open** — `disableLocalAuth` still defaults false | — |
+| P1-5 APIM key is a non-secure output | **Fixed** — compiled ARM emits `securestring` | #266 |
+| P1-6 no post-deploy proof or rollback | **In progress** | delegated |
+| P1-7 tested artifact is not the deployed artifact | **Open** | — |
+| P1-8 teardown destroys data it cannot restore | **Partially fixed** — guidance corrected and Cosmos PITR linked; no capture/restore step in the runbook flow, Blob and Key Vault still unrecoverable | #266 |
+| P1-9 sharing read failure can revoke an ACL | **Fixed** | #266 |
+| P1-10 "tenant-public" is application-public | **Open** — latent until a second tenant is onboarded | — |
+| P1-11 portal presents stale evidence as live health | **Fixed** — `healthy` now requires a positive Resource Health signal | #266 |
+| P1-12 hard-coded colors bypass theme tokens | **Barely started** — only `SharePanel`'s error text moved to a token; ~20 literals remain in `LibraryPanel`, `Pill`, `McpServerBuilder`, `MediaPlayer`, `AnnotationsPanel`, `AgentBuilder` | #266 |
+| P1-13 indirect prompt injection drives preapproved MCP | **In progress** | delegated |
+| P1-14 citations are presentation, not provenance | **Open** | — |
+| P1-15 admin refresh can exhaust a 1 GiB replica | **In progress** | delegated |
+| P1-16 live-default chat is not token-streaming | **Partially fixed** — proxy now flushes per SSE event; the non-streaming tool loop remains | #266 |
+| P1-17 region/data-zone constraints silently relax | **Fixed**, and the residency model was corrected: `residency` now derives from the deployment SKU, not endpoint geography | #266, #267, #268 |
+
+Selected P2 items also closed: CGNAT SSRF gap, portal service counts, portal
+narrow-screen reflow, the missing `main` landmark, the APIM compiler harness
+rejecting its own shards, and two documentation current-state contradictions.
+
 
 ## Scope and method
 
