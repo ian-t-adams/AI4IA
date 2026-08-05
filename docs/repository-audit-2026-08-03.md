@@ -105,22 +105,42 @@ Verified against the tree at `main` on 2026-08-05, not from memory.
 | P1-3 fresh azd deploy is public + dev auth | **Open** — `${AI4IA_APP_ENVIRONMENT=dev}` and `${AI4IA_AUTH_PROVIDER=dev}` unchanged | — |
 | P1-4 gateway-only routing is convention, not IAM | **Open** — `disableLocalAuth` still defaults false | — |
 | P1-5 APIM key is a non-secure output | **Fixed** — compiled ARM emits `securestring` | #266 |
-| P1-6 no post-deploy proof or rollback | **In progress** | delegated |
+| P1-6 no post-deploy proof or rollback | **Fixed** — pre-deploy revision capture, hard rollout/health/web/proxy/domain assertions, an authenticated gateway canary, and automatic rollback. Does not cover a cancelled run or job timeout | #274 |
 | P1-7 tested artifact is not the deployed artifact | **Open** | — |
-| P1-8 teardown destroys data it cannot restore | **Partially fixed** — guidance corrected and Cosmos PITR linked; no capture/restore step in the runbook flow, Blob and Key Vault still unrecoverable | #266 |
+| P1-8 teardown destroys data it cannot restore | **Fixed** — `-Force` now requires `-AcknowledgeDataLoss` and refuses before any `az` call; `capture-data-recovery-state.ps1` records the Cosmos restorable-instance id, a blob manifest, and secret names. Blob still has no restore path — the capture makes that a decision rather than a discovery | #266, #273 |
 | P1-9 sharing read failure can revoke an ACL | **Fixed** | #266 |
 | P1-10 "tenant-public" is application-public | **Open** — latent until a second tenant is onboarded | — |
 | P1-11 portal presents stale evidence as live health | **Fixed** — `healthy` now requires a positive Resource Health signal | #266 |
-| P1-12 hard-coded colors bypass theme tokens | **Barely started** — only `SharePanel`'s error text moved to a token; ~20 literals remain in `LibraryPanel`, `Pill`, `McpServerBuilder`, `MediaPlayer`, `AnnotationsPanel`, `AgentBuilder` | #266 |
-| P1-13 indirect prompt injection drives preapproved MCP | **In progress** | delegated |
+| P1-12 hard-coded colors bypass theme tokens | **Fixed**, and the severity was understated: measuring the literals made this an accessibility defect, not a style nit. `#fff` on a `var(--accent)` fill is **1.07:1** in the high-contrast theme and sat on three panels' primary action button. All 14 literals now resolve through tokens, `--warn` was added, and two gates enforce it | #266, #271 |
+| P1-13 indirect prompt injection drives preapproved MCP | **In review** — approval is bound to an argument digest recomputed at dispatch, which is sound; returned for three defects found in review (one grant authorized up to 8 executions; the preview card silently drops attacker-chosen keys; the single-use burn is a non-atomic read-modify-write) | #272 |
 | P1-14 citations are presentation, not provenance | **Open** | — |
-| P1-15 admin refresh can exhaust a 1 GiB replica | **In progress** | delegated |
+| P1-15 admin refresh can exhaust a 1 GiB replica | **Fixed** — the dashboard is served from one projected ledger scan instead of seven | #270 |
 | P1-16 live-default chat is not token-streaming | **Partially fixed** — proxy now flushes per SSE event; the non-streaming tool loop remains | #266 |
 | P1-17 region/data-zone constraints silently relax | **Fixed**, and the residency model was corrected: `residency` now derives from the deployment SKU, not endpoint geography | #266, #267, #268 |
 
 Selected P2 items also closed: CGNAT SSRF gap, portal service counts, portal
 narrow-screen reflow, the missing `main` landmark, the APIM compiler harness
 rejecting its own shards, and two documentation current-state contradictions.
+
+**What is still open, and why.** Four of the five remaining items are one decision,
+not four: `main.parameters.json` still defaults to `${AI4IA_APP_ENVIRONMENT=dev}` and
+`${AI4IA_AUTH_PROVIDER=dev}`, so a fresh `azd up` produces a public, dev-auth stack.
+That single default is the root of P1-3, and it is what makes P1-4 (gateway-only
+routing is convention, not IAM — `disableLocalAuth` still defaults false) and P1-7
+(the tested artifact is not the deployed artifact) matter as much as they do. They
+need production-versus-demo deploy profiles, which is a posture decision for the
+owner rather than a defect to patch.
+
+The other two are feature work with no safe shortcut: P1-10 (tenant-public means
+application-public) stays latent until a second tenant is onboarded, and P1-14
+(citations are presentation, not provenance) needs real span-level provenance —
+`untrusted_context` in the new approval work is a *turn-level* taint bit and is
+deliberately not claimed as more than that.
+
+Two items are honestly partial rather than done. P1-2 locks `store: false` but has no
+entitlement or usage accounting for Code Interpreter, and P1-16 fixed the proxy's SSE
+buffering while the non-streaming tool loop remains. Both are recorded as partial in
+the table above rather than rounded up.
 
 
 ## Scope and method
