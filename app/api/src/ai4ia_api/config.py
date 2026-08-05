@@ -836,6 +836,43 @@ class Settings(BaseSettings):
                 "policy back to 'global'."
             )
 
+    def _validate_library_sharing_is_tenant_walled(self) -> None:
+        """Refuse to start when `public` documents would cross a tenant boundary.
+
+        `library/access.py` grants `Visibility.public` to *any authenticated
+        caller* without comparing tenant identity. That is safe only because the
+        app authenticates against one tenant, which makes "public" mean
+        "tenant-public". The assumption is written in that module's docstring and
+        is not enforced anywhere.
+
+        `entra_allowed_tenants` accepts a comma-separated list. Adding a second
+        tenant is a one-variable change that silently converts every existing
+        `public` document into cross-tenant-readable, retroactively, with no
+        migration and no signal — the documents were shared under the old
+        meaning. That is audit finding P1-10, and the reason it is latent rather
+        than fixed is that nobody has a second tenant yet.
+
+        So this fails closed at startup rather than waiting to be discovered as a
+        disclosure. Multi-tenant is a supported destination; it just needs owner
+        tenant persisted and compared first, or the visibility renamed to
+        `application_public` so the name stops implying a wall that is not there.
+        """
+        if self.auth_provider != AuthProviderKind.entra:
+            return
+        tenants = self.allowed_tenants
+        if len(tenants) <= 1:
+            return
+        raise RuntimeError(
+            "AI4IA_ENTRA_ALLOWED_TENANTS names "
+            f"{len(tenants)} tenants, but document library sharing is not "
+            "tenant-aware: a 'public' document is readable by every "
+            "authenticated caller regardless of tenant, so every existing "
+            "'public' document would become cross-tenant readable the moment "
+            "this starts. Persist and compare the owner's tenant (see "
+            "library/access.py) before enabling multi-tenant auth, or run with a "
+            "single tenant."
+        )
+
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
         self._validate_data_residency()
@@ -849,6 +886,7 @@ class Settings(BaseSettings):
                 raise RuntimeError(
                     "Entra auth requires AI4IA_ENTRA_TENANT_ID and AI4IA_ENTRA_AUDIENCE."
                 )
+        self._validate_library_sharing_is_tenant_walled()
         if (
             self.env == Environment.prod
             and self.model_gateway_auth_mode == GatewayAuthMode.none

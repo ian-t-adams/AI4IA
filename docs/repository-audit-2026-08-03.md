@@ -122,7 +122,7 @@ Verified against the tree at `main` on 2026-08-05, not from memory.
 | P1-7 tested artifact is not the deployed artifact | **Open** | — |
 | P1-8 teardown destroys data it cannot restore | **Fixed** — `-Force` now requires `-AcknowledgeDataLoss` and refuses before any `az` call; `capture-data-recovery-state.ps1` records the Cosmos restorable-instance id, a blob manifest, and secret names. Blob still has no restore path — the capture makes that a decision rather than a discovery | #266, #273 |
 | P1-9 sharing read failure can revoke an ACL | **Fixed** | #266 |
-| P1-10 "tenant-public" is application-public | **Open** — latent until a second tenant is onboarded | — |
+| P1-10 "tenant-public" is application-public | **Contained, not fixed** — sharing is still not tenant-aware, but startup now refuses when more than one Entra tenant is allowed, so the latent bug cannot be activated by a one-variable change | #283 |
 | P1-11 portal presents stale evidence as live health | **Fixed** — `healthy` now requires a positive Resource Health signal | #266 |
 | P1-12 hard-coded colors bypass theme tokens | **Fixed**, and the severity was understated: measuring the literals made this an accessibility defect, not a style nit. `#fff` on a `var(--accent)` fill is **1.07:1** in the high-contrast theme and sat on three panels' primary action button. All 14 literals now resolve through tokens, `--warn` was added, and two gates enforce it | #266, #271 |
 | P1-13 indirect prompt injection drives preapproved MCP | **Fixed for MCP tools** — approval binds to an argument digest recomputed at dispatch and spent on use; review caught three defects before merge, all fixed and mutation-verified. **Scope is narrower than it sounds**: the registry governs only `calculator` and `get_current_time`, so all 15 first-party synthetic capabilities (`browse_url`, the four searches, `run_code`, memory writes, media generation) remain ungated. Inventory pinned by test | #272 |
@@ -147,10 +147,12 @@ profiles, plus RBAC and image-promotion changes that are posture decisions for t
 owner rather than defects to patch.
 
 The other two are feature work with no safe shortcut: P1-10 (tenant-public means
-application-public) stays latent until a second tenant is onboarded, and P1-14
-(citations are presentation, not provenance) needs real span-level provenance —
-`untrusted_context` in the new approval work is a *turn-level* taint bit and is
-deliberately not claimed as more than that.
+application-public) is now *contained* — startup refuses when more than one Entra
+tenant is allowed, so the latent bug cannot be activated by appending a GUID to a
+variable — but sharing is still not tenant-aware, and making it so means persisting
+the owner's tenant and comparing it. P1-14 (citations are presentation, not
+provenance) needs real span-level provenance; `untrusted_context` in the approval
+work is a *turn-level* taint bit and is deliberately not claimed as more than that.
 
 One partially-closed item deserves naming rather than burying in the table, and it
 is larger than the original disclosure implied. P1-13's per-invocation approval
