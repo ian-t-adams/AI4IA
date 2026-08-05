@@ -21,6 +21,39 @@ ships, add one when a real gap appears.
 | **Ops** | **PostgreSQL retirement.** It is retained post-cutover only as the migration source + document-chunk fallback and for the rollback window. | After the agreed rollback window, remove the server, its firewall/admin, config, and data in a separate reviewed change — needs explicit destructive-action approval. | [`memory-migration.md` "Retirement"](./runbooks/memory-migration.md) |
 | **Ops** | **Speech Voice Live final proof.** Both voice providers are enabled in production; the last open validation is a signed-in manual microphone canary. | Run the authenticated canary + manual retest and record correlated evidence. | [`deployment.md` §7.3](./runbooks/deployment.md), [`feature-enablement.md`](./runbooks/feature-enablement.md) |
 
+## Owner decisions from the 2026-08-03 audit
+
+Five items the audit raised that were deliberately **not** actioned, because each
+needs a judgement only the owner can make — RBAC changes, a provision run, or a
+product tradeoff. Each row states the concrete lever and what it costs, so the
+decision does not have to be re-derived. Full context in the
+[repository audit](./repository-audit-2026-08-03.md).
+
+| Item | The lever | What it costs | Why it wasn't done |
+| --- | --- | --- | --- |
+| **P1-4 — gateway-only routing is convention, not IAM.** Foundry local auth stays enabled (`foundry.bicep:15`, `disableLocalAuth bool = false`) and `id-api` holds account-wide OpenAI/Cognitive Services roles, so "all model traffic goes through APIM" is enforced by code review rather than by Azure. | Set `disableLocalAuth: true`, then move the Code Interpreter exception into a **separately deployed workload** with its own identity and remove direct Foundry roles from `id-api`. | A second Container App, its own identity and role assignments, and a provision run. Attaching a second identity to the *same* container is not isolation — any code in that workload can request either token. | Needs new Azure resources, RBAC and a deploy. AGENTS.md makes that stop-and-ask. |
+| **P1-7 — the tested artifact is not the deployed artifact.** `docker-build` proves the images build, but azd rebuilds and pushes at deploy time, so nothing ties the digest that passed CI to the digest that runs. | Build once, push by digest, and have `azd deploy` promote that immutable digest rather than rebuild. | A registry/tagging strategy and a rework of the deploy path azd currently owns end to end. | Deploy-pipeline architecture, not a defect to patch. |
+| **P1-14 — citations are presentation, not provenance.** A citation is rendered from what the model emitted; nothing binds a claim to the span it came from. `untrusted_context` is a *turn-level* taint bit and is deliberately not claimed as more than that. | Attach provenance to each retrieved span and carry it through argument construction and into the rendered answer. | Real dataflow tracking through retrieval, prompt assembly and rendering. Multi-week. | Feature work with no safe partial. |
+| **P1-2 — Code Interpreter has no entitlement or usage accounting.** `store: false` is locked and tested, but nothing meters who ran what or bills it back. | Add an entitlement check at the execution seam and emit usage rows the way chat does. | Design work on what an entitlement *is* here (per-user? per-agent? quota?) before any code. | The design question is the owner's, not the implementer's. |
+| **P1-16 — the tool loop is not token-streaming.** The proxy now flushes per SSE event, so the transport is fixed. The remaining latency is that a turn with tool calls runs the model non-streaming between iterations. | Stream each model iteration and interleave tool results, instead of awaiting a complete response per round trip. | A restructure of `run_agent_turn` plus the SSE contract that `test_chat_stream_protocol.py` pins (terminal-row ordering, cancellation, single-error framing). | High regression risk in the one path every chat request takes. |
+
+Two more that are **contained rather than closed**, recorded so the containment is
+not mistaken for a fix:
+
+- **P1-10 — sharing is still not tenant-aware.** `Visibility.public` grants read to
+  any authenticated caller without comparing tenants. Startup now refuses when more
+  than one Entra tenant is allowed, so the latent bug cannot be activated by
+  appending a GUID to a variable — but making it genuinely multi-tenant means
+  persisting the owner's tenant and comparing it in `library/access.py`, or renaming
+  the visibility to `application_public`.
+- **P1-13 — 15 first-party capabilities sit outside the approval gate.** The
+  per-invocation approval control covers MCP tools. The registry governs only
+  `calculator` and `get_current_time`, so `browse_url`, the four search tools,
+  `run_code`, memory writes and media generation are all ungated.
+  `test_ungated_capabilities.py` pins the inventory so it cannot grow silently.
+  Gating them is a **product** decision: under the default `always` policy the user
+  would be prompted on every web search.
+
 ## Accepted tradeoffs (decisions, not gaps)
 
 - **Feature posture is intentionally expensive.** The checked-in live parameters enable
