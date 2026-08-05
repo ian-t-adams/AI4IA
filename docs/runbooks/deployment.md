@@ -43,6 +43,19 @@ push to main (app/infra/proxy/azure.yaml)        manual: Actions -> deploy -> Ru
 
 - **Concurrency:** runs are serialized on the `deploy-production` group and **not** cancelled
   mid-flight, so an in-progress provision/deploy always finishes cleanly.
+- **Rollback restores container revisions, not infrastructure.** This is the single most
+  important limit to know. `post-deploy-verify.py rollback` calls
+  `az containerapp revision copy`, so it undoes a bad *image*. It does not undo anything
+  `azd provision` changed — APIM policy and fragments, named values, model deployments,
+  RBAC. A regression in generated gateway policy therefore survives rollback and keeps
+  failing every subsequent deploy, because each run redeploys the same broken policy,
+  fails verification, and rolls the containers back again.
+  This is not hypothetical: on 2026-08-05 a duplicate backend label in the generated APIM
+  catalog made every model request return 500, and seven consecutive deploys rolled back
+  without touching the cause. The app stayed up and serving throughout — the rollback did
+  its job — but chat was down until the *policy* was fixed and redeployed. If verification
+  fails and the containers roll back cleanly yet the failure persists, suspect infra, and
+  fix it forward: there is no automatic path back.
 - **Provision on every app-only change** is intentional: `azd provision` is idempotent and keeps
   infra reconciled. A manual run can skip it (`Run workflow` → uncheck *provision*).
 - **Path filter:** doc-only merges (e.g. `docs/**`) do **not** trigger a deploy. Use the manual
