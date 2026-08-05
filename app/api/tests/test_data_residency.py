@@ -79,6 +79,94 @@ def test_bounded_deployment_satisfies_only_its_own_zone():
     assert eu.satisfies("global") is True
 
 
+# --- the `zonal` tier ---------------------------------------------------------
+
+
+def test_zonal_accepts_any_bounded_zone_but_never_global():
+    """`zonal` means "stay inside SOME data zone, I don't mind which".
+
+    It exists because DataZoneStandard availability is uneven between regions:
+    forcing a choice between `global` and one specific zone would either deny
+    those models to everyone or make `us` and `eu` silently unequal with no way
+    to say "regional, either one".
+    """
+    us = _option("DataZoneStandard", "eastus2", "US")
+    eu = _option("DataZoneStandard", "swedencentral", "EU")
+    regional = _option("Standard", "eastus2", "US")
+    globally = _option("GlobalStandard", "swedencentral", "EU")
+
+    assert us.satisfies("zonal") is True
+    assert eu.satisfies("zonal") is True
+    assert regional.satisfies("zonal") is True
+    assert globally.satisfies("zonal") is False, (
+        "a GlobalStandard deployment may process anywhere, so it cannot satisfy "
+        "a request to stay inside a data zone"
+    )
+
+
+def test_zonal_is_strictly_wider_than_a_specific_zone():
+    """Every model reachable under `us` or `eu` must also be reachable under
+    `zonal` -- otherwise the ladder is not a ladder."""
+    zonal = load_catalog(None, "zonal")
+    zonal_ids = {m.id for m in zonal.models if zonal.available(m)}
+
+    for policy in ("us", "eu"):
+        catalog = load_catalog(None, policy)
+        specific = {m.id for m in catalog.models if catalog.available(m)}
+        assert specific <= zonal_ids, f"{policy} reaches models 'zonal' does not"
+
+
+def test_zonal_is_strictly_narrower_than_global():
+    zonal = load_catalog(None, "zonal")
+    globally = load_catalog(None, "global")
+
+    zonal_ids = {m.id for m in zonal.models if zonal.available(m)}
+    global_ids = {m.id for m in globally.models if globally.available(m)}
+    assert zonal_ids < global_ids, "zonal must exclude something global allows"
+
+
+def test_zonal_routes_only_to_bounded_deployments():
+    catalog = load_catalog(None, "zonal")
+
+    for entry in catalog.models:
+        for option in catalog.eligible_options(entry):
+            assert option.sku != "GlobalStandard"
+            assert option.residency in {"us", "eu"}
+
+
+def test_asymmetric_models_are_reachable_rather_than_excluded():
+    """Four models offer DataZoneStandard in eastus2 only. Excluding them to
+    keep `us` and `eu` symmetric also denied them to `zonal` users for no
+    benefit, so they are included and the asymmetry is made visible instead."""
+    zonal = load_catalog(None, "zonal")
+    reachable = {m.id for m in zonal.models if zonal.available(m)}
+
+    for model_id in ("gpt-5.2", "gpt-5.3-codex", "gpt-5.4-nano", "grok-4-1-fast-reasoning"):
+        assert model_id in reachable, f"{model_id} should be reachable under zonal"
+        # ...and only via its US deployment, since that is the only zone it has.
+        entry = zonal.get(model_id)
+        assert entry is not None
+        assert {o.residency for o in zonal.eligible_options(entry)} == {"us"}
+
+
+def test_us_and_eu_are_deliberately_unequal_and_that_is_visible():
+    """Not a defect: Azure offers DataZoneStandard for more models in eastus2.
+    Pinned so the difference is a recorded fact rather than a surprise."""
+    us = load_catalog(None, "us")
+    eu = load_catalog(None, "eu")
+
+    us_chat = {m.id for m in us.conversational_models()}
+    eu_chat = {m.id for m in eu.conversational_models()}
+
+    assert eu_chat < us_chat, "expected EU to be a strict subset of US today"
+    assert us_chat - eu_chat == {
+        "gpt-5.2",
+        "gpt-5.3-codex",
+        "gpt-5.4-nano",
+        "grok-4-1-fast-reasoning",
+    }
+
+
 # --- the policy filters routing ---------------------------------------------
 
 
@@ -135,7 +223,7 @@ def test_invalid_policy_fails_startup():
         settings.validate_runtime()
 
 
-@pytest.mark.parametrize("policy", ["us", "eu"])
+@pytest.mark.parametrize("policy", ["zonal", "us", "eu"])
 def test_zone_policies_are_usable_with_datazone_deployments(policy):
     """The lever has to actually work, not merely exist.
 
@@ -153,7 +241,13 @@ def test_zone_policies_are_usable_with_datazone_deployments(policy):
     embedding = catalog.resolve_deployment("text-embedding-3-large")
     assert embedding is not None, "memory + library RAG would silently switch off"
     assert embedding.sku == "DataZoneStandard"
-    assert embedding.residency == policy
+    # Under a specific zone the deployment carries that zone. Under `zonal` it
+    # carries whichever concrete zone served -- "zonal" is a policy, never a
+    # deployment's residency.
+    if policy == "zonal":
+        assert embedding.residency in {"us", "eu"}
+    else:
+        assert embedding.residency == policy
 
 
 @pytest.mark.parametrize("policy", ["us", "eu"])

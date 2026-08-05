@@ -55,6 +55,51 @@ export function ModelCategoryNote({
   );
 }
 
+/**
+ * Where the selected model will actually process this conversation.
+ *
+ * Shown at the point of model selection because that is where the decision is
+ * made. It reports the residency the SERVER derived from each deployment's SKU,
+ * not the endpoint's geography: a GlobalStandard deployment in a Swedish region
+ * is reachable from the EU but may be processed anywhere, and calling that "EU"
+ * would assert a guarantee Azure is not making.
+ *
+ * A model can carry more than one eligible deployment (e.g. under the `zonal`
+ * policy, one in each zone), in which case both are named rather than picking
+ * one — the user needs to know the set they might land in, and the usage ledger
+ * records which one actually served.
+ *
+ * Renders nothing when there is no selection or no deployment metadata, rather
+ * than guessing.
+ */
+export function ModelResidencyNote({
+  model,
+  id,
+}: {
+  model: ModelEntry | null;
+  id?: string;
+}) {
+  if (!model || model.options.length === 0) return null;
+
+  const zones = [...new Set(model.options.map((o) => o.residency))].sort();
+  if (zones.length === 0) return null;
+
+  const label = (zone: string) =>
+    zone === "us" ? "US" : zone === "eu" ? "EU" : zone;
+
+  const text = zones.includes("global")
+    ? "May process in any Azure region worldwide."
+    : zones.length === 1
+      ? `Processing stays in the ${label(zones[0])} data zone.`
+      : `Processing stays in the ${zones.map(label).join(" or ")} data zone.`;
+
+  return (
+    <p id={id} style={{ fontSize: "0.78em", color: "var(--fg-muted)", margin: 0 }}>
+      <strong>Data residency.</strong> {text}
+    </p>
+  );
+}
+
 export function ModelPicker({
   models,
   value,
@@ -72,7 +117,13 @@ export function ModelPicker({
   const grouped = groupConversationalModels(models);
   const selected = models.find((m) => m.id === value) ?? null;
   const noteId = useId();
+  const residencyId = useId();
   const categoryHelp = selected?.category ? MODEL_CATEGORY_HELP[selected.category] : undefined;
+  const hasResidency = (selected?.options.length ?? 0) > 0;
+  const describedBy =
+    [categoryHelp ? noteId : null, hasResidency ? residencyId : null]
+      .filter(Boolean)
+      .join(" ") || undefined;
 
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -86,7 +137,7 @@ export function ModelPicker({
         // below renders inside this same wrapping <label>, and without this
         // the select's name-from-content would absorb that note's text too.
         aria-label="Model"
-        aria-describedby={categoryHelp ? noteId : undefined}
+        aria-describedby={describedBy}
       >
         <option value="" disabled>
           Select a model…
@@ -105,6 +156,7 @@ export function ModelPicker({
         ))}
       </select>
       <ModelCategoryNote id={noteId} category={selected?.category} />
+      <ModelResidencyNote id={residencyId} model={selected} />
     </label>
   );
 }

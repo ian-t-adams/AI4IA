@@ -194,6 +194,12 @@
           "version": "2025-12-11"
         },
         {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 50,
+          "version": "2025-12-11"
+        },
+        {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
@@ -327,6 +333,12 @@
           "version": "1"
         },
         {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 50,
+          "version": "1"
+        },
+        {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
@@ -419,6 +431,12 @@
           "version": "2026-02-24"
         },
         {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 50,
+          "version": "2026-02-24"
+        },
+        {
           "region": "swedencentral",
           "sku": "GlobalStandard",
           "capacity": 50,
@@ -504,6 +522,12 @@
         {
           "region": "eastus2",
           "sku": "GlobalStandard",
+          "capacity": 100,
+          "version": "2026-03-17"
+        },
+        {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
           "capacity": 100,
           "version": "2026-03-17"
         },

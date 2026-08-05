@@ -12,6 +12,12 @@ export interface DeploymentOption {
   dataZone: string | null;
   sku: string;
   deploymentName: string;
+  // Where processing may actually occur, derived server-side from the SKU:
+  // "global" | "us" | "eu". Deliberately NOT the same as `dataZone`, which is
+  // only the endpoint's geography — a GlobalStandard deployment in a Swedish
+  // region is reachable from the EU but may be processed anywhere, so its
+  // residency is "global". Use this, not dataZone, to state a guarantee.
+  residency: string;
 }
 
 export interface ModelEntry {
@@ -40,6 +46,11 @@ export interface ModelEntry {
 
 export interface ModelCatalog {
   models: ModelEntry[];
+  // The deployment's active data-residency policy: "global" | "zonal" | "us" |
+  // "eu". The server has already filtered `models` and each entry's `options`
+  // by it, so this is for display — it lets the UI state the guarantee rather
+  // than leaving a user to infer it from region names.
+  residencyPolicy: string;
 }
 
 export interface Session {

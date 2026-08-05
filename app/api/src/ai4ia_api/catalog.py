@@ -26,12 +26,29 @@ CONVERSATIONAL_CATEGORIES = frozenset(
     {"chat", "chat-fast", "reasoning", "reasoning-oss", "router", "research"}
 )
 
-# Data-residency policy tokens. ``global`` is the permissive default (any
-# deployment is usable); the others restrict routing to deployments whose
-# processing is bounded to that zone. Lowercase so they compare directly against
-# both the settings value and ``DeploymentOption.residency``.
+# Data-residency policy tokens, weakest constraint first:
+#
+#   global  no constraint (default; any deployment may serve)
+#   zonal   processing must stay inside SOME data zone, caller does not mind
+#           which -- rejects GlobalStandard, accepts any DataZone/regional
+#           deployment. Maximises model choice while still excluding
+#           "may process anywhere on earth".
+#   us/eu   processing must stay inside that specific zone.
+#
+# `zonal` exists because Azure's DataZoneStandard availability is uneven: four
+# models offer it in eastus2 but not swedencentral. Forcing a choice between
+# "global" and a specific zone would either deny those models to everyone or
+# make `us` and `eu` silently unequal with no way to express "regional, either
+# one". A caller on `zonal` still gets a real boundary, and the per-option
+# `residency` field (and the usage ledger's region/dataZone) says which zone
+# actually served -- so a user can apply their own sovereignty judgement rather
+# than being told a guarantee that does not fit.
+#
+# Lowercase so they compare directly against both the settings value and
+# ``DeploymentOption.residency``.
 GLOBAL_RESIDENCY = "global"
-RESIDENCY_POLICIES = frozenset({GLOBAL_RESIDENCY, "us", "eu"})
+ZONAL_RESIDENCY = "zonal"
+RESIDENCY_POLICIES = frozenset({GLOBAL_RESIDENCY, ZONAL_RESIDENCY, "us", "eu"})
 
 
 class DeploymentOption(BaseModel):
@@ -74,13 +91,16 @@ class DeploymentOption(BaseModel):
     def satisfies(self, policy: str) -> bool:
         """Whether this deployment is usable under a residency ``policy``.
 
-        ``global`` accepts everything. A specific zone accepts only deployments
-        whose processing is bounded to that zone -- a ``global`` deployment does
-        NOT satisfy ``us`` or ``eu``, because "may process anywhere" cannot
-        satisfy "must stay here".
+        ``global`` accepts everything. ``zonal`` accepts any deployment whose
+        processing is bounded to a data zone, without caring which. A specific
+        zone accepts only deployments bounded to that zone -- a ``global``
+        deployment does NOT satisfy ``zonal``, ``us`` or ``eu``, because "may
+        process anywhere" cannot satisfy "must stay inside a boundary".
         """
         if policy == GLOBAL_RESIDENCY:
             return True
+        if policy == ZONAL_RESIDENCY:
+            return self.residency != GLOBAL_RESIDENCY
         return self.residency == policy
 
 
