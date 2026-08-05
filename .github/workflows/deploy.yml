@@ -103,6 +103,11 @@ jobs:
       AI4IA_PROXY_APPCONFIG_LABEL: ${{ vars.AI4IA_PROXY_APPCONFIG_LABEL }}
       AI4IA_APP_ENVIRONMENT: ${{ vars.AI4IA_APP_ENVIRONMENT }}
       AI4IA_AUTH_PROVIDER: ${{ vars.AI4IA_AUTH_PROVIDER }}
+      # Default false. Setting it true makes a deployed environment derive
+      # identity from the client-supplied X-Dev-User header, so it is only
+      # ever appropriate for a throwaway demo without Entra. `prod` ignores
+      # it entirely (main.bicep forces false).
+      AI4IA_ALLOW_DEV_AUTH: ${{ vars.AI4IA_ALLOW_DEV_AUTH }}
       AI4IA_ENTRA_TENANT_ID: ${{ vars.AI4IA_ENTRA_TENANT_ID }}
       AI4IA_ENTRA_AUDIENCE: ${{ vars.AI4IA_ENTRA_AUDIENCE }}
       AI4IA_ENTRA_WEB_CLIENT_ID: ${{ vars.AI4IA_ENTRA_WEB_CLIENT_ID }}
