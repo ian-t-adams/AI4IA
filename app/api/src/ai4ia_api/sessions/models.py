@@ -15,6 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from ..agents.approvals import PendingToolApproval
 from ..safety import MessageSafety
 
 
@@ -139,6 +140,16 @@ class Message(BaseModel):
     # Additive and optional, exactly like ``steps``/``summaryVersion``: existing
     # Cosmos documents lack the field and deserialize to None, so no migration.
     safety: MessageSafety | None = None
+    # Tool calls this turn refused to execute because they need a fresh, per-call
+    # human approval bound to their exact arguments (see agents/approvals.py).
+    # Server-minted and server-held: the browser renders the card from here and
+    # redeems it by presenting the matching one-time grant, which is deliberately
+    # NOT stored (only its SHA-256 is), so reading a conversation never confers
+    # the ability to approve its outbound calls.
+    #
+    # Additive and optional exactly like ``steps``/``safety``: existing Cosmos
+    # documents lack the field and deserialize to None, so no migration.
+    pendingApprovals: list[PendingToolApproval] | None = None
     createdAt: datetime = Field(default_factory=_now)
 
 

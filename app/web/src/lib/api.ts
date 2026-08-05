@@ -9,7 +9,9 @@ import type {
   ImageResponse,
   Message,
   ModelCatalog,
+  PendingToolApprovalPrompt,
   Session,
+  ToolApprovalDecision,
   ToolOverrides,
   UserAgent,
   UserAgentCreate,
@@ -806,6 +808,11 @@ export interface StreamHandlers {
   // the UI can show "Searching the web..." while it runs. Ignored by callers that
   // don't render activity.
   onStep?: (step: ActivityStep) => void;
+  // Called when the server held one or more tool calls pending a per-invocation
+  // human approval. Each prompt carries its one-time grant, delivered here and
+  // nowhere else — it is not on the persisted message. Ignored by callers that
+  // don't render approvals, which simply means those calls stay unexecuted.
+  onApprovals?: (prompts: PendingToolApprovalPrompt[]) => void;
   // Called when the caller aborts the stream (e.g. Stop button). Lets the UI
   // reconcile with the server, which persists a `cancelled` assistant message.
   onAbort?: (info?: {
@@ -825,6 +832,9 @@ export function streamChat(
     region?: string | null;
     dataZone?: string | null;
     params?: ChatParams;
+    // Per-invocation tool approvals redeemed on this turn. Opaque to the client:
+    // the server re-derives what each one authorizes from its own record.
+    approvals?: ToolApprovalDecision[];
   },
   handlers: StreamHandlers,
 ): () => void {
@@ -905,6 +915,12 @@ export function streamChat(
             }
             if (obj.step) {
               handlers.onStep?.(obj.step as ActivityStep);
+              continue;
+            }
+            if (Array.isArray(obj.approvals)) {
+              handlers.onApprovals?.(
+                obj.approvals as PendingToolApprovalPrompt[],
+              );
               continue;
             }
             const delta: string =

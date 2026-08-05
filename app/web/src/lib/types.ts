@@ -121,6 +121,59 @@ export interface MessageSafety {
   signals: SafetySignal[];
 }
 
+// A tool call the server refused to execute because it needs a fresh, per-call
+// human approval bound to its exact arguments (audit finding P1-13). Mirrors
+// ai4ia_api.agents.approvals.PendingToolApproval.
+//
+// This is the *persisted* shape. It deliberately does NOT carry the grant —
+// only `grantHash` — so reading a conversation never confers the ability to
+// approve its outbound calls. The grant arrives once, on the SSE stream, as
+// `PendingToolApprovalPrompt` below.
+export interface PendingToolApproval {
+  id: string;
+  // Runtime dispatch identity (an opaque provider-safe alias for MCP tools).
+  tool: string;
+  // The durable, human-readable name to show (e.g. `mcp:courier/send`).
+  label: string;
+  // Destination host this call would reach. Null when the tool declares more
+  // than one, in which case the UI must not imply a single destination.
+  host?: string | null;
+  purpose?: string;
+  risk?: string;
+  argumentsDigest: string;
+  // Redacted, bounded, single-line view of the arguments. Server-built with the
+  // same redactor the activity trace uses; never re-derive it client-side.
+  argumentsPreview?: Record<string, string>;
+  // Keys whose VALUE the redactor masked. `***REDACTED***` means "hidden from
+  // you, but sent in full" — a materially different claim from "this is the
+  // value", so the card must render the two differently.
+  argumentsMasked?: string[];
+  // Keys whose value was length-capped for display (value ends in "…").
+  argumentsElided?: string[];
+  // Count of arguments NOT shown at all. The digest covers the whole argument
+  // object but the card does not, and the argument set is model-controlled — so
+  // a non-zero count MUST be surfaced, or padding with filler keys becomes a
+  // way to push an exfiltration's destination off the card.
+  argumentsOmitted?: number;
+  grantHash: string;
+  consumed?: boolean;
+  expiresAt: string;
+  createdAt: string;
+}
+
+// The same record plus its one-time grant, delivered exactly once over SSE.
+export interface PendingToolApprovalPrompt extends PendingToolApproval {
+  grant: string;
+}
+
+// What the client sends back to redeem an approval. The server reads WHAT was
+// approved from its own record; these two opaque strings are the entire client
+// contribution, and any other field is rejected with a 422.
+export interface ToolApprovalDecision {
+  requestId: string;
+  grant: string;
+}
+
 export interface Message {
   id: string;
   sessionId: string;
@@ -138,6 +191,8 @@ export interface Message {
   // Annotate-only content-safety verdicts. `null`/absent means the provider
   // reported none, which is NOT the same as "the filters found nothing".
   safety?: MessageSafety | null;
+  // Tool calls held pending a per-invocation approval on this turn.
+  pendingApprovals?: PendingToolApproval[] | null;
 }
 
 // A finalized Voice Live turn the web persists back into the shared session.

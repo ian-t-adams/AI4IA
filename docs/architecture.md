@@ -206,9 +206,11 @@ The in-process agent runtime receives only server-approved tool schemas. Per tur
    retains the exact remote name. Plane/server identity is part of the alias and
    approval binding; deterministic precedence resolves any remaining collision.
 3. The registry rechecks scopes, approvals, ownership, host policy, and SSRF rules.
-4. Tool errors and denials become structured outcomes the model can handle; call
+4. Every external or destructive call is additionally held for a **per-invocation
+   human approval** bound to that call's exact arguments.
+5. Tool errors and denials become structured outcomes the model can handle; call
    budgets and orchestration depth bound fan-out.
-5. The assistant answer, usage, artifacts, and metadata-only activity trace are
+6. The assistant answer, usage, artifacts, and metadata-only activity trace are
    persisted.
 
 BYO MCP servers are untrusted and approval-gated. DNS/public-HTTPS validation is
@@ -216,6 +218,51 @@ performed again when a request runs to resist DNS rebinding. Official MCP server
 are admin-curated and reached through an MCP-only APIM product. Foundry Toolbox is
 one official MCP upstream; WebIQ search is a separate feature-gated server-side
 capability whose bounded output is treated as untrusted model context.
+
+### Per-invocation tool approval
+
+Retrieved documents, recalled memory, library excerpts and prior tool results are
+promoted into a turn's context. They are nonce-fenced, which defeats delimiter
+forgery, but a fence is not an information-flow boundary: text inside one can
+still influence what the model decides to *do*. Standing approval — a `trusted`
+MCP server, or a per-tool `requireApproval: never` — used to be enough to execute
+an outbound call with model-chosen arguments, so injected content could pick a
+destination and a payload with no human in the loop.
+
+Approval is therefore a property of one call, not of a tool. The runtime hashes
+the arguments the model actually emitted and refuses a gated call unless a
+server-minted approval exists for that exact `(tool, argument-digest)` pair. A
+held call ends the turn normally with a prompt showing the tool, the destination
+host, the purpose and a redacted argument preview; the user approves, and the
+next turn presents a one-time grant that the server redeems against its own
+durable record. The record is bound to user, session, tool, argument digest and a
+short expiry. It is burned on use — with a conditional (ETag) write, so two
+concurrent requests presenting the same grant cannot both redeem it — and the
+resulting authorization is spent the moment it dispatches one call, so a single
+approval buys exactly one execution rather than one per emission. It therefore
+cannot be replayed for different arguments, in another conversation, by another
+user, after it expires, or twice. Only the grant's hash is persisted, so reading
+a conversation confers no ability to approve its outbound calls. Denial is the
+absence of a grant: there is no deny endpoint to fail and no state to unstick.
+
+The approval card is required to be honest about its own completeness. The digest
+covers the whole argument object but the card shows a bounded view, and the
+argument set is model-controlled — so keys are never silently dropped: values
+shrink before keys disappear, a masked value is labelled as hidden-but-sent
+rather than shown as content, and any argument the card could not display at all
+is counted and surfaced as a warning. Without that, padding a call with filler
+keys would push an exfiltration's destination off the card while it still went
+out on the wire.
+
+Two limits are deliberate and worth knowing. The gate covers registry-governed
+tools (every MCP tool on both planes) and **not** the synthetic capabilities the
+runtime dispatches ahead of the registry — web search, `browse_url`, code
+execution, document processing — which have no `ToolSpec` to read a risk off;
+`browse_url` in particular remains an ungated egress channel. And provenance is
+tracked as a **turn-level** taint bit ("untrusted content entered this turn",
+latched on again by any tool result), not as per-argument dataflow. Posture is
+selectable via `AI4IA_TOOL_APPROVAL_MODE`; see
+[Feature enablement](./runbooks/feature-enablement.md).
 
 ### Durable workflow execution
 

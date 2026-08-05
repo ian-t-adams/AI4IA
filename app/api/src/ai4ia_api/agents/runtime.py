@@ -11,10 +11,17 @@ the standard tool-calling protocol against the model gateway:
   3. Loop (bounded) until the model returns a plain answer, then return it.
 
 Governance is centralized: every invocation is re-checked against the tool-safety
-registry (defense in depth on top of schema-time filtering). Argument/result
-content is only ever credential-redacted (``redact_obj``) before it lands on the
-in-process ``AgentStep`` trace, and free-text log lines never include it at all —
-only the tool name and fixed, bounded status/reason strings reach logs or the
+registry (defense in depth on top of schema-time filtering), and every *external
+or destructive* invocation is additionally gated on a fresh, per-call human
+approval bound to the exact arguments the model emitted (see
+``agents/approvals.py``). The second gate is deliberately independent of the
+first: the registry's approval check keys off a tool's standing posture, which a
+``trusted`` MCP server switches off, and standing trust is precisely what an
+indirect prompt injection borrows when it chooses an outbound call's arguments.
+Argument/result content is only ever credential-redacted (``redact_obj``) before
+it lands on the in-process ``AgentStep`` trace, and free-text log lines never
+include it at all — only the tool name and fixed, bounded status/reason strings
+reach logs or the
 user-facing activity view (see ``agents.activity``). The tool "name" itself is
 model-supplied and unvalidated at call time, so it is never trusted as log-safe
 free text either: only a name that is BOTH known (a synthetic capability or a
@@ -44,8 +51,14 @@ from typing import Any
 from ..gateway.client import ModelGatewayClient
 from ..usage.models import TokenUsage
 from ..logging_setup import emit_custom_event, emit_security_block
+from .approvals import (
+    arguments_digest,
+    approval_key,
+    draft_for_call,
+    requires_invocation_approval,
+)
 from .tool_exec import ToolContext, ToolExecutor, ToolValidationError
-from .tools import ToolRegistry, is_safe_tool_name, redact, redact_obj
+from .tools import DenyReason, ToolRegistry, is_safe_tool_name, redact, redact_obj
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +69,17 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_ITERS = 4
 _MAX_TOOL_CALLS = 8
 _MAX_TOOL_RESULT_BYTES = 8192
+
+# What the model is told when a call is held for human approval. It is phrased so
+# the turn ends in a useful sentence ("I need you to approve X") instead of the
+# model retrying the same call until the budget is spent — and it deliberately
+# carries no hint about how to get around the gate.
+_APPROVAL_HELD_MESSAGE = (
+    "This call was not executed. It requires the user's explicit approval for "
+    "these exact arguments, and the user has been shown an approval prompt. Do "
+    "not retry it in this turn and do not attempt a different tool to achieve "
+    "the same effect. Tell the user plainly what you need approved and why."
+)
 
 # Caller params the governed turn always controls itself.
 _RESERVED_PARAMS = ("tools", "tool_choice", "parallel_tool_calls")
@@ -130,6 +154,10 @@ async def run_agent_turn(
     convo: list[dict[str, Any]] = [dict(m) for m in messages]
     resolved_tool_names = [ctx.tool_aliases.get(name, name) for name in tool_names]
     real_schema = executor.schema_for(resolved_tool_names, registry=registry, ctx=ctx)
+    # Runtime dispatch alias -> durable governance name, for the human-readable
+    # label on an approval prompt. Built here because ``tool_aliases`` maps the
+    # other way and the runtime only ever sees the alias.
+    labels: dict[str, str] = {alias: name for name, alias in ctx.tool_aliases.items()}
     handlers: dict[str, Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]] = (
         dict(extra_handlers) if extra_handlers else {}
     )
@@ -144,6 +172,27 @@ async def run_agent_turn(
     steps: list[AgentStep] = []
     denied_once: set[str] = set()
     tool_calls_used = 0
+    # Turn-local taint. Starts from the caller's assessment of the context blocks
+    # it injected (documents / recalled memory / library excerpts) and latches ON
+    # as soon as ANY tool result comes back, because a tool result is untrusted
+    # remote content that the model has now read. That is the exact chain the
+    # audit describes: a hostile MCP/web response steering a later outbound call.
+    untrusted_context = ctx.untrusted_context
+    # Mutable copy of the redeemed per-invocation approvals. A key is REMOVED
+    # the moment it authorizes a dispatch, so one approval buys exactly one
+    # execution.
+    #
+    # This is not a refinement — it is the difference between "one click, one
+    # call" and "one click, up to _MAX_TOOL_CALLS calls". ``PendingToolApproval
+    # .consumed`` makes *redemption* single-use, but redemption happens once per
+    # turn in the router while this set is consulted once per tool call, and the
+    # model's tool-call list is precisely what injected context influences. A
+    # membership test that never shrinks therefore lets the attacker choose the
+    # repeat count, which for a ``destructive`` tool is that many unauthorized
+    # side effects from a single human decision. Repeats fall through to the
+    # normal held-for-approval path, so the user is asked again rather than the
+    # model quietly retrying.
+    unspent_approvals: set[str] = set(ctx.invocation_approvals)
 
     async def record(step: AgentStep, *, persist: bool = True) -> None:
         """Append a finalized step to the trace and/or surface it live.
@@ -260,6 +309,14 @@ async def run_agent_turn(
             # before the registry path. They are disjoint from real tool names
             # (asserted at setup), count against the shared tool-call budget, and
             # are wrapped so a handler error becomes a structured tool result.
+            #
+            # SEAM (deliberate gap, stated plainly): synthetic capabilities carry
+            # no ``ToolSpec``, so the per-invocation approval gate below cannot
+            # read a risk off them and does NOT cover them. ``browse_url`` in
+            # particular is an egress channel that stays ungated. Closing that
+            # means giving each synthetic capability a governed spec (or an
+            # explicit gated-name set on ``ToolContext``) and running it through
+            # the same digest check; see agents/approvals.py.
             if name in handlers:
                 try:
                     raw_result = await handlers[name](parsed, ctx)
@@ -280,6 +337,7 @@ async def run_agent_turn(
                     )
                     logger.warning("agent delegate error: tool=%s", safe_name)
                     continue
+                untrusted_context = True
                 convo.append(
                     {
                         "role": "tool",
@@ -298,12 +356,86 @@ async def run_agent_turn(
                 logger.info("agent delegated: tool=%s", safe_name)
                 continue
 
+            # --- Per-invocation approval (agents/approvals.py) ---------------
+            # Deliberately layered ON TOP of registry authorization rather than
+            # folded into it: the registry's approval check keys off the tool's
+            # *standing* posture, and standing posture is exactly what a
+            # ``trusted`` MCP server switches off. Being standing-approved says
+            # "this agent may use this tool"; it must never say "this agent may
+            # send THESE arguments to that host". The digest below is computed
+            # from the arguments the model actually emitted, so an approval the
+            # user granted for one call cannot authorize a different one.
+            #
+            # Ordering is deliberate too. The registry runs FIRST so cheap,
+            # structural denials keep their own precise reason (a disabled or
+            # unallowlisted tool must report ``disabled``/``not_allowlisted``,
+            # not a spurious approval prompt for a call that could never run).
+            # Only a call that would otherwise execute — or one the registry
+            # itself held for approval — reaches a human.
+            spec = registry.get(name)
+            needs_invocation_approval = spec is not None and requires_invocation_approval(
+                spec,
+                policy=ctx.approval_policy,
+                untrusted_context=untrusted_context,
+            )
+            digest = arguments_digest(parsed) if needs_invocation_approval else ""
+            approval_token = approval_key(name, digest) if needs_invocation_approval else ""
+            invocation_approved = (
+                needs_invocation_approval and approval_token in unspent_approvals
+            )
             decision = registry.authorize(
                 name,
                 granted_scopes=ctx.granted_scopes,
                 target_hosts=ctx.target_hosts,
-                approved=name in ctx.approvals,
+                approved=(name in ctx.approvals) or invocation_approved,
             )
+            held_for_approval = (
+                decision.allowed and needs_invocation_approval and not invocation_approved
+            ) or (
+                not decision.allowed
+                and decision.reason is DenyReason.approval_required
+                and needs_invocation_approval
+            )
+            # ``spec is not None`` is implied by needs_invocation_approval; it is
+            # restated so the narrowing is local and obvious rather than inferred
+            # three statements up.
+            if held_for_approval and spec is not None:
+                reason = DenyReason.approval_required.value
+                if ctx.approval_sink is not None:
+                    ctx.approval_sink.request(
+                        draft_for_call(
+                            spec,
+                            tool=name,
+                            label=labels.get(name),
+                            arguments=parsed,
+                            digest=digest,
+                        )
+                    )
+                emit_custom_event(
+                    "tool_authorization",
+                    {
+                        "tool": safe_name,
+                        "source": "agent_runtime",
+                        "outcome": "denied",
+                        "reason": reason,
+                        "gate": "invocation_approval",
+                    },
+                )
+                emit_security_block("tool_authorization", reason, "agent_runtime")
+                convo.append(
+                    _tool_message(
+                        call_id,
+                        {"error": {"type": reason, "message": _APPROVAL_HELD_MESSAGE}},
+                    )
+                )
+                await record(AgentStep(kind="tool_denied", tool=safe_name, detail=reason))
+                logger.info("agent tool held for approval: tool=%s", safe_name)
+                # One held call per tool is informative; a second means the model
+                # is looping, so cut tools off and force a final answer.
+                if name in denied_once:
+                    force_final = True
+                denied_once.add(name)
+                continue
             if not decision.allowed:
                 reason = decision.reason.value if decision.reason else "denied"
                 emit_custom_event(
@@ -330,6 +462,16 @@ async def run_agent_turn(
                     force_final = True
                 denied_once.add(name)
                 continue
+
+            # Spend the approval BEFORE dispatching, not after a successful
+            # return. The handler is what makes the outbound call, so once it is
+            # entered the side effect may already have happened even if it then
+            # raises; treating the approval as "authorizes one attempt" means a
+            # failed call cannot be silently retried against the same click. The
+            # cost is that a genuinely failed call needs re-approval, which is
+            # the correct direction to err for an egress control.
+            if invocation_approved:
+                unspent_approvals.discard(approval_token)
 
             started = time.monotonic()
             try:
@@ -393,12 +535,20 @@ async def run_agent_turn(
                     "content": _truncate(json.dumps(raw_result, default=str)),
                 }
             )
+            # A tool result is remote content the model has now read: from here on
+            # this turn is tainted, so a later external call is gated even under
+            # the ``tainted`` policy.
+            untrusted_context = True
             emit_custom_event(
                 "tool_authorization",
                 {
                     "tool": safe_name,
                     "source": "agent_runtime",
-                    "outcome": "approved" if name in ctx.approvals else "ok",
+                    "outcome": (
+                        "approved"
+                        if invocation_approved or name in ctx.approvals
+                        else "ok"
+                    ),
                     "latencyMs": int((time.monotonic() - started) * 1000),
                 },
             )

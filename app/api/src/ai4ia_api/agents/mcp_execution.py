@@ -29,6 +29,17 @@ closure-bound to one endpoint and re-validates that exact host via the SSRF guar
 call time, so it physically cannot egress anywhere else. Each tool keeps
 ``egress_allowlist={host}`` for governance/documentation, and approval gating still
 applies via ``ctx.approvals``.
+
+**Approval posture.** Every tool this module builds is ``external`` risk, so the
+turn builders default to :attr:`~ai4ia_api.agents.approvals.ApprovalPolicy.always`:
+each call additionally needs a fresh, per-invocation human approval bound to its
+exact arguments (see :mod:`ai4ia_api.agents.approvals`). Marking a server *trusted*
+or a tool ``requireApproval: never`` still removes the *standing* gate — which is
+what decides whether the model is offered the tool at all — but no longer decides
+what leaves the network, because that posture is exactly what an indirect prompt
+injection would otherwise inherit. Callers may relax this per deployment
+(``AI4IA_TOOL_APPROVAL_MODE``), but they must do so deliberately: the default here
+is secure, so a future call site that forgets the argument gets the safe behavior.
 """
 from __future__ import annotations
 
@@ -39,6 +50,7 @@ from datetime import datetime
 from typing import Protocol
 
 from . import mcp_observability as obs
+from .approvals import ApprovalPolicy, ApprovalSink
 from .mcp_client import McpAuth, McpConnector
 from .mcp_health import is_quarantined, quarantine_reason
 from .mcp_servers import (
@@ -380,6 +392,10 @@ def build_mcp_turn_tools(
     max_calls: int = MAX_MCP_TOOL_CALLS_PER_TURN,
     health: HealthReporter | None = None,
     now: datetime | None = None,
+    approval_policy: ApprovalPolicy = ApprovalPolicy.always,
+    untrusted_context: bool = False,
+    invocation_approvals: Collection[str] = (),
+    approval_sink: ApprovalSink | None = None,
 ) -> tuple[ToolRegistry, ToolExecutor, ToolContext] | None:
     """Build a merged (registry, executor, ctx) for a turn that attaches MCP tools.
 
@@ -404,6 +420,11 @@ def build_mcp_turn_tools(
       :func:`_build_mcp_tool_bindings`), plus any explicitly ``approved`` names
       supplied by the caller, e.g. a per-turn approval UI.
 
+    Note that ``approvals`` is now only half the story: when ``approval_policy``
+    is not ``off``, the runtime *additionally* requires a per-invocation approval
+    bound to the exact arguments (see :mod:`ai4ia_api.agents.approvals`). A
+    standing approval only decides whether the model is shown the tool.
+
     Quarantined servers are skipped (see :func:`build_mcp_tool_definitions`); if that
     leaves no runnable tools the function returns ``None``.
     """
@@ -422,6 +443,10 @@ def build_mcp_turn_tools(
         approved=approved,
         max_calls=max_calls,
         now=now,
+        approval_policy=approval_policy,
+        untrusted_context=untrusted_context,
+        invocation_approvals=invocation_approvals,
+        approval_sink=approval_sink,
     )
 
 
@@ -433,6 +458,10 @@ def build_mcp_turn_tools_multi(
     approved: Collection[str] = (),
     max_calls: int = MAX_MCP_TOOL_CALLS_PER_TURN,
     now: datetime | None = None,
+    approval_policy: ApprovalPolicy = ApprovalPolicy.always,
+    untrusted_context: bool = False,
+    invocation_approvals: Collection[str] = (),
+    approval_sink: ApprovalSink | None = None,
 ) -> tuple[ToolRegistry, ToolExecutor, ToolContext] | None:
     """Merge multiple MCP planes into one turn's (registry, executor, ctx).
 
@@ -450,7 +479,11 @@ def build_mcp_turn_tools_multi(
       MCP calls for the turn, not per-plane.
     * **Unioned approvals.** Each accepted binding's ``auto_approved`` flag (see
       :func:`_build_mcp_tool_bindings`) is unioned across every plane with the
-      caller's ``approved``.
+      caller's ``approved``. This is the **standing** set only: it decides what the
+      model is offered. What actually *runs* is additionally gated per invocation
+      by ``approval_policy`` + ``invocation_approvals`` (see
+      :mod:`ai4ia_api.agents.approvals`), which is bound to the exact arguments and
+      therefore cannot be satisfied by a server merely being marked *trusted*.
 
     Returns ``None`` when no plane contributes a runnable tool (none attached, or all
     quarantined), so the caller keeps the shared app singletons.
@@ -518,5 +551,9 @@ def build_mcp_turn_tools_multi(
         target_hosts=frozenset(),
         correlation_id=correlation_id,
         tool_aliases=aliases,
+        approval_policy=approval_policy,
+        untrusted_context=untrusted_context,
+        invocation_approvals=frozenset(invocation_approvals),
+        approval_sink=approval_sink,
     )
     return registry, executor, ctx

@@ -1,4 +1,5 @@
 import asyncio
+import copy
 from pathlib import Path
 
 import pytest
@@ -8,9 +9,15 @@ from azure.cosmos.exceptions import (
 )
 
 from ai4ia_api.agents.agent_catalog import load_agent_catalog
+from ai4ia_api.agents.approvals import (
+    PendingToolApproval,
+    draft_for_call,
+    mint_pending_approval,
+)
 from ai4ia_api.agents.command_service import execute_command
 from ai4ia_api.agents.commands import parse_input
 from ai4ia_api.agents.summarization import SummarizationService
+from ai4ia_api.agents.tools import ToolRisk, ToolSpec
 from ai4ia_api.auth.base import AuthenticatedUser
 from ai4ia_api.catalog import load_catalog
 from ai4ia_api.sessions.cosmos_repo import CosmosSessionRepository
@@ -679,3 +686,190 @@ async def test_cosmos_get_and_patch_session_survive_corrupted_tool_overrides():
     assert patched.title == "Renamed"
     assert patched.toolOverrides == ToolOverrides(added=[], removed=[])
 
+
+
+# --- Per-invocation tool approval: the burn must be a real compare-and-set ----
+#
+# ``PendingToolApproval`` is a one-shot capability to make a real outbound call
+# (see agents/approvals.py). Burning it as read-modify-write let two concurrent
+# POST /api/chat requests presenting the same {requestId, grant} both observe
+# consumed=False from their own snapshots and both redeem it, doubling every
+# side effect one human decision authorized. These drive the Cosmos path, where
+# the race is real -- the in-memory store serializes on its own lock.
+
+
+class _ApprovalMessages:
+    """Messages container that models Cosmos ETag semantics faithfully.
+
+    The concurrency here is driven **only** by ETag state, exactly as real
+    Cosmos behaves — no out-of-band "fail this write" counter. That matters:
+    a fake that rejects writes by counter would keep these tests green even if
+    the implementation dropped its precondition, which is the single most
+    important thing they exist to catch. Verified by mutation: removing
+    ``etag=``/``match_condition=`` from ``consume_tool_approval`` fails these.
+    """
+
+    def __init__(self, message: Message) -> None:
+        self.item = {**message.model_dump(mode="json"), "_etag": "m0"}
+        self.etags: list[str | None] = []
+        self.writes = 0
+        self._version = 0
+        # A concurrent actor that lands between this caller's read and its
+        # write. ``redeemer`` also spends the approval; ``unrelated`` only
+        # touches another field (e.g. the terminal assistant upsert), which
+        # invalidates the ETag without meaning the approval was spent.
+        self.race_once: str | None = None
+
+    def _bump(self) -> None:
+        self._version += 1
+        self.item["_etag"] = f"m{self._version}"
+
+    async def read_item(self, *, item, partition_key):
+        return copy.deepcopy(self.item)
+
+    async def patch_item(
+        self,
+        *,
+        item,
+        partition_key,
+        patch_operations,
+        etag=None,
+        match_condition=None,
+    ):
+        self.etags.append(etag)
+        if self.race_once is not None:
+            if self.race_once == "redeemer":
+                self.item["pendingApprovals"][0]["consumed"] = True
+            else:
+                self.item["content"] = "written by something else"
+            self._bump()
+            self.race_once = None
+        if etag is not None and etag != self.item["_etag"]:
+            raise CosmosAccessConditionFailedError(message="etag")
+        self.writes += 1
+        for operation in patch_operations:
+            parts = operation["path"].lstrip("/").split("/")
+            target = self.item
+            for part in parts[:-1]:
+                target = target[int(part)] if part.isdigit() else target[part]
+            key = parts[-1]
+            if isinstance(target, list):
+                target[int(key)] = operation["value"]
+            else:
+                target[key] = operation["value"]
+        self._bump()
+        return copy.deepcopy(self.item)
+
+
+def _approval_message() -> tuple[Message, PendingToolApproval]:
+    record, _grant = mint_pending_approval(
+        draft_for_call(
+            ToolSpec(name="mcp_x", description="d", risk=ToolRisk.external),
+            tool="mcp_x",
+            label="mcp:x/send",
+            arguments={"to": "someone@example.com"},
+        )
+    )
+    message = Message(
+        sessionId="s1",
+        userId="u1",
+        role=MessageRole.assistant,
+        pendingApprovals=[record],
+    )
+    return message, record
+
+
+def _approval_repo(fake) -> CosmosSessionRepository:
+    repo = object.__new__(CosmosSessionRepository)
+    repo._messages = fake
+
+    async def _owned(_user_id, _session_id):
+        return Session(userId="u1")
+
+    repo._owned_session = _owned  # type: ignore[method-assign]
+    return repo
+
+
+async def test_cosmos_approval_burn_is_conditional_and_single_winner():
+    message, record = _approval_message()
+    fake = _ApprovalMessages(message)
+    repo = _approval_repo(fake)
+
+    first = await repo.consume_tool_approval("u1", "s1", message.id, record.id)
+    second = await repo.consume_tool_approval("u1", "s1", message.id, record.id)
+
+    assert first is True
+    assert second is False
+    # The write was ETag-conditional, not a blind upsert.
+    assert fake.etags[0] == "m0"
+    assert fake.item["pendingApprovals"][0]["consumed"] is True
+
+
+async def test_cosmos_approval_burn_loses_to_a_concurrent_redeemer():
+    """A racing redeemer that wins in the ETag gap must make this caller lose.
+
+    This is the exact double-spend the read-modify-write allowed: both callers
+    read ``consumed=False``, so only the conditional write can arbitrate. The
+    loser must re-read, see the record spent, and deny — not retry into a
+    second burn, and not write at all.
+    """
+    message, record = _approval_message()
+    fake = _ApprovalMessages(message)
+    fake.race_once = "redeemer"
+    repo = _approval_repo(fake)
+
+    won = await repo.consume_tool_approval("u1", "s1", message.id, record.id)
+
+    assert won is False
+    assert fake.writes == 0
+
+
+async def test_cosmos_approval_burn_retries_an_unrelated_concurrent_write():
+    """A different write to the same message invalidates the ETag without
+    meaning the approval was spent, so that must retry rather than deny."""
+    message, record = _approval_message()
+    fake = _ApprovalMessages(message)
+    fake.race_once = "unrelated"
+    repo = _approval_repo(fake)
+
+    won = await repo.consume_tool_approval("u1", "s1", message.id, record.id)
+
+    assert won is True
+    assert len(fake.etags) == 2  # first rejected, second accepted
+    assert fake.writes == 1
+    assert fake.item["pendingApprovals"][0]["consumed"] is True
+
+
+async def test_cosmos_approval_burn_denies_unknown_record_and_message():
+    message, record = _approval_message()
+    fake = _ApprovalMessages(message)
+    repo = _approval_repo(fake)
+
+    assert await repo.consume_tool_approval("u1", "s1", message.id, "nope") is False
+
+    class _Missing(_ApprovalMessages):
+        async def read_item(self, *, item, partition_key):
+            raise CosmosResourceNotFoundError(message="missing")
+
+    gone = _approval_repo(_Missing(message))
+    assert await gone.consume_tool_approval("u1", "s1", message.id, record.id) is False
+
+
+async def test_cosmos_approval_burn_denies_under_sustained_contention():
+    """Retries are bounded; exhausting them must deny, never fall through."""
+    message, record = _approval_message()
+
+    class _AlwaysStale(_ApprovalMessages):
+        async def read_item(self, *, item, partition_key):
+            # Every read hands out an ETag that is stale by the time the write
+            # lands — sustained contention from unrelated writers.
+            snapshot = copy.deepcopy(self.item)
+            self._bump()
+            return snapshot
+
+    fake = _AlwaysStale(message)
+    repo = _approval_repo(fake)
+
+    assert await repo.consume_tool_approval("u1", "s1", message.id, record.id) is False
+    assert fake.writes == 0
+    assert fake.item["pendingApprovals"][0]["consumed"] is False

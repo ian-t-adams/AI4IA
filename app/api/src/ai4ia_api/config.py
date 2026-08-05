@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .agents.approvals import ApprovalPolicy as ToolApprovalMode
 from .official_mcp_catalog import load_official_mcp_catalog
 from .voice_provider_catalog import (
     EXPECTED_PROVIDER_IDS,
@@ -279,6 +280,25 @@ class Settings(BaseSettings):
     # time; when empty the service falls back to a process-local store (local/dev
     # only — see ``validate_runtime``).
     custom_tools_secret_vault_uri: str | None = None
+
+    # --- Per-invocation tool approval (indirect prompt-injection defense) ---
+    # Governs whether an external/destructive tool call needs a FRESH human
+    # approval bound to its exact arguments, in addition to the tool's standing
+    # posture. Default ``always``, i.e. ON: standing trust (a ``trusted`` MCP
+    # server, or a per-tool ``requireApproval: never`` override) decides what the
+    # model is offered, never what actually leaves the network. Unlike most flags
+    # here this is default-ON because it is a security control, not a feature —
+    # a default-off mitigation does not mitigate anything.
+    #   ``always``  - every external/destructive call is gated (default).
+    #   ``tainted`` - gated only when the turn carried untrusted content
+    #                 (documents, recalled memory, library excerpts, or an
+    #                 earlier tool result in the same turn). Keeps a trusted
+    #                 server frictionless on turns with no injection surface.
+    #   ``off``     - restores the pre-P1-13 behavior exactly. Deliberate,
+    #                 visible opt-out; not a supported posture for a deployment
+    #                 that lets users register their own MCP servers.
+    # See docs/runbooks/feature-enablement.md and agents/approvals.py.
+    tool_approval_mode: ToolApprovalMode = ToolApprovalMode.always
 
     # --- Official MCP plane (curated servers behind the shared active APIM) ---
     # Distinct from BYO custom tools above. These are admin-curated MCP servers
