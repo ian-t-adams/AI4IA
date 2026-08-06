@@ -62,14 +62,28 @@ redactor matched key paths by substring and `Key1` matches none of its terms.
 
 **Severity correction, measured rather than assumed.** This finding was written
 on the assumption that the event reached durable telemetry. It did not, in this
-deployment: `EVENT_LOGGERS` is unset, so the config event goes to the default
-*file* client (`eventslog.json`) inside the container, which is ephemeral and
-dies with the revision. Searches of Application Insights (`traces`,
-`customEvents`, `exceptions`) and of `ContainerAppConsoleLogs_CL` found **no
-occurrence of either key**. The leak path was real and is fixed; its blast radius
-was narrower than this section originally implied. That depends on
-`EVENT_LOGGERS` and `AppInsightsConnectionString`, both configurable — re-check
-before relying on it.
+deployment. The proxy container has **no** `APPLICATIONINSIGHTS_CONNECTION_STRING`
+and **no** `EVENT_LOGGERS`, so there is no export path at all: the config event
+goes to the default *file* client (`eventslog.json`) inside the container, which
+is ephemeral and dies with the revision. A search of `ContainerAppConsoleLogs_CL`
+— the pipeline that does carry proxy output, and which holds 113,514 proxy lines
+over the same window — finds **no occurrence** of either key. The leak path was
+real and is fixed; its blast radius was narrower than this section originally
+implied. That depends on `EVENT_LOGGERS` and `AppInsightsConnectionString`, both
+configurable — re-check before relying on it.
+
+> **Method correction, 2026-08-06.** The original wording of this note said the
+> conclusion was supported by searching Application Insights `traces`,
+> `customEvents` and `exceptions`. Those searches were run with
+> `az monitor app-insights query`, which returns an **empty result set rather than
+> an error** for a workspace-based component — so they would have reported "no
+> occurrences" no matter what the store contained. The conclusion happens to hold,
+> and on stronger grounds than were claimed (there is no export path from the
+> proxy at all), but the evidence originally cited was vacuous. A search intended
+> to prove a secret did not appear is worthless without a non-vacuity control
+> showing the table holds data over the same window. Recorded in
+> [`runbooks/telemetry.md`](./runbooks/telemetry.md) so the next incident does not
+> repeat it.
 
 Ordering constraint worth knowing: the redaction fix must be *deployed* before a
 rotation, or the new key is written where the old one was.

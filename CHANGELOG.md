@@ -549,11 +549,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   production with zero downtime using the proxy's `ValidateAuthKey2` dual-accept slot
   (old key verified 403, new key 200); the procedure is in
   [`docs/runbooks/key-rotation.md`](docs/runbooks/key-rotation.md).
-  Measured scope, rather than assumed: `EVENT_LOGGERS` is unset in this deployment, so
-  the event went to an ephemeral in-container file, and searches of Application
-  Insights (`traces`, `customEvents`, `exceptions`) and `ContainerAppConsoleLogs_CL`
-  found no occurrence of either key. Both preconditions are configurable — re-check
-  before relying on that.
+  Measured scope, rather than assumed: the proxy container has no
+  `APPLICATIONINSIGHTS_CONNECTION_STRING` and no `EVENT_LOGGERS`, so there is no
+  export path — the event went to an ephemeral in-container file, and a search of
+  `ContainerAppConsoleLogs_CL` (which holds 113,514 proxy lines over the same
+  window) found no occurrence of either key. Both preconditions are configurable —
+  re-check before relying on that. *Corrected 2026-08-06:* this entry originally
+  also cited Application Insights `traces`/`customEvents`/`exceptions` searches.
+  Those were run with `az monitor app-insights query`, which returns an empty
+  result set rather than an error for a workspace-based component, so they proved
+  nothing. See [`docs/runbooks/telemetry.md`](docs/runbooks/telemetry.md).
 - **Teardown now requires a separate data-loss acknowledgement** (`teardown.ps1`,
   `capture-data-recovery-state.ps1`). `-Force` only ever acknowledged deleting the
   *infrastructure*, which `azd provision` rebuilds. It also deleted blobs that have no

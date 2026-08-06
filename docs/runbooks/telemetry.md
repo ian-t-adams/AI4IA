@@ -18,7 +18,41 @@ transcripts.
 | Security blocks | `security_block` custom events in `AppEvents` | Bounded category/reason/source for HTTP/admin auth, tool authorization, SSRF, and realtime denial |
 | Platform resources | Azure Monitor Metrics | One-hour window; `—` means no datapoint |
 
-The admin API exposes:
+## Querying it by hand (incident response)
+
+> **`az monitor app-insights query` returns an empty result set for this
+> component, not an error.** The component is workspace-based
+> (`IngestionMode: LogAnalytics`), so the classic schema names — `customEvents`,
+> `traces`, `requests`, `exceptions` — resolve to nothing through that command
+> even when the data exists. During an incident that reads as a clean all-clear,
+> which is the most dangerous possible failure mode for a search whose purpose is
+> to prove a secret did **not** appear.
+
+Query the workspace tables instead:
+
+| Classic name | Workspace table |
+| --- | --- |
+| `customEvents` | `AppEvents` |
+| `traces` | `AppTraces` |
+| `requests` | `AppRequests` |
+| `dependencies` | `AppDependencies` |
+| `exceptions` | `AppExceptions` |
+
+```powershell
+$cid = az monitor log-analytics workspace show -g <rg> -n <workspace> --query customerId -o tsv
+az monitor log-analytics query -w $cid --analytics-query "AppEvents | where TimeGenerated > ago(24h) | summarize count() by Name"
+```
+
+**Always run a non-vacuity control beside any "we found nothing" search.** Count
+the rows the table holds over the same window first. A zero-match search against a
+table that turns out to hold zero rows proves nothing, and the two outcomes are
+indistinguishable in the output. The proxy is the case that matters here: it has
+no `APPLICATIONINSIGHTS_CONNECTION_STRING` and no `EVENT_LOGGERS`, so **none** of
+its events ever reach Application Insights. Searching `App*` tables for proxy
+content will always return zero, whatever happened. Its logs are in
+`ContainerAppConsoleLogs_CL` filtered on `ContainerAppName_s ==
+'ca-proxy-slurmfactory'`.
+
 
 - `GET /api/admin/metrics/operations?minutes=15..1440`
 - `GET /api/admin/metrics/security?minutes=15..1440`
