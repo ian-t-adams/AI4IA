@@ -40,9 +40,6 @@ dependencies = [
     # Async azure SDKs (azure.cosmos.aio + azure.identity.aio) require an async
     # HTTP transport at runtime; azure-core selects aiohttp by default.
     "aiohttp>=3.14.3",
-    # Async Postgres driver for the pgvector memory store.
-    # Imported lazily so the app/tests run without a live database.
-    "asyncpg>=0.29",
     # Multipart form parser: required by FastAPI for the voice transcription
     # endpoint's audio file upload.
     "python-multipart>=0.0.9",

@@ -38,7 +38,7 @@ flowchart LR
   CU --> PARSED[parsed.md + grounded fields]
   PARSED --> CHUNKS[chunk + embed]
   PARSED --> MEDIA[media timeline for audio/video]
-  CHUNKS --> VECTOR[(pgvector or Azure AI Search)]
+  CHUNKS --> VECTOR[(Azure AI Search)]
   COS --> CHAT[summary cards + RAG context]
   VECTOR --> CHAT
   BLOB --> TOOLS[fetch_document / run_code / export_document / process_document]
@@ -57,7 +57,7 @@ playback, memory save, or sharing.
   Built-ins are not persisted as user records and cannot be shadowed.
 - **Blob Storage**: raw bytes, `parsed.md`, `chunks.jsonl`, media timeline
   sidecars, and versioned/exported artifacts under a user/document prefix.
-- **pgvector / Azure AI Search**: per-user document chunks. Azure AI Search, when
+- **Azure AI Search**: per-user document chunks. Azure AI Search, when
   configured, provides hybrid vector + BM25 retrieval with optional semantic
   reranking.
 - **Memory store**: explicit save-to-memory promotes a ready document's summary

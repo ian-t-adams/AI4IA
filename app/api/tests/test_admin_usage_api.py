@@ -487,7 +487,6 @@ def test_resource_metrics_unavailable_without_ids(client):
     body = client.get("/api/admin/metrics/resources", headers=ADMIN).json()
     assert {p["key"] for p in body["panels"]} == {
         "search",
-        "postgres",
         "cosmos",
         "containerApp",
     }

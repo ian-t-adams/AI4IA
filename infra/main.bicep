@@ -230,9 +230,6 @@ param proxyAppConfigLabel string = ''
 ])
 param memoryStore string = 'cosmos'
 
-@description('Retain the legacy Postgres Flexible Server for source migration and optional document-index fallback. Empty location skips it; remove only after approved retirement.')
-param postgresLocation string = ''
-
 @description('''Network isolation foundation. When true, provisions a VNet +
 private DNS, creates the Container Apps environment VNet-injected (a NEW env under
 a `-vnet` name), and stands up private endpoints for the data tier (Cosmos, both
@@ -297,10 +294,6 @@ var regionList = map(items(models.regions), r => {
 
 var uniqueSuffix = uniqueString(subscription().id, environmentName)
 
-// Retain Postgres for migration rollback and the document-index fallback via a
-// non-empty postgresLocation; some subscriptions remain offer-restricted.
-var postgresEnabled = !empty(postgresLocation)
-
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
   location: location
@@ -331,7 +324,7 @@ module monitoring 'modules/monitoring.bicep' = {
 
 // All app identity principals (api, web, proxy) may read secrets/config.
 var allPrincipalIds = map(identity.outputs.identities, x => x.principalId)
-// The api identity owns the canonical data stores (Cosmos + Postgres).
+// The api identity owns the canonical data store (Cosmos).
 var apiIdentity = filter(identity.outputs.identities, x => x.service == 'api')[0]
 // The proxy identity runs the SimpleL7Proxy gateway container.
 var proxyIdentity = filter(identity.outputs.identities, x => x.service == 'proxy')[0]
@@ -394,10 +387,7 @@ module data 'modules/data.bicep' = {
     environmentName: environmentName
     uniqueSuffix: uniqueSuffix
     apiPrincipalId: apiIdentity.principalId
-    apiPrincipalName: apiIdentity.name
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
-    deployPostgres: postgresEnabled
-    postgresLocation: empty(postgresLocation) ? location : postgresLocation
     // Document library blob storage. Gated on the feature flag, so the
     // storage account + container + RBAC are created only when enabled — default OFF.
     // The inline-attachment code interpreter (default OFF) reuses this same account
@@ -831,13 +821,8 @@ module api 'modules/api.bicep' = {
     realtimeGatewayApiKey: gateway.outputs.realtimeGatewayKey
     cosmosEndpoint: data.outputs.cosmosEndpoint
     cosmosDatabase: data.outputs.cosmosDatabaseName
-    // Cosmos is the active per-user memory store. Keep the legacy Postgres
-    // parameters wired for source migration and document-index fallback while the
-    // server, metrics, and existing data remain through the migration window.
+    // Cosmos is the canonical per-user memory store.
     memoryStore: memoryStore
-    postgresHost: data.outputs.postgresFqdn
-    postgresDatabase: data.outputs.postgresDatabaseName
-    postgresUser: apiIdentity.name
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     appEnvironment: appEnvironment
     authProvider: apiAuthProvider
@@ -919,7 +904,6 @@ module api 'modules/api.bicep' = {
     // Empty when a resource is not deployed -> that panel stays 'unavailable'.
     metricsSearchResourceId: search.outputs.searchId
     logAnalyticsWorkspaceCustomerId: monitoring.outputs.logAnalyticsCustomerId
-    metricsPostgresResourceId: data.outputs.postgresId
     metricsCosmosResourceId: data.outputs.cosmosId
     // Custom tools / BYO MCP. Default OFF. When on, the flag is emitted
     // and durable MCP connection secrets are stored in the shared Key Vault (the
@@ -1049,8 +1033,6 @@ output AZURE_KEY_VAULT_URI string = keyvault.outputs.keyVaultUri
 output AZURE_APP_CONFIG_ENDPOINT string = keyvault.outputs.appConfigEndpoint
 output AZURE_COSMOS_ENDPOINT string = data.outputs.cosmosEndpoint
 output AZURE_COSMOS_DATABASE string = data.outputs.cosmosDatabaseName
-output AZURE_POSTGRES_FQDN string = data.outputs.postgresFqdn
-output AZURE_POSTGRES_DATABASE string = data.outputs.postgresDatabaseName
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = platform.outputs.acrLoginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = platform.outputs.acrName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = platform.outputs.containerEnvName

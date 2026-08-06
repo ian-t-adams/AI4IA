@@ -61,7 +61,6 @@ class _RecordingQuerier:
 def _settings_with_all_resource_ids():
     return make_settings(
         metrics_search_resource_id=f"{_SUB}/providers/Microsoft.Search/searchServices/s",
-        metrics_postgres_resource_id=f"{_SUB}/providers/Microsoft.DBforPostgreSQL/flexibleServers/p",
         metrics_cosmos_resource_id=f"{_SUB}/providers/Microsoft.DocumentDB/databaseAccounts/c",
         metrics_container_app_resource_id=f"{_SUB}/providers/Microsoft.App/containerApps/a",
     )

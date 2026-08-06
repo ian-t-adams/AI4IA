@@ -47,7 +47,11 @@ class ProviderDerivationTests(unittest.TestCase):
             "Microsoft.DocumentDB",
             "Microsoft.App",
             "Microsoft.ApiManagement",
-            "Microsoft.DBforPostgreSQL",
+            # Declared only in infra/modules/search.bicep. Replaced
+            # Microsoft.DBforPostgreSQL here when PostgreSQL was retired on
+            # 2026-08-06; the point of the list is coverage of module-only
+            # providers, so it needs at least one that main.bicep never names.
+            "Microsoft.Search",
         ):
             self.assertIn(namespace, required, f"{namespace} should be derived from infra/")
         for namespace, sources in required.items():

@@ -246,8 +246,8 @@ flags when a window was truncated, so large tenants stay responsive. User identi
 are shown as stable internal identifiers; see the troubleshooting note below.
 
 Platform resources shows live Azure Monitor metrics for the deployment's Container
-App (requests, response time, replicas, restarts), Cosmos DB, Azure AI Search, and
-PostgreSQL (CPU, storage, connections). Each tile degrades to unavailable when its Azure resource id, the
+App (requests, response time, replicas, restarts), Cosmos DB, and Azure AI Search.
+Each tile degrades to unavailable when its Azure resource id, the
 `azure-monitor-query` SDK, or the API identity's Monitoring Reader permission is
 missing; a `—` cell means no data for that metric, not an error.
 The whole Cosmos panel uses the common one-hour grain required by

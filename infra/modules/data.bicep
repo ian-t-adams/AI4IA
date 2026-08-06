@@ -1,6 +1,10 @@
-// Application data stores: Cosmos DB (NoSQL, canonical app and vector memory data) +
-// PostgreSQL Flexible Server (legacy memory rollback). Identity-based auth only
-// (no keys/passwords).
+// Application data stores: Cosmos DB (NoSQL) — the canonical store for app data
+// and per-user vector memory. Identity-based auth only (no keys/passwords).
+//
+// PostgreSQL Flexible Server was retired here on 2026-08-06 after the memory
+// migration to Cosmos completed. Do not reintroduce it without re-reading
+// `docs/runbooks/memory-migration.md`; `scripts/tests/test_postgres_retired.py`
+// fails if provisioning comes back.
 @description('Location for the data stores.')
 param location string
 
@@ -19,20 +23,8 @@ param uniqueSuffix string
 @description('Principal ID (objectId) of the api identity granted data-plane access.')
 param apiPrincipalId string
 
-@description('Resource name of the api identity (used as the Postgres AAD admin login name).')
-param apiPrincipalName string
-
 @description('Central Log Analytics workspace resource id. Diagnostic settings stream data-store logs/metrics there for the admin observability plane.')
 param logAnalyticsWorkspaceId string
-
-@description('Tenant ID for Entra auth on Postgres.')
-param tenantId string = subscription().tenantId
-
-@description('Retain the legacy Postgres Flexible Server for migration rollback and document-index fallback. Disable only where the subscription is offer-restricted for Postgres.')
-param deployPostgres bool = true
-
-@description('Location for the Postgres Flexible Server (may differ from `location` due to subscription offer restrictions).')
-param postgresLocation string = location
 
 @description('Provision the document library blob storage account + container. Gated on the document-understanding flag so nothing is created by default — zero regression.')
 param deployDocumentStorage bool = false
@@ -311,119 +303,6 @@ resource cosmosDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-pre
   }
 }
 
-// ---------------- Postgres Flexible Server (pgvector) ----------------
-// Name includes the location so a region change yields a fresh resourceId (ARM
-// enforces location-immutability per resourceId; a prior eastus2 attempt otherwise
-// blocks re-creation in another region).
-var postgresName = take('psql-${workload}-${environmentName}-${postgresLocation}-${uniqueSuffix}', 60)
-
-resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = if (deployPostgres) {
-  name: postgresName
-  location: postgresLocation
-  tags: tags
-  sku: {
-    name: 'Standard_B2s'
-    tier: 'Burstable'
-  }
-  properties: {
-    version: '16'
-    storage: {
-      storageSizeGB: 32
-      autoGrow: 'Enabled'
-    }
-    authConfig: {
-      activeDirectoryAuth: 'Enabled'
-      passwordAuth: 'Disabled'
-      tenantId: tenantId
-    }
-    highAvailability: {
-      mode: 'Disabled'
-    }
-    backup: {
-      backupRetentionDays: 7
-      geoRedundantBackup: 'Disabled'
-    }
-  }
-}
-
-// Entra admin = api managed identity (no SQL passwords).
-resource postgresAdmin 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024-08-01' = if (deployPostgres) {
-  parent: postgres
-  name: apiPrincipalId
-  properties: {
-    principalType: 'ServicePrincipal'
-    principalName: apiPrincipalName
-    tenantId: tenantId
-  }
-}
-
-// Allowlist the pgvector extension (app runs CREATE EXTENSION vector at init).
-resource postgresExtensions 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2024-08-01' = if (deployPostgres) {
-  parent: postgres
-  name: 'azure.extensions'
-  properties: {
-    value: 'VECTOR'
-    source: 'user-override'
-  }
-  dependsOn: [
-    postgresAdmin
-  ]
-}
-
-resource memoryDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = if (deployPostgres) {
-  parent: postgres
-  name: 'mem0'
-  properties: {
-    charset: 'UTF8'
-    collation: 'en_US.utf8'
-  }
-  // Serialize server child operations. Flexible Server runs control-plane ops one
-  // at a time; when a database create is in flight the server is briefly "not
-  // accessible", which makes a concurrent Entra-admin op fail with
-  // AadAuthOperationCannotBePerformedWhenServerIsNotAccessible. Chaining after the
-  // admin (via postgresExtensions) keeps the whole sequence single-file.
-  dependsOn: [
-    postgresExtensions
-  ]
-}
-
-// Allow Azure-internal traffic (the special 0.0.0.0 rule) so the api Container
-// App — Consumption plan, public egress, no VNet integration — can reach the
-// server. DB auth is still AAD-only; this only opens the network firewall to
-// Azure-origin sources. Tighten to a VNet/private endpoint in a later hardening pass.
-resource postgresAllowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2024-08-01' = if (deployPostgres) {
-  parent: postgres
-  name: 'AllowAllAzureServicesAndResourcesWithinAzureIps'
-  properties: {
-    startIpAddress: '0.0.0.0'
-    endIpAddress: '0.0.0.0'
-  }
-  // Last link in the serialized child-operation chain (see memoryDb) so the
-  // firewall update never runs concurrently with the Entra-admin assignment.
-  dependsOn: [
-    memoryDb
-  ]
-}
-
-// Stream the Postgres server log (errors/connections/checkpoints — the standard
-// operational signal, and the cheapest-to-export log category) plus all platform
-// metrics (CPU/memory/storage/connections) to the central Log Analytics
-// workspace. Verbose query-store/session categories are deliberately excluded for
-// cost. Only created with the server. Retention follows the workspace (30 days).
-resource postgresDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (deployPostgres) {
-  name: 'to-log-analytics'
-  scope: postgres
-  properties: {
-    workspaceId: logAnalyticsWorkspaceId
-    logs: [
-      { category: 'PostgreSQLLogs', enabled: true }
-    ]
-    metrics: [
-      { category: 'AllMetrics', enabled: true }
-    ]
-  }
-}
-
 // ---------------- Document library blob storage ----------------
 // Provisioned only when document understanding is enabled (deployDocumentStorage).
 // AAD-only (no account keys), private container, TLS 1.2+. Raw uploads and the
@@ -635,9 +514,6 @@ resource imageStorageDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-
 output cosmosAccountName string = cosmos.name
 output cosmosEndpoint string = cosmos.properties.documentEndpoint
 output cosmosDatabaseName string = cosmosDb.name
-output postgresName string = deployPostgres ? postgres.name : ''
-output postgresFqdn string = postgres.?properties.fullyQualifiedDomainName ?? ''
-output postgresDatabaseName string = deployPostgres ? memoryDb.name : ''
 output documentBlobAccountUrl string = documentStorage.?properties.primaryEndpoints.blob ?? ''
 output documentBlobContainerName string = documentBlobContainer
 output inlineAttachmentBlobContainerName string = inlineAttachmentBlobContainer
@@ -650,6 +526,5 @@ output videoBlobContainerName string = videoBlobContainer
 // Conditional storage accounts return '' when not deployed; main.bicep filters
 // empty IDs before building the PE target array.
 output cosmosId string = cosmos.id
-output postgresId string = deployPostgres ? postgres.id : ''
 output documentStorageId string = deployDocumentStorage ? documentStorage.id : ''
 output imageStorageId string = deployMediaStorage ? imageStorage.id : ''

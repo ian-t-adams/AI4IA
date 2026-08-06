@@ -85,7 +85,7 @@ window.AI4IA_META = {
     { layer: "API", tech: "FastAPI · Python 3.11+ · Pydantic", host: "Azure Container Apps" },
     { layer: "Model gateway", tech: ".NET SimpleL7Proxy -> APIM", host: "Azure Container Apps + API Management" },
     { layer: "App data", tech: "Cosmos DB (NoSQL, canonical state)", host: "Azure Cosmos DB" },
-    { layer: "Memory / chunks", tech: "Cosmos DB vectors (canonical); Postgres 16 + pgvector retained for migration + document-chunk fallback", host: "Azure Cosmos DB · Azure Database for PostgreSQL" },
+    { layer: "Memory / chunks", tech: "Cosmos DB vectors (canonical memory); Azure AI Search (document chunks)", host: "Azure Cosmos DB · Azure AI Search" },
     { layer: "Search", tech: "Azure AI Search (optional retrieval)", host: "Azure AI Search" },
     { layer: "Storage", tech: "Blob (documents + generated media)", host: "Azure Storage" },
     { layer: "AI services", tech: "Azure AI Foundry (3 regions) + Content Understanding", host: "Azure AI Foundry" },

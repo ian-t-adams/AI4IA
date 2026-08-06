@@ -4,7 +4,7 @@ Returns ``None`` when document understanding is disabled (or the library repo wa
 not built), so the upload endpoint refuses and nothing is constructed — the
 default-OFF, zero-regression posture. When enabled, the backing IO mirrors the
 rest of the app: an in-memory blob store + chunk store locally, and Azure Blob +
-Postgres/pgvector when configured. The Content Understanding client is only wired
+Azure AI Search when configured. The Content Understanding client is only wired
 when ``cu_base_url`` is set; without it, ``enrich`` is a no-op and a document stays
 at ``stored`` with its instant quick-text summary.
 """
@@ -19,7 +19,7 @@ from ..gateway.client import ModelGatewayClient
 from ..memory.embedder import GatewayEmbedder
 from ..usage.service import UsageService
 from .blob_store import AzureBlobStore, BlobStore, InMemoryBlobStore
-from .doc_chunks import DocChunkStore, InMemoryDocChunkStore, PgDocChunkStore
+from .doc_chunks import DocChunkStore, InMemoryDocChunkStore
 from .ingest import DocumentIngestor
 from .repository import DocumentLibraryRepository
 from .retrieval import DocumentRetrievalService
@@ -36,10 +36,9 @@ def _build_blob_store(settings: Settings) -> BlobStore:
 
 
 def _build_chunk_store(settings: Settings) -> DocChunkStore:
-    # Prefer the Azure AI Search index when a search service is provisioned: a
-    # durable, semantic-ready index that scales independently of Postgres. Falls
-    # back to pgvector, then the in-memory store (local/dev/tests). Dormant unless
-    # ``search_endpoint`` is set, so this is zero-regression by default.
+    # Azure AI Search is the durable chunk index; the in-memory store backs
+    # local/dev/tests. Dormant unless ``search_endpoint`` is set, so this is
+    # zero-regression by default.
     if settings.search_endpoint:
         from .ai_search_chunks import AzureSearchDocChunkStore
 
@@ -48,14 +47,6 @@ def _build_chunk_store(settings: Settings) -> DocChunkStore:
             index_name=settings.search_index_name,
             expected_dim=settings.memory_embedding_dimensions,
             semantic_ranking=settings.search_semantic_ranking,
-        )
-    if settings.postgres_host and settings.postgres_user:
-        return PgDocChunkStore(
-            host=settings.postgres_host,
-            database=settings.postgres_database,
-            user=settings.postgres_user,
-            port=settings.postgres_port,
-            expected_dim=settings.memory_embedding_dimensions,
         )
     return InMemoryDocChunkStore(expected_dim=settings.memory_embedding_dimensions)
 

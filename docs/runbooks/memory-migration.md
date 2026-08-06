@@ -206,19 +206,63 @@ and verified migration.
 
 ## Retirement
 
-After the agreed observation window:
+**Executed 2026-08-06.** All five preconditions below were verified before the
+IaC, configuration, application code and portal claims were removed. Recorded
+here rather than in a commit message because this is the evidence someone will
+want when they ask why a database disappeared.
 
-1. confirm no rollback depends on PostgreSQL;
-2. confirm Azure AI Search is authoritative for document chunks, or deliberately
-   accept losing the PostgreSQL document-index fallback;
-3. archive the migration evidence and production revision ids;
-4. obtain explicit destructive-action approval;
-5. remove PostgreSQL IaC, configuration, diagnostics, firewall/admin assignments,
-   and data in a separate reviewed change.
+1. **No rollback depends on PostgreSQL.** `AI4IA_MEMORY_STORE=cosmos` in
+   production, the Cosmos `memories` container exists partitioned on `/userId`,
+   and the workspace recorded 99 `memory_operation` events in the preceding 30
+   days. Memory is demonstrably being served from Cosmos, not merely configured to.
+2. **Azure AI Search is authoritative for document chunks.** `_build_chunk_store`
+   in `app/api/src/ai4ia_api/library/ingest_factory.py` returns
+   `AzureSearchDocChunkStore` whenever `search_endpoint` is set, and it *is* set
+   in production — so the PostgreSQL branch was already unreachable. Nothing was
+   accepted as a loss; the fallback had no live traffic to lose. That branch and
+   its ~215-line `PgDocChunkStore` are now deleted rather than left as
+   unreachable, untested code.
+3. **Evidence archived.** Server `psql-ai4ia-slurmfactory-centralus-vypvgrncoed2o`,
+   Central US, PostgreSQL 16, `Standard_B2s` Burstable, 32 GB, 7-day backup
+   retention, `earliestRestoreDate` 2026-07-31. Connection metrics returned no
+   datapoints over the window — the server was idle.
+4. **Explicit destructive-action approval** given by the accountable owner.
+5. **Removal.** IaC (`data.bicep`, `api.bicep`, `main.bicep`,
+   `main.parameters.json`), the `AI4IA_POSTGRES_*` and
+   `AI4IA_METRICS_POSTGRES_RESOURCE_ID` settings, the admin dashboard's Postgres
+   panel, the `asyncpg` runtime dependency, and every documentation/portal claim
+   that PostgreSQL is a deployed component. `scripts/tests/test_postgres_retired.py`
+   fails if any of that returns.
 
-Deleting the server is not part of this migration implementation.
+### Deleting the server itself
+
+Not done by this change, and **deliberately sequenced after it**, because
+`azd provision` would otherwise recreate the server between the IaC merge and the
+deletion.
+
+> **Deleting a PostgreSQL Flexible Server destroys its backups with it.** Unlike
+> Cosmos, there is no post-deletion point-in-time restore — the 7-day window ends
+> the moment the server does. Cosmos DB keeps a restorable copy of a deleted
+> account for its configured retention; Postgres does not. Treat this as
+> irreversible.
+
+Recommended order:
+
+1. Merge the IaC removal (this change) so nothing recreates the server.
+2. **Stop** the server — reversible, and it drops roughly 85% of the cost while
+   the decision settles:
+   ```powershell
+   az postgres flexible-server stop -g rg-ai4ia-<env> --name psql-<...>
+   ```
+3. Delete only after the observation window closes with the server stopped and
+   nothing having missed it.
 
 ## Common failures
+
+> The migration script keeps its `--postgres-*` flags and its tests, so a restored
+> backup could still be migrated. It needs `pip install asyncpg`: that driver was
+> removed from the API's runtime dependencies because no API source imports it any
+> more.
 
 | Failure | Meaning / response |
 | --- | --- |
