@@ -115,10 +115,10 @@ Verified against the tree at `main` on 2026-08-05, not from memory.
 | P0-2 annotation-only filters | **Accepted**; annotations now surfaced | #266 + owner decision |
 | P1-1 client can override server-owned model fields | **Fixed** | #266 |
 | P1-2 Code Interpreter retention/metering | **Partially fixed** — `store:false` locked; entitlement/usage accounting still absent | #266 |
-| P1-3 fresh azd deploy is public + dev auth | **Auth half fixed** — `apiAllowDevAuth` now defaults `false` and is a real azd variable, so a clean-room deploy refuses to start instead of trusting `X-Dev-User`. **Still open**: every feature flag defaults on, and there is no budget/alert gate — the `demo|production` profile split | #279 |
+| P1-3 fresh azd deploy is public + dev auth | **Auth half fixed** — `apiAllowDevAuth` now defaults `false` and is a real azd variable, so a clean-room deploy refuses to start instead of trusting `X-Dev-User`. **Still open**: every feature flag defaults on, and there is no budget/alert gate — the demo-versus-production profile split | #279 |
 | P1-4 gateway-only routing is convention, not IAM | **Open** — `disableLocalAuth` still defaults false | — |
 | P1-5 APIM key is a non-secure output | **Fixed** — compiled ARM emits `securestring` | #266 |
-| P1-6 no post-deploy proof or rollback | **Fixed** — pre-deploy revision capture, hard rollout/health/web/proxy/domain assertions, an authenticated gateway canary, and automatic rollback. Does not cover a cancelled run or job timeout | #274 |
+| P1-6 no post-deploy proof or rollback | **Fixed**, and proven in anger on its first day — it caught a real production outage seven times running and its rollback kept the app serving (see below). Pre-deploy revision capture, hard rollout/health/web/proxy/domain assertions, an authenticated gateway canary, and automatic rollback. Does not cover a cancelled run or job timeout, and does not roll back infrastructure | #274 |
 | P1-7 tested artifact is not the deployed artifact | **Open** | — |
 | P1-8 teardown destroys data it cannot restore | **Fixed** — `-Force` now requires `-AcknowledgeDataLoss` and refuses before any `az` call; `capture-data-recovery-state.ps1` records the Cosmos restorable-instance id, a blob manifest, and secret names. Blob still has no restore path — the capture makes that a decision rather than a discovery | #266, #273 |
 | P1-9 sharing read failure can revoke an ACL | **Fixed** | #266 |
@@ -134,6 +134,43 @@ Verified against the tree at `main` on 2026-08-05, not from memory.
 Selected P2 items also closed: CGNAT SSRF gap, portal service counts, portal
 narrow-screen reflow, the missing `main` landmark, the APIM compiler harness
 rejecting its own shards, and two documentation current-state contradictions.
+
+### The remediation caused an outage, and the remediation caught it
+
+Recorded because an audit that only lists what it improved is not an honest one.
+
+On 2026-08-05 the fix for P1-17 (#267, adding `DataZoneStandard` deployments so the
+residency tiers had something to resolve to) gave 28 model/region pairs a second
+deployment in the same region. `gen-gateway-policy.py` labelled each gateway backend
+with its **region alone**, so the generated APIM catalog emitted `EASTUS2` twice into
+one `JObject`. Newtonsoft throws on a duplicate property, and APIM answered
+`500 ExpressionValueEvaluationFailure` for **every** chat and embedding request for
+roughly six hours.
+
+Three things are worth keeping from it:
+
+1. **The control this audit asked for is what caught it.** P1-6's post-deploy canary
+   (#274) failed seven consecutive deploys, correctly, and its rollback is why the app
+   stayed up and serving throughout. Before that canary existed, deploys reported
+   success because nothing exercised the model path — the same bug would have shipped
+   silently and been found by a user.
+2. **Both existing gates were structurally incapable of catching it.**
+   `gen-gateway-policy.py --check` proves only that the generated file matches its
+   source, and both were equally wrong. The policy is *syntactically valid C#*, so the
+   APIM policy compiler accepts it. The duplicate is a runtime exception. Any check
+   that compiles rather than executes has this blind spot, which is now written into
+   the roadmap entry as the reason compilation is not sufficient prevention.
+3. **Rollback restores containers, not infrastructure.** Seven deploys rolled back
+   cleanly while redeploying the same broken policy each time. The app-level rollback
+   worked exactly as designed and could not have helped; the cause was in APIM. That
+   asymmetry is now a P1 in [`roadmap.md`](./roadmap.md) and a warning in the
+   deployment runbook.
+
+Fixed in #285 by grouping failover candidates by residency rather than by model, which
+makes labels unique as a consequence and also closes a latent residency hole — the old
+candidate list would have let a `DataZoneStandard` request fail over to a
+`GlobalStandard` deployment. #287 generalised the guard to every `JObject` in every
+committed policy file.
 
 **What is still open, and why.** `main.parameters.json` still defaults to
 `${AI4IA_APP_ENVIRONMENT=dev}` and hard-enables every feature flag. The *auth* half of

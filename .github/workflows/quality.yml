@@ -290,3 +290,14 @@ jobs:
           python3 -m unittest scripts.tests.test_gating_workflows
         env:
           PYYAML_VERSION: 6.0.3
+
+      - name: Run Markdown table shape tests
+        run: |
+          set -euo pipefail
+          # A dropped line break merges two table rows into one and the second
+          # row vanishes from the rendered page; an unescaped `|` inside a code
+          # span silently adds a phantom column. Both shipped in docs before this
+          # existed, neither is visible in a diff, and neither breaks a link. For
+          # a configuration reference, a swallowed row means an operator never
+          # learns a variable exists.
+          python3 -m unittest scripts.tests.test_markdown_tables
