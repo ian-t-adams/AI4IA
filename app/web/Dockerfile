@@ -29,9 +29,19 @@
 #
 # To refresh:
 #   docker buildx imagetools inspect node:22-alpine
-# and take the `Digest:` line. That is the INDEX digest; do not substitute a
-# per-platform manifest digest or the build breaks on every other
-# architecture. All three FROM lines below must carry the SAME digest --
+#
+# Take the `Digest:` field at the TOP of that output -- the one printed
+# directly under `MediaType: application/vnd.oci.image.index.v1+json`. That is
+# the MANIFEST LIST (image index) digest, and it is the only correct value
+# here. The same command then prints a `Manifests:` block listing one digest
+# per platform (linux/amd64 is currently sha256:76789712..., which is NOT what
+# is pinned above). Copying one of those single-platform digests instead is the
+# easy mistake, and it fails in a confusing way: the image becomes unbuildable
+# on every other architecture -- a local `azd deploy` from an arm64 Mac would
+# fail with a manifest/platform mismatch rather than anything mentioning the
+# pin -- and CI would never catch it, because docker-build runs on amd64.
+#
+# All three FROM lines below must carry the SAME digest --
 # scripts/tests/test_base_image_pins.py fails if they drift apart, and a
 # wrong digest fails docker-build.yml on the PR that introduces it.
 #
