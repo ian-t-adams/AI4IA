@@ -178,6 +178,15 @@ _RESPONSES_NO_TOOLS_NOTICE = (
     "retrieved, or run code, and do not fabricate citations or sources."
 )
 
+# Shown when a turn held a call for approval but the model produced no prose to
+# go with it. Fixed server-side text, never model output: this sentence exists
+# precisely for the case where the model said nothing, and it must not be
+# something injected context can influence.
+_APPROVAL_NEEDED_FALLBACK = (
+    "I need your approval before I can run one of the tools required to answer "
+    "that. Review the request below and approve it if it looks right."
+)
+
 
 def _history(messages: list[Message], system_prompt: str | None) -> list[dict]:
     out: list[dict] = []
@@ -1420,6 +1429,27 @@ async def chat(
     elif not title_updated:
         await repo.touch_session(user.internal_user_id, session.id)
 
+    # One sink and one policy per turn, hoisted above BOTH tool-calling paths.
+    # The agent path has always had them; the plain-chat path below (the MAIN
+    # chat, which is where web search and browse_url actually live) built a bare
+    # ``ToolContext`` and had neither. That was invisible while synthetic
+    # capabilities were ungoverned — nothing on that path could ever be held. Now
+    # that they carry specs, a held call there would deny with no way for the
+    # user to approve it, so the plain path gets the same policy, taint bit,
+    # redeemed approvals and sink as the agent path.
+    #
+    # The sink is bounded and de-duplicating (see agents/approvals.py) so
+    # injected text cannot paper the UI with prompts until one is clicked
+    # through. Fail-secure lookup: if settings were somehow absent, gate
+    # everything rather than silently running ungated. A security control must
+    # not be switchable off by an attribute that isn't there.
+    approval_policy: ApprovalPolicy = getattr(
+        getattr(request.app.state, "settings", None),
+        "tool_approval_mode",
+        ApprovalPolicy.always,
+    )
+    approval_sink = ApprovalSink()
+
     # Tool-enabled / orchestrator agent turn: run the gateway-native tool-calling
     # loop governed by the tool-safety registry. The model picks/sequences tools;
     # we authorize and execute each call. Orchestrators (agents with ``links``)
@@ -1430,19 +1460,6 @@ async def chat(
     # when streaming). Plain agents (no tools, no links) fall through to the direct
     # model path below, which keeps true token streaming.
     if agent is not None and (agent.tools or agent.links):
-        # One sink per turn: the runtime records every call it held for approval,
-        # and the streaming/non-streaming tails below mint, persist and return
-        # them. Bounded and de-duplicating (see agents/approvals.py) so injected
-        # text cannot paper the UI with prompts until one is clicked through.
-        # Fail-secure lookup: if settings were somehow absent, gate everything
-        # rather than silently running ungated. A security control must not be
-        # switchable off by an attribute that isn't there.
-        approval_policy: ApprovalPolicy = getattr(
-            getattr(request.app.state, "settings", None),
-            "tool_approval_mode",
-            ApprovalPolicy.always,
-        )
-        approval_sink = ApprovalSink()
         ctx = ToolContext(
             correlation_id=correlation_id,
             approval_policy=approval_policy,
@@ -1831,7 +1848,13 @@ async def chat(
     plain_capabilities_possible = plain_compute_active or web_search is not None
     if plain_capabilities_possible and api == "chat":
         try:
-            ctx = ToolContext(correlation_id=correlation_id)
+            ctx = ToolContext(
+                correlation_id=correlation_id,
+                approval_policy=approval_policy,
+                untrusted_context=untrusted_context,
+                invocation_approvals=invocation_approvals,
+                approval_sink=approval_sink,
+            )
             plain_tools: list[dict] = []
             plain_handlers: dict = {}
             if plain_compute_active:
@@ -1940,6 +1963,7 @@ async def chat(
                                 content_for_model=content_for_model,
                                 user_message_id=user_msg.id,
                                 fallback=_rag_fallback,
+                                get_approval_drafts=approval_sink.drafts,
                             ),
                         ),
                         media_type="text/event-stream",
@@ -1957,17 +1981,26 @@ async def chat(
                     extra_tools=plain_tools or None,
                     extra_handlers=plain_handlers or None,
                 )
-                if run.text.strip():
+                plain_drafts = approval_sink.drafts()
+                # Normally the model answers in prose after a held call (see
+                # ``_APPROVAL_HELD_MESSAGE``). If it returned nothing at all, the
+                # pre-existing fall-through to the RAG path would re-answer
+                # WITHOUT tools and silently discard the prompt — the user would
+                # get a fluent reply and never learn that a call was held. A
+                # security prompt must fail visible, so a held turn is finished
+                # here either way, with a fixed sentence when the model gave none.
+                if run.text.strip() or plain_drafts:
                     assistant = Message(
                         sessionId=body.sessionId,
                         userId=user.internal_user_id,
                         role=MessageRole.assistant,
-                        content=run.text,
+                        content=run.text if run.text.strip() else _APPROVAL_NEEDED_FALLBACK,
                         status=MessageStatus.complete,
                         model=deployment.deploymentName,
                         agent=agent_name,
                         steps=persisted_trace(run.steps) or None,
                     )
+                    approval_events = _mint_approval_events(assistant, plain_drafts)
                     await repo.add_message(user.internal_user_id, assistant)
                     await memory.remember(
                         user.internal_user_id, body.sessionId, content_for_model
@@ -1982,7 +2015,15 @@ async def chat(
                         agent=agent_name,
                         correlation_id=correlation_id,
                     )
-                    return {"sessionId": body.sessionId, "message": assistant}
+                    plain_reply: dict[str, object] = {
+                        "sessionId": body.sessionId,
+                        "message": assistant,
+                    }
+                    if approval_events:
+                        # The one and only delivery of these grants; the persisted
+                        # record keeps just their hashes.
+                        plain_reply["approvals"] = approval_events
+                    return plain_reply
         except Exception:  # noqa: BLE001 - the plain tool loop must never break a turn
             logger.warning(
                 "plain-chat tool loop failed; falling back to normal answer",

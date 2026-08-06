@@ -254,14 +254,37 @@ is counted and surfaced as a warning. Without that, padding a call with filler
 keys would push an exfiltration's destination off the card while it still went
 out on the wire.
 
-Two limits are deliberate and worth knowing. The gate covers registry-governed
-tools (every MCP tool on both planes) and **not** the synthetic capabilities the
-runtime dispatches ahead of the registry — web search, `browse_url`, code
-execution, document processing — which have no `ToolSpec` to read a risk off;
-`browse_url` in particular remains an ungated egress channel. And provenance is
-tracked as a **turn-level** taint bit ("untrusted content entered this turn",
-latched on again by any tool result), not as per-argument dataflow. Posture is
-selectable via `AI4IA_TOOL_APPROVAL_MODE`; see
+The gate covers **both** dispatch routes. A registry-governed tool (every MCP tool
+on both planes) reads its risk from its registered `ToolSpec`; a *synthetic*
+capability — web search, `browse_url`, code execution, media generation, memory,
+document reads — reads its risk from `agents/synthetic_governance.py`. Those used
+to have no spec at all, so they were dispatched ahead of the registry and the gate
+could not see them; `browse_url` was the consequence that mattered. A synthetic
+capability with no entry in that table is now *refused* rather than run, so a new
+capability cannot acquire an execution route without also acquiring a risk.
+
+Three postures follow from what an attacker who controls a document can actually
+do with each capability:
+
+| posture | capabilities | why |
+| --- | --- | --- |
+| held on every turn | `browse_url`, `run_code` | the model chooses the destination or the program, so no server-side boundary constrains the effect |
+| held only on a turn carrying untrusted content | the four `*_search` tools, `generate_image`, `generate_video`, `remember_memory`, `export_document` | the destination is fixed by server config and the effect is confined to the caller's own data, so injected text choosing the payload is the whole of the risk — on a clean turn the user is the only possible author |
+| never held | `recall_memory`, `fetch_document`, `process_document`, `analyze_attachment`, `delegate_to_agent` | reads over the caller's own data, or a router onto an already-governed sub-turn: no egress, no durable write |
+
+The middle posture is declared per tool (`ToolSpec.injection_only_risk`), not by
+the operator, and it only ever relaxes a call to `tainted` strength — never to
+`off`. It exists so a capability whose risk really is injection-borne can say so
+instead of being mislabelled `safe` to dodge a prompt it does not warrant.
+
+Two limits remain, both deliberate. **Unattended runs are exempt**: a workflow
+step has no open request to return a grant on and nobody watching to click it, so
+holding a call there would mean denying it silently and forever;
+`workflows/runner.py` therefore passes an explicit `ApprovalPolicy.off`, and
+closing that properly needs an out-of-band approval channel for unattended runs.
+And provenance is tracked as a **turn-level** taint bit ("untrusted content
+entered this turn", latched on again by any tool result), not as per-argument
+dataflow. Posture is selectable via `AI4IA_TOOL_APPROVAL_MODE`; see
 [Feature enablement](./runbooks/feature-enablement.md).
 
 ### Durable workflow execution

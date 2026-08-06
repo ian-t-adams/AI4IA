@@ -540,6 +540,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- **Every first-party capability is now behind the tool-approval gate**
+  (`agents/synthetic_governance.py`, audit finding P1-13). #272 bound approval to
+  one call with one exact argument set, but it read risk off a `ToolSpec` and only
+  registry tools have one — and the registry governs exactly two `safe` built-ins.
+  The fifteen capabilities that actually reach the network, spend money, execute
+  code, or write durable state are dispatched from `extra_handlers` *before* the
+  registry path, so the gate could not see any of them. `browse_url` — an
+  arbitrary-URL fetch whose destination a poisoned document can name — was the
+  live consequence: the model would fetch the attacker's URL, the turn would
+  complete normally, and nothing would ask anyone.
+
+  Each one now carries a real spec, so one definition of risk serves both dispatch
+  routes and the existing `AI4IA_TOOL_APPROVAL_MODE` decides. `browse_url` and
+  `run_code` are held on **every** turn, because the model chooses the destination
+  or the program. The four web searches, image/video generation,
+  `remember_memory` and `export_document` are held only on a turn that carried
+  untrusted content: their destination is fixed by server configuration and their
+  effect is confined to the caller's own data, so injected text choosing the
+  payload is the whole of the risk, and prompting on a clean turn would be
+  friction with no security value. That relaxation is declared per tool
+  (`ToolSpec.injection_only_risk`), is not operator-configurable, and never
+  weakens a call below `tainted` strength. Read-only capabilities and
+  `delegate_to_agent` are not held — their untrusted output is covered by the
+  runtime's taint latch, which gates the *next* outbound call.
+
+  A synthetic capability with no classification is **refused**, not run, so a new
+  capability cannot acquire an execution route without also acquiring a risk.
+  Proven rather than asserted: a poisoned session document steers `browse_url` at
+  an attacker host carrying a canary, the model complies, the turn completes
+  normally and the web client sees nothing — and the byte-identical turn *does*
+  egress with the gate off, so the test is not passing because nothing was
+  attempted. Thirteen guards were mutation-tested; all thirteen killed their test.
+
+  Two things fell out of the work. The **main chat** — where `browse_url` and web
+  search actually live — had no approval wiring at all: it built a bare
+  `ToolContext` with no policy, no taint bit and no sink, and never minted a
+  prompt. That was invisible while nothing on that path could be held; gating
+  without fixing it would have denied calls with no way to approve them. And a
+  held turn whose model produced no prose used to fall through to a tool-less RAG
+  answer, silently discarding the prompt. Both are fixed and pinned.
+
+  Known limit, deliberate and tested: a **workflow step runs unattended**, so
+  there is no open request to return a grant on and nobody watching to click it.
+  `workflows/runner.py` opts out with an explicit `ApprovalPolicy.off` rather than
+  denying every step forever. Workflow traffic is not behind this control; closing
+  that needs an out-of-band approval channel for unattended runs.
+
 - **Proxy-ingress credential no longer emitted, and the key was rotated** (#266).
   `ProxyConfig.ValidateAuthKey1` held the proxy-ingress APIM subscription key and was
   serialized unredacted into a startup config event, because the redactor matched key

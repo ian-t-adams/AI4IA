@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..agents.agent_catalog import AgentCatalog
+from ..agents.approvals import ApprovalPolicy
 from ..agents.capabilities import CapabilityBuilder, Handler
 from ..agents.runtime import run_agent_turn
 from ..agents.tool_exec import ToolContext, ToolExecutor
@@ -224,7 +225,29 @@ async def run_workflow_step(
             gateway=gateway,
             registry=registry,
             executor=executor,
-            ctx=ToolContext(correlation_id=correlation_id),
+            # EXPLICIT exemption from per-invocation approval, recorded rather
+            # than inherited. A workflow run is unattended by construction: there
+            # is no open request to return a grant on and no one watching to
+            # click it, so "hold for approval" here does not mean "ask" — it
+            # means "deny, silently, forever". Leaving the default ``always`` in
+            # place would have broken every step that reads a document and then
+            # writes memory, or searches the web, the moment those capabilities
+            # acquired specs (see agents/synthetic_governance.py) — turning a
+            # security fix into a feature outage with no signal.
+            #
+            # This is therefore the one place the P1-13 seam stays open, and it
+            # is stated plainly rather than hidden behind an absent attribute.
+            # What still applies: the step's tool surface is built from the
+            # agent's own declared tools by a builder the owner configured, every
+            # capability is closure-bound to that user, and the registry path is
+            # unaffected. Closing it properly needs a durable, out-of-band
+            # approval channel for unattended runs — a product feature, not a
+            # flag flip, and a decision for the owner rather than a default to
+            # change quietly here.
+            ctx=ToolContext(
+                correlation_id=correlation_id,
+                approval_policy=ApprovalPolicy.off,
+            ),
             params=None,
             max_iters=_STEP_MAX_ITERS,
             extra_tools=extra_tools,

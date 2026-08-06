@@ -221,6 +221,23 @@ Custom MCP servers and Web IQ search tools are feature-gated. When enabled:
   `video_search`, `image_search`, and `browse_url` — and their output is bounded
   and treated as untrusted model context.
 
+Some tool calls are held until you approve them. You will see a card naming the
+tool, where the call is going, and the arguments it would send; the reply arrives
+normally and the call runs only after you approve *that* card. Approving one call
+does not approve the next one, and the approval expires in ten minutes.
+
+`browse_url` (fetching a web page) and `run_code` (running code over one of your
+documents) ask every time, because the model picks the address or the program.
+Web searches, image and video generation, and saving to memory ask only when the
+turn also contained something the assistant read on your behalf — a document you
+uploaded, a saved memory, or an earlier tool result — since that is the case where
+the request may not have come from you. An ordinary search or "remember that I
+prefer X" is not interrupted.
+
+If you did not ask for what the card describes, do not approve it: a document can
+contain text written to make the assistant act on the author's behalf rather than
+yours, and the card is where that becomes visible.
+
 If the controls are hidden, the feature is disabled for that environment.
 
 ## Admin views

@@ -14,10 +14,15 @@ Governance is centralized: every invocation is re-checked against the tool-safet
 registry (defense in depth on top of schema-time filtering), and every *external
 or destructive* invocation is additionally gated on a fresh, per-call human
 approval bound to the exact arguments the model emitted (see
-``agents/approvals.py``). The second gate is deliberately independent of the
-first: the registry's approval check keys off a tool's standing posture, which a
-``trusted`` MCP server switches off, and standing trust is precisely what an
-indirect prompt injection borrows when it chooses an outbound call's arguments.
+``agents/approvals.py``). That second gate covers **both** dispatch routes: a
+registry tool reads its risk from its registered ``ToolSpec``, and a *synthetic*
+capability injected through ``extra_handlers`` reads its risk from
+``agents/synthetic_governance.py``. A synthetic capability with no classification
+there is refused rather than run, so a new capability cannot acquire an execution
+route without also acquiring a risk. The second gate is deliberately independent
+of the first: the registry's approval check keys off a tool's standing posture,
+which a ``trusted`` MCP server switches off, and standing trust is precisely what
+an indirect prompt injection borrows when it chooses an outbound call's arguments.
 Argument/result content is only ever credential-redacted (``redact_obj``) before
 it lands on the in-process ``AgentStep`` trace, and free-text log lines never
 include it at all — only the tool name and fixed, bounded status/reason strings
@@ -57,8 +62,9 @@ from .approvals import (
     draft_for_call,
     requires_invocation_approval,
 )
+from .synthetic_governance import synthetic_spec
 from .tool_exec import ToolContext, ToolExecutor, ToolValidationError
-from .tools import DenyReason, ToolRegistry, is_safe_tool_name, redact, redact_obj
+from .tools import DenyReason, ToolRegistry, ToolSpec, is_safe_tool_name, redact, redact_obj
 
 logger = logging.getLogger(__name__)
 
@@ -147,9 +153,11 @@ async def run_agent_turn(
     async handler in ``extra_handlers`` keyed by the function name. Synthetic
     names MUST be disjoint from the real executor tool names (asserted below, fail
     closed) so a synthetic capability can never shadow a governed tool. Synthetic
-    handlers bypass the registry authorize/execute path but are still counted
-    against the per-turn tool-call budget and are wrapped so an exception becomes
-    a structured tool result rather than crashing the turn.
+    handlers bypass the registry authorize/execute path but are **not**
+    ungoverned: each one's risk is declared in ``agents/synthetic_governance.py``
+    and runs through the same per-invocation approval gate as a registry tool, an
+    unclassified one is refused, and they are still counted against the per-turn
+    tool-call budget and wrapped so an exception becomes a structured tool result.
     """
     convo: list[dict[str, Any]] = [dict(m) for m in messages]
     resolved_tool_names = [ctx.tool_aliases.get(name, name) for name in tool_names]
@@ -209,6 +217,78 @@ async def run_agent_turn(
                 await on_step(step)
             except Exception:  # noqa: BLE001 - a UI callback must never break a turn
                 logger.debug("on_step callback failed", exc_info=True)
+
+    # --- Denial paths, shared by both dispatch routes -------------------------
+    # Factored out because the synthetic and registry routes must produce
+    # byte-identical governance output: the same telemetry event, the same
+    # security block, the same structured tool result, the same trace step. Two
+    # copies of this would be two things to keep in step, and the one that
+    # drifted would be the one nobody was watching.
+    #
+    # Both return True when the caller should stop offering tools: a second
+    # denial of the same tool means the model is looping on it.
+
+    async def deny(
+        *, name: str, safe_name: str, call_id: str | None, reason: str
+    ) -> bool:
+        emit_custom_event(
+            "tool_authorization",
+            {
+                "tool": safe_name,
+                "source": "agent_runtime",
+                "outcome": "denied",
+                "reason": reason,
+            },
+        )
+        emit_security_block("tool_authorization", reason, "agent_runtime")
+        convo.append(
+            _tool_message(call_id, {"error": {"type": "authorization_denied", "message": reason}})
+        )
+        await record(AgentStep(kind="tool_denied", tool=safe_name, detail=reason))
+        logger.info("agent tool denied: tool=%s reason=%s", safe_name, reason)
+        repeat = name in denied_once
+        denied_once.add(name)
+        return repeat
+
+    async def hold_for_approval(
+        *,
+        spec: ToolSpec,
+        name: str,
+        safe_name: str,
+        call_id: str | None,
+        parsed: dict[str, Any],
+        digest: str,
+    ) -> bool:
+        reason = DenyReason.approval_required.value
+        if ctx.approval_sink is not None:
+            ctx.approval_sink.request(
+                draft_for_call(
+                    spec,
+                    tool=name,
+                    label=labels.get(name),
+                    arguments=parsed,
+                    digest=digest,
+                )
+            )
+        emit_custom_event(
+            "tool_authorization",
+            {
+                "tool": safe_name,
+                "source": "agent_runtime",
+                "outcome": "denied",
+                "reason": reason,
+                "gate": "invocation_approval",
+            },
+        )
+        emit_security_block("tool_authorization", reason, "agent_runtime")
+        convo.append(
+            _tool_message(call_id, {"error": {"type": reason, "message": _APPROVAL_HELD_MESSAGE}})
+        )
+        await record(AgentStep(kind="tool_denied", tool=safe_name, detail=reason))
+        logger.info("agent tool held for approval: tool=%s", safe_name)
+        repeat = name in denied_once
+        denied_once.add(name)
+        return repeat
 
     base_params = dict(params or {})
     for key in _RESERVED_PARAMS:
@@ -305,19 +385,75 @@ async def run_agent_turn(
                 persist=False,
             )
 
-            # Synthetic capabilities (e.g. delegate_to_agent) are dispatched here,
-            # before the registry path. They are disjoint from real tool names
-            # (asserted at setup), count against the shared tool-call budget, and
-            # are wrapped so a handler error becomes a structured tool result.
+            # --- Per-invocation approval (agents/approvals.py) ---------------
+            # Deliberately layered ON TOP of registry authorization rather than
+            # folded into it: the registry's approval check keys off the tool's
+            # *standing* posture, and standing posture is exactly what a
+            # ``trusted`` MCP server switches off. Being standing-approved says
+            # "this agent may use this tool"; it must never say "this agent may
+            # send THESE arguments to that host". The digest below is computed
+            # from the arguments the model actually emitted, so an approval the
+            # user granted for one call cannot authorize a different one.
             #
-            # SEAM (deliberate gap, stated plainly): synthetic capabilities carry
-            # no ``ToolSpec``, so the per-invocation approval gate below cannot
-            # read a risk off them and does NOT cover them. ``browse_url`` in
-            # particular is an egress channel that stays ungated. Closing that
-            # means giving each synthetic capability a governed spec (or an
-            # explicit gated-name set on ``ToolContext``) and running it through
-            # the same digest check; see agents/approvals.py.
-            if name in handlers:
+            # The governing spec is resolved from ONE of two sources — the
+            # registry for a real tool, ``synthetic_governance`` for a synthetic
+            # capability — and everything after that is shared. That is the
+            # point: a capability cannot acquire a dispatch route without also
+            # acquiring a risk classification, which is precisely what
+            # ``extra_handlers`` used to let it do (audit finding P1-13). If a
+            # synthetic capability has no classification it is REFUSED, not run.
+            is_synthetic = name in handlers
+            spec = synthetic_spec(name) if is_synthetic else registry.get(name)
+            needs_invocation_approval = spec is not None and requires_invocation_approval(
+                spec,
+                policy=ctx.approval_policy,
+                untrusted_context=untrusted_context,
+            )
+            digest = arguments_digest(parsed) if needs_invocation_approval else ""
+            approval_token = approval_key(name, digest) if needs_invocation_approval else ""
+            invocation_approved = (
+                needs_invocation_approval and approval_token in unspent_approvals
+            )
+
+            # Synthetic capabilities (web search, browse_url, memory,
+            # delegate_to_agent, ...) are dispatched here, before the registry
+            # path. They are disjoint from real tool names (asserted at setup),
+            # count against the shared tool-call budget, and are wrapped so a
+            # handler error becomes a structured tool result.
+            #
+            # Ordering mirrors the registry path below: the structural check —
+            # "is this capability governed at all?" — runs FIRST, so an
+            # unclassified capability reports its own precise reason instead of
+            # minting an approval prompt for a call that must not run either way.
+            if is_synthetic:
+                if spec is None:
+                    logger.warning(
+                        "ungoverned synthetic capability refused: tool=%s", safe_name
+                    )
+                    if await deny(
+                        name=name,
+                        safe_name=safe_name,
+                        call_id=call_id,
+                        reason=DenyReason.ungoverned.value,
+                    ):
+                        force_final = True
+                    continue
+                if needs_invocation_approval and not invocation_approved:
+                    if await hold_for_approval(
+                        spec=spec,
+                        name=name,
+                        safe_name=safe_name,
+                        call_id=call_id,
+                        parsed=parsed,
+                        digest=digest,
+                    ):
+                        force_final = True
+                    continue
+                # Spend before dispatch, for the reason spelled out on the
+                # registry path below: entering the handler may already have
+                # caused the side effect.
+                if invocation_approved:
+                    unspent_approvals.discard(approval_token)
                 try:
                     raw_result = await handlers[name](parsed, ctx)
                 except Exception as exc:  # noqa: BLE001 - never crash the turn
@@ -356,33 +492,12 @@ async def run_agent_turn(
                 logger.info("agent delegated: tool=%s", safe_name)
                 continue
 
-            # --- Per-invocation approval (agents/approvals.py) ---------------
-            # Deliberately layered ON TOP of registry authorization rather than
-            # folded into it: the registry's approval check keys off the tool's
-            # *standing* posture, and standing posture is exactly what a
-            # ``trusted`` MCP server switches off. Being standing-approved says
-            # "this agent may use this tool"; it must never say "this agent may
-            # send THESE arguments to that host". The digest below is computed
-            # from the arguments the model actually emitted, so an approval the
-            # user granted for one call cannot authorize a different one.
-            #
-            # Ordering is deliberate too. The registry runs FIRST so cheap,
+            # Ordering is deliberate here too. The registry runs FIRST so cheap,
             # structural denials keep their own precise reason (a disabled or
             # unallowlisted tool must report ``disabled``/``not_allowlisted``,
             # not a spurious approval prompt for a call that could never run).
             # Only a call that would otherwise execute — or one the registry
             # itself held for approval — reaches a human.
-            spec = registry.get(name)
-            needs_invocation_approval = spec is not None and requires_invocation_approval(
-                spec,
-                policy=ctx.approval_policy,
-                untrusted_context=untrusted_context,
-            )
-            digest = arguments_digest(parsed) if needs_invocation_approval else ""
-            approval_token = approval_key(name, digest) if needs_invocation_approval else ""
-            invocation_approved = (
-                needs_invocation_approval and approval_token in unspent_approvals
-            )
             decision = registry.authorize(
                 name,
                 granted_scopes=ctx.granted_scopes,
@@ -400,67 +515,22 @@ async def run_agent_turn(
             # restated so the narrowing is local and obvious rather than inferred
             # three statements up.
             if held_for_approval and spec is not None:
-                reason = DenyReason.approval_required.value
-                if ctx.approval_sink is not None:
-                    ctx.approval_sink.request(
-                        draft_for_call(
-                            spec,
-                            tool=name,
-                            label=labels.get(name),
-                            arguments=parsed,
-                            digest=digest,
-                        )
-                    )
-                emit_custom_event(
-                    "tool_authorization",
-                    {
-                        "tool": safe_name,
-                        "source": "agent_runtime",
-                        "outcome": "denied",
-                        "reason": reason,
-                        "gate": "invocation_approval",
-                    },
-                )
-                emit_security_block("tool_authorization", reason, "agent_runtime")
-                convo.append(
-                    _tool_message(
-                        call_id,
-                        {"error": {"type": reason, "message": _APPROVAL_HELD_MESSAGE}},
-                    )
-                )
-                await record(AgentStep(kind="tool_denied", tool=safe_name, detail=reason))
-                logger.info("agent tool held for approval: tool=%s", safe_name)
-                # One held call per tool is informative; a second means the model
-                # is looping, so cut tools off and force a final answer.
-                if name in denied_once:
+                if await hold_for_approval(
+                    spec=spec,
+                    name=name,
+                    safe_name=safe_name,
+                    call_id=call_id,
+                    parsed=parsed,
+                    digest=digest,
+                ):
                     force_final = True
-                denied_once.add(name)
                 continue
             if not decision.allowed:
                 reason = decision.reason.value if decision.reason else "denied"
-                emit_custom_event(
-                    "tool_authorization",
-                    {
-                        "tool": safe_name,
-                        "source": "agent_runtime",
-                        "outcome": "denied",
-                        "reason": reason,
-                    },
-                )
-                emit_security_block("tool_authorization", reason, "agent_runtime")
-                convo.append(
-                    _tool_message(
-                        call_id,
-                        {"error": {"type": "authorization_denied", "message": reason}},
-                    )
-                )
-                await record(AgentStep(kind="tool_denied", tool=safe_name, detail=reason))
-                logger.info("agent tool denied: tool=%s reason=%s", safe_name, reason)
-                # A second denial of the same tool means the model is looping;
-                # cut tools off so the next call must produce a final answer.
-                if name in denied_once:
+                if await deny(
+                    name=name, safe_name=safe_name, call_id=call_id, reason=reason
+                ):
                     force_final = True
-                denied_once.add(name)
                 continue
 
             # Spend the approval BEFORE dispatching, not after a successful

@@ -50,9 +50,11 @@ feature posture.
 
 **Per-invocation tool approval** (audit finding P1-13) is the inverse of every
 other row here: leaving it alone is the secure choice, and changing it is what
-needs justifying. Every external/destructive tool call — which today means every
-MCP tool on both the BYO and official planes — is held until the user approves
-*that call with those exact arguments*. Marking a server `trusted` or a tool
+needs justifying. Every external/destructive tool call is held until the user
+approves *that call with those exact arguments*. That covers every MCP tool on
+both the BYO and official planes, **and** the first-party synthetic capabilities
+(`browse_url`, the four web searches, `run_code`, image/video generation,
+`remember_memory`, `export_document`). Marking a server `trusted` or a tool
 `requireApproval: never` still decides whether the model is offered the tool; it
 no longer decides what leaves the network, because standing trust is precisely
 the authority an indirect prompt injection borrows when a document, a memory, a
@@ -65,6 +67,22 @@ web result or a previous tool response chooses an outbound call's arguments.
   surface, at the cost of trusting the turn-level taint bit to be complete.
 * `off` — restore the pre-P1-13 behavior exactly. Not a supported posture for a
   deployment where users register their own MCP servers.
+
+**What a user actually sees under the default.** Only two capabilities prompt on
+every use: `browse_url` and `run_code`, because the model chooses the destination
+or the program. Everything else first-party whose destination is fixed by server
+configuration — the four searches, image/video generation, `remember_memory`,
+`export_document` — prompts *only* on a turn that carried untrusted content, so an
+ordinary "search the web for X" or "remember that I prefer Y" is not interrupted.
+That relaxation is declared per tool (`ToolSpec.injection_only_risk`), not
+operator-configurable, and never weakens a call below `tainted` strength.
+
+**Workflow runs are exempt, deliberately.** A scheduled or durable workflow step
+has no open request to hand a grant back on and nobody watching to click it, so
+holding a call there would mean denying it silently and permanently.
+`workflows/runner.py` therefore passes an explicit `ApprovalPolicy.off`, pinned by
+a test. If you rely on workflows to browse or search, that traffic is **not**
+behind this control.
 
 Approvals are short-lived (10 minutes), single-use, and bound to user, session,
 tool and argument digest. "Single-use" is enforced in two independent places,

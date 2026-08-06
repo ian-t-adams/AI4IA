@@ -142,7 +142,7 @@ Verified against the tree at `main` on 2026-08-05, not from memory.
 | P1-10 "tenant-public" is application-public | **Contained, not fixed** — sharing is still not tenant-aware, but startup now refuses when more than one Entra tenant is allowed, so the latent bug cannot be activated by a one-variable change | #283 |
 | P1-11 portal presents stale evidence as live health | **Fixed** — `healthy` now requires a positive Resource Health signal | #266 |
 | P1-12 hard-coded colors bypass theme tokens | **Fixed**, and the severity was understated: measuring the literals made this an accessibility defect, not a style nit. `#fff` on a `var(--accent)` fill is **1.07:1** in the high-contrast theme and sat on three panels' primary action button. All 14 literals now resolve through tokens, `--warn` was added, and two gates enforce it | #266, #271 |
-| P1-13 indirect prompt injection drives preapproved MCP | **Fixed for MCP tools** — approval binds to an argument digest recomputed at dispatch and spent on use; review caught three defects before merge, all fixed and mutation-verified. **Scope is narrower than it sounds**: the registry governs only `calculator` and `get_current_time`, so all 15 first-party synthetic capabilities (`browse_url`, the four searches, `run_code`, memory writes, media generation) remain ungated. Inventory pinned by test | #272 |
+| P1-13 indirect prompt injection drives preapproved MCP | **Fixed** — approval binds to an argument digest recomputed at dispatch and spent on use; review caught three defects before merge, all fixed and mutation-verified (#272). The MCP fix left the larger half open: the registry governs only `calculator` and `get_current_time`, so all 15 first-party synthetic capabilities were ungated. They now carry specs of their own, an unclassified one is refused rather than run, and `browse_url` has a canary with a non-vacuity control. **Unattended workflow runs stay exempt** by explicit, tested opt-out — there is nobody to ask | #272, #296 |
 | P1-14 citations are presentation, not provenance | **Open** | — |
 | P1-15 admin refresh can exhaust a 1 GiB replica | **Fixed** — the dashboard is served from one projected ledger scan instead of seven | #270 |
 | P1-16 live-default chat is not token-streaming | **Partially fixed** — proxy now flushes per SSE event; the non-streaming tool loop remains | #266 |
@@ -214,11 +214,11 @@ work is a *turn-level* taint bit and is deliberately not claimed as more than th
 
 One partially-closed item deserves naming rather than burying in the table, and it
 is larger than the original disclosure implied. P1-13's per-invocation approval
-covers every MCP tool on both planes, because those carry a `ToolSpec` through the
-registry. It does **not** cover the synthetic capabilities the runtime dispatches
+covered every MCP tool on both planes, because those carry a `ToolSpec` through the
+registry. It did **not** cover the synthetic capabilities the runtime dispatches
 from `extra_handlers` before the registry path — and measuring showed that is
 almost everything. The registry governs exactly two built-ins, `calculator` and
-`get_current_time`, both `safe`. All fifteen first-party capabilities are
+`get_current_time`, both `safe`. All fifteen first-party capabilities were
 synthetic and ungated:
 
 `browse_url`, `web_search`, `news_search`, `video_search`, `image_search`,
@@ -226,15 +226,29 @@ synthetic and ungated:
 `process_document`, `analyze_attachment`, `fetch_document`, `export_document`,
 `delegate_to_agent`.
 
-`browse_url` is the clearest exfiltration channel because a poisoned document can
-name the destination, but the four search tools carry attacker-influenced *query
-text* to a third party, `run_code` executes model-authored code, and
-`remember_memory` writes durable state. Gating them is a product decision — under
-`always` the user would be prompted on every web search — so it is not something
-this audit changes unilaterally. What it does now is prevent the list growing by
-accident: `app/api/tests/test_ungated_capabilities.py` fails when a sixteenth
-capability appears, until someone records why it is safe to leave ungated or gives
-it a `ToolSpec`.
+**Closed 2026-08-06.** Each of those now carries a real `ToolSpec` in
+`agents/synthetic_governance.py`, so one definition of risk serves both dispatch
+routes and the existing `ApprovalPolicy` decides. `browse_url` and `run_code` are
+held on every turn, because the model chooses the destination or the program. The
+four searches, media generation, `remember_memory` and `export_document` are held
+only on a turn that carried untrusted content: their destination is fixed by
+server configuration and their effect is confined to the caller's own data, so
+injected text choosing the payload is the whole of the risk, and prompting on a
+clean turn would be friction with no security value. That relaxation is declared
+per tool (`ToolSpec.injection_only_risk`) rather than by the operator, and never
+weakens a call below `tainted` strength. The four read-only capabilities and
+`delegate_to_agent` are not held; their untrusted output is covered by the
+runtime's taint latch, which gates the *next* outbound call. A synthetic
+capability with no classification is now refused at runtime rather than run, so
+the list cannot grow silently in the dangerous direction either;
+`app/api/tests/test_ungated_capabilities.py` pins the split in both directions and
+`app/api/tests/test_synthetic_capability_gate.py` carries the `browse_url` canary
+(and its non-vacuity control: the identical turn *does* egress with the gate off).
+
+What remains open, deliberately: a **workflow step** runs unattended, so holding a
+call there would deny it silently and forever. `workflows/runner.py` opts out with
+an explicit `ApprovalPolicy.off`, pinned by a test. Closing that needs a durable,
+out-of-band approval channel for unattended runs.
 
 Two items are honestly partial rather than done. P1-2 locks `store: false` but has no
 entitlement or usage accounting for Code Interpreter, and P1-16 fixed the proxy's SSE

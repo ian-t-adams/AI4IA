@@ -6,9 +6,12 @@ End-to-end through the chat endpoint:
   ``app.state.document_compute`` is None, the intent router never runs, neither
   compute tool is ever offered, and a normal answer is returned.
 * **Enabled.** A compute-intent turn routes through the governed tool loop: the
-  model calls ``run_code``, the Code Interpreter (a fake here) runs over the ready
-  document, and the resolved answer is returned. A plain Q&A turn does NOT route
-  to compute even when enabled.
+  model calls ``run_code``, which is now a *governed* synthetic capability
+  (``agents/synthetic_governance.py``) and is therefore held for the user's
+  per-invocation approval on first ask. Once the user approves that exact call,
+  the Code Interpreter (a fake here) runs over the ready document and the
+  resolved answer is returned. A plain Q&A turn does NOT route to compute even
+  when enabled.
 
 All IO is injected (in-memory stores + a fake Code Interpreter + a scripted
 tool-calling gateway); no network.
@@ -152,19 +155,45 @@ def test_compute_disabled_by_default():
 
 # --- enabled: compute-intent turn routes to run_code ---
 async def test_compute_turn_invokes_run_code():
+    """``run_code`` is held on first ask, then runs for real once approved.
+
+    ``run_code`` executes model-authored code in an Azure-managed sandbox reached
+    directly rather than through the gateway, so it is classified ``external``
+    with no ``injection_only_risk`` relaxation: under the default ``always``
+    policy every invocation raises a prompt. Both halves are asserted here — the
+    hold is not useful if the approval does not then work, and the approval is
+    not useful if the hold can be skipped.
+    """
     client = _make_client(document_understanding_enabled=True, document_compute_enabled=True)
     try:
         uid = _uid(client)
         doc = await _seed_ready_doc(client, uid)
         ci = FakeCI()
         _inject_compute(client, ci)
-        gw = ScriptedGateway(doc_id=doc.id)
-        client.app.state.gateway = gw
+        client.app.state.gateway = ScriptedGateway(doc_id=doc.id)
 
         sid = _new_session(client)
+        body = {"sessionId": sid, "content": "Sum the amounts in the spreadsheet.", "stream": False}
+        held = client.post("/api/chat", json=body)
+        assert held.status_code == 200, held.text
+        # Nothing ran, and the user was asked about this exact call.
+        assert ci.calls == []
+        prompts = held.json()["approvals"]
+        assert len(prompts) == 1
+        assert prompts[0]["tool"] == "run_code"
+        assert prompts[0]["argumentsPreview"]["task"] == "sum the amounts"
+
+        # Same call, same arguments (fresh gateway so the script re-emits it),
+        # now carrying the grant the server minted.
+        client.app.state.gateway = ScriptedGateway(doc_id=doc.id)
         resp = client.post(
             "/api/chat",
-            json={"sessionId": sid, "content": "Sum the amounts in the spreadsheet.", "stream": False},
+            json={
+                **body,
+                "approvals": [
+                    {"requestId": prompts[0]["id"], "grant": prompts[0]["grant"]}
+                ],
+            },
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["message"]["content"] == "The total is 30."
