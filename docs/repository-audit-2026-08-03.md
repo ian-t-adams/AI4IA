@@ -16,8 +16,11 @@ has drifted from the implementation and live environment.
 
 > **Written 2026-08-03. See [the disposition](#immediate-action--status-as-of-2026-08-05)
 > for what has since been fixed** — the credential defect is fixed and the key is
-> rotated, but the production-completeness verdict above still stands: the
-> deployment-posture findings (P1-3, P1-4, P1-7) are untouched.
+> rotated, but the production-completeness verdict above still stands. P1-3 and
+> P1-4 both remain open (P1-4's first half landed in #294; see the
+> [roadmap](./roadmap.md)), and P1-7 is only partly closed: the deployed artifact
+> is now immutable and identifiable, but it is still not the artifact the PR
+> tested, and there is no SBOM, signature, provenance, or blocking image scan.
 
 A second phase exercised the public deployment in a real browser, ran a controlled
 HTTP/SSE chat round trip through the actual FastAPI application, audited performance
@@ -133,7 +136,7 @@ Verified against the tree at `main` on 2026-08-05, not from memory.
 | P1-4 gateway-only routing is convention, not IAM | **Open** — `disableLocalAuth` still defaults false | — |
 | P1-5 APIM key is a non-secure output | **Fixed** — compiled ARM emits `securestring` | #266 |
 | P1-6 no post-deploy proof or rollback | **Fixed**, and proven in anger on its first day — it caught a real production outage seven times running and its rollback kept the app serving (see below). Pre-deploy revision capture, hard rollout/health/web/proxy/domain assertions, an authenticated gateway canary, and automatic rollback. Does not cover a cancelled run or job timeout, and does not roll back infrastructure | #274 |
-| P1-7 tested artifact is not the deployed artifact | **Open** | — |
+| P1-7 tested artifact is not the deployed artifact | **Partly fixed** — both app base images are pinned by digest (verified by `docker-build` building them on every PR), and `deploy.yml` now builds each service once and deploys `--from-package <ref>@sha256:<digest>` instead of letting azd rebuild, so the deployed artifact is identifiable and traceable to a commit. **Still open**: the image is built by the deploy workflow rather than promoted from the PR that tested it (promoting the literal PR image means PR code pushing to the production registry — a posture decision); `proxy/Dockerfile`'s MCR bases stay on moving tags because CI does not build that image; and there is still no SBOM, signature, provenance, blocking image scan, or lock-derived Python install | #296 |
 | P1-8 teardown destroys data it cannot restore | **Fixed** — `-Force` now requires `-AcknowledgeDataLoss` and refuses before any `az` call; `capture-data-recovery-state.ps1` records the Cosmos restorable-instance id, a blob manifest, and secret names. Blob still has no restore path — the capture makes that a decision rather than a discovery | #266, #273 |
 | P1-9 sharing read failure can revoke an ACL | **Fixed** | #266 |
 | P1-10 "tenant-public" is application-public | **Contained, not fixed** — sharing is still not tenant-aware, but startup now refuses when more than one Entra tenant is allowed, so the latent bug cannot be activated by a one-variable change | #283 |
@@ -191,11 +194,15 @@ committed policy file.
 that posture is now closed — `apiAllowDevAuth` defaults `false`, so a clean-room deploy
 refuses to start rather than trusting a client-supplied identity header
 ([P1-3](#p1-3-a-fresh-azd-deployment-is-public-dev-authenticated-and-expensive)) — but
-the cost and feature-surface halves are not, and neither is P1-4 (gateway-only routing
-is convention, not IAM; `disableLocalAuth` still defaults false) or P1-7 (the tested
-artifact is not the deployed artifact). Those need production-versus-demo deploy
-profiles, plus RBAC and image-promotion changes that are posture decisions for the
-owner rather than defects to patch.
+the cost and feature-surface halves are not, and neither is P1-4 (see the
+[roadmap](./roadmap.md) for where that stands after #294). P1-7 is now *partly*
+closed — the base images are digest-pinned and `deploy.yml` builds once and deploys that
+digest rather than letting azd rebuild, so the running artifact is immutable and traceable
+to a commit — but the image is still produced by the deploy workflow rather than promoted
+from the PR that tested it, and there is no SBOM, signature, provenance, or blocking image
+scan. Those remaining pieces need production-versus-demo deploy profiles, plus RBAC and
+image-promotion changes that are posture decisions for the owner rather than defects to
+patch.
 
 The other two are feature work with no safe shortcut: P1-10 (tenant-public means
 application-public) is now *contained* — startup refuses when more than one Entra
