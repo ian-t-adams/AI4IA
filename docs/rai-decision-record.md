@@ -1,11 +1,12 @@
 # Responsible AI decision record: annotate-only content filtering
 
-> **STATUS: approval evidenced; review cadence still unset.**
+> **STATUS: complete.** Approval evidenced against the live control plane
+> (2026-08-06); owner named; review cadence set below.
 >
-> Assembled from the implemented state on 2026-08-05, updated 2026-08-06 once the
-> approval evidence was verified against the live control plane. The one field
-> that remains genuinely open is the **expiry / review cadence** — that is a
-> judgement, not a fact, and no amount of inspection produces it.
+> Assembled from the implemented state on 2026-08-05. The review cadence is a
+> judgement rather than a fact — the default recorded here was proposed by the
+> implementer and stands until the owner replaces it. Change the row and the
+> triggers together; a date without triggers is the weaker half.
 
 ## Decision
 
@@ -22,7 +23,8 @@ the basis of that verdict.
 | Approval evidence | The deployed policy itself — see below |
 | Approval reference | Held by the owner (Azure guardrails-modification approval email); not stored in the repo |
 | Scope | All Foundry model deployments in every region, all users |
-| Expiry / next review | **Unset** — see "What would change this decision" |
+| Next scheduled review | **2027-08-06** (annual) |
+| Invalidated immediately by | Any trigger in "Review triggers" below — these do not wait for the annual date |
 
 **Why the deployed policy is the approval artifact.** Azure's control plane refuses
 a RAI policy that disables blocking on the abuse filters unless the subscription
@@ -103,8 +105,30 @@ response.
 That argument depends on the user population staying small, known and internal. It
 stops holding the moment the platform is exposed to a second tenant or to
 unauthenticated use — which is also when audit finding P1-10 (tenant-public means
-application-public) stops being latent. Tie the expiry above to that, not only to a
-date.
+application-public) stops being latent. That is trigger 1 in "Review triggers"
+below, and it is why the review is trigger-driven rather than only annual.
+
+## Review triggers
+
+The annual date is the *backstop*, not the control. The argument above depends on
+facts that can change without anyone revisiting this page, so each of these
+invalidates the decision the day it happens and requires re-approval before the
+annotate-only posture continues:
+
+| # | Trigger | Why it breaks the argument | How you would notice |
+| --- | --- | --- | --- |
+| 1 | A second Entra tenant is allowed, or any unauthenticated access is enabled | The whole justification is "small, known, internal, authenticated". This is also the moment P1-10 (tenant-public means application-public) stops being latent. | Startup already **refuses** when more than one tenant is allowed, so this cannot happen silently — the refusal is the notification. |
+| 2 | A high-severity annotation is observed on a production completion | The premise is that filters would fire on legitimate technical work, not on genuinely harmful content. One high-severity hit is evidence the premise is wrong. | `AppEvents` in the Log Analytics workspace. **Nothing alerts on this today** — see the gap below. |
+| 3 | A new output modality is enabled that this record did not reason about | The decision was made about text completions. Image and video generation have different failure modes and a different blast radius. | A feature flag flip; `docs/runbooks/feature-enablement.md` should point back here. |
+| 4 | The Azure guardrails-modification approval lapses, or a deployment is recreated on a stock policy | The approval *is* the deployed policy. If the policy reverts, the exception has already ended in fact. | `scripts/tests/test_rai_policy.py` pins the posture in IaC; a live drift would need a control-plane read. |
+| 5 | A regulatory or customer commitment requires enforced filtering | External obligation overrides the internal tradeoff. | Owner judgement. |
+
+> **Known gap in trigger 2.** There is no alert on high-severity annotations —
+> they land in telemetry and nothing reads them. That makes the most
+> evidence-driven trigger the one least likely to fire on time. Until an alert
+> exists, treat trigger 2 as "checked at the annual review", not "detected".
+> This is the same gap the "No escalation path" limitation records above; it is
+> repeated here because it directly weakens a control this record depends on.
 
 ## What would change this decision
 

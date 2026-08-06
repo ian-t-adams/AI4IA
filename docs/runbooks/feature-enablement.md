@@ -8,6 +8,15 @@ Use the consolidated parameter/env map in
 [`../configuration-reference.md`](../configuration-reference.md) before changing
 feature posture.
 
+> **Before enabling a new output modality**, read
+> [`../rai-decision-record.md`](../rai-decision-record.md). Every content-safety
+> filter on every deployment is **enabled but non-blocking** under an approved
+> Azure guardrails-modification exception, and that decision was reasoned about
+> *text completions*. Turning on image generation, video generation or a new voice
+> provider extends an unfiltered posture to a modality the record did not consider
+> — which is trigger 3 in its review-trigger table and requires the record to be
+> revisited, not just the flag flipped.
+
 ## Flag inventory
 
 | Feature | API flag / setting | Web flag | IaC parameter | Deployed prerequisites |
