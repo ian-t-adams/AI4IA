@@ -70,14 +70,19 @@ the matching grant, and holding a grant is useless once the record is consumed,
 expired, or asked to authorize different arguments. FastAPI is the trust boundary
 here in the same way ``ChatParams`` is in ``routers/chat.py``.
 
-**Scope, stated plainly.** :func:`requires_invocation_approval` gates tools that
-carry a :class:`~ai4ia_api.agents.tools.ToolSpec` through the registry — which is
-every MCP tool on both planes (they are all ``external`` risk). It does **not** gate
-the synthetic capabilities that the runtime dispatches from ``extra_handlers``
-before the registry path (web search, ``browse_url``, code execution, document
-processing): those have no ``ToolSpec`` to read a risk off, so they are outside this
-seam today. ``browse_url`` in particular remains an unmitigated egress channel. The
-seam for closing that gap is marked in ``runtime.run_agent_turn``.
+**Scope, stated plainly.** :func:`requires_invocation_approval` gates any call that
+carries a :class:`~ai4ia_api.agents.tools.ToolSpec`. Two independent sources supply
+one: the registry, which covers every MCP tool on both planes (all ``external``),
+and :mod:`ai4ia_api.agents.synthetic_governance`, which covers the *synthetic*
+capabilities the runtime dispatches from ``extra_handlers`` — web search,
+``browse_url``, code execution, image/video generation, memory, document reads. A
+synthetic capability with no entry in that table is **refused**
+(``DenyReason.ungoverned``) rather than run: acquiring an execution route without
+also acquiring a risk classification is the failure mode this closes.
+
+The residual gap is unattended execution. A workflow run has no human in the loop,
+so "hold for approval" would degrade to "deny"; ``workflows/runner.py`` therefore
+opts out with an explicit, documented ``ApprovalPolicy.off``. See that call site.
 
 Likewise, ``untrusted_context`` is a **turn-level** taint bit, not per-argument
 provenance: it says "this turn had untrusted content in it", not "this specific
@@ -163,7 +168,17 @@ class ApprovalPolicy(str, Enum):
     result in the same turn). It preserves the ergonomics of a trusted server for
     turns with no injection surface.
 
-    ``always`` (the default) raises a prompt for every external/destructive call.
+    ``always`` (the default) raises a prompt for every external/destructive call
+    **whose risk is not purely injection-borne**. The exception is declared per
+    tool by :attr:`~ai4ia_api.agents.tools.ToolSpec.injection_only_risk`, not by
+    the operator, and it only ever relaxes a call to ``tainted`` strength — never
+    to ``off``. It exists so a tool whose destination is fixed by the server and
+    whose effect is confined to the caller's own data (writing the user's own
+    memory, running the user's own query against the configured search provider)
+    can be classified honestly instead of being mislabelled ``safe`` to avoid a
+    prompt it does not warrant. On a turn with no untrusted content those calls
+    have exactly one possible author — the user — so there is nothing to ask
+    about.
 
     **Approval identity vs. endpoint identity.** An approval is keyed on the
     runtime tool alias, and :func:`~ai4ia_api.agents.mcp_servers.tool_alias`
@@ -235,13 +250,17 @@ def requires_invocation_approval(
     off), which is precisely the property this gate must not inherit. A trusted
     external tool is still an outbound call whose arguments a hostile document
     could have chosen.
+
+    ``spec.injection_only_risk`` is the one spec property that *is* honoured, and
+    it can only ever soften ``always`` to ``tainted`` — never to ``off``. See
+    :class:`ApprovalPolicy`.
     """
     if policy is ApprovalPolicy.off:
         return False
     reaches_out = spec.risk in (ToolRisk.external, ToolRisk.destructive)
     if not reaches_out:
         return False
-    if policy is ApprovalPolicy.always:
+    if policy is ApprovalPolicy.always and not spec.injection_only_risk:
         return True
     return untrusted_context
 

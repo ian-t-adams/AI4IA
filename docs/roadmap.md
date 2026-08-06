@@ -102,13 +102,19 @@ not mistaken for a fix:
   appending a GUID to a variable — but making it genuinely multi-tenant means
   persisting the owner's tenant and comparing it in `library/access.py`, or renaming
   the visibility to `application_public`.
-- **P1-13 — 15 first-party capabilities sit outside the approval gate.** The
-  per-invocation approval control covers MCP tools. The registry governs only
-  `calculator` and `get_current_time`, so `browse_url`, the four search tools,
-  `run_code`, memory writes and media generation are all ungated.
-  `test_ungated_capabilities.py` pins the inventory so it cannot grow silently.
-  Gating them is a **product** decision: under the default `always` policy the user
-  would be prompted on every web search.
+- **P1-13 — closed for the capabilities that matter; unattended runs remain
+  exempt.** Per-invocation approval now covers MCP tools *and* the 15 first-party
+  synthetic capabilities, which get their risk from
+  `agents/synthetic_governance.py` rather than from the registry. `browse_url` and
+  `run_code` are held on every turn; the four searches, media generation,
+  `remember_memory` and `export_document` are held only on a turn that carried
+  untrusted content; the four read-only capabilities and `delegate_to_agent` are
+  not held. `test_ungated_capabilities.py` pins that split in both directions, and
+  an unclassified capability is refused at runtime. What is still open: a
+  **workflow step** runs unattended, so there is nobody to ask and
+  `workflows/runner.py` opts out with an explicit `ApprovalPolicy.off`. Closing
+  that needs a durable, out-of-band approval channel for unattended runs — a
+  product feature, not a flag flip.
 
 ## Accepted tradeoffs (decisions, not gaps)
 

@@ -484,3 +484,98 @@ def test_chat_only_reporting_does_not_disturb_tools_that_do_build() -> None:
     )
     assert [t["function"]["name"] for t in built.tools] == [REMEMBER_TOOL_NAME]
     assert set(built.unavailable) == {"generate_image"}
+
+
+# --- Unattended runs opt out of per-invocation approval, on purpose -------------
+
+
+class _BrowsingGateway:
+    """Emits one ``browse_url`` call, then a final answer."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(
+        self, *, deployment, messages, params=None, correlation_id=None, api="chat"
+    ):
+        self.calls += 1
+        offered = [t["function"]["name"] for t in (params or {}).get("tools", []) or []]
+        if self.calls == 1 and "browse_url" in offered:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "c1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "browse_url",
+                                        "arguments": '{"url": "https://example.com/"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": _USAGE,
+            }
+        return {"choices": [{"message": {"content": "done"}}], "usage": _USAGE}
+
+    async def stream(self, **_kwargs):  # pragma: no cover - runner never streams
+        raise AssertionError("runner must not stream")
+
+
+class _BrowsingWebSearch:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def build_capability(self, *, user_id: str, session_id: str, nonce: str):
+        async def _handler(args: dict[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+            self.calls.append(args)
+            return {"content": "page"}
+
+        schema = {
+            "type": "function",
+            "function": {"name": "browse_url", "parameters": {"type": "object"}},
+        }
+        return [schema], {"browse_url": _handler}
+
+
+async def test_a_workflow_step_is_exempt_from_per_invocation_approval() -> None:
+    """The one place the P1-13 seam stays open, pinned so it stays a decision.
+
+    ``browse_url`` is the capability that is held on *every* chat turn, tainted or
+    not. A workflow step runs it, because ``run_workflow_step`` passes an explicit
+    ``ApprovalPolicy.off``: an unattended run has no open request to return a
+    grant on and nobody watching to click it, so "hold for approval" there does
+    not mean "ask" — it means "deny, silently, forever".
+
+    If someone removes that explicit policy, the default (``always``) takes over
+    and this fails, which is the point: reverting the exemption must break a test
+    rather than quietly break every workflow that reads or searches.
+    """
+    web = _BrowsingWebSearch()
+    state = type("S", (), {"document_retrieval": None, "web_search": web, "memory": None})()
+    builder = capability_builder_for_state(state, user_id="u1", session_id="s1")
+
+    gw = _BrowsingGateway()
+    registry, executor = build_tools()
+    outcome = await run_workflow_step(
+        WorkflowStep(agent="a1", instruction="Do {input}"),
+        index=0,
+        workflow_name="flow",
+        run_input="hello",
+        previous="",
+        composed=AgentCatalog(agents=[_agent("a1")]),
+        deployment="dep-1",
+        gateway=gw,
+        registry=registry,
+        executor=executor,
+        capabilities=builder,
+        correlation_id="cid",
+    )
+
+    assert outcome.result.ok
+    assert web.calls == [{"url": "https://example.com/"}]

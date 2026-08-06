@@ -34,6 +34,11 @@ class DenyReason(str, Enum):
     missing_scopes = "missing_scopes"
     egress_blocked = "egress_blocked"
     approval_required = "approval_required"
+    # A capability the runtime can dispatch but nothing has classified. Distinct
+    # from ``unknown_tool`` (which means "no such tool"): this one is real,
+    # callable, and refused precisely *because* its risk is unknown. See
+    # :mod:`ai4ia_api.agents.synthetic_governance`.
+    ungoverned = "ungoverned"
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,24 @@ class ToolSpec:
     secret_refs: frozenset[str] = field(default_factory=frozenset)
     egress_allowlist: frozenset[str] = field(default_factory=frozenset)
     enabled: bool = True
+    #: This tool's danger is *entirely* injection-borne: its destination is fixed
+    #: by the server and its effect is confined to the caller's own data, so the
+    #: only way it does something the user did not want is if untrusted content
+    #: chose its arguments. On a turn that carried no untrusted content, the only
+    #: possible author of those arguments is the user.
+    #:
+    #: Read by :func:`~ai4ia_api.agents.approvals.requires_invocation_approval`:
+    #: such a tool is gated at ``tainted`` strength even under the ``always``
+    #: policy. It is a property of the *tool*, not an operator override — the
+    #: operator's ``ApprovalPolicy`` still moves only in the safe direction
+    #: (``tainted`` and ``off`` behave identically for these).
+    #:
+    #: This exists so a tool whose risk really is injection-only can say so
+    #: instead of being mislabelled ``safe`` to dodge a prompt it does not
+    #: warrant. Setting it on a tool whose destination the model can choose (an
+    #: arbitrary-URL fetch, an MCP call to a caller-named host) would be a lie,
+    #: and would silently downgrade the control this flag is defined against.
+    injection_only_risk: bool = False
 
     @property
     def needs_approval(self) -> bool:
