@@ -42,14 +42,35 @@ npm run build --if-present
 
 Package scripts currently resolve to `eslint .`, `vitest run`, and `next build`. Local dev uses `npm run dev`. Prefer `npm ci` over `npm install` when validating reproducibility.
 
-`app/web/Dockerfile`'s `FROM node:22-alpine` must track this same version
-deliberately (see the comment above that line). A Dependabot major-version bump
-to `node:26-alpine` was merged the same day `package.json`'s `engines.node` was
-widened to `>=22.0.0 <27` — but that widening only stopped the manifest
-contradicting the image; it was not evidence of an actual Node 26 requirement.
-No CI job exercised the built image at that Node version, and every runtime
-dependency (`next`, `typescript`, `vitest`) is satisfied by any Node 22.x.
-Reverted to `node:22-alpine` on audit; see the parallel Python incident below.
+`app/web/Dockerfile` pins its base as `FROM node:22-alpine@sha256:...` — the tag
+for humans and Dependabot, the digest for enforcement (audit finding P1-7). A
+tag is a mutable pointer, so without the digest `docker-build` on a PR and
+`azd deploy` later can resolve `22-alpine` to different images with no diff
+anywhere to show it. `docker-build` builds both app images on every PR, so a
+wrong digest fails there rather than at deploy time. Refresh with
+`docker buildx imagetools inspect node:22-alpine` and take the `Digest:` line —
+that is the multi-platform INDEX digest; substituting a per-platform manifest
+digest breaks every other architecture. All three `FROM` lines in that
+multi-stage file must carry the same digest.
+
+Do not assume the digest refreshes itself. dependabot-core parses and rewrites
+`tag@sha256:` pairs (`docker/lib/dependabot/docker/file_parser.rb` `FROM_LINE`,
+`update_checker.rb` `#updated_requirements`), but it suppresses a *digest-only*
+refresh of an unchanged **comparable** tag behind the server-side
+`docker_digest_only_update_suppression` experiment, whose state is not
+observable from this repo — and `22-alpine` is a floating tag whose name never
+changes. Treat the refresh as a manual audit step.
+`scripts/tests/test_base_image_pins.py` fails if a pin is dropped, if the stages
+desync, or if the pinned major stops tracking `app-ci.yml`.
+
+The MAJOR must track this same CI version deliberately. A Dependabot
+major-version bump to `node:26-alpine` was merged the same day `package.json`'s
+`engines.node` was widened to `>=22.0.0 <27` — but that widening only stopped
+the manifest contradicting the image; it was not evidence of an actual Node 26
+requirement. No CI job exercised the built image at that Node version, and every
+runtime dependency (`next`, `typescript`, `vitest`) is satisfied by any Node
+22.x. Reverted to `node:22-alpine` on audit; see the parallel Python incident
+below.
 
 `engines.node` is `>=22.22.2 <23`, not the wider `>=22.0.0`: the floor tracks
 whichever direct devDependency demands the most. `eslint@10.6.0` publishes
@@ -83,14 +104,20 @@ or add overrides to silence it.
 
 ### API (`app/api` plus repo-root catalog checks)
 
-CI uses Python 3.12. `app/api/Dockerfile`'s `FROM python:3.12-slim` must track this
-same version deliberately (see the comment above that line) — a June 2026
-Dependabot major-version bump to `python:3.14-slim` went unreviewed for weeks
-(no CI job exercised the built image, and nothing else in the repo asserted the
-two stay in sync). Production `azure-cosmos`/`aiohttp` warning reports prompted the
-review, but the audit did not establish that Python 3.14 caused those warnings.
-`app/web`'s Node base drifted the same way (see the Web section above) — both are
-now pinned back to the CI-tested majors. In `app/api` it installs:
+CI uses Python 3.12. `app/api/Dockerfile` pins its base as
+`FROM python:3.12-slim@sha256:...`, for the same reasons and with the same
+refresh recipe as the Node base above — and this is where the moving-tag risk
+was measured rather than assumed: `python:3.12-slim` moved to a new digest on
+2026-08-05, the day before the pin was taken. The MAJOR.MINOR must track this
+CI version deliberately — a June 2026 Dependabot major-version bump to
+`python:3.14-slim` went unreviewed for weeks (no CI job exercised the built
+image, and nothing else in the repo asserted the two stay in sync). Production
+`azure-cosmos`/`aiohttp` warning reports prompted the review, but the audit did
+not establish that Python 3.14 caused those warnings. `app/web`'s Node base
+drifted the same way (see the Web section above) — both are now pinned back to
+the CI-tested majors, and `scripts/tests/test_base_image_pins.py` now enforces
+that against `app-ci.yml` instead of leaving it to prose. In `app/api` it
+installs:
 
 ```powershell
 python -m pip install --upgrade pip
@@ -151,7 +178,7 @@ so a newly added one is covered the day it is written.
 
 ### Docker image builds
 
-`docker-build` actually builds (never pushes) the `app/web` and `app/api` container images on any PR/push touching `app/web/**` or `app/api/**`, so a broken/renamed base image tag or an install failure specific to the pinned Node/Python version fails CI instead of only surfacing at `azd deploy`. It is separate from `quality`'s `hadolint` job, which only lints Dockerfile syntax and never resolves an image or installs anything:
+`docker-build` actually builds (never pushes) the `app/web` and `app/api` container images on every PR (and on pushes to `main` touching `app/web/**` or `app/api/**`), so a broken/renamed base image tag, a bad digest pin, or an install failure specific to the pinned Node/Python version fails CI instead of only surfacing at `azd deploy`. It is separate from `quality`'s `hadolint` job, which only lints Dockerfile syntax and never resolves an image or installs anything:
 
 ```powershell
 docker buildx build --file app/web/Dockerfile --load app/web
@@ -159,7 +186,7 @@ docker buildx build --file app/api/Dockerfile --load app/api
 docker run --rm <api-image> python -c "import ai4ia_api.main"
 ```
 
-`proxy/Dockerfile` (vendored SimpleL7Proxy) is intentionally out of scope for `docker-build` to avoid touching the gateway build path; it is still linted by `quality`'s `hadolint` job and its binary is compiled/tested by `quality`'s `proxy-dotnet` job. azd owns the real build-and-push path at deploy time (see `azure.yaml`, `deploy.yml`).
+Because both app images are built here on every PR, this is also what makes their base-image digest pins trustworthy: a digest that does not resolve fails on the PR that introduces it. `proxy/Dockerfile` (vendored SimpleL7Proxy) is intentionally out of scope for `docker-build` to avoid touching the gateway build path; it is still linted by `quality`'s `hadolint` job and its binary is compiled/tested by `quality`'s `proxy-dotnet` job. Its `mcr.microsoft.com/dotnet/*` bases are therefore **not** digest-pinned — a pin CI cannot resolve would first fail at deploy time. That exemption is recorded in `scripts/tests/test_base_image_pins.py`, which fails if the proxy ever does get a build job without also getting a pin.
 
 `docker-build`'s `dockerignore-context` job builds separate, throwaway probe images from `app/web/.dockerignore` and `app/api/.dockerignore` plus synthetic root- and nested-depth dotenv files to prove secrets are excluded from the Docker build context recursively (Docker's `.dockerignore` matching is not recursive by default the way Git's `.gitignore` is — a pattern needs an explicit `**/` prefix to match at every depth) while committed `.env.example` files still survive:
 
@@ -168,6 +195,28 @@ python -m unittest scripts.tests.test_dockerignore_context
 ```
 
 Both `.dockerignore` files use `**/.env*` / `!**/.env.example` for exactly this reason; do not narrow either back to an unanchored `.env*` without re-running this test.
+
+### Deploying by digest, not by rebuild
+
+`deploy.yml` does **not** let `azd deploy` build the images. It builds each of the three services once (tagged `<commit sha>`), pushes to the azd-managed ACR, reads back the digest the registry assigned, and then runs one `azd deploy <service> --from-package <loginserver>/ai4ia/<service>-<env>@sha256:<digest>` per service. The digests are written to the job summary, so a running revision traces back to a commit.
+
+Four properties this depends on, all read from the azd source at tag `azure-dev-cli_1.29.0` (the version `Azure/setup-azd` installs here) rather than assumed:
+
+- With `--from-package` set, azd injects the supplied artifact and never calls its packager, so no `docker build` runs (`internal/cmd/service_graph.go`).
+- The containerapp target skips ACR login/tag/push and forwards `Location: packagePath` — the original string — whenever the reference parses and carries a registry (`pkg/project/service_target_containerapp.go`).
+- `ParseContainerImage` has no first-class digest concept, but for `<host>.azurecr.io/repo@sha256:<hex>` it returns no error and sets `Registry` from the leading dot-bearing segment, which is the only field that shortcut reads (`pkg/tools/docker/container_image.go`). **A registry-less reference silently falls back to azd building and pushing it**, which is why the workflow asserts the login server contains a dot.
+- `--from-package` is rejected with `--all` and requires a named service, so the deploy is three invocations. A service added to `azure.yaml` and not to `deploy.yml` would silently stop being deployed; `scripts/tests/test_immutable_image_promotion.py` fails on that.
+
+Repository names deliberately match azd's own `DefaultImageName` (`<project>/<service>-<env>`, lowercased) so a local `azd deploy` and CI keep using the same ACR repositories.
+
+This interacts with the P1-6 verification harness, and getting it wrong would roll back healthy releases. `rollout_problems` used to treat "new revision, unchanged image string" as a failure — sound only while azd tagged every build `azd-deploy-<unix-ts>`. A digest is content-addressed, so an identical rebuild yields an identical reference. `deploy.yml` therefore passes `--expect-image <service>=<reference>` to `post-deploy-verify.py verify`, which asserts the app runs *exactly* the digest this run pushed. That is strictly stronger than the old "it changed" heuristic, which remains as the fallback for callers that cannot name the image. Do not drop those flags.
+
+The images are built **before** the rollback capture on purpose: the rollback step is gated on `steps.capture.outcome == 'success'`, so capturing first would make every failed build "restore" revisions nothing had touched.
+
+```powershell
+python -m unittest scripts.tests.test_base_image_pins
+python -m unittest scripts.tests.test_immutable_image_promotion
+```
 
 ### Infra, manifests, and operational quality
 
@@ -203,10 +252,12 @@ python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deplo
 python3 -m unittest scripts.tests.test_portal_contrast          # WCAG gate for site/assets/styles.css (no build, no other runner)
 python3 -m unittest scripts.tests.test_brand_assets             # every committed logo: coverage, palette, size
 python3 -m unittest scripts.tests.test_dependabot_config        # keeps dependabot.yml and the uv.lock gate in step
+python3 -m unittest scripts.tests.test_base_image_pins          # base images CI builds must be digest-pinned
+python3 -m unittest scripts.tests.test_immutable_image_promotion # deploy.yml builds once and deploys that digest
 python3 -m unittest scripts.tests.test_configuration_reference_reachability  # docs may only name azd vars a deploy can actually read
 ```
 
-`test_custom_domain_preflight` and `test_dependabot_config` need `PyYAML` (pinned in the workflow); the rest are stdlib-only. `security-scan` runs Trivy filesystem/config scans and gitleaks.
+`test_custom_domain_preflight`, `test_dependabot_config`, `test_base_image_pins` and `test_immutable_image_promotion` need `PyYAML` (pinned in the workflow); `test_immutable_image_promotion` additionally needs `bash` and skips without it. The rest are stdlib-only. `security-scan` runs Trivy filesystem/config scans and gitleaks.
 
 The vendored proxy plus AI4IA auth guard tests use .NET 10:
 

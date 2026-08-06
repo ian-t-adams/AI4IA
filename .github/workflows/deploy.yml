@@ -372,16 +372,120 @@ jobs:
         run: azd provision --no-prompt
 
       # ---------------------------------------------------------------------
+      # Build each service image ONCE, push it, and record the digest the
+      # registry assigned (audit finding P1-7).
+      #
+      # `azd deploy` builds all three images from source at deploy time, so the
+      # artifact that runs in production was never the artifact CI tested: same
+      # source, different build, different moment, and -- until the base images
+      # were digest-pinned alongside this change -- potentially a different
+      # `node:22-alpine` / `python:3.12-slim` underneath. Nothing recorded which
+      # bytes were live. Building here and handing the resulting digest to
+      # `azd deploy --from-package` below removes the rebuild and makes the
+      # running revision traceable to a commit.
+      #
+      # Verified against the azd source at tag azure-dev-cli_1.29.0, the version
+      # Azure/setup-azd installs for this workflow:
+      #   * internal/cmd/service_graph.go -- with --from-package set, azd injects
+      #     the supplied artifact directly and never calls serviceManager.Package,
+      #     so no `docker build` runs.
+      #   * pkg/project/service_target_containerapp.go `Publish` -- when the
+      #     reference parses AND carries a registry, azd skips ACR login/tag/push
+      #     and forwards `Location: packagePath`, the ORIGINAL string. The digest
+      #     is not re-resolved, re-tagged or re-pushed.
+      #   * pkg/tools/docker/container_image.go `ParseContainerImage` -- has no
+      #     first-class digest concept, but for `<host>.azurecr.io/repo@sha256:x`
+      #     it returns no error and sets Registry from the leading dot-bearing
+      #     segment, which is the only field the shortcut above reads. A
+      #     registry-LESS reference would silently fall back to azd's own push,
+      #     hence the fully-qualified login server and the dot assertion below.
+      #
+      # Deliberately BEFORE the rollback capture. A build failure here must fail
+      # the job WITHOUT firing the P1-6 rollback, and that step is gated on
+      # `steps.capture.outcome == 'success'`. Pushing to ACR changes no running
+      # revision, so at this point there is genuinely nothing to restore.
+      #
+      # Repository names match azd's own DefaultImageName
+      # (`<project>/<service>-<env>`, lowercased -- pkg/project/container_helper.go)
+      # so a local `azd deploy` and this workflow keep writing to the same ACR
+      # repositories instead of forking into two parallel sets.
+      - name: Build and push service images, recording their digests
+        id: images
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          # Same derivation as the custom-domain preflight above: must match
+          # infra/main.bicep's `rg-${workload}-${environmentName}`.
+          rg="rg-${AI4IA_WORKLOAD:-ai4ia}-${AZURE_ENV_NAME}"
+          registry="$(az acr list -g "$rg" --query "[].loginServer" -o tsv)"
+          if [ "$(printf '%s\n' "$registry" | grep -c .)" -ne 1 ]; then
+            echo "::error::Expected exactly one container registry in $rg, found: $(printf '%s' "$registry" | tr '\n' ' '). infra/modules/containerapps.bicep creates one; deploying by digest needs to know which one holds the images."
+            exit 1
+          fi
+          case "$registry" in
+            *.*) ;;
+            *)
+              echo "::error::Registry login server '$registry' has no dot, so azd's ParseContainerImage would not detect a registry and azd would silently rebuild and push the image itself -- exactly what this step exists to prevent."
+              exit 1
+              ;;
+          esac
+          az acr login --name "${registry%%.*}"
+
+          env_slug="$(printf '%s' "$AZURE_ENV_NAME" | tr '[:upper:]' '[:lower:]')"
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          {
+            echo "### Deployed image digests"
+            echo ""
+            echo "Built once from \`${GITHUB_SHA}\` and deployed by digest; no rebuild happens inside \`azd deploy\`."
+            echo ""
+            echo "| service | image |"
+            echo "| --- | --- |"
+          } >> "$summary"
+
+          # service:build-context. Contexts match azure.yaml's service projects
+          # and docker-build.yml's PR-time builds.
+          for entry in "web:app/web" "api:app/api" "proxy:proxy"; do
+            service="${entry%%:*}"
+            context="${entry#*:}"
+            ref="${registry}/ai4ia/${service}-${env_slug}"
+            echo "::group::build ${service} (${context})"
+            # --platform is explicit rather than inherited from the runner: azd's
+            # own docker.platform default is linux/amd64 and Container Apps runs
+            # linux/amd64, so an arm64 runner would otherwise push an image that
+            # provisions fine and never starts.
+            docker build --platform linux/amd64 \
+              --file "${context}/Dockerfile" --tag "${ref}:${GITHUB_SHA}" "${context}"
+            docker push "${ref}:${GITHUB_SHA}"
+            echo "::endgroup::"
+            # RepoDigests is populated by the push and is the digest the REGISTRY
+            # computed, not a local guess. Filtered to this exact repository
+            # because an image can carry several.
+            digest="$(docker image inspect "${ref}:${GITHUB_SHA}" \
+              --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+              | sed -n "s|^${ref}@||p" | head -n 1)" || digest=""
+            case "$digest" in
+              sha256:*) ;;
+              *)
+                echo "::error::Could not read a registry digest for ${ref}:${GITHUB_SHA} after pushing it. Falling back to the mutable tag would reintroduce the very ambiguity this change removes, so the run stops here."
+                exit 1
+                ;;
+            esac
+            echo "${service}_image=${ref}@${digest}" >> "$GITHUB_OUTPUT"
+            echo "${service} -> ${ref}@${digest}"
+            echo "| ${service} | \`${ref}@${digest}\` |" >> "$summary"
+          done
+
+      # ---------------------------------------------------------------------
       # Post-deploy proof and rollback (audit finding P1-6).
       #
-      # `azd deploy` exiting 0 means an image built, pushed, and ARM accepted a
-      # new Container App template. It does NOT mean the app runs. A crash-looping
-      # image, an unbound secret, a Python import error, a stale APIM route or a
-      # gateway policy that no longer matches the catalog all finish as a GREEN
-      # deploy, and the first person to find out is a user. azure.yaml's
-      # postprovision hook cannot close this: it runs BEFORE application
-      # deployment, when the api container may still be the azd placeholder image,
-      # which is exactly why it treats app probes as best-effort.
+      # `azd deploy` exiting 0 means ARM accepted a new Container App template.
+      # It does NOT mean the app runs. A crash-looping image, an unbound secret,
+      # a Python import error, a stale APIM route or a gateway policy that no
+      # longer matches the catalog all finish as a GREEN deploy, and the first
+      # person to find out is a user. azure.yaml's postprovision hook cannot
+      # close this: it runs BEFORE application deployment, when the api container
+      # may still be the azd placeholder image, which is exactly why it treats
+      # app probes as best-effort.
       #
       # So: capture the rollback target first, deploy, then assert, then restore
       # on failure.
@@ -397,7 +501,8 @@ jobs:
       # token for the API audience, that is a gate misconfiguration, not a bad
       # release -- and discovering it after deployment would roll back a healthy
       # app for a reason that has nothing to do with it. Failing here costs
-      # nothing: no image has moved yet.
+      # nothing: the images are already in ACR, but no revision has been touched,
+      # so an unreferenced image tag is all that is left behind.
       #
       # The token acquired here is DISCARDED. Verification acquires a fresh one,
       # because a three-image `azd deploy` plus a retried rollout can put a long
@@ -420,8 +525,33 @@ jobs:
           fi
           echo "The deploy identity can obtain a token for the API audience."
 
+      # One invocation per service, by digest. azd rejects `--from-package`
+      # together with `--all` and requires a named service
+      # (internal/cmd/deploy.go: ErrFromPackageWithAll / ErrFromPackageNoService),
+      # so the previous single `azd deploy --no-prompt` cannot carry a package.
+      # Sequential rather than parallel because each invocation writes
+      # SERVICE_<NAME>_IMAGE_NAME back into the azd environment file.
+      #
+      # The service list is asserted against azure.yaml by
+      # scripts/tests/test_immutable_image_promotion.py: a service added there
+      # but not here would silently stop being deployed, which the old
+      # deploy-everything form could not do.
       - name: Deploy application
-        run: azd deploy --no-prompt
+        env:
+          WEB_IMAGE: ${{ steps.images.outputs.web_image }}
+          API_IMAGE: ${{ steps.images.outputs.api_image }}
+          PROXY_IMAGE: ${{ steps.images.outputs.proxy_image }}
+        run: |
+          set -euo pipefail
+          for pair in "web:$WEB_IMAGE" "api:$API_IMAGE" "proxy:$PROXY_IMAGE"; do
+            if [ -z "${pair#*:}" ]; then
+              echo "::error::No image digest was recorded for ${pair%%:*}. azd would treat an empty --from-package as 'build it yourself', reintroducing the deploy-time rebuild, so this run stops instead."
+              exit 1
+            fi
+          done
+          azd deploy web --from-package "$WEB_IMAGE" --no-prompt
+          azd deploy api --from-package "$API_IMAGE" --no-prompt
+          azd deploy proxy --from-package "$PROXY_IMAGE" --no-prompt
 
       # Separate from the verification step on purpose. A token problem here is
       # not evidence the release is bad, and the rollback below is gated on this
@@ -462,16 +592,33 @@ jobs:
         # job). If this step is killed by its own timeout, `failure()` still
         # fires and the rollback below still runs.
         timeout-minutes: 30
+        env:
+          WEB_IMAGE: ${{ steps.images.outputs.web_image }}
+          API_IMAGE: ${{ steps.images.outputs.api_image }}
+          PROXY_IMAGE: ${{ steps.images.outputs.proxy_image }}
         run: |
           set -euo pipefail
+          # --expect-image asserts each app runs EXACTLY the digest this run
+          # pushed. It replaces the verifier's older "the image string must have
+          # changed" heuristic, which was only sound while azd tagged every build
+          # `azd-deploy-<unix-ts>`: a content-addressed digest is identical for
+          # identical content, so a rebuild of the same commit could have been
+          # read as "the deploy did not replace the container" and rolled back a
+          # healthy release. See scripts/post-deploy-verify.py.
           if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ]; then
             python scripts/post-deploy-verify.py verify \
               --state "${RUNNER_TEMP}/ai4ia-deploy-state.json" \
+              --expect-image "web=${WEB_IMAGE}" \
+              --expect-image "api=${API_IMAGE}" \
+              --expect-image "proxy=${PROXY_IMAGE}" \
               --skip-canary
             exit 0
           fi
           python scripts/post-deploy-verify.py verify \
-            --state "${RUNNER_TEMP}/ai4ia-deploy-state.json"
+            --state "${RUNNER_TEMP}/ai4ia-deploy-state.json" \
+            --expect-image "web=${WEB_IMAGE}" \
+            --expect-image "api=${API_IMAGE}" \
+            --expect-image "proxy=${PROXY_IMAGE}"
 
       # `failure()` rather than a check on `steps.verify` alone: a deploy that dies
       # partway through has already replaced some services and is exactly as much

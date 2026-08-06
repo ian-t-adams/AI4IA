@@ -67,6 +67,17 @@ updates:
   # move together, in one deliberate change that updates the workflow, the
   # Dockerfile, and the engines/requires-python floors. Minor/patch (security
   # fixes for the pinned major) still flow through automatically.
+  #
+  # Both app Dockerfiles now pin `tag@sha256:<digest>` (audit finding P1-7).
+  # dependabot-core parses that form (docker/lib/dependabot/docker/file_parser.rb
+  # `FROM_LINE`) and rewrites tag and digest together
+  # (update_checker.rb `#updated_requirements`), so the pin does not break these
+  # ecosystem entries. It does NOT follow that the digest self-refreshes: a
+  # digest-only refresh of an unchanged *comparable* tag is suppressed behind
+  # dependabot's server-side `docker_digest_only_update_suppression` experiment,
+  # whose state is not observable from this repo -- and `22-alpine` / `3.12-slim`
+  # are floating tags whose names never change. Refreshing the digest is
+  # therefore a manual audit step; the recipe is in each Dockerfile header.
   - package-ecosystem: docker
     directory: /app/api
     schedule:

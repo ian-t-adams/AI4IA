@@ -301,3 +301,34 @@ jobs:
           # a configuration reference, a swallowed row means an operator never
           # learns a variable exists.
           python3 -m unittest scripts.tests.test_markdown_tables
+
+      - name: Run base image pin tests
+        run: |
+          set -euo pipefail
+          # A tag is a mutable pointer: docker-build.yml resolves node:22-alpine
+          # on the PR and deploy.yml resolves it again later, so the image CI
+          # proved and the image production runs could be different builds. Both
+          # app Dockerfiles now pin `tag@sha256:<digest>`. This fails if a pin is
+          # dropped, if a multi-stage file desyncs its own stages, if the pinned
+          # major stops tracking app-ci's toolchain version, or if a new
+          # Dockerfile appears that is neither CI-built nor recorded as exempt.
+          python3 -m pip install --user --quiet "PyYAML==${PYYAML_VERSION}"
+          python3 -m unittest scripts.tests.test_base_image_pins
+        env:
+          PYYAML_VERSION: 6.0.3
+
+      - name: Run immutable image promotion tests
+        run: |
+          set -euo pipefail
+          # deploy.yml no longer lets `azd deploy` rebuild from source: it builds
+          # each image once, reads back the registry digest, and deploys that
+          # exact reference. The build/push step's real `run:` block is executed
+          # here with docker and az stubbed, so the branch logic is covered
+          # rather than merely mentioned; the static half guards the wiring --
+          # every azure.yaml service is deployed, nothing falls back to a
+          # rebuild, and the P1-6 capture/preflight/deploy/verify/rollback
+          # ordering still holds.
+          python3 -m pip install --user --quiet "PyYAML==${PYYAML_VERSION}"
+          python3 -m unittest scripts.tests.test_immutable_image_promotion
+        env:
+          PYYAML_VERSION: 6.0.3

@@ -50,7 +50,7 @@ window.AI4IA_REQUIREMENTS = {
   ],
   packages: {
     api: {
-      runtime: "Python 3.11+ (container image on python:3.14-slim)",
+      runtime: "Python 3.11+ (container image pinned to python:3.12-slim by digest)",
       manager: "uv (uv.lock is the lockfile)",
       items: [
         ["fastapi / starlette / uvicorn", "ASGI web framework + server (upper-bounded to keep the type gate stable)"],
@@ -72,7 +72,7 @@ window.AI4IA_REQUIREMENTS = {
       extra: "foundry extra (azure-ai-projects, azure-mgmt-apicenter) — provisioning-only, not in CI/runtime",
     },
     web: {
-      runtime: "Node.js >=22 <27 (container image node:26-alpine)",
+      runtime: "Node.js >=22.22.2 <23 (container image pinned to node:22-alpine by digest)",
       manager: "npm (package-lock.json; deterministic npm ci)",
       items: [
         ["next 16", "React framework (App Router, standalone output)"],
