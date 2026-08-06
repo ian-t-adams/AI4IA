@@ -11,8 +11,22 @@ param accountName string
 @description('Default project name.')
 param projectName string
 
-@description('Disable local (key) auth in favor of Entra/managed identity.')
-param disableLocalAuth bool = false
+@description('''Disable local (key) auth on the Foundry accounts in favour of
+Entra/managed identity. Default TRUE: gateway-only routing is only a real
+boundary when an account key cannot bypass it.
+
+Verified before flipping (2026-08-06) that nothing reaches a Foundry account with
+a key. APIM authenticates with its managed identity (37 `auth: MI` entries in the
+generated catalog, zero `api-key`); Content Understanding and the Responses-API
+Code Interpreter both default to `bearer` (`cu_auth_mode`,
+`code_interpreter_auth_mode`) and neither `AI4IA_CU_API_KEY` nor
+`AI4IA_CODE_INTERPRETER_API_KEY` is set in production; and every key-bearing env
+var on `ca-api-*` is a SimpleL7Proxy ingress key, an APIM subscription key or a
+third-party key -- none is a Cognitive Services account key.
+
+Set false only if a live deploy proves an unforeseen key dependency. Doing so
+re-opens the bypass, so record why.''')
+param disableLocalAuth bool = true
 
 @description('Principal IDs granted data-plane access (Cognitive Services OpenAI User + User).')
 param dataPlanePrincipalIds array = []

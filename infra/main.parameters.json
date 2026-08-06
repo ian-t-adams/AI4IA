@@ -20,6 +20,9 @@
     "memoryStore": {
       "value": "${AI4IA_MEMORY_STORE=cosmos}"
     },
+    "foundryDisableLocalAuth": {
+      "value": "${AI4IA_FOUNDRY_DISABLE_LOCAL_AUTH=true}"
+    },
     "adminSubjects": {
       "value": "${AI4IA_ADMIN_SUBJECTS=}"
     },

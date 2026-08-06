@@ -165,6 +165,15 @@ jobs:
       # fallback had become a second, divergent default shadowing the parameter file
       # (which says `cosmos`), so it is gone. See docs/runbooks/memory-migration.md.
       AI4IA_MEMORY_STORE: ${{ vars.AI4IA_MEMORY_STORE }}
+      # Identity-only auth on the Foundry accounts (audit P1-4a). Default true in
+      # main.parameters.json, and plumbed here for the same reason as the vars
+      # above: unplumbed, the repo variable would be unreadable and the escape
+      # hatch inert. Leave it UNSET in normal operation -- azd resolves an unset
+      # variable to the parameter default, which is the secure value. Set it to
+      # `false` only to recover from a proven key dependency, and record why:
+      # with local auth enabled, anything holding a Cognitive Services account
+      # key can reach a Foundry deployment directly and skip APIM.
+      AI4IA_FOUNDRY_DISABLE_LOCAL_AUTH: ${{ vars.AI4IA_FOUNDRY_DISABLE_LOCAL_AUTH }}
       # Speech Voice Live is a second, additive realtime provider fronted by the
       # SAME shared active APIM (a dedicated /speech/voice-live/realtime
       # WebSocket API + distinct subscription key; see infra/modules/gateway.bicep).
