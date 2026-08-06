@@ -47,11 +47,18 @@ for humans and Dependabot, the digest for enforcement (audit finding P1-7). A
 tag is a mutable pointer, so without the digest `docker-build` on a PR and
 `azd deploy` later can resolve `22-alpine` to different images with no diff
 anywhere to show it. `docker-build` builds both app images on every PR, so a
-wrong digest fails there rather than at deploy time. Refresh with
-`docker buildx imagetools inspect node:22-alpine` and take the `Digest:` line —
-that is the multi-platform INDEX digest; substituting a per-platform manifest
-digest breaks every other architecture. All three `FROM` lines in that
-multi-stage file must carry the same digest.
+wrong digest fails there rather than at deploy time.
+
+Refresh with `docker buildx imagetools inspect node:22-alpine` and take the
+`Digest:` field at the **top** of the output — the one under
+`MediaType: application/vnd.oci.image.index.v1+json`. That is the **manifest
+list / image index** digest. The same command then prints a `Manifests:` block
+with one digest per platform; pinning one of those instead makes the image
+unbuildable on every other architecture, and it fails confusingly (a local
+`azd deploy` from an arm64 Mac reports a platform mismatch, not a bad pin)
+while CI stays green because `docker-build` runs on amd64. Both current pins
+were confirmed to be index digests with that command. All three `FROM` lines in
+the multi-stage web file must carry the same digest.
 
 Do not assume the digest refreshes itself. dependabot-core parses and rewrites
 `tag@sha256:` pairs (`docker/lib/dependabot/docker/file_parser.rb` `FROM_LINE`,
@@ -208,6 +215,8 @@ Four properties this depends on, all read from the azd source at tag `azure-dev-
 - `--from-package` is rejected with `--all` and requires a named service, so the deploy is three invocations. A service added to `azure.yaml` and not to `deploy.yml` would silently stop being deployed; `scripts/tests/test_immutable_image_promotion.py` fails on that.
 
 Repository names deliberately match azd's own `DefaultImageName` (`<project>/<service>-<env>`, lowercased) so a local `azd deploy` and CI keep using the same ACR repositories.
+
+Both the image build/push step and the custom-domain preflight derive the resource group in bash as `rg-${AI4IA_WORKLOAD:-ai4ia}-${AZURE_ENV_NAME}`. Neither can ask Bicep, so both are hand-copies — and a copy that merely agrees with the other copy proves nothing. `scripts/tests/test_immutable_image_promotion.py` therefore *derives* the expected string from `infra/main.bicep`'s `var resourceGroupName` and `infra/main.parameters.json`'s `${AI4IA_WORKLOAD=ai4ia}` / `${AZURE_ENV_NAME}` substitutions and asserts every shell copy matches. Getting this wrong sends every `az` lookup in the deploy job to a resource group that does not exist, and the preflight reads a missing app as "nothing bound" — so it fails silently.
 
 This interacts with the P1-6 verification harness, and getting it wrong would roll back healthy releases. `rollout_problems` used to treat "new revision, unchanged image string" as a failure — sound only while azd tagged every build `azd-deploy-<unix-ts>`. A digest is content-addressed, so an identical rebuild yields an identical reference. `deploy.yml` therefore passes `--expect-image <service>=<reference>` to `post-deploy-verify.py verify`, which asserts the app runs *exactly* the digest this run pushed. That is strictly stronger than the old "it changed" heuristic, which remains as the fallback for callers that cannot name the image. Do not drop those flags.
 

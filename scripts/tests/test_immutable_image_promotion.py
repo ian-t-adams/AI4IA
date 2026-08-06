@@ -28,6 +28,7 @@ the P1-6 capture/preflight/deploy/verify/rollback ordering still holds.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -428,6 +429,110 @@ class DeployWiringTests(unittest.TestCase):
                     referenced,
                     f"{name} does not read the {service} digest",
                 )
+
+
+class ResourceGroupDerivationTests(unittest.TestCase):
+    """The shell must derive the resource group the way the Bicep does.
+
+    Two steps in deploy.yml build the RG name in bash: the custom-domain
+    preflight and the image build/push step. Neither can ask Bicep, so both are
+    hand-copies of `infra/main.bicep`, and a hand-copy that is merely *consistent
+    with the other copy* is worthless -- if the original preflight were wrong,
+    copying it would propagate the bug rather than reveal it.
+
+    So the expected string is **derived** here from `infra/main.bicep` and
+    `infra/main.parameters.json` rather than hardcoded: the RG template, the
+    parameter order, the azd variable each parameter reads, and each default.
+    Renaming the workload parameter, changing its default, or restructuring the
+    RG name now fails this test instead of sending every `az` lookup in the
+    deploy job to a resource group that does not exist -- which fails *silently*,
+    because the preflight treats a missing app as "nothing bound".
+    """
+
+    def setUp(self) -> None:
+        self.bicep = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
+        self.parameters = json.loads(
+            (ROOT / "infra/main.parameters.json").read_text(encoding="utf-8")
+        )["parameters"]
+
+    def _rg_template_parameters(self) -> list[str]:
+        """The parameter names in `var resourceGroupName = 'rg-${a}-${b}'`."""
+
+        match = re.search(
+            r"var\s+resourceGroupName\s*=\s*'([^']+)'", self.bicep
+        )
+        self.assertIsNotNone(
+            match, "infra/main.bicep no longer declares `var resourceGroupName`"
+        )
+        assert match is not None
+        template = match.group(1)
+        self.assertTrue(
+            template.startswith("rg-"),
+            f"resource group template changed shape: {template!r}",
+        )
+        return re.findall(r"\$\{(\w+)\}", template)
+
+    def _shell_expansion_for(self, parameter: str) -> str:
+        """`${AI4IA_WORKLOAD=ai4ia}` -> `${AI4IA_WORKLOAD:-ai4ia}`."""
+
+        value = self.parameters[parameter]["value"]
+        match = re.fullmatch(r"\$\{(\w+)(?:=([^}]*))?\}", value)
+        self.assertIsNotNone(
+            match, f"{parameter} is not a plain azd substitution: {value!r}"
+        )
+        assert match is not None
+        variable, default = match.group(1), match.group(2)
+        # azd's ${VAR=default} behaves like POSIX ${VAR:-default}.
+        return f"${{{variable}:-{default}}}" if default is not None else f"${{{variable}}}"
+
+    def _expected_rg_expression(self) -> str:
+        names = self._rg_template_parameters()
+        self.assertEqual(
+            names,
+            ["workload", "environmentName"],
+            "the RG template's parameters changed; update the deploy.yml shell too",
+        )
+        return "rg-" + "-".join(self._shell_expansion_for(name) for name in names)
+
+    def test_the_bicep_default_and_the_parameter_file_default_agree(self) -> None:
+        """A split default would make the shell right for only one of them."""
+
+        bicep_default = re.search(
+            r"param\s+workload\s+string\s*=\s*'([^']+)'", self.bicep
+        )
+        self.assertIsNotNone(bicep_default, "main.bicep lost its workload default")
+        assert bicep_default is not None
+        shell = self._shell_expansion_for("workload")
+        self.assertTrue(
+            shell.endswith(f":-{bicep_default.group(1)}}}"),
+            f"main.bicep defaults workload to {bicep_default.group(1)!r} but "
+            f"main.parameters.json yields {shell!r}",
+        )
+
+    def test_every_shell_copy_matches_the_bicep(self) -> None:
+        expected = self._expected_rg_expression()
+        found = []
+        for step in _steps():
+            for line in str(step.get("run") or "").splitlines():
+                match = re.match(r'\s*rg="([^"]+)"\s*$', line)
+                if match:
+                    found.append((step.get("name"), match.group(1)))
+        self.assertGreaterEqual(
+            len(found),
+            2,
+            "expected at least the custom-domain preflight and the image build "
+            f"step to derive an rg= name; found {found}",
+        )
+        for name, derived in found:
+            self.assertEqual(
+                derived,
+                expected,
+                f"{name!r} derives {derived!r} but infra/main.bicep + "
+                f"infra/main.parameters.json say {expected!r}. Every `az` lookup "
+                "in that step would target a resource group that does not exist, "
+                "and a missing app reads as 'nothing bound' -- so it fails "
+                "silently rather than loudly.",
+            )
 
 
 if __name__ == "__main__":
