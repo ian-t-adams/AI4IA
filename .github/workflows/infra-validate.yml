@@ -1,23 +1,15 @@
 name: infra-validate
 
 on:
+  # Not path-filtered on pull requests, so `bicep-lint-build` is always reported
+  # and can be required by branch protection. See the longer note in app-ci.yml.
+  #
+  # The `push` filter below keeps its path list, and that list still has to name
+  # every script this workflow runs: a change to a validator that is not listed
+  # would not re-run that validator on main. validate-catalog.py and
+  # validate-feature-prereqs.py were being executed here without being listed,
+  # so editing either one skipped the job entirely.
   pull_request:
-    paths:
-      - "infra/**"
-      - "foundry/**"
-      # Every script this workflow *runs* must also be a trigger path, or a
-      # change to a validator does not run that validator. validate-catalog.py
-      # and validate-feature-prereqs.py were being executed here without being
-      # listed, so editing either one skipped the job entirely.
-      - "scripts/validate-catalog.py"
-      - "scripts/validate-feature-prereqs.py"
-      - "scripts/tests/test_feature_prereqs.py"
-      - "scripts/gen-gateway-policy.py"
-      - "scripts/tests/test_gateway_policy.py"
-      - "scripts/tests/test_policy_json_shape.py"
-      - "scripts/gen-voice-provider-catalog.py"
-      - "scripts/tests/test_voice_provider_catalog.py"
-      - ".github/workflows/infra-validate.yml"
   push:
     branches: [main]
     paths:

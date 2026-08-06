@@ -1,26 +1,21 @@
 name: app-ci
 
 on:
+  # Deliberately NOT path-filtered for pull requests, unlike the `push` trigger
+  # below. A path-filtered workflow simply never reports its status contexts on a
+  # PR that misses the filter, and GitHub waits forever for a required check that
+  # is never reported -- so a path-filtered workflow cannot be a required check
+  # without deadlocking every unrelated PR. That is why these jobs were excluded
+  # from branch protection, which in turn meant a PR could break the API test
+  # suite and still be mergeable.
+  #
+  # Always running on PRs is the cheapest fix that has no silent-skip failure
+  # mode. The alternative -- keep the filter, add a `changes` job, and gate the
+  # real jobs on it -- introduces custom change-detection whose bug would be
+  # *worse* than the status quo: it would report success while skipping the tests
+  # entirely. This costs ~2 minutes of runner time on a docs-only PR and buys a
+  # gate that cannot lie.
   pull_request:
-    paths:
-      - "app/**"
-      - "infra/models.json"
-      - "infra/mcp-servers.json"
-      - "infra/voice-providers.json"
-      - "infra/voice-providers.schema.json"
-      - "foundry/**"
-      - "scripts/gen-model-catalog.py"
-      - "scripts/gen-mcp-catalog.py"
-      - "scripts/gen-voice-provider-catalog.py"
-      - "scripts/migrate-memory-to-cosmos.py"
-      - "scripts/provision-foundry-toolbox.py"
-      - "scripts/provision-foundry-skills.py"
-      - "scripts/provision-private-tool-catalog.py"
-      - "scripts/provision-foundry-routine.py"
-      - "scripts/provision-foundry-a2a.py"
-      - "scripts/tests/test_voice_provider_catalog.py"
-      - "scripts/tests/test_memory_cosmos_migration.py"
-      - ".github/workflows/app-ci.yml"
   push:
     branches: [main]
     paths:

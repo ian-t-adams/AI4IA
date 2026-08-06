@@ -218,24 +218,33 @@ dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Rel
 ### Branch protection on `main`
 
 `main` is protected by a repository ruleset: a pull request is required, force-pushes
-and branch deletion are blocked, review threads must be resolved, and 11 status checks
+and branch deletion are blocked, review threads must be resolved, and status checks
 must pass. **Required approving reviews is deliberately 0** — this is a solo-maintained
 repo, so requiring an approver would self-block every PR. There are **no bypass actors**,
 so the rule applies to admins too; turning it off is a visible settings change rather
 than a silent `git push`.
 
-Only checks that are emitted on **every** PR are required — the seven `quality` jobs,
-both `codeql` analyses, and `security-scan`'s two blocking jobs. `app-ci`,
-`infra-validate`, and `docker-build` are **path-filtered**, so they are deliberately
-*not* required: GitHub waits indefinitely for a required check that is never reported,
-so requiring one would deadlock every docs-only PR. This was verified rather than
-assumed — adding a single unreachable context flipped an otherwise-green PR from
-`CLEAN` to `BLOCKED`.
+Only checks that are emitted on **every** PR can be required. GitHub waits indefinitely
+for a required check that is never reported, so requiring a path-filtered workflow would
+deadlock every PR that misses its filter. This was verified rather than assumed — adding
+a single unreachable context flipped an otherwise-green PR from `CLEAN` to `BLOCKED`.
 
-The consequence to know: a PR touching `app/**` or `infra/**` still *runs* those
-workflows and still shows a red check, but protection does not block the merge on it.
-Closing that gap needs an always-run aggregate job per path-filtered workflow (tracked
-in `docs/roadmap.md`). If you add such an aggregate, add its context to the ruleset.
+`app-ci`, `infra-validate` and `docker-build` used to be path-filtered and were
+therefore excluded, which meant a PR could break the API suite, the Bicep build or the
+container images and still be mergeable. They now run on **every** pull request, so
+their contexts are always reported and can be required. Their `push` triggers keep their
+path filters — a push to `main` does not gate a merge, so there is nothing to deadlock.
+
+Always running is deliberate over the tempting alternative of keeping the filter and
+adding a `changes` job to gate the real jobs: a bug in custom change-detection would be
+*worse* than the original gap, because it would report success while skipping the tests
+entirely. Measured cost of always running is about four minutes of runner time on a
+docs-only PR (app-ci ~122s, docker-build ~66s, infra-validate ~40s).
+
+`scripts/tests/test_gating_workflows.py` fails if a `paths:` filter returns under
+`pull_request:`, or if a job is renamed out from under the ruleset's context list. If
+you add or rename a job in one of those three workflows, update that inventory **and**
+the ruleset together — they are two halves of one contract.
 
 ## How to add things
 

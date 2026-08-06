@@ -277,3 +277,16 @@ jobs:
           # value is that its claims are checkable, a citation resolving to nothing is
           # worse than no citation. Globs and CHANGELOG.md are excluded by design.
           python3 -m unittest scripts.tests.test_documented_paths_exist
+
+      - name: Run gating-workflow tests
+        run: |
+          set -euo pipefail
+          # GitHub waits forever for a required status check that is never
+          # reported, so a path-filtered workflow cannot be a required check.
+          # app-ci, infra-validate and docker-build therefore run on every PR;
+          # this fails if a `paths:` filter comes back under `pull_request:`, or
+          # if a job is renamed out from under the ruleset's context list.
+          python3 -m pip install --user --quiet "PyYAML==${PYYAML_VERSION}"
+          python3 -m unittest scripts.tests.test_gating_workflows
+        env:
+          PYYAML_VERSION: 6.0.3
