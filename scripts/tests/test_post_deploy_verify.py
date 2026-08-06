@@ -408,9 +408,13 @@ class RolloutProblemTests(unittest.TestCase):
         )
 
     def test_a_new_revision_running_the_old_image_fails(self) -> None:
-        """A revision this deploy did not produce. azd tags every build uniquely,
-        so an unchanged image under a changed revision means something other than
-        this deploy's push created it."""
+        """A revision this deploy did not produce.
+
+        This is the FALLBACK assertion, used when the caller cannot name the
+        image it deployed. It was sound while azd tagged every build
+        `azd-deploy-<unix-ts>`; deploy.yml now passes --expect-image instead,
+        because a content-addressed digest repeats for identical content.
+        """
         problems = pdv.rollout_problems(
             service="api",
             previous_revision="ca-api-x--r1",
@@ -461,6 +465,102 @@ class RolloutProblemTests(unittest.TestCase):
         )
         self.assertEqual(len(problems), 1)
         self.assertIn("returned no state", problems[0])
+
+
+# ---------------------------------------------------------------------------
+# deploying by digest (audit finding P1-7)
+# ---------------------------------------------------------------------------
+
+DIGEST_A = "acr.azurecr.io/ai4ia/api-prod@sha256:" + "a" * 64
+DIGEST_B = "acr.azurecr.io/ai4ia/api-prod@sha256:" + "b" * 64
+
+
+class ExpectedImageTests(unittest.TestCase):
+    """`--expect-image` replaces 'the image changed' with 'it is OUR image'.
+
+    Deploying by digest breaks the older heuristic's premise: two builds of
+    identical content produce the same reference, so 'unchanged' stops meaning
+    'the deploy did not land'. Reading that as a failure would roll back a
+    healthy release -- the single worst outcome this gate can produce.
+    """
+
+    def problems(self, **kwargs: object) -> list[str]:
+        base: dict = dict(
+            service="api",
+            previous_revision="ca-api-x--r1",
+            current_revision="ca-api-x--r2",
+            revision_detail=revision_payload(),
+            require_replicas=True,
+        )
+        base.update(kwargs)
+        return pdv.rollout_problems(**base)
+
+    def test_the_expected_image_running_is_a_pass(self) -> None:
+        self.assertEqual(
+            self.problems(current_image=DIGEST_A, expected_image=DIGEST_A), []
+        )
+
+    def test_an_unchanged_digest_passes_when_it_is_the_one_we_deployed(self) -> None:
+        """The false rollback this option exists to prevent."""
+        self.assertEqual(
+            self.problems(
+                previous_image=DIGEST_A,
+                current_image=DIGEST_A,
+                expected_image=DIGEST_A,
+            ),
+            [],
+        )
+
+    def test_a_different_image_running_is_a_failure(self) -> None:
+        problems = self.problems(current_image=DIGEST_B, expected_image=DIGEST_A)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("not the image this deploy pushed", problems[0])
+
+    def test_no_image_at_all_is_a_failure(self) -> None:
+        problems = self.problems(current_image=None, expected_image=DIGEST_A)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("runs no image", problems[0])
+
+    def test_the_stale_revision_check_still_wins(self) -> None:
+        """A revision that never changed is a worse diagnosis than the image."""
+        problems = self.problems(
+            current_revision="ca-api-x--r1",
+            current_image=DIGEST_A,
+            expected_image=DIGEST_A,
+        )
+        self.assertEqual(len(problems), 1)
+        self.assertIn("still serving the pre-deploy revision", problems[0])
+
+    def test_parsing_accepts_repeated_service_pairs(self) -> None:
+        self.assertEqual(
+            pdv.parse_expected_images([f"api={DIGEST_A}", f"web={DIGEST_B}"]),
+            {"api": DIGEST_A, "web": DIGEST_B},
+        )
+
+    def test_parsing_tolerates_a_digest_bearing_reference(self) -> None:
+        """`@sha256:` contains no `=`, but a naive split() would still be wrong."""
+        parsed = pdv.parse_expected_images([f"proxy={DIGEST_A}"])
+        self.assertEqual(parsed["proxy"], DIGEST_A)
+
+    def test_parsing_rejects_a_missing_separator(self) -> None:
+        with self.assertRaises(pdv.VerifyInputError):
+            pdv.parse_expected_images(["api"])
+
+    def test_parsing_rejects_an_empty_reference(self) -> None:
+        with self.assertRaises(pdv.VerifyInputError):
+            pdv.parse_expected_images(["api="])
+
+    def test_parsing_rejects_an_unknown_service(self) -> None:
+        with self.assertRaises(pdv.VerifyInputError):
+            pdv.parse_expected_images([f"gateway={DIGEST_A}"])
+
+    def test_parsing_rejects_two_references_for_one_service(self) -> None:
+        with self.assertRaises(pdv.VerifyInputError):
+            pdv.parse_expected_images([f"api={DIGEST_A}", f"api={DIGEST_B}"])
+
+    def test_parsing_nothing_yields_nothing(self) -> None:
+        """No expectation must leave the previous behaviour exactly in place."""
+        self.assertEqual(pdv.parse_expected_images([]), {})
 
 
 # ---------------------------------------------------------------------------

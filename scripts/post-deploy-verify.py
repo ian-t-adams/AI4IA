@@ -508,6 +508,42 @@ def _revision_props(revision: Any) -> dict:
     return props if props else (revision if isinstance(revision, dict) else {})
 
 
+def parse_expected_images(values: Sequence[str]) -> dict[str, str]:
+    """Turn ``--expect-image web=host/repo@sha256:...`` pairs into a mapping.
+
+    Deploying by digest (audit finding P1-7) makes this possible AND makes it
+    necessary. The image assertion below used to lean on `azd deploy` tagging
+    every build `azd-deploy-<unix-ts>`, so the string was guaranteed to differ
+    from the pre-deploy one. A digest is content-addressed instead, so two
+    builds of identical content produce identical references -- and the
+    "changed?" heuristic would then fail a perfectly healthy deploy and roll it
+    back, which is the single worst outcome this gate can produce. Naming the
+    reference the deploy actually pushed replaces the heuristic with the real
+    question: is the app running the bytes we shipped?
+    """
+
+    expected: dict[str, str] = {}
+    for raw in values:
+        service, separator, reference = raw.partition("=")
+        service = service.strip()
+        reference = reference.strip()
+        if not separator or not service or not reference:
+            raise VerifyInputError(
+                f"--expect-image {raw!r} is not in SERVICE=REFERENCE form."
+            )
+        if service not in SERVICES:
+            raise VerifyInputError(
+                f"--expect-image names unknown service {service!r}; "
+                f"expected one of {', '.join(SERVICES)}."
+            )
+        if service in expected and expected[service] != reference:
+            raise VerifyInputError(
+                f"--expect-image was given two different references for {service}."
+            )
+        expected[service] = reference
+    return expected
+
+
 def rollout_problems(
     *,
     service: str,
@@ -517,6 +553,7 @@ def rollout_problems(
     require_replicas: bool,
     previous_image: str | None = None,
     current_image: str | None = None,
+    expected_image: str | None = None,
 ) -> list[str]:
     """Everything wrong with this app's rollout, in operator-facing English.
 
@@ -524,6 +561,12 @@ def rollout_problems(
     is running. The revision-name comparison is the assertion that catches the
     failure this whole gate was written for: `azd deploy` reporting success
     without Container Apps ever promoting a new template.
+
+    The image assertion has two forms. With ``expected_image`` the check is
+    exact -- the running container must be the reference this deploy pushed --
+    which is both stronger and immune to a content-identical rebuild. Without
+    it (a caller that does not know what was deployed) it falls back to the
+    weaker "the image must have moved" heuristic.
     """
 
     problems: list[str] = []
@@ -535,11 +578,19 @@ def rollout_problems(
             f"{service}: still serving the pre-deploy revision {current_revision} -- "
             "azd reported success but Container Apps never promoted a new template"
         )
+    elif expected_image:
+        if current_image != expected_image:
+            problems.append(
+                f"{service}: revision {current_revision} runs "
+                f"{current_image or 'no image'}, not the image this deploy pushed "
+                f"({expected_image}) -- the container that is live is not the "
+                "artifact CI built"
+            )
     elif previous_image and current_image and previous_image == current_image:
         # A NEW revision running the OLD image. Capture happens after
-        # `azd provision`, and `azd deploy` tags every build uniquely, so the
-        # image must move; an unchanged one means the revision was created by
-        # something other than this deploy's push.
+        # `azd provision`, so when the caller cannot name the intended image the
+        # only available signal is that it must have moved; an unchanged one
+        # means the revision was created by something other than this deploy.
         problems.append(
             f"{service}: revision {current_revision} is new but still runs the "
             "pre-deploy image -- the deploy did not replace the container"
@@ -1139,6 +1190,7 @@ def await_rollout(
     delay: float = 10.0,
     sleep: Callable[[float], None] | None = None,
     deadline: Deadline | None = None,
+    expected_image: str | None = None,
 ) -> tuple[list[str], dict | None, str | None]:
     """Poll the rollout assertions until they pass or the budget runs out.
 
@@ -1207,6 +1259,7 @@ def await_rollout(
                 require_replicas=bool(configured_min and configured_min > 0),
                 previous_image=snapshot.image,
                 current_image=container_image(app),
+                expected_image=expected_image,
             )
         if not problems:
             return [], app, current
@@ -1222,6 +1275,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     state = _load_state(args.state)
     failures: list[str] = []
     deadline = Deadline(seconds=max(0.0, args.deadline_seconds))
+    expected_images = parse_expected_images(getattr(args, "expect_image", []) or [])
 
     live: dict[str, Any] = {}
     for service in SERVICES:
@@ -1236,6 +1290,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             attempts=args.rollout_attempts,
             delay=args.rollout_delay,
             deadline=deadline,
+            expected_image=expected_images.get(service),
         )
         if app is not None:
             live[service] = app
@@ -1246,6 +1301,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             previous=snapshot.revision,
             current=current,
             image=container_image(app) if app else None,
+            expected=expected_images.get(service),
             problems=problems or None,
         )
         failures.extend(problems)
@@ -1608,6 +1664,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Proxy probe path (SimpleL7Proxy serves /startup, /readiness, /health).",
     )
     verify.add_argument("--attempts", type=int, default=10, help="Attempts per HTTP probe.")
+    verify.add_argument(
+        "--expect-image",
+        action="append",
+        default=[],
+        metavar="SERVICE=REFERENCE",
+        help=(
+            "Assert a service runs exactly this container reference "
+            "(e.g. web=cr.azurecr.io/ai4ia/web-prod@sha256:...). Repeatable. "
+            "Supersedes the weaker 'the image must have changed' heuristic, "
+            "which a content-addressed digest can no longer guarantee."
+        ),
+    )
     verify.add_argument(
         "--proxy-attempts",
         type=int,

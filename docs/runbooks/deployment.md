@@ -32,12 +32,15 @@ push to main (app/infra/proxy/azure.yaml)        manual: Actions -> deploy -> Ru
                                         ▼
               azd provision --no-prompt   (Bicep: infra/main.bicep, idempotent)
                                         ▼
+       docker build / push x3            (one build per service, tagged <commit sha>;
+                                          the registry digest is recorded)
+                                       ▼
        post-deploy-verify.py capture     (record the revision each app is serving)
-                                        ▼
-              azd deploy --no-prompt      (build + push web / api / proxy images)
-                                        ▼
+                                       ▼
+       azd deploy <svc> --from-package   (one per service, by digest — no rebuild)
+                                       ▼
        post-deploy-verify.py verify      (rollout, health, web, proxy, domains, canary)
-                                        ▼
+                                       ▼
        post-deploy-verify.py rollback    (only on failure — restore the captured revisions)
 ```
 
@@ -58,6 +61,19 @@ push to main (app/infra/proxy/azure.yaml)        manual: Actions -> deploy -> Ru
   fix it forward: there is no automatic path back.
 - **Provision on every app-only change** is intentional: `azd provision` is idempotent and keeps
   infra reconciled. A manual run can skip it (`Run workflow` → uncheck *provision*).
+- **Images are built once and deployed by digest.** The workflow builds each service itself,
+  tags it with the commit SHA, pushes to the azd-managed ACR, reads back the digest the
+  *registry* assigned, and then runs `azd deploy <service> --from-package <ref>@sha256:<digest>`
+  — one invocation per service, because azd rejects `--from-package` with `--all`. Given a
+  digest reference that carries a registry hostname, azd skips its own build **and** its own
+  push and forwards the reference unchanged, so no rebuild happens inside the deploy. The
+  digests are written to the run's job summary, which is how you answer "what is production
+  running?" for a given revision. Ordering matters: the build runs *before* the rollback
+  capture, so a build failure fails the run without triggering a rollback of revisions
+  nothing touched. See [`AGENTS.md`](../../AGENTS.md) → *Deploying by digest, not by rebuild*.
+- **A local `azd deploy` still rebuilds.** Only the workflow promotes a digest; running
+  `azd deploy` from a workstation builds from your working tree, exactly as before, and does
+  not verify or roll back.
 - **Path filter:** doc-only merges (e.g. `docs/**`) do **not** trigger a deploy. Use the manual
   `workflow_dispatch` trigger to force one.
 
@@ -796,8 +812,8 @@ and is unit-tested in `scripts/tests/test_post_deploy_verify.py`.
 
 ### Why the gate exists
 
-`azd deploy` exiting 0 means an image built, pushed, and ARM accepted a new
-Container App template. It does **not** mean the app runs. A crash-looping image,
+`azd deploy` exiting 0 means ARM accepted a new Container App template. It does
+**not** mean the app runs. A crash-looping image,
 an unbound secret, a Python import error, a stale APIM route, or a gateway policy
 that no longer matches the catalog all finish as a **green** deploy. `azure.yaml`'s
 postprovision hook cannot close this: it runs before application deployment, when
@@ -809,7 +825,7 @@ it treats app probes as best-effort.
 | Assertion | Catches |
 |---|---|
 | The revision taking traffic changed | `azd deploy` reported success but Container Apps never promoted a new template |
-| That revision runs a different image than before | A new revision that is not this deploy's — the container was never replaced |
+| That revision runs **exactly** the digest this run pushed (`--expect-image`) | A revision that is not this deploy's. This used to be the weaker "the image string changed", which only worked while azd tagged every build `azd-deploy-<unix-ts>`; a content-addressed digest repeats for identical content, so "changed" would have failed healthy redeploys |
 | That revision is `active`, `healthState: Healthy`, `runningState: Running` | A revision that provisioned but never became ready. **Polled**, because ARM lags `azd deploy` by seconds to a minute |
 | Running replicas > 0 (apps with `minReplicas >= 1`) | A crash-looping image: the revision exists, no replica survives |
 | API `GET /health/live` = 200 | The process is up |
