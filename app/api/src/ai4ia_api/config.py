@@ -601,13 +601,6 @@ class Settings(BaseSettings):
     # Catalog model used by the Cosmos memory planner to extract and consolidate
     # durable facts. It should be a non-reasoning model with strict JSON support.
     memory_extraction_model: str = "gpt-5.4-mini"
-    # Legacy Postgres connection retained for source migration and as the
-    # document-chunk fallback when Azure AI Search is not configured. ``user`` is
-    # the API managed identity's AAD role; no SQL passwords are used.
-    postgres_host: str | None = None
-    postgres_database: str = "mem0"
-    postgres_user: str | None = None
-    postgres_port: int = 5432
 
     # --- Observability ---
     log_level: str = "INFO"
@@ -621,7 +614,7 @@ class Settings(BaseSettings):
 
     # --- Admin resource metrics: Azure Monitor platform metrics ---
     # The admin dashboard's resource panels (AI Search query volume/latency,
-    # Postgres CPU/storage/connections, Cosmos RU, Container Apps replicas/restarts)
+    # Cosmos RU, Container Apps replicas/restarts)
     # are read from Azure Monitor via the api managed identity (RBAC: Monitoring
     # Reader on each resource). Each value below is a full ARM resource id, e.g.
     # ``/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Search/searchServices/<name>``.
@@ -630,7 +623,6 @@ class Settings(BaseSettings):
     # than erroring, so the dashboard ships before diagnostics/resource ids exist.
     resource_metrics_enabled: bool = True
     metrics_search_resource_id: str | None = None
-    metrics_postgres_resource_id: str | None = None
     metrics_cosmos_resource_id: str | None = None
     metrics_container_app_resource_id: str | None = None
     # Regional batch-metrics endpoint, e.g. https://<region>.metrics.monitor.azure.com

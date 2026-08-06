@@ -70,14 +70,6 @@ window.AI4IA_SERVICES = [
     docs: [["Azure Cosmos DB", "https://learn.microsoft.com/azure/cosmos-db/introduction"]],
   },
   {
-    key: "postgres", name: "Postgres Flexible Server (pgvector)", azureType: "Microsoft.DBforPostgreSQL/flexibleServers",
-    group: "Data", icon: "🧬", module: "data.bicep", resourcePattern: "psql-ai4ia-*",
-    summary: "PostgreSQL 16 with pgvector — retained for document chunk vectors and as the legacy memory-migration source; per-user memory is now canonical in Cosmos DB. " +
-      "Passwordless: the API authenticates as its managed identity with an AAD access token (no SQL password).",
-    identity: "id-api authenticates via Entra token (AI4IA_POSTGRES_USER = id-api)",
-    docs: [["Postgres Flexible Server", "https://learn.microsoft.com/azure/postgresql/flexible-server/"], ["pgvector", "https://github.com/pgvector/pgvector"]],
-  },
-  {
     key: "search", name: "Azure AI Search", azureType: "Microsoft.Search/searchServices",
     group: "Data", icon: "🔎", module: "search.bicep", resourcePattern: "srch-ai4ia-*",
     summary: "Optional hybrid/semantic retrieval backend for the document chunk index. AAD-only: the API reaches the " +
@@ -170,7 +162,7 @@ window.AI4IA_SERVICES = [
     key: "identities", name: "User-Assigned Managed Identities (×3)", azureType: "Microsoft.ManagedIdentity/userAssignedIdentities",
     group: "Security", icon: "🪪", module: "identity.bicep", resourcePattern: "id-{web,api,proxy}-*",
     summary: "The workload identities for the web, api and proxy container apps. Azure service data planes " +
-      "(Cosmos, Storage, Search, Key Vault, Postgres, Foundry, Monitor) use these identities + RBAC; scoped APIM hop keys remain Container App secrets.",
+      "(Cosmos, Storage, Search, Key Vault, Foundry, Monitor) use these identities + RBAC; scoped APIM hop keys remain Container App secrets.",
     identity: "see Requirements → Permissions for the full role map",
     docs: [["Managed identities", "https://learn.microsoft.com/azure/active-directory/managed-identities-azure-resources/overview"]],
   },

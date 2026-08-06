@@ -52,7 +52,6 @@ flowchart TB
   Web -->|"same-origin proxy"| API["FastAPI API<br/>(Container App)"]
   User -. "Voice Live (WebSocket)" .-> API
   API --> Cosmos[("Cosmos DB<br/>canonical state")]
-  API --> PG[("Postgres + pgvector<br/>chunk fallback")]
   API --> Blob[("Blob Storage<br/>documents + media")]
   API --> Search["Azure AI Search<br/>(optional retrieval)"]
   API --> CU["Content Understanding"]
@@ -99,7 +98,6 @@ flowchart LR
   end
   subgraph Data["Data + memory"]
     Cos["Cosmos DB"]
-    Pg["Postgres + pgvector"]
     Srch["AI Search"]
     St["Storage x2"]
   end
@@ -143,7 +141,6 @@ flowchart LR
   idapi -->|"Key Vault Secrets User / Officer"| Kv["Key Vault"]
   idapi -->|"App Config Data Reader"| Ac["App Configuration"]
   idapi -->|"Monitoring Reader (sub scope)"| Mon["Azure Monitor"]
-  idapi -->|"Entra token"| Pg["Postgres"]
   idweb["id-web"] -->|"AcrPull"| Acr["ACR"]
   idproxy["id-proxy"] -->|"AcrPull"| Acr
   idproxy -->|"App Config Data Reader"| Ac

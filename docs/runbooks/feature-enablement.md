@@ -358,8 +358,6 @@ IaC defaults `memoryStore='cosmos'` from `AI4IA_MEMORY_STORE`. During cutover,
 operators deliberately set it to `disabled` to freeze writes before migration,
 then restore `cosmos` only after verification. Startup fails closed if the Cosmos
 endpoint is missing or either catalog-driven memory model cannot resolve.
-`postgresLocation` only retains the legacy migration source and the optional
-document-chunk fallback; it no longer changes the memory backend.
 
 The Conversation Inspector exposes create, inline edit, and confirmed delete.
 Automatic recall and planner consolidation remain best-effort so a memory service

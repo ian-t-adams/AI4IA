@@ -58,7 +58,7 @@ it is generated locally and never through excalidraw.com.
 | Agent tools | Built-ins, BYO MCP, official MCP, and Foundry Toolbox | Governed tool discovery and execution with budgets, approvals, redaction, and health state |
 | Web grounding | WebIQ | Separate feature-gated server-side search/browse tools whose bounded results are treated as untrusted model context |
 | Canonical state | Cosmos DB and Blob Storage | User-scoped records and memory text/vectors plus source documents and durable generated artifacts |
-| Derived state | Azure AI Search or optional Postgres/pgvector | Rebuildable document chunks and retrieval indexes |
+| Derived state | Azure AI Search | Rebuildable document chunks and retrieval indexes |
 | Native Azure planes | Content Understanding, Monitor, Key Vault, Storage, Cosmos, Search | Non-model control/data planes called directly with managed identity or configured service auth |
 | Sandboxed compute | Azure OpenAI Responses API Code Interpreter | Azure-managed Python container for `run_code`, `export_document`, and `analyze_attachment`; called directly (see invariant 3) |
 | Observability | Application Insights, Log Analytics, Azure Monitor | Correlated logs, traces, usage, resource metrics, and fixed operator queries |
@@ -165,7 +165,7 @@ the normal SimpleL7Proxy path.
 | Document manifests/shares | Cosmos | Owner-scoped writes and a common access predicate for owned, email-shared, and tenant-public reads |
 | Source documents and artifacts | Blob Storage | Private; bytes are served through authenticated API routes |
 | Memory text and vectors | Cosmos `memories` | Canonical; `/userId` partition, point operations always include the authenticated user partition, ETag writes, per-user write epochs, and scoped deletion cutoffs |
-| Document chunks/indexes | Azure AI Search or optional Postgres/pgvector | Derived, filtered by user/document ownership, and rebuildable from canonical manifests/blobs |
+| Document chunks/indexes | Azure AI Search | Derived, filtered by user/document ownership, and rebuildable from canonical manifests/blobs |
 
 Session policy changes use atomic patches. Explicit document selection is an exact
 allowlist; missing selection preserves legacy all-accessible behavior, while an

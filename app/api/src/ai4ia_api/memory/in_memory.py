@@ -1,13 +1,14 @@
 """In-process cosine-similarity memory store.
 
-The default backend until pgvector is validated live. Records are physically
-bucketed by ``user_id`` (not one global list filtered after the fact) so a
-user can never structurally see another user's memories, and tests are clear.
-Not durable across process restarts or replicas — that is the pgvector store's
-job in the next increment.
+The local/dev/test backend. Records are physically bucketed by ``user_id`` (not
+one global list filtered after the fact) so a user can never structurally see
+another user's memories, and tests are clear. Not durable across process
+restarts or replicas — that is
+:class:`~ai4ia_api.memory.cosmos_store.CosmosMemoryStore`'s job, and it is what
+production runs.
 
-Known limitations deferred to the durable (pgvector) increment, where DB
-transactions resolve them cleanly:
+Known limitations accepted here because the durable store resolves them with
+Cosmos ETag concurrency:
 - No isolation between a concurrent ``/forget`` and an in-flight ``remember``
   for the same user (a tiny window where a just-embedded record could land
   after a forget). Acceptable here because memories are rebuildable and this

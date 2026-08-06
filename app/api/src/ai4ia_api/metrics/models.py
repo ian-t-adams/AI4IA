@@ -45,7 +45,7 @@ class MetricPoint(BaseModel):
 
 
 class ResourcePanel(BaseModel):
-    key: str  # "search" | "postgres" | "cosmos" | "containerApp"
+    key: str  # "search" | "cosmos" | "containerApp"
     displayName: str
     status: PanelStatus = "unavailable"
     # Why a panel is unavailable/partial (not configured / SDK absent / query

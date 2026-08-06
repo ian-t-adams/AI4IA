@@ -58,18 +58,6 @@ PANEL_SPECS: tuple[_PanelSpec, ...] = (
         ),
     ),
     _PanelSpec(
-        key="postgres",
-        display_name="PostgreSQL (Flexible Server)",
-        id_attr="metrics_postgres_resource_id",
-        metrics=(
-            MetricRequest(name="cpu_percent", label="CPU %", aggregation="average", unit="%"),
-            MetricRequest(name="storage_percent", label="Storage %", aggregation="average", unit="%"),
-            MetricRequest(
-                name="active_connections", label="Active connections", aggregation="average"
-            ),
-        ),
-    ),
-    _PanelSpec(
         key="cosmos",
         display_name="Cosmos DB",
         id_attr="metrics_cosmos_resource_id",

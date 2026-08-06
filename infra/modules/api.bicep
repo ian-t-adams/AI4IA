@@ -60,15 +60,6 @@ param cosmosDatabase string
 ])
 param memoryStore string = 'disabled'
 
-@description('Postgres Flexible Server FQDN retained for source migration and document-index fallback.')
-param postgresHost string = ''
-
-@description('Postgres database name retained for source migration and document-index fallback.')
-param postgresDatabase string = 'mem0'
-
-@description('Postgres AAD role name retained for source migration and document-index fallback.')
-param postgresUser string = ''
-
 @description('Application Insights connection string for api telemetry.')
 param appInsightsConnectionString string
 
@@ -215,9 +206,6 @@ param metricsSearchResourceId string = ''
 @description('Existing Log Analytics workspace customer id (GUID) for fixed admin operations queries.')
 param logAnalyticsWorkspaceCustomerId string = ''
 
-@description('ARM resource id of the Postgres flexible server for the admin Postgres resource panel (empty when Postgres is not deployed).')
-param metricsPostgresResourceId string = ''
-
 @description('ARM resource id of the Cosmos DB account for the admin Cosmos resource panel.')
 param metricsCosmosResourceId string = ''
 
@@ -348,28 +336,12 @@ var adminEnv = concat(
   ] : []
 )
 
-// PostgreSQL is no longer a memory backend. Keep its connection available only
-// for the document-index fallback while the migration/retirement window is open.
-var pgEnv = (!empty(postgresHost) && !empty(postgresUser)) ? [
-  {
-    name: 'AI4IA_POSTGRES_HOST'
-    value: postgresHost
-  }
-  {
-    name: 'AI4IA_POSTGRES_DATABASE'
-    value: postgresDatabase
-  }
-  {
-    name: 'AI4IA_POSTGRES_USER'
-    value: postgresUser
-  }
-] : []
-var memoryEnv = concat([
+var memoryEnv = [
   {
     name: 'AI4IA_MEMORY_STORE'
     value: memoryStore
   }
-], pgEnv)
+]
 
 // Voice Live realtime relay settings. Default OFF: with the flag unset
 // the /api/voice/live WebSocket refuses immediately, so the relay is inert and the
@@ -626,9 +598,9 @@ var apiAppName = 'ca-api-${environmentName}'
 var apiAppResourceId = resourceId('Microsoft.App/containerApps', apiAppName)
 
 // Admin dashboard resource-metric panels. The regional batch-metrics endpoint and
-// the container-app and Cosmos ids always resolve; search/postgres ids are only
-// emitted when those resources are deployed (empty -> the api leaves that env var
-// unset and the panel stays 'unavailable').
+// the container-app and Cosmos ids always resolve; the search id is only emitted
+// when that resource is deployed (empty -> the api leaves that env var unset and
+// the panel stays 'unavailable').
 var resourceMetricsEnv = concat(
   [
     {
@@ -648,12 +620,6 @@ var resourceMetricsEnv = concat(
     {
       name: 'AI4IA_METRICS_SEARCH_RESOURCE_ID'
       value: metricsSearchResourceId
-    }
-  ],
-  empty(metricsPostgresResourceId) ? [] : [
-    {
-      name: 'AI4IA_METRICS_POSTGRES_RESOURCE_ID'
-      value: metricsPostgresResourceId
     }
   ]
 )

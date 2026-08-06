@@ -24,7 +24,6 @@ Omitting it is exactly what broke the first cutover attempt — see
 | Container App | no | `ca-<service>-<env>` | `ca-api-dev`, `ca-web-dev`, `ca-proxy-dev` |
 | Key Vault | **yes** | `kv<workload><suffix>` (≤24) | `kvai4ia3k7x` |
 | Cosmos DB | **yes** | `cosmos-<workload>-<env>-<suffix>` (≤44) | `cosmos-ai4ia-dev-3k7x` |
-| Postgres Flexible | **yes** | `psql-<workload>-<env>-<region>-<suffix>` | `psql-ai4ia-dev-centralus-3k7x` |
 | Container Registry | **yes** | `acr<workload><suffix>` | `acrai4ia3k7x` |
 | AI Search | **yes** | `srch-<workload>-<suffix>` | `srch-ai4ia-3k7x` |
 | Storage | **yes** | `st<uniqueString(rg)>` / `sti<uniqueString(rg)>` | `stabc123…` |

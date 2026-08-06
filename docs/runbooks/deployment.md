@@ -509,7 +509,6 @@ config edits plus the normal deploy — no code changes. What varies per environ
 | Admin subjects | `AI4IA_ADMIN_SUBJECTS` repo var | **Not portable, and fails silently.** An `oid` identifies a *user object in one directory*; the same human signing into a new tenant gets a **different** `oid`. A carried-over value is simply an id that matches nobody — no error anywhere, the operator just quietly stops being an admin (losing `/api/admin/*` **and** the P0 gateway priority band). Re-read it in the new tenant with `az ad signed-in-user show --query id -o tsv`. |
 | Model deployment-name token | `infra/models.json` → `naming.subscriptionToken` | Stamped into every model deployment name (`{model}-<token>-<region>-<sku>`). Read by bicep **and** the runtime catalog. |
 | Foundry account/project token | `infra/models.json` → `naming.foundryToken` | Names `mf-<token>-<env>-<region>` and the toolbox project endpoint. |
-| Postgres region (temporary) | `AI4IA_POSTGRES_LOCATION` | Required only while the legacy migration source/document-index fallback remains (see §7.1). |
 | API Center region | `AI4IA_API_CENTER_LOCATION` | Only if `enablePrivateToolCatalog=true`; not available in every region (see §7.2 / the API Center note). |
 | Custom domains | `AI4IA_*_CUSTOM_DOMAIN` / `*_MANAGED_CERT_NAME` | Leave **all four empty for the first provision in a new tenant** — see step 3a below, this is ordering-sensitive and a wrong order fails the deploy. Leave empty permanently for a vanilla hostname; see §2.5. The values in §2.5's table are **this deployment's**, not portable — a new tenant has its own hostnames and certs. |
 | APIM publisher mailbox | `AI4IA_APIM_PUBLISHER_EMAIL` | Must be an operator-owned address in the new tenant. It receives APIM service notices, including **managed-certificate expiry** for the custom domains bound in step 3a. `validate-feature-prereqs.py` warns while it is still the `@example.com` placeholder. |
@@ -531,17 +530,18 @@ config edits plus the normal deploy — no code changes. What varies per environ
 > exporting an unset knob overwrites a non-empty parameter default with `''`. It does not:
 > azd's `${VAR=default}` resolves an empty value to the **default**, i.e. it behaves like
 > POSIX `${VAR:-default}`, not `${VAR=default}`. Verified live against
-> `main`'s own workflow — with `AI4IA_POSTGRES_LOCATION`, `AI4IA_SEARCH_LOCATION`, and
-> `AI4IA_API_CENTER_LOCATION` all *unset* as repo variables, the resulting subscription
-> deployment resolved them to `centralus`, `eastus`, and `eastus` respectively:
+> `main`'s own workflow — with `AI4IA_SEARCH_LOCATION` and
+> `AI4IA_API_CENTER_LOCATION` unset as repo variables, the resulting subscription
+> deployment resolved them to `eastus` and `eastus` respectively:
 >
 > ```powershell
 > az deployment sub show -n <name> --query properties.parameters -o json
 > ```
 >
-> This matters most for `AI4IA_POSTGRES_LOCATION`, because `main.bicep` derives
-> `postgresEnabled = !empty(postgresLocation)` — had empty won, exporting the unset
-> variable would have **disabled and torn down the Postgres flexible server**. The
+> This matters most for any parameter a module treats as a **feature switch** via
+> `!empty(...)` — had empty won, exporting an unset variable would have torn the
+> corresponding resource down. (That was originally verified on the retired
+> `AI4IA_POSTGRES_LOCATION` — retired 2026-08-06 — whose `postgresEnabled = !empty(postgresLocation)` derivation made the stakes concrete.) The
 > `|| 'literal'` fallbacks that some entries do carry (`AI4IA_PROXY_WORKERS`,
 > `AI4IA_MEMORY_STORE`) exist to pin a value that differs from the parameter default, not
 > to guard against empty. Re-confirm with the query above rather than re-deriving this
@@ -613,9 +613,8 @@ Procedure:
    (plus the generators in step 2). If it is merely out of quota, request an
    increase or lower that deployment's `capacity`.
 
-1. Set the repo variables for the new subscription/tenant/env (§2.3), plus
-   `AI4IA_POSTGRES_LOCATION` while PostgreSQL is retained and (if used)
-   `AI4IA_API_CENTER_LOCATION` to regions valid there.
+1. Set the repo variables for the new subscription/tenant/env (§2.3), plus (if used)
+   `AI4IA_API_CENTER_LOCATION` to a region valid there.
 2. If you want a different naming token, edit `infra/models.json` `naming.subscriptionToken` and
    `naming.foundryToken`, then **regenerate the runtime catalog** so routing matches the deployments:
 
@@ -758,7 +757,8 @@ Clean-room notes for a brand-new subscription/tenant:
 - **Activate memory** — `AI4IA_MEMORY_STORE` defaults to `disabled` in `deploy.yml` (fail-closed).
   A greenfield stand-up has no legacy `mem0` data to migrate, so set the `AI4IA_MEMORY_STORE` repo
   variable to `cosmos` and deploy — no migration runbook needed. (The [memory-migration
-  runbook](./memory-migration.md) applies only when moving *existing* `mem0`/PostgreSQL memories.)
+  runbook](./memory-migration.md) is a historical record: the legacy `mem0` source it
+  migrated from was retired on 2026-08-06.)
 - The first provision can hit the Cosmos vector-capability race in §7.4; re-running `azd provision`
   resolves it.
 
@@ -988,33 +988,11 @@ which will block a teardown-and-redeploy of the same environment name.
 
 ## 7. Troubleshooting
 
-### 7.1 `Provision infrastructure` fails with `LocationIsOfferRestricted` (Postgres)
-
-Symptom — the deploy job fails in **Provision infrastructure** with:
-
-```
-(x) Failed: Azure Database for PostgreSQL flexible server: psql-...
-LocationIsOfferRestricted: Subscriptions are restricted from provisioning in location '<region>'.
-```
-
-Cause — the temporarily retained Postgres Flexible Server (legacy memory migration
-source and optional document-index fallback) is being provisioned in a region
-where **this subscription is offer-restricted** for that resource. It is a subscription-level
-policy, not a quota/capacity issue, and it surfaces only at provision time — `az bicep build` and the
-other resources (Cosmos, Container Apps, Foundry) succeed in the same region. The `slurmfactory`
-subscription is restricted in `eastus2`, `eastus`, and `westus2`.
-
-Fix — point `postgresLocation` at an **unrestricted** region. The default is `centralus`
-(`infra/main.parameters.json` → `AI4IA_POSTGRES_LOCATION`). The server name embeds its region, so
-changing it yields a fresh `resourceId` (no ARM location-immutability conflict with a prior attempt).
-Verify a candidate region before switching:
-
-```powershell
-$sub = (az account show --query id -o tsv)
-az rest --method get --url "https://management.azure.com/subscriptions/$sub/providers/Microsoft.DBforPostgreSQL/locations/<region>/capabilities?api-version=2024-08-01" --query "value[0].{restricted:restricted, reason:reason}" -o json
-# restricted: "Disabled" (with reason: null) means the region is usable.
-```
-
+> Entry numbers are stable identifiers, not positions — they are referenced from
+> other docs, from commit messages, and from CI failure output. A retired entry
+> leaves its number vacant rather than renumbering everything below it.
+> §7.1 (Postgres `LocationIsOfferRestricted`) was retired with the PostgreSQL server on 2026-08-06.
+> §7.7 (Postgres `ServerIsBusy`) was retired at the same time.
 
 ### 7.2 `Provision infrastructure` fails with `Start date of budgets cannot be updated`
 
@@ -1095,7 +1073,7 @@ A brand-new (greenfield) account usually succeeds on the first pass because acco
 creation itself gives the capability time to activate.
 
 Fix — enable the capability out-of-band, then **re-run the deploy** (`azd provision` is
-idempotent, exactly like §7.1/§7.2):
+idempotent, exactly like §7.2):
 
 ```powershell
 # Preserve EnableServerless; add the vector capability. Takes ~1-2 min to propagate.
@@ -1180,32 +1158,6 @@ than renaming the environment.
 Note this changes resource names, so the old and new environments are independent — the new
 subscription gets its own APIM/Foundry endpoints. Nothing in the generated runtime catalog
 or gateway policy hardcodes these names; they flow from Bicep outputs.
-
-### 7.7 `ServerIsBusy` on a PostgreSQL child resource
-
-Symptom — the `data` deployment fails on a firewall rule, database, or configuration while
-the server itself reports `Ready`:
-
-```text
-ServerIsBusy: Cannot complete operation while server 'psql-…' is busy processing
-another operation. Try again later.
-```
-
-Cause — PostgreSQL flexible server serialises control-plane operations, and a server
-configuration change (the `azure.extensions` update) leaves it internally busy after ARM has
-already reported that child resource as succeeded. The template already chains its children
-(`postgres → administrators → configurations → database → firewallRule`) so they never run
-concurrently; this is the server settling *after* the chain's own dependency was satisfied,
-which Bicep cannot express a wait for.
-
-Fix — **re-run the provision.** This is genuinely transient and idempotent: the server is
-`Ready` by then and the earlier steps are no-ops. It is not a wedged deployment, so §7.5
-does not apply, but check that nothing is left `Running` before retrying.
-
-```powershell
-az postgres flexible-server show -g rg-ai4ia-<env> --name psql-… --query state -o tsv   # expect: Ready
-gh workflow run deploy.yml -f provision=true --ref main
-```
 
 ### 7.8 `ServiceModelDeprecating` on a model deployment
 
