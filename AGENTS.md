@@ -218,7 +218,7 @@ dotnet test proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Rel
 ### Branch protection on `main`
 
 `main` is protected by a repository ruleset: a pull request is required, force-pushes
-and branch deletion are blocked, review threads must be resolved, and status checks
+and branch deletion are blocked, review threads must be resolved, and 17 status checks
 must pass. **Required approving reviews is deliberately 0** — this is a solo-maintained
 repo, so requiring an approver would self-block every PR. There are **no bypass actors**,
 so the rule applies to admins too; turning it off is a visible settings change rather
@@ -245,6 +245,14 @@ docs-only PR (app-ci ~122s, docker-build ~66s, infra-validate ~40s).
 `pull_request:`, or if a job is renamed out from under the ruleset's context list. If
 you add or rename a job in one of those three workflows, update that inventory **and**
 the ruleset together — they are two halves of one contract.
+
+The six added contexts are `web`, `api`, `bicep-lint-build`, `web image`, `api image`,
+and `dockerignore context boundary`. They were verified to report on a PR touching none
+of the old filter paths *before* being required, because a required context that is
+never reported blocks every PR permanently. Keep that ordering for any future addition:
+make it always-reported, prove it on a PR that would previously have skipped it, then
+require it. One consequence to accept knowingly — a docs-only PR now also has to build
+both container images, so a flaky Docker build blocks a docs merge.
 
 ## How to add things
 
