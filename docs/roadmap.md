@@ -24,6 +24,23 @@ ships, add one when a real gap appears.
 
 ## Owner decisions from the 2026-08-03 audit
 
+> **Considered and rejected: passing the signed-in user's token through to
+> Foundry.** It is the natural intuition for P1-4 and it makes the problem
+> materially worse. Three independent reasons: (1) the user's token is issued for
+> *this API's* audience, not `https://cognitiveservices.azure.com`, so it would
+> need an on-behalf-of exchange before Foundry would look at it; (2) Foundry
+> data-plane access is RBAC on the calling identity, so **every user** would need
+> `Cognitive Services OpenAI User` on the account — a per-user role assignment,
+> and the opposite of least privilege; (3) decisively, a user holding a Foundry
+> token can call Foundry *directly from anywhere*, which bypasses APIM entirely —
+> no rate limiting, no residency policy, no usage metering, no priority routing.
+> P1-4 is about making gateway-only routing an IAM boundary; user passthrough
+> removes the boundary for everyone instead of tightening it for one identity. It
+> also would not fix the stated problem, since `id-api` keeps its roles regardless.
+>
+> The identity model is deliberate: the *user* is authenticated at the API edge,
+> and the *platform* is authorized to Foundry. Those are different questions.
+
 Five items the audit raised that were deliberately **not** actioned, because each
 needs a judgement only the owner can make — RBAC changes, a provision run, or a
 product tradeoff. Each row states the concrete lever and what it costs, so the
@@ -32,7 +49,7 @@ decision does not have to be re-derived. Full context in the
 
 | Item | The lever | What it costs | Why it wasn't done |
 | --- | --- | --- | --- |
-| **P1-4 — gateway-only routing is convention, not IAM.** Foundry local auth stays enabled (`foundry.bicep:15`, `disableLocalAuth bool = false`) and `id-api` holds account-wide OpenAI/Cognitive Services roles, so "all model traffic goes through APIM" is enforced by code review rather than by Azure. | Set `disableLocalAuth: true`, then move the Code Interpreter exception into a **separately deployed workload** with its own identity and remove direct Foundry roles from `id-api`. | A second Container App, its own identity and role assignments, and a provision run. Attaching a second identity to the *same* container is not isolation — any code in that workload can request either token. | Needs new Azure resources, RBAC and a deploy. AGENTS.md makes that stop-and-ask. |
+| **P1-4 — gateway-only routing is convention, not IAM.** Foundry local auth stays enabled (`foundry.bicep:15`, `disableLocalAuth bool = false` — confirmed live on all three accounts 2026-08-06) and `id-api` holds account-wide OpenAI/Cognitive Services roles, so "all model traffic goes through APIM" is enforced by code review rather than by Azure. | **Two separable halves.** (a) Set `disableLocalAuth: true`, which kills key-based access outright. Verified safe on the main paths: APIM reaches Foundry with managed identity (37 `auth: MI` entries, zero `api-key`), the app uses `DefaultAzureCredential`, and the two `listKeys` call sites are the *APIM* subscription key and a *Log Analytics* shared key — neither is a Foundry key. **Still to confirm before flipping:** Content Understanding and Voice Live upstream auth. (b) Move the Code Interpreter exception into a separately deployed workload with its own identity, then remove direct Foundry roles from `id-api`. | (a) is a one-line Bicep change plus a provision run. (b) needs a second Container App, its own identity and role assignments. Attaching a second identity to the *same* container is not isolation — any code in that workload can request either token. | Needs new Azure resources, RBAC and a deploy. AGENTS.md makes that stop-and-ask. |
 | **P1-7 — the tested artifact is not the deployed artifact.** `docker-build` proves the images build, but azd rebuilds and pushes at deploy time, so nothing ties the digest that passed CI to the digest that runs. | Build once, push by digest, and have `azd deploy` promote that immutable digest rather than rebuild. | A registry/tagging strategy and a rework of the deploy path azd currently owns end to end. | Deploy-pipeline architecture, not a defect to patch. |
 | **P1-14 — citations are presentation, not provenance.** A citation is rendered from what the model emitted; nothing binds a claim to the span it came from. `untrusted_context` is a *turn-level* taint bit and is deliberately not claimed as more than that. | Attach provenance to each retrieved span and carry it through argument construction and into the rendered answer. | Real dataflow tracking through retrieval, prompt assembly and rendering. Multi-week. | Feature work with no safe partial. |
 | **P1-2 — Code Interpreter has no entitlement or usage accounting.** `store: false` is locked and tested, but nothing meters who ran what or bills it back. | Add an entitlement check at the execution seam and emit usage rows the way chat does. | Design work on what an entitlement *is* here (per-user? per-agent? quota?) before any code. | The design question is the owner's, not the implementer's. |

@@ -2,7 +2,12 @@
 
 This posture exists under an approved Azure guardrails-modification exception:
 content filters stay *enabled* (so annotations are still emitted and logged) but
-never *block*. It is a governance commitment, not a preference, and the failure
+never *block*. The approval is evidenced by the deployed policy itself — Azure's
+control plane refuses a RAI policy that disables blocking on the abuse filters
+without one, and `ai4ia-annotate-only` is live with all 11 filters non-blocking
+against a `Microsoft.DefaultV2` base that has only 1. See
+`docs/rai-decision-record.md` for the accountable owner and the verification.
+It is a governance commitment, not a preference, and the failure
 mode is silent — a deployment that quietly reverts to the blocking default still
 provisions cleanly and only shows up as unexplained refusals in production.
 
