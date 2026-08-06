@@ -21,12 +21,12 @@ name: docker-build
 # context at any depth, not just at the root.
 
 on:
+  # Not path-filtered on pull requests, so its contexts are always reported and
+  # can therefore be required by branch protection. See the longer note in
+  # app-ci.yml; the same reasoning applies to all three formerly path-filtered
+  # workflows. The `push` filter below is unchanged -- pushes to main do not gate
+  # a merge, so there is nothing to deadlock there.
   pull_request:
-    paths:
-      - "app/web/**"
-      - "app/api/**"
-      - "scripts/tests/test_dockerignore_context.py"
-      - ".github/workflows/docker-build.yml"
   push:
     branches: [main]
     paths:
