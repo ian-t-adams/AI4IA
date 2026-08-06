@@ -185,6 +185,29 @@ see `uv.lock`, so every Python dependency PR it opened failed CI until someone
 hand-ran `uv lock`. `scripts/tests/test_dependabot_config.py` fails if that
 pairing regresses.
 
+**Run `uv lock` against public PyPI, and check what it rewrote.** On a machine
+behind a corporate package mirror — which includes at least one maintainer
+workstation — `uv lock` silently rewrites *every* artifact URL in the lockfile to
+the internal proxy (`packagefeedproxy.microsoft.io`,
+`ms-feed-*.pkgs.visualstudio.com`). This is not theoretical: commit `aad6889`
+committed a `uv.lock` with **1,659** such lines, `app-ci` passed green, and the
+file was repaired two PRs later only because a Dependabot PR happened to
+regenerate it from PyPI.
+
+None of the existing gates catch it. `uv lock --check` only compares the lock
+against `pyproject.toml`; it never inspects the registry. And because nothing on
+the install path reads the lock at all, the poisoned URLs are inert — right up
+until something does read it (`uv sync`, a vendoring step, an SBOM generator),
+at which point it breaks for every contributor and every CI runner, against a
+host most readers will not recognise. It also makes the lock *lie about
+provenance*, with hashes alongside lending the wrong answer false authority, and
+leaks internal feed GUIDs into a public repo.
+
+If your `uv lock` output diffs thousands of lines you did not intend, this is
+why. Re-run it with `UV_INDEX_URL=https://pypi.org/simple`, or off the proxied
+network. `scripts/tests/test_lockfile_provenance.py` (run by `quality`) fails on
+a single non-PyPI URL, and refuses to pass vacuously on a truncated lock.
+
 **A third-party module imported inside a function body still has to be declared
 in `pyproject.toml`.** The API imports heavy/optional SDKs lazily on purpose, so
 the app boots without every Azure service wired — but that also means neither
@@ -275,6 +298,7 @@ python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deplo
 python3 -m unittest scripts.tests.test_portal_contrast          # WCAG gate for site/assets/styles.css (no build, no other runner)
 python3 -m unittest scripts.tests.test_brand_assets             # every committed logo: coverage, palette, size
 python3 -m unittest scripts.tests.test_dependabot_config        # keeps dependabot.yml and the uv.lock gate in step
+python3 -m unittest scripts.tests.test_lockfile_provenance     # uv.lock must resolve from public PyPI, not a corporate mirror
 python3 -m unittest scripts.tests.test_base_image_pins          # base images CI builds must be digest-pinned
 python3 -m unittest scripts.tests.test_immutable_image_promotion # deploy.yml builds once and deploys that digest
 python3 -m unittest scripts.tests.test_configuration_reference_reachability  # docs may only name azd vars a deploy can actually read
