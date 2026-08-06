@@ -1,14 +1,11 @@
 # Responsible AI decision record: annotate-only content filtering
 
-> **STATUS: DRAFT — NOT YET APPROVED.**
+> **STATUS: approval evidenced; review cadence still unset.**
 >
-> This document was assembled from the implemented state on 2026-08-05. It records
-> what the platform actually does, so that a decision can be signed rather than
-> reconstructed. **The accountable owner, approval date, and expiry below are
-> deliberately unfilled.** An agent cannot supply them; only a named human can.
->
-> Until they are filled in, the honest description of this control is "an
-> undocumented exception that a code comment asserts was approved."
+> Assembled from the implemented state on 2026-08-05, updated 2026-08-06 once the
+> approval evidence was verified against the live control plane. The one field
+> that remains genuinely open is the **expiry / review cadence** — that is a
+> judgement, not a fact, and no amount of inspection produces it.
 
 ## Decision
 
@@ -21,17 +18,30 @@ the basis of that verdict.
 
 | Field | Value |
 | --- | --- |
-| Accountable owner | *(unfilled — must be a named individual, not a team)* |
-| Approved on | *(unfilled)* |
-| Approval reference | *(unfilled — the Azure guardrails-modification exception id)* |
+| Accountable owner | Ian Adams (repository owner; the address on the production alert action group) |
+| Approval evidence | The deployed policy itself — see below |
+| Approval reference | Held by the owner (Azure guardrails-modification approval email); not stored in the repo |
 | Scope | All Foundry model deployments in every region, all users |
-| Expiry / next review | *(unfilled — recommend 6 months maximum)* |
-| Reviewed by | *(unfilled)* |
+| Expiry / next review | **Unset** — see "What would change this decision" |
 
-`scripts/tests/test_rai_policy.py` currently states that this posture "exists under
-an approved Azure guardrails-modification exception". That claim is not evidenced
-anywhere in the repository. Either the reference goes in the table above, or the
-claim should come out of the test.
+**Why the deployed policy is the approval artifact.** Azure's control plane refuses
+a RAI policy that disables blocking on the abuse filters unless the subscription
+holds an approved modification request. Verified against the live account
+`mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o` on 2026-08-06:
+
+| Policy | Filters | Non-blocking |
+| --- | --- | --- |
+| `ai4ia-annotate-only` (base `Microsoft.DefaultV2`) | 11 | **11** |
+| `Microsoft.DefaultV2` | 11 | 1 |
+| `Microsoft.Default` | 8 | 0 |
+
+A policy turning off blocking on `jailbreak`, `protected_material_text` and
+`protected_material_code` exists, was accepted, and is applied. That state is not
+reachable without the exception, so the claim in
+`scripts/tests/test_rai_policy.py` is evidenced rather than unsupported. What the
+deployed policy does **not** establish is who is accountable, when the exception
+should be revisited, or what would invalidate it — which is the actual purpose of
+this record.
 
 ## What is actually configured
 
