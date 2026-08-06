@@ -49,16 +49,30 @@ tag is a mutable pointer, so without the digest `docker-build` on a PR and
 anywhere to show it. `docker-build` builds both app images on every PR, so a
 wrong digest fails there rather than at deploy time.
 
-Refresh with `docker buildx imagetools inspect node:22-alpine` and take the
-`Digest:` field at the **top** of the output — the one under
-`MediaType: application/vnd.oci.image.index.v1+json`. That is the **manifest
-list / image index** digest. The same command then prints a `Manifests:` block
-with one digest per platform; pinning one of those instead makes the image
-unbuildable on every other architecture, and it fails confusingly (a local
-`azd deploy` from an arm64 Mac reports a platform mismatch, not a bad pin)
-while CI stays green because `docker-build` runs on amd64. Both current pins
-were confirmed to be index digests with that command. All three `FROM` lines in
-the multi-stage web file must carry the same digest.
+Refresh with
+`docker buildx imagetools inspect node:22-alpine --format '{{json .Manifest.Digest}}'`,
+which prints the **manifest list / OCI image index** digest — the only correct
+value here. (Verified: it returns exactly the pinned digest, and
+`--format '{{.Manifest.MediaType}}'` on the same reference returns
+`application/vnd.oci.image.index.v1+json`.)
+
+There are two ways to grab a **platform-specific** digest by accident. Both look
+identical in shape, and neither can be caught by CI, because `docker-build` runs
+on amd64 and an amd64-only pin passes every check:
+
+1. **`docker inspect` on a locally pulled image.** The daemon only holds the
+   manifest for its own platform, so `RepoDigests` gives you the amd64 digest
+   rather than the index. This is the likelier mistake, since `docker inspect`
+   is the more familiar command.
+2. **Copying from the `Manifests:` block** that bare
+   `docker buildx imagetools inspect node:22-alpine` prints beneath the index
+   digest — one entry per platform.
+
+Either way the image becomes unbuildable on every other architecture, and it
+fails confusingly: a local `azd deploy` from an arm64 Mac reports a
+manifest/platform mismatch that never mentions the pin. Both current pins were
+confirmed to be index digests. All three `FROM` lines in the multi-stage web
+file must carry the same digest.
 
 Do not assume the digest refreshes itself. dependabot-core parses and rewrites
 `tag@sha256:` pairs (`docker/lib/dependabot/docker/file_parser.rb` `FROM_LINE`,
