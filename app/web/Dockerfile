@@ -28,18 +28,29 @@
 # 2026-07-29 and pinned 2026-08-06.
 #
 # To refresh:
-#   docker buildx imagetools inspect node:22-alpine
+#   docker buildx imagetools inspect node:22-alpine --format '{{json .Manifest.Digest}}'
 #
-# Take the `Digest:` field at the TOP of that output -- the one printed
-# directly under `MediaType: application/vnd.oci.image.index.v1+json`. That is
-# the MANIFEST LIST (image index) digest, and it is the only correct value
-# here. The same command then prints a `Manifests:` block listing one digest
-# per platform (linux/amd64 is currently sha256:76789712..., which is NOT what
-# is pinned above). Copying one of those single-platform digests instead is the
-# easy mistake, and it fails in a confusing way: the image becomes unbuildable
-# on every other architecture -- a local `azd deploy` from an arm64 Mac would
-# fail with a manifest/platform mismatch rather than anything mentioning the
-# pin -- and CI would never catch it, because docker-build runs on amd64.
+# That prints the MANIFEST LIST (OCI image index) digest, which is the only
+# correct value here -- verified: for this tag it returns exactly the digest
+# pinned above, and `--format '{{.Manifest.MediaType}}'` on the same reference
+# returns `application/vnd.oci.image.index.v1+json`.
+#
+# Two ways to get a PLATFORM-SPECIFIC digest by accident, both of which look
+# identical in shape and neither of which CI can catch (docker-build runs on
+# amd64, so an amd64-only pin passes every check):
+#
+#   1. `docker inspect` on a locally pulled image. The daemon only ever holds
+#      the manifest for ITS platform, so RepoDigests/Id give you the amd64
+#      digest, not the index. This is the likelier mistake, because
+#      `docker inspect` is the more familiar command.
+#   2. Copying from the `Manifests:` block that bare
+#      `docker buildx imagetools inspect node:22-alpine` prints underneath the
+#      index digest -- one entry per platform (linux/amd64 is currently
+#      sha256:76789712..., which is NOT what is pinned above).
+#
+# Either mistake makes the image unbuildable on every other architecture, and
+# it fails confusingly: a local `azd deploy` from an arm64 Mac reports a
+# manifest/platform mismatch that never mentions the pin.
 #
 # All three FROM lines below must carry the SAME digest --
 # scripts/tests/test_base_image_pins.py fails if they drift apart, and a
