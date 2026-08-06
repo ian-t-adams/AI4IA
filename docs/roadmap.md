@@ -49,11 +49,49 @@ decision does not have to be re-derived. Full context in the
 
 | Item | The lever | What it costs | Why it wasn't done |
 | --- | --- | --- | --- |
-| **P1-4 — gateway-only routing is convention, not IAM.** Foundry local auth stays enabled (`foundry.bicep:15`, `disableLocalAuth bool = false` — confirmed live on all three accounts 2026-08-06) and `id-api` holds account-wide OpenAI/Cognitive Services roles, so "all model traffic goes through APIM" is enforced by code review rather than by Azure. | **Two separable halves.** (a) Set `disableLocalAuth: true`, which kills key-based access outright. Verified safe on the main paths: APIM reaches Foundry with managed identity (37 `auth: MI` entries, zero `api-key`), the app uses `DefaultAzureCredential`, and the two `listKeys` call sites are the *APIM* subscription key and a *Log Analytics* shared key — neither is a Foundry key. **Still to confirm before flipping:** Content Understanding and Voice Live upstream auth. (b) Move the Code Interpreter exception into a separately deployed workload with its own identity, then remove direct Foundry roles from `id-api`. | (a) is a one-line Bicep change plus a provision run. (b) needs a second Container App, its own identity and role assignments. Attaching a second identity to the *same* container is not isolation — any code in that workload can request either token. | Needs new Azure resources, RBAC and a deploy. AGENTS.md makes that stop-and-ask. |
+| **P1-4 — gateway-only routing is convention, not IAM.** ~~Foundry local auth stays enabled~~ **Half closed 2026-08-06.** `disableLocalAuth` is now `true` by default (`foundry.bicep`, surfaced as `foundryDisableLocalAuth` / `AI4IA_FOUNDRY_DISABLE_LOCAL_AUTH`), so key-based access to Foundry is refused by Azure rather than by convention. What remains: `id-api` still holds account-wide OpenAI/Cognitive Services roles. | **(a) Done.** Verified before flipping that nothing reaches Foundry with a key — APIM authenticates with managed identity (37 `auth: MI`, zero `api-key`); Content Understanding and Code Interpreter both default to `bearer` and neither `AI4IA_CU_API_KEY` nor `AI4IA_CODE_INTERPRETER_API_KEY` is set; all five key-bearing env vars on the api container are proxy/APIM/third-party keys, not Cognitive Services account keys; Voice Live reaches **APIM**, not Foundry. Pinned by `scripts/tests/test_foundry_local_auth.py`. **(b) Open.** Move the Code Interpreter exception into a separately deployed workload with its own identity, then remove direct Foundry roles from `id-api`. | (a) was a one-line default plus a provision run. (b) needs a second Container App, its own identity and role assignments. Attaching a second identity to the *same* container is not isolation — any code in that workload can request either token. | (a) is done. (b) still needs new Azure resources, RBAC and a deploy, which AGENTS.md makes stop-and-ask. |
 | **P1-7 — the tested artifact is not the deployed artifact.** `docker-build` proves the images build, but azd rebuilds and pushes at deploy time, so nothing ties the digest that passed CI to the digest that runs. | Build once, push by digest, and have `azd deploy` promote that immutable digest rather than rebuild. | A registry/tagging strategy and a rework of the deploy path azd currently owns end to end. | Deploy-pipeline architecture, not a defect to patch. |
 | **P1-14 — citations are presentation, not provenance.** A citation is rendered from what the model emitted; nothing binds a claim to the span it came from. `untrusted_context` is a *turn-level* taint bit and is deliberately not claimed as more than that. | Attach provenance to each retrieved span and carry it through argument construction and into the rendered answer. | Real dataflow tracking through retrieval, prompt assembly and rendering. Multi-week. | Feature work with no safe partial. |
 | **P1-2 — Code Interpreter has no entitlement or usage accounting.** `store: false` is locked and tested, but nothing meters who ran what or bills it back. | Add an entitlement check at the execution seam and emit usage rows the way chat does. | Design work on what an entitlement *is* here (per-user? per-agent? quota?) before any code. | The design question is the owner's, not the implementer's. |
 | **P1-16 — the tool loop is not token-streaming.** The proxy now flushes per SSE event, so the transport is fixed. The remaining latency is that a turn with tool calls runs the model non-streaming between iterations. | Stream each model iteration and interleave tool results, instead of awaiting a complete response per round trip. | A restructure of `run_agent_turn` plus the SSE contract that `test_chat_stream_protocol.py` pins (terminal-row ordering, cancellation, single-error framing). | High regression risk in the one path every chat request takes. |
+
+### What P1-14 and P1-16 actually mean
+
+Both are described above in the language of the audit. In plain terms, and with
+the reason each gets *worse* rather than better as traffic grows:
+
+**P1-14 — a citation is a claim the model made, not a receipt.** When an answer
+says "according to the Q3 filing", the app renders that because the model wrote
+it. Nothing checks that a retrieved span actually says it, and nothing records
+which span the sentence came from. A correct citation and a fabricated one are
+byte-identical to the system. The `citation-discipline` skill instructs the model
+to cite well; it cannot verify that it did. Today the exposure is small because
+volume is small. It scales badly in a specific way: the cost of an unverifiable
+citation is paid by the *reader*, so a system that produces ten a day and one
+that produces ten thousand a day fail identically per answer, and the second one
+fails ten thousand times. The fix is span-level provenance carried from retrieval
+through prompt assembly into rendering — genuinely multi-week, with no safe
+partial, because a *partially* trustworthy citation badge is worse than none.
+
+**P1-16 — a turn that uses a tool stops streaming.** The transport is fixed (the
+proxy flushes per SSE event). What remains is that when a turn calls a tool, each
+model iteration runs to completion before the next begins, so the user sees
+nothing until a round trip finishes. A plain chat turn streams; a tool-using turn
+feels like a hang. This is the one that most directly punishes growth: it is a
+*latency* defect, so its cost is per-turn and rises linearly with usage, and it
+lands hardest on exactly the turns the platform is built for. The risk is that
+`run_agent_turn` and the SSE contract are the single path every chat request
+takes, and `test_chat_stream_protocol.py` pins terminal-row ordering,
+cancellation and single-error framing — all three of which a restructure touches.
+
+> **On sequencing.** Measured production usage over the 30 days to 2026-08-06 was
+> 23 chat turns across 4 active days, 10 tool invocations (all `remember_memory`),
+> and zero `browse_url` / `web_search` / `run_code`. That is why neither is urgent
+> *today*. It is not an argument that they stay cheap: P1-16's cost is per-turn,
+> and P1-14's is per-answer-read. Both are best done while the surface is small
+> and a regression is cheap to notice — which is now, not after the traffic
+> arrives. Neither is blocked on anything; they are blocked on someone choosing to
+> spend the weeks.
 
 Two more that are **contained rather than closed**, recorded so the containment is
 not mistaken for a fix:

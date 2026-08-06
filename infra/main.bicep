@@ -230,6 +230,18 @@ param proxyAppConfigLabel string = ''
 ])
 param memoryStore string = 'cosmos'
 
+@description('''Disable local (key) auth on the Foundry accounts, so Entra /
+managed identity is the only way in. Default TRUE.
+
+This is what makes gateway-only routing an IAM boundary rather than a convention:
+with account keys live, anything holding one can reach a Foundry deployment
+directly and skip APIM's rate limiting, residency policy, usage metering and
+priority routing. See `infra/modules/foundry.bicep` for the evidence gathered
+before this was turned on, and `docs/roadmap.md` (P1-4) for what it does *not*
+close -- the api identity still holds direct Foundry data-plane roles because the
+Responses-API Code Interpreter needs them until it moves to its own workload.''')
+param foundryDisableLocalAuth bool = true
+
 @description('''Network isolation foundation. When true, provisions a VNet +
 private DNS, creates the Container Apps environment VNet-injected (a NEW env under
 a `-vnet` name), and stands up private endpoints for the data tier (Cosmos, both
@@ -1002,6 +1014,7 @@ module foundry 'modules/foundry.bicep' = [for (r, i) in regionList: {
     accountName: foundryAccountNames[i]
     projectName: foundryProjectNames[i]
     dataPlanePrincipalIds: nativeFoundryPrincipalIds
+    disableLocalAuth: foundryDisableLocalAuth
     toolboxPrincipalIds: (i == primaryFoundryIndex) ? foundryToolboxApimPrincipal : []
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
   }
