@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.responses import StreamingResponse
 
 from ai4ia_api.agents.approvals import (
     APPROVAL_TTL_SECONDS,
@@ -52,6 +53,7 @@ from ai4ia_api.agents.mcp_service import McpServerService
 from ai4ia_api.agents.mcp_store import InMemoryUserMcpServerStore
 from ai4ia_api.agents.tools import ToolRisk, ToolSpec
 from ai4ia_api.main import create_app
+from ai4ia_api.routers import chat as chat_router
 from tests.conftest import make_settings, stream_like_gateway
 
 _PUBLIC_RESOLVER = lambda _host: ["93.184.216.34"]  # noqa: E731 - terse test stub
@@ -812,6 +814,62 @@ def test_held_call_produces_a_clean_streaming_turn():
         assert connector.tool_calls == []
     finally:
         c.__exit__(None, None, None)
+
+
+def test_the_approval_prompt_still_rides_out_after_the_terminal_write(monkeypatch):
+    """Approval ordering survives the streamed tool loop (P1-16 vs #272/#301).
+
+    The grants must reach the client only AFTER the record they refer to is
+    durable, and still before ``[DONE]`` — a grant whose record was never saved
+    is unredeemable and, worse, looks approvable. That ordering used to be
+    trivially true because the terminal write was the first thing to happen once
+    the run finished; now content frames precede it, so it is pinned here
+    directly rather than left implied.
+
+    The rendezvous stays out-of-process on purpose: the approve POST may land on
+    a different Container Apps replica than the SSE stream, so nothing here may
+    wait in-process for a decision.
+    """
+    order: list[str] = []
+
+    class _Tracked(StreamingResponse):
+        def __init__(self, content, *args, **kwargs):
+            async def tracked():
+                async for chunk in content:
+                    text = chunk.decode() if isinstance(chunk, bytes) else chunk
+                    if '"approvals"' in text:
+                        order.append("approvals")
+                    elif "data: [DONE]" in text:
+                        order.append("done")
+                    yield chunk
+
+            super().__init__(tracked(), *args, **kwargs)
+
+    connector = _connector()
+    c = _client(connector)
+    try:
+        monkeypatch.setattr(chat_router, "StreamingResponse", _Tracked)
+        session_id = _bootstrap(c)
+        repo = c.app.state.session_repo
+        original_upsert = repo.upsert_message
+
+        async def tracked_upsert(user_id, message):
+            result = await original_upsert(user_id, message)
+            order.append(f"upsert:{message.status.value}")
+            return result
+
+        monkeypatch.setattr(repo, "upsert_message", tracked_upsert)
+        c.app.state.gateway = _InjectedModelGateway()
+        response = c.post(
+            "/api/chat",
+            json={"sessionId": session_id, "content": "@courierbot send it", "stream": True},
+        )
+        assert response.status_code == 200
+    finally:
+        c.__exit__(None, None, None)
+
+    assert order.index("upsert:complete") < order.index("approvals") < order.index("done")
+    assert connector.tool_calls == []
 
 
 def test_approval_mode_off_is_a_real_documented_opt_out():

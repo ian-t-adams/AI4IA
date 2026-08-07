@@ -241,8 +241,11 @@ async def stream_iteration(
             if not isinstance(choice, dict):
                 continue
             delta = choice.get("delta")
-            if isinstance(delta, dict) and delta.get("tool_calls") is not None:
-                accumulator.add(delta.get("tool_calls"))
+            if not isinstance(delta, dict):
+                continue
+            fragments = delta.get("tool_calls")
+            if fragments is not None:
+                accumulator.add(fragments)
 
     return StreamedIteration(
         content="".join(content),
