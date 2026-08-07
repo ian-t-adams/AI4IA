@@ -135,6 +135,26 @@ describe("entitlementLabel", () => {
     } as EntitlementView;
     expect(entitlementLabel(ent)).toBe("10/min, 5K tok/day");
   });
+  it("surfaces the sandbox-execution cap, which no token/cost figure implies", () => {
+    // A Code Interpreter execution burns a provider-billed sandbox container,
+    // not tokens, so an admin scanning this column would otherwise see
+    // "Limited" with no clue what was limited.
+    const ent = {
+      isUnlimited: false,
+      disabled: false,
+      computeExecutionsPerDay: 25,
+    } as EntitlementView;
+    expect(entitlementLabel(ent)).toBe("25 runs/day");
+  });
+  it("keeps the sandbox cap alongside the token/cost caps", () => {
+    const ent = {
+      isUnlimited: false,
+      disabled: false,
+      tokensPerDay: 5000,
+      computeExecutionsPerDay: 3,
+    } as EntitlementView;
+    expect(entitlementLabel(ent)).toBe("5K tok/day, 3 runs/day");
+  });
 });
 
 describe("shortUserId", () => {
