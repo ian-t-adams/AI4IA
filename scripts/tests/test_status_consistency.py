@@ -106,5 +106,47 @@ class AuditAndRoadmapAgree(unittest.TestCase):
             self.assertIn(expected, found, f"{expected} missing from the disposition table")
 
 
+    def test_the_roadmap_does_not_describe_retired_things_as_retained(self) -> None:
+        """Catches the other half of the same drift, in the other document.
+
+        The disposition-table check above only sees rows keyed by a `P<n>-<n>`
+        finding id. The roadmap also carries **Ops** rows with no finding id, and
+        one of them went stale in exactly the same way: after PR #293 removed
+        PostgreSQL from all provisioning, configuration and application code, the
+        roadmap still said it "is retained post-cutover ... as the migration
+        source + document-chunk fallback", present tense, for a fallback whose
+        code no longer exists.
+
+        This is narrow on purpose. It does not attempt to understand the roadmap;
+        it asserts that for each subject a *committed guard* declares retired, the
+        roadmap does not simultaneously claim the thing is retained. Extend the
+        mapping when a future guard retires something else.
+        """
+        # subject -> (guard that proves it is gone, phrases that would contradict it)
+        retired = {
+            "PostgreSQL": (
+                REPO / "scripts" / "tests" / "test_postgres_retired.py",
+                ("is retained", "remains as", "retained post-cutover", "still retained"),
+            ),
+        }
+        roadmap = _roadmap_text()
+        problems: list[str] = []
+        for subject, (guard, contradictions) in retired.items():
+            if not guard.exists():
+                continue  # the retirement was reverted; nothing to enforce
+            for line in roadmap.splitlines():
+                if subject.lower() not in line.lower():
+                    continue
+                for phrase in contradictions:
+                    if phrase in line.lower():
+                        problems.append(f"{subject}: roadmap says {phrase!r} but {guard.name} enforces its removal")
+        self.assertEqual(
+            problems,
+            [],
+            "The roadmap describes something as still present that a committed "
+            "guard proves is gone:\n  " + "\n  ".join(problems),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
