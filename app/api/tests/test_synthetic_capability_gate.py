@@ -34,7 +34,7 @@ from ai4ia_api.agents.runtime import run_agent_turn
 from ai4ia_api.agents.tool_exec import ToolContext, build_tools
 from ai4ia_api.main import create_app
 from ai4ia_api.websearch.factory import build_web_search_service
-from tests.conftest import make_settings
+from tests.conftest import make_settings, stream_like_gateway
 
 # The data the attacker wants shipped, and where they want it shipped to. The
 # canary is checked against everything the fake client saw, so a leak in any
@@ -117,8 +117,12 @@ class InjectedGateway:
             }
         return {"choices": [{"message": {"role": "assistant", "content": "Done."}}]}
 
-    async def stream(self, **_kwargs):  # pragma: no cover - tool turns never stream
-        raise AssertionError("tool turns must not use the streaming path")
+    async def stream(self, **kwargs):
+        # Since P1-16 a tool turn streams, so the injection is replayed over SSE
+        # with its arguments fragmented — the governance assertions below now
+        # hold against reassembled calls, not hand-built ones.
+        async for chunk in stream_like_gateway(await self.complete(**kwargs)):
+            yield chunk
 
 
 def _client(web: FakeWebClient, **settings) -> TestClient:

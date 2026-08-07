@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+from tests.conftest import stream_like_gateway
+
 
 def _create_session(client, model="gpt-5.2"):
     resp = client.post("/api/sessions", json={"title": "Chat", "model": model})
@@ -50,8 +52,12 @@ class ToolThenAnswerGateway:
             self.saw_tool_result = True
         return {"choices": [{"message": {"role": "assistant", "content": "It is 42."}}]}
 
-    async def stream(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):  # pragma: no cover
-        raise AssertionError("tool-enabled agent turns must not use the streaming path")
+    async def stream(self, **kwargs):
+        # The tool loop token-streams since P1-16, so this double speaks SSE and
+        # its tool call arrives in fragments — which is what actually exercises
+        # the accumulator that reassembles it.
+        async for chunk in stream_like_gateway(await self.complete(**kwargs)):
+            yield chunk
 
 
 def test_tool_enabled_agent_runs_tool_and_persists_answer(client):
@@ -88,12 +94,25 @@ def test_tool_enabled_agent_streaming_emits_steps_then_answer(client):
     # Live activity events precede the answer, then the answer + DONE.
     assert '"step"' in resp.text
     assert "Calculat" in resp.text  # tool_start "Calculating" / tool_result "Calculated"
-    assert "It is 42." in resp.text
     assert "[DONE]" in resp.text
-    # The tool loop ran (two model calls) and the streaming gateway path was unused.
+    # The answer arrives as SEVERAL deltas, not one blob at the end (P1-16). The
+    # count assertion is the non-vacuity guard: a single terminal delta whose
+    # content happens to concatenate correctly would pass the equality check
+    # alone while reproducing exactly the defect this change removes.
+    deltas = [
+        (json.loads(line.removeprefix("data: "))["choices"][0]["delta"].get("content") or "")
+        for line in resp.text.splitlines()
+        if line.startswith("data: ")
+        and line != "data: [DONE]"
+        and "choices" in json.loads(line.removeprefix("data: "))
+    ]
+    assert len(deltas) > 1
+    assert "".join(deltas) == "It is 42."
+    # The tool loop ran (two model round trips), both of them streamed.
     assert gw.calls == 2
 
-    # The redacted trace is persisted on the assistant message for after-the-fact view.
+    # What streamed is what was saved, and the redacted trace is persisted on the
+    # assistant message for after-the-fact view.
     messages = client.get(f"/api/sessions/{sid}/messages").json()
     assistant = messages[-1]
     assert assistant["role"] == "assistant" and assistant["content"] == "It is 42."
