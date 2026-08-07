@@ -57,9 +57,22 @@ hopeless at first:
 | `npm ci` (default registry) | **404** — `packagefeedproxy.microsoft.io` is reachable but *incomplete*; it does not carry the lockfile-pinned `vite@8.1.3` |
 | `npm ci --registry=https://registry.npmjs.org` | **`ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE`** — the public registry is complete but unreachable from this network |
 
-The way through is `npm install` rather than `npm ci`: `install` may resolve a
-*satisfiable alternative* for the one package the mirror lacks, where `ci`
-demands the lockfile version exactly. Measured: **525 packages, ~3 minutes**.
+**The discriminator is the absence of the lockfile, not the `install` vs `ci`
+verb.** `npm install` does *not* ignore a lockfile — it honours one when present
+and fails identically. Controlled experiment, same `package.json`, same command,
+same network, only the lockfile's presence varying:
+
+| scratch dir contents | `npm install` result |
+| --- | --- |
+| `package.json` + `package-lock.json` | **404** on `vite@8.1.3` — byte-identical to the `npm ci` failure |
+| `package.json` only | **525 packages in ~3 min**, resolving `vite@8.2.0` |
+
+The mechanism in one line: the lockfile pins `vite@8.1.3`, whose tarball the
+mirror lacks; with no lockfile npm's resolver picks `8.2.0`, which the mirror has.
+
+So in step 1 below, copy **only** `package.json` — never `package-lock.json`.
+Running `npm install` inside `app/web` fails exactly like `npm ci`, because the
+lockfile is already sitting there.
 
 ```powershell
 # 1. Resolve into a scratch dir so a non-lockfile-exact tree never sits in the repo.
@@ -82,8 +95,12 @@ for `app-ci/web`:
   all. CI remains authoritative for reproducibility.
 - The **9 failures are a local Node artifact, not a defect**: every one is in
   `ThemeProvider.test.tsx`, failing with `localStorage is not available because
-  --localstorage-file was not provided`. Do not "fix" them. Pass
-  `--localstorage-file` if you need that file to pass locally.
+  --localstorage-file was not provided`. The cause is an engine mismatch that npm
+  prints during the install — `EBADENGINE ... required: { node: '>=22.22.2 <23' },
+  current: { node: 'v26.4.0' }`. The project pins Node 22; a workstation on Node
+  26 gets a runtime where `localStorage` moved behind `--localstorage-file`. Do
+  not "fix" those tests. Pass `--localstorage-file` if you need them green
+  locally, and expect other Node-26-only artifacts from the same mismatch.
 
 Node 26 can also run `.ts` directly via `--experimental-strip-types`, which is
 enough to mutation-test a pure TypeScript module before the junction exists.
