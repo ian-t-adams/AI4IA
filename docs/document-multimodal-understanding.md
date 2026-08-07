@@ -84,8 +84,11 @@ playback, memory save, or sharing.
   durable library flag and uses short-lived attachment storage.
 - **Processing:** `process_document` produces bounded inline output or a durable
   markdown artifact.
-- **Media:** audio/video timelines and `[[cite:FILENAME@MM:SS]]` citations open
-  the web media player at the cited timestamp.
+- **Media:** audio/video timelines and span-id citations (`[[cite:S1]]`) open the
+  web media player at the cited timestamp. The id resolves to the span's own
+  `documentId` and start offset, so two ready documents sharing a filename no
+  longer collide; rows written before that change still carry the older
+  `[[cite:FILENAME@MM:SS]]` token and still resolve by name.
 
 All tool paths re-check ownership/access, require `ready` status, apply caps, and
 sanitize untrusted strings before returning them to the model.

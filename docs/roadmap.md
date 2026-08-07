@@ -50,7 +50,7 @@ decision does not have to be re-derived. Full context in the
 | --- | --- | --- | --- |
 | **P1-4 — gateway-only routing is convention, not IAM.** ~~Foundry local auth stays enabled~~ **Half closed 2026-08-06.** `disableLocalAuth` is now `true` by default (`foundry.bicep`, surfaced as `foundryDisableLocalAuth` / `AI4IA_FOUNDRY_DISABLE_LOCAL_AUTH`), so key-based access to Foundry is refused by Azure rather than by convention. What remains: `id-api` still holds account-wide OpenAI/Cognitive Services roles. | **(a) Done.** Verified before flipping that nothing reaches Foundry with a key — APIM authenticates with managed identity (37 `auth: MI`, zero `api-key`); Content Understanding and Code Interpreter both default to `bearer` and neither `AI4IA_CU_API_KEY` nor `AI4IA_CODE_INTERPRETER_API_KEY` is set; all five key-bearing env vars on the api container are proxy/APIM/third-party keys, not Cognitive Services account keys; Voice Live reaches **APIM**, not Foundry. Pinned by `scripts/tests/test_foundry_local_auth.py`. **(b) Open.** Move the Code Interpreter exception into a separately deployed workload with its own identity, then remove direct Foundry roles from `id-api`. | (a) was a one-line default plus a provision run. (b) needs a second Container App, its own identity and role assignments. Attaching a second identity to the *same* container is not isolation — any code in that workload can request either token. | (a) is done. (b) still needs new Azure resources, RBAC and a deploy, which AGENTS.md makes stop-and-ask. |
 | **P1-7 — the tested artifact is not the *PR-tested* artifact.** *Partly closed by #296:* both app base images are digest-pinned and `deploy.yml` builds each service once and deploys `--from-package <ref>@sha256:<digest>`, so nothing rebuilds inside a deploy and the running revision traces back to a commit. What remains is that the image is built by the **deploy** workflow, not promoted from the PR that tested it — plus no SBOM, signature, provenance, or blocking image scan, and `proxy/Dockerfile`'s MCR bases stay on moving tags because CI does not build that image. | Publish the PR-built image to a staging repository (or GHCR) under a PR-scoped identity, then re-tag it by digest into the production ACR after merge. Separately: add SBOM/signing/provenance and a blocking scan to the build step. | Letting PR code push to a registry the production apps pull from is a **security-posture change**: a malicious or merely broken PR could publish there, and the OIDC identity would need `AcrPush` reachable from PR-triggered workflows. | The posture tradeoff is the owner's call. The mechanical half was doable and was done. |
-| **P1-14 — citations are presentation, not provenance.** A citation is rendered from what the model emitted; nothing binds a claim to the span it came from. `untrusted_context` is a *turn-level* taint bit and is deliberately not claimed as more than that. | Attach provenance to each retrieved span and carry it through argument construction and into the rendered answer. | Real dataflow tracking through retrieval, prompt assembly and rendering. Multi-week. | Feature work with no safe partial. |
+| **P1-14 — citations are presentation, not provenance.** ~~A citation is rendered from what the model emitted; nothing binds a claim to the span it came from.~~ **Span-level half closed 2026-08-07 (#309).** Library Tier-2 mints a server-owned span id per injected excerpt (with content hash, retrieval timestamp, and a persisted verbatim excerpt), the registry lands on the answer, and a cited id that was never retrieved is caught and rendered distinctly. `untrusted_context` remains a *turn-level* taint bit and is still not claimed as more than that. | What remains: **claim-level support** (does the cited span actually say it), and attesting the other context sources — web search, recalled memory, session-uploaded documents — which are still cited as prose. | Claim support is entailment. Every check cheap enough to run inline is approximate, and this finding's own logic is that a partially-trustworthy badge is worse than none — so the honest version needs an evaluation set and a measured threshold, not a heuristic. | The span half was mechanical once the provenance survived prompt assembly, and was done. The claim half was refused rather than approximated. |
 | **P1-2 — Code Interpreter has no entitlement or usage accounting.** `store: false` is locked and tested, but nothing meters who ran what or bills it back. | Add an entitlement check at the execution seam and emit usage rows the way chat does. | Design work on what an entitlement *is* here (per-user? per-agent? quota?) before any code. | The design question is the owner's, not the implementer's. |
 
 ### What P1-14 and P1-16 actually mean
@@ -58,10 +58,11 @@ decision does not have to be re-derived. Full context in the
 Both are described above in the language of the audit. In plain terms, and with
 the reason each gets *worse* rather than better as traffic grows:
 
-**P1-14 — a citation is a claim the model made, not a receipt.** When an answer
-says "according to the Q3 filing", the app renders that because the model wrote
-it. Nothing checks that a retrieved span actually says it, and nothing records
-which span the sentence came from. A correct citation and a fabricated one are
+**P1-14 — a citation is a claim the model made, not a receipt.** *(Span-level half
+closed 2026-08-07, #309; described here as it stood.)* When an answer says
+"according to the Q3 filing", the app renders that because the model wrote it.
+Nothing checks that a retrieved span actually says it, and nothing records which
+span the sentence came from. A correct citation and a fabricated one are
 byte-identical to the system. The `citation-discipline` skill instructs the model
 to cite well; it cannot verify that it did. Today the exposure is small because
 volume is small. It scales badly in a specific way: the cost of an unverifiable
@@ -70,6 +71,15 @@ that produces ten thousand a day fail identically per answer, and the second one
 fails ten thousand times. The fix is span-level provenance carried from retrieval
 through prompt assembly into rendering — genuinely multi-week, with no safe
 partial, because a *partially* trustworthy citation badge is worse than none.
+
+> **What shipped, and where the line was drawn.** Library retrieval spans now
+> carry a server-minted id, a hash of the exact injected text, and a persisted
+> verbatim excerpt; an answer citing an id that was never retrieved is caught
+> with certainty and shown as unverified. The *claim-level* half — does the cited
+> span support the sentence — was deliberately not built, because the only checks
+> cheap enough to run inline are approximate and this entry's own reasoning says
+> an approximate badge is worse than none. The excerpt is shown to the reader
+> instead of a verdict the app is not entitled to reach.
 
 **P1-16 — a turn that uses a tool stops streaming.** The transport is fixed (the
 proxy flushes per SSE event). What remains is that when a turn calls a tool, each

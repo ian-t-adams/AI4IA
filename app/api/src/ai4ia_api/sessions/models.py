@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from ..agents.approvals import PendingToolApproval
+from ..citations import MessageCitation, RetrievedSource
 from ..safety import MessageSafety
 
 
@@ -150,6 +151,25 @@ class Message(BaseModel):
     # Additive and optional exactly like ``steps``/``safety``: existing Cosmos
     # documents lack the field and deserialize to None, so no migration.
     pendingApprovals: list[PendingToolApproval] | None = None
+    # Span-level citation provenance for this turn (audit P1-14). ``sources`` is
+    # the server-minted registry of retrieval spans that were injected — what the
+    # answer *could* have cited — and ``citations`` records what it actually did
+    # cite, each marked verified or not against that registry. Written together,
+    # immediately before the row is persisted; see :mod:`ai4ia_api.citations`.
+    #
+    # ``None`` on both is a meaningful third state, not an empty one: this turn
+    # was never attested (library retrieval was off, contributed nothing, or the
+    # row predates the feature), so its citations are rendered exactly as before
+    # rather than being marked suspect on the strength of missing evidence.
+    #
+    # Additive and optional exactly like ``steps``/``safety``/``pendingApprovals``:
+    # existing Cosmos documents lack both fields and deserialize to None, so no
+    # migration. The excerpt and hash each source carries are deliberate
+    # immutable copies — chunks and search indexes are rebuildable derived state,
+    # so a receipt that merely pointed at them would stop meaning anything the
+    # first time a document was re-chunked or deleted.
+    sources: list[RetrievedSource] | None = None
+    citations: list[MessageCitation] | None = None
     createdAt: datetime = Field(default_factory=_now)
 
 

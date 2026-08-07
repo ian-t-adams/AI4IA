@@ -22,6 +22,85 @@ function sseResponse(chunks: string[]): Response {
 afterEach(() => mockApiFetch.mockReset());
 
 describe("streamChat", () => {
+  // Audit P1-14. The span registry rides frame 0, before the model speaks, so
+  // the browser can mark citations as they stream rather than showing raw
+  // tokens until the durable row is refetched.
+  it("adopts a well-formed span registry from the metadata frame", async () => {
+    const source = {
+      spanId: "S1",
+      documentId: "doc-1",
+      filename: "report.pdf",
+      excerpt: "Revenue grew twenty percent.",
+      contentSha256: "a".repeat(64),
+      retrievedAt: "2026-08-07T00:00:00Z",
+    };
+    mockApiFetch.mockResolvedValue(
+      sseResponse([
+        `data: ${JSON.stringify({ metadata: { userMessageId: "u1", assistantMessageId: "a1", sources: [source] } })}\n\n`,
+        "data: [DONE]\n\n",
+      ]),
+    );
+    let seen: unknown = "unset";
+    await new Promise<void>((resolve) => {
+      streamChat(
+        { sessionId: "s1", content: "hi" },
+        {
+          onMetadata: (m) => {
+            seen = m.sources;
+          },
+          onDelta: () => {},
+          onDone: () => resolve(),
+          onError: () => resolve(),
+        },
+      );
+    });
+    expect(seen).toEqual([source]);
+  });
+
+  // Two malformed shapes, checked separately: a partial registry would report an
+  // honest citation as fabricated, so a bad one is dropped whole.
+  async function metadataSources(metadata: unknown): Promise<unknown> {
+    mockApiFetch.mockResolvedValue(
+      sseResponse([
+        `data: ${JSON.stringify({ metadata })}\n\n`,
+        "data: [DONE]\n\n",
+      ]),
+    );
+    let seen: unknown = "unset";
+    await new Promise<void>((resolve) => {
+      streamChat(
+        { sessionId: "s1", content: "hi" },
+        {
+          onMetadata: (m) => {
+            seen = m.sources;
+          },
+          onDelta: () => {},
+          onDone: () => resolve(),
+          onError: () => resolve(),
+        },
+      );
+    });
+    return seen;
+  }
+
+  it("drops a non-array registry", async () => {
+    const seen = await metadataSources({
+      userMessageId: "u1",
+      assistantMessageId: "a1",
+      sources: "nope",
+    });
+    expect(seen).toBeNull();
+  });
+
+  it("drops a registry whose entry is missing its document id", async () => {
+    const seen = await metadataSources({
+      userMessageId: "u1",
+      assistantMessageId: "a1",
+      sources: [{ spanId: "S1", filename: "report.pdf" }],
+    });
+    expect(seen).toBeNull();
+  });
+
   it("routes step events to onStep, content to onDelta, and finishes on [DONE]", async () => {
     mockApiFetch.mockResolvedValue(
       sseResponse([
