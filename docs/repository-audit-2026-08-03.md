@@ -161,7 +161,7 @@ Verified against the tree at `main` on 2026-08-05, not from memory.
 | P1-13 indirect prompt injection drives preapproved MCP | **Fixed** — approval binds to an argument digest recomputed at dispatch and spent on use; review caught three defects before merge, all fixed and mutation-verified (#272). The MCP fix left the larger half open: the registry governs only `calculator` and `get_current_time`, so all 15 first-party synthetic capabilities were ungated. They now carry specs of their own, an unclassified one is refused rather than run, and `browse_url` has a canary with a non-vacuity control. **Unattended workflow runs stay exempt** by explicit, tested opt-out — there is nobody to ask | #272, #296 |
 | P1-14 citations are presentation, not provenance | **Open** | — |
 | P1-15 admin refresh can exhaust a 1 GiB replica | **Fixed** — the dashboard is served from one projected ledger scan instead of seven | #270 |
-| P1-16 live-default chat is not token-streaming | **Partially fixed** — proxy now flushes per SSE event; the non-streaming tool loop remains | #266 |
+| P1-16 live-default chat is not token-streaming | **Fixed** — the proxy flushes per SSE event, and the tool loop now streams each model iteration and interleaves tool results instead of running each round trip to completion. Measured against a real uvicorn server with a paced model: time-to-first-token on a tool-using turn falls from 1244.7 ms to 33.7 ms (36.9x), with total turn time unchanged | #266, #307 |
 | P1-17 region/data-zone constraints silently relax | **Fixed**, and the residency model was corrected: `residency` now derives from the deployment SKU, not endpoint geography | #266, #267, #268 |
 
 Selected P2 items also closed: CGNAT SSRF gap, portal service counts, portal
@@ -267,9 +267,10 @@ an explicit `ApprovalPolicy.off`, pinned by a test. Closing that needs a durable
 out-of-band approval channel for unattended runs.
 
 Two items are honestly partial rather than done. P1-2 locks `store: false` but has no
-entitlement or usage accounting for Code Interpreter, and P1-16 fixed the proxy's SSE
-buffering while the non-streaming tool loop remains. Both are recorded as partial in
-the table above rather than rounded up.
+entitlement or usage accounting for Code Interpreter. It is recorded as partial in the
+table above rather than rounded up. P1-16 was partial for the same reason — the proxy's
+SSE buffering was fixed while the non-streaming tool loop remained — and closed later;
+see its row.
 
 
 ## Scope and method
@@ -696,6 +697,25 @@ produced no bytes after ten 470-byte events until the writer itself was flushed.
 Make web/tool use opt-in or intent-routed, stream tool and final-model progress, and
 flush or replace the text processor per SSE event. Add an inter-chunk timing regression
 test through the built proxy image.
+
+**Remediated (#266, #307).** The proxy half landed first: `JsonStreamProcessor` now
+flushes per SSE event. The application half followed — `agents/streaming.py` reassembles
+a `tool_calls` array from index-keyed SSE fragments (arguments arrive split at arbitrary
+offsets, so no fragment is independently parseable), `run_agent_turn` consumes each
+iteration over SSE and forwards every text increment as it arrives, and `_agentic_stream`
+yields those increments as ordinary content deltas interleaved with the live step trace.
+The three properties `test_chat_stream_protocol.py` pins — terminal-row ordering,
+cancellation, single-error framing — are unchanged, and the per-invocation approval
+prompt still rides out after the terminal write and before `[DONE]`.
+
+Measured with `app/api/benchmarks/ttft_tool_turn.py` against a real uvicorn server and a
+paced model double (20 tokens/iteration, 2 iterations): time-to-first-token on a
+tool-using turn falls from **1244.7 ms to 33.7 ms** at 20 ms/token, and total turn time
+is unchanged — the same work, delivered progressively. The `before` arm is the shipped
+kill switch (`AI4IA_GATEWAY_STREAM_TOOL_LOOP=false`), so both arms run identical code.
+The harness deliberately does not use `fastapi.testclient.TestClient`: that transport
+buffers the whole body before the first line is readable and reports a 1.0x non-result,
+which is what the first version of this measurement did.
 
 #### P1-17: Explicit region/data-zone constraints silently relax
 

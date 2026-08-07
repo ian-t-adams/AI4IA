@@ -52,7 +52,6 @@ decision does not have to be re-derived. Full context in the
 | **P1-7 — the tested artifact is not the *PR-tested* artifact.** *Partly closed by #296:* both app base images are digest-pinned and `deploy.yml` builds each service once and deploys `--from-package <ref>@sha256:<digest>`, so nothing rebuilds inside a deploy and the running revision traces back to a commit. What remains is that the image is built by the **deploy** workflow, not promoted from the PR that tested it — plus no SBOM, signature, provenance, or blocking image scan, and `proxy/Dockerfile`'s MCR bases stay on moving tags because CI does not build that image. | Publish the PR-built image to a staging repository (or GHCR) under a PR-scoped identity, then re-tag it by digest into the production ACR after merge. Separately: add SBOM/signing/provenance and a blocking scan to the build step. | Letting PR code push to a registry the production apps pull from is a **security-posture change**: a malicious or merely broken PR could publish there, and the OIDC identity would need `AcrPush` reachable from PR-triggered workflows. | The posture tradeoff is the owner's call. The mechanical half was doable and was done. |
 | **P1-14 — citations are presentation, not provenance.** A citation is rendered from what the model emitted; nothing binds a claim to the span it came from. `untrusted_context` is a *turn-level* taint bit and is deliberately not claimed as more than that. | Attach provenance to each retrieved span and carry it through argument construction and into the rendered answer. | Real dataflow tracking through retrieval, prompt assembly and rendering. Multi-week. | Feature work with no safe partial. |
 | **P1-2 — Code Interpreter has no entitlement or usage accounting.** `store: false` is locked and tested, but nothing meters who ran what or bills it back. | Add an entitlement check at the execution seam and emit usage rows the way chat does. | Design work on what an entitlement *is* here (per-user? per-agent? quota?) before any code. | The design question is the owner's, not the implementer's. |
-| **P1-16 — the tool loop is not token-streaming.** The proxy now flushes per SSE event, so the transport is fixed. The remaining latency is that a turn with tool calls runs the model non-streaming between iterations. | Stream each model iteration and interleave tool results, instead of awaiting a complete response per round trip. | A restructure of `run_agent_turn` plus the SSE contract that `test_chat_stream_protocol.py` pins (terminal-row ordering, cancellation, single-error framing). | High regression risk in the one path every chat request takes. |
 
 ### What P1-14 and P1-16 actually mean
 
@@ -172,8 +171,9 @@ not mistaken for a fix:
   models are `api: "responses"` (`gpt-5-pro`, `gpt-5.4-pro`, `gpt-5-codex`,
   `gpt-5.3-codex`), so Researcher is fully grounded on the other 35, including every
   gpt-5.6 daily driver. Rejected the alternative of giving Researcher real `tools`:
-  it converts silence into a loud 422 but moves the agent onto the internally
-  non-streaming tool path, losing true token streaming everywhere else.
+  it converts silence into a loud 422 but moves the agent onto the tool path. That
+  reasoning predates P1-16: since the tool loop streams, the streaming cost is gone
+  and only the extra round trips remain, so this tradeoff is worth revisiting.
 - **The official-MCP plane is now verifiable.** `GET /api/admin/metrics/official-mcp`
   performs full MCP discovery (`initialize` → `tools/list`), not a ping — because the
   handshake returns 200 even when the upstream toolbox does not exist, so every

@@ -132,10 +132,18 @@ class ToolCallAccumulator:
                 continue
             slot = self._slot_for(fragment)
             call_id = fragment.get("id")
-            if isinstance(call_id, str) and call_id and not slot.id:
+            # ``not slot.id`` is the whole guard, and it is load-bearing in both
+            # directions: the first non-empty value wins, so a later empty ``id``
+            # cannot erase it and a later *different* one cannot hijack the slot.
+            # An additional ``and call_id`` here would read as defensive but be
+            # dead — ``not slot.id`` already makes assigning "" a no-op — and a
+            # dead condition is indistinguishable from a working one until
+            # something mutates it. (It was written that way first; the mutation
+            # test survived, which is how it was found.)
+            if isinstance(call_id, str) and not slot.id:
                 slot.id = call_id
             call_type = fragment.get("type")
-            if isinstance(call_type, str) and call_type and not slot.type:
+            if isinstance(call_type, str) and not slot.type:
                 slot.type = call_type
             function = fragment.get("function")
             if not isinstance(function, dict):

@@ -91,6 +91,19 @@ def test_a_later_empty_id_never_erases_the_real_one():
     assert call["id"] == "call_a" and call["type"] == "function"
 
 
+def test_a_later_different_id_never_hijacks_an_established_slot():
+    """One slot, one identity: the first non-empty ``id`` wins outright.
+
+    The same guard covers both this and the empty-id case above, which is why
+    both are asserted — a guard tested from one side only is half-tested.
+    """
+    acc = ToolCallAccumulator()
+    acc.add(_fragments({"index": 0, "id": "call_a", "function": {"name": "calculator"}}))
+    acc.add(_fragments({"index": 0, "id": "call_b", "function": {"arguments": "{}"}}))
+    calls = acc.finalize()
+    assert len(calls) == 1 and calls[0]["id"] == "call_a"
+
+
 def test_a_bare_continuation_extends_the_open_call():
     """Some providers drop ``index`` on continuation fragments entirely."""
     acc = ToolCallAccumulator()
