@@ -485,6 +485,33 @@ Three rules that follow from those:
    the backup — and note that PowerShell rewrites line endings, which has
    reported CRLF files as false mutation failures.
 
+**When two branches touch one file and both merge green, CI has only covered the
+union of the tests that already existed.** It says nothing about paths the *other*
+change created. This is not a rebase-hygiene point — the merge can be textually
+clean, the suite can pass, and the coverage hole is still there.
+
+Measured on 2026-08-07, when three sessions ran in parallel:
+
+- #307 (token-streaming the tool loop) merged at 14:33 and added new assistant
+  persist paths. #309 (citation provenance) merged **green** at 14:52 on top of
+  it. Mutation testing then found that **four of six** persist sites had no test
+  holding them: `sources=library_sources` could have been deleted from an
+  `@mention` agent turn or a web-search turn with the whole suite passing. Those
+  rows persist `sources: null`, which the renderer correctly reads as
+  *unattested* — so citations silently revert to pre-P1-14 rendering with nothing
+  telling the reader that verification stopped. A silently absent verdict is the
+  worst shape this defect takes. Closed by #312, 25 minutes later.
+- Separately, two sessions each rewrote the same audit paragraph to say their own
+  finding was "honestly partial". Both sentences were true when written and
+  **both were false once the other landed**; taking either side of the conflict
+  verbatim would have shipped a wrong claim.
+
+So after rebasing onto a sibling's work, do not treat a green suite as coverage.
+Mutate the seam the other change introduced, and pair it with a control proving
+your test actually enters the new path — #312 asserts `gateway.iterations >= 2`
+so a turn that never entered the streaming loop fails instead of quietly
+re-testing the old one.
+
 ## How to add things
 
 ### Add a chat tool
