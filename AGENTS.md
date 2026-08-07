@@ -632,6 +632,39 @@ actually happened here:
 - Local/dev auth uses `X-Dev-User`; the Next.js same-origin proxy is the authority that injects or drops it. Browser-supplied `X-Dev-User` must not be trusted.
 - `apiFetch` is the browser helper for same-origin `/api/*` calls. In Entra mode it silently acquires an MSAL token and adds only `Authorization`; in dev mode it is a pass-through so the server-side proxy controls identity. Keep uploads multipart-safe by not forcing `Content-Type`.
 
+## RBAC by hand: `--assignee-object-id` takes the PRINCIPAL id
+
+A user-assigned managed identity has **two** GUIDs and `az` will silently accept
+the wrong one:
+
+```
+id-api-slurmfactory  clientId=39f0bdd7-...  principalId=cd0321eb-...
+```
+
+`az role assignment create --assignee-object-id <clientId>
+--assignee-principal-type ServicePrincipal` **succeeds**. The `--assignee-principal-type`
+flag skips directory validation, so the assignment is created against an object
+that grants the identity nothing. `az role assignment delete --assignee <clientId>`,
+by contrast, *does* resolve the client id back to the real principal and deletes
+the right row.
+
+That asymmetry is a live trap: on 2026-08-07 a role-narrowing change granted the
+replacement role to the clientId and deleted the old role from the principalId,
+which left Content Understanding with **no** Foundry grant at all until it was
+caught. Nothing errored.
+
+Two rules:
+
+1. Read the principal id from the resource, never from a role listing:
+   `az identity list -g <rg> --query "[].{n:name,principalId:principalId}"`.
+   `az role assignment list` prints the *clientId* in `principalName` for managed
+   identities, which is exactly how the wrong value gets copied.
+2. **Verify by scope, not by assignee.** `az role assignment list --assignee <id>`
+   resolves the id first, so it can report the roles the identity *should* have
+   while the actual row belongs to a different object. `--scope <resource>` shows
+   the literal `principalId` on each assignment and is the only view that would
+   have exposed the mistake.
+
 ## Red flags: stop and ask a human
 
 - You are about to bypass the approved HTTP/SSE proxy -> APIM path, bypass APIM for realtime, or introduce a direct deployment name.
