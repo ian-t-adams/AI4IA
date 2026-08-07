@@ -26,15 +26,20 @@ state cannot catch the bug it exists to catch.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from ai4ia_api.agents.approvals import ApprovalPolicy
+from ai4ia_api.agents.runtime import run_agent_turn
+from ai4ia_api.agents.tool_exec import ToolContext, build_tools
 from ai4ia_api.code_interpreter.client import CodeInterpreterError
 from ai4ia_api.code_interpreter.models import CodeInterpreterResult
 from ai4ia_api.entitlements.memory_store import InMemoryEntitlementStore
 from ai4ia_api.entitlements.models import Entitlement, EntitlementLimits
 from ai4ia_api.entitlements.service import EntitlementService
+from ai4ia_api.gateway.client import ChatChunk
 from ai4ia_api.library.blob_store import InMemoryBlobStore
 from ai4ia_api.library.compute_capability import (
     MAX_RUNS_PER_TURN,
@@ -162,6 +167,11 @@ async def _apply(store, user, limits: EntitlementLimits):
 
 
 def _caps(library, blob, ci, settings, *, ents, usage, user="u1", session="s1"):
+    return _build(library, blob, ci, settings, ents=ents, usage=usage, user=user, session=session)[1]
+
+
+def _build(library, blob, ci, settings, *, ents, usage, user="u1", session="s1"):
+    """``(tools, handlers)`` for the compute capability."""
     return build_compute_capability(
         retrieval=DocumentRetrievalService(
             library=library, blob_store=blob, chunk_store=None, embedder=None,
@@ -175,7 +185,7 @@ def _caps(library, blob, ci, settings, *, ents, usage, user="u1", session="s1"):
         user_id=user,
         session_id=session,
         nonce="nn",
-    )[1]
+    )
 
 
 # --------------------------------------------------------------------------
@@ -530,3 +540,169 @@ async def test_hard_block_of_zero_denies_the_first_execution():
     )
     assert res["status"] == "denied"
     assert ci.calls == []
+
+
+# --------------------------------------------------------------------------
+# The streaming tool loop (P1-16 / #307) landed AFTER the gate above was
+# written, and it is the live default (``gateway_stream_tool_loop=True``). The
+# tests above call the handler directly, which is transport-agnostic by
+# construction -- ``run_agent_turn.call_model`` reduces both transports to one
+# ``(text, tool_calls)`` pair and there is exactly ONE ``await handlers[name]``
+# dispatch site. But "shared by construction" is an argument, not evidence, and
+# "a denial does not kill the turn" is precisely the property that would regress
+# silently under streaming: an exception raised mid-stream surfaces as a broken
+# SSE body rather than a failed assertion. So drive it end to end.
+# --------------------------------------------------------------------------
+class _StreamingScriptedGateway:
+    """Replays scripted iterations as SSE, fragmenting every tool call.
+
+    Mirrors the double in test_agent_streaming.py: ``id``/``name`` ride only the
+    first fragment and the arguments are cut at arbitrary offsets, which is what
+    a real provider does.
+    """
+
+    def __init__(self, script):
+        self._script = list(script)
+        self.iterations = 0
+        self.completes = 0
+
+    async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
+        self.completes += 1
+        text, calls = self._script.pop(0) if self._script else ("(exhausted)", [])
+        message = {"role": "assistant", "content": text or None}
+        if calls:
+            message["tool_calls"] = calls
+        return {"choices": [{"message": message}]}
+
+    async def stream(self, *, deployment, messages, params=None, correlation_id=None):
+        self.iterations += 1
+        text, calls = self._script.pop(0) if self._script else ("(exhausted)", [])
+        for i in range(0, len(text), 4):
+            yield ChatChunk(
+                delta=text[i : i + 4],
+                raw=json.dumps({"choices": [{"delta": {"content": text[i : i + 4]}}]}),
+            )
+        for index, call in enumerate(calls):
+            fn = call["function"]
+            head = {
+                "index": index,
+                "id": call["id"],
+                "type": "function",
+                "function": {"name": fn["name"], "arguments": ""},
+            }
+            yield ChatChunk(raw=json.dumps({"choices": [{"delta": {"tool_calls": [head]}}]}))
+            args = fn["arguments"]
+            for off in range(0, len(args), 3):
+                frag = {"index": index, "function": {"arguments": args[off : off + 3]}}
+                yield ChatChunk(raw=json.dumps({"choices": [{"delta": {"tool_calls": [frag]}}]}))
+        yield ChatChunk(done=True, raw="[DONE]")
+
+
+def _run_code_call(call_id: str, document_id: str) -> dict:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": RUN_CODE_TOOL_NAME,
+            "arguments": json.dumps({"document_id": document_id, "task": "sum the amounts"}),
+        },
+    }
+
+
+async def _streamed_turn(handlers, tools, gateway):
+    """One streamed agent turn offering the compute capability.
+
+    ``on_delta`` + a gateway with ``stream`` is what turns ``stream_tokens`` on
+    inside ``run_agent_turn``. ``ApprovalPolicy.off`` is used ONLY so the turn
+    reaches the entitlement gate at all -- ``run_code`` is held for
+    per-invocation approval on every turn (#272/#301), which is an independent
+    gate this test is not about and must not be read as weakening.
+    """
+    registry, executor = build_tools()
+    seen: list[str] = []
+
+    async def on_delta(text: str) -> None:
+        seen.append(text)
+
+    result = await run_agent_turn(
+        deployment="dep",
+        messages=[{"role": "user", "content": "sum the spreadsheet"}],
+        tool_names=[],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(approval_policy=ApprovalPolicy.off),
+        extra_tools=tools,
+        extra_handlers=handlers,
+        on_delta=on_delta,
+    )
+    return result, seen
+
+
+async def test_denial_survives_the_streaming_tool_loop_as_a_tool_result():
+    """The turn must finish with a real answer, not a broken stream."""
+    library, blob = InMemoryDocumentLibraryRepository(), InMemoryBlobStore()
+    ci = FakeCI()
+    usage, ents, store = _real_services()
+    await _apply(store, "u1", EntitlementLimits(computeExecutionsPerDay=0))
+    doc = await _seed_doc(library, blob)
+    tools, handlers = _build(library, blob, ci, _settings(), ents=ents, usage=usage)
+
+    gateway = _StreamingScriptedGateway(
+        [
+            ("Let me compute that. ", [_run_code_call("c1", doc.id)]),
+            ("I could not run that computation: your daily code-execution budget is used up.", []),
+        ]
+    )
+    result, seen = await _streamed_turn(handlers, tools, gateway)
+
+    # The turn took the STREAMING path for both iterations and completed.
+    assert gateway.iterations == 2 and gateway.completes == 0
+    assert len(seen) > 1  # really incremental, not one terminal blob
+    assert result.text.startswith("I could not run that computation")
+
+    # The denial reached the model as a structured tool RESULT, not as an
+    # execution_error. This is the exact discriminator: a synthetic capability
+    # that RETURNS a dict is recorded ``delegate``; one that RAISES is recorded
+    # ``tool_error`` with detail ``execution_error``. So this assertion fails
+    # loudly if the denial ever becomes an exception.
+    steps = [s for s in result.steps if s.tool == RUN_CODE_TOOL_NAME]
+    assert steps, "run_code never reached dispatch"
+    step = steps[-1]
+    assert step.kind == "delegate", f"denial surfaced as {step.kind!r}, not a returned result"
+    assert step.result["status"] == "denied"
+    assert step.result["retry_after_seconds"] == 24 * 60 * 60
+    assert not any(s.kind == "tool_error" for s in result.steps)
+
+    # And nothing was spent: no provider call, no ledger row.
+    assert ci.calls == []
+    assert (await usage.summarize("u1")).computeExecutions == 0
+
+
+async def test_a_permitted_run_still_executes_through_the_streaming_loop():
+    """Non-vacuity control: identical script and fixtures, cap lifted. Without
+    this, the test above would pass just as well against a loop that silently
+    dropped every compute call."""
+    library, blob = InMemoryDocumentLibraryRepository(), InMemoryBlobStore()
+    ci = FakeCI()
+    usage, ents, _ = _real_services()
+    doc = await _seed_doc(library, blob)
+    tools, handlers = _build(library, blob, ci, _settings(), ents=ents, usage=usage)
+
+    gateway = _StreamingScriptedGateway(
+        [
+            ("Let me compute that. ", [_run_code_call("c1", doc.id)]),
+            ("The total is 42.", []),
+        ]
+    )
+    result, _ = await _streamed_turn(handlers, tools, gateway)
+
+    assert gateway.iterations == 2 and gateway.completes == 0
+    assert result.text == "The total is 42."
+    step = next(s for s in result.steps if s.kind == "delegate")
+    assert step.tool == RUN_CODE_TOOL_NAME
+    assert "denied" not in str(step.result)
+    # The fragmented arguments reassembled well enough to reach the real
+    # interpreter, and the execution was metered under the distinct identity.
+    assert len(ci.calls) == 1
+    assert (await usage.summarize("u1")).computeExecutions == 1
