@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..catalog import DeploymentOption, ModelCatalog, ModelEntry
+from ..citations import RetrievedSource, attest_message
 from ..conversations.policy import resolve_conversation_policy
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..logging_setup import emit_custom_event, emit_security_block, get_correlation_id
@@ -477,6 +478,12 @@ async def _persist_terminal_assistant(
     user_id: str,
     assistant: Message,
 ) -> bool:
+    # Single choke point for every streaming terminal write, which is why the
+    # citation attestation happens here: the answer's text is final, and both the
+    # agentic and plain streaming generators funnel through this one call rather
+    # than each remembering to attest. Idempotent and a no-op on an unattested
+    # turn (see ai4ia_api.citations).
+    attest_message(assistant)
     write = asyncio.create_task(repo.upsert_message(user_id, assistant))
     try:
         await asyncio.shield(write)
@@ -1349,19 +1356,27 @@ async def chat(
     # retrieval is off (default) or the library is empty, this is "".
     library_nonce = secrets.token_hex(4)
     library_block = ""
+    # Span-level citation provenance for this turn (audit P1-14). ``None`` means
+    # "retrieval never ran for this turn", which leaves the answer unattested; a
+    # list (including an empty one) means it did run, so a cited id that is not
+    # in it was never retrieved and is reported as such.
+    library_sources: list[RetrievedSource] | None = None
     library_tools_enabled = (
         session.libraryDocumentIds is None or bool(session.libraryDocumentIds)
     )
     if retrieval is not None and library_tools_enabled:
         try:
-            library_block = await retrieval.context_block(
+            built = await retrieval.context(
                 user.internal_user_id, content_for_model, nonce=library_nonce,
                 email=user.email,
                 document_ids=session.libraryDocumentIds,
             )
+            library_block = built.block
+            library_sources = built.sources if built.block else None
         except Exception:  # noqa: BLE001 - retrieval must never break a turn
             logger.warning("library context build failed", exc_info=True)
             library_block = ""
+            library_sources = None
 
     # Insert context system blocks after the main system prompt: the rolling
     # summary first (it recaps the folded-away turns), then memory, then session
@@ -1721,6 +1736,7 @@ async def chat(
                 status=MessageStatus.streaming,
                 model=deployment.deploymentName,
                 agent=agent_name,
+                sources=library_sources,
             )
             def _run(on_step: Callable[[AgentStep], Awaitable[None]]):
                 return run_agent_turn(
@@ -1792,8 +1808,10 @@ async def chat(
             agent=agent_name,
             attachments=[*image_sink, *video_sink, *doc_sink],
             steps=persisted_trace(run.steps) or None,
+            sources=library_sources,
         )
         approval_events = _mint_approval_events(assistant, approval_sink.drafts())
+        attest_message(assistant)
         await repo.add_message(user.internal_user_id, assistant)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
         await metering.record_completion(
@@ -1916,6 +1934,7 @@ async def chat(
                         status=MessageStatus.streaming,
                         model=deployment.deploymentName,
                         agent=agent_name,
+                        sources=library_sources,
                     )
 
                     def _run_plain(on_step: Callable[[AgentStep], Awaitable[None]]):
@@ -1999,8 +2018,10 @@ async def chat(
                         model=deployment.deploymentName,
                         agent=agent_name,
                         steps=persisted_trace(run.steps) or None,
+                        sources=library_sources,
                     )
                     approval_events = _mint_approval_events(assistant, plain_drafts)
+                    attest_message(assistant)
                     await repo.add_message(user.internal_user_id, assistant)
                     await memory.remember(
                         user.internal_user_id, body.sessionId, content_for_model
@@ -2070,7 +2091,9 @@ async def chat(
             # Annotate-only safety verdicts. Under a non-blocking RAI policy
             # these are the only visible evidence the filters ran at all.
             safety=parse_safety(result),
+            sources=library_sources,
         )
+        attest_message(assistant)
         await repo.add_message(user.internal_user_id, assistant)
         await memory.remember(user.internal_user_id, body.sessionId, content_for_model)
         await metering.record_completion(
@@ -2097,6 +2120,7 @@ async def chat(
         status=MessageStatus.streaming,
         model=deployment.deploymentName,
         agent=agent_name,
+        sources=library_sources,
     )
     async def event_stream():
         parts: list[str] = []

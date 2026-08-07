@@ -161,12 +161,14 @@ async def test_rag_citation_includes_timestamp_and_speaker_for_audio():
     assert "lecture.mp3" in block
     assert "2:13-2:45" in block
     assert "Speaker 1" in block
-    # The copyable deep-link token is keyed to the chunk's START timestamp so the
-    # frontend can parse the model's citation and seek the player there.
-    assert "cite-as: [[cite:lecture.mp3@2:13]]" in block
+    # The copyable token is the server-minted span id, not the filename and
+    # timecode: the app resolves both from the span's own record, so a second
+    # document with the same name can no longer capture the deep-link.
+    assert "cite-as: [[cite:S1]]" in block
+    assert "[[cite:lecture.mp3" not in block
 
 
-async def test_rag_citation_explains_token_format_and_omits_token_for_documents():
+async def test_rag_citation_explains_span_id_format_and_labels_every_excerpt():
     library = InMemoryDocumentLibraryRepository()
     blob = InMemoryBlobStore()
     chunks = InMemoryDocChunkStore()
@@ -176,10 +178,14 @@ async def test_rag_citation_explains_token_format_and_omits_token_for_documents(
 
     block = await svc.context_block("u1", "revenue?", nonce="n9")
 
-    # The instruction teaches the model the media-citation token format...
-    assert "[[cite:FILENAME@MM:SS]]" in block
-    # ...but a plain document (no time grounding) gets no copyable token to echo.
-    assert "[[cite:report.pdf@" not in block
+    # The instruction teaches the span-id token format...
+    assert "[[cite:S1]]" in block
+    # ...and a plain document gets a copyable token too, which it did not before:
+    # every injected excerpt is attestable, not just the time-grounded ones.
+    assert "cite-as: [[cite:S1]]" in block
+    assert "[S1 · report.pdf" in block
+    # The old filename form is gone from what the model is taught.
+    assert "FILENAME@MM:SS" not in block
 
 
 async def test_rag_never_surfaces_chunk_of_nonready_doc():
