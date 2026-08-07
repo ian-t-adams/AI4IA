@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -130,4 +133,68 @@ describe("parseCitations on an unattested turn", () => {
     expect(parseCitations("")).toEqual([]);
     expect(hasCitations("no tokens here")).toBe(false);
   });
+});
+
+// The grammar and the verification rule are implemented twice, here and in
+// `app/api/src/ai4ia_api/citations.py`. Two implementations that quietly
+// disagree would show a reader a green chip for a citation the server recorded
+// as fabricated, so both suites assert the same committed case table and a
+// grammar change on one side alone fails that side's CI job.
+//
+// The API owns the file because the API owns the verdict. `expect` is the set
+// of DISTINCT verdicts: the API keeps one record per span with an occurrence
+// count, while this renderer must emit one chip per occurrence, so the counts
+// legitimately differ and are not compared.
+const CONTRACT = JSON.parse(
+  readFileSync(
+    fileURLToPath(new URL("../../../api/tests/citation_contract.json", import.meta.url)),
+    "utf8",
+  ),
+) as {
+  registry: RetrievedSource[];
+  cases: {
+    text: string;
+    attested: boolean;
+    expect: { spanId: string | null; status: string; documentId: string | null }[];
+  }[];
+};
+
+describe("the shared citation contract", () => {
+  it("is not vacuous", () => {
+    const statuses = new Set(
+      CONTRACT.cases.flatMap((c) => c.expect.map((e) => e.status)),
+    );
+    // A table that only ever expected one verdict would make the parity claim a
+    // statement about nothing.
+    expect([...statuses].sort()).toEqual(["unverified", "verified"]);
+    expect(CONTRACT.cases.some((c) => c.attested)).toBe(true);
+    expect(CONTRACT.cases.some((c) => !c.attested)).toBe(true);
+    expect(CONTRACT.cases.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it.each(CONTRACT.cases.map((c) => [c.text, c] as const))(
+    "agrees with the API on %s",
+    (_text, testCase) => {
+      const tokens = cites(
+        parseCitations(
+          testCase.text,
+          testCase.attested ? CONTRACT.registry : null,
+        ),
+      )
+        // An unattested turn yields no API verdict; this renderer may still
+        // lift a legacy token out as an unattested chip, which the contract
+        // excludes rather than pretends away.
+        .filter((t) => t.status !== "unattested")
+        .map((t) => ({
+          spanId: t.spanId,
+          status: t.status,
+          documentId: t.documentId,
+        }));
+      const distinct = tokens.filter(
+        (t, i) =>
+          tokens.findIndex((other) => JSON.stringify(other) === JSON.stringify(t)) === i,
+      );
+      expect(distinct).toEqual(testCase.expect);
+    },
+  );
 });

@@ -1,0 +1,164 @@
+{
+  "_comment": "SHARED CONTRACT for citation tokens (audit P1-14). The token grammar and the rule 'verified means the id is in this turn's server-minted registry' are implemented twice: app/api/src/ai4ia_api/citations.py and app/web/src/lib/citations.ts. Two implementations that quietly disagree would show a reader a green chip for a citation the server recorded as fabricated. Both test suites read this file and assert these verdicts, so a grammar change on one side alone fails that side's CI job. 'expect' is the set of DISTINCT verdicts: the API keeps one record per span with an occurrence count, while the web emits one chip per occurrence, so counts legitimately differ and are not compared. An unattested turn yields no API verdict at all; the web may still lift a legacy FILENAME@MM:SS token out as an unattested chip, which is excluded here rather than pretended away.",
+  "registry": [
+    {
+      "spanId": "S1",
+      "documentId": "doc-1",
+      "filename": "report.pdf",
+      "excerpt": "Revenue grew twenty percent.",
+      "contentSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "retrievedAt": "2026-08-07T00:00:00Z"
+    },
+    {
+      "spanId": "S2",
+      "documentId": "doc-2",
+      "filename": "lecture.mp3",
+      "startMs": 133000,
+      "excerpt": "The mitochondria is the powerhouse.",
+      "contentSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "retrievedAt": "2026-08-07T00:00:00Z"
+    }
+  ],
+  "cases": [
+    {
+      "text": "Grew [[cite:S1]].",
+      "attested": true,
+      "expect": [
+        {
+          "spanId": "S1",
+          "status": "verified",
+          "documentId": "doc-1"
+        }
+      ]
+    },
+    {
+      "text": "Grew [[cite:S9]].",
+      "attested": true,
+      "expect": [
+        {
+          "spanId": "S9",
+          "status": "unverified",
+          "documentId": null
+        }
+      ]
+    },
+    {
+      "text": "Grew [[cite:s1]].",
+      "attested": true,
+      "expect": [
+        {
+          "spanId": "S1",
+          "status": "verified",
+          "documentId": "doc-1"
+        }
+      ]
+    },
+    {
+      "text": "Grew [[cite: S2 ]].",
+      "attested": true,
+      "expect": [
+        {
+          "spanId": "S2",
+          "status": "verified",
+          "documentId": "doc-2"
+        }
+      ]
+    },
+    {
+      "text": "Both [[cite:S1,S9]].",
+      "attested": true,
+      "expect": [
+        {
+          "spanId": "S1",
+          "status": "verified",
+          "documentId": "doc-1"
+        },
+        {
+          "spanId": "S9",
+          "status": "unverified",
+          "documentId": null
+        }
+      ]
+    },
+    {
+      "text": "Both [[cite:S1; S2]].",
+      "attested": true,
+      "expect": [
+        {
+          "spanId": "S1",
+          "status": "verified",
+          "documentId": "doc-1"
+        },
+        {
+          "spanId": "S2",
+          "status": "verified",
+          "documentId": "doc-2"
+        }
+      ]
+    },
+    {
+      "text": "Old [[cite:lecture.mp3@2:13]].",
+      "attested": true,
+      "expect": [
+        {
+          "spanId": null,
+          "status": "unverified",
+          "documentId": null
+        }
+      ]
+    },
+    {
+      "text": "Bad [[cite:source four]].",
+      "attested": true,
+      "expect": [
+        {
+          "spanId": null,
+          "status": "unverified",
+          "documentId": null
+        }
+      ]
+    },
+    {
+      "text": "Empty [[cite:]].",
+      "attested": true,
+      "expect": [
+        {
+          "spanId": null,
+          "status": "unverified",
+          "documentId": null
+        }
+      ]
+    },
+    {
+      "text": "Twice [[cite:S1]] and [[cite:S1]].",
+      "attested": true,
+      "expect": [
+        {
+          "spanId": "S1",
+          "status": "verified",
+          "documentId": "doc-1"
+        }
+      ]
+    },
+    {
+      "text": "Nothing to cite here.",
+      "attested": true,
+      "expect": []
+    },
+    {
+      "text": "Grew [[cite:S1]].",
+      "attested": false,
+      "expect": []
+    },
+    {
+      "text": "Old [[cite:lecture.mp3@2:13]].",
+      "attested": false,
+      "expect": []
+    },
+    {
+      "text": "Nothing to cite here.",
+      "attested": false,
+      "expect": []
+    }
+  ]
+}

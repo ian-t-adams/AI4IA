@@ -7,6 +7,9 @@ prove nothing, so each catching test has a passing control beside it.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from ai4ia_api.citations import (
@@ -437,3 +440,45 @@ async def test_no_excerpt_is_injected_without_an_id_when_the_registry_is_full():
     # registry exactly -- an unlabelled excerpt would be usable and unattestable.
     assert len(built.sources) == MAX_SOURCES
     assert built.block.count("cite-as: [[cite:") == MAX_SOURCES
+
+
+# --- The shared contract with the web parser ---------------------------------
+#
+# The grammar and the verification rule are implemented twice, here and in
+# ``app/web/src/lib/citations.ts``. Two implementations that quietly disagree
+# would show a reader a green chip for a citation this side recorded as
+# fabricated, so both suites assert the same committed case table. A grammar
+# change on one side alone fails that side's CI job.
+
+_CONTRACT_PATH = Path(__file__).with_name("citation_contract.json")
+_CONTRACT = json.loads(_CONTRACT_PATH.read_text(encoding="utf-8"))
+
+
+def test_shared_contract_is_not_vacuous():
+    cases = _CONTRACT["cases"]
+    statuses = {
+        item["status"] for case in cases for item in case["expect"]
+    }
+    # A table that only ever expected one verdict would make the parity claim a
+    # statement about nothing.
+    assert statuses == {"verified", "unverified"}
+    assert any(case["attested"] for case in cases)
+    assert any(not case["attested"] for case in cases)
+    assert len(cases) >= 10
+
+
+@pytest.mark.parametrize("case", _CONTRACT["cases"], ids=lambda c: c["text"])
+def test_api_matches_the_shared_citation_contract(case):
+    sources = [RetrievedSource(**item) for item in _CONTRACT["registry"]]
+    citations = verify_citations(
+        case["text"], sources if case["attested"] else None
+    )
+
+    assert [
+        {
+            "spanId": c.spanId or None,
+            "status": c.status.value,
+            "documentId": c.documentId,
+        }
+        for c in citations
+    ] == case["expect"]

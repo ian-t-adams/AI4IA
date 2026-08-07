@@ -281,3 +281,23 @@ def test_a_turn_without_retrieval_is_left_unattested():
         assert row["citations"] is None
     finally:
         client.__exit__(None, None, None)
+
+
+async def test_an_empty_library_leaves_the_turn_unattested_too():
+    # Retrieval is ON but the user has nothing ready, so no library block is
+    # built and nothing was injected. Attesting here would mark any cite-shaped
+    # token unverified on the strength of a feature that contributed nothing --
+    # a false accusation, which is the failure mode this whole change exists to
+    # avoid. Distinct from a Tier-1-only turn, where a block WAS built and an
+    # empty registry really is evidence.
+    client = _make_client("Nothing to cite [[cite:S1]].")
+    try:
+        _uid(client)  # no documents seeded
+        sid = _session(client)
+        _ask(client, sid, stream=False)
+        row = _assistant_row(client, sid)
+
+        assert row["sources"] is None
+        assert row["citations"] is None
+    finally:
+        client.__exit__(None, None, None)
