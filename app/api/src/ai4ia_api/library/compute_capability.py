@@ -25,6 +25,33 @@ from tool args. Governance:
   :class:`DocumentExportService` for the write).
 * Per-turn budgets cap how many runs/exports a single turn may perform, on top of
   the runtime's global tool-call budget.
+* **Entitlement + metering on every sandbox execution** (audit P1-2). ``run_code``
+  is a *direct-to-Foundry* call — the documented exception to the
+  SimpleL7Proxy -> APIM -> Foundry rule, because a stateful Azure-managed sandbox
+  container is not a routable chat-completions deployment — so none of the
+  gateway's governance applies to it. Three properties make that safe:
+
+  1. :meth:`EntitlementService.check` runs with ``scope="compute"`` before **any**
+     provider IO (before the raw-file upload, not just before the run), so a
+     disabled account, an exhausted rate/budget limit, or an exhausted
+     ``computeExecutionsPerDay`` allowance stops the spend. The per-turn budget
+     above permits up to :data:`MAX_RUNS_PER_TURN` executions, so the gate is
+     re-evaluated per execution rather than per turn.
+  2. A denial returns a **structured tool result**, never an exception: one user
+     message can legitimately exhaust the allowance mid-turn, and the model must
+     be able to explain that to the user instead of the turn dying.
+  3. Every execution *attempt* is metered — including one that errors — under the
+     distinct :meth:`UsageTarget.code_interpreter` identity, so sandbox spend
+     cannot hide inside the parent chat charge in the admin rollups. A sandbox
+     that spun up and then failed still cost money and still created provider
+     resources, which is the same reasoning the per-invocation tool approval
+     work uses when it spends an approval before dispatch.
+
+  The metered unit is deliberately the sandbox execution (the ``run`` call), not
+  every HTTP request: a pre-flight file upload that fails before any container
+  exists created no sandbox, is transparently fallen back from, and is not
+  charged. ``export_document`` is not gated here — it writes a blob and makes no
+  provider call, so there is no spend to meter.
 * **Every** untrusted field returned to the model is neutralized: multi-line
   payloads (the CI answer, captured logs) are wrapped in the turn's nonce fence
   (newlines preserved, structure can't escape); short scalar fields (source
@@ -33,6 +60,7 @@ from tool args. Governance:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -41,6 +69,15 @@ from typing import Any
 from ..agents.tool_exec import ToolContext
 from ..code_interpreter.client import CodeInterpreterClient, CodeInterpreterError
 from ..config import Settings
+from ..entitlements.service import EntitlementService
+from ..usage.models import (
+    CODE_INTERPRETER_MODEL,
+    CODE_INTERPRETER_TARGET,
+    TokenUsage,
+    UsageStatus,
+    UsageTarget,
+)
+from ..usage.service import UsageService
 from .export import DocumentExportService
 from .retrieval import DocumentRetrievalService
 
@@ -93,8 +130,11 @@ def build_compute_capability(
     retrieval: DocumentRetrievalService,
     code_interpreter: CodeInterpreterClient,
     export: DocumentExportService,
+    entitlements: EntitlementService,
+    metering: UsageService,
     settings: Settings,
     user_id: str,
+    session_id: str,
     nonce: str,
     email: str | None = None,
     allowed_document_ids: set[str] | None = None,
@@ -108,9 +148,16 @@ def build_compute_capability(
     compute over a document shared with that email (read via the owner's storage),
     consistent with the read/RAG paths. ``export_document`` stays owner-only — a
     grantee never writes a new version onto someone else's document.
+
+    ``entitlements`` and ``metering`` are **required**, not optional: they are the
+    gate and the ledger for a direct-to-Foundry sandbox call, and a default would
+    let a caller construct a compute path that silently spends without either
+    (which is precisely the state audit P1-2 found). ``session_id`` scopes the
+    ledger rows to the conversation that spent them.
     """
     run_budget = {"used": 0}
     export_budget = {"used": 0}
+    ci_target = UsageTarget.code_interpreter(settings.code_interpreter_model)
 
     run_schema: dict[str, Any] = {
         "type": "function",
@@ -184,6 +231,25 @@ def build_compute_capability(
         },
     }
 
+    async def _meter(status: UsageStatus, ctx: ToolContext) -> None:
+        """Record one sandbox execution attempt under the distinct CI identity.
+
+        ``known=False`` because the Responses Code Interpreter surface reports no
+        token usage for the sandbox: the row is *counted* but never priced, so an
+        unknown cost is never rendered as zero. Best-effort by construction —
+        :meth:`UsageService.record_completion` never raises.
+        """
+        await metering.record_completion(
+            user_id=user_id,
+            session_id=session_id,
+            model_id=CODE_INTERPRETER_MODEL,
+            target=ci_target,
+            usage=TokenUsage(known=False, complete=False, calls=1),
+            status=status,
+            agent=CODE_INTERPRETER_TARGET,
+            correlation_id=getattr(ctx, "correlation_id", None),
+        )
+
     async def _run_handler(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         if run_budget["used"] >= MAX_RUNS_PER_TURN:
             return {"error": "code execution budget exhausted for this turn."}
@@ -196,6 +262,21 @@ def build_compute_capability(
         if not task:
             return {"error": "task must be a non-empty string."}
         run_budget["used"] += 1
+
+        # Entitlement gate, BEFORE any provider IO (the raw-file upload below is
+        # already a call to Foundry). Re-evaluated per execution, so a turn that
+        # is allowed its first run can still be stopped on its second. A denial is
+        # a structured tool result, never an exception: exhausting the allowance
+        # mid-turn must leave the model able to explain what happened.
+        decision = await entitlements.check(user_id, scope="compute")
+        if not decision.allowed:
+            denied: dict[str, Any] = {
+                "error": _one_line(decision.reason or "code execution is not permitted."),
+                "status": "denied",
+            }
+            if decision.retry_after_seconds is not None:
+                denied["retry_after_seconds"] = decision.retry_after_seconds
+            return denied
 
         file_id: str | None = None
         source_name = "document"
@@ -279,12 +360,20 @@ def build_compute_capability(
                 f"BEGIN DOCUMENT {nonce}\n{document_text}\nEND DOCUMENT {nonce}"
             )
 
+        # Metered on ATTEMPT, not on success: the sandbox container that a failed
+        # run spun up still cost money and still created provider resources. The
+        # status carried into the ledger says which it was.
+        status: UsageStatus = "error"
         try:
             result = await code_interpreter.run(
                 instructions=instructions,
                 user_input=user_input,
                 file_ids=[file_id] if file_id else None,
             )
+            status = "complete"
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
         except CodeInterpreterError as exc:
             logger.warning("run_code upstream error user=%s status=%s", user_id, exc.status_code)
             return {"error": "The code interpreter could not complete that computation."}
@@ -295,6 +384,7 @@ def build_compute_capability(
             # Best-effort cleanup of the uploaded original (never affects the turn).
             if file_id:
                 await code_interpreter.delete_file(file_id)
+            await _meter(status, ctx)
 
         # Fence the (untrusted) CI answer + logs with the turn nonce, newlines
         # preserved, so the compute output can never be read as instructions.

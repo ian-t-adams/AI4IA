@@ -131,6 +131,8 @@ def _inject_compute(client: TestClient, ci: FakeCI) -> None:
         settings,
         ingestor=client.app.state.document_ingestor,
         retrieval=client.app.state.document_retrieval,
+        entitlements=client.app.state.entitlements,
+        metering=client.app.state.usage,
         code_interpreter=ci,
     )
 

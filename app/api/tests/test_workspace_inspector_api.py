@@ -16,6 +16,23 @@ from ai4ia_api.agents.tool_exec import ToolContext
 from tests.conftest import make_settings
 
 
+class _AllowAll:
+    """Minimal EntitlementService stand-in: this test asserts the *selection*
+    guard rejects an unselected id BEFORE any service is touched, so the gate is
+    irrelevant here — but it must exist, because the capability refuses to be
+    built without one."""
+
+    async def check(self, user_id, *, scope="chat"):
+        raise AssertionError(
+            "the unselected-id guard must reject before the entitlement gate runs"
+        )
+
+
+class _NoopMetering:
+    async def record_completion(self, **kwargs):
+        raise AssertionError("nothing may be metered for a rejected selection")
+
+
 class EnumerableMemory:
     enabled = True
 
@@ -639,8 +656,11 @@ def test_document_tools_reject_unselected_ids_before_service_access():
         retrieval=None,
         code_interpreter=None,
         export=None,
+        entitlements=_AllowAll(),
+        metering=_NoopMetering(),
         settings=make_settings(),
         user_id="u1",
+        session_id="s1",
         nonce="n",
         allowed_document_ids=set(),
     )

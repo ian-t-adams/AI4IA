@@ -12,6 +12,12 @@ store) and the already-built retrieval consumer, exactly like
 compute and exports share one source of IO truth. The Code Interpreter client
 (Responses API) is injectable for tests; in deployments it is constructed from
 settings and closed in the app lifespan.
+
+The entitlement gate and the usage meter are **required** constructor arguments
+(audit P1-2). Compute is a direct-to-Foundry sandbox call, so it is outside the
+gateway's governance; making the two services non-optional means a compute path
+that could spend without a gate or a ledger cannot be constructed at all, rather
+than being a runtime posture someone has to remember to wire.
 """
 from __future__ import annotations
 
@@ -19,6 +25,8 @@ import logging
 
 from ..code_interpreter.client import CodeInterpreterClient
 from ..config import Settings
+from ..entitlements.service import EntitlementService
+from ..usage.service import UsageService
 from .compute_capability import Handler, build_compute_capability
 from .export import DocumentExportService
 from .ingest import DocumentIngestor
@@ -40,12 +48,16 @@ class DocumentComputeService:
         retrieval: DocumentRetrievalService,
         export: DocumentExportService,
         code_interpreter: CodeInterpreterClient,
+        entitlements: EntitlementService,
+        metering: UsageService,
         settings: Settings,
     ) -> None:
         self._router = router
         self._retrieval = retrieval
         self._export = export
         self._ci = code_interpreter
+        self._entitlements = entitlements
+        self._metering = metering
         self._settings = settings
 
     @property
@@ -61,6 +73,7 @@ class DocumentComputeService:
         self,
         *,
         user_id: str,
+        session_id: str,
         nonce: str,
         email: str | None = None,
         allowed_document_ids: set[str] | None = None,
@@ -70,8 +83,11 @@ class DocumentComputeService:
             retrieval=self._retrieval,
             code_interpreter=self._ci,
             export=self._export,
+            entitlements=self._entitlements,
+            metering=self._metering,
             settings=self._settings,
             user_id=user_id,
+            session_id=session_id,
             nonce=nonce,
             email=email,
             allowed_document_ids=allowed_document_ids,
@@ -96,6 +112,8 @@ def build_document_compute(
     *,
     ingestor: DocumentIngestor | None,
     retrieval: DocumentRetrievalService | None,
+    entitlements: EntitlementService,
+    metering: UsageService,
     code_interpreter: CodeInterpreterClient | None = None,
 ) -> DocumentComputeService | None:
     """Construct the compute consumer.
@@ -119,5 +137,7 @@ def build_document_compute(
         retrieval=retrieval,
         export=export,
         code_interpreter=ci,
+        entitlements=entitlements,
+        metering=metering,
         settings=settings,
     )

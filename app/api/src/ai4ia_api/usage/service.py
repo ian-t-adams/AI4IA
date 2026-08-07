@@ -291,6 +291,7 @@ class UsageService:
             requests=summary.totalRequests,
             totalTokens=summary.totalTokens,
             costMicroUsd=summary.totalCostMicroUsd,
+            computeExecutions=summary.computeExecutions,
         )
 
     async def close(self) -> None:

@@ -8,11 +8,20 @@ chat outright (local ``/commands`` still work — see the router/chat docs).
 Budgets/limits use **rolling** windows (last 60s / 24h / 30d) rather than
 calendar day/month, which sidesteps timezone and reset-boundary bugs and matches
 how the ledger is queried (``createdAt >= since``).
+
+``computeExecutionsPerDay`` is the one limit whose unit is not a token or a
+dollar: a Code Interpreter execution burns a provider-billed **sandbox
+container**, not a token budget, so folding it into ``tokensPerDay`` would
+misreport what was consumed and folding it into ``requestsPerMinute`` would
+price a 30-second sandbox the same as a trivial chat turn. It is therefore
+metered and enforced on its own axis, and only on the compute scope (see
+:class:`~ai4ia_api.entitlements.service.EntitlementService.check`).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +33,12 @@ def _now() -> datetime:
 MINUTE_SECONDS = 60
 DAY_SECONDS = 24 * 60 * 60
 MONTH_SECONDS = 30 * DAY_SECONDS
+
+#: What a caller is about to spend. ``chat`` is every token-priced model turn
+#: (the historical behaviour, and the default so the twelve existing call sites
+#: are unchanged). ``compute`` is a direct Code Interpreter sandbox execution,
+#: which additionally consumes the ``computeExecutionsPerDay`` allowance.
+EntitlementScope = Literal["chat", "compute"]
 
 
 class EntitlementLimits(BaseModel):
@@ -40,6 +55,10 @@ class EntitlementLimits(BaseModel):
     costPerDayMicroUsd: int | None = Field(default=None, ge=0)
     tokensPerMonth: int | None = Field(default=None, ge=0)
     costPerMonthMicroUsd: int | None = Field(default=None, ge=0)
+    #: Rolling 24h cap on direct Code Interpreter sandbox executions (the
+    #: ``run_code`` / ``analyze_attachment`` tools). Its own axis because a
+    #: sandbox is billed per session, not per token — see the module docstring.
+    computeExecutionsPerDay: int | None = Field(default=None, ge=0)
     note: str | None = None
 
     @property
@@ -57,6 +76,7 @@ class EntitlementLimits(BaseModel):
                 self.costPerDayMicroUsd,
                 self.tokensPerMonth,
                 self.costPerMonthMicroUsd,
+                self.computeExecutionsPerDay,
             )
         )
 

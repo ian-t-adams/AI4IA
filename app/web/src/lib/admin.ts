@@ -94,6 +94,9 @@ export interface EntitlementView {
   costPerDayMicroUsd?: number | null;
   tokensPerMonth?: number | null;
   costPerMonthMicroUsd?: number | null;
+  // Rolling 24h cap on direct Code Interpreter sandbox executions. Its own axis
+  // because a sandbox is billed per session, not per token.
+  computeExecutionsPerDay?: number | null;
   note?: string | null;
   updatedAt?: string | null;
   updatedBy?: string | null;
@@ -612,6 +615,8 @@ export function entitlementLabel(ent: EntitlementView | null | undefined): strin
   if (ent.tokensPerMonth != null) parts.push(`${formatCompact(ent.tokensPerMonth)} tok/mo`);
   if (ent.costPerDayMicroUsd != null) parts.push(`${formatUsd(ent.costPerDayMicroUsd)}/day`);
   if (ent.costPerMonthMicroUsd != null) parts.push(`${formatUsd(ent.costPerMonthMicroUsd)}/mo`);
+  if (ent.computeExecutionsPerDay != null)
+    parts.push(`${formatCompact(ent.computeExecutionsPerDay)} runs/day`);
   return parts.length ? parts.join(", ") : "Limited";
 }
 

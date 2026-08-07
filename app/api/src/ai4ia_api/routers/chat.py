@@ -1573,6 +1573,7 @@ async def chat(
             try:
                 c_tools, c_handlers = compute.build_capability(
                     user_id=user.internal_user_id, nonce=library_nonce,
+                    session_id=body.sessionId,
                     email=user.email,
                     allowed_document_ids=(
                         None
@@ -1920,6 +1921,7 @@ async def chat(
             if plain_compute_active:
                 c_tools, c_handlers = compute.build_capability(  # pyright: ignore[reportOptionalMemberAccess]
                     user_id=user.internal_user_id, nonce=library_nonce,
+                    session_id=body.sessionId,
                     email=user.email,
                     allowed_document_ids=(
                         None

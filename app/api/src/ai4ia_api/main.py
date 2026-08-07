@@ -281,6 +281,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings,
             ingestor=app.state.document_ingestor,
             retrieval=app.state.document_retrieval,
+            entitlements=app.state.entitlements,
+            metering=app.state.usage,
         )
         # Durable store for tool-generated images. Shared (single
         # instance) so the byte written during a tool turn is readable by the
