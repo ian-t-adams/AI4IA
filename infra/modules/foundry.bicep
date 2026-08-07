@@ -102,7 +102,21 @@ resource annotateOnlyRaiPolicy 'Microsoft.CognitiveServices/accounts/raiPolicies
 
 // Data-plane RBAC for app identities (managed-identity model access; no keys).
 var openAiUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd' // Cognitive Services OpenAI User
-var cognitiveUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908' // Cognitive Services User
+// Content Understanding, scoped to the ``MultiModalIntelligence`` data plane and
+// nothing else. This deliberately REPLACES `Cognitive Services User`
+// (a97b65f3-…), whose single dataAction is the wildcard
+// `Microsoft.CognitiveServices/*` — a strict superset of every OpenAI inference
+// action, including `deployments/chat/completions/action` and `responses/*`.
+//
+// That wildcard is why the P1-4 remediation had to be resequenced. Content
+// Understanding is enabled in production and needs a
+// `cognitiveservices.azure.com` token, so `Cognitive Services User` could not
+// simply be dropped — and while it stays, removing `Cognitive Services OpenAI
+// User` from an identity accomplishes **nothing**, because the wildcard still
+// grants direct inference. Narrowing this role first is what makes the OpenAI
+// grant the only inference path, and therefore what makes removing it mean
+// something.
+var contentUnderstandingRoleId = '59a2dba3-6303-4fd8-9a2e-8cbb4bdda972' // Cognitive Services Content Understanding Contributor
 var foundryUserRoleId = '53ca6127-db72-4b80-b1b0-d745d6d5456d' // Foundry User (formerly "Azure AI User") — Agent Service data plane (toolbox/agent invocation)
 
 resource openAiUserAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in dataPlanePrincipalIds: {
@@ -115,11 +129,11 @@ resource openAiUserAssignments 'Microsoft.Authorization/roleAssignments@2022-04-
   }
 }]
 
-resource cognitiveUserAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in dataPlanePrincipalIds: {
-  name: guid(account.id, pid, cognitiveUserRoleId)
+resource contentUnderstandingAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in dataPlanePrincipalIds: {
+  name: guid(account.id, pid, contentUnderstandingRoleId)
   scope: account
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveUserRoleId)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', contentUnderstandingRoleId)
     principalId: pid
     principalType: 'ServicePrincipal'
   }
