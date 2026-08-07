@@ -188,6 +188,20 @@ class Settings(BaseSettings):
     # Defensive: if a deployment rejects it (HTTP 400), the client retries the
     # stream once without it, so this can stay on safely.
     gateway_stream_include_usage: bool = True
+    # Token-stream the agent/tool loop (audit finding P1-16). ON by default,
+    # because OFF is the defect: with it off, a turn that calls a tool runs every
+    # model round trip to completion before emitting anything, so the user sees a
+    # blank bubble for the whole turn and a tool-using turn feels like a hang.
+    #
+    # It is a kill switch rather than a feature gate, which is why it defaults ON
+    # rather than following the usual default-off convention: the flag exists so
+    # a streaming regression in the one path every chat request takes can be
+    # rolled back by an env var instead of a deploy. It is read ONLY here and in
+    # the API's chat router — never in the web app — so turning it off genuinely
+    # restores the previous wire bytes rather than only hiding something in the
+    # UI. Off, the runtime takes the original non-streaming ``gateway.complete``
+    # path and the router emits the single terminal content delta.
+    gateway_stream_tool_loop: bool = True
 
     # --- Usage metering: observational cost/traffic ledger ---
     # When true, each completed chat turn is metered and written to a per-user

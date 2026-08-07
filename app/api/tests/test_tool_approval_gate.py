@@ -52,7 +52,7 @@ from ai4ia_api.agents.mcp_service import McpServerService
 from ai4ia_api.agents.mcp_store import InMemoryUserMcpServerStore
 from ai4ia_api.agents.tools import ToolRisk, ToolSpec
 from ai4ia_api.main import create_app
-from tests.conftest import make_settings
+from tests.conftest import make_settings, stream_like_gateway
 
 _PUBLIC_RESOLVER = lambda _host: ["93.184.216.34"]  # noqa: E731 - terse test stub
 
@@ -365,8 +365,13 @@ class _InjectedModelGateway:
             "choices": [{"message": {"role": "assistant", "content": "Handled."}}]
         }
 
-    async def stream(self, **_kwargs):  # pragma: no cover - tool turns never stream
-        raise AssertionError("tool-enabled agent turns must not use the streaming path")
+    async def stream(self, **kwargs):
+        # Since P1-16 a tool turn streams, so the injected call is replayed over
+        # SSE with its arguments fragmented. The approval digest is therefore
+        # computed from a *reassembled* argument string, which is exactly the
+        # property that must not drift.
+        async for chunk in stream_like_gateway(await self.complete(**kwargs)):
+            yield chunk
 
 
 def _client(connector: FakeMcpConnector, **settings) -> TestClient:

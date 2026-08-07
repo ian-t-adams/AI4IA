@@ -62,6 +62,7 @@ from .approvals import (
     draft_for_call,
     requires_invocation_approval,
 )
+from .streaming import stream_iteration
 from .synthetic_governance import synthetic_spec
 from .tool_exec import ToolContext, ToolExecutor, ToolValidationError
 from .tools import DenyReason, ToolRegistry, ToolSpec, is_safe_tool_name, redact, redact_obj
@@ -111,6 +112,13 @@ class AgentRunResult:
     # Token usage summed across every model call in the turn. ``usage.complete``
     # is False if any call did not report usage, so cost is never overstated.
     usage: TokenUsage = field(default_factory=TokenUsage.empty)
+    # Everything handed to ``on_delta`` this turn, concatenated in order — empty
+    # unless the caller asked for token streaming. It is deliberately NOT the
+    # same as ``text``: ``text`` is the FINAL iteration's answer, while this also
+    # contains any preamble the model emitted alongside a tool call ("Let me look
+    # that up..."), which the user has already seen. A streaming caller must
+    # persist this, so the saved row matches what was actually delivered.
+    streamed_text: str = ""
 
 
 def _tool_message(call_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
@@ -122,11 +130,6 @@ def _truncate(text: str) -> str:
     if len(encoded) <= _MAX_TOOL_RESULT_BYTES:
         return text
     return encoded[:_MAX_TOOL_RESULT_BYTES].decode("utf-8", "ignore") + "...[truncated]"
-
-
-def _final_text(result: dict[str, Any]) -> str:
-    message = (result.get("choices") or [{}])[0].get("message") or {}
-    return message.get("content") or ""
 
 
 async def run_agent_turn(
@@ -144,6 +147,7 @@ async def run_agent_turn(
     extra_handlers: Mapping[str, Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]]
     | None = None,
     on_step: Callable[[AgentStep], Awaitable[None]] | None = None,
+    on_delta: Callable[[str], Awaitable[None]] | None = None,
 ) -> AgentRunResult:
     """Run a single agent turn with tool calling and return the final answer.
 
@@ -158,6 +162,16 @@ async def run_agent_turn(
     and runs through the same per-invocation approval gate as a registry tool, an
     unclassified one is refused, and they are still counted against the per-turn
     tool-call budget and wrapped so an exception becomes a structured tool result.
+
+    ``on_delta`` opts the turn into **token streaming** (audit finding P1-16).
+    With it set, each model iteration is consumed over SSE and every assistant
+    text increment is forwarded the moment it arrives, so a tool-using turn shows
+    text and live tool activity while it works instead of going silent for a full
+    round trip. Without it the turn takes the original non-streaming
+    ``gateway.complete`` path byte-for-byte — which is also the automatic
+    behaviour when the injected gateway exposes no ``stream``. Nothing else about
+    the turn changes: the same schema is advertised, the same governance runs on
+    the same reassembled tool calls, and the same bounds apply.
     """
     convo: list[dict[str, Any]] = [dict(m) for m in messages]
     resolved_tool_names = [ctx.tool_aliases.get(name, name) for name in tool_names]
@@ -201,6 +215,66 @@ async def run_agent_turn(
     # normal held-for-approval path, so the user is asked again rather than the
     # model quietly retrying.
     unspent_approvals: set[str] = set(ctx.invocation_approvals)
+    # Token streaming is opt-in AND capability-checked: a caller that wants
+    # deltas still gets the original non-streaming path against an injected
+    # gateway that has no ``stream`` (workflow runners, delegation sub-turns and
+    # the whole existing test surface), rather than an AttributeError.
+    stream_tokens = on_delta is not None and callable(getattr(gateway, "stream", None))
+    streamed_parts: list[str] = []
+
+    async def emit_delta(text: str) -> None:
+        """Forward one assistant text increment, best-effort.
+
+        Swallowing here matches ``record`` below: a UI/stream consumer must never
+        be able to break a turn. The router tracks what it actually yielded, so a
+        dropped callback cannot make the persisted row claim undelivered text.
+        """
+        if not text or on_delta is None:
+            return
+        streamed_parts.append(text)
+        try:
+            await on_delta(text)
+        except Exception:  # noqa: BLE001 - a UI callback must never break a turn
+            logger.debug("on_delta callback failed", exc_info=True)
+
+    async def call_model(request_params: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+        """One model round trip, streamed or not, folded into shared usage.
+
+        Returns ``(assistant text, tool calls)``. The two transports are
+        deliberately reduced to the same pair here so everything downstream —
+        governance, budget, trace, taint — has exactly one shape to reason about.
+        """
+        nonlocal usage_agg
+        if stream_tokens:
+            iteration = await stream_iteration(
+                gateway=gateway,
+                deployment=deployment,
+                messages=convo,
+                params=request_params,
+                correlation_id=ctx.correlation_id,
+                on_delta=emit_delta,
+            )
+            usage_agg = usage_agg.add(TokenUsage.parse(iteration.usage))
+            return iteration.content, iteration.tool_calls
+        result = await gateway.complete(
+            deployment=deployment,
+            messages=convo,
+            params=request_params,
+            correlation_id=ctx.correlation_id,
+        )
+        usage_agg = usage_agg.add(TokenUsage.parse(result.get("usage")))
+        message = (result.get("choices") or [{}])[0].get("message") or {}
+        return message.get("content") or "", message.get("tool_calls") or []
+
+    def finish(text: str, iterations: int) -> AgentRunResult:
+        return AgentRunResult(
+            text=text,
+            model=deployment,
+            steps=steps,
+            iterations=iterations,
+            usage=usage_agg,
+            streamed_text="".join(streamed_parts),
+        )
 
     async def record(step: AgentStep, *, persist: bool = True) -> None:
         """Append a finalized step to the trace and/or surface it live.
@@ -302,32 +376,18 @@ async def run_agent_turn(
         if schema:
             req_params["tools"] = schema
             req_params["tool_choice"] = "auto"
-        result = await gateway.complete(
-            deployment=deployment,
-            messages=convo,
-            params=req_params,
-            correlation_id=ctx.correlation_id,
-        )
-        usage_agg = usage_agg.add(TokenUsage.parse(result.get("usage")))
-        message = (result.get("choices") or [{}])[0].get("message") or {}
-        tool_calls = message.get("tool_calls") or []
+        content, tool_calls = await call_model(req_params)
 
         if not tool_calls:
             await record(AgentStep(kind="final"))
-            return AgentRunResult(
-                text=message.get("content") or "",
-                model=deployment,
-                steps=steps,
-                iterations=iterations,
-                usage=usage_agg,
-            )
+            return finish(content, iterations)
 
         # Preserve the assistant tool-call message verbatim (content may be null)
         # so the subsequent tool results reference valid call ids.
         convo.append(
             {
                 "role": "assistant",
-                "content": message.get("content"),
+                "content": content or None,
                 "tool_calls": tool_calls,
             }
         )
@@ -636,19 +696,9 @@ async def run_agent_turn(
             schema = []  # disable tools so the next call yields a natural answer
 
     # Iterations exhausted: take one final answer with tools disabled so the model
-    # must respond in natural language rather than request yet another tool.
-    final = await gateway.complete(
-        deployment=deployment,
-        messages=convo,
-        params=base_params,
-        correlation_id=ctx.correlation_id,
-    )
-    usage_agg = usage_agg.add(TokenUsage.parse(final.get("usage")))
+    # must respond in natural language rather than request yet another tool. This
+    # streams too when the turn is streaming — otherwise the last thing the user
+    # waits on would be the one round trip that still went silent.
+    tail_text, _ = await call_model(dict(base_params))
     await record(AgentStep(kind="final", detail="max_iters"))
-    return AgentRunResult(
-        text=_final_text(final),
-        model=deployment,
-        steps=steps,
-        iterations=iterations,
-        usage=usage_agg,
-    )
+    return finish(tail_text, iterations)

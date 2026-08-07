@@ -564,16 +564,28 @@ async def _stream_with_placeholder(
             await _persist_terminal_assistant(repo, user_id, assistant)
 
 
-# Live activity + final answer for an agentic (tool-using) turn. The turn's tool
-# path is non-streaming internally, so today it dumps the whole answer at once and
-# the bubble stays blank while tools run. This runs the turn as a shielded task and
-# forwards its step trace live as ``{"step": {...}}`` SSE events (older clients that
-# only read ``choices[0].delta.content`` ignore them), then a single content delta,
-# then durably persists the terminal row before ``[DONE]``.
+# Live activity + final answer for an agentic (tool-using) turn. Runs the turn as
+# a shielded task and forwards its step trace live as ``{"step": {...}}`` SSE
+# events (older clients that only read ``choices[0].delta.content`` ignore them).
+#
+# With ``stream_tokens`` the turn's assistant text is forwarded the same way, as
+# ordinary content deltas, interleaved with those step events — so a tool-using
+# turn shows text and "running X" while it works instead of going silent for a
+# whole model round trip (audit finding P1-16). What was streamed is then exactly
+# what is persisted, so a reloaded conversation matches what the user watched
+# arrive; a partially-streamed turn that is cancelled or fails keeps its partial
+# text on the row, the way the plain (non-tool) streaming path already does.
+#
+# Without ``stream_tokens`` the generator behaves as before: nothing but steps
+# until the run finishes, then a single content delta. That is the kill switch's
+# job — one flag, one branch, and the pre-change bytes on the wire.
+#
+# Either way the terminal row is durably persisted BEFORE ``[DONE]``, and any
+# approval prompts ride out after that write and before ``[DONE]``.
 async def _agentic_stream(
     *,
     assistant: Message,
-    run: Callable[[Callable[[AgentStep], Awaitable[None]]], Awaitable[AgentRunResult]],
+    run: Callable[..., Awaitable[AgentRunResult]],
     repo: SessionRepository,
     memory: MemoryServiceProtocol,
     metering: UsageService,
@@ -589,6 +601,7 @@ async def _agentic_stream(
     fallback: Callable[[], Awaitable[tuple[str, TokenUsage]]] | None = None,
     get_attachments: Callable[[], list[MessageAttachment]] | None = None,
     get_approval_drafts: Callable[[], list[ApprovalDraft]] | None = None,
+    stream_tokens: bool = False,
 ) -> AsyncGenerator[str, None]:
     queue: asyncio.Queue = asyncio.Queue()
     sentinel = object()
@@ -598,9 +611,13 @@ async def _agentic_stream(
         if view is not None:
             queue.put_nowait(("step", view))
 
+    async def on_delta(text: str) -> None:
+        if text:
+            queue.put_nowait(("delta", text))
+
     async def runner() -> None:
         try:
-            result = await run(on_step)
+            result = await (run(on_step, on_delta) if stream_tokens else run(on_step))
             queue.put_nowait(("result", result))
         except Exception as exc:  # noqa: BLE001 - surfaced below; never crashes the response
             queue.put_nowait(("error", exc))
@@ -611,6 +628,7 @@ async def _agentic_stream(
     final = MessageStatus.complete
     total_usage = TokenUsage.empty()
     content = ""
+    streamed_text = ""
     persisted: list[ActivityStep] | None = None
     remembered = False
     terminal_persisted = False
@@ -625,26 +643,51 @@ async def _agentic_stream(
             kind, payload = item
             if kind == "step":
                 yield f"data: {json.dumps({'step': payload.model_dump(exclude_none=True)})}\n\n"
+            elif kind == "delta":
+                # Track what was actually put on the wire, not what the runtime
+                # says it produced: on a disconnect mid-turn this is the only
+                # honest answer to "what did the user receive?", and it is what
+                # the finally block persists.
+                streamed_text += payload
+                content = streamed_text
+                yield f"data: {json.dumps({'choices': [{'delta': {'content': payload}}]})}\n\n"
             elif kind == "result":
                 result = payload
             elif kind == "error":
                 run_error = payload
 
+        # ``pending_delta`` is the text still owed to the client. Under streaming
+        # that is normally nothing (it already went out increment by increment);
+        # without streaming it is the whole answer, exactly as before.
+        pending_delta = ""
         if result is not None and (result.text or "").strip():
-            content = result.text
+            content = streamed_text if streamed_text.strip() else result.text
+            pending_delta = "" if streamed_text.strip() else content
             total_usage = result.usage
             for extra in extra_usage or []:
                 total_usage = total_usage.add(extra)
             persisted = persisted_trace(result.steps) or None
         elif fallback is not None:
             # Empty (or failed) tool turn: complete the answer with a plain call so
-            # the turn never dead-ends. The steps that did run are still shown.
+            # the turn never dead-ends. The steps that did run are still shown, and
+            # anything already streamed is kept rather than retracted — the user
+            # cannot un-see it.
             if run_error is not None:
                 logger.warning("agentic stream fell back after run error", exc_info=run_error)
             fb_text, fb_usage = await fallback()
-            content = fb_text
+            pending_delta = f"\n\n{fb_text}" if streamed_text.strip() else fb_text
+            content = f"{streamed_text}{pending_delta}" if streamed_text.strip() else fb_text
             total_usage = fb_usage
             if result is not None:
+                persisted = persisted_trace(result.steps) or None
+        elif streamed_text.strip():
+            # Streamed text but no reported final answer and no fallback: keep what
+            # the user saw rather than persisting an empty row over it.
+            content = streamed_text
+            if result is not None:
+                total_usage = result.usage
+                for extra in extra_usage or []:
+                    total_usage = total_usage.add(extra)
                 persisted = persisted_trace(result.steps) or None
         elif run_error is not None:
             raise run_error
@@ -663,8 +706,8 @@ async def _agentic_stream(
             if get_approval_drafts is not None
             else []
         )
-        if content:
-            yield f"data: {json.dumps({'choices': [{'delta': {'content': content}}]})}\n\n"
+        if pending_delta:
+            yield f"data: {json.dumps({'choices': [{'delta': {'content': pending_delta}}]})}\n\n"
         terminal_persisted = await _persist_terminal_assistant(
             repo, user.internal_user_id, assistant
         )
@@ -1449,16 +1492,27 @@ async def chat(
         ApprovalPolicy.always,
     )
     approval_sink = ApprovalSink()
+    # Server-authoritative kill switch for the token-streaming tool loop (P1-16).
+    # Read here, once, from server settings only — the web app has no say. Absent
+    # settings fall back to the shipped default (ON) because unlike a capability
+    # gate, the *unsafe* direction for this flag is OFF: silently reverting to the
+    # non-streaming loop would reintroduce the latency defect invisibly.
+    stream_tool_tokens = bool(
+        getattr(
+            getattr(request.app.state, "settings", None),
+            "gateway_stream_tool_loop",
+            True,
+        )
+    )
 
     # Tool-enabled / orchestrator agent turn: run the gateway-native tool-calling
     # loop governed by the tool-safety registry. The model picks/sequences tools;
     # we authorize and execute each call. Orchestrators (agents with ``links``)
     # additionally get a synthetic ``delegate_to_agent`` capability that runs a
     # linked agent as a sub-turn on THIS supervisor's deployment (so all usage
-    # meters to one model). This path is non-streaming internally; the resolved
-    # final answer is returned via the standard reply shape (a single SSE delta
-    # when streaming). Plain agents (no tools, no links) fall through to the direct
-    # model path below, which keeps true token streaming.
+    # meters to one model). When streaming, each model iteration of that loop is
+    # itself streamed and tool activity is interleaved between iterations, so the
+    # answer appears as it is produced rather than in one delta at the end.
     if agent is not None and (agent.tools or agent.links):
         ctx = ToolContext(
             correlation_id=correlation_id,
@@ -1722,7 +1776,10 @@ async def chat(
                 model=deployment.deploymentName,
                 agent=agent_name,
             )
-            def _run(on_step: Callable[[AgentStep], Awaitable[None]]):
+            def _run(
+                on_step: Callable[[AgentStep], Awaitable[None]],
+                on_delta: Callable[[str], Awaitable[None]] | None = None,
+            ):
                 return run_agent_turn(
                     deployment=deployment.deploymentName,
                     messages=payload_messages,
@@ -1735,6 +1792,7 @@ async def chat(
                     extra_tools=extra_tools or None,
                     extra_handlers=extra_handlers or None,
                     on_step=on_step,
+                    on_delta=on_delta,
                 )
 
             return StreamingResponse(
@@ -1759,6 +1817,7 @@ async def chat(
                         extra_usage=usage_sink,
                         get_attachments=lambda: [*image_sink, *video_sink, *doc_sink],
                         get_approval_drafts=approval_sink.drafts,
+                        stream_tokens=stream_tool_tokens,
                     ),
                 ),
                 media_type="text/event-stream",
@@ -1825,10 +1884,11 @@ async def chat(
     # and its untrusted output is nonce-fenced inside the handler.
     #
     # TRADE-OFF (opt-in, default-OFF): when web search is on, every chat-completions
-    # main-chat turn runs through this tool loop and returns a single-delta reply
-    # instead of token-streaming, because this app's tool path is non-streaming
-    # internally — the same trade-off the compute path already makes. This loop is
-    # built against the chat-completions wire format, so Responses-API models
+    # main-chat turn runs through this tool loop — the same trade-off the compute
+    # path already makes. Since P1-16 that loop token-streams and interleaves tool
+    # activity, so the cost is the extra round trips a tool call needs, not a
+    # blank bubble for the whole turn. This loop is built against the
+    # chat-completions wire format, so Responses-API models
     # (api != "chat") cannot use it and take the ``elif`` below, which tells the
     # model its grounding tools are missing instead of dropping them in silence.
     # ANY failure — or an empty answer — falls through to the normal RAG path
@@ -1918,7 +1978,10 @@ async def chat(
                         agent=agent_name,
                     )
 
-                    def _run_plain(on_step: Callable[[AgentStep], Awaitable[None]]):
+                    def _run_plain(
+                        on_step: Callable[[AgentStep], Awaitable[None]],
+                        on_delta: Callable[[str], Awaitable[None]] | None = None,
+                    ):
                         return run_agent_turn(
                             deployment=deployment.deploymentName,
                             messages=payload_messages,
@@ -1931,6 +1994,7 @@ async def chat(
                             extra_tools=plain_tools or None,
                             extra_handlers=plain_handlers or None,
                             on_step=on_step,
+                            on_delta=on_delta,
                         )
 
                     async def _rag_fallback() -> tuple[str, TokenUsage]:
@@ -1964,6 +2028,7 @@ async def chat(
                                 user_message_id=user_msg.id,
                                 fallback=_rag_fallback,
                                 get_approval_drafts=approval_sink.drafts,
+                                stream_tokens=stream_tool_tokens,
                             ),
                         ),
                         media_type="text/event-stream",
