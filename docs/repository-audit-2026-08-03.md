@@ -121,6 +121,22 @@ assessment). A code comment and a CI test are not an approval record.
 > asserts an "approved Azure guardrails-modification exception" for which no
 > reference exists anywhere in the repository; either the reference goes in the
 > record or the claim should come out of the test.
+>
+> **Closed 2026-08-06.** All three blanks are filled and the unevidenced test
+> claim is gone. The owner's position — that the deployed guardrail *is* the
+> approval, because Azure would not have accepted it otherwise — was checked
+> against the live control plane and holds: `ai4ia-annotate-only` runs with
+> **11 of 11 filters non-blocking** against a `Microsoft.DefaultV2` base that has
+> 1, and Azure refuses a policy that disables blocking on the abuse filters
+> without an approved modification request. `test_rai_policy.py` now cites that
+> evidence instead of asserting something unsupported. Review cadence is an
+> annual backstop (2027-08-06) plus five triggers that invalidate the decision
+> immediately; each records how it would be *noticed*, which exposed that the
+> most evidence-driven trigger (a high-severity annotation in production) has no
+> alert behind it and is therefore "checked at the annual review", not
+> "detected". One trigger was written but not wired — the runbook it named did
+> not link back — so `feature-enablement.md` now carries that pointer, because a
+> control that lives only in the document nobody has open is not a control. (#292, #295)
 
 ### Disposition of the P0/P1 findings
 
@@ -133,7 +149,7 @@ Verified against the tree at `main` on 2026-08-05, not from memory.
 | P1-1 client can override server-owned model fields | **Fixed** | #266 |
 | P1-2 Code Interpreter retention/metering | **Partially fixed** — `store:false` locked; entitlement/usage accounting still absent | #266 |
 | P1-3 fresh azd deploy is public + dev auth | **Auth half fixed** — `apiAllowDevAuth` now defaults `false` and is a real azd variable, so a clean-room deploy refuses to start instead of trusting `X-Dev-User`. **Still open**: every feature flag defaults on, and there is no budget/alert gate — the demo-versus-production profile split | #279 |
-| P1-4 gateway-only routing is convention, not IAM | **Open** — `disableLocalAuth` still defaults false | — |
+| P1-4 gateway-only routing is convention, not IAM | **Half fixed** — `disableLocalAuth` now defaults **true**, so Azure refuses key-based access to Foundry and gateway-only routing is an IAM boundary rather than a code-review convention. Verified key-free first: APIM authenticates with managed identity (37 `auth: MI`, zero `api-key`), Content Understanding and Code Interpreter both default to `bearer` with no key set, and of the 67 environment variables on the production api container the five credential-bearing ones are proxy/APIM/third-party keys — none is a Cognitive Services account key. Voice Live reaches APIM, not Foundry. **Still open:** `id-api` retains direct Foundry data-plane roles, because the Responses-API Code Interpreter needs them until it runs in its own workload | #294 |
 | P1-5 APIM key is a non-secure output | **Fixed** — compiled ARM emits `securestring` | #266 |
 | P1-6 no post-deploy proof or rollback | **Fixed**, and proven in anger on its first day — it caught a real production outage seven times running and its rollback kept the app serving (see below). Pre-deploy revision capture, hard rollout/health/web/proxy/domain assertions, an authenticated gateway canary, and automatic rollback. Does not cover a cancelled run or job timeout, and does not roll back infrastructure | #274 |
 | P1-7 tested artifact is not the deployed artifact | **Partly fixed** — both app base images are pinned by digest (verified by `docker-build` building them on every PR), and `deploy.yml` now builds each service once and deploys `--from-package <ref>@sha256:<digest>` instead of letting azd rebuild, so the deployed artifact is identifiable and traceable to a commit. **Still open**: the image is built by the deploy workflow rather than promoted from the PR that tested it (promoting the literal PR image means PR code pushing to the production registry — a posture decision); `proxy/Dockerfile`'s MCR bases stay on moving tags because CI does not build that image; and there is still no SBOM, signature, provenance, blocking image scan, or lock-derived Python install | #296 |

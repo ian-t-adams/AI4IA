@@ -240,6 +240,18 @@ jobs:
           # when a Dependabot PR regenerated the file from PyPI. stdlib-only.
           python3 -m unittest scripts.tests.test_lockfile_provenance
 
+      - name: Run status consistency tests
+        run: |
+          set -euo pipefail
+          # The audit's disposition table and the roadmap are two live status
+          # documents for the same findings. Nothing coupled them, and they
+          # drifted the day it mattered: PR #294 set disableLocalAuth true and
+          # updated the roadmap, leaving the audit asserting in the present tense
+          # that it "still defaults false". Prose is not executable, so nothing
+          # failed. This makes the checkable half executable -- a finding may not
+          # be Open in one document and closed in the other. stdlib-only.
+          python3 -m unittest scripts.tests.test_status_consistency
+
       - name: Run post-deploy verification tests
         run: |
           set -euo pipefail
