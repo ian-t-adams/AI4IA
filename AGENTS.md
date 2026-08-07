@@ -42,6 +42,52 @@ npm run build --if-present
 
 Package scripts currently resolve to `eslint .`, `vitest run`, and `next build`. Local dev uses `npm run dev`. Prefer `npm ci` over `npm install` when validating reproducibility.
 
+### Running the web tests locally behind the corporate mirror
+
+**`npm ci` fails on a maintainer workstation, but the web suite still runs — and
+it is worth the five minutes to set up.** Treating CI as the only possible gate
+costs a full round-trip to learn about a typo; a TypeScript syntax error reached
+`main`'s PR queue that way during the P1-14 work.
+
+Both obvious paths fail, for *different* reasons, which is why this looks
+hopeless at first:
+
+| Command | Failure |
+| --- | --- |
+| `npm ci` (default registry) | **404** — `packagefeedproxy.microsoft.io` is reachable but *incomplete*; it does not carry the lockfile-pinned `vite@8.1.3` |
+| `npm ci --registry=https://registry.npmjs.org` | **`ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE`** — the public registry is complete but unreachable from this network |
+
+The way through is `npm install` rather than `npm ci`: `install` may resolve a
+*satisfiable alternative* for the one package the mirror lacks, where `ci`
+demands the lockfile version exactly. Measured: **525 packages, ~3 minutes**.
+
+```powershell
+# 1. Resolve into a scratch dir so a non-lockfile-exact tree never sits in the repo.
+mkdir D:\ai4ia-web-scratch; copy app\web\package.json D:\ai4ia-web-scratch
+cd D:\ai4ia-web-scratch; npm install --no-audit --no-fund
+
+# 2. Junction it in (app/web/.gitignore already ignores /node_modules).
+cmd /c mklink /J <repo>\app\web\node_modules D:\ai4ia-web-scratch\node_modules
+
+# 3. Both gates now run.
+cd <repo>\app\web; npm test; npm run lint
+```
+
+Measured result: **602 of 611 vitest tests pass, `npm run lint` exits 0.**
+
+Two honesty caveats, because this is a fast pre-check and **not** a replacement
+for `app-ci/web`:
+
+- The tree is **not lockfile-exact** — that is the whole reason it installs at
+  all. CI remains authoritative for reproducibility.
+- The **9 failures are a local Node artifact, not a defect**: every one is in
+  `ThemeProvider.test.tsx`, failing with `localStorage is not available because
+  --localstorage-file was not provided`. Do not "fix" them. Pass
+  `--localstorage-file` if you need that file to pass locally.
+
+Node 26 can also run `.ts` directly via `--experimental-strip-types`, which is
+enough to mutation-test a pure TypeScript module before the junction exists.
+
 `app/web/Dockerfile` pins its base as `FROM node:22-alpine@sha256:...` — the tag
 for humans and Dependabot, the digest for enforcement (audit finding P1-7). A
 tag is a mutable pointer, so without the digest `docker-build` on a PR and
