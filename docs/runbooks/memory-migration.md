@@ -257,6 +257,21 @@ Recommended order:
 3. Delete only after the observation window closes with the server stopped and
    nothing having missed it.
 
+> ⚠️ **A stopped Flexible Server restarts itself after 7 days.** Azure prints this
+> as a warning on `stop` and it is easy to miss: *"Server will be automatically
+> started after 7 days if you do not perform a manual start operation."* Stopping
+> is therefore a **cost pause, not a decommission** — leave it and the server
+> silently resumes billing, still holding data nothing reads. Either delete within
+> the window or re-issue `stop` each week. Do not treat step 2 as the end state.
+
+### Status (2026-08-06 / 2026-08-07)
+
+| Step | State |
+| --- | --- |
+| IaC / code / docs removal | **Done** — #293, guarded by `scripts/tests/test_postgres_retired.py` |
+| Server stopped | **Done 2026-08-07.** `psql-ai4ia-slurmfactory-centralus-vypvgrncoed2o` reports `Stopped`. Verified idle first: `active_connections` returned **no datapoints at all** over the preceding 7 days |
+| Server deleted | **Not done.** Needs a deliberate destructive action, and the auto-restart above means the clock is running |
+
 ## Common failures
 
 > The migration script keeps its `--postgres-*` flags and its tests, so a restored
