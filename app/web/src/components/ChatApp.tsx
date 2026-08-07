@@ -25,6 +25,7 @@ import type {
   Message,
   ModelEntry,
   PendingToolApprovalPrompt,
+  RetrievedSource,
   Session,
   ToolApprovalDecision,
   VoiceTurnInput,
@@ -61,6 +62,7 @@ import {
 import { LibraryPanel } from "./LibraryPanel";
 import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage } from "./MessageList";
+import type { CitationTarget } from "./Markdown";
 import { Composer, type UploadItem } from "./Composer";
 import { ToolApprovalPanel } from "./ToolApprovalPanel";
 import {
@@ -386,6 +388,12 @@ export function ChatApp() {
   );
   // Live agent activity for the in-flight turn (tool steps streamed as they run).
   const [liveSteps, setLiveSteps] = useState<ActivityStep[]>([]);
+  // The in-flight turn's span registry, delivered on the first stream frame
+  // (audit P1-14). It exists before the model speaks, so citations can be marked
+  // as they arrive instead of rendering as raw tokens until the turn settles.
+  const [streamingSources, setStreamingSources] = useState<
+    RetrievedSource[] | null
+  >(null);
   // Tool calls the server held pending this user's approval, with their
   // one-time grants. Kept in component state only: the grant is delivered once
   // on the stream and never persisted, so a reload deliberately drops it and
@@ -2046,22 +2054,30 @@ export function ChatApp() {
     [activeId, libraryDocs],
   );
 
-  // Resolve a clicked chat citation to a ready audio/video library
-  // document and open the player at the cited moment. Citations name a file by
-  // its filename (what the model is given + told to cite), so we match
-  // case-insensitively against the user's ready media; the first match wins on the
-  // rare duplicate-name case. Best-effort: a miss surfaces a soft error, never
-  // throws into the message list.
+  // Resolve a clicked chat citation to a ready audio/video library document and
+  // open the player at the cited moment.
+  //
+  // An attested citation carries the span's own `documentId`, so resolution is by
+  // identity. Filename matching is the fallback for legacy tokens only (rows
+  // written before P1-14), and it is genuinely ambiguous: two ready documents can
+  // share a name and the first match wins, which is exactly the defect the span
+  // id removes. Best-effort: a miss surfaces a soft error, never throws into the
+  // message list.
   const handleCitation = useCallback(
-    async (filename: string, ms: number) => {
-      if (!libraryEnabled) return;
+    async (target: CitationTarget) => {
+      if (!libraryEnabled || target.ms === null) return;
+      const ms = target.ms;
+      const playable = (d: LibraryDocument) =>
+        d.status === "ready" && (d.modality === "audio" || d.modality === "video");
       const resolve = (docs: LibraryDocument[]) =>
-        docs.find(
-          (d) =>
-            d.status === "ready" &&
-            (d.modality === "audio" || d.modality === "video") &&
-            d.filename.toLowerCase() === filename.toLowerCase(),
-        );
+        target.documentId
+          ? docs.find((d) => d.id === target.documentId && playable(d))
+          : docs.find(
+              (d) =>
+                playable(d) &&
+                d.filename.toLowerCase() ===
+                  (target.filename ?? "").toLowerCase(),
+            );
       let doc = libraryIndexRef.current
         ? resolve(libraryIndexRef.current)
         : undefined;
@@ -2078,7 +2094,11 @@ export function ChatApp() {
       if (doc) {
         setCitationTarget({ doc, seekToMs: ms });
       } else {
-        setError(`Couldn't find a playable document named "${filename}".`);
+        setError(
+          target.filename
+            ? `Couldn't find a playable document named "${target.filename}".`
+            : "Couldn't open the cited media.",
+        );
       }
     },
     [libraryEnabled],
@@ -2136,6 +2156,7 @@ export function ChatApp() {
       setStreamingText("");
       setStreamMaterialized(false);
       setLiveSteps([]);
+      setStreamingSources(null);
       clearReconciliationTimers();
       const turnGeneration = ++turnGenerationRef.current;
       const selectionGeneration = selectionGenerationRef.current;
@@ -2190,6 +2211,7 @@ export function ChatApp() {
       let metadata: {
         userMessageId: string | null;
         assistantMessageId: string;
+        sources?: RetrievedSource[] | null;
       } | null = null;
       let bufferedText = "";
       let bufferedSteps: ActivityStep[] = [];
@@ -2272,6 +2294,10 @@ export function ChatApp() {
             agent: null,
             createdAt: assistantCreatedAt,
             steps: finalizedSteps.length > 0 ? finalizedSteps : null,
+            // The span registry rides the first stream frame, so the just-
+            // finished turn resolves its citations without waiting for the
+            // durable row to be refetched.
+            sources: metadata?.sources ?? null,
           };
           setMessages((previous) => {
             const durableUserId = metadata?.userMessageId;
@@ -2316,6 +2342,7 @@ export function ChatApp() {
         setStreamingText("");
         setStreamingStartedAt(null);
         setLiveSteps([]);
+        setStreamingSources(null);
         setStreaming(false);
         setStreamMaterialized(false);
         streamingRef.current = false;
@@ -2385,6 +2412,7 @@ export function ChatApp() {
           onMetadata: (value) => {
             metadata = value;
             trackPendingAssistant(sessionId, value.assistantMessageId);
+            if (ownsTurn()) setStreamingSources(value.sources ?? null);
             if (!ownsTurn() || !value.userMessageId) return;
             const durableUserId = value.userMessageId;
             setMessages((previous) =>
@@ -2471,6 +2499,8 @@ export function ChatApp() {
         source: m.source,
         steps: m.steps,
         safety: m.safety,
+        sources: m.sources,
+        citations: m.citations,
       }));
     if (streaming && !streamMaterialized) {
       base.push({
@@ -2480,6 +2510,7 @@ export function ChatApp() {
         createdAt: streamingStartedAt ?? undefined,
         pending: true,
         steps: liveSteps,
+        sources: streamingSources,
       });
     }
     return mergeDisplayMessages(
@@ -2497,6 +2528,7 @@ export function ChatApp() {
     streamingText,
     streamingStartedAt,
     liveSteps,
+    streamingSources,
     inlineVoice.messages,
     inlineVoice.boundSessionId,
     activeId,

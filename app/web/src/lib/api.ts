@@ -10,6 +10,7 @@ import type {
   Message,
   ModelCatalog,
   PendingToolApprovalPrompt,
+  RetrievedSource,
   Session,
   ToolApprovalDecision,
   ToolOverrides,
@@ -803,6 +804,9 @@ export interface StreamHandlers {
   onMetadata: (metadata: {
     userMessageId: string | null;
     assistantMessageId: string;
+    // The turn's span registry (audit P1-14), when retrieval ran. Absent on an
+    // unattested turn, which is deliberately different from an empty array.
+    sources?: RetrievedSource[] | null;
   }) => void;
   // Called for each live activity event during an agentic (tool-using) turn, so
   // the UI can show "Searching the web..." while it runs. Ignored by callers that
@@ -902,7 +906,28 @@ export function streamChat(
                 return;
               }
               sawMetadata = true;
-              handlers.onMetadata({ userMessageId, assistantMessageId });
+              // The registry is server-minted and rides frame 0. Shape-check it
+              // the same way the ids are checked, and drop a malformed payload
+              // rather than half-adopting it: a partial registry would report
+              // honest citations as fabricated.
+              const rawSources = obj.metadata.sources;
+              const sources: RetrievedSource[] | null = Array.isArray(rawSources)
+                ? rawSources.every(
+                    (s: unknown) =>
+                      typeof s === "object" &&
+                      s !== null &&
+                      typeof (s as RetrievedSource).spanId === "string" &&
+                      typeof (s as RetrievedSource).documentId === "string" &&
+                      typeof (s as RetrievedSource).filename === "string",
+                  )
+                  ? (rawSources as RetrievedSource[])
+                  : null
+                : null;
+              handlers.onMetadata({
+                userMessageId,
+                assistantMessageId,
+                sources,
+              });
               continue;
             }
             if (obj.error) {

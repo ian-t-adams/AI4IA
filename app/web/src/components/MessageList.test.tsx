@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { MessageList, type DisplayMessage } from "./MessageList";
+import type { RetrievedSource } from "@/lib/types";
 
 // Speech playback owns <audio> + object-URL plumbing and hits the TTS endpoint on
 // toggle. Stub the hook so we can assert the speak button wiring without audio or
@@ -153,7 +154,13 @@ describe("MessageList", () => {
     expect(screen.queryByText(/\[\[cite:/)).toBeNull();
     const chip = screen.getByRole("button", { name: /Play lecture\.mp3/ });
     await user.click(chip);
-    expect(onCitation).toHaveBeenCalledWith("lecture.mp3", 12 * 60_000 + 34_000);
+    // A legacy token carries no span, so the app can only offer the filename --
+    // which is exactly the ambiguity the span id removes for new turns.
+    expect(onCitation).toHaveBeenCalledWith({
+      documentId: null,
+      filename: "lecture.mp3",
+      ms: 12 * 60_000 + 34_000,
+    });
   });
 
   it("renders citation tokens as static labels when no onCitation is supplied", () => {
@@ -221,7 +228,13 @@ describe("MessageList", () => {
     expect(container.querySelector("strong")?.textContent).toBe("this");
     expect(screen.queryByText(/\[\[cite:/)).toBeNull();
     await user.click(screen.getByRole("button", { name: /Play lecture\.mp3/ }));
-    expect(onCitation).toHaveBeenCalledWith("lecture.mp3", 12 * 60_000 + 34_000);
+    // A legacy token carries no span, so the app can only offer the filename --
+    // which is exactly the ambiguity the span id removes for new turns.
+    expect(onCitation).toHaveBeenCalledWith({
+      documentId: null,
+      filename: "lecture.mp3",
+      ms: 12 * 60_000 + 34_000,
+    });
   });
 
   it("does not render raw HTML embedded in assistant markdown", () => {
@@ -234,6 +247,174 @@ describe("MessageList", () => {
     );
     // Raw HTML is disabled, so no injected element is created from model output.
     expect(container.querySelector("b")).toBeNull();
+  });
+});
+
+// Audit P1-14. The reader's whole protection here is that a citation the model
+// invented does not look like one backed by a span that was actually retrieved,
+// so every catching test has a passing control beside it: same markup, same
+// answer shape, only the id differs.
+describe("MessageList citation provenance", () => {
+  const span = (over: Partial<RetrievedSource> = {}): RetrievedSource => ({
+    spanId: "S1",
+    documentId: "doc-1",
+    filename: "lecture.mp3",
+    startMs: 12 * 60_000 + 34_000,
+    excerpt: "The mitochondria is the powerhouse of the cell.",
+    contentSha256: "a".repeat(64),
+    retrievedAt: "2026-08-07T00:00:00Z",
+    ...over,
+  });
+
+  it("renders a cited span that was retrieved as an actionable chip", async () => {
+    const user = userEvent.setup();
+    const onCitation = vi.fn();
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "p1",
+            role: "assistant",
+            content: "It is the powerhouse [[cite:S1]].",
+            sources: [span()],
+          }),
+        ]}
+        onCitation={onCitation}
+      />,
+    );
+    expect(screen.queryByText(/\[\[cite:/)).toBeNull();
+    expect(screen.queryByText("Unverified citation")).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Play lecture\.mp3/ }));
+    // Resolution is by document id, not by name.
+    expect(onCitation).toHaveBeenCalledWith({
+      documentId: "doc-1",
+      filename: "lecture.mp3",
+      ms: 12 * 60_000 + 34_000,
+    });
+  });
+
+  it("marks a cited span that was never retrieved, and refuses to make it actionable", () => {
+    const onCitation = vi.fn();
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "p2",
+            role: "assistant",
+            // Byte-identical to the test above except for the id.
+            content: "It is the powerhouse [[cite:S9]].",
+            sources: [span()],
+            citations: [
+              { spanId: "S9", status: "unverified", occurrences: 1, raw: "[[cite:S9]]" },
+            ],
+          }),
+        ]}
+        onCitation={onCitation}
+      />,
+    );
+    expect(screen.getByText("Unverified citation")).toBeInTheDocument();
+    // Nothing was retrieved under that id, so there is nothing to open. A
+    // playable-looking chip would be the same lie in a different costume.
+    expect(screen.queryByRole("button", { name: /Play/ })).toBeNull();
+  });
+
+  it("does not lose an invented id hidden inside a grouped citation", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "p3",
+            role: "assistant",
+            content: "Both agree [[cite:S1,S9]].",
+            sources: [span()],
+          }),
+        ]}
+      />,
+    );
+    // The good id must not launder the bad one.
+    expect(screen.getByText("Unverified citation")).toBeInTheDocument();
+  });
+
+  it("resolves duplicate filenames to the span's own document", async () => {
+    const user = userEvent.setup();
+    const onCitation = vi.fn();
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "p4",
+            role: "assistant",
+            content: "Later on [[cite:S2]].",
+            sources: [
+              span({ spanId: "S1", documentId: "dup-a" }),
+              span({ spanId: "S2", documentId: "dup-b", startMs: 900_000 }),
+            ],
+          }),
+        ]}
+        onCitation={onCitation}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Play lecture\.mp3/ }));
+    // Filename matching would have taken the first of the two; the span id
+    // cannot, which is the media half of the P1-14 defect.
+    expect(onCitation).toHaveBeenCalledWith({
+      documentId: "dup-b",
+      filename: "lecture.mp3",
+      ms: 900_000,
+    });
+  });
+
+  it("lists the retrieval receipt, marking which spans the answer used", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "p5",
+            role: "assistant",
+            content: "It is the powerhouse [[cite:S1]].",
+            sources: [
+              span({ spanId: "S1" }),
+              span({ spanId: "S2", documentId: "doc-2", filename: "notes.pdf", startMs: null }),
+            ],
+            citations: [
+              {
+                spanId: "S1",
+                status: "verified",
+                documentId: "doc-1",
+                filename: "lecture.mp3",
+                occurrences: 1,
+              },
+            ],
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/Sources · 2 retrieved, 1 cited/)).toBeInTheDocument();
+    // The excerpt travels with the answer so support is the reader's judgement
+    // rather than a verdict the app is not entitled to reach.
+    expect(
+      screen.getAllByText(/The mitochondria is the powerhouse/).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText(/S2 · notes\.pdf · not cited/)).toBeInTheDocument();
+  });
+
+  it("shows no receipt and no verdict for a turn that was never attested", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "p6",
+            role: "assistant",
+            content: "Listen [[cite:lecture.mp3@12:34]] here",
+          }),
+        ]}
+      />,
+    );
+    // Every row written before this feature lands here. Absent evidence is not
+    // evidence of fabrication, so nothing is marked and nothing is claimed.
+    expect(screen.queryByText("Unverified citation")).toBeNull();
+    expect(screen.queryByText(/Sources ·/)).toBeNull();
+    expect(screen.getByText(/lecture\.mp3/)).toBeInTheDocument();
   });
 });
 

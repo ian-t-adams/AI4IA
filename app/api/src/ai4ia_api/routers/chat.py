@@ -353,14 +353,20 @@ def _now() -> datetime:
 def _stream_metadata(
     user_message_id: str | None,
     assistant_message_id: str,
+    sources: list[RetrievedSource] | None = None,
 ) -> str:
-    payload = {
-        "metadata": {
-            "userMessageId": user_message_id,
-            "assistantMessageId": assistant_message_id,
-        }
+    metadata: dict[str, object] = {
+        "userMessageId": user_message_id,
+        "assistantMessageId": assistant_message_id,
     }
-    return f"data: {json.dumps(payload)}\n\n"
+    # The span registry is minted before the model runs, so it can ride the very
+    # first frame: the browser can then mark citations as they stream in rather
+    # than showing raw tokens until the durable row is refetched. Omitted
+    # entirely on an unattested turn, which keeps the base frame byte-identical
+    # to what it has always been.
+    if sources is not None:
+        metadata["sources"] = [s.model_dump(mode="json") for s in sources]
+    return f"data: {json.dumps({'metadata': metadata})}\n\n"
 
 
 def _has_gateway_stream_error(raw: str) -> bool:
@@ -523,7 +529,7 @@ def _local_reply_response(
             }
             yield f"data: {json.dumps(payload)}\n\n"
             return
-        yield _stream_metadata(user_message_id, assistant.id)
+        yield _stream_metadata(user_message_id, assistant.id, assistant.sources)
         chunk = {"choices": [{"delta": {"content": assistant.content}}]}
         yield f"data: {json.dumps(chunk)}\n\n"
         yield "data: [DONE]\n\n"
@@ -622,7 +628,7 @@ async def _agentic_stream(
     remembered = False
     terminal_persisted = False
     try:
-        yield _stream_metadata(user_message_id, assistant.id)
+        yield _stream_metadata(user_message_id, assistant.id, assistant.sources)
         result: AgentRunResult | None = None
         run_error: Exception | None = None
         while True:
@@ -2130,7 +2136,7 @@ async def chat(
         stream_safety: MessageSafety | None = None
         terminal_persisted = False
         try:
-            yield _stream_metadata(user_msg.id, assistant.id)
+            yield _stream_metadata(user_msg.id, assistant.id, assistant.sources)
             async for chunk in gateway.stream(
                 deployment=deployment.deploymentName,
                 messages=payload_messages,

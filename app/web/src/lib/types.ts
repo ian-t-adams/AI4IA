@@ -121,6 +121,42 @@ export interface MessageSafety {
   signals: SafetySignal[];
 }
 
+// --- Citation provenance (audit P1-14) --------------------------------------
+// `verified` means the cited span id was in the server-minted registry for that
+// turn. It does NOT mean the span supports the sentence it is attached to; the
+// excerpt is carried so the reader can judge that themselves.
+export type CitationStatus = "verified" | "unverified";
+
+// One retrieval span exactly as it was injected into a turn. `documentId` is
+// identity; `filename` is a display label only.
+export interface RetrievedSource {
+  spanId: string;
+  documentId: string;
+  filename: string;
+  heading?: string | null;
+  charStart?: number | null;
+  charEnd?: number | null;
+  startMs?: number | null;
+  endMs?: number | null;
+  speaker?: string | null;
+  excerpt: string;
+  excerptTruncated?: boolean;
+  contentSha256: string;
+  retrievedAt: string;
+  score?: number | null;
+}
+
+// One citation the answer made, and what became of it.
+export interface MessageCitation {
+  spanId: string;
+  status: CitationStatus;
+  documentId?: string | null;
+  filename?: string | null;
+  startMs?: number | null;
+  occurrences: number;
+  raw?: string | null;
+}
+
 // A tool call the server refused to execute because it needs a fresh, per-call
 // human approval bound to its exact arguments (audit finding P1-13). Mirrors
 // ai4ia_api.agents.approvals.PendingToolApproval.
@@ -193,6 +229,14 @@ export interface Message {
   safety?: MessageSafety | null;
   // Tool calls held pending a per-invocation approval on this turn.
   pendingApprovals?: PendingToolApproval[] | null;
+  // Span-level citation provenance. `sources` is the server-minted registry of
+  // retrieval spans injected into the turn; `citations` is what the answer
+  // actually cited, each checked against it. Both `null`/absent means the turn
+  // was never attested (retrieval did not run, or the row predates the feature),
+  // which is deliberately distinct from an empty registry — see
+  // `app/api/src/ai4ia_api/citations.py`.
+  sources?: RetrievedSource[] | null;
+  citations?: MessageCitation[] | null;
 }
 
 // A finalized Voice Live turn the web persists back into the shared session.

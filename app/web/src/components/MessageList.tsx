@@ -10,12 +10,15 @@ import type {
   ActivityStep,
   Message,
   MessageAttachment,
+  MessageCitation,
   MessageSafety,
+  RetrievedSource,
   SafetySignal,
 } from "@/lib/types";
 import { fetchImageArtifact, fetchVideoArtifact, fetchDocumentArtifact } from "@/lib/api";
 import { useSpeechPlayback, type SpeechState } from "@/lib/voice";
-import { Markdown } from "@/components/Markdown";
+import { Markdown, type CitationTarget } from "@/components/Markdown";
+import { msToTimecode } from "@/lib/citations";
 import { DOCS_INDEX_URL, STATUS_URL, USER_GUIDE_URL } from "@/lib/docs";
 
 interface DisplayMessage {
@@ -31,6 +34,10 @@ interface DisplayMessage {
   steps?: ActivityStep[] | null;
   // Annotate-only content-safety verdicts for the turn.
   safety?: MessageSafety | null;
+  // The turn's span registry and the citations checked against it (P1-14).
+  // Both absent/null means the turn was never attested.
+  sources?: RetrievedSource[] | null;
+  citations?: MessageCitation[] | null;
 }
 
 // Human-readable names for the categories Foundry reports. Unknown categories
@@ -112,8 +119,80 @@ function SafetyPanel({ safety }: { safety: MessageSafety }) {
   );
 }
 
-// A small glyph for a finalized step's outcome (running steps show a spinner).
-function stepGlyph(kind: string): string {
+// The turn's retrieval receipt. Lists every span that was injected — the set the
+// answer *could* have cited — with the excerpt exactly as the model saw it, so a
+// reader can judge whether a cited span actually supports the sentence. The app
+// deliberately does not make that judgement for them: checking that a span
+// entails a claim is entailment, every cheap inline approximation of it would be
+// wrong some of the time, and a badge that is wrong some of the time is worse
+// than no badge (audit P1-14).
+//
+// Rendered only for an attested turn. An unattested one has no registry, so
+// there is nothing to show and nothing is implied by its absence.
+function SourcesPanel({
+  sources,
+  citations,
+}: {
+  sources: RetrievedSource[];
+  citations?: MessageCitation[] | null;
+}) {
+  if (sources.length === 0) return null;
+  const cited = new Set(
+    (citations ?? [])
+      .filter((c) => c.status === "verified")
+      .map((c) => c.spanId),
+  );
+  const unverified = (citations ?? []).filter((c) => c.status === "unverified");
+  const summary =
+    `Sources · ${sources.length} retrieved` +
+    (cited.size > 0 ? `, ${cited.size} cited` : ", none cited") +
+    (unverified.length > 0 ? `, ${unverified.length} unverified` : "");
+  return (
+    <details className="activity activity-trace">
+      <summary>{summary}</summary>
+      <div className="activity-rows">
+        <p className="safety-note">
+          These are the excerpts retrieved for this answer, shown as the model
+          received them. A cited excerpt is one the answer referred to by id — it
+          is not a check that the excerpt supports what was written.
+        </p>
+        {unverified.length > 0 && (
+          <p className="safety-note" style={{ color: "var(--danger)" }}>
+            {unverified.length === 1
+              ? "One citation in this answer names a source that was not retrieved."
+              : `${unverified.length} citations in this answer name sources that were not retrieved.`}
+          </p>
+        )}
+        {sources.map((source) => {
+          const ground = [
+            source.heading,
+            typeof source.startMs === "number"
+              ? msToTimecode(source.startMs)
+              : null,
+            source.speaker,
+          ].filter(Boolean);
+          return (
+            <div key={source.spanId} className="activity-row">
+              {/* Never colour alone: the cited state is carried by text too.
+                  One text node, so the whole label is assertable as written. */}
+              <span className="activity-label">
+                {`${source.spanId} · ${source.filename}` +
+                  (ground.length > 0 ? ` · ${ground.join(" · ")}` : "") +
+                  (cited.has(source.spanId) ? " · cited" : " · not cited")}
+              </span>
+              <span className="activity-detail">
+                {source.excerpt}
+                {source.excerptTruncated ? "…" : ""}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
+// A small glyph for a finalized step's outcome (running steps show a spinner).function stepGlyph(kind: string): string {
   if (kind === "tool_result" || kind === "delegate") return "✓";
   if (kind === "tool_denied") return "⊘";
   if (kind === "tool_error") return "!";
@@ -439,7 +518,7 @@ function Bubble({
   msg: DisplayMessage;
   speechState: SpeechState;
   onToggleSpeak: (id: string, text: string) => void;
-  onCitation?: (filename: string, ms: number) => void;
+  onCitation?: (target: CitationTarget) => void;
 }) {
   const isUser = msg.role === "user";
   const isSystem = msg.role === "system";
@@ -508,7 +587,11 @@ function Bubble({
         {isUser ? (
           msg.content
         ) : (
-          <Markdown content={msg.content} onCitation={onCitation} />
+          <Markdown
+            content={msg.content}
+            onCitation={onCitation}
+            sources={msg.sources}
+          />
         )}
         {msg.pending ? (
           (msg.steps && msg.steps.length > 0) || msg.content.trim().length === 0 ? (
@@ -524,6 +607,11 @@ function Bubble({
         {/* Annotate-only safety verdicts, shown once the turn is settled so a
             partial verdict is never presented as final. */}
         {!msg.pending && msg.safety ? <SafetyPanel safety={msg.safety} /> : null}
+        {/* The turn's retrieval receipt, shown once settled so a partial
+            registry is never presented as the whole of what was retrieved. */}
+        {!msg.pending && msg.sources && msg.sources.length > 0 ? (
+          <SourcesPanel sources={msg.sources} citations={msg.citations} />
+        ) : null}
         {msg.attachments?.map((att) =>
           att.kind === "image" ? (
             <ImageAttachmentView key={att.id} attachment={att} />
@@ -591,7 +679,7 @@ export function MessageList({
 }: {
   messages: DisplayMessage[];
   onError?: (message: string) => void;
-  onCitation?: (filename: string, ms: number) => void;
+  onCitation?: (target: CitationTarget) => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const playback = useSpeechPlayback((msg) => onError?.(msg));

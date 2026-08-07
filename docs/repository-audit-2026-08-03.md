@@ -159,7 +159,7 @@ Verified against the tree at `main` on 2026-08-05, not from memory.
 | P1-11 portal presents stale evidence as live health | **Fixed** — `healthy` now requires a positive Resource Health signal | #266 |
 | P1-12 hard-coded colors bypass theme tokens | **Fixed**, and the severity was understated: measuring the literals made this an accessibility defect, not a style nit. `#fff` on a `var(--accent)` fill is **1.07:1** in the high-contrast theme and sat on three panels' primary action button. All 14 literals now resolve through tokens, `--warn` was added, and two gates enforce it | #266, #271 |
 | P1-13 indirect prompt injection drives preapproved MCP | **Fixed** — approval binds to an argument digest recomputed at dispatch and spent on use; review caught three defects before merge, all fixed and mutation-verified (#272). The MCP fix left the larger half open: the registry governs only `calculator` and `get_current_time`, so all 15 first-party synthetic capabilities were ungated. They now carry specs of their own, an unclassified one is refused rather than run, and `browse_url` has a canary with a non-vacuity control. **Unattended workflow runs stay exempt** by explicit, tested opt-out — there is nobody to ask | #272, #296 |
-| P1-14 citations are presentation, not provenance | **Open** | — |
+| P1-14 citations are presentation, not provenance | **Span-level half fixed** — every injected excerpt is minted a server-owned span id with a SHA-256 of the exact injected text, the registry is persisted on the answer, and a cited id that was never retrieved is caught with certainty and rendered distinctly. Citing by span id also removes the filename-collision media resolution. **Deliberately not claimed**: that a cited span *supports* the sentence. That is entailment; the excerpt is persisted verbatim so the reader can judge it instead. Web-search, memory, and session-document context are still cited as prose and remain unattested | #306 |
 | P1-15 admin refresh can exhaust a 1 GiB replica | **Fixed** — the dashboard is served from one projected ledger scan instead of seven | #270 |
 | P1-16 live-default chat is not token-streaming | **Partially fixed** — proxy now flushes per SSE event; the non-streaming tool loop remains | #266 |
 | P1-17 region/data-zone constraints silently relax | **Fixed**, and the residency model was corrected: `residency` now derives from the deployment SKU, not endpoint geography | #266, #267, #268 |
@@ -225,8 +225,9 @@ application-public) is now *contained* — startup refuses when more than one En
 tenant is allowed, so the latent bug cannot be activated by appending a GUID to a
 variable — but sharing is still not tenant-aware, and making it so means persisting
 the owner's tenant and comparing it. P1-14 (citations are presentation, not
-provenance) needs real span-level provenance; `untrusted_context` in the approval
-work is a *turn-level* taint bit and is deliberately not claimed as more than that.
+provenance) now has real span-level provenance for library retrieval and is
+described below; `untrusted_context` in the approval work is still a *turn-level*
+taint bit and is deliberately not claimed as more than that.
 
 One partially-closed item deserves naming rather than burying in the table, and it
 is larger than the original disclosure implied. P1-13's per-invocation approval
@@ -339,7 +340,7 @@ environment.
 | Entra authentication | **Implemented** | Signature, issuer, audience, tenant, and expiry validation exist. JWKS rotation/outage behavior and web misconfiguration handling need hardening. |
 | Dev authentication | **Implemented, unsafe clean-room default** | The same-origin proxy boundary is coherent, but checked-in azd parameters deploy public `dev` auth unless overridden. |
 | Sessions and chat | **Implemented, boundary partial** | Streaming and terminal persistence are strong. Arbitrary `params` can replace reserved model request fields, and request sizes are unbounded. |
-| Grounding and citations | **Partial** | Document, memory, Web IQ, and web context are bounded and fenced, but retrieval failure is silent and citations are not tied to a server-owned evidence record. |
+| Grounding and citations | **Partial** | Document, memory, Web IQ, and web context are bounded and fenced. Library retrieval citations are now tied to a server-owned evidence record (span id + content hash + persisted excerpt) and an unretrieved id is caught; retrieval failure is still silent, claim-level support is still unchecked, and web/memory/session-document citations remain prose. |
 | Content safety | **Critical intentional gap** | Foundry harm, jailbreak, and protected-material filters annotate but never block; the application does not consume those annotations or provide an equivalent enforcement layer. |
 | Agents and built-in tools | **Implemented** | User ownership, allowlists, execution-time authorization, budgets, aliases, and redaction are real. |
 | BYO MCP | **Implemented, default-off, partial approval** | Key Vault secret storage, public-HTTPS validation, DNS revalidation, and IP pinning exist. Per-invocation human approval is not exposed; CGNAT is not rejected. |
@@ -668,6 +669,45 @@ Persist server-owned source IDs, document/version or URL, retrieval timestamp,
 excerpt/span, and content hash per turn. Accept only citations to sources actually
 returned and validate claim support. Filenames should remain display labels, not
 identity.
+
+**Resolution (2026-08-07, #306) — the span-level half, and an explicit refusal of
+the other half.** Library Tier-2 retrieval now mints a server-owned span id for
+every excerpt it injects, carrying the document id, filename, heading, character
+or time range, retrieval timestamp, a bounded verbatim excerpt, and a SHA-256 of
+the exact injected text. That registry is persisted on the assistant message
+(`Message.sources`) beside the citations the answer made (`Message.citations`),
+each marked against it. The model is instructed to cite the id and nothing else,
+so filenames are display labels — which also removes the first-case-insensitive-
+duplicate-wins media resolution, since a citation now resolves through the span's
+own `documentId`.
+
+Three states are distinguished, and the third exists because absent evidence is
+not evidence: `verified` (the id is in this turn's registry), `unverified` (the
+answer cited something never injected — caught with certainty, rendered as a
+dashed `--danger` chip that is deliberately not actionable), and *unattested*
+(the turn has no registry at all, so nothing is claimed and citations render as
+they always did). An empty registry is treated as evidence and a missing one is
+not.
+
+What is **not** claimed, and was not built: that a cited span *supports* the
+sentence it is attached to. That is claim-level entailment. Every check cheap
+enough to run inline — lexical overlap, embedding similarity — is approximate,
+and this finding's own logic says a partially-trustworthy badge is worse than
+none, so no such signal is computed or shown. The receipt is offered instead: the
+excerpt is persisted verbatim and rendered under the answer, so support is a
+judgement the reader makes against the real text rather than one the app pretends
+to have made. Web-search results, recalled memory, and session-uploaded documents
+are still cited as prose and remain unattested.
+
+The `citation-discipline` skill was deliberately **not** bound to the canonical
+toolbox as part of this. `foundry/toolbox.manifest.json` documents the toolbox
+that is actually deployed, and binding a skill that has not been provisioned into
+the project would make the manifest describe something that does not exist —
+drift of exactly the kind this repo gates against elsewhere. The skill also
+teaches a Markdown-URL citation style that now conflicts with the span-id token
+for library retrieval. Binding it would not have closed this finding either way:
+it instructs the model to cite well and cannot verify that it did, which is the
+whole point of the finding.
 
 #### P1-15: Admin refresh can consume most of a 1 GiB API replica
 

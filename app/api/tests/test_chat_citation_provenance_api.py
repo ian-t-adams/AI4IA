@@ -215,6 +215,48 @@ async def test_streaming_turn_verifies_a_real_citation():
     assert [c["status"] for c in row["citations"]] == ["verified"]
 
 
+async def test_the_registry_rides_the_first_stream_frame():
+    client = _make_client("It shipped in March [[cite:S1]].")
+    try:
+        uid = _uid(client)
+        await _seed_indexed_doc(client, uid)
+        sid = _session(client)
+        resp = client.post(
+            "/api/chat",
+            json={"sessionId": sid, "content": "When?", "stream": True},
+        )
+        assert resp.status_code == 200, resp.text
+        first = json.loads(
+            resp.text.split("\n\n")[0].removeprefix("data: ").strip()
+        )["metadata"]
+
+        # Minted before the model runs, so the browser can mark citations as they
+        # stream instead of showing raw tokens until the row is refetched.
+        assert [s["spanId"] for s in first["sources"]] == ["S1"]
+        assert first["sources"][0]["filename"] == "falcon.md"
+    finally:
+        client.__exit__(None, None, None)
+
+
+async def test_an_unattested_turn_omits_sources_from_the_stream_frame():
+    client = TestClient(create_app(make_settings()))  # library off
+    client.__enter__()
+    try:
+        client.app.state.gateway = ScriptedGateway("Nothing to cite.")
+        sid = _session(client)
+        resp = client.post(
+            "/api/chat", json={"sessionId": sid, "content": "hi", "stream": True}
+        )
+        first = json.loads(
+            resp.text.split("\n\n")[0].removeprefix("data: ").strip()
+        )["metadata"]
+
+        # The base frame stays byte-identical to what it has always been.
+        assert set(first) == {"userMessageId", "assistantMessageId"}
+    finally:
+        client.__exit__(None, None, None)
+
+
 async def test_an_uncited_answer_still_keeps_the_registry():
     row = await _run("It shipped in March.", stream=False)
 
