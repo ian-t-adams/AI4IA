@@ -224,6 +224,22 @@ jobs:
         env:
           PYYAML_VERSION: 6.0.3
 
+      - name: Run lockfile provenance tests
+        run: |
+          set -euo pipefail
+          # app-ci's `uv lock --check` only compares the lock to pyproject.toml;
+          # it never looks at WHERE the artifacts resolve from. And nothing on
+          # the install path reads the lock at all (Dockerfile and CI both
+          # `pip install` from pyproject.toml). So a lockfile rewritten to point
+          # at a different registry passes every other gate.
+          #
+          # Measured, not assumed: commit aad6889 committed a uv.lock with 1,659
+          # lines pointing at an internal Microsoft package-feed proxy, because
+          # the machine that ran `uv lock` resolves through a corporate mirror.
+          # app-ci went green. It was repaired two PRs later only by coincidence,
+          # when a Dependabot PR regenerated the file from PyPI. stdlib-only.
+          python3 -m unittest scripts.tests.test_lockfile_provenance
+
       - name: Run post-deploy verification tests
         run: |
           set -euo pipefail
