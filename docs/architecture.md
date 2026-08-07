@@ -27,8 +27,13 @@ it is generated locally and never through excalidraw.com.
    deployment, so the catalog gateway — which resolves a backend from
    `x-LLMModel` for completion-shaped traffic — cannot route it. Auth is the
    Container App's managed identity (or a resource key), never a gateway key.
-   Introducing any *other* direct model call is a governance change, not an
-   implementation detail.
+   Because it is outside the gateway, the governance the gateway would have
+   applied is re-applied at the call site instead: `store=false` is set
+   server-side, an entitlement check runs before **any** provider IO (including
+   the file upload), and every execution *attempt* — success or failure — is
+   metered under a distinct target identity so sandbox spend cannot hide inside
+   the parent chat charge. Introducing any *other* direct model call is a
+   governance change, not an implementation detail.
 4. **Three credentials protect the core gateway hops.** FastAPI holds a
    proxy-ingress key and a separately scoped realtime APIM key. SimpleL7Proxy
    alone holds the model-APIM key. The proxy strips the ingress key before

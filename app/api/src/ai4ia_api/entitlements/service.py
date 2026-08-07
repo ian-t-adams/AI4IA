@@ -18,7 +18,15 @@ Design goals (see package docstring):
   token/cost budgets under-count (fail open). Rate limits (request counts) and
   ``disabled`` do not depend on usage/pricing completeness. The startup guard in
   ``Settings.validate_runtime`` additionally refuses enforcement with metering
-  off, so positive limits can never silently no-op for lack of a ledger.
+  off, so positive limits can never silently no-op for lack of a ledger. That
+  guard covers ``computeExecutionsPerDay`` for free: sandbox executions accrue
+  in the same ledger, so with metering off the compute counter would stay at 0
+  exactly like the token/cost ones.
+- **Scoped limits stay scoped.** ``computeExecutionsPerDay`` is enforced only on
+  the ``compute`` scope, so exhausting a sandbox allowance never blocks ordinary
+  chat — and a user whose *only* limit is that one still takes a chat turn with
+  zero ledger IO (the daily read is skipped when no daily limit applies to the
+  scope being checked).
 """
 from __future__ import annotations
 
@@ -35,6 +43,7 @@ from .models import (
     Entitlement,
     EntitlementDecision,
     EntitlementLimits,
+    EntitlementScope,
 )
 from .store import EntitlementStore
 
@@ -145,8 +154,17 @@ class EntitlementService:
 
     # ---- per-turn enforcement ----
 
-    async def check(self, user_id: str) -> EntitlementDecision:
-        """Decide whether ``user_id`` may consume a model turn right now."""
+    async def check(
+        self, user_id: str, *, scope: EntitlementScope = "chat"
+    ) -> EntitlementDecision:
+        """Decide whether ``user_id`` may consume a model turn right now.
+
+        ``scope`` selects which limits apply. ``chat`` (the default, and what
+        every HTTP router passes) is unchanged from before this parameter
+        existed. ``compute`` additionally enforces ``computeExecutionsPerDay``
+        and is what the Code Interpreter capabilities call before each sandbox
+        execution.
+        """
         if not self._enabled:
             return EntitlementDecision.allow()
 
@@ -164,15 +182,20 @@ class EntitlementService:
             )
 
         try:
-            return await self._check_budgets(user_id, ent)
+            return await self._check_budgets(user_id, ent, scope)
         except Exception:  # noqa: BLE001 - ledger failure fails OPEN (availability)
             logger.warning(
                 "entitlement budget check failed; allowing (user=%s)", user_id, exc_info=True
             )
             return EntitlementDecision.allow()
 
-    async def _check_budgets(self, user_id: str, ent: Entitlement) -> EntitlementDecision:
+    async def _check_budgets(
+        self, user_id: str, ent: Entitlement, scope: EntitlementScope = "chat"
+    ) -> EntitlementDecision:
         now = _now()
+        # Only the compute scope spends the sandbox allowance, so a chat turn for
+        # a user whose only limit is that one still does zero ledger IO.
+        compute_cap = ent.computeExecutionsPerDay if scope == "compute" else None
 
         # Rolling request-rate limit (last 60s).
         if ent.requestsPerMinute is not None:
@@ -185,8 +208,12 @@ class EntitlementService:
                     MINUTE_SECONDS, "Rate limit exceeded. Please slow down.",
                 )
 
-        # Rolling daily budgets (last 24h) — one ledger read covers both.
-        if ent.tokensPerDay is not None or ent.costPerDayMicroUsd is not None:
+        # Rolling daily budgets (last 24h) — one ledger read covers all three.
+        if (
+            ent.tokensPerDay is not None
+            or ent.costPerDayMicroUsd is not None
+            or compute_cap is not None
+        ):
             totals = await self._usage.window_totals(
                 user_id, since=now - timedelta(seconds=DAY_SECONDS), now=now
             )
@@ -199,6 +226,11 @@ class EntitlementService:
                 return self._deny(
                     "cost_per_day", ent.costPerDayMicroUsd, totals.costMicroUsd,
                     DAY_SECONDS, "Daily cost budget reached.",
+                )
+            if compute_cap is not None and totals.computeExecutions >= compute_cap:
+                return self._deny(
+                    "compute_executions_per_day", compute_cap, totals.computeExecutions,
+                    DAY_SECONDS, "Daily code-execution budget reached.",
                 )
 
         # Rolling monthly budgets (last 30d).

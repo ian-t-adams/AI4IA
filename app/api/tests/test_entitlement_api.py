@@ -108,6 +108,39 @@ def test_put_rejects_negative_limit(client):
     assert r.status_code == 422
 
 
+def test_admin_can_set_and_read_the_sandbox_execution_cap(client):
+    """The Code Interpreter allowance has to be settable and visible through the
+    same admin surface as every other limit, or an operator cannot use it. A
+    sandbox is billed per session, so this is its own axis rather than a token
+    or cost figure (audit P1-2)."""
+    uid = _internal_id(client, {"X-Dev-User": "target"})
+    put = client.put(
+        f"/api/admin/entitlements/{uid}",
+        json={"computeExecutionsPerDay": 25},
+        headers=ADMIN,
+    )
+    assert put.status_code == 200, put.text
+    body = put.json()
+    assert body["computeExecutionsPerDay"] == 25
+    # Setting only this limit must take the user OFF the unlimited fast path,
+    # otherwise the cap could never be reached.
+    assert body["isUnlimited"] is False
+    # ...and the user's own read shows it too.
+    mine = client.get("/api/entitlement", headers={"X-Dev-User": "target"}).json()
+    assert mine["computeExecutionsPerDay"] == 25
+    assert mine["isUnlimited"] is False
+
+
+def test_put_rejects_a_negative_sandbox_cap(client):
+    uid = _internal_id(client, {"X-Dev-User": "target"})
+    r = client.put(
+        f"/api/admin/entitlements/{uid}",
+        json={"computeExecutionsPerDay": -1},
+        headers=ADMIN,
+    )
+    assert r.status_code == 422
+
+
 # ---- admin gating under spoofable dev auth (deployed env) ----
 
 

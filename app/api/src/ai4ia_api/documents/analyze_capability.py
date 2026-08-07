@@ -23,7 +23,11 @@ Governance — mirrors ``run_code`` exactly:
 * Bound *per turn* to the authenticated ``user_id`` + ``session_id`` (closure), so a
   tool argument can only ever carry an ``attachment_id`` — never spoof the user or
   reach another session's bytes (the fetch path is recomposed server-side).
-* A disabled-account entitlement gate runs before any CI spend.
+* An entitlement gate runs with ``scope="compute"`` before any CI spend, so this
+  path consumes the same ``computeExecutionsPerDay`` allowance the library
+  ``run_code`` tool does. Both tools drive the *same* Azure-managed sandbox
+  primitive, so an allowance either covers both or is trivially evaded by asking
+  for the other one.
 * A per-turn budget caps how many analyses one turn may perform (on top of the
   runtime's global tool-call budget); a size cap bounds the uploaded bytes.
 * **Every** untrusted field returned to the model is neutralized: the CI answer +
@@ -33,21 +37,28 @@ Governance — mirrors ``run_code`` exactly:
 * Fail-soft on every store/CI error: a sanitized error result is returned, never an
   exception that breaks the turn. The uploaded CI file is always best-effort
   deleted afterwards.
-* Each successful CI call is metered against a synthetic deployment
-  (``known=False``), mirroring the library ingest/compute metering convention.
+* Each sandbox execution *attempt* is metered under the distinct
+  :meth:`UsageTarget.code_interpreter` identity (``known=False``) — including one
+  that errors, because the container that spun up still cost money.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..agents.tool_exec import ToolContext
-from ..catalog import DeploymentOption
 from ..code_interpreter.client import CodeInterpreterClient, CodeInterpreterError
 from ..config import Settings
 from ..entitlements.service import EntitlementService
-from ..usage.models import TokenUsage
+from ..usage.models import (
+    CODE_INTERPRETER_MODEL,
+    CODE_INTERPRETER_TARGET,
+    TokenUsage,
+    UsageStatus,
+    UsageTarget,
+)
 from ..usage.service import UsageService
 from .ephemeral_store import BlobNotFoundError, EphemeralAttachmentStore, ci_supports_file
 
@@ -63,12 +74,6 @@ MAX_ANALYSES_PER_TURN = 3
 # Length bounds for sanitized scalar fields returned to the model.
 _FIELD_LIMIT = 200
 _ARTIFACTS_LIMIT = 10
-
-# Synthetic metering identity (CI has no chat-catalog deployment). known=False so
-# the call is counted but never priced (no catalog/price lookup) — mirrors
-# ingest._meter_cu and the image/video tools.
-_CI_MODEL_ID = "code-interpreter"
-_CI_SKU = "code-interpreter"
 
 Handler = Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]
 
@@ -106,6 +111,7 @@ def build_analyze_capability(
     :func:`run_agent_turn`.
     """
     budget = {"used": 0}
+    ci_target = UsageTarget.code_interpreter(settings.code_interpreter_model)
     # Compact, model-readable index of the available attachments (id + filename),
     # single-lined so a crafted filename can't inject structure into the schema.
     listing = "; ".join(
@@ -165,11 +171,21 @@ def build_analyze_capability(
             return {"error": "task must be a non-empty string."}
         budget["used"] += 1
 
-        # Entitlement gate (mirrors the image/video tools): a disabled user is
-        # blocked before any CI spend.
-        decision = await entitlements.check(user_id)
+        # Entitlement gate (mirrors the library run_code tool): a disabled user is
+        # blocked and the shared sandbox allowance is spent before any CI spend. A
+        # denial is a structured tool result, never an exception, so the model can
+        # explain a mid-turn refusal.
+        decision = await entitlements.check(user_id, scope="compute")
         if not decision.allowed:
-            return {"error": _one_line(decision.reason or "attachment analysis is not permitted.")}
+            denied: dict[str, Any] = {
+                "error": _one_line(
+                    decision.reason or "attachment analysis is not permitted."
+                ),
+                "status": "denied",
+            }
+            if decision.retry_after_seconds is not None:
+                denied["retry_after_seconds"] = decision.retry_after_seconds
+            return denied
 
         # Resolve the attachment's display name from the per-turn listing (the only
         # untrusted-but-already-known field); default generically otherwise.
@@ -227,12 +243,21 @@ def build_analyze_capability(
             "directory if needed to find it, then load it to do the task."
         )
 
+        # Metered on ATTEMPT, not on success: a sandbox that spun up and then
+        # failed still cost money and still created provider resources. Distinct
+        # CI identity so sandbox spend never hides inside the parent chat charge;
+        # known=False so it is counted but never priced (unknown != zero).
+        status: UsageStatus = "error"
         try:
             result = await code_interpreter.run(
                 instructions=instructions,
                 user_input=user_input,
                 file_ids=[file_id],
             )
+            status = "complete"
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
         except CodeInterpreterError as exc:
             logger.warning(
                 "analyze_attachment upstream error user=%s status=%s", user_id, exc.status_code
@@ -245,22 +270,16 @@ def build_analyze_capability(
             # Best-effort cleanup of the uploaded original (never affects the turn).
             if file_id:
                 await code_interpreter.delete_file(file_id)
-
-        # Meter the CI call so rolling rate/token windows include inline-attachment
-        # analysis. Synthetic deployment, known=False (counted, never priced).
-        await metering.record_completion(
-            user_id=user_id,
-            session_id=session_id,
-            model_id=_CI_MODEL_ID,
-            deployment=DeploymentOption(
-                region="unknown",
-                sku=_CI_SKU,
-                deploymentName=settings.code_interpreter_model or _CI_MODEL_ID,
-            ),
-            usage=TokenUsage(known=False, complete=False, calls=1),
-            status="complete",
-            correlation_id=getattr(ctx, "correlation_id", None),
-        )
+            await metering.record_completion(
+                user_id=user_id,
+                session_id=session_id,
+                model_id=CODE_INTERPRETER_MODEL,
+                target=ci_target,
+                usage=TokenUsage(known=False, complete=False, calls=1),
+                status=status,
+                agent=CODE_INTERPRETER_TARGET,
+                correlation_id=getattr(ctx, "correlation_id", None),
+            )
 
         # Fence the (untrusted) CI answer + logs with the turn nonce, newlines
         # preserved, so the analysis output can never be read as instructions.

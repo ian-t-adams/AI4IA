@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 
 from ai4ia_api.code_interpreter.models import CodeInterpreterResult
 from ai4ia_api.library.blob_store import (
@@ -76,6 +77,39 @@ class FakeCI:
         self.closed = True
 
 
+class FakeEntitlements:
+    """Stand-in for EntitlementService. Records ``(user_id, scope)`` per check so a
+    test can assert the SANDBOX allowance is what a compute call spends, and can
+    script a per-call sequence of decisions so a mid-turn denial is reachable."""
+
+    def __init__(self, allowed=True, reason=None, sequence=None, retry_after=None):
+        self.allowed = allowed
+        self.reason = reason
+        self.retry_after = retry_after
+        # Optional list of booleans consumed one per check (mid-turn exhaustion).
+        self.sequence = list(sequence) if sequence is not None else None
+        self.checked: list[tuple[str, str]] = []
+
+    async def check(self, user_id, *, scope="chat"):
+        self.checked.append((user_id, scope))
+        allowed = self.allowed
+        if self.sequence:
+            allowed = self.sequence.pop(0)
+        return SimpleNamespace(
+            allowed=allowed,
+            reason=self.reason,
+            retry_after_seconds=self.retry_after,
+        )
+
+
+class FakeMetering:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    async def record_completion(self, **kwargs):
+        self.calls.append(kwargs)
+
+
 def _settings(**overrides):
     base = dict(document_understanding_enabled=True, document_compute_enabled=True)
     base.update(overrides)
@@ -118,17 +152,44 @@ async def _seed_doc(
 
 
 def _caps(library, blob, ci, settings, *, user_id="u1", nonce="nn"):
+    tools, handlers, export, _, _ = _gated_caps(
+        library, blob, ci, settings, user_id=user_id, nonce=nonce
+    )
+    return tools, handlers, export
+
+
+def _gated_caps(
+    library,
+    blob,
+    ci,
+    settings,
+    *,
+    user_id="u1",
+    nonce="nn",
+    session_id="s1",
+    entitlements=None,
+    metering=None,
+    allowed_document_ids=None,
+):
+    """Build the capability and hand back the entitlement/metering fakes too, so
+    a test can assert what was gated and what was charged."""
     retrieval = _retrieval(library, blob, settings)
     export = _export(library, blob, settings)
+    ent = entitlements if entitlements is not None else FakeEntitlements()
+    met = metering if metering is not None else FakeMetering()
     tools, handlers = build_compute_capability(
         retrieval=retrieval,
         code_interpreter=ci,
         export=export,
+        entitlements=ent,
+        metering=met,
         settings=settings,
         user_id=user_id,
+        session_id=session_id,
         nonce=nonce,
+        allowed_document_ids=allowed_document_ids,
     )
-    return tools, handlers, export
+    return tools, handlers, export, ent, met
 
 
 # --- schema / tool-name disjointness ---
@@ -813,10 +874,53 @@ def test_versions_round_trip_through_json_serialization():
 # --- factory: disabled => None ---
 def test_build_document_compute_none_when_disabled():
     settings = make_settings(document_understanding_enabled=True, document_compute_enabled=False)
-    assert build_document_compute(settings, ingestor=object(), retrieval=object()) is None
+    assert (
+        build_document_compute(
+            settings,
+            ingestor=object(),
+            retrieval=object(),
+            entitlements=FakeEntitlements(),
+            metering=FakeMetering(),
+        )
+        is None
+    )
 
 
 def test_build_document_compute_none_when_prereqs_missing():
     settings = _settings()
-    assert build_document_compute(settings, ingestor=None, retrieval=object()) is None
-    assert build_document_compute(settings, ingestor=object(), retrieval=None) is None
+    ent, met = FakeEntitlements(), FakeMetering()
+    assert (
+        build_document_compute(
+            settings, ingestor=None, retrieval=object(), entitlements=ent, metering=met
+        )
+        is None
+    )
+    assert (
+        build_document_compute(
+            settings, ingestor=object(), retrieval=None, entitlements=ent, metering=met
+        )
+        is None
+    )
+
+
+def test_build_document_compute_requires_a_gate_and_a_ledger():
+    """The compute path is a DIRECT-to-Foundry spend, outside the gateway's
+    governance. Making the gate and the ledger required constructor arguments is
+    what stops an ungoverned compute path from being constructible at all —
+    which is the state audit P1-2 found. A default would make this a posture
+    someone has to remember; a TypeError makes it structural."""
+    settings = _settings()
+    for missing in ("entitlements", "metering"):
+        kwargs = {
+            "ingestor": object(),
+            "retrieval": object(),
+            "entitlements": FakeEntitlements(),
+            "metering": FakeMetering(),
+        }
+        del kwargs[missing]
+        try:
+            build_document_compute(settings, **kwargs)
+        except TypeError as exc:
+            assert missing in str(exc)
+        else:  # pragma: no cover - only reached if the guard regresses
+            raise AssertionError(f"build_document_compute accepted no {missing}")

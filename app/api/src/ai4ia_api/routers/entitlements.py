@@ -40,6 +40,7 @@ class EntitlementView(BaseModel):
     costPerDayMicroUsd: int | None = None
     tokensPerMonth: int | None = None
     costPerMonthMicroUsd: int | None = None
+    computeExecutionsPerDay: int | None = None
     note: str | None = None
     updatedAt: datetime | None = None
     updatedBy: str | None = None
@@ -58,6 +59,7 @@ class EntitlementView(BaseModel):
             costPerDayMicroUsd=ent.costPerDayMicroUsd,
             tokensPerMonth=ent.tokensPerMonth,
             costPerMonthMicroUsd=ent.costPerMonthMicroUsd,
+            computeExecutionsPerDay=ent.computeExecutionsPerDay,
             note=ent.note,
             updatedAt=ent.updatedAt if is_override else None,
             updatedBy=ent.updatedBy if is_override else None,

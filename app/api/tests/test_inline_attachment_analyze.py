@@ -35,6 +35,11 @@ from ai4ia_api.documents.ephemeral_store import (
 )
 from ai4ia_api.library.blob_store import InMemoryBlobStore
 from ai4ia_api.main import create_app
+from ai4ia_api.usage.models import (
+    CODE_INTERPRETER_MODEL,
+    CODE_INTERPRETER_PROVIDER,
+    CODE_INTERPRETER_TARGET,
+)
 from tests.conftest import make_settings
 
 
@@ -79,11 +84,15 @@ class FakeEntitlements:
     def __init__(self, allowed=True, reason=None):
         self.allowed = allowed
         self.reason = reason
-        self.checked: list[str] = []
+        # (user_id, scope) pairs, so a test can assert the sandbox allowance —
+        # not the plain chat one — is what this path spends.
+        self.checked: list[tuple[str, str]] = []
 
-    async def check(self, user_id):
-        self.checked.append(user_id)
-        return SimpleNamespace(allowed=self.allowed, reason=self.reason)
+    async def check(self, user_id, *, scope="chat"):
+        self.checked.append((user_id, scope))
+        return SimpleNamespace(
+            allowed=self.allowed, reason=self.reason, retry_after_seconds=None
+        )
 
 
 class FakeMetering:
@@ -166,9 +175,15 @@ async def test_happy_path_fences_output_uploads_runs_and_deletes():
     assert ci.uploads and ci.uploads[0]["content"] == b"col,val\nA,1\n"
     assert ci.runs and ci.runs[0]["file_ids"] == [ci.upload_file_id]
     assert ci.deletes == [ci.upload_file_id]
-    # The CI call is metered exactly once (synthetic deployment, known=False).
+    # The sandbox execution is metered exactly once, under the DISTINCT Code
+    # Interpreter identity (not the parent chat's), known=False so it is counted
+    # but never priced.
     assert len(met.calls) == 1
     assert met.calls[0]["usage"].known is False
+    assert met.calls[0]["status"] == "complete"
+    assert met.calls[0]["target"].provider == CODE_INTERPRETER_PROVIDER
+    assert met.calls[0]["target"].target == CODE_INTERPRETER_TARGET
+    assert met.calls[0]["model_id"] == CODE_INTERPRETER_MODEL
 
 
 # --- arg validation / budget / gates ---
@@ -208,8 +223,28 @@ async def test_disabled_account_is_blocked_before_ci():
         {"attachment_id": "d1", "task": "sum"}, ctx=None
     )
     assert "error" in res and "result" not in res
+    assert res["status"] == "denied"  # structured, so the model can explain it
     assert ci.uploads == [] and ci.runs == []  # never reached the interpreter
-    assert met.calls == []  # nothing metered
+    assert met.calls == []  # nothing spent -> nothing metered
+    # The gate spends the SANDBOX allowance, not the plain chat one.
+    assert ent.checked == [("u1", "compute")]
+
+
+async def test_allowed_account_reaches_ci_with_identical_call():
+    """Non-vacuity partner to the denial above: the same call, same fixtures,
+    only the decision flipped, reaches the interpreter and is metered."""
+    store = _store()
+    await _seed_bytes(store)
+    ci = FakeCI()
+    ent = FakeEntitlements(allowed=True)
+    _, handlers, ent, met = _caps(store, ci, _settings(), entitlements=ent)
+    res = await handlers[ANALYZE_ATTACHMENT_TOOL_NAME](
+        {"attachment_id": "d1", "task": "sum"}, ctx=None
+    )
+    assert "error" not in res
+    assert len(ci.runs) == 1
+    assert len(met.calls) == 1
+    assert ent.checked == [("u1", "compute")]
 
 
 async def test_forged_or_missing_id_is_generic_not_available():
@@ -265,22 +300,29 @@ async def test_ci_run_error_is_sanitized_and_file_deleted():
     # Upstream detail (and its newlines) never leak to the model.
     assert "\n" not in res["error"]
     assert "stack" not in res["error"]
-    # The uploaded file is still best-effort deleted (finally), and nothing metered.
+    # The uploaded file is still best-effort deleted (finally).
     assert ci.deletes == [ci.upload_file_id]
-    assert met.calls == []
+    # ...and the FAILED execution is still metered: the sandbox that spun up and
+    # then failed cost money and created provider resources. Status says so.
+    assert len(met.calls) == 1
+    assert met.calls[0]["status"] == "error"
+    assert met.calls[0]["target"].provider == CODE_INTERPRETER_PROVIDER
 
 
 async def test_ci_upload_error_is_sanitized_and_not_run():
     store = _store()
     await _seed_bytes(store)
     ci = FakeCI(upload_raise=CodeInterpreterError(413, "too big"))
-    _, handlers, _, _ = _caps(store, ci, _settings())
+    _, handlers, _, met = _caps(store, ci, _settings())
     res = await handlers[ANALYZE_ATTACHMENT_TOOL_NAME](
         {"attachment_id": "d1", "task": "sum"}, ctx=None
     )
     assert "error" in res and "result" not in res
     assert ci.runs == []  # upload failed -> never ran
     assert ci.deletes == []  # no file id to delete
+    # No container was ever created, so no execution is charged. The metered unit
+    # is a sandbox execution, not every HTTP request.
+    assert met.calls == []
 
 
 # --- sanitization / nonce-fencing of crafted CI output + artifact names ---

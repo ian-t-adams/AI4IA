@@ -25,6 +25,20 @@ from ..catalog import DeploymentOption
 
 UsageStatus = Literal["complete", "cancelled", "error"]
 
+#: Provider identity for a direct Code Interpreter sandbox execution. Deliberately
+#: distinct from ``azure_openai`` so admin rollups (``aggregate_by_provider``) can
+#: separate sandbox spend from chat spend rather than letting it hide inside the
+#: parent chat charge — and so the rolling ``computeExecutionsPerDay`` window has
+#: an unambiguous predicate to count. Code Interpreter is the documented
+#: direct-to-Foundry exception (a stateful Azure-managed sandbox is not a routable
+#: chat-completions deployment), which is exactly why it needs its own identity.
+CODE_INTERPRETER_PROVIDER = "azure_openai_code_interpreter"
+#: Target/agent label carried alongside the provider, so the admin agents panel
+#: also shows sandbox executions as their own row.
+CODE_INTERPRETER_TARGET = "code_interpreter"
+#: Synthetic model id for the ledger row when no CI deployment name is configured.
+CODE_INTERPRETER_MODEL = "code-interpreter"
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -125,6 +139,26 @@ class UsageTarget:
             target=target,
             region=region,
             dataZone=data_zone,
+        )
+
+    @classmethod
+    def code_interpreter(cls, deployment: str | None = None) -> "UsageTarget":
+        """The distinct identity every direct Code Interpreter execution is
+        metered under.
+
+        ``deployment`` is the configured CI deployment name when there is one, so
+        an operator can still tell *which* deployment served the sandbox; the
+        provider/target pair is what keeps the spend out of the chat bucket.
+        Region is unknown from the app's side (the sandbox container is
+        Azure-managed and its placement is not reported), and saying so is more
+        honest than inventing one.
+        """
+        return cls(
+            provider=CODE_INTERPRETER_PROVIDER,
+            deployment=deployment or None,
+            target=CODE_INTERPRETER_TARGET,
+            region=None,
+            dataZone=None,
         )
 
 
@@ -380,6 +414,10 @@ class WindowTotals(BaseModel):
     requests: int = 0
     totalTokens: int = 0
     costMicroUsd: int = 0
+    #: Rows metered under :data:`CODE_INTERPRETER_PROVIDER` — i.e. direct sandbox
+    #: executions. Counts *attempts* (errored executions are recorded too), which
+    #: is the point: a sandbox that spun up and then failed still cost money.
+    computeExecutions: int = 0
 
 
 class ModelUsageBucket(BaseModel):
@@ -411,6 +449,11 @@ class UsageSummary(BaseModel):
     unknownUsageRequests: int = 0
     cancelledRequests: int = 0
     erroredRequests: int = 0
+    # Direct Code Interpreter sandbox executions in this window (a subset of
+    # totalRequests). Its own counter because a sandbox is billed per session
+    # rather than per token, so it is invisible in the token/cost totals — every
+    # such row is deliberately usage-unknown, never zero.
+    computeExecutions: int = 0
 
     totalPromptTokens: int = 0
     totalCompletionTokens: int = 0
@@ -467,6 +510,8 @@ def summarize_records(
 
     for rec in records:
         summary.totalRequests += 1
+        if rec.provider == CODE_INTERPRETER_PROVIDER:
+            summary.computeExecutions += 1
         if rec.status == "cancelled":
             summary.cancelledRequests += 1
         elif rec.status == "error":
