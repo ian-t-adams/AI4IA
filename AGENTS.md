@@ -208,6 +208,27 @@ why. Re-run it with `UV_INDEX_URL=https://pypi.org/simple`, or off the proxied
 network. `scripts/tests/test_lockfile_provenance.py` (run by `quality`) fails on
 a single non-PyPI URL, and refuses to pass vacuously on a truncated lock.
 
+**On that network, `uv lock --check` also fails on a pristine checkout — and its
+own hint tells you to do the harmful thing.** This is the trap that makes the
+above self-reinforcing, so recognise it rather than acting on it. Measured on
+`origin/main` at `823d638`, working tree clean, lockfile provably fine (the
+provenance test passes: zero non-PyPI URLs):
+
+```
+$ uv lock --check
+error: The lockfile at `uv.lock` needs to be updated, but `--check` was provided.
+hint: To update the lockfile, run `uv lock`.
+```
+
+Nothing is wrong. `--check` re-resolves against *your* configured index, and a
+mirror-resolved result never matches a PyPI-resolved lock, so it reports drift
+that does not exist. Follow the hint and you commit ~1,659 rewritten URLs — which
+is exactly how the original incident happened. **CI is the authority here:**
+`app-ci`'s `api` job runs the same command from PyPI and passes. Before
+"fixing" a local `uv lock --check` failure, confirm CI actually fails it, and
+confirm you changed `pyproject.toml` at all — if you did not, there is nothing to
+re-lock.
+
 **A third-party module imported inside a function body still has to be declared
 in `pyproject.toml`.** The API imports heavy/optional SDKs lazily on purpose, so
 the app boots without every Azure service wired — but that also means neither
@@ -351,6 +372,43 @@ never reported blocks every PR permanently. Keep that ordering for any future ad
 make it always-reported, prove it on a PR that would previously have skipped it, then
 require it. One consequence to accept knowingly — a docs-only PR now also has to build
 both container images, so a flaky Docker build blocks a docs merge.
+
+## Test discipline: mutate the guard, or you have not written one
+
+A green test says nothing until you have seen it fail for the reason you wrote
+it. **Revert your fix and confirm the test fails**, then restore. This is not
+ceremony here — it has caught four live defects in tests that were already
+passing, and each would have shipped a green suite over the bug it was meant to
+prevent:
+
+- **A fake that could not model the bug.** A Cosmos double rejected writes by a
+  `conflicts` counter rather than by ETag state, so it stayed green with the
+  precondition removed — the test most responsible for catching a lost-update
+  race could not catch it. Rewritten to be driven purely by ETag state, the way
+  real Cosmos behaves (#272).
+- **A boundary test sitting exactly on the boundary.** It used precisely 12 keys
+  against the old cap of 12, so nothing ever overflowed. Widened to 22 and a
+  500-key case (#272).
+- **A pattern that matched neither side.** A doc-consistency regex required the
+  literal `**closed**`, while the two documents write `**Half closed 2026-08-06.**`
+  and `**Partially fixed** — …`. It compared nothing and passed with the defect
+  in place (#303).
+- **A dead condition that looked defensive.** `isinstance(call_id, str) and
+  call_id and not slot.id` — the middle clause is unreachable, because `not
+  slot.id` already makes assigning `""` a no-op. Mutating it changed no
+  behaviour. **A redundant condition and a load-bearing one are
+  indistinguishable until mutated** (#307).
+
+Two rules that follow from those:
+
+1. **Prove non-vacuity in both directions.** "Denied when over limit" proves
+   nothing unless the identical call is *allowed* when under it. A canary test
+   must also demonstrate the egress it prevents actually happens with the gate
+   off.
+2. **Commit before mutating.** `git checkout -- <file>` to undo a mutation also
+   silently discards uncommitted real work. Back up the bytes and restore from
+   the backup — and note that PowerShell rewrites line endings, which has
+   reported CRLF files as false mutation failures.
 
 ## How to add things
 
