@@ -192,7 +192,8 @@ function SourcesPanel({
   );
 }
 
-// A small glyph for a finalized step's outcome (running steps show a spinner).function stepGlyph(kind: string): string {
+// A small glyph for a finalized step's outcome (running steps show a spinner).
+function stepGlyph(kind: string): string {
   if (kind === "tool_result" || kind === "delegate") return "✓";
   if (kind === "tool_denied") return "⊘";
   if (kind === "tool_error") return "!";
