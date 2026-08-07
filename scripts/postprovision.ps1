@@ -287,11 +287,63 @@ function Test-CustomDomainDns {
 Write-Host '== AI4IA postprovision smoke tests ==' -ForegroundColor Cyan
 $script:AzdEnv = Get-AzdEnvMap
 
+function Register-ContentUnderstandingDefault {
+  # Content Understanding will not run an analyzer until the resource has a
+  # `modelDeployments` default mapping. Without it every analyze job returns
+  # `status=Failed` with innererror `ResourceError`, and nothing in Bicep can
+  # set it: it is a data-plane PATCH on the account, not an ARM property.
+  #
+  # This is not a hypothetical gap. Document understanding shipped enabled and
+  # had NEVER successfully enriched a document -- discovered 2026-08-07 by
+  # uploading a file, which is something no prior review had done.
+  #
+  # The map keys are the analyzer's own LOGICAL model names, not model ids and
+  # not the literal word "completion". Read them from the analyzer:
+  #   GET /contentunderstanding/analyzers/prebuilt-documentSearch
+  #     -> models: { completion: prebuilt-analyzer-completion-mini,
+  #                  embedding:  prebuilt-analyzer-embedding }
+  # and the deployment must be one the analyzer supports -- `supportedModels`
+  # on the same response is authoritative. As of api-version 2025-11-01 the only
+  # completion model in this catalog it accepts is gpt-5.2.
+  $envMap = Get-AzdEnvMap
+  $account = Get-EnvValue $envMap 'AZURE_FOUNDRY_ACCOUNT_NAME'
+  if (-not $account) {
+    Add-Result -Name 'Content Understanding defaults' -Status 'SKIP' -Detail 'no Foundry account in azd env'
+    return
+  }
+  $base = "https://$account.cognitiveservices.azure.com"
+  $token = (az account get-access-token --resource 'https://cognitiveservices.azure.com' --query accessToken -o tsv 2>$null)
+  if (-not $token) {
+    Add-Result -Name 'Content Understanding defaults' -Status 'WARN' -Detail 'could not acquire a Cognitive Services token'
+    return
+  }
+  # Deployment names follow the catalog's `{model}-{token}-{region}-{sku}`
+  # convention. Overridable, but defaulted so a clean-room provision configures
+  # CU without anyone having to know this API exists.
+  $suffix = Get-EnvValue $envMap 'AZURE_MODEL_DEPLOYMENT_SUFFIX'
+  if (-not $suffix) { $suffix = 'slurmfactory-eastus2-glbl' }
+  $completion = if ($env:AI4IA_CU_COMPLETION_DEPLOYMENT) { $env:AI4IA_CU_COMPLETION_DEPLOYMENT } else { "gpt-5.2-$suffix" }
+  $embedding = if ($env:AI4IA_CU_EMBEDDING_DEPLOYMENT) { $env:AI4IA_CU_EMBEDDING_DEPLOYMENT } else { "text-embedding-3-large-$suffix" }
+  $body = @{ modelDeployments = @{
+      'prebuilt-analyzer-completion-mini' = $completion
+      'prebuilt-analyzer-completion'      = $completion
+      'prebuilt-analyzer-embedding'       = $embedding
+    } } | ConvertTo-Json -Depth 5
+  try {
+    Invoke-RestMethod -Method Patch -Uri "$base/contentunderstanding/defaults?api-version=2025-11-01" `
+      -Headers @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json' } -Body $body -TimeoutSec 60 | Out-Null
+    Add-Result -Name 'Content Understanding defaults' -Status 'PASS' -Detail "completion=$completion"
+  } catch {
+    Add-Result -Name 'Content Understanding defaults' -Status 'WARN' -Detail "PATCH failed: $($_.Exception.Message)"
+  }
+}
+
 $checks = @(
   @{ Label = 'Model deployments (hard gate)'; Fn = { Test-ModelDeployment } }
   @{ Label = 'API health'; Fn = { Test-ApiHealth } }
   @{ Label = 'Custom-domain DNS'; Fn = { Test-CustomDomainDns } }
   @{ Label = 'Gateway topology outputs (hard gate)'; Fn = { Test-GatewayTopology } }
+  @{ Label = 'Content Understanding defaults'; Fn = { Register-ContentUnderstandingDefault } }
 )
 foreach ($check in $checks) {
   Write-Host ("{0}:" -f $check.Label)

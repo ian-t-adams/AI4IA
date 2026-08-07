@@ -503,3 +503,126 @@ async def test_enrich_audio_without_phrases_falls_back_to_markdown():
     # Markdown fallback → no time grounding, but content is retrievable.
     assert all(h.start_ms is None for h in hits)
     assert hits
+
+
+
+
+@pytest.mark.asyncio
+async def test_cu_failure_records_the_reason_not_just_the_status():
+    """A terminal CU failure must say WHY, or the feature is unobservable.
+
+    Not hypothetical tidying. Document understanding was enabled in production
+    and had **never once** enriched a document; the only evidence anywhere was
+    ``content understanding status=Failed`` with the reason discarded, so
+    nothing could be diagnosed without first adding logging and waiting for a
+    redeploy. CU returns an ``error`` object beside the terminal status and
+    ``parse_result`` already keeps the whole body on ``raw`` -- the reason was
+    being thrown away one line before it was needed.
+    """
+    library = InMemoryDocumentLibraryRepository()
+    failed = CUResult(
+        status="Failed",
+        analyzer_id="prebuilt-documentSearch",
+        markdown="",
+        raw={
+            "status": "Failed",
+            "error": {"code": "InvalidArgument", "message": "Analyzer not found."},
+        },
+    )
+    ingestor = _make(cu=FakeCU(result=failed), library=library)
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"BYTES"
+    )
+    await ingestor.enrich(
+        user_id="u1", document_id=stored.document.id, data=b"BYTES", content_type="application/pdf"
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc is not None
+    assert doc.status is DocumentStatus.failed
+    # The bare status is what shipped before, and it proved nothing.
+    assert "InvalidArgument" in (doc.error or ""), doc.error
+    assert "Analyzer not found." in (doc.error or ""), doc.error
+
+
+@pytest.mark.asyncio
+async def test_cu_failure_without_an_error_object_still_reports_the_status():
+    """Control: the reason is additive, never a new failure mode.
+
+    If CU returns a terminal failure with no ``error`` payload, enrich must
+    degrade exactly as it always did rather than raising on a missing key.
+    Without this, the test above could be satisfied by code that only works
+    when an error object happens to be present.
+    """
+    library = InMemoryDocumentLibraryRepository()
+    failed = CUResult(
+        status="Failed",
+        analyzer_id="prebuilt-documentSearch",
+        markdown="",
+        raw={"status": "Failed"},
+    )
+    ingestor = _make(cu=FakeCU(result=failed), library=library)
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"BYTES"
+    )
+    await ingestor.enrich(
+        user_id="u1", document_id=stored.document.id, data=b"BYTES", content_type="application/pdf"
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc is not None
+    assert doc.status is DocumentStatus.failed
+    assert "status=Failed" in (doc.error or ""), doc.error
+    # Tightened after mutation testing: asserting only that the status is
+    # present let a mutant through that appended the reason unconditionally.
+    # `json.dumps(None)` is the string "null", so the bare-status assertion
+    # stayed true while the message gained a meaningless `: null` suffix. The
+    # message must end AT the status when there is nothing to add.
+    assert (doc.error or "").endswith("status=Failed"), doc.error
+    assert "null" not in (doc.error or ""), doc.error
+
+
+@pytest.mark.asyncio
+async def test_cu_failure_reason_is_redacted_before_it_is_persisted():
+    """The CU error body is REMOTE content and lands in a persisted field.
+
+    It can echo file names, analyzer field values, or an upstream URL carrying a
+    token back at us, and this string is written to the document row and to
+    logs. Added because mutation testing showed the two tests above passed
+    unchanged with `redact()` removed -- their fixtures contained nothing
+    secret-shaped, so they could not tell redaction from no redaction.
+    """
+    library = InMemoryDocumentLibraryRepository()
+    failed = CUResult(
+        status="Failed",
+        analyzer_id="prebuilt-documentSearch",
+        markdown="",
+        raw={
+            "status": "Failed",
+            "error": {
+                "code": "InvalidArgument",
+                # Deliberately shaped like a credential without being one:
+                # `redact()` keys off the `api_key=` prefix, so the value only
+                # needs to look opaque. A realistic-looking token here trips
+                # gitleaks in CI (it scans history and matches on shape, not on
+                # whether the string is real), and an allowlist entry to carry a
+                # fake secret would be worse than a duller fixture.
+                "message": "callback failed for api_key=" + ("Z" * 24),
+            },
+        },
+    )
+    ingestor = _make(cu=FakeCU(result=failed), library=library)
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"BYTES"
+    )
+    await ingestor.enrich(
+        user_id="u1", document_id=stored.document.id, data=b"BYTES", content_type="application/pdf"
+    )
+
+    doc = await library.get_document("u1", stored.document.id)
+    assert doc is not None
+    error = doc.error or ""
+    # Non-vacuity: the reason really did make it through...
+    assert "InvalidArgument" in error, error
+    # ...and the credential-shaped value in it did not.
+    assert ("Z" * 24) not in error, error
