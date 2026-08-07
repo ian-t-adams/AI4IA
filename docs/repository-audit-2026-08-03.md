@@ -147,7 +147,7 @@ Verified against the tree at `main` on 2026-08-05, not from memory.
 | P0-1 proxy credential in startup event | **Fixed + key rotated** | #266, live rotation |
 | P0-2 annotation-only filters | **Accepted**; annotations now surfaced | #266 + owner decision |
 | P1-1 client can override server-owned model fields | **Fixed** | #266 |
-| P1-2 Code Interpreter retention/metering | **Partially fixed** — `store:false` locked; entitlement/usage accounting still absent | #266 |
+| P1-2 Code Interpreter retention/metering | **Fixed** — `store:false` locked (#266); a dedicated `computeExecutionsPerDay` entitlement is now checked before every sandbox execution (before the file upload, not just before the run), and every attempt — including a failed one — is metered under a distinct `azure_openai_code_interpreter` identity. Both CI tools share the allowance, so it cannot be evaded by asking for the other one. 13 mutations, all caught | #266, #307 |
 | P1-3 fresh azd deploy is public + dev auth | **Auth half fixed** — `apiAllowDevAuth` now defaults `false` and is a real azd variable, so a clean-room deploy refuses to start instead of trusting `X-Dev-User`. **Still open**: every feature flag defaults on, and there is no budget/alert gate — the demo-versus-production profile split | #279 |
 | P1-4 gateway-only routing is convention, not IAM | **Half fixed** — `disableLocalAuth` now defaults **true**, so Azure refuses key-based access to Foundry and gateway-only routing is an IAM boundary rather than a code-review convention. Verified key-free first: APIM authenticates with managed identity (37 `auth: MI`, zero `api-key`), Content Understanding and Code Interpreter both default to `bearer` with no key set, and of the 67 environment variables on the production api container the five credential-bearing ones are proxy/APIM/third-party keys — none is a Cognitive Services account key. Voice Live reaches APIM, not Foundry. **Still open:** `id-api` retains direct Foundry data-plane roles, because the Responses-API Code Interpreter needs them until it runs in its own workload | #294 |
 | P1-5 APIM key is a non-secure output | **Fixed** — compiled ARM emits `securestring` | #266 |
@@ -266,11 +266,25 @@ call there would deny it silently and forever. `workflows/runner.py` opts out wi
 an explicit `ApprovalPolicy.off`, pinned by a test. Closing that needs a durable,
 out-of-band approval channel for unattended runs.
 
-Two items are honestly partial rather than done. P1-2 locks `store: false` but has no
-entitlement or usage accounting for Code Interpreter. It is recorded as partial in the
-table above rather than rounded up. P1-16 was partial for the same reason — the proxy's
-SSE buffering was fixed while the non-streaming tool loop remained — and closed later;
-see its row.
+Two items were honestly partial rather than done, and both have since closed.
+P1-2 locked `store: false` while Code Interpreter still had no entitlement or
+usage accounting; that second half has now landed, mutation-verified. P1-16 was
+partial for the same shape of reason — the proxy's SSE buffering was fixed while
+the non-streaming tool loop remained — and closed later. See both rows. What is
+still genuinely partial is recorded as such in the table above rather than
+rounded up: P1-3's demo-versus-production profile split, P1-4's direct Foundry
+data-plane roles on `id-api`, P1-7's build-vs-promote posture and supply-chain
+gaps, and P1-10's non-tenant-aware sharing.
+
+One judgement call inside the P1-2 fix is worth recording, because it is the kind
+of thing that decays quietly. The metered unit is a **sandbox execution**, not
+every HTTP request to the Responses surface: a pre-flight file upload that fails
+before any container exists is transparently fallen back from and is not charged.
+That is deliberate — charging it would burn a user's allowance for a container
+that never ran — but it does mean a caller who can reliably fail uploads can
+generate provider traffic that the `computeExecutionsPerDay` counter does not
+see. The per-turn budget (three) and the ordinary `requestsPerMinute` limit are
+what bound that residue.
 
 
 ## Scope and method

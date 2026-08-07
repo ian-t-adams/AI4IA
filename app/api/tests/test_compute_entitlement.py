@@ -44,7 +44,7 @@ from ai4ia_api.library.compute_capability import (
 from ai4ia_api.library.export import DocumentExportService
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
 from ai4ia_api.library.models import DocumentStatus, UserDocument
-from ai4ia_api.library.blob_store import PARSED_NAME, blob_path
+from ai4ia_api.library.blob_store import PARSED_NAME, RAW_NAME, blob_path
 from ai4ia_api.library.retrieval import DocumentRetrievalService
 from ai4ia_api.usage.memory_repo import InMemoryUsageRepository
 from ai4ia_api.usage.models import (
@@ -119,12 +119,20 @@ def _settings(**overrides):
 
 
 async def _seed_doc(library, blob, *, user="u1", parsed="name,amount\nA,10\n"):
+    """Seed a ready document with BOTH a parsed artifact and the original raw
+    bytes. The raw artifact matters: without it ``read_raw`` errors out and the
+    raw-file upload path never engages, which would silently defuse any test
+    claiming the gate runs before the upload.
+    """
     doc = UserDocument(
         userId=user, filename="data.csv", status=DocumentStatus.ready, summary="seed"
     )
     path = blob_path(user, doc.id, PARSED_NAME)
     await blob.put(path, parsed.encode("utf-8"), "text/markdown")
     doc.parsedPath = path
+    raw_path = blob_path(user, doc.id, RAW_NAME)
+    await blob.put(raw_path, b"name,amount\nA,10\n", "text/csv")
+    doc.rawPath = raw_path
     await library.create_document(doc)
     return doc
 
@@ -334,7 +342,12 @@ def test_startup_guard_covers_the_compute_limit_too():
 # --------------------------------------------------------------------------
 async def test_run_code_is_gated_before_any_provider_io():
     """The gate must run before the raw-file UPLOAD, not merely before the run —
-    an upload is already a call to Foundry."""
+    an upload is already a call to Foundry.
+
+    Non-vacuity: the companion below proves this same fixture DOES reach the
+    upload when the account is permitted, so ``ci.uploads == []`` here is a real
+    observation about the gate rather than a path that never ran.
+    """
     library, blob = InMemoryDocumentLibraryRepository(), InMemoryBlobStore()
     ci = FakeCI()
     usage, ents, store = _real_services()
@@ -349,6 +362,25 @@ async def test_run_code_is_gated_before_any_provider_io():
     assert res["status"] == "denied"
     assert "result" not in res
     assert ci.uploads == [] and ci.calls == []
+
+
+async def test_permitted_run_really_does_reach_the_upload():
+    """Guards the test above: same settings, same seeded document, only the
+    entitlement flipped. If this stops uploading, the gate test has quietly
+    stopped proving anything."""
+    library, blob = InMemoryDocumentLibraryRepository(), InMemoryBlobStore()
+    ci = FakeCI()
+    usage, ents, _ = _real_services()
+    settings = _settings(code_interpreter_raw_files_enabled=True)
+    handlers = _caps(library, blob, ci, settings, ents=ents, usage=usage)
+    doc = await _seed_doc(library, blob)
+
+    res = await handlers[RUN_CODE_TOOL_NAME](
+        {"document_id": doc.id, "task": "sum"}, ctx=None
+    )
+    assert "error" not in res
+    assert len(ci.uploads) == 1  # the raw-file path really engaged
+    assert ci.calls and ci.calls[0]["file_ids"] == [ci.upload_file_id]
 
 
 async def test_limit_reached_mid_turn_returns_a_structured_tool_result():

@@ -373,6 +373,46 @@ inlineDocumentComputeEnabled=true
 
 Outside local, both fail closed without the Responses API base URL and model.
 
+**Both spend an Azure-managed sandbox container per execution, billed per
+session rather than per token.** Neither is routed through APIM (architecture
+invariant 3), so the gateway's governance does not apply to them; the equivalent
+controls run at the call site instead. Per-user cost control is the
+`computeExecutionsPerDay` entitlement — a rolling 24h cap on sandbox executions,
+its own axis because a token or dollar budget cannot express it:
+
+```bash
+# Cap a user at 25 sandbox executions per rolling 24h. Omit the field (or DELETE
+# the override) to return to unlimited, which is the shipped default.
+curl -X PUT "$API/api/admin/entitlements/$INTERNAL_USER_ID" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"computeExecutionsPerDay": 25}'
+```
+
+Four properties worth knowing before you set one:
+
+- **It is scoped.** Exhausting it denies `run_code` / `analyze_attachment` and
+  nothing else — the user keeps chatting normally. Conversely a chat turn for a
+  user whose only limit is this one does no extra ledger read.
+- **Both tools share it.** A per-tool allowance would be evaded by asking for the
+  other tool; they drive the same sandbox primitive.
+- **It charges on attempt.** A sandbox that starts and then fails still cost
+  money and still created provider resources, so it still counts. The ledger row
+  carries `status: "error"` so the failure is visible in the admin rollups.
+- **It can be reached mid-turn.** A turn may perform up to three executions, and
+  the check runs before each. The refusal comes back to the model as a tool
+  result it can explain, not as a failed turn.
+
+Sandbox spend is reported separately from chat spend: ledger rows carry provider
+`azure_openai_code_interpreter` and agent `code_interpreter`, so the admin
+by-provider and agents panels break it out. Those rows are deliberately
+usage-unknown (the surface reports no tokens) and therefore never priced — an
+unknown cost is never rendered as zero. Use `computeExecutions` on the usage
+summary, not the token totals, to see how much sandbox was consumed.
+
+Enforcement requires the usage ledger: `AI4IA_ENTITLEMENTS_ENABLED=true` with
+`AI4IA_USAGE_METERING_ENABLED=false` is refused at startup, so a limit you set
+can never silently fail to apply for lack of a ledger.
+
 ### Memory
 
 `AI4IA_MEMORY_STORE` selects and gates the backend:
