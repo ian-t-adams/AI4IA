@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from ..catalog import DeploymentOption
 from ..config import Settings
 from ..content_understanding.models import CUResult
+from ..agents.tools import redact
 from ..documents.extract import DocumentError, extract_text
 from ..memory.embedder import GatewayEmbedder
 from ..logging_setup import emit_custom_event
@@ -347,8 +348,21 @@ class DocumentIngestor:
                 cu_analyzer_id, data, content_type or "application/octet-stream"
             )
             if not result.succeeded:
+                # Surface WHY, not just that it failed. CU returns an `error`
+                # object alongside the terminal status; `parse_result` already
+                # keeps the whole body on `raw`, and this message used to drop
+                # it — which made the failure unobservable. Discovered
+                # 2026-08-07: document understanding had been enabled in
+                # production and had never once enriched a document, and the
+                # only evidence was `status=Failed` with no reason attached.
+                #
+                # Redacted because the body is remote content: it can echo file
+                # names and analyzer field values back at us, and this string
+                # lands in the persisted document error and in logs.
+                detail = result.raw.get("error") or result.raw.get("result", {}).get("error")
+                suffix = f": {redact(json.dumps(detail, default=str))[:400]}" if detail else ""
                 raise RuntimeError(
-                    f"content understanding status={result.status or 'unknown'}"
+                    f"content understanding status={result.status or 'unknown'}{suffix}"
                 )
             # The user may have deleted the document during the (potentially long)
             # CU poll. Re-check before writing blob/vector side effects so enrich
