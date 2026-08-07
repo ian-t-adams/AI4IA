@@ -21,6 +21,28 @@ ships, add one when a real gap appears.
 | **P2** | **Memory UX gaps.** No global memory-consent control and no recalled-memory provenance indicator; management is owner-scoped CRUD only. | Design explicit consent + provenance UX before expanding memory surfaces. | [`memory.md`](./memory.md) |
 | **Ops** | **Speech Voice Live final proof.** Both voice providers are enabled in production; the last open validation is a signed-in manual microphone canary. | Run the authenticated canary + manual retest and record correlated evidence. | [`deployment.md` §7.3](./runbooks/deployment.md), [`feature-enablement.md`](./runbooks/feature-enablement.md) |
 
+> **Document understanding has never successfully enriched a document.**
+> Discovered 2026-08-07 while verifying the P1-4 role narrowing end to end.
+> `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=true` in production, but Content
+> Understanding had **never been called at all** in the preceding 30 days, so
+> nothing had exercised it. An upload now reaches CU and is *authorized* — POST
+> returns `202 Accepted`, the polling GETs return `200 OK` — and the analyzer
+> then reports `status=Failed`. Both a `.txt` and a valid PDF failed identically.
+>
+> This is not caused by the role change: authorization succeeds (a wrong role
+> returns `403`, not `202`), and there is no prior success to have regressed from.
+> It is a latent defect in an enabled feature, which is precisely the
+> "claimed but not present" class the 2026-08-03 audit was written to find — it
+> survived that audit because the audit read code and configuration rather than
+> uploading a file. The instant quick-text summary still works (it is local
+> `pypdf` extraction), so the library is not wholly inert, but no CU-derived
+> fields, no chunks and no RAG grounding are ever produced.
+>
+> Next step is to read the analyzer error body: the client logs
+> `content understanding status=Failed` without the `error` payload CU returns
+> alongside it, so the reason is currently unobservable. Widen that log first;
+> do not guess at analyzer ids or API versions.
+
 ## Owner decisions from the 2026-08-03 audit
 
 > **Considered and rejected: passing the signed-in user's token through to
