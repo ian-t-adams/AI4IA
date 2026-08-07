@@ -18,7 +18,9 @@ from ai4ia_api.library.doc_chunks import DocChunkRecord
 from ai4ia_api.library.models import DocumentStatus, UserDocument
 from ai4ia_api.library.retrieval import DocumentRetrievalService
 from ai4ia_api.main import create_app
-from tests.conftest import make_settings
+from ai4ia_api.websearch.factory import build_web_search_service
+from tests.conftest import make_settings, stream_like_gateway
+from tests.test_chat_websearch_api import FakeWebClient
 
 _CHUNK_TEXT = "Falcon shipped on the fourteenth of March."
 
@@ -213,6 +215,263 @@ async def test_streaming_turn_verifies_a_real_citation():
 
     assert row["status"] == "complete"
     assert [c["status"] for c in row["citations"]] == ["verified"]
+
+
+# --- The token-streaming tool loop (P1-16, #307) -----------------------------
+#
+# That change made a tool-using turn stream each model iteration, and it is ON by
+# default, so it is now the path most real turns take. It reaches the durable row
+# through ``_persist_terminal_assistant`` like every other streaming path, which
+# is where attestation lives -- but "should be covered because it goes through
+# the same function" is exactly the kind of claim mutation testing exists to
+# disprove. These drive it end to end.
+
+
+class ToolStreamGateway:
+    """Streams a tool call on the first iteration, then the answer on the second.
+
+    Mirrors what the token-streaming loop consumes: tool-call fragments arrive as
+    SSE ``delta.tool_calls`` and the text arrives as ordinary deltas.
+    """
+
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+        self.iterations = 0
+
+    async def complete(
+        self, *, deployment, messages, params=None, correlation_id=None, api="chat"
+    ):
+        return {"choices": [{"message": {"role": "assistant", "content": self.reply}}]}
+
+    async def stream(
+        self, *, deployment, messages, params=None, correlation_id=None, api="chat"
+    ):
+        self.iterations += 1
+        if self.iterations == 1 and (params or {}).get("tools"):
+            fragment = {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "web_search",
+                                        "arguments": json.dumps({"query": "falcon"}),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+            yield ChatChunk(raw=json.dumps(fragment))
+            yield ChatChunk(done=True, raw="[DONE]")
+            return
+        yield ChatChunk(
+            delta=self.reply,
+            raw=json.dumps({"choices": [{"delta": {"content": self.reply}}]}),
+        )
+        yield ChatChunk(done=True, raw="[DONE]")
+
+
+async def _run_tool_stream(reply: str) -> tuple[dict, ToolStreamGateway]:
+    client = _make_client(reply)
+    try:
+        gateway = ToolStreamGateway(reply)
+        client.app.state.gateway = gateway
+        # Web search makes the plain-chat tool loop engage for a main-chat turn,
+        # which is what routes this through the token-streaming path.
+        client.app.state.web_search = build_web_search_service(
+            make_settings(web_search_enabled=True),
+            entitlements=client.app.state.entitlements,
+            metering=client.app.state.usage,
+            client=FakeWebClient(),
+        )
+        uid = _uid(client)
+        await _seed_indexed_doc(client, uid)
+        sid = _session(client)
+        _ask(client, sid, stream=True)
+        return _assistant_row(client, sid), gateway
+    finally:
+        client.__exit__(None, None, None)
+
+
+async def test_the_token_streaming_tool_loop_marks_a_fabricated_citation():
+    row, gateway = await _run_tool_stream("It shipped in March [[cite:S7]].")
+
+    # Non-vacuity for the *path*: more than one model iteration means the tool
+    # loop really ran, so this is not silently testing the plain stream again.
+    assert gateway.iterations >= 2
+    assert row["sources"], "the tool-loop turn must still carry its registry"
+    assert [c["status"] for c in row["citations"]] == ["unverified"]
+
+
+async def test_the_token_streaming_tool_loop_verifies_a_real_citation():
+    row, gateway = await _run_tool_stream("It shipped in March [[cite:S1]].")
+
+    assert gateway.iterations >= 2
+    assert [c["status"] for c in row["citations"]] == ["verified"]
+    assert row["citations"][0]["documentId"] == row["sources"][0]["documentId"]
+
+
+# --- The @mention agent streaming path ---------------------------------------
+#
+# A tool-enabled agent turn builds its own streaming placeholder, separate from
+# the plain-chat one, so it needs its own coverage: mutation testing showed the
+# agent placeholder could drop the turn's registry entirely and every other test
+# here still passed.
+
+
+class AgentToolStreamGateway:
+    """Asks @analyst's calculator on the first iteration, then answers."""
+
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+        self.iterations = 0
+
+    async def complete(
+        self, *, deployment, messages, params=None, correlation_id=None, api="chat"
+    ):
+        self.iterations += 1
+        if self.iterations == 1:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "c1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "calculator",
+                                        "arguments": json.dumps({"expression": "6*7"}),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        return {"choices": [{"message": {"role": "assistant", "content": self.reply}}]}
+
+    async def stream(self, **kwargs):
+        async for chunk in stream_like_gateway(await self.complete(**kwargs)):
+            yield chunk
+
+
+async def _run_agent_stream(reply: str) -> tuple[dict, AgentToolStreamGateway]:
+    client = _make_client(reply)
+    try:
+        gateway = AgentToolStreamGateway(reply)
+        client.app.state.gateway = gateway
+        uid = _uid(client)
+        await _seed_indexed_doc(client, uid)
+        sid = _session(client)
+        resp = client.post(
+            "/api/chat",
+            json={
+                "sessionId": sid,
+                "content": "@analyst when did Falcon ship?",
+                "stream": True,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert "[DONE]" in resp.text
+        return _assistant_row(client, sid), gateway
+    finally:
+        client.__exit__(None, None, None)
+
+
+async def test_the_agent_streaming_path_marks_a_fabricated_citation():
+    row, gateway = await _run_agent_stream("It shipped in March [[cite:S7]].")
+
+    # Non-vacuity for the path: a second iteration means the agent tool loop
+    # really ran, so this is not the plain streaming path wearing a costume.
+    assert gateway.iterations >= 2
+    assert row["agent"] == "analyst"
+    assert row["sources"], "an agent turn must still carry its registry"
+    assert [c["status"] for c in row["citations"]] == ["unverified"]
+
+
+async def test_the_agent_streaming_path_verifies_a_real_citation():
+    row, gateway = await _run_agent_stream("It shipped in March [[cite:S1]].")
+
+    assert gateway.iterations >= 2
+    assert [c["status"] for c in row["citations"]] == ["verified"]
+    assert row["citations"][0]["documentId"] == row["sources"][0]["documentId"]
+
+
+# --- The two non-streaming tool replies --------------------------------------
+#
+# An agent turn and a plain-chat tool turn each build their own non-streaming
+# assistant row, separate again from the streaming placeholders above. Mutation
+# testing showed both could drop the registry with every other test still green.
+
+
+async def _run_agent_nonstream(reply: str) -> dict:
+    client = _make_client(reply)
+    try:
+        client.app.state.gateway = AgentToolStreamGateway(reply)
+        uid = _uid(client)
+        await _seed_indexed_doc(client, uid)
+        sid = _session(client)
+        resp = client.post(
+            "/api/chat",
+            json={
+                "sessionId": sid,
+                "content": "@analyst when did Falcon ship?",
+                "stream": False,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        return _assistant_row(client, sid)
+    finally:
+        client.__exit__(None, None, None)
+
+
+async def test_the_agent_non_streaming_reply_keeps_its_registry():
+    fabricated = await _run_agent_nonstream("It shipped in March [[cite:S7]].")
+    real = await _run_agent_nonstream("It shipped in March [[cite:S1]].")
+
+    assert fabricated["agent"] == "analyst"
+    assert fabricated["sources"], "an agent turn must still carry its registry"
+    assert [c["status"] for c in fabricated["citations"]] == ["unverified"]
+    # The control: same path, same answer shape, only the id differs.
+    assert [c["status"] for c in real["citations"]] == ["verified"]
+
+
+async def _run_tool_nonstream(reply: str) -> dict:
+    client = _make_client(reply)
+    try:
+        client.app.state.gateway = ToolStreamGateway(reply)
+        client.app.state.web_search = build_web_search_service(
+            make_settings(web_search_enabled=True),
+            entitlements=client.app.state.entitlements,
+            metering=client.app.state.usage,
+            client=FakeWebClient(),
+        )
+        uid = _uid(client)
+        await _seed_indexed_doc(client, uid)
+        sid = _session(client)
+        _ask(client, sid, stream=False)
+        return _assistant_row(client, sid)
+    finally:
+        client.__exit__(None, None, None)
+
+
+async def test_the_plain_chat_tool_non_streaming_reply_keeps_its_registry():
+    fabricated = await _run_tool_nonstream("It shipped in March [[cite:S7]].")
+    real = await _run_tool_nonstream("It shipped in March [[cite:S1]].")
+
+    assert fabricated["sources"], "a tool turn must still carry its registry"
+    assert [c["status"] for c in fabricated["citations"]] == ["unverified"]
+    assert [c["status"] for c in real["citations"]] == ["verified"]
+    assert real["citations"][0]["documentId"] == real["sources"][0]["documentId"]
 
 
 async def test_the_registry_rides_the_first_stream_frame():
