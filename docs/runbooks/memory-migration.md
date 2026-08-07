@@ -264,13 +264,13 @@ Recommended order:
 > silently resumes billing, still holding data nothing reads. Either delete within
 > the window or re-issue `stop` each week. Do not treat step 2 as the end state.
 
-### Status (2026-08-06 / 2026-08-07)
+### Status (complete)
 
 | Step | State |
 | --- | --- |
 | IaC / code / docs removal | **Done** — #293, guarded by `scripts/tests/test_postgres_retired.py` |
 | Server stopped | **Done 2026-08-07.** `psql-ai4ia-slurmfactory-centralus-vypvgrncoed2o` reports `Stopped`. Verified idle first: `active_connections` returned **no datapoints at all** over the preceding 7 days |
-| Server deleted | **Not done.** Needs a deliberate destructive action, and the auto-restart above means the clock is running |
+| Server deleted | **Done 2026-08-07**, on explicit owner instruction. `az postgres flexible-server show` now returns `ResourceNotFound` and the resource group holds no PostgreSQL servers. The 7-day backup window went with it, as warned above — there is nothing left to restore from |
 
 ## Common failures
 
