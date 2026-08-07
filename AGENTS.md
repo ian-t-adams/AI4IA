@@ -398,14 +398,26 @@ prevent:
   slot.id` already makes assigning `""` a no-op. Mutating it changed no
   behaviour. **A redundant condition and a load-bearing one are
   indistinguishable until mutated** (#307).
+- **A fixture that made the assertion unreachable.** The hardest to spot,
+  because the test reads as correct: it asserted a denied account performs no
+  upload, and it passed — but its fixture seeded only the *parsed* artifact, so
+  the read of the original bytes errored and the upload path was never entered
+  at all. It was **true for the wrong reason**, and would have shipped green over
+  a gate that ran too late to stop real provider IO (#308).
 
-Two rules that follow from those:
+Three rules that follow from those:
 
 1. **Prove non-vacuity in both directions.** "Denied when over limit" proves
    nothing unless the identical call is *allowed* when under it. A canary test
    must also demonstrate the egress it prevents actually happens with the gate
    off.
-2. **Commit before mutating.** `git checkout -- <file>` to undo a mutation also
+2. **Pair every "X did not happen" with a control proving X happens when it
+   should** — using the *same fixture*, with only the condition under test
+   flipped. That is what caught the fixture bug above: `..._is_gated_before_any_provider_io`
+   is only meaningful beside `..._really_does_reach_the_upload`. An absence
+   assertion over a code path that never ran is indistinguishable from a working
+   guard.
+3. **Commit before mutating.** `git checkout -- <file>` to undo a mutation also
    silently discards uncommitted real work. Back up the bytes and restore from
    the backup — and note that PowerShell rewrites line endings, which has
    reported CRLF files as false mutation failures.
