@@ -468,6 +468,49 @@ describe("MessageList citation provenance", () => {
     expect(screen.queryByText(/Sources ·/)).toBeNull();
     expect(screen.getByText(/lecture\.mp3/)).toBeInTheDocument();
   });
+
+  // The pair below is the point: this component renders `onCitation` in
+  // production whenever the library is enabled (ChatApp passes `handleCitation`),
+  // so a test that omits the handler exercises a branch real users never see. The
+  // control proves the accent styling is reachable at all, so the unattested
+  // assertion cannot pass merely because nothing rendered.
+  it("marks an actionable VERIFIED citation as attested", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "p7",
+            role: "assistant",
+            content: "Listen [[cite:S1]] here",
+            sources: [span({ spanId: "S1" })],
+          }),
+        ]}
+        onCitation={vi.fn()}
+      />,
+    );
+    const chip = screen.getByRole("button", { name: /verified source S1/ });
+    expect(chip).toHaveStyle({ color: "var(--accent)" });
+  });
+
+  it("does not dress an actionable UNATTESTED citation as a verified one", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "p8",
+            role: "assistant",
+            content: "Listen [[cite:lecture.mp3@12:34]] here",
+          }),
+        ]}
+        onCitation={vi.fn()}
+      />,
+    );
+    // Still clickable — a legacy row should keep seeking to its media — but it
+    // must not borrow the accent that means "this answer actually retrieved it".
+    const chip = screen.getByRole("button", { name: /not verified for this answer/ });
+    expect(chip).toHaveStyle({ color: "var(--fg-muted)" });
+    expect(chip).not.toHaveStyle({ color: "var(--accent)" });
+  });
 });
 
 // Every model runs under an annotate-only Responsible AI policy: the filters are

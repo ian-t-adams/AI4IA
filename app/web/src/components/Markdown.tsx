@@ -90,11 +90,19 @@ function CitationChip({
   }
   const seekable =
     token.ms !== null && (token.documentId !== null || token.filename !== null);
+  // The attested/unattested distinction is a property of the citation, not of
+  // whether a handler happens to be wired up, so it is computed once and applied
+  // to BOTH branches below. Scoping it to the static branch was a real defect: a
+  // legacy token carries a filename and a timecode, so it is `seekable`, and with
+  // `onCitation` supplied (which production does whenever the library is enabled)
+  // it fell through to the actionable branch and was painted in the same accent as
+  // a verified span. The clickable case is exactly where the reader is most likely
+  // to trust the chip, so it is the last place the verdict may be dropped.
+  const attested = token.status === "verified";
   if (!onCitation || !seekable) {
     // Not actionable. Still distinguish an attested source (accent, and it names
     // its span id) from a legacy token we can say nothing about (muted), so
     // "verified" is never indistinguishable from "we have no idea".
-    const attested = token.status === "verified";
     return (
       <span
         title={
@@ -126,8 +134,16 @@ function CitationChip({
           ms: token.ms,
         })
       }
-      title={`Play ${token.label}`}
-      aria-label={`Play ${token.label}`}
+      title={
+        attested
+          ? `Play ${token.label} (source ${token.spanId})`
+          : `Play ${token.label} (source not verified for this answer)`
+      }
+      aria-label={
+        attested
+          ? `Play ${token.label}, verified source ${token.spanId}`
+          : `Play ${token.label}, source not verified for this answer`
+      }
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -135,9 +151,9 @@ function CitationChip({
         margin: "0 1px",
         padding: "0 8px",
         borderRadius: 999,
-        border: "1px solid var(--accent)",
+        border: attested ? "1px solid var(--accent)" : "1px solid var(--border)",
         background: "transparent",
-        color: "var(--accent)",
+        color: attested ? "var(--accent)" : "var(--fg-muted)",
         font: "inherit",
         fontSize: "0.85em",
         lineHeight: 1.6,

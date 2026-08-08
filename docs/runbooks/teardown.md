@@ -21,17 +21,25 @@ $rg  = azd env get-value AZURE_RESOURCE_GROUP
 - **Protected (never delete):** `NetworkWatcherRG`, `Default-ActivityLogAlerts`,
   `DefaultResourceGroup-*`
 
-## Targeted Lean Azure retained-resource cleanup (one-time)
+## Targeted Lean Azure retained-resource cleanup (one-time, conditional)
 
 ARM incremental deployments do not delete resources removed from Bicep or
 hidden behind a newly disabled condition. After the Lean Azure migration is
-merged and reprovisioned, an authorized operator must separately remove the
-retained Event Hubs namespace and its direct RBAC, the retired
-`Microsoft.Monitor/accounts` workspace, and the portal-created API Center
-`swagger-petstore` sample. This is intentionally not a deploy hook: changing a
-feature flag must never delete live Azure.
+merged and reprovisioned, an environment may still carry a retained Event Hubs
+namespace and its direct RBAC, the retired `Microsoft.Monitor/accounts`
+workspace, and the portal-created API Center `swagger-petstore` sample. An
+authorized operator must remove whichever of those still exist. This is
+intentionally not a deploy hook: changing a feature flag must never delete live
+Azure.
 
-Resolve and inspect the three exact IDs first:
+> **Reference environment status.** All three were removed from
+> `rg-ai4ia-slurmfactory` on 2026-08-08 and verified absent, so this section is
+> historical there. It still applies to any environment first provisioned before
+> the Lean Azure migration. Treat the discovery step below as the gate: if a
+> lookup returns nothing, that resource is already gone and needs no action.
+
+Resolve and inspect the three exact IDs first — an empty result means there is
+nothing to clean up for that resource, not that the lookup failed:
 
 ```powershell
 $eventHubsId = az eventhubs namespace show --subscription $sub --resource-group $rg --name <exact-event-hubs-name> --query id -o tsv
