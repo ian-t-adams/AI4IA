@@ -10,6 +10,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "foundry-assets.yml"
+DEPLOY_WORKFLOW = ROOT / ".github" / "workflows" / "deploy.yml"
 REMOVED_SKILL_REFERENCES = (
     "citation-" + "discipline",
     "provision-foundry-" + "skills.py",
@@ -27,10 +28,33 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
         cls.triggers = cls.document.get("on", cls.document.get(True, {}))
         cls.job = cls.document["jobs"]["reconcile"]
 
-    def test_runs_on_foundry_changes_and_manual_dispatch(self) -> None:
-        self.assertEqual(self.triggers["push"]["branches"], ["main"])
-        self.assertIn("foundry/**", self.triggers["push"]["paths"])
+    def test_runs_after_successful_main_deploy_and_on_manual_dispatch(self) -> None:
+        self.assertNotIn("push", self.triggers)
+        self.assertEqual(self.triggers["workflow_run"]["workflows"], ["deploy"])
+        self.assertEqual(self.triggers["workflow_run"]["types"], ["completed"])
         self.assertIn("workflow_dispatch", self.triggers)
+        condition = self.job["if"]
+        self.assertIn("github.event.workflow_run.conclusion == 'success'", condition)
+        self.assertIn("github.event.workflow_run.event == 'push'", condition)
+        self.assertIn("github.event.workflow_run.head_branch == 'main'", condition)
+        self.assertIn("github.event_name == 'workflow_dispatch'", condition)
+
+    def test_deploy_runs_for_foundry_assets_before_reconciliation(self) -> None:
+        document = yaml.safe_load(DEPLOY_WORKFLOW.read_text(encoding="utf-8"))
+        triggers = document.get("on", document.get(True, {}))
+        paths = triggers["push"]["paths"]
+        self.assertIn("foundry/**", paths)
+        self.assertIn("scripts/provision-foundry-toolbox.py", paths)
+        self.assertIn(".github/workflows/foundry-assets.yml", paths)
+
+    def test_workflow_run_checks_out_the_exact_deployed_sha(self) -> None:
+        checkout = next(
+            step for step in self.job["steps"] if step.get("name") == "Checkout"
+        )
+        self.assertEqual(
+            checkout["with"]["ref"],
+            "${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}",
+        )
 
     def test_uses_oidc_and_an_explicit_repository_project_endpoint(self) -> None:
         self.assertEqual(

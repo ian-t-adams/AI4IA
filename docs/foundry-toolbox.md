@@ -292,13 +292,16 @@ but adding runtime MCP resource support is separate work.
    > creation succeeded but activation failed, the next run scans immutable versions, reuses the
    > matching version, and retries activation without creating a duplicate.
 
-5. **Automated reconciliation.** `.github/workflows/foundry-assets.yml` runs on changes under
-   `foundry/**` and on manual dispatch. It authenticates with OIDC, reads
-   `AZURE_FOUNDRY_PROJECT_ENDPOINT` from a repository or production-environment variable. It
-   first verifies that the OIDC identity has the project-scoped Foundry User role, then ensures
-   `ai4ia-toolbox`. `main.bicep` now includes `deploymentPrincipalId` in the primary project's
-   Foundry User assignments; the preflight still fails with a remediation message if a target
-   environment has not reconciled that grant. Unchanged runs are no-ops.
+5. **Automated reconciliation.** Foundry asset and provisioner changes trigger
+   `.github/workflows/deploy.yml` first. After that named workflow completes successfully for a
+   push to `main`, `.github/workflows/foundry-assets.yml` checks out the exact deployed
+   `workflow_run.head_sha` and reconciles assets. It has no direct push trigger, so it cannot race
+   ahead of project creation or Foundry User role propagation. Manual dispatch remains available.
+   Both paths authenticate with OIDC, read `AZURE_FOUNDRY_PROJECT_ENDPOINT` from a repository or
+   production-environment variable, first verify project-scoped Foundry User, then ensure
+   `ai4ia-toolbox`. `main.bicep` includes `deploymentPrincipalId` in the primary project's
+   assignments; the preflight still fails with remediation if that grant has not reconciled.
+   Unchanged runs are no-ops.
 
 6. **Register the entry.** Paste the printed object into `infra/mcp-servers.json` (`servers[]`)
    and regenerate the packaged runtime catalog:
