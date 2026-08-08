@@ -288,6 +288,9 @@ Write-Host '== AI4IA postprovision smoke tests ==' -ForegroundColor Cyan
 $script:AzdEnv = Get-AzdEnvMap
 
 function Register-ContentUnderstandingDefault {
+  param(
+    [string]$CatalogPath = (Join-Path $PSScriptRoot '..\app\api\src\ai4ia_api\data\model_catalog.json')
+  )
   # Content Understanding will not run an analyzer until the resource has a
   # `modelDeployments` default mapping. Without it every analyze job returns
   # `status=Failed` with innererror `ResourceError`, and nothing in Bicep can
@@ -305,35 +308,72 @@ function Register-ContentUnderstandingDefault {
   # and the deployment must be one the analyzer supports -- `supportedModels`
   # on the same response is authoritative. As of api-version 2025-11-01 the only
   # completion model in this catalog it accepts is gpt-5.2.
-  $envMap = Get-AzdEnvMap
-  $account = Get-EnvValue $envMap 'AZURE_FOUNDRY_ACCOUNT_NAME'
-  if (-not $account) {
-    Add-Result -Name 'Content Understanding defaults' -Status 'SKIP' -Detail 'no Foundry account in azd env'
-    return
-  }
-  $base = "https://$account.cognitiveservices.azure.com"
-  $token = (az account get-access-token --resource 'https://cognitiveservices.azure.com' --query accessToken -o tsv 2>$null)
-  if (-not $token) {
-    Add-Result -Name 'Content Understanding defaults' -Status 'WARN' -Detail 'could not acquire a Cognitive Services token'
-    return
-  }
-  # Deployment names follow the catalog's `{model}-{token}-{region}-{sku}`
-  # convention. Overridable, but defaulted so a clean-room provision configures
-  # CU without anyone having to know this API exists.
-  $suffix = Get-EnvValue $envMap 'AZURE_MODEL_DEPLOYMENT_SUFFIX'
-  if (-not $suffix) { $suffix = 'slurmfactory-eastus2-glbl' }
-  $completion = if ($env:AI4IA_CU_COMPLETION_DEPLOYMENT) { $env:AI4IA_CU_COMPLETION_DEPLOYMENT } else { "gpt-5.2-$suffix" }
-  $embedding = if ($env:AI4IA_CU_EMBEDDING_DEPLOYMENT) { $env:AI4IA_CU_EMBEDDING_DEPLOYMENT } else { "text-embedding-3-large-$suffix" }
-  $body = @{ modelDeployments = @{
-      'prebuilt-analyzer-completion-mini' = $completion
-      'prebuilt-analyzer-completion'      = $completion
-      'prebuilt-analyzer-embedding'       = $embedding
-    } } | ConvertTo-Json -Depth 5
   try {
-    Invoke-RestMethod -Method Patch -Uri "$base/contentunderstanding/defaults?api-version=2025-11-01" `
-      -Headers @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json' } -Body $body -TimeoutSec 60 | Out-Null
-    Add-Result -Name 'Content Understanding defaults' -Status 'PASS' -Detail "completion=$completion"
+    # Reuse the output Test-ModelDeployment already proves and parses. The first
+    # version of this hook invented `AZURE_FOUNDRY_ACCOUNT_NAME` and
+    # `AZURE_MODEL_DEPLOYMENT_SUFFIX`, then called Get-EnvValue with two
+    # positional arguments even though it accepts one. That threw before this
+    # try block and failed the whole deploy before any image was built.
+    $foundryRaw = Get-EnvValue 'AZURE_FOUNDRY_ENDPOINTS'
+    if ([string]::IsNullOrWhiteSpace($foundryRaw)) {
+      Add-Result -Name 'Content Understanding defaults' -Status 'SKIP' -Detail 'AZURE_FOUNDRY_ENDPOINTS not set'
+      return
+    }
+    $endpoints = @(($foundryRaw | ConvertFrom-Json) | Where-Object { $_.accountName -and $_.region })
+    $primary = @($endpoints | Where-Object { "$($_.region)" -eq 'eastus2' }) | Select-Object -First 1
+    if (-not $primary) {
+      Add-Result -Name 'Content Understanding defaults' -Status 'WARN' -Detail 'no eastus2 account in AZURE_FOUNDRY_ENDPOINTS'
+      return
+    }
+
+    # Read the generated catalog rather than reconstructing a deployment name.
+    # This is the same artifact the API routes from, so a naming-token, model, or
+    # SKU change cannot silently desynchronise the hook.
+    $catalog = Get-Content -LiteralPath $CatalogPath -Raw | ConvertFrom-Json
+    $completionModel = @($catalog.models | Where-Object { $_.id -eq 'gpt-5.2' }) | Select-Object -First 1
+    $embeddingModel = @($catalog.models | Where-Object { $_.id -eq 'text-embedding-3-large' }) | Select-Object -First 1
+    $completion = @($completionModel.options | Where-Object {
+        $_.region -eq 'eastus2' -and $_.sku -eq 'GlobalStandard'
+      }) | Select-Object -ExpandProperty deploymentName -First 1
+    $embedding = @($embeddingModel.options | Where-Object {
+        $_.region -eq 'eastus2' -and $_.sku -eq 'GlobalStandard'
+      }) | Select-Object -ExpandProperty deploymentName -First 1
+    if (-not $completion -or -not $embedding) {
+      Add-Result -Name 'Content Understanding defaults' -Status 'WARN' -Detail 'required eastus2 GlobalStandard deployments missing from model_catalog.json'
+      return
+    }
+
+    $token = (az account get-access-token --resource 'https://cognitiveservices.azure.com' --query accessToken -o tsv 2>$null)
+    if (-not $token) {
+      Add-Result -Name 'Content Understanding defaults' -Status 'WARN' -Detail 'could not acquire a Cognitive Services token'
+      return
+    }
+    $body = @{ modelDeployments = @{
+        'prebuilt-analyzer-completion-mini' = $completion
+        'prebuilt-analyzer-completion'      = $completion
+        'prebuilt-analyzer-embedding'       = $embedding
+      } } | ConvertTo-Json -Depth 5
+    $base = "https://$($primary.accountName).cognitiveservices.azure.com"
+    $lastError = $null
+    foreach ($attempt in 1..6) {
+      try {
+        Invoke-RestMethod -Method Patch -Uri "$base/contentunderstanding/defaults?api-version=2025-11-01" `
+          -Headers @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json' } -Body $body -TimeoutSec 60 | Out-Null
+        Add-Result -Name 'Content Understanding defaults' -Status 'PASS' -Detail "completion=$completion"
+        return
+      } catch {
+        $lastError = $_.Exception.Message
+        if ($attempt -lt 6) {
+          # A role assignment created by the immediately preceding ARM
+          # deployment can take tens of seconds to reach the data plane.
+          Start-Sleep -Seconds 10
+        }
+      }
+    }
+    Add-Result -Name 'Content Understanding defaults' -Status 'WARN' -Detail "PATCH failed after 6 attempts: $lastError"
   } catch {
+    # CU is additive. A bug or an upstream outage here must be visible but must
+    # not turn an otherwise healthy provision into a failed release.
     Add-Result -Name 'Content Understanding defaults' -Status 'WARN' -Detail "PATCH failed: $($_.Exception.Message)"
   }
 }

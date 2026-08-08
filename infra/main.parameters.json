@@ -23,6 +23,9 @@
     "foundryDisableLocalAuth": {
       "value": "${AI4IA_FOUNDRY_DISABLE_LOCAL_AUTH=true}"
     },
+    "deploymentPrincipalId": {
+      "value": "${AZURE_PRINCIPAL_ID=}"
+    },
     "adminSubjects": {
       "value": "${AI4IA_ADMIN_SUBJECTS=}"
     },

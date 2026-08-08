@@ -28,8 +28,11 @@ Set false only if a live deploy proves an unforeseen key dependency. Doing so
 re-opens the bypass, so record why.''')
 param disableLocalAuth bool = true
 
-@description('Principal IDs granted data-plane access (Cognitive Services OpenAI User + User).')
+@description('Principal IDs granted the Cognitive Services OpenAI User role (direct OpenAI data-plane access).')
 param dataPlanePrincipalIds array = []
+
+@description('Principal IDs granted the narrowly scoped Cognitive Services Content Understanding Contributor role. Populate only on the account that hosts the configured CU endpoint.')
+param contentUnderstandingPrincipalIds array = []
 
 @description('Principal IDs granted the "Foundry User" role on the PROJECT (Agent Service data plane: toolbox/agent invocation). Default empty; only populated for the primary account when the Foundry-toolbox bridge is enabled (no role assignment while empty).')
 param toolboxPrincipalIds array = []
@@ -129,7 +132,7 @@ resource openAiUserAssignments 'Microsoft.Authorization/roleAssignments@2022-04-
   }
 }]
 
-resource contentUnderstandingAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in dataPlanePrincipalIds: {
+resource contentUnderstandingAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in contentUnderstandingPrincipalIds: {
   name: guid(account.id, pid, contentUnderstandingRoleId)
   scope: account
   properties: {
