@@ -20,6 +20,9 @@ param keyVaultReaderPrincipalIds array = []
 @description('Principal IDs granted App Configuration Data Reader. The SimpleL7Proxy identity consumes this plane; web and api do not.')
 param appConfigReaderPrincipalIds array = []
 
+@description('Optional App Configuration label used by the proxy hot-reload scope.')
+param appConfigLabel string = ''
+
 @description('''Principal IDs granted Key Vault Secrets Officer (read/write secrets).
 The api managed identity gets this only when custom tools / BYO MCP is enabled, so
 it can persist per-user MCP connection secrets at runtime.''')
@@ -76,6 +79,18 @@ resource appConfig 'Microsoft.AppConfiguration/configurationStores@2024-05-01' =
   properties: {
     disableLocalAuth: true
     publicNetworkAccess: 'Enabled'
+  }
+}
+
+// App Configuration key-value resource names encode an optional label after `$`.
+// This harmless warm key makes the managed-identity bootstrap and refresh path
+// observable without changing any proxy routing or policy setting.
+resource appConfigSentinel 'Microsoft.AppConfiguration/configurationStores/keyValues@2024-05-01' = {
+  parent: appConfig
+  name: empty(appConfigLabel) ? 'Warm:Sentinel' : 'Warm:Sentinel$${appConfigLabel}'
+  properties: {
+    value: 'ready'
+    contentType: 'text/plain'
   }
 }
 

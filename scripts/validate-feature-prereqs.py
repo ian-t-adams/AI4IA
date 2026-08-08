@@ -69,6 +69,14 @@ def main() -> int:
             if not text(parameter_value(parameters, name)):
                 errors.append(f"apiAuthProvider=entra requires {name}.")
 
+    if truthy(parameter_value(parameters, "enablePrivateToolCatalog", False)) and not truthy(
+        parameter_value(parameters, "enableOfficialMcp", False)
+    ):
+        errors.append(
+            "enablePrivateToolCatalog=true requires enableOfficialMcp=true so every catalog "
+            "deployment resolves to an active APIM-fronted MCP route."
+        )
+
     # main.bicep derives the realtime Origin allowlist from the web app this
     # deployment actually creates (Container Apps default FQDN + webCustomDomain
     # when bound), so it is never empty and needs no per-environment value. What

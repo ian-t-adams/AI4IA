@@ -49,8 +49,7 @@ python scripts/provision-foundry-toolbox.py --create
 
 # 4. (optional) Inventory the APIM-fronted MCP servers in an Azure API Center
 #    private tool catalog (set enablePrivateToolCatalog=true first).
-python scripts/provision-private-tool-catalog.py     # dry run: prints APIM URLs to catalog
-python scripts/provision-private-tool-catalog.py --create
+azd provision  # apicenter.bicep registers each official MCP server through its APIM consumer URL
 
 # 5. (optional) Validate a routine and see its plan. Its tool calls target the toolbox, so
 #    they inherit the APIM bridge. Edit foundry/routines/example.routine.json first.

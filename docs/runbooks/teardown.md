@@ -21,6 +21,50 @@ $rg  = azd env get-value AZURE_RESOURCE_GROUP
 - **Protected (never delete):** `NetworkWatcherRG`, `Default-ActivityLogAlerts`,
   `DefaultResourceGroup-*`
 
+## Targeted Lean Azure retained-resource cleanup (one-time)
+
+ARM incremental deployments do not delete resources removed from Bicep or
+hidden behind a newly disabled condition. After the Lean Azure migration is
+merged and reprovisioned, an authorized operator must separately remove the
+retained Event Hubs namespace and its direct RBAC, the retired
+`Microsoft.Monitor/accounts` workspace, and the portal-created API Center
+`swagger-petstore` sample. This is intentionally not a deploy hook: changing a
+feature flag must never delete live Azure.
+
+Resolve and inspect the three exact IDs first:
+
+```powershell
+$eventHubsId = az eventhubs namespace show --subscription $sub --resource-group $rg --name <exact-event-hubs-name> --query id -o tsv
+$monitorWorkspaceId = az resource show --subscription $sub --resource-group $rg --resource-type Microsoft.Monitor/accounts --name <exact-monitor-workspace-name> --query id -o tsv
+$apiCenterId = az resource show --subscription $sub --resource-group $rg --resource-type Microsoft.ApiCenter/services --name <exact-api-center-name> --query id -o tsv
+$sampleApiId = "$apiCenterId/workspaces/default/apis/swagger-petstore"
+```
+
+Preview the exact-resource migration; this mode makes no Azure CLI calls:
+
+```powershell
+./scripts/cleanup-lean-azure-retained.ps1 `
+  -EventHubsNamespaceResourceId $eventHubsId `
+  -MonitorWorkspaceResourceId $monitorWorkspaceId `
+  -ApiCenterSampleApiResourceId $sampleApiId
+```
+
+After verifying every printed ID, execute explicitly:
+
+```powershell
+./scripts/cleanup-lean-azure-retained.ps1 `
+  -EventHubsNamespaceResourceId $eventHubsId `
+  -MonitorWorkspaceResourceId $monitorWorkspaceId `
+  -ApiCenterSampleApiResourceId $sampleApiId `
+  -Execute -AcknowledgeRetainedResourceDeletion
+```
+
+The script requires all targets to share one subscription/resource group,
+verifies all three before deleting anything, removes only direct role assignments
+at the exact Event Hubs namespace scope, then deletes those three resources.
+Re-run `azd provision` and `scripts/status-snapshot.ps1` afterward to confirm they
+remain absent and refresh the published inventory.
+
 ## 0. Pre-flight (read-only)
 
 Two captures, and they cover different things. `inventory.ps1` records the

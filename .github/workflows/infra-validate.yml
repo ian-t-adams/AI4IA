@@ -23,6 +23,13 @@ on:
       - "scripts/tests/test_policy_json_shape.py"
       - "scripts/gen-voice-provider-catalog.py"
       - "scripts/tests/test_voice_provider_catalog.py"
+      - "scripts/tests/test_lean_azure_iac.py"
+      - "scripts/status-snapshot.ps1"
+      - "site/data/services.js"
+      - "proxy/SimpleL7Proxy/Config/AppConfigService.cs"
+      - "app/api/pyproject.toml"
+      - "docs/**"
+      - ".github/workflows/deploy.yml"
       - ".github/workflows/infra-validate.yml"
 
 permissions:
@@ -133,6 +140,9 @@ jobs:
       # nor a costly upgrade produces any deployment-time signal, so pin both.
       - name: Cosmos backup posture tests
         run: python -m unittest scripts.tests.test_cosmos_backup_policy
+
+      - name: Lean Azure capability-map contract tests
+        run: python -m unittest scripts.tests.test_lean_azure_iac
 
       - name: Bicep build (lint)
         run: bicep build infra/main.bicep --stdout > /dev/null

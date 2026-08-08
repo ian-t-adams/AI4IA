@@ -34,7 +34,7 @@ param dataPlanePrincipalIds array = []
 @description('Principal IDs granted the narrowly scoped Cognitive Services Content Understanding Contributor role. Populate only on the account that hosts the configured CU endpoint.')
 param contentUnderstandingPrincipalIds array = []
 
-@description('Principal IDs granted the "Foundry User" role on the PROJECT (Agent Service data plane: toolbox/agent invocation). Default empty; only populated for the primary account when the Foundry-toolbox bridge is enabled (no role assignment while empty).')
+@description('Principal IDs granted the "Foundry User" role on the PROJECT (Agent Service data plane). Includes APIM for toolbox invocation and, when enabled, the deployment identity for asset reconciliation. Default empty; populated only for the primary project.')
 param toolboxPrincipalIds array = []
 
 @description('Central Log Analytics workspace resource id. Diagnostic settings stream account logs/metrics there for the admin observability plane.')
@@ -142,10 +142,10 @@ resource contentUnderstandingAssignments 'Microsoft.Authorization/roleAssignment
   }
 }]
 
-// Project-scoped "Foundry User" grants for identities that invoke the Agent
-// Service data plane (the toolbox MCP endpoint at
+// Project-scoped "Foundry User" grants for identities that invoke or reconcile
+// Agent Service assets (including the toolbox MCP endpoint at
 // {project_endpoint}/toolboxes/<name>/mcp). Unlike the account-scoped model
-// grants above, the toolbox authorizes on the PROJECT resource. Preview
+// grants above, toolbox access authorizes on the PROJECT resource. Preview
 // capability; default-empty (no grant is created unless the bridge is enabled).
 resource toolboxFoundryUserAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in toolboxPrincipalIds: {
   name: guid(project.id, pid, foundryUserRoleId)

@@ -22,9 +22,9 @@ feature resources.
 | Module | Purpose |
 |---|---|
 | `identity.bicep` | User-assigned managed identities |
-| `monitoring.bicep` | Log Analytics, Application Insights, Azure Monitor workspace |
+| `monitoring.bicep` | Log Analytics and workspace-based Application Insights |
 | `network.bicep` / `privateendpoints.bicep` | Optional VNet/private-endpoint isolation |
-| `keyvault.bicep` | Key Vault and App Configuration |
+| `keyvault.bicep` | Key Vault and App Configuration with a label-aware warm sentinel |
 | `foundry.bicep` / `models.bicep` | Foundry accounts/projects and catalog-driven deployments |
 | `data.bicep` | Cosmos (canonical state) plus document/media/blob containers; PostgreSQL was retired and deleted |
 | `search.bicep` | Azure AI Search service and RBAC |
@@ -32,7 +32,7 @@ feature resources.
 | `api.bicep` / `web.bicep` | API and web Container Apps |
 | `gateway.bicep` | Public SimpleL7Proxy HTTP/SSE edge, APIM model/realtime APIs, policy, auth, and Foundry RBAC |
 | `proxyasync.bicep` | Default-off AVM Blob + Service Bus backing for durable proxy async jobs |
-| `eventhubs.bicep` | Telemetry Event Hubs namespace/hub |
+| `eventhubs.bicep` | Default-off proxy metadata Event Hubs namespace/hub |
 | `cost.bicep` | Budget tracking |
 
 Normal model traffic is DNS/custom domain -> SimpleL7Proxy -> APIM -> Foundry.

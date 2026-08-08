@@ -224,8 +224,8 @@ window.AI4IA_STATUS = {
     {
       "name": "stiiisc5ciijwpuk-cdbc765c-9807-4a8e-a95b-5426111df948",
       "type": "microsoft.eventgrid/systemtopics",
-      "label": "Event Grid System Topic",
-      "group": "Messaging",
+      "label": "Defender for Storage Event Topic",
+      "group": "Security",
       "location": "eastus2",
       "provisioningState": "Succeeded",
       "availability": "Unknown",
@@ -234,8 +234,8 @@ window.AI4IA_STATUS = {
     {
       "name": "stiisc5ciijwpuk-3e9d5cf6-8c21-44b0-97cd-ed8cd9e10772",
       "type": "microsoft.eventgrid/systemtopics",
-      "label": "Event Grid System Topic",
-      "group": "Messaging",
+      "label": "Defender for Storage Event Topic",
+      "group": "Security",
       "location": "eastus2",
       "provisioningState": "Succeeded",
       "availability": "Unknown",
@@ -244,7 +244,7 @@ window.AI4IA_STATUS = {
     {
       "name": "evhns-ai4ia-slurmfactory-vypvgrncoed2o",
       "type": "microsoft.eventhub/namespaces",
-      "label": "Event Hubs Namespace",
+      "label": "Event Hubs (optional telemetry)",
       "group": "Messaging",
       "location": "eastus2",
       "provisioningState": "Succeeded",
@@ -344,8 +344,8 @@ window.AI4IA_STATUS = {
     {
       "name": "amw-ai4ia-slurmfactory",
       "type": "microsoft.monitor/accounts",
-      "label": "Azure Monitor Workspace",
-      "group": "Observability",
+      "label": "Retained Monitor Workspace (not in IaC)",
+      "group": "Other",
       "location": "eastus2",
       "provisioningState": "Succeeded",
       "availability": "Unknown",

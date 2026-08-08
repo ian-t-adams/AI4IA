@@ -101,9 +101,10 @@ requires. The general, reusable fix (already in the schema and the gateway modul
 | Concern | How it's wired |
 | --- | --- |
 | **Who can call the toolbox** | The MCP APIM system-assigned managed identity. |
-| **What grant it needs** | The **"Foundry User"** role (`53ca6127-db72-4b80-b1b0-d745d6d5456d`, formerly "Azure AI User") at **project** scope — data-plane, not the account-scope Cognitive Services roles. |
+| **Who reconciles canonical assets** | The OIDC deployment/foundry-assets identity supplied as `deploymentPrincipalId`; this is provisioning-only and is not an app runtime identity. |
+| **What grant they need** | The **"Foundry User"** role (`53ca6127-db72-4b80-b1b0-d745d6d5456d`, formerly "Azure AI User") at **project** scope — data-plane, not the account-scope Cognitive Services roles. |
 | **Where it's granted** | `infra/modules/foundry.bicep` adds a project-scoped role-assignment loop over `toolboxPrincipalIds`, passed only to the **primary** Foundry region from `main.bicep`. |
-| **How the app reaches it** | `main.bicep` var `foundryToolboxApimPrincipal` = the APIM MI principal, guarded on `enableOfficialMcp && enableFoundryToolbox`. |
+| **How each identity is gated** | `main.bicep` adds the APIM MI only under `enableOfficialMcp && enableFoundryToolbox`; it separately adds the nonempty deployment **principal/object ID** under `enableFoundryToolbox` so the asset workflow can reconcile the manifest. |
 | **Project endpoint for scripts** | `main.bicep` output `AZURE_FOUNDRY_PROJECT_ENDPOINT`, composed by `foundry.bicep` as `https://{toLower(accountName)}.services.ai.azure.com/api/projects/{project.name}`. |
 
 The Agent Service host (`*.services.ai.azure.com`) is deliberately **not** the account's
@@ -327,40 +328,25 @@ principal IDs afterward.
 ## Private tool catalog (Azure API Center)
 
 `enablePrivateToolCatalog=true` provisions an **Azure API Center** (`infra/modules/apicenter.bicep`,
-`Microsoft.ApiCenter/services@2024-03-01`, Free plan, system-assigned identity, single `default`
-workspace) to act as a private, governed inventory of tools. `enablePrivateToolCatalog` is `true` in
-this repo (activated); the bicep param default is `false`. Its region is set by `apiCenterLocation`
-(default `eastus`) because API Center is not available in every region (notably not `eastus2`). The
-flag is independent of `enableOfficialMcp`/`enableFoundryToolbox` (you can catalog whatever official
-MCP servers exist). When enabled, `azd env get-values` exposes `AZURE_API_CENTER_NAME`.
+`Microsoft.ApiCenter/*@2024-06-01-preview`, Free plan, single `default`
+workspace) as a private, governed inventory. The Bicep parameter defaults off and requires
+`enableOfficialMcp=true`; the repository's deployed profile enables both. Its region is set by
+`apiCenterLocation` (default `eastus`) because API Center is unavailable in some regions, including
+`eastus2`.
 
-The **catalog container** is IaC; **registering each server as an asset** is a preview, script-driven
-step (MCP is a preview API kind in API Center), so it is intentionally not baked into Bicep:
-
-```bash
-# Dry run: lists each server and the APIM consumer URL that will be cataloged.
-python scripts/provision-private-tool-catalog.py \
-  --api-center "$AZURE_API_CENTER_NAME" \
-  --gateway-url "$AZURE_OFFICIAL_MCP_GATEWAY_URL"
-
-# Print ready-to-run `az apic api create` commands (register via CLI):
-python scripts/provision-private-tool-catalog.py --emit-az \
-  --api-center "$AZURE_API_CENTER_NAME" --gateway-url "$AZURE_OFFICIAL_MCP_GATEWAY_URL" \
-  --resource-group "$AZURE_RESOURCE_GROUP"
-
-# Or register directly via the SDK (needs the `foundry` extra):
-python scripts/provision-private-tool-catalog.py --create \
-  --api-center "$AZURE_API_CENTER_NAME" --gateway-url "$AZURE_OFFICIAL_MCP_GATEWAY_URL" \
-  --resource-group "$AZURE_RESOURCE_GROUP" --subscription-id "$AZURE_SUBSCRIPTION_ID"
-```
-
-The load-bearing detail: the script catalogs the **APIM consumer URL**
-(`https://<mcp-apim-gateway>/<name>/mcp`), not the raw upstream. Discovery and governance stay on
-the proxy, and because API Center private tool catalogs integrate with Microsoft Foundry, Foundry
-agents discover exactly the APIM-fronted URLs the app already consumes -- one governed inventory,
-no second auth path. The shipped `infra/mcp-servers.json` now contains the activated
-`ai4ia-toolbox` entry, so the script plans that MCP asset by default; an empty catalog is still a
-clean no-op for consumers who remove all official servers.
+The complete registration graph is IaC-owned. For every entry in `infra/mcp-servers.json`, Bicep
+creates or updates an MCP-kind API, preview version, Streamable HTTP definition, shared production
+APIM environment, and active deployment. Deployment `environmentId` and `definitionId` values are
+API-Center-scoped (`/workspaces/default/...`), as required by the API Center contract rather than
+full ARM IDs. Each deployment carries the **APIM consumer URL**
+(`https://<shared-apim>/<name>/mcp`), never the raw upstream, so discovery and governance stay on the
+same authenticated front door the app consumes. The MCP inventory and registry integration remain
+public preview. When the catalog is enabled and `deploymentPrincipalId` is nonempty, that
+provisioning/operator identity receives only **Azure API Center Data Reader** at the API Center
+service scope; no app runtime identity or subscription-wide reader is granted. Existing
+portal-created samples such as `swagger-petstore` are retained by ARM incremental deployments and
+must be removed separately with `scripts/cleanup-lean-azure-retained.ps1` after verifying the exact
+asset; they are not created or advertised by this repo.
 
 ## P7 — Routines and Agent-to-Agent (A2A): mixed status (routines validation-only by design; A2A endpoint scaffold shipped)
 
@@ -455,9 +441,9 @@ scaffold and the APIM-fronting commands are shipped and tested.
   `infra/main.bicep` (which compiles `apicenter.bicep`).
 - `app-ci` runs the pytest suite whenever `app/**`, `foundry/**`, or the provisioning scripts
   change.
-- `app/api/tests/test_private_tool_catalog.py` pins the API Center registration script: each
-  server projects to an MCP asset carrying the **APIM consumer URL**, the emitted
-  `az apic api create` command shape, and fail-closed input resolution.
+- `scripts/tests/test_lean_azure_iac.py` pins the API Center ARM graph: every curated server is
+  passed from `main.bicep`, registered as MCP, versioned, and deployed through its **APIM consumer
+  URL**; it also guards the default-off Event Hubs and active App Configuration sentinel.
 - `app/api/tests/test_foundry_routine.py` pins the routine script: manifest validation, the
   toolbox-tool references a routine makes, that `--create`/`create_routine` no longer exist
   (guarding against a silent regression back to fake-mapping), and that the dry-run plan tolerates

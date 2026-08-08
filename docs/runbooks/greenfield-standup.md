@@ -165,8 +165,12 @@ today.
 
 The deploy workflow resolves the identity's principal id from
 `AZURE_CLIENT_ID`, exports azd's `AZURE_PRINCIPAL_ID`, and grants the deployment
-identity Content Understanding Contributor on the primary Foundry account so
-postprovision can register required defaults.
+identity **Cognitive Services Content Understanding Contributor** on the primary
+Foundry account. When the Foundry toolbox is enabled, Bicep also grants this
+provisioning identity project-scoped **Foundry User** so the foundry-assets
+workflow can reconcile canonical assets. When the private catalog is enabled,
+it receives only **Azure API Center Data Reader** at that API Center service
+scope. These are provisioning grants, not app runtime access.
 
 ## 3. Configure GitHub
 
@@ -571,7 +575,7 @@ Do not carry these values across unchanged:
 
 Memory is already Cosmos-backed in a greenfield environment. The
 [memory migration runbook](./memory-migration.md) documents the retired
-PostgreSQL-to-Cosmos transition and is not a prerequisite for a new tenant.
+legacy memory-store transition and is not a prerequisite for a new tenant.
 
 Operator scripts such as `inventory.ps1`,
 `capture-data-recovery-state.ps1`, `teardown.ps1`,

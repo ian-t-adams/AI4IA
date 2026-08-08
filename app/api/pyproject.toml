@@ -183,13 +183,11 @@ dev = [
 # deliberate, reviewed action: re-run the reflection parity test
 # (test_reflection_driven_parity_covers_every_sdk_toolbox_type_and_field) against the new version
 # first, fix whatever it flags, THEN raise the pin and regenerate uv.lock.
-# azure-mgmt-apicenter registers the private-tool-catalog assets (scripts/provision-private-tool-catalog.py --create).
 # jsonschema backs scripts/provision-foundry-toolbox.py's strict manifest-schema validation,
 # which --create requires before constructing any SDK model.
 foundry = [
     "azure-ai-projects==2.4.0",
     "azure-identity>=1.17",
-    "azure-mgmt-apicenter>=1.0.0",
     "jsonschema>=4.18",
 ]
 

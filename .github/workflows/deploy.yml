@@ -272,7 +272,7 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Resolve deploy principal ID for narrow CU data-plane setup
+      - name: Resolve deploy principal ID for Foundry and API Center data-plane setup
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
         shell: bash
         run: |
@@ -296,7 +296,7 @@ jobs:
           # here makes the Bicep substitution deterministic in both azd and the
           # workflow rather than inventing a second variable for the same fact.
           echo "AZURE_PRINCIPAL_ID=$principal_id" >> "$GITHUB_ENV"
-          echo "Resolved the deploy principal id for Content Understanding configuration."
+          echo "Resolved the deploy principal id for Content Understanding, Foundry assets, and API Center catalog access."
 
       - name: Validate generated gateway and deployment prerequisites
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}

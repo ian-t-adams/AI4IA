@@ -81,7 +81,7 @@ window.AI4IA_SERVICES = [
     key: "storage", name: "Storage accounts (×2 + optional async)", azureType: "Microsoft.Storage/storageAccounts",
     group: "Data", icon: "💾", module: "data.bicep + proxyasync.bicep", resourcePattern: "st*",
     summary: "Blob storage for raw + parsed documents (library) and for generated media (images/videos). Identity-based " +
-      "access only. Durable proxy async adds a dedicated default-off account; the two application accounts emit Event Grid topics.",
+      "access only. Durable proxy async adds a dedicated default-off account; Defender for Storage V2 protects both application accounts.",
     identity: "id-api owns application blobs; id-proxy gets Blob Data Contributor only on the optional async account",
     docs: [["Azure Blob Storage", "https://learn.microsoft.com/azure/storage/blobs/storage-blobs-introduction"]],
   },
@@ -96,8 +96,8 @@ window.AI4IA_SERVICES = [
   {
     key: "appconfig", name: "App Configuration", azureType: "Microsoft.AppConfiguration/configurationStores",
     group: "Config", icon: "🎛️", module: "keyvault.bicep", resourcePattern: "appcs-ai4ia-*",
-    summary: "Centralized configuration store paired with Key Vault. SimpleL7Proxy alone reads warm/cold gateway settings; " +
-      "the web and API do not consume this plane.",
+    summary: "A label-aware Warm:Sentinel makes the proxy managed-identity bootstrap and refresh path active without " +
+      "seeding any behavior-changing routing or policy setting; the web and API do not consume this plane.",
     identity: "id-proxy alone has App Configuration Data Reader",
     docs: [["Azure App Configuration", "https://learn.microsoft.com/azure/azure-app-configuration/overview"]],
   },
@@ -106,15 +106,15 @@ window.AI4IA_SERVICES = [
     group: "Gateway", icon: "📇", module: "apicenter.bicep", resourcePattern: "apic-ai4ia-*",
     summary: "Inventories the 'official' MCP servers already fronted by the shared APIM so they are discoverable and " +
       "governable as one private tool catalog — the same URLs Foundry agents can discover, with no second auth path.",
-    identity: "n/a (populated by scripts/provision-private-tool-catalog.py)",
+    identity: "IaC-owned MCP APIs, versions, APIM environment, and active deployments",
     docs: [["Azure API Center", "https://learn.microsoft.com/azure/api-center/overview"]],
   },
   {
     key: "eventhubs", name: "Event Hubs Namespace", azureType: "Microsoft.EventHub/namespaces",
     group: "Messaging", icon: "📨", module: "eventhubs.bicep", resourcePattern: "evhns-ai4ia-*",
-    summary: "Provisioned identity-only namespace reserved for telemetry export. The live proxy Event Hub flag is off and " +
-      "the API has no producer/consumer integration, so this is dormant capacity rather than an active cost/usage pipeline.",
-    identity: "id-api retains sender/receiver; id-proxy gets sender only when proxy telemetry is enabled",
+    summary: "Optional identity-only telemetry export, provisioned only when proxyEventHubTelemetryEnabled is true. Fresh " +
+      "default-off deployments create no namespace, diagnostics, or data-plane roles.",
+    identity: "id-proxy gets Data Sender only when proxy telemetry is enabled; the API has no Event Hubs role",
     docs: [["Azure Event Hubs", "https://learn.microsoft.com/azure/event-hubs/event-hubs-about"]],
   },
   {
@@ -134,12 +134,12 @@ window.AI4IA_SERVICES = [
     docs: [["Durable Task Scheduler", "https://learn.microsoft.com/azure/azure-functions/durable/durable-task-scheduler/durable-task-scheduler"]],
   },
   {
-    key: "eventgrid", name: "Event Grid System Topics (×2)", azureType: "Microsoft.EventGrid/systemTopics",
-    group: "Messaging", icon: "⚡", module: "data.bicep (implicit)", resourcePattern: "st*-{guid}",
-    summary: "Azure-created system topics associated with the two storage accounts. No event subscription currently " +
-      "drives document ingestion; ingestion remains API/process initiated.",
-    identity: "n/a",
-    docs: [["Event Grid system topics", "https://learn.microsoft.com/azure/event-grid/system-topics"]],
+    key: "eventgrid", name: "Defender for Storage event topics (×2)", azureType: "Microsoft.EventGrid/systemTopics",
+    group: "Security", icon: "⚡", module: "Defender for Storage V2 (Azure-managed)", resourcePattern: "st*-{guid}",
+    summary: "Defender for Storage V2 creates StorageAntimalwareSubscription on both application storage accounts for " +
+      "On-Upload Malware Scanning and Sensitive Data Discovery events; these are active security topics, not app-ingestion placeholders.",
+    identity: "Azure-managed Defender for Storage integration",
+    docs: [["Defender for Storage malware scanning", "https://learn.microsoft.com/azure/defender-for-cloud/on-upload-malware-scanning"]],
   },
   {
     key: "appinsights", name: "Application Insights", azureType: "Microsoft.Insights/components",
@@ -157,14 +157,6 @@ window.AI4IA_SERVICES = [
       "backing store for Application Insights.",
     identity: "n/a",
     docs: [["Log Analytics", "https://learn.microsoft.com/azure/azure-monitor/logs/log-analytics-overview"]],
-  },
-  {
-    key: "monitorworkspace", name: "Azure Monitor Workspace", azureType: "Microsoft.Monitor/accounts",
-    group: "Observability", icon: "📊", module: "monitoring.bicep", resourcePattern: "amw-ai4ia-*",
-    summary: "Provisioned Managed Prometheus workspace, but no scrape/data-collection rule currently writes to it. The " +
-      "admin dashboard instead reads Azure Monitor platform metrics directly through the batch metrics API.",
-    identity: "no workspace data-plane consumer; id-api's subscription Monitoring Reader supports the separate batch metrics API",
-    docs: [["Azure Monitor workspace", "https://learn.microsoft.com/azure/azure-monitor/essentials/azure-monitor-workspace-overview"]],
   },
   {
     key: "identities", name: "User-Assigned Managed Identities (×3)", azureType: "Microsoft.ManagedIdentity/userAssignedIdentities",

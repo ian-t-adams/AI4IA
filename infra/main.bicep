@@ -13,7 +13,7 @@ param environmentName string
 @description('Primary location for the resource group and shared resources.')
 param location string = 'eastus2'
 
-@description('Object/principal id of the OIDC identity running `azd provision`. When set, the primary Foundry account grants it the narrow Content Understanding Contributor role so postprovision can register CU model defaults. This is a principalId, never the managed identity clientId.')
+@description('Object/principal id of the OIDC deployment identity. When set, it receives Content Understanding Contributor on the primary account, Foundry User on the enabled primary toolbox project, and API Center Data Reader on the enabled private catalog. This is a principalId, never the managed identity clientId.')
 param deploymentPrincipalId string = ''
 
 @description('Accountable owner tag value. Override per deployment; do not rely on a personal repo default.')
@@ -43,7 +43,7 @@ param enableOfficialMcp bool = false
 @description('Opt-in: enable the Foundry Agent Service toolbox bridge. Grants the shared active APIM system-assigned identity the "Foundry User" role on the primary Foundry project so it can mint the AAD bearer the toolbox MCP endpoint requires, and emits AZURE_FOUNDRY_PROJECT_ENDPOINT for the provisioning scripts. Requires enableOfficialMcp=true to have any effect (the toolbox is consumed as an official MCP server fronted by that APIM). Default OFF; no toolbox is created by the deploy itself (provisioning is a documented, opt-in script step).')
 param enableFoundryToolbox bool = false
 
-@description('Opt-in: provision an Azure API Center to act as a private tool catalog that inventories the official MCP servers fronted by the shared active APIM (discoverable/governable, and integratable with Microsoft Foundry private tool catalogs). Default OFF so the checked-in deploy provisions no API Center. Registering each MCP server as an asset is a documented, opt-in script step (scripts/provision-private-tool-catalog.py).')
+@description('Opt-in: provision an Azure API Center private catalog with one MCP asset and APIM deployment per official MCP server. Requires enableOfficialMcp. Default OFF.')
 param enablePrivateToolCatalog bool = false
 
 @description('Region for the API Center (private tool catalog). API Center is only available in a subset of regions (e.g. eastus, westeurope, swedencentral) and NOT in eastus2, so it needs its own region knob independent of the primary `location`. The catalog only inventories URLs, so its region is not latency-sensitive. Override via AI4IA_API_CENTER_LOCATION if eastus is unsuitable.')
@@ -360,12 +360,6 @@ var contentUnderstandingPrincipalIds = concat([
 ], empty(deploymentPrincipalId) ? [] : [
   deploymentPrincipalId
 ])
-var telemetrySenderPrincipalIds = concat([
-  apiIdentity.principalId
-], proxyEventHubTelemetryEnabled ? [
-  proxyIdentity.principalId
-] : [])
-
 // The api managed identity reads Azure Monitor platform metrics for the admin
 // dashboard's resource panels via the batch metrics API (metrics:getBatch), which
 // requires Monitoring Reader at SUBSCRIPTION scope — per-resource grants are not
@@ -397,6 +391,7 @@ module keyvault 'modules/keyvault.bicep' = {
     keyVaultReaderPrincipalIds: []
     // SimpleL7Proxy is the only runtime App Configuration consumer.
     appConfigReaderPrincipalIds: [proxyIdentity.principalId]
+    appConfigLabel: proxyAppConfigLabel
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     enablePurgeProtection: keyVaultPurgeProtection
     // Custom tools / BYO MCP: the api MI writes per-user MCP
@@ -549,7 +544,7 @@ module privateEndpoints 'modules/privateendpoints.bicep' = if (vnetIsolationEnab
   }
 }
 
-module eventhubs 'modules/eventhubs.bicep' = {
+module eventhubs 'modules/eventhubs.bicep' = if (proxyEventHubTelemetryEnabled) {
   name: 'eventhubs'
   scope: rg
   params: {
@@ -558,10 +553,10 @@ module eventhubs 'modules/eventhubs.bicep' = {
     workload: workload
     environmentName: environmentName
     uniqueSuffix: uniqueSuffix
-    senderPrincipalIds: telemetrySenderPrincipalIds
-    receiverPrincipalIds: [
-      apiIdentity.principalId
+    senderPrincipalIds: [
+      proxyIdentity.principalId
     ]
+    receiverPrincipalIds: []
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
   }
 }
@@ -701,8 +696,10 @@ module gateway 'modules/gateway.bicep' = {
     appConfigEndpoint: keyvault.outputs.appConfigEndpoint
     appConfigLabel: proxyAppConfigLabel
     proxyEventHubTelemetryEnabled: proxyEventHubTelemetryEnabled
-    eventHubNamespaceFqdn: eventhubs.outputs.namespaceFqdn
-    eventHubName: eventhubs.outputs.telemetryHubName
+    #disable-next-line BCP318
+    eventHubNamespaceFqdn: proxyEventHubTelemetryEnabled ? eventhubs.outputs.namespaceFqdn : ''
+    #disable-next-line BCP318
+    eventHubName: proxyEventHubTelemetryEnabled ? eventhubs.outputs.telemetryHubName : ''
     proxyProfilesEnabled: proxyProfilesEnabled
     proxyProfileProjectionJson: proxyProfileProjectionJson
     proxyPrioritiesEnabled: proxyPrioritiesEnabled
@@ -772,19 +769,21 @@ module mcpgateway 'modules/mcpgateway.bicep' = if (enableOfficialMcp) {
   }
 }
 
-// Foundry-toolbox bridge (opt-in): when both the official MCP gateway and the
-// toolbox bridge are enabled, the shared active APIM's system-assigned identity
-// needs the "Foundry User" role on the PRIMARY project so it can mint the
-// toolbox bearer. Guarded on enableOfficialMcp so the role is granted only when
-// the official MCP APIs exist.
+// Foundry-toolbox bridge (opt-in): APIM needs Foundry User to invoke the toolbox;
+// the deployment identity needs the same project-scoped role to reconcile the
+// canonical toolbox assets. The latter is provisioning-only, never app runtime.
 var foundryToolboxApimPrincipal = (enableOfficialMcp && enableFoundryToolbox) ? [apimcore.outputs.principalId] : []
+var foundryToolboxDeploymentPrincipal = (enableFoundryToolbox && !empty(deploymentPrincipalId)) ? [deploymentPrincipalId] : []
+var foundryToolboxPrincipalIds = union(foundryToolboxApimPrincipal, foundryToolboxDeploymentPrincipal)
 
 // --- Private tool catalog (Azure API Center; opt-in) ---
+var apiCenterCatalogReaderPrincipalIds = (enablePrivateToolCatalog && !empty(deploymentPrincipalId)) ? [deploymentPrincipalId] : []
+
 // Inventories the APIM-fronted official MCP servers as a discoverable/governable
 // private catalog (and integrates with Foundry private tool catalogs). Default OFF:
-// no resources unless explicitly enabled. Asset registration is a documented script
-// step (scripts/provision-private-tool-catalog.py), not baked into IaC.
-module apicenter 'modules/apicenter.bicep' = if (enablePrivateToolCatalog) {
+// no resources unless explicitly enabled. MCP APIs, versions, environment, and
+// APIM-fronted deployments are all repeatable ARM resources in apicenter.bicep.
+module apicenter 'modules/apicenter.bicep' = if (enablePrivateToolCatalog && enableOfficialMcp) {
   name: 'apicenter'
   scope: rg
   params: {
@@ -793,6 +792,9 @@ module apicenter 'modules/apicenter.bicep' = if (enablePrivateToolCatalog) {
     workload: workload
     environmentName: environmentName
     uniqueSuffix: uniqueSuffix
+    servers: officialMcpServers
+    gatewayBaseUrl: apimcore.outputs.gatewayUrl
+    dataReaderPrincipalIds: apiCenterCatalogReaderPrincipalIds
   }
 }
 
@@ -1035,7 +1037,7 @@ module foundry 'modules/foundry.bicep' = [for (r, i) in regionList: {
     dataPlanePrincipalIds: nativeFoundryPrincipalIds
     contentUnderstandingPrincipalIds: (i == primaryFoundryIndex) ? contentUnderstandingPrincipalIds : []
     disableLocalAuth: foundryDisableLocalAuth
-    toolboxPrincipalIds: (i == primaryFoundryIndex) ? foundryToolboxApimPrincipal : []
+    toolboxPrincipalIds: (i == primaryFoundryIndex) ? foundryToolboxPrincipalIds : []
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
   }
 }]
@@ -1070,8 +1072,10 @@ output AZURE_CONTAINER_REGISTRY_ENDPOINT string = platform.outputs.acrLoginServe
 output AZURE_CONTAINER_REGISTRY_NAME string = platform.outputs.acrName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = platform.outputs.containerEnvName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = platform.outputs.containerEnvId
-output AZURE_EVENTHUBS_NAMESPACE_FQDN string = eventhubs.outputs.namespaceFqdn
-output AZURE_EVENTHUBS_TELEMETRY_HUB string = eventhubs.outputs.telemetryHubName
+#disable-next-line BCP318
+output AZURE_EVENTHUBS_NAMESPACE_FQDN string = proxyEventHubTelemetryEnabled ? eventhubs.outputs.namespaceFqdn : ''
+#disable-next-line BCP318
+output AZURE_EVENTHUBS_TELEMETRY_HUB string = proxyEventHubTelemetryEnabled ? eventhubs.outputs.telemetryHubName : ''
 output AZURE_MODEL_GATEWAY_URL string = gateway.outputs.proxyIngressUrl
 output AZURE_APIM_GATEWAY_URL string = gateway.outputs.apimGatewayUrl
 output AZURE_REALTIME_GATEWAY_URL string = gateway.outputs.realtimeGatewayUrl
@@ -1085,10 +1089,10 @@ output AZURE_OFFICIAL_MCP_GATEWAY_URL string = enableOfficialMcp ? apimcore.outp
 // toolbox; the toolbox MCP URL registered in mcp-servers.json is
 // `<this>/toolboxes/<name>/mcp`. Empty otherwise so the default deploy is unchanged.
 output AZURE_FOUNDRY_PROJECT_ENDPOINT string = enableFoundryToolbox ? foundry[primaryFoundryIndex].outputs.projectEndpoint : ''
-// Private tool catalog (API Center) name, emitted only when enabled. The
-// provisioning script reads this to register the APIM-fronted MCP servers as assets.
+// Private tool catalog (API Center) name, emitted only when both the catalog
+// and its official MCP source plane are enabled.
 #disable-next-line BCP318
-output AZURE_API_CENTER_NAME string = enablePrivateToolCatalog ? apicenter.outputs.apiCenterName : ''
+output AZURE_API_CENTER_NAME string = (enablePrivateToolCatalog && enableOfficialMcp) ? apicenter.outputs.apiCenterName : ''
 output AZURE_API_URL string = api.outputs.apiUrl
 output AZURE_API_APP_NAME string = api.outputs.apiAppName
 output AZURE_WEB_URL string = web.outputs.webUrl
