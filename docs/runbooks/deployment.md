@@ -782,8 +782,7 @@ Clean-room notes for a brand-new subscription/tenant:
 - **Memory is already active** — `AI4IA_MEMORY_STORE` defaults to `cosmos` in the
   checked-in azd parameters. Use `disabled` only as an explicit freeze/rollback
   posture; a greenfield deployment has no legacy `mem0` data to migrate. The
-  [memory-migration runbook](./memory-migration.md) is historical: PostgreSQL was
-  retired and deleted.
+  [memory-migration runbook](./memory-migration.md) is historical: PostgreSQL was retired and deleted.
 - The first provision can hit the Cosmos vector-capability race in §7.4; re-running `azd provision`
   resolves it.
 
