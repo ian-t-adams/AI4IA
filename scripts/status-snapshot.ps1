@@ -7,8 +7,8 @@
   Read-only. Uses Azure Resource Graph as the AUTHORITATIVE source of the deployed
   footprint. This matters: `az resource list -g <rg>` silently OMITS several provider
   types actually present in AI4IA (Microsoft.Search/searchServices,
-  Microsoft.DBforPostgreSQL/flexibleServers, Microsoft.ApiCenter/services and the
-  westus/swedencentral Foundry accounts), so the generic resources list under-reports
+  Microsoft.ApiCenter/services and the westus/swedencentral Foundry accounts),
+  so the generic resources list under-reports
   the environment. Resource Graph's `resources` table returns all of them, and its
   `healthresources` table returns Azure Resource Health availability states in one call.
 
@@ -113,7 +113,6 @@ $TypeMap = @{
     'microsoft.cognitiveservices/accounts/projects'         = @{ label = 'Foundry project';               group = 'AI' }
     'microsoft.containerregistry/registries'                = @{ label = 'Container Registry';            group = 'Compute' }
     'microsoft.documentdb/databaseaccounts'                 = @{ label = 'Cosmos DB (NoSQL)';             group = 'Data' }
-    'microsoft.dbforpostgresql/flexibleservers'             = @{ label = 'Postgres Flexible Server';      group = 'Data' }
     'microsoft.search/searchservices'                       = @{ label = 'Azure AI Search';               group = 'Data' }
     'microsoft.eventgrid/systemtopics'                      = @{ label = 'Event Grid System Topic';       group = 'Messaging' }
     'microsoft.eventhub/namespaces'                         = @{ label = 'Event Hubs Namespace';          group = 'Messaging' }

@@ -52,7 +52,7 @@
       <div class="container">
         <h2 class="section-title">Public endpoints</h2>
         <p class="section-sub">A 200/redirect or an auth challenge (401/403) both prove the ingress is serving.
-          The model proxy is scale-to-zero, so a cold-start timeout reads as “no response”, not a confirmed outage.</p>
+          The model proxy keeps at least one replica; “no response” is therefore a real degraded signal, not an expected scale-to-zero cold start.</p>
         <div class="grid cols-2" id="endpoints"></div>
       </div>
     </section>

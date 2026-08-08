@@ -1,7 +1,7 @@
 # site — AI4IA self-documenting portal
 
-A framework-free static site that documents AI4IA end to end and shows the **live
-status/health** of the deployed Azure environment. It links to the app
+A framework-free static site that documents AI4IA end to end and shows a
+**timestamped status snapshot** of the deployed Azure environment. It links to the app
 (<https://ai4ia.nomad-analytics.com>) but stands alone, and is published to GitHub Pages
 at **<https://ian-t-adams.github.io/AI4IA/>**.
 
@@ -10,7 +10,7 @@ at **<https://ian-t-adams.github.io/AI4IA/>**.
 | Page | What it shows |
 | --- | --- |
 | `index.html` | Purpose, capabilities, technology stack and live environment facts. |
-| `status.html` | Live health of every deployed Azure resource + the public endpoints. |
+| `status.html` | Twice-daily deployment snapshot: Azure resource health + public endpoint reachability. |
 | `architecture.html` | Diagrams: request flow, deployment topology, identity/RBAC, MCP planes, chat-turn sequence. |
 | `services.html` | Every Azure service AI4IA deploys, why it exists, its IaC module and RBAC. |
 | `requirements.html` | IaC modules, the permissions/RBAC model, and package dependencies. |

@@ -3,15 +3,17 @@ name: pages
 # Publish the self-documenting portal (site/) to GitHub Pages.
 #
 # The portal is plain static HTML/CSS/JS (no build step) that documents AI4IA — its
-# purpose, architecture, deployed Azure services, requirements and LIVE status/health.
+# purpose, architecture, deployed Azure services, requirements and a timestamped
+# deployment status snapshot.
 # It links to the app (https://ai4ia.nomad-analytics.com) but stands alone.
 #
 # Status data: site/data/status.js + inventory.js are committed as an accurate seed and
-# refreshed here best-effort. On main this job authenticates with the existing deploy
+# refreshed here. On main this job authenticates with the existing deploy
 # identity (id-ai4ia-deploy) via its `ref:refs/heads/main` federated credential — note
 # NO `environment:` is set on the build job, so the OIDC subject matches that credential
 # (setting an environment would change the subject to environment:<name> and break login).
-# The refresh is continue-on-error: a failure simply ships the committed seed data.
+# A configured refresh is not allowed to fail open: publishing an old seed under
+# a "live" label was the exact stale-evidence defect this workflow exists to prevent.
 #
 # Docs index: site/data/docs.js is regenerated from site/data/docs.manifest.json on every
 # publish (scripts/gen-docs-catalog.py) so the portal's documentation hub always reflects
@@ -62,19 +64,28 @@ jobs:
       # --- Best-effort live status refresh (only when the deploy identity is configured) ---
       - name: Log in to Azure (OIDC, main-branch federated credential)
         if: ${{ vars.AZURE_CLIENT_ID != '' }}
-        continue-on-error: true
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Refresh live status snapshot
+      - name: Refresh deployment status snapshot
         if: ${{ vars.AZURE_CLIENT_ID != '' }}
-        continue-on-error: true
         shell: pwsh
         run: |
-          ./scripts/status-snapshot.ps1 -Subscription "${{ vars.AZURE_SUBSCRIPTION_ID }}"
+          $workload = '${{ vars.AI4IA_WORKLOAD }}'
+          if ([string]::IsNullOrWhiteSpace($workload)) { $workload = 'ai4ia' }
+          $resourceGroup = "rg-$workload-${{ vars.AZURE_ENV_NAME }}"
+          $webDomain = '${{ vars.AI4IA_WEB_CUSTOM_DOMAIN }}'
+          $proxyDomain = '${{ vars.AI4IA_PROXY_CUSTOM_DOMAIN }}'
+          $webUrl = if ($webDomain) { "https://$webDomain" } else { '' }
+          $proxyUrl = if ($proxyDomain) { "https://$proxyDomain" } else { '' }
+          ./scripts/status-snapshot.ps1 `
+            -Subscription "${{ vars.AZURE_SUBSCRIPTION_ID }}" `
+            -ResourceGroup $resourceGroup `
+            -WebUrl $webUrl `
+            -ProxyUrl $proxyUrl
 
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
