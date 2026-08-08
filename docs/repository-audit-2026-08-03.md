@@ -779,15 +779,13 @@ judgement the reader makes against the real text rather than one the app pretend
 to have made. Web-search results, recalled memory, and session-uploaded documents
 are still cited as prose and remain unattested.
 
-The `citation-discipline` skill was deliberately **not** bound to the canonical
-toolbox as part of this. `foundry/toolbox.manifest.json` documents the toolbox
-that is actually deployed, and binding a skill that has not been provisioned into
-the project would make the manifest describe something that does not exist —
-drift of exactly the kind this repo gates against elsewhere. The skill also
-teaches a Markdown-URL citation style that now conflicts with the span-id token
-for library retrieval. Binding it would not have closed this finding either way:
-it instructs the model to cite well and cannot verify that it did, which is the
-whole point of the finding.
+The span-level fix did not bind `citation-discipline`: the live project had no
+skills, so changing only the manifest would have described an asset that did not
+exist. The later Foundry-assets reliability change closes that operational gap:
+an OIDC workflow now ensures the skill before reconciling the canonical toolbox,
+with content-based no-op semantics. This still does **not** close claim-level
+entailment. The skill instructs the model to cite well; it cannot verify that it
+did, which remains the point of this finding.
 
 #### P1-15: Admin refresh can consume most of a 1 GiB API replica
 

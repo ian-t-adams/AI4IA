@@ -1,0 +1,71 @@
+name: foundry-assets
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "foundry/**"
+      - "scripts/provision-foundry-skills.py"
+      - "scripts/provision-foundry-toolbox.py"
+      - ".github/workflows/foundry-assets.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: foundry-assets-production
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: reconcile Foundry assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      AZURE_FOUNDRY_PROJECT_ENDPOINT: ${{ vars.AZURE_FOUNDRY_PROJECT_ENDPOINT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Log in to Azure (OIDC)
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Foundry provisioning dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e "app/api[foundry]"
+
+      - name: Validate project endpoint
+        run: |
+          set -euo pipefail
+          test -n "$AZURE_FOUNDRY_PROJECT_ENDPOINT" || {
+            echo "::error::Set the AZURE_FOUNDRY_PROJECT_ENDPOINT repository or production-environment variable."
+            exit 1
+          }
+
+      - name: Ensure Foundry skills
+        run: |
+          set -euo pipefail
+          python scripts/provision-foundry-skills.py \
+            --project-endpoint "$AZURE_FOUNDRY_PROJECT_ENDPOINT" \
+            --create
+
+      - name: Ensure Foundry toolbox
+        run: |
+          set -euo pipefail
+          python scripts/provision-foundry-toolbox.py \
+            --project-endpoint "$AZURE_FOUNDRY_PROJECT_ENDPOINT" \
+            --create

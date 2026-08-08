@@ -28,18 +28,26 @@ PR #125, with **zero new runtime code**. APIM injects the managed-identity beare
 | `routines/routine.schema.json` + `routines/example.routine.json` | Routine schema + a populated example; a routine's tool calls flow through the APIM-fronted toolbox. |
 | `a2a/a2a.schema.json` + `a2a/example.a2a.json` | A2A exposure schema + example; fronts a deployed agent's A2A endpoint through APIM. |
 
-## Provisioning (operator, one time)
+## Reconciliation
+
+`.github/workflows/foundry-assets.yml` uses GitHub OIDC to reconcile these preview
+data-plane assets after changes under `foundry/**` and on manual dispatch. The project
+endpoint comes only from the `AZURE_FOUNDRY_PROJECT_ENDPOINT` repository or production
+environment variable. It ensures skills before the toolbox so references always resolve.
+Failures stop the workflow; unchanged defaults create no immutable versions.
+
+For a local/operator run:
 
 ```bash
 # 0. Install the provisioning-only extra (CI's app-ci.yml api job installs it too, so the
 #    real-SDK toolbox construction tests run there; the runtime container never does).
 uv pip install -e "app/api[foundry]"
 
-# 1. Create skills (dry run first; --create writes to Foundry).
+# 1. Ensure skills (dry run first; --create reconciles Foundry).
 python scripts/provision-foundry-skills.py
 python scripts/provision-foundry-skills.py --create
 
-# 2. Populate toolbox.manifest.json (tools + skills), then create the toolbox.
+# 2. Populate toolbox.manifest.json (tools + skills), then ensure the toolbox.
 #    Tip: copy toolbox.manifest.example.json (one of every tool) as a starting point.
 python scripts/provision-foundry-toolbox.py            # dry run: prints plan + mcp-servers.json entry
 python scripts/provision-foundry-toolbox.py --create

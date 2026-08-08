@@ -8,11 +8,11 @@
 > automation, computer use, private tool catalog, routines, A2A) is **public preview** — do not use
 > in production without your own validation.
 >
-> **Portability (1:1 standup):** the toolbox is a data-plane resource, so `azd up` alone cannot
-> create it; a new subscription/tenant is **`azd up` + one command** (`provision-foundry-toolbox.py
-> --create`). The `mcp-servers.json` entry is portable — it sets `foundryToolbox: true` and omits
-> `upstreamUrl`, which `main.bicep` computes from the deployed project endpoint per environment.
-> `foundry/toolbox.manifest.json` is the canonical toolbox definition the script reproduces.
+> **Portability (1:1 standup):** the toolbox and skills are data-plane resources, so `azd up`
+> alone cannot create them. Run the two ordered ensure commands below, or configure
+> `AZURE_FOUNDRY_PROJECT_ENDPOINT` and manually dispatch `foundry-assets.yml`. The
+> `mcp-servers.json` entry stays portable — it omits `upstreamUrl`, which `main.bicep` computes
+> per environment. `foundry/toolbox.manifest.json` is the canonical toolbox definition.
 
 ## TL;DR — the bridge
 
@@ -272,14 +272,14 @@ Skill `name` must match `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (max 64). The create p
 2. **Resolve the project endpoint.** With `enableFoundryToolbox=true` deployed, read it from
    `azd env get-values` (`AZURE_FOUNDRY_PROJECT_ENDPOINT`), or pass `--project-endpoint`.
 
-3. **Create skills (optional).** Dry-run, then create:
+3. **Ensure skills.** Dry-run, then reconcile the skill versions before the toolbox:
 
    ```bash
    python scripts/provision-foundry-skills.py
    python scripts/provision-foundry-skills.py --create
    ```
 
-4. **Populate `foundry/toolbox.manifest.json`** with tools (and any skills), then create the
+4. **Populate `foundry/toolbox.manifest.json`** with tools and skills, then ensure the
    toolbox. The dry run prints the plan, the consumer MCP URL, and a ready-to-paste
    `infra/mcp-servers.json` entry:
 
@@ -290,30 +290,28 @@ Skill `name` must match `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (max 64). The create p
    python scripts/provision-foundry-toolbox.py --emit-yaml foundry/toolbox.azd.yaml
    ```
 
-   > **Idempotency note:** re-running `--create` with the same manifest `name` does not fail or
-   > duplicate the toolbox -- it calls `create_version(name, ...)` again, which adds a new version
-   > under the same named toolbox. `create_version` alone does **not** change what the toolbox's
-   > MCP endpoint serves: a toolbox's `default_version` pointer is fixed at creation and does not
-   > auto-advance to newer versions. So after every successful `create_version`, the script also
-   > calls `project.toolboxes.update(name, default_version=<new version>)` to explicitly activate
-   > it -- without that, repeat `--create` runs would keep creating versions that are never
-   > actually served, silently. That makes repeat runs *safe* (each one activates cleanly) but not
-   > a true no-op: each `--create` still accumulates an immutable version even when the manifest is
-   > unchanged. There is no script-side dedup/diff against the latest version's content, so avoid
-   > scripting unconditional `--create` on every deploy; run it deliberately when the manifest
-   > changes. **Skills differ:** `provision-foundry-skills.py`'s `skills.create(name, ...,
-   > default=True)` is a single idempotent call that both creates the version (auto-creating the
-   > parent skill on first use) AND activates it as the default, so there is no separate
-   > "create-then-activate" step to forget for skills the way there is for the toolbox.
+   > **Idempotency note:** both `--create` commands are content-based ensures. Each compares the
+   > desired source with the currently served default and creates nothing when they match. A
+   > changed toolbox creates exactly one immutable version and then explicitly advances
+   > `default_version`; a changed skill creates exactly one version with `default=True`. Read,
+   > download, create, and activation errors propagate, so reconciliation cannot report success
+   > while leaving an old default served.
 
-5. **Register the entry.** Paste the printed object into `infra/mcp-servers.json` (`servers[]`)
+5. **Automated reconciliation.** `.github/workflows/foundry-assets.yml` runs on changes under
+   `foundry/**` and on manual dispatch. It authenticates with OIDC, reads
+   `AZURE_FOUNDRY_PROJECT_ENDPOINT` from a repository or production-environment variable, and
+   ensures `citation-discipline` before `ai4ia-toolbox`. At the start of this change the primary
+   project had toolbox default v1 and no skills; the first workflow run creates the missing skill
+   and one changed toolbox version, while later unchanged runs are no-ops.
+
+6. **Register the entry.** Paste the printed object into `infra/mcp-servers.json` (`servers[]`)
    and regenerate the packaged runtime catalog:
 
    ```bash
    python scripts/gen-mcp-catalog.py
    ```
 
-6. **Flip the flags and deploy:** `enableOfficialMcp=true` **and** `enableFoundryToolbox=true`,
+7. **Flip the flags and deploy:** `enableOfficialMcp=true` **and** `enableFoundryToolbox=true`,
    then `azd up`. The toolbox surfaces in the agent tool picker as the `foundry-toolbox`
    official MCP server; the grant lets APIM's MI bearer invoke it.
 

@@ -71,6 +71,7 @@ def test_checked_in_manifest_matches_the_live_toolbox():
     assert manifest["name"] == "ai4ia-toolbox"
     tool_types = [t["type"] for t in manifest["tools"]]
     assert tool_types == ["web_search", "code_interpreter", "toolbox_search_preview"]
+    assert manifest["skills"] == [{"name": "citation-discipline"}]
     # Every tool is named (the service allows at most one unnamed tool total).
     assert all(t.get("name") for t in manifest["tools"])
 
@@ -1055,6 +1056,66 @@ def test_create_toolbox_fails_loud_when_create_version_has_no_version(monkeypatc
     with pytest.raises(SystemExit):
         _tb.create_toolbox(_valid_manifest(), _ENDPOINT)
     assert "update_calls" not in captured
+
+
+class _EnsureToolboxesOps:
+    def __init__(self, current):
+        self.current = current
+        self.create_calls: list[tuple[str, dict]] = []
+        self.update_calls: list[tuple[str, dict]] = []
+
+    def get(self, name):
+        return SimpleNamespace(name=name, default_version="1")
+
+    def get_version(self, name, version):
+        assert name == "ai4ia-toolbox"
+        assert version == "1"
+        return self.current
+
+    def create_version(self, name, **kwargs):
+        self.create_calls.append((name, kwargs))
+        return SimpleNamespace(name=name, version="2")
+
+    def update(self, name, **kwargs):
+        self.update_calls.append((name, kwargs))
+        return SimpleNamespace(name=name, default_version=kwargs["default_version"])
+
+
+def _ensure_project_for(manifest):
+    from azure.ai.projects import models as m
+
+    kwargs = _tb._build_toolbox_kwargs(manifest, m)
+    current = SimpleNamespace(version="1", **kwargs)
+    return SimpleNamespace(toolboxes=_EnsureToolboxesOps(current))
+
+
+def test_ensure_toolbox_unchanged_default_is_a_true_noop():
+    pytest.importorskip("azure.ai.projects")
+    manifest = _valid_manifest()
+    project = _ensure_project_for(manifest)
+
+    result, changed = _tb.ensure_toolbox(manifest, _ENDPOINT, project=project)
+
+    assert changed is False
+    assert result.version == "1"
+    assert project.toolboxes.create_calls == []
+    assert project.toolboxes.update_calls == []
+
+
+def test_ensure_toolbox_changed_default_creates_and_activates_exactly_one_version():
+    pytest.importorskip("azure.ai.projects")
+    manifest = _valid_manifest()
+    project = _ensure_project_for(manifest)
+    project.toolboxes.current.description = "stale"
+
+    result, changed = _tb.ensure_toolbox(manifest, _ENDPOINT, project=project)
+
+    assert changed is True
+    assert result.version == "2"
+    assert len(project.toolboxes.create_calls) == 1
+    assert project.toolboxes.update_calls == [
+        ("ai4ia-toolbox", {"default_version": "2"})
+    ]
 
 
 # ----------------- provisioner-side schema enforcement (Finding 3, round 4) ------------

@@ -16,6 +16,8 @@ genuinely NOT covered anywhere else:
 from __future__ import annotations
 
 import importlib.util
+import io
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -142,3 +144,71 @@ def test_create_skill_always_passes_default_true_on_first_create_and_later_versi
     assert len(project.beta.skills.calls) == 2
     assert project.beta.skills.calls[1]["default"] is True
     assert project.beta.skills.calls[1]["inline_content"].instructions == "Do it better."
+
+
+def _skill_zip(name: str, description: str, instructions: str) -> bytes:
+    content = (
+        f"---\nname: {name}\ndescription: {description}\n---\n\n{instructions}\n"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("SKILL.md", content)
+    return buffer.getvalue()
+
+
+class _EnsureSkillsOps(_FakeSkillsOps):
+    def __init__(self, package: bytes) -> None:
+        super().__init__()
+        self.package = package
+
+    def get(self, name):
+        return SimpleNamespace(name=name, default_version="1")
+
+    def download(self, name):
+        assert name == "citation-discipline"
+        return iter([self.package])
+
+
+def _ensure_project(package: bytes):
+    project = _FakeProject()
+    project.beta.skills = _EnsureSkillsOps(package)
+    return project
+
+
+def test_ensure_skill_unchanged_default_is_a_true_noop():
+    pytest.importorskip("azure.ai.projects.models")
+    skill = {
+        "name": "citation-discipline",
+        "description": "Cite sources.",
+        "instructions": "Do it.",
+    }
+    project = _ensure_project(_skill_zip(**skill))
+
+    result, changed = _sk.ensure_skill(project, skill)
+
+    assert changed is False
+    assert result.default_version == "1"
+    assert project.beta.skills.calls == []
+
+
+def test_ensure_skill_changed_default_creates_and_activates_exactly_one_version():
+    pytest.importorskip("azure.ai.projects.models")
+    skill = {
+        "name": "citation-discipline",
+        "description": "Cite sources.",
+        "instructions": "Do it.",
+    }
+    project = _ensure_project(
+        _skill_zip(
+            name="citation-discipline",
+            description="Cite sources.",
+            instructions="Old instructions.",
+        )
+    )
+
+    result, changed = _sk.ensure_skill(project, skill)
+
+    assert changed is True
+    assert result.version == "1"
+    assert len(project.beta.skills.calls) == 1
+    assert project.beta.skills.calls[0]["default"] is True

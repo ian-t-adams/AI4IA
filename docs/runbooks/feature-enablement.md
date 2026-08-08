@@ -506,14 +506,15 @@ search, and bound skills) through the same MCP APIM front door. **Activated in t
 repo:** `foundry/toolbox.manifest.json` is the canonical `ai4ia-toolbox` and
 `enableOfficialMcp`/`enableFoundryToolbox` are `true`.
 
-To reproduce in a NEW subscription/environment (full runbook + preview caveats in
-[`../foundry-toolbox.md`](../foundry-toolbox.md)) — it is **`azd up` + one command**:
+To reproduce in a new subscription/environment (full runbook + preview caveats in
+[`../foundry-toolbox.md`](../foundry-toolbox.md)), reconcile the ordered data-plane assets
+after `azd up`:
 
 1. Provision the toolbox (and any skills) in that environment's Foundry project:
 
    ```text
    uv pip install -e "app/api[foundry]"
-   python scripts/provision-foundry-skills.py --create      # optional
+   python scripts/provision-foundry-skills.py --create
    python scripts/provision-foundry-toolbox.py --create
    ```
 

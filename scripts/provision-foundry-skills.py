@@ -11,19 +11,21 @@ foundry/toolbox.manifest.json (see scripts/provision-foundry-toolbox.py), so any
 - including this app, through the official-MCP APIM bridge - discovers them alongside tools
 at the single toolbox endpoint. No app runtime code is required.
 
-Default is a dry run (offline, no Azure calls). Pass ``--create`` to write to Foundry
-(requires the optional ``foundry`` dependency group: azure-ai-projects + azure-identity). Every
-``--create`` call passes ``default=True``, so the version it just created is immediately
-activated as the one served -- both for a brand-new skill and for a later version of an
-existing one (there is no separate promotion step, unlike the toolbox script).
+Default is a dry run (offline, no Azure calls). Pass ``--create`` to reconcile Foundry
+(requires the optional ``foundry`` dependency group: azure-ai-projects + azure-identity).
+The live default package is downloaded and compared first; unchanged content is a true no-op.
+Changed or missing content is created with ``default=True`` so exactly one new version is
+created and immediately activated.
 All of this is public preview; do not use in production without validation.
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import re
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -127,6 +129,40 @@ def create_skill(project: Any, skill: dict[str, Any]) -> Any:
     )
 
 
+def _downloaded_skill(project: Any, name: str) -> dict[str, Any]:
+    """Download and parse the SKILL.md served by a skill's default version."""
+    package = b"".join(project.beta.skills.download(name))
+    try:
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            skill_files = [path for path in archive.namelist() if Path(path).name == "SKILL.md"]
+            if len(skill_files) != 1:
+                raise ValueError(f"expected exactly one SKILL.md, found {len(skill_files)}")
+            text = archive.read(skill_files[0]).decode("utf-8")
+    except (OSError, UnicodeDecodeError, zipfile.BadZipFile, ValueError) as exc:
+        raise SystemExit(
+            f"Skill '{name}' exists but its default content could not be compared: {exc}. "
+            "Refusing to create a success-shaped duplicate version."
+        ) from exc
+    return parse_skill_md(text)
+
+
+def ensure_skill(project: Any, skill: dict[str, Any]) -> tuple[Any, bool]:
+    """Create and activate a skill version only when the served content differs."""
+    from azure.core.exceptions import ResourceNotFoundError
+
+    try:
+        existing = project.beta.skills.get(skill["name"])
+    except ResourceNotFoundError:
+        return create_skill(project, skill), True
+
+    current = _downloaded_skill(project, skill["name"])
+    desired = {key: skill[key] for key in ("name", "description", "instructions")}
+    actual = {key: current.get(key) for key in desired}
+    if actual == desired:
+        return existing, False
+    return create_skill(project, skill), True
+
+
 def _project_client(endpoint: str) -> Any:  # pragma: no cover - live only
     try:
         from azure.ai.projects import AIProjectClient
@@ -176,15 +212,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if not args.create:
-        print(f"\n(dry run) {len(skills)} skill(s) valid. Re-run with --create to create them in Foundry,")
+        print(f"\n(dry run) {len(skills)} skill(s) valid. Re-run with --create to ensure them in Foundry,")
         print("then list them under `skills` in foundry/toolbox.manifest.json to bind to the toolbox.")
         return 0
 
     endpoint = resolve_project_endpoint(args.project_endpoint)
     project = _project_client(endpoint)
     for skill in skills:
-        created = create_skill(project, skill)
-        print(f"Created skill '{skill['name']}' version {getattr(created, 'version', '?')} and activated it as the default version.")
+        result, changed = ensure_skill(project, skill)
+        if changed:
+            print(
+                f"Created skill '{skill['name']}' version {getattr(result, 'version', '?')} "
+                "and activated it as the default version."
+            )
+        else:
+            print(f"Skill '{skill['name']}' already matches its default version; no version created.")
     print("\nNow bind them: add each under `skills` in foundry/toolbox.manifest.json and re-run")
     print("scripts/provision-foundry-toolbox.py --create to publish a toolbox version that references them.")
     return 0
