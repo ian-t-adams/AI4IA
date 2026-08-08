@@ -283,6 +283,33 @@ def _preview_value(value: Any, limit: int) -> tuple[str, bool]:
     return collapsed, False
 
 
+def _preview_label(key: Any) -> str:
+    """Render an argument key without collapsing distinct keys together.
+
+    Approval and dispatch use the exact JSON object, so the card must preserve
+    that distinction. The old whitespace normalization turned
+    ``{"to": "attacker", "to ": "owner"}`` into one visible
+    ``to: owner`` row with ``omitted=0``, even though the canonical ``to``
+    value was what the handler received.
+    """
+
+    raw = str(key)
+    collapsed = " ".join(raw.split())
+    if not raw:
+        rendered = "<empty-key>"
+    elif raw != collapsed:
+        rendered = "".join(
+            f"\\u{ord(char):04x}" if char.isspace() else char for char in raw
+        )
+    else:
+        rendered = raw
+    if len(rendered) <= _MAX_LABEL_CHARS:
+        return rendered
+    suffix = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10]
+    prefix_len = _MAX_LABEL_CHARS - len(suffix) - 2
+    return f"{rendered[:prefix_len]}…#{suffix}"
+
+
 @dataclass(frozen=True)
 class ArgumentPreview:
     """What a human is shown about one call's arguments, and what they are not.
@@ -331,8 +358,8 @@ def build_preview(arguments: Mapping[str, Any] | None) -> ArgumentPreview:
     if not isinstance(redacted, Mapping):  # pragma: no cover - redact_obj preserves dicts
         return ArgumentPreview()
 
-    keys = [key for key in sorted(redacted, key=str) if " ".join(str(key).split())]
-    dropped = len(redacted) - len(keys)
+    keys = list(sorted(redacted, key=str))
+    dropped = 0
     visible, overflow = keys[:_MAX_PREVIEW_ENTRIES], keys[_MAX_PREVIEW_ENTRIES:]
     per_value = _MAX_PREVIEW_VALUE_CHARS
     if visible:
@@ -345,7 +372,13 @@ def build_preview(arguments: Mapping[str, Any] | None) -> ArgumentPreview:
     masked: set[str] = set()
     elided: set[str] = set()
     for key in visible:
-        label = " ".join(str(key).split())[:_MAX_LABEL_CHARS]
+        label = _preview_label(key)
+        # Parsed JSON objects cannot contain duplicate string keys, but this
+        # helper accepts arbitrary Mappings too. Fail visible if stringification
+        # or a future label transform ever creates a collision.
+        if label in shown:
+            suffix = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()[:10]
+            label = f"{label[: _MAX_LABEL_CHARS - len(suffix) - 2]}…#{suffix}"
         value, was_cut = _preview_value(redacted[key], per_value)
         shown[label] = value
         # ``redact_obj`` masks a credential-named key's value wholesale; compare
