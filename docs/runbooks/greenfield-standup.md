@@ -495,8 +495,13 @@ When the checked-in `enableFoundryToolbox=true` parameter is deployed, Bicep
 creates the control-plane wiring but not the Foundry data-plane toolbox:
 
 ```powershell
+python scripts/provision-foundry-toolbox.py --check-access
 python scripts/provision-foundry-toolbox.py --create
 ```
+
+The preflight fails closed unless the caller has project-scoped **Foundry User**.
+For GitHub reconciliation, Bicep grants that role to the nonempty
+`deploymentPrincipalId`; Azure OIDC login alone is not data-plane authorization.
 
 Skipping this can leave APIM and the MCP initialize handshake healthy while
 `tools/list` returns `Toolbox '<name>' not found`. Verify through the admin
