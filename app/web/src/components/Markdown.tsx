@@ -21,7 +21,13 @@
 // react-markdown v9 dropped the `inline` prop on `code` — see the `.md` rules in
 // globals.css.
 
-import { Fragment, type ReactNode } from "react";
+import {
+  Children,
+  Fragment,
+  cloneElement,
+  isValidElement,
+  type ReactNode,
+} from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { parseCitations, type CitationToken } from "@/lib/citations";
@@ -145,33 +151,42 @@ function CitationChip({
   );
 }
 
-// Replace citation tokens inside the plain-text children of a block element with
-// chips. The token contains no markdown syntax, so remark always emits it as a
-// single literal text node; a pass over the direct string children therefore
-// never splits a token. Non-string children (emphasis, links, code, …) pass
-// through untouched.
+// Replace citation tokens anywhere inside a text-bearing block, including
+// emphasis/strong wrappers. Code and links are deliberate boundaries: citations
+// inside code are examples, and turning link text into a button would create
+// nested interactive content. The old direct-child pass let
+// `**[[cite:S9]]**` and heading citations remain raw, bypassing the verified /
+// unverified distinction.
 function injectCitations(
   children: ReactNode,
   onCitation?: (target: CitationTarget) => void,
   sources?: RetrievedSource[] | null,
 ): ReactNode {
-  const nodes = Array.isArray(children) ? children : [children];
-  const out: ReactNode[] = [];
-  nodes.forEach((child, index) => {
+  return Children.map(children, (child, index) => {
     if (typeof child !== "string" || !child.includes("[[cite:")) {
-      out.push(child);
-      return;
+      if (
+        isValidElement<{ children?: ReactNode }>(child) &&
+        child.props.children !== undefined &&
+        child.type !== "code" &&
+        child.type !== "pre" &&
+        child.type !== "a"
+      ) {
+        return cloneElement(
+          child,
+          undefined,
+          injectCitations(child.props.children, onCitation, sources),
+        );
+      }
+      return child;
     }
-    parseCitations(child, sources).forEach((seg, i) => {
+    return parseCitations(child, sources).map((seg, i) => {
       const key = `${index}-${i}`;
       if (seg.type === "text") {
-        out.push(<Fragment key={key}>{seg.value}</Fragment>);
-      } else {
-        out.push(<CitationChip key={key} token={seg} onCitation={onCitation} />);
+        return <Fragment key={key}>{seg.value}</Fragment>;
       }
+      return <CitationChip key={key} token={seg} onCitation={onCitation} />;
     });
   });
-  return out;
 }
 
 export function Markdown({ content, onCitation, sources }: MarkdownProps) {
@@ -186,7 +201,22 @@ export function Markdown({ content, onCitation, sources }: MarkdownProps) {
         {children}
       </a>
     ),
+    // Never let model/tool-authored Markdown make an automatic browser request
+    // to an attacker-controlled (or local-network) URL. Generated image
+    // artifacts are rendered by their authenticated object-URL component, not
+    // through Markdown.
+    img: ({ alt }) => (
+      <span className="md-image-omitted" role="note">
+        {alt ? `[External image omitted: ${alt}]` : "[External image omitted]"}
+      </span>
+    ),
     p: ({ children }) => <p>{withCitations(children)}</p>,
+    h1: ({ children }) => <h1>{withCitations(children)}</h1>,
+    h2: ({ children }) => <h2>{withCitations(children)}</h2>,
+    h3: ({ children }) => <h3>{withCitations(children)}</h3>,
+    h4: ({ children }) => <h4>{withCitations(children)}</h4>,
+    h5: ({ children }) => <h5>{withCitations(children)}</h5>,
+    h6: ({ children }) => <h6>{withCitations(children)}</h6>,
     li: ({ children }) => <li>{withCitations(children)}</li>,
     td: ({ children }) => <td>{withCitations(children)}</td>,
     th: ({ children }) => <th>{withCitations(children)}</th>,

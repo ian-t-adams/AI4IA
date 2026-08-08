@@ -23,12 +23,12 @@ import { NextRequest, NextResponse } from "next/server";
 //     attributes throughout; style *attributes* can't be covered by a nonce or
 //     hash, only by `'unsafe-inline'`. Style injection is far lower severity
 //     than script injection, which stays locked down.
-//   * No `default-src` / `connect-src` / `img-src` restriction — the Voice Live
+//   * No `default-src` / `connect-src` restriction — the Voice Live
 //     feature opens a WebSocket *directly* to the API's external ingress
 //     (a cross-origin, env-configured `wss://` origin the Next proxy can't
-//     proxy), and generated backgrounds use `data:`/`blob:` images. Constraining
-//     these would break those at runtime, which is exactly what the #83 baseline
-//     avoided. We keep that posture and only tighten scripts here.
+//     proxy). Images are narrower: product images are same-origin static assets
+//     or authenticated `blob:` object URLs, and user-selected backgrounds may be
+//     `data:` URLs, so `img-src` can deny arbitrary model-authored remote loads.
 //
 // Using a nonce forces dynamic rendering; the rendered routes (`/`, `/admin`)
 // are already `export const dynamic = "force-dynamic"`, so this is a no-op for
@@ -43,6 +43,7 @@ export function proxy(request: NextRequest): NextResponse {
   const cspHeader = `
     script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ""};
     style-src 'self' 'unsafe-inline';
+    img-src 'self' data: blob:;
     base-uri 'self';
     object-src 'none';
     frame-ancestors 'none';

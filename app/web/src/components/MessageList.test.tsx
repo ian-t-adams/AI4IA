@@ -237,6 +237,41 @@ describe("MessageList", () => {
     });
   });
 
+  it("does not let emphasis or headings hide an invented citation", () => {
+    render(
+      <MessageList
+        messages={[
+          msg({
+            id: "md-nested-cite",
+            role: "assistant",
+            content: "## **[[cite:S9]]**",
+            sources: [],
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("Unverified citation")).toBeInTheDocument();
+    expect(screen.getByRole("heading")).toContainElement(
+      screen.getByText("Unverified citation").parentElement,
+    );
+  });
+
+  it("does not auto-load remote images from assistant markdown", () => {
+    const { container } = render(
+      <MessageList
+        messages={[
+          msg({
+            id: "md-image",
+            role: "assistant",
+            content: "![tracking pixel](https://attacker.example/pixel)",
+          }),
+        ]}
+      />,
+    );
+    expect(container.querySelector("img")).toBeNull();
+    expect(screen.getByText("[External image omitted: tracking pixel]")).toBeInTheDocument();
+  });
+
   it("does not render raw HTML embedded in assistant markdown", () => {
     const { container } = render(
       <MessageList
