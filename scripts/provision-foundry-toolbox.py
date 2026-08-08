@@ -452,11 +452,17 @@ def _canonical_state(value: Any) -> Any:
     if hasattr(value, "as_dict"):
         value = value.as_dict()
     if isinstance(value, dict):
-        return {
-            key: _canonical_state(item)
-            for key, item in sorted(value.items())
-            if item is not None
-        }
+        canonical: dict[str, Any] = {}
+        for key, item in sorted(value.items()):
+            normalized = _canonical_state(item)
+            # Foundry materializes omitted optional arrays/objects as empty
+            # service defaults (for example `skills: []`). They are semantically
+            # identical to an omitted request field and must not mint a new
+            # immutable toolbox version on every reconciliation.
+            if normalized in (None, [], {}):
+                continue
+            canonical[key] = normalized
+        return canonical
     if isinstance(value, list):
         return [_canonical_state(item) for item in value]
     return value

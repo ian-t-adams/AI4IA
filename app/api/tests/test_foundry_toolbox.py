@@ -1107,7 +1107,14 @@ def _ensure_project_for(manifest):
     from azure.ai.projects import models as m
 
     kwargs = _tb._build_toolbox_kwargs(manifest, m)
-    current = SimpleNamespace(version="1", **kwargs)
+    # The live service returns explicit empty defaults for optional fields that
+    # the create request omitted. This shape caught a real version-sprawl bug:
+    # `skills: []` compared unequal to no `skills` key and minted a version on
+    # every workflow run.
+    service_state = {"version": "1", **kwargs}
+    service_state.setdefault("skills", [])
+    service_state.setdefault("policies", {})
+    current = SimpleNamespace(**service_state)
     return SimpleNamespace(toolboxes=_EnsureToolboxesOps(current))
 
 
@@ -1130,6 +1137,19 @@ def test_ensure_toolbox_unchanged_default_is_a_true_noop():
             {"headers": _tb.TOOLBOX_FEATURES_HEADER},
         ),
     ]
+
+
+def test_service_empty_defaults_are_equivalent_to_omitted_manifest_fields():
+    pytest.importorskip("azure.ai.projects")
+    manifest = _valid_manifest()
+    project = _ensure_project_for(manifest)
+
+    result, changed = _tb.ensure_toolbox(manifest, _ENDPOINT, project=project)
+
+    assert changed is False
+    assert result.skills == []
+    assert result.policies
+    assert project.toolboxes.create_calls == []
 
 
 def test_ensure_toolbox_changed_default_creates_and_activates_exactly_one_version():
