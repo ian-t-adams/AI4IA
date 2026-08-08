@@ -101,7 +101,6 @@ foreach ($target in $targets) {
 $roleOutput = Invoke-AzureCli -Arguments @(
     'role', 'assignment', 'list',
     '--scope', $EventHubsNamespaceResourceId,
-    '--include-inherited', 'false',
     '--query', '[].id',
     '--output', 'tsv',
     '--only-show-errors'
