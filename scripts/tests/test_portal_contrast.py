@@ -21,13 +21,24 @@ import re
 import unittest
 
 STYLES = pathlib.Path(__file__).resolve().parents[2] / "site" / "assets" / "styles.css"
+REQUIREMENTS = pathlib.Path(__file__).resolve().parents[2] / "site" / "requirements.html"
 
 AA_TEXT = 4.5
 # WCAG 1.4.11: non-text UI (focus rings, borders) needs 3:1, not 4.5:1.
 AA_NON_TEXT = 3.0
 
 # Rendered as body text somewhere in the portal, so held to 1.4.3.
-TEXT_TOKENS = ("brand", "brand-2", "accent", "ok", "warn", "bad", "muted", "text")
+TEXT_TOKENS = (
+    "brand",
+    "brand-2",
+    "accent",
+    "ok",
+    "warn",
+    "bad",
+    "unknown",
+    "muted",
+    "text",
+)
 # Used as a gradient fill under --on-brand (.btn.primary, .nav-cta, .skip-link).
 FILL_TOKENS = ("brand", "brand-2")
 
@@ -46,6 +57,19 @@ def luminance(hex_colour: str) -> float:
 def contrast(a: str, b: str) -> float:
     la, lb = luminance(a), luminance(b)
     return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def blend(foreground: str, background: str, opacity: float) -> str:
+    fg = foreground.lstrip("#")
+    bg = background.lstrip("#")
+    channels = (
+        round(
+            int(fg[i : i + 2], 16) * opacity
+            + int(bg[i : i + 2], 16) * (1 - opacity)
+        )
+        for i in (0, 2, 4)
+    )
+    return "#" + "".join(f"{channel:02x}" for channel in channels)
 
 
 def _scheme_blocks(css: str) -> dict[str, str]:
@@ -98,6 +122,28 @@ class PortalContrastTests(unittest.TestCase):
                         AA_TEXT,
                         f"--on-brand ({on_brand}) on the --{name} gradient stop "
                         f"in {scheme} is {ratio:.2f}:1",
+                    )
+
+    def test_unknown_badge_text_meets_aa_on_its_tinted_surface(self) -> None:
+        self.assertRegex(
+            self.css,
+            r"\.updated\s*\{[^}]*color:\s*var\(--unknown\)",
+        )
+        self.assertIn(
+            "background: color-mix(in srgb, var(--unknown) 14%, transparent)",
+            self.css,
+        )
+        for scheme in ("dark", "light"):
+            unknown = self.token(scheme, "unknown")
+            for surface_name in ("bg", "panel", "panel-2"):
+                surface = self.token(scheme, surface_name)
+                badge_background = blend(unknown, surface, 0.14)
+                with self.subTest(scheme=scheme, surface=surface_name):
+                    self.assertGreaterEqual(
+                        contrast(unknown, badge_background),
+                        AA_TEXT,
+                        f"--unknown ({unknown}) on its badge tint ({badge_background}) "
+                        f"over --{surface_name} fails AA in {scheme}",
                     )
 
     def test_panel_surfaces_stay_distinguishable_from_the_page(self) -> None:
@@ -169,6 +215,25 @@ class PortalContrastTests(unittest.TestCase):
                     195 <= hue(self.token(scheme, "brand-2")) <= 250,
                     f"--brand-2 {self.token(scheme, 'brand-2')} is not a blue",
                 )
+
+    def test_390px_prose_and_grid_content_can_reflow_without_page_overflow(self) -> None:
+        requirements = REQUIREMENTS.read_text(encoding="utf-8")
+        self.assertIn('id="prereqs"', requirements)
+        self.assertRegex(
+            self.css,
+            r"p,\s*li,\s*dd,\s*figcaption\s*\{[^}]*overflow-wrap:\s*anywhere",
+        )
+        self.assertRegex(
+            self.css,
+            r"\.grid\s*>\s*\*,\s*\.stats\s*>\s*\*,\s*\.feat \.body,"
+            r"\s*\.nav-links\s*\{[^}]*min-width:\s*0",
+        )
+        self.assertRegex(
+            self.css,
+            r"@media \(max-width:\s*620px\)[^{]*\{[^}]*"
+            r"grid-template-columns:\s*1fr",
+        )
+        self.assertNotIn("overflow-x: hidden", self.css)
 
 
 if __name__ == "__main__":

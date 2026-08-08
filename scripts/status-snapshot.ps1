@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Generate the live status/health + resource-inventory data that the self-documenting
+  Generate the timestamped status/health + resource-inventory data that the self-documenting
   static site (site/status.html and site/services.html) renders.
 
 .DESCRIPTION

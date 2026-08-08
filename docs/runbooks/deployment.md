@@ -84,8 +84,9 @@ is no client secret to rotate.
 
 ### 2.1 Create a deployment identity with a federated credential
 
-Use a user-assigned managed identity (or an app registration). The federated credential trusts
-tokens GitHub Actions issues for this repo's `production` environment.
+Use a user-assigned managed identity (or an app registration). Two federated credentials on that
+same identity trust tokens GitHub Actions issues for this repo's `production` environment and
+`main` branch.
 
 ```powershell
 az login
@@ -103,10 +104,21 @@ az identity federated-credential create `
   --issuer https://token.actions.githubusercontent.com `
   --subject "repo:ian-t-adams/AI4IA:environment:production" `
   --audiences api://AzureADTokenExchange
+
+# 3) required credential on the same identity for the Pages status refresh
+az identity federated-credential create `
+  --identity-name id-ai4ia-deploy -g rg-ai4ia-cicd `
+  --name github-ai4ia-main `
+  --issuer https://token.actions.githubusercontent.com `
+  --subject "repo:ian-t-adams/AI4IA:ref:refs/heads/main" `
+  --audiences api://AzureADTokenExchange
 ```
 
-> Add a second federated credential with subject `repo:ian-t-adams/AI4IA:ref:refs/heads/main`
-> if you also want pushes (not just the `production` environment) to authenticate.
+Both subjects are required on the same deployment identity. The `production` environment
+credential authorizes `deploy.yml`; the `ref:refs/heads/main` credential authorizes
+`pages.yml` to regenerate its timestamped status snapshot before every publish. Do not create
+a second Azure identity for Pages. Missing branch federation makes Azure login fail and the
+workflow intentionally refuses to publish stale seed data.
 
 ### 2.2 Grant the identity the roles azd needs
 
@@ -155,7 +167,8 @@ Settings → Secrets and variables → Actions → **Variables** (these are iden
 | `AI4IA_PROXY_PROFILES_ENABLED` / `AI4IA_PROXY_PROFILE_PROJECTION_JSON` | Keep disabled until Entra workload identity is wired at the proxy edge; validation intentionally fails otherwise. The JSON value is a secret. |
 | `AI4IA_DEPLOY_VERIFY_CANARY` | *(optional)* Set to `false` to skip the post-deploy model canary. CI-only — it is **not** an azd parameter and has no `${...}` token in `main.parameters.json`. See [§6](#6-post-deploy-verification-and-rollback). |
 
-The moment `AZURE_CLIENT_ID` is set, the next qualifying push to `main` deploys.
+Once the repository variables and both federated credentials above are configured, the next
+qualifying push to `main` deploys and Pages can refresh its snapshot.
 
 Current live values:
 
@@ -529,7 +542,7 @@ config edits plus the normal deploy — no code changes. What varies per environ
 |---|---|---|
 | Environment name | `AZURE_ENV_NAME` repo/azd var | Feeds `environmentName`; names the RG (`rg-ai4ia-<env>`), Foundry accounts/projects (`mf-aiforia-<env>-<region>-<suffix>`), Container Apps, etc. Globally-unique names additionally carry `uniqueString(subscription().id, environmentName)` — see [naming](../naming-and-tagging.md) and §7.6. |
 | Subscription / tenant / region | `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_LOCATION` repo vars | See §2.3. |
-| CI/CD deployment identity | `AZURE_CLIENT_ID` repo var | **Not portable.** The federated credential is a tenant object; an identity from the old tenant cannot authenticate to the new one, so `azure/login` fails before any Bicep runs. Recreate per §2.1–2.2 (managed identity + `repo:<owner>/<repo>:environment:production` subject + `Contributor` and `Role Based Access Control Administrator`). |
+| CI/CD deployment identity | `AZURE_CLIENT_ID` repo var | **Not portable.** Federated credentials are tenant objects; an identity from the old tenant cannot authenticate to the new one, so `azure/login` fails before any Bicep runs. Recreate per §2.1–2.2 with both required subjects on one managed identity: `repo:<owner>/<repo>:environment:production` for deploys and `repo:<owner>/<repo>:ref:refs/heads/main` for Pages, plus `Contributor` and `Role Based Access Control Administrator`. |
 | Application Entra app registrations | `AI4IA_ENTRA_AUDIENCE`, `AI4IA_ENTRA_API_SCOPE`, `AI4IA_ENTRA_WEB_CLIENT_ID`, `AI4IA_ENTRA_TENANT_ID` | **Not portable** — directory objects, not subscription resources, so nothing in Bicep creates them. Recreate with `scripts/provision-entra-apps.ps1` (§2.7). Carrying the old app IDs over leaves `AI4IA_AUTH_PROVIDER=entra` pointing at audiences that do not exist in the new tenant: the stack provisions green and every authenticated request then returns `401`. |
 | Admin subjects | `AI4IA_ADMIN_SUBJECTS` repo var | **Not portable, and fails silently.** An `oid` identifies a *user object in one directory*; the same human signing into a new tenant gets a **different** `oid`. A carried-over value is simply an id that matches nobody — no error anywhere, the operator just quietly stops being an admin (losing `/api/admin/*` **and** the P0 gateway priority band). Re-read it in the new tenant with `az ad signed-in-user show --query id -o tsv`. |
 | Model deployment-name token | `infra/models.json` → `naming.subscriptionToken` | Stamped into every model deployment name (`{model}-<token>-<region>-<sku>`). Read by bicep **and** the runtime catalog. |

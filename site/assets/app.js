@@ -14,6 +14,9 @@
   function el(id) { return document.getElementById(id); }
   function h(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content; }
 
+  // Two missed twice-daily refresh windows make the snapshot operationally stale.
+  var STATUS_STALE_AFTER_HOURS = 24;
+
   function stateBadge(state, label) {
     var map = {
       healthy: "ok", up: "ok", ok: "ok",
@@ -21,7 +24,7 @@
       // Health published no availability state for it. That is NOT a positive
       // health signal, so it must not render as a green "ok" badge.
       provisioned: "unknown",
-      degraded: "warn", unknown: "unknown", unavailable: "bad", down: "bad"
+      current: "ok", stale: "warn", degraded: "warn", unknown: "unknown", unavailable: "bad", down: "bad"
     };
     var cls = map[state] || "unknown";
     var text = label || state;
@@ -40,6 +43,30 @@
     else if (mins < 1440) rel = Math.round(mins / 60) + " h ago";
     else rel = Math.round(mins / 1440) + " d ago";
     return d.toUTCString().replace("GMT", "UTC") + " (" + rel + ")";
+  }
+
+  function snapshotFreshness(iso) {
+    var generated = new Date(iso);
+    if (!iso || isNaN(generated.getTime())) {
+      return {
+        state: "unknown",
+        label: "freshness unknown",
+        detail: "The snapshot timestamp is unavailable, so freshness cannot be verified."
+      };
+    }
+    var ageHours = (Date.now() - generated.getTime()) / 3600000;
+    if (ageHours > STATUS_STALE_AFTER_HOURS) {
+      return {
+        state: "stale",
+        label: "stale snapshot",
+        detail: "Older than " + STATUS_STALE_AFTER_HOURS + " hours; the deployment may have changed."
+      };
+    }
+    return {
+      state: "current",
+      label: "current snapshot",
+      detail: "Within the " + STATUS_STALE_AFTER_HOURS + "-hour freshness window."
+    };
   }
 
   function groupBy(arr, key) {
@@ -94,7 +121,11 @@
     var host = el("status-stats");
     if (!s || !host) return;
     var up = el("updated");
-    if (up) up.textContent = "Snapshot generated " + fmtDate(s.generatedAt);
+    if (up) {
+      var freshness = snapshotFreshness(s.generatedAt);
+      up.innerHTML = stateBadge(freshness.state, freshness.label) +
+        "<span>Generated " + fmtDate(s.generatedAt) + ". " + esc(freshness.detail) + "</span>";
+    }
 
     var sum = s.summary;
     var resources = s.resources || [];

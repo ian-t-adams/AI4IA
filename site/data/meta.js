@@ -1,12 +1,12 @@
-// AI4IA site metadata. Hand-maintained; describes the application, its live
-// environment, feature posture, and technology stack. The LIVE resource inventory
-// and health live in the auto-generated inventory.js / status.js.
+// AI4IA site metadata. Hand-maintained; describes the application, its deployed
+// environment, feature posture, and technology stack. The timestamped resource
+// inventory and health snapshot live in auto-generated inventory.js / status.js.
 window.AI4IA_META = {
   name: "AI4IA",
   tagline: "A governed, multi-model, multi-region agentic chat platform on Azure.",
   description:
-    "AI4IA is a multi-model, multi-region agentic chat application for personal use and " +
-    "customer demos. It is a monorepo: a Next.js web app, a FastAPI backend that owns all " +
+    "AI4IA provides governed multimodal and agent chat for enterprise knowledge work while " +
+    "showcasing Azure capabilities. It is a monorepo: a Next.js web app, a FastAPI backend that owns all " +
     "governance (auth, sessions, tools, memory, usage metering, entitlements, model routing), " +
     "a vendored SimpleL7Proxy model gateway, and Azure infrastructure as Bicep. Everything " +
     "deploys through the Azure Developer CLI (azd).",
