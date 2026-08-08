@@ -310,7 +310,7 @@ describe("streamChat", () => {
           onMetadata: () => {},
           onDelta: () => {},
           onDone: resolve,
-          onError: resolve,
+          onError: () => resolve(),
         },
       );
     });
