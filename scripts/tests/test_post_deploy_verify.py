@@ -521,15 +521,32 @@ class ExpectedImageTests(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("runs no image", problems[0])
 
-    def test_the_stale_revision_check_still_wins(self) -> None:
-        """A revision that never changed is a worse diagnosis than the image."""
-        problems = self.problems(
+    def test_same_revision_passes_when_it_already_runs_the_exact_digest(self) -> None:
+        """Content-addressed promotion is allowed to be a no-op.
+
+        Building identical bytes yields the same digest, and Container Apps may
+        keep the current revision when the template is byte-identical. The exact
+        expected image plus the health/canary checks are stronger evidence than
+        revision churn; rejecting this case rolls back unrelated services from a
+        healthy, fully verified release.
+        """
+        self.assertEqual(
+            self.problems(
             current_revision="ca-api-x--r1",
             current_image=DIGEST_A,
             expected_image=DIGEST_A,
+            ),
+            [],
+        )
+
+    def test_same_revision_with_the_wrong_digest_is_still_a_failure(self) -> None:
+        problems = self.problems(
+            current_revision="ca-api-x--r1",
+            current_image=DIGEST_B,
+            expected_image=DIGEST_A,
         )
         self.assertEqual(len(problems), 1)
-        self.assertIn("still serving the pre-deploy revision", problems[0])
+        self.assertIn("not the image this deploy pushed", problems[0])
 
     def test_parsing_accepts_repeated_service_pairs(self) -> None:
         self.assertEqual(
