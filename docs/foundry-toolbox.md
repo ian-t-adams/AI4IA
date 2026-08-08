@@ -294,9 +294,9 @@ Foundry public-preview capability, but adding runtime MCP resource support is se
    `foundry/**` and on manual dispatch. It authenticates with OIDC, reads
    `AZURE_FOUNDRY_PROJECT_ENDPOINT` from a repository or production-environment variable. It
    first verifies that the OIDC identity has the project-scoped Foundry User role, then ensures
-   `ai4ia-toolbox`. Until the sibling infrastructure change grants that role to
-   `deploymentPrincipalId`, the preflight intentionally fails with a remediation message.
-   Unchanged runs are no-ops.
+   `ai4ia-toolbox`. `main.bicep` now includes `deploymentPrincipalId` in the primary project's
+   Foundry User assignments; the preflight still fails with a remediation message if a target
+   environment has not reconciled that grant. Unchanged runs are no-ops.
 
 6. **Register the entry.** Paste the printed object into `infra/mcp-servers.json` (`servers[]`)
    and regenerate the packaged runtime catalog:
