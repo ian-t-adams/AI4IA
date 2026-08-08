@@ -276,9 +276,22 @@ class CustomDomainPreflightDocsTests(unittest.TestCase):
     """The runbook has to describe the sequence the workflow actually performs."""
 
     def test_runbook_explains_the_two_phase_bind(self) -> None:
-        runbook = (ROOT / "docs/runbooks/deployment.md").read_text(encoding="utf-8")
+        runbook = (ROOT / "docs/runbooks/greenfield-standup.md").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("RequireCustomHostnameInEnvironment", runbook)
         self.assertIn("az containerapp hostname add", runbook)
+
+    def test_workflow_failures_point_to_the_greenfield_sequence(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            "docs/runbooks/greenfield-standup.md section 6.2",
+            workflow,
+        )
+        self.assertNotIn(
+            "docs/runbooks/deployment.md section 3 step 3a",
+            workflow,
+        )
 
     def test_step_still_runs_before_provisioning(self) -> None:
         """Ordering is the fix. Registering after `azd provision` would be useless."""

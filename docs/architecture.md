@@ -149,11 +149,13 @@ session ownership, feature gates, entitlements, provider/model selection, and
 voice-capable tools before opening the APIM socket. The API replaces client voice
 instructions with the selected agent persona or saved session prompt.
 
-`azure_openai` resolves a realtime deployment from `infra/models.json`. The
-optional `speech_voice_live` provider is implemented but is off in the checked-in
-and live production profile. It has a separate APIM API/key and account-scoped
-managed-identity path. Its production enablement remains subject to the operator gates in
-[`runbooks/feature-enablement.md`](./runbooks/feature-enablement.md).
+`azure_openai` resolves a realtime deployment from `infra/models.json` and remains
+the server-authoritative default. The additive `speech_voice_live` provider has a
+separate APIM API/key and account-scoped managed-identity path. Its Bicep template
+default is off, but the current production environment overrides it on and
+allowlists both providers. Authenticated direct-FastAPI canaries succeeded for
+both providers on 2026-08-08; the web/Next.js hostname is not a valid WebSocket
+canary target.
 FastAPI presents key 3 only to the Azure OpenAI realtime APIM API and optional key
 4 only to the Speech Voice Live APIM API; neither key crosses the APIM boundary.
 Turn-based transcription and text-to-speech remain compatible HTTP calls and use
@@ -402,9 +404,10 @@ label those gaps rather than infer precision.
   the only APIM plane — MCP, HTTP/SSE, and both voice providers share its blast radius.
 - Proxy application profiles remain blocked until ingress derives a verified
   workload identity rather than trusting caller-supplied profile headers.
-- Speech Voice Live is implemented but off in the checked-in and live profile.
-  Incremental ARM retained its APIM children and account-scoped roles from an
-  earlier trial; they are dormant privilege until a targeted teardown removes them.
+- Speech Voice Live is default-off in Bicep but enabled by repository-variable
+  override in the current environment. Disabling it later would not delete its
+  APIM children or account-scoped roles under ARM incremental mode, so a targeted
+  teardown would still be needed to remove that retained privilege.
 - Memory has no global user-facing consent toggle or recalled-memory provenance
   indicator. Users can create, edit, and delete individual owned records.
 - Active-store deletion removes Cosmos plaintext and vectors, but Azure backup

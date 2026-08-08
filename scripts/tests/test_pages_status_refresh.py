@@ -20,7 +20,7 @@ WORKFLOW = REPO / ".github" / "workflows" / "pages.yml"
 APP_JS = REPO / "site" / "assets" / "app.js"
 STATUS_HTML = REPO / "site" / "status.html"
 INDEX_HTML = REPO / "site" / "index.html"
-DEPLOYMENT_DOC = REPO / "docs" / "runbooks" / "deployment.md"
+GREENFIELD_DOC = REPO / "docs" / "runbooks" / "greenfield-standup.md"
 META_JS = REPO / "site" / "data" / "meta.js"
 SERVICES_HTML = REPO / "site" / "services.html"
 
@@ -128,16 +128,17 @@ class PagesStatusRefreshTests(unittest.TestCase):
 
     def test_main_branch_federation_is_required_on_the_deploy_identity(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        deployment = DEPLOYMENT_DOC.read_text(encoding="utf-8")
+        greenfield = GREENFIELD_DOC.read_text(encoding="utf-8")
         subject = "repo:ian-t-adams/AI4IA:ref:refs/heads/main"
         self.assertIn(subject, workflow)
-        self.assertIn(subject, deployment)
+        self.assertIn(subject, greenfield)
         self.assertIn(
-            "Both subjects are required on the same deployment identity", deployment
+            "Both subjects are required on the same deployment identity", greenfield
         )
-        self.assertIn("Do not create", deployment)
-        self.assertIn("a second Azure identity for Pages", deployment)
-        self.assertNotIn("if you also want pushes", deployment)
+        self.assertIn("Do not create", greenfield)
+        self.assertIn("a second Azure identity for Pages", greenfield)
+        self.assertIn("refuses to publish stale seed data", greenfield)
+        self.assertNotIn("if you also want pushes", greenfield)
 
     def test_public_copy_calls_status_a_timestamped_snapshot_not_live_health(self) -> None:
         public_copy = "\n".join(

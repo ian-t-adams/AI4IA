@@ -92,7 +92,8 @@ azd up
 ```
 Then verify any external DNS records for custom domains and run smoke tests. DNS
 records are managed outside this repo; the Azure-side custom-domain binding is
-covered in [`deployment.md`](./deployment.md#25-custom-domains-vanity-hostnames--required-if-you-use-them).
+covered in the
+[greenfield standup guide](./greenfield-standup.md#62-bind-custom-domains-optional).
 
 ## Rollback
 There is no in-place rollback after step 2. The inventory snapshot from step 0 plus
@@ -105,7 +106,7 @@ There is no in-place rollback after step 2. The inventory snapshot from step 0 p
 > - **Cosmos (sessions, messages, usage, memory, agents, workflows, document
 >   manifests)** has continuous backup with point-in-time restore, and the
 >   procedure is tested — see
->   [`deployment.md`](./deployment.md#data-recovery-posture-know-this-before-you-need-it).
+>   [`deployment.md`](./deployment.md#5-data-recovery-posture).
 >   Restore targets a **new account** and is addressed by the restorable-instance
 >   id, not the account name, so the step 0 capture records that id, the location
 >   and the window. After deletion those are no longer queryable.

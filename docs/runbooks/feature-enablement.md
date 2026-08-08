@@ -23,7 +23,7 @@ feature posture.
 |---|---|---|---|---|
 | Voice Live | `AI4IA_REALTIME_ENABLED` | `VOICE_LIVE_ENABLED` + `API_PUBLIC_URL` | `voiceLiveEnabled` | Browser Origin allowlist outside local |
 | Voice Live tools | `AI4IA_REALTIME_TOOLS_ENABLED` | advertised by web env | `voiceLiveToolsEnabled` | Voice Live enabled |
-| Speech Voice Live (2nd voice provider) | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | advertised by web env | `speechVoiceLiveEnabled` | Voice Live enabled; `speech_voice_live` in `AI4IA_VOICE_PROVIDER_ALLOWLIST`; distinct `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`; separately approved live-validation gate (see below) |
+| Speech Voice Live (2nd voice provider) | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | advertised by web env | `speechVoiceLiveEnabled` | Voice Live enabled; `speech_voice_live` in `AI4IA_VOICE_PROVIDER_ALLOWLIST`; distinct `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`; repeat the standing APIM and authenticated-canary checks after changes |
 | Document library + multimodal understanding | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED` | `DOCUMENT_LIBRARY_ENABLED` | `documentUnderstandingEnabled` | Cosmos session store, blob account URL, CU endpoint outside local |
 | Library compute / export | `AI4IA_DOCUMENT_COMPUTE_ENABLED` | none | `documentComputeEnabled` | Document understanding, Responses API base URL + model outside local |
 | Inline attachment Code Interpreter | `AI4IA_INLINE_DOCUMENT_COMPUTE_ENABLED` | none | `inlineDocumentComputeEnabled` | Responses API base URL + model outside local |
@@ -121,7 +121,8 @@ also off. `speechVoiceLiveEnabled` is the one flag whose checked-in value is a
 `true`, so the second provider **is** enabled in the live environment and
 `AI4IA_VOICE_PROVIDER_ALLOWLIST` is `azure_openai,speech_voice_live`. Azure OpenAI
 Realtime remains the *default* provider (`AI4IA_VOICE_DEFAULT_PROVIDER`); Speech
-Voice Live is selectable but still owes the manual microphone canary in
+Voice Live is selectable. Authenticated direct-FastAPI protocol canaries succeeded
+for both providers on 2026-08-08; the manual microphone retest remains tracked in
 [Speech Voice Live](#speech-voice-live-second-voice-provider) below. Read the
 deployed container's env, not this file, when you need the current answer.
 
@@ -161,7 +162,7 @@ the environment — the prior Consumption service has been deleted.
 
 ### Speech Voice Live (second voice provider)
 
-Set (only after the gates below close):
+Set:
 
 ```text
 speechVoiceLiveEnabled=true
@@ -190,6 +191,8 @@ accepted. The shared APIM managed identity additionally needs **Cognitive
 Services User** and **Foundry User** (formerly Azure AI User) on that one
 account; the `speechVoiceLiveManagedIdentityAudience` parameter (default
 `https://ai.azure.com`) is deployment-only, never an app runtime setting.
+The current account accepted that audience in the authenticated 2026-08-08
+Speech canary.
 
 **Enablement status and standing rules.** This provider is **enabled in production**
 (`AI4IA_SPEECH_VOICE_LIVE_ENABLED=true`, with `speech_voice_live` in
@@ -213,11 +216,16 @@ that are standing rules still apply to any future change to this surface:
    token against the authenticated FastAPI `wss://.../api/voice/live` path for
    each enabled model, then manually retest a signed-in microphone session,
    provider/model changes on the next connection, and transcript persistence.
-   Direct APIM handshakes are infrastructure diagnostics, not app proof.
+   Derive the socket from `AZURE_API_URL`; never use the web/Next.js hostname,
+   which cannot proxy WebSockets. Direct APIM handshakes are infrastructure
+   diagnostics, not app proof.
 
-The signed-in manual microphone retest in step 5 is the one outstanding validation
-and is tracked in [`roadmap.md`](../roadmap.md). Deploying and merging remain
-separate, explicitly authorized decisions that this runbook does not grant.
+Authenticated canaries against the direct API Container App returned
+`outcome=success` on 2026-08-08 for `speech_voice_live/gpt-realtime` and
+`azure_openai/gpt-realtime`. The signed-in manual microphone retest in step 5 is
+the remaining audio/UX validation and is tracked in
+[`roadmap.md`](../roadmap.md). Deploying and merging remain separate, explicitly
+authorized decisions that this runbook does not grant.
 
 **Rollback and retained resources.** Disabling Speech Voice Live is immediate
 and non-destructive:
@@ -568,7 +576,8 @@ environment secret** (mapped into `.github/workflows/deploy.yml`). If that secre
 empty at provision time, bicep drops the `webiq-api-key` Container App secret and the
 api falls back to its managed identity — which must be **entitled to Web IQ**, or
 every call returns 401. Set it with `gh secret set AI4IA_WEBIQ_API_KEY --env
-production`; see [`deployment.md`](deployment.md#26-web-iq-api-key-secret).
+production`; see
+[`greenfield-standup.md`](greenfield-standup.md#32-secrets).
 
 **Diagnosing failures.** The admin dashboard has a **Web search health** panel
 (`GET /api/admin/metrics/web-search`, admin-gated) that reports per-replica call

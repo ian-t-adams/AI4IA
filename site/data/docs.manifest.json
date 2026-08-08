@@ -15,9 +15,9 @@
       "group": "Start here",
       "docs": [
         { "path": "README.md", "title": "Repository overview", "desc": "What AI4IA is, current state, layout, key decisions and how to deploy." },
+        { "path": "docs/runbooks/greenfield-standup.md", "title": "Start here: greenfield Azure standup", "desc": "New subscription or tenant setup: preflight, both GitHub OIDC subjects, RBAC, repo configuration, Entra apps, first provision, domains and validation." },
         { "path": "docs/user-guide.md", "title": "User guide", "desc": "How to use the app: chat, agents, voice, library, media, memory and admin views." },
         { "path": "docs/architecture.md", "title": "Architecture", "desc": "Governed multi-model design, request lifecycle, components and MCP planes." },
-        { "path": "docs/memory.md", "title": "Memory architecture", "desc": "Canonical Cosmos memory, owner-scoped CRUD, vector recall, concurrency fences, deletion, privacy, and remaining gaps." },
         { "path": "AGENTS.md", "title": "Agent & contributor guide", "desc": "Machine-facing map for humans and AI agents: invariants, CI commands, and how to add tools, models, flags and routers." }
       ]
     },
@@ -29,6 +29,7 @@
         { "path": "docs/naming-and-tagging.md", "title": "Naming & tagging", "desc": "Resource naming tokens and the tag scheme applied across the deployment." },
         { "path": "docs/foundry-toolbox.md", "title": "Foundry toolbox", "desc": "The official MCP plane: toolbox, skills, A2A and the private tool catalog." },
         { "path": "docs/document-multimodal-understanding.md", "title": "Document & multimodal understanding", "desc": "Content Understanding ingest, retrieval, compute and the library." },
+        { "path": "docs/memory.md", "title": "Memory architecture", "desc": "Canonical Cosmos memory, owner-scoped CRUD, vector recall, concurrency fences, deletion, privacy, and remaining gaps." },
         { "path": "infra/README.md", "title": "Infrastructure (Bicep) overview", "desc": "How infra/main.bicep and the parameters, model catalog and azd hooks fit together." },
         { "path": "infra/modules/README.md", "title": "Bicep modules", "desc": "Conventions for the composable infra modules." }
       ]
@@ -36,7 +37,7 @@
     {
       "group": "Runbooks",
       "docs": [
-        { "path": "docs/runbooks/deployment.md", "title": "Deployment runbook", "desc": "One-time OIDC setup, custom domains, and the continuous deploy workflow." },
+        { "path": "docs/runbooks/deployment.md", "title": "Routine deployment", "desc": "Exact-digest promotion, capture-before-provision ordering, verification, rollback limits, and current deployment troubleshooting." },
         { "path": "docs/runbooks/feature-enablement.md", "title": "Feature enablement", "desc": "The authoritative flag list and how to safely turn features on/off." },
         { "path": "docs/runbooks/key-rotation.md", "title": "Key rotation", "desc": "Zero-downtime rotation of the proxy-ingress credential using the proxy's dual-key accept, with verification at every step." },
         { "path": "docs/runbooks/memory-migration.md", "title": "Memory migration", "desc": "Dry-run-first PostgreSQL-to-Cosmos cutover, verification, rollback, and retirement gates." },

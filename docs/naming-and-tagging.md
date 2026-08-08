@@ -59,7 +59,7 @@ Omitting it is exactly what broke the first cutover attempt — see
 > reverse. A new tenant standing up an env called `prod` gets `rg-ai4ia-prod` and
 > `mf-aiforia-prod-eastus2-<suffix>` while its deployments stay `{model}-slurmfactory-...`
 > unless the token is also changed (see
-> [deployment runbook §3](./runbooks/deployment.md)).
+> [greenfield standup §5](./runbooks/greenfield-standup.md#5-select-environment-posture-and-names)).
 
 ## Model deployment naming
 Deployments follow `infra/models.json` `naming.pattern`:

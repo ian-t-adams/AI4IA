@@ -22,6 +22,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "postprovision.ps1"
 CATALOG = REPO / "app" / "api" / "src" / "ai4ia_api" / "data" / "model_catalog.json"
+GREENFIELD = REPO / "docs" / "runbooks" / "greenfield-standup.md"
 
 
 def _ps_literal(value: str) -> str:
@@ -192,6 +193,38 @@ class ContentUnderstandingProvisioningWiringTests(unittest.TestCase):
             "for pid in dataPlanePrincipalIds: {\n"
             "  name: guid(account.id, pid, contentUnderstandingRoleId)",
             foundry,
+        )
+
+    def test_greenfield_requires_oidc_principal_wiring_and_cu_success(self) -> None:
+        runbook = GREENFIELD.read_text(encoding="utf-8")
+        first_provision = runbook.split(
+            "### 6.1 First provision without custom domains", 1
+        )[1].split("### 6.2 Bind custom domains", 1)[0]
+
+        self.assertIn(
+            "The first standup must use the GitHub deployment workflow",
+            first_provision,
+        )
+        self.assertIn("principal/object id", first_provision)
+        self.assertIn("`AZURE_PRINCIPAL_ID`", first_provision)
+        self.assertIn("never treating the\nclient id as an object id", first_provision)
+        self.assertIn(
+            "Cognitive Services Content Understanding Contributor",
+            first_provision,
+        )
+        self.assertNotIn(
+            "\nazd up\n",
+            first_provision,
+            "The current Bicep CU assignment declares ServicePrincipal, so a local "
+            "human's object id cannot safely use that path.",
+        )
+        self.assertIn("Content Understanding defaults | PASS", runbook)
+        self.assertIn("A `WARN` or `SKIP` is not success", runbook)
+        self.assertGreaterEqual(
+            runbook.count("gh workflow run deploy.yml -f provision=true --ref main"),
+            2,
+            "The guide must show both the first workflow provision and the explicit "
+            "rerun used when CU defaults are not PASS.",
         )
 
 

@@ -41,7 +41,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "provision-entra-apps.ps1"
-RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "deployment.md"
+RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "greenfield-standup.md"
 
 # `az ad app create` accepts neither of these. They are invented spellings that look
 # plausible next to the real `--web-redirect-uris`.
@@ -69,10 +69,41 @@ class TestNoNonexistentCliFlag(unittest.TestCase):
             self.assertNotIn(
                 flag,
                 text,
-                f"deployment.md documents {flag}, which az does not accept. The runbook "
-                "is copy-pasted during a tenant standup, so a bad flag there fails the "
-                "same way the script did.",
+                f"greenfield-standup.md documents {flag}, which az does not accept. "
+                "The runbook is copy-pasted during a tenant standup, so a bad flag "
+                "there fails the same way the script did.",
             )
+
+
+class TestGreenfieldRunbookContract(unittest.TestCase):
+    def setUp(self) -> None:
+        self.runbook = RUNBOOK.read_text(encoding="utf-8")
+        self.script = SCRIPT.read_text(encoding="utf-8")
+
+    def test_runbook_keeps_deploy_roles_at_subscription_scope(self) -> None:
+        self.assertIn("targetScope = 'subscription'", self.runbook)
+        self.assertIn("Retain both roles at subscription scope", self.runbook)
+        self.assertIn(
+            "Do **not** narrow `Contributor` to the resource group",
+            self.runbook,
+        )
+
+    def test_runbook_bootstraps_then_adds_the_deployed_web_origin(self) -> None:
+        self.assertIn('-WebRedirectUri http://localhost:3000', self.runbook)
+        self.assertGreaterEqual(
+            self.runbook.count('"https://$($web.fqdn)"'),
+            2,
+            "The default ACA origin must be added immediately after first provision "
+            "and retained when the optional vanity origin is added.",
+        )
+        self.assertIn(
+            "This post-provision rerun is required even when no custom domain",
+            self.runbook,
+        )
+
+    def test_script_help_points_to_the_greenfield_authority(self) -> None:
+        self.assertIn("docs/runbooks/greenfield-standup.md section 4", self.script)
+        self.assertNotIn("docs/runbooks/deployment.md 2.7", self.script)
 
 
 class TestCreationFailsLoudly(unittest.TestCase):
