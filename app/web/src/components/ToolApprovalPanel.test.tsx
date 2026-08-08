@@ -25,7 +25,7 @@ function prompt(
     argumentsOmitted: 0,
     grantHash: "h".repeat(64),
     consumed: false,
-    expiresAt: "2026-08-05T13:10:00Z",
+    expiresAt: "2099-08-05T13:10:00Z",
     createdAt: "2026-08-05T13:00:00Z",
     grant: "one-time-grant",
     ...overrides,
@@ -80,6 +80,8 @@ describe("ToolApprovalPanel", () => {
     );
     await user.click(screen.getByRole("button", { name: /^Approve/ }));
     expect(onApprove).toHaveBeenCalledWith(pending);
+    expect(screen.getByRole("button", { name: /Approve and retry/ })).toBeInTheDocument();
+    expect(screen.getByText(/model must re-issue this exact call/i)).toBeInTheDocument();
   });
 
   it("denies locally without needing a server round trip", async () => {
@@ -109,6 +111,19 @@ describe("ToolApprovalPanel", () => {
     );
     expect(screen.getByRole("button", { name: /^Approve/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^Deny/ })).toBeDisabled();
+  });
+
+  it("disables an expired approval and explains how to recover", () => {
+    render(
+      <ToolApprovalPanel
+        prompts={[prompt({ expiresAt: "2000-01-01T00:00:00Z" })]}
+        onApprove={vi.fn()}
+        onDeny={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Approve and retry/ })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/expired/i);
+    expect(screen.getByRole("button", { name: /^Deny/ })).toBeEnabled();
   });
 
   it("warns loudly when the card is not the whole call", () => {
