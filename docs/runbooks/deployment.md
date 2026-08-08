@@ -124,6 +124,15 @@ az role assignment create --assignee $principalId --role "Role Based Access Cont
 > Prefer least privilege: after the first successful `azd provision`, narrow `Contributor` to the
 > created resource group scope. `Role Based Access Control Administrator` is needed because the Bicep
 > assigns data-plane roles (e.g. Cosmos, Storage, Key Vault) to the app's managed identities.
+>
+> The workflow resolves this identity's **principal/object id** from
+> `AZURE_CLIENT_ID` on every provision and exports azd's native
+> `AZURE_PRINCIPAL_ID`. Bicep uses it to grant only
+> **Cognitive Services Content Understanding Contributor** on the primary
+> Foundry account, so the postprovision hook can register CU's required model
+> defaults. Do not supply the client id where a principal id is expected: Azure
+> can accept that wrong GUID without an error and create a role assignment that
+> grants the identity nothing (see the RBAC warning in `AGENTS.md`).
 
 ### 2.3 Add the repository variables
 

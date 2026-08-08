@@ -13,6 +13,9 @@ param environmentName string
 @description('Primary location for the resource group and shared resources.')
 param location string = 'eastus2'
 
+@description('Object/principal id of the OIDC identity running `azd provision`. When set, the primary Foundry account grants it the narrow Content Understanding Contributor role so postprovision can register CU model defaults. This is a principalId, never the managed identity clientId.')
+param deploymentPrincipalId string = ''
+
 @description('Accountable owner tag value. Override per deployment; do not rely on a personal repo default.')
 param owner string = 'ai4ia-operator'
 
@@ -347,6 +350,15 @@ var webIdentity = filter(identity.outputs.identities, x => x.service == 'web')[0
 var nativeFoundryPrincipalIds = [
   apiIdentity.principalId
 ]
+// Content Understanding is configured only on the primary Foundry account.
+// The API needs this role to analyze documents; the deploy identity needs it to
+// PATCH the data-plane defaults after ARM provisioning. Keep this separate from
+// nativeFoundryPrincipalIds: CU access must never imply OpenAI inference access.
+var contentUnderstandingPrincipalIds = concat([
+  apiIdentity.principalId
+], empty(deploymentPrincipalId) ? [] : [
+  deploymentPrincipalId
+])
 var telemetrySenderPrincipalIds = concat([
   apiIdentity.principalId
 ], proxyEventHubTelemetryEnabled ? [
@@ -1014,6 +1026,7 @@ module foundry 'modules/foundry.bicep' = [for (r, i) in regionList: {
     accountName: foundryAccountNames[i]
     projectName: foundryProjectNames[i]
     dataPlanePrincipalIds: nativeFoundryPrincipalIds
+    contentUnderstandingPrincipalIds: (i == primaryFoundryIndex) ? contentUnderstandingPrincipalIds : []
     disableLocalAuth: foundryDisableLocalAuth
     toolboxPrincipalIds: (i == primaryFoundryIndex) ? foundryToolboxApimPrincipal : []
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
