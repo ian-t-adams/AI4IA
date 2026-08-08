@@ -181,3 +181,28 @@ def test_summarize_per_model_and_per_day_ignore_unknown_usage_tokens():
     assert bucket.completionTokens == 50
     day_bucket = s.byDay[0]
     assert day_bucket.totalTokens == 150
+
+
+def test_code_interpreter_attempt_has_unknown_cost_not_known_zero():
+    """Sandbox attempts are cost-bearing despite having no token billability."""
+    now = datetime.now(timezone.utc)
+    row = _rec(
+        provider="azure_openai_code_interpreter",
+        model="code-interpreter",
+        target="code_interpreter",
+        status="error",
+        billable=False,
+        usageKnown=False,
+        usageComplete=False,
+        calls=1,
+        costKnown=False,
+        estCostMicroUsd=None,
+        createdAt=now,
+    )
+
+    summary = summarize_records(
+        "u1", [row], since_days=1, from_time=now - timedelta(days=1), to_time=now
+    )
+    assert summary.totalCostMicroUsd == 0  # sum of known cost only
+    assert summary.costUnknownRequests == 1
+    assert summary.byModel[0].costKnown is False

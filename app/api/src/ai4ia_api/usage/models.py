@@ -33,6 +33,20 @@ UsageStatus = Literal["complete", "cancelled", "error"]
 #: direct-to-Foundry exception (a stateful Azure-managed sandbox is not a routable
 #: chat-completions deployment), which is exactly why it needs its own identity.
 CODE_INTERPRETER_PROVIDER = "azure_openai_code_interpreter"
+
+
+def cost_bearing_attempt(rec: "UsageRollupSource") -> bool:
+    """Whether a row represents provider work whose unknown cost matters.
+
+    Token-priced chat rows historically use ``billable`` for this. Direct Code
+    Interpreter rows cannot: the provider reports no token usage, so they are
+    intentionally ``usageKnown=False`` and therefore ``billable=False`` even
+    though each recorded row is a sandbox execution attempt that may incur cost.
+    Treating billability as the cost signal made every sandbox rollup report
+    known ``$0`` with zero unknown-cost requests.
+    """
+
+    return rec.billable or rec.provider == CODE_INTERPRETER_PROVIDER
 #: Target/agent label carried alongside the provider, so the admin agents panel
 #: also shows sandbox executions as their own row.
 CODE_INTERPRETER_TARGET = "code_interpreter"
@@ -528,7 +542,7 @@ def summarize_records(
 
         if rec.costKnown and rec.estCostMicroUsd is not None:
             summary.totalCostMicroUsd += rec.estCostMicroUsd
-        elif rec.billable:
+        elif cost_bearing_attempt(rec):
             summary.costUnknownRequests += 1
 
         bucket = by_model.get(rec.model)
@@ -542,7 +556,7 @@ def summarize_records(
             bucket.totalTokens += rec.totalTokens or 0
         if rec.costKnown and rec.estCostMicroUsd is not None:
             bucket.costMicroUsd += rec.estCostMicroUsd
-        elif rec.billable:
+        elif cost_bearing_attempt(rec):
             bucket.costKnown = False
 
         day = rec.createdAt.astimezone(timezone.utc).strftime("%Y-%m-%d")
