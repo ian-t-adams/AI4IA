@@ -17,6 +17,7 @@ schedule/cancel path the router uses.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -360,7 +361,9 @@ async def test_recover_interrupted_fails_stuck_analyzing():
     )
     ingestor = _build(cu=_CU(""), library=library)
 
-    swept = await ingestor.recover_interrupted()
+    swept = await ingestor.recover_interrupted(
+        now=datetime.now(timezone.utc) + timedelta(hours=2)
+    )
     assert swept == 1
     failed = await library.get_document("u1", stuck.id)
     assert failed.status == DocumentStatus.failed
@@ -395,13 +398,20 @@ async def test_recover_interrupted_purges_partial_artifacts():
     assert _blob_keys(blob, "u1", doc.id) != []
     assert await chunks.search("u1", _QUERY, top_k=50) != []
 
-    swept = await ingestor.recover_interrupted()
+    swept = await ingestor.recover_interrupted(
+        now=datetime.now(timezone.utc) + timedelta(hours=2)
+    )
 
     assert swept == 1
     failed = await library.get_document("u1", doc.id)
     assert failed.status == DocumentStatus.failed
-    # The partial artifacts are gone — no orphan chunks/blobs under the failed doc.
-    assert _blob_keys(blob, "u1", doc.id) == []
+    # The retrieval-reachable index and manifest pointers are gone, but the raw
+    # upload survives a replica restart so "Re-upload to retry" is truthful.
+    assert failed.rawPath is not None
+    assert failed.rawPath in _blob_keys(blob, "u1", doc.id)
+    assert failed.parsedPath is None
+    assert failed.chunksPath is None
+    assert failed.chunkCount == 0
     assert await chunks.search("u1", _QUERY, top_k=50) == []
 
 
@@ -433,7 +443,9 @@ async def test_recovery_preserves_concurrent_access_and_owner_metadata():
         )
     )
     ingestor = _build(cu=_CU(""), library=library)
-    assert await ingestor.recover_interrupted() == 1
+    assert await ingestor.recover_interrupted(
+        now=datetime.now(timezone.utc) + timedelta(hours=2)
+    ) == 1
     final = await library.get_document("u1", stuck.id)
     assert final.status == DocumentStatus.failed
     assert final.visibility == Visibility.private
@@ -455,10 +467,54 @@ async def test_recovery_skips_document_no_longer_analyzing():
         UserDocument(userId="u1", filename="x.pdf", status=DocumentStatus.analyzing)
     )
     ingestor = _build(cu=_CU(""), library=library)
-    assert await ingestor.recover_interrupted() == 0
+    assert await ingestor.recover_interrupted(
+        now=datetime.now(timezone.utc) + timedelta(hours=2)
+    ) == 0
     assert (
         await library.get_document("u1", stuck.id)
     ).status == DocumentStatus.ready
+
+
+async def test_recovery_does_not_steal_a_fresh_row_from_another_replica():
+    """A rolling deploy starts the sweep while the old replica still works.
+
+    Status alone cannot distinguish a lost task from a healthy remote one; age
+    is the lease. This is the production race the old sweep lost.
+    """
+    library = InMemoryDocumentLibraryRepository()
+    active = await library.create_document(
+        UserDocument(userId="u1", filename="x.pdf", status=DocumentStatus.analyzing)
+    )
+    ingestor = _build(cu=_CU(""), library=library)
+
+    assert await ingestor.recover_interrupted(now=datetime.now(timezone.utc)) == 0
+    assert (
+        await library.get_document("u1", active.id)
+    ).status == DocumentStatus.analyzing
+
+
+async def test_reupload_of_failed_dedupe_hit_resets_and_retries():
+    library = InMemoryDocumentLibraryRepository()
+    blob = InMemoryBlobStore()
+    ingestor = _build(cu=_CU(""), library=library, blob=blob)
+    first = await ingestor.ingest(
+        user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"SAME"
+    )
+    failed = first.document
+    failed.status = DocumentStatus.failed
+    failed.error = "interrupted"
+    await library.update_document(failed)
+
+    retry = await ingestor.ingest(
+        user_id="u1", filename="d.pdf", content_type="application/pdf", data=b"SAME"
+    )
+
+    assert retry.deduped is False
+    assert retry.document.id == first.document.id
+    assert retry.document.status == DocumentStatus.stored
+    assert retry.document.error is None
+    assert retry.document.rawPath is not None
+    assert retry.document.rawPath in _blob_keys(blob, "u1", first.document.id)
 
 
 async def test_chunk_cap_truncates_and_batches():
