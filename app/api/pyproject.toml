@@ -55,7 +55,7 @@ dependencies = [
     # continue` cannot catch a hang. Each crafted upload would pin one
     # run_in_threadpool worker forever until the pool starves. Keep this at or
     # above 6.14.2.
-    "pypdf>=6.14.2",
+    "pypdf>=6.15.0",
     # Blob storage for the document library: raw uploads + parsed
     # artifacts. Async client (azure.storage.blob.aio) reached via the api managed
     # identity; imported lazily so the app/tests run without it wired (the
