@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import io
 import json
+import re
 import sys
 import unittest
 from contextlib import redirect_stdout
@@ -13,6 +14,11 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "voice-live-canary.py"
+DEPLOYMENT_DOC = ROOT / "docs" / "runbooks" / "deployment.md"
+GREENFIELD_DOC = ROOT / "docs" / "runbooks" / "greenfield-standup.md"
+FEATURE_DOC = ROOT / "docs" / "runbooks" / "feature-enablement.md"
+CONFIG_DOC = ROOT / "docs" / "configuration-reference.md"
+ARCHITECTURE_DOC = ROOT / "docs" / "architecture.md"
 
 
 def load_script():
@@ -434,6 +440,81 @@ class VoiceLiveCanaryTests(unittest.TestCase):
         self.assertEqual(result, 5)
         self.assertEqual(json.loads(output.getvalue())["outcome"], "closed")
         self.assertEqual(len(websocket.sent), 3)
+
+
+class VoiceLiveDocumentationContractTests(unittest.TestCase):
+    @staticmethod
+    def _read(path: Path) -> str:
+        return path.read_text(encoding="utf-8")
+
+    def test_operator_guidance_targets_direct_api_not_web_hostname(self) -> None:
+        deployment = self._read(DEPLOYMENT_DOC)
+        config = self._read(CONFIG_DOC)
+        feature = self._read(FEATURE_DOC)
+        greenfield = self._read(GREENFIELD_DOC)
+
+        for name, text in {
+            "deployment": deployment,
+            "configuration reference": config,
+            "feature enablement": feature,
+            "greenfield standup": greenfield,
+        }.items():
+            with self.subTest(document=name):
+                self.assertIn("AZURE_API_URL", text)
+                self.assertIn("web/Next.js hostname", text)
+                self.assertRegex(
+                    text,
+                    re.compile(
+                        r"web/Next\.js\s+hostname.{0,120}"
+                        r"(?:cannot proxy|does not support)\s+WebSockets",
+                        re.DOTALL,
+                    ),
+                )
+
+        for name, text in {
+            "deployment": deployment,
+            "configuration reference": config,
+        }.items():
+            with self.subTest(command=name):
+                self.assertIn(
+                    "$voiceUrl = ($apiUrl -replace '^https://', 'wss://')",
+                    text,
+                )
+                self.assertIn("--url $voiceUrl", text)
+
+        self.assertIn(
+            "Derive the socket from `AZURE_API_URL`",
+            deployment,
+        )
+        self.assertIn(
+            "`AZURE_API_URL`\n"
+            "must resolve to the direct FastAPI Container App origin",
+            config,
+        )
+
+    def test_live_evidence_does_not_replace_template_default(self) -> None:
+        deployment = self._read(DEPLOYMENT_DOC)
+        config = self._read(CONFIG_DOC)
+        architecture = self._read(ARCHITECTURE_DOC)
+
+        for name, text in {
+            "deployment": deployment,
+            "configuration reference": config,
+        }.items():
+            with self.subTest(document=name):
+                self.assertIn("AI4IA_SPEECH_VOICE_LIVE_ENABLED=true", text)
+                self.assertIn(
+                    "AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live",
+                    text,
+                )
+                self.assertIn("speech_voice_live/gpt-realtime", text)
+                self.assertIn("azure_openai/gpt-realtime", text)
+                self.assertIn("outcome=success", text)
+                self.assertIn("2026-08-08", text)
+
+        self.assertIn("speechVoiceLiveEnabled=false", deployment)
+        self.assertIn("Template default OFF", config)
+        self.assertIn("server-authoritative default", architecture)
 
 
 if __name__ == "__main__":

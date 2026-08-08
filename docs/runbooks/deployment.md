@@ -232,11 +232,15 @@ app:
 6. Move production DNS/custom-domain bindings only after those checks pass.
 
 Use an operator-obtained Entra API token in an environment variable, never a CLI
-argument:
+argument. Derive the socket from `AZURE_API_URL`, which is the direct FastAPI
+Container App origin:
 
 ```powershell
+$apiUrl = azd env get-value AZURE_API_URL
+$voiceUrl = ($apiUrl -replace '^https://', 'wss://').TrimEnd('/') + '/api/voice/live'
+
 python scripts/voice-live-canary.py `
-  --url wss://<api-host>/api/voice/live `
+  --url $voiceUrl `
   --origin https://<web-origin> `
   --provider azure_openai `
   --model gpt-realtime `
@@ -247,7 +251,9 @@ python scripts/voice-live-canary.py `
 Repeat without `--region` for each enabled Speech managed model. A successful
 protocol canary receives `session.created` and `session.updated`; it sends no
 audio or conversation content. Direct APIM handshakes are infrastructure
-diagnostics, not proof of the authenticated app path.
+diagnostics, not proof of the authenticated app path. Never use the web/Next.js
+hostname for `--url`: it cannot proxy WebSockets. The HTTPS web origin remains
+the correct `--origin` value.
 
 For a policy regression, restore the known-good source and run `azd provision`
 as well as `azd deploy`. Restoring a Container App revision does not change APIM.
@@ -452,10 +458,11 @@ than silently degrading to a different provider or deployment.
 
 The safe protocol-error/close capture, correlation/outcome/frame-count completion
 record, deterministic cleanup, retry messaging, and isolated inline selectors are
-confirmed code-level diagnostics/UX fixes. They do **not** establish a root cause
-for any Azure OpenAI Realtime failure. Until the authenticated canary and manual
-signed-in microphone retest produce correlated evidence, an Azure OpenAI upstream
-service or model cause remains unproven.
+confirmed code-level diagnostics/UX fixes. Authenticated protocol canaries for
+both `azure_openai/gpt-realtime` and `speech_voice_live/gpt-realtime` succeeded on
+2026-08-08. For a new failure, correlate the canary output with API and APIM
+diagnostics before assigning an upstream service or model root cause; the
+signed-in microphone retest remains the end-to-end audio/UX check.
 
 ### 7.4 `Provision infrastructure` fails: Cosmos "Container Vector Policy ... capability has not been enabled"
 
@@ -1021,23 +1028,37 @@ The superseded PR-only `apim-v2-*` design was never deployed. A what-if must con
 no `apim-v2-*` creation. If resource inventory unexpectedly finds such a service, stop
 and handle it through a separate explicitly approved cleanup.
 
-### Speech Voice Live posture (off)
+<a id="speech-voice-live-posture-off"></a>
+<a id="speech-voice-live-posture"></a>
 
-The checked-in and current deployment posture is
-`AI4IA_SPEECH_VOICE_LIVE_ENABLED=false` with
-`AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai`. Azure OpenAI Realtime remains the
-only selectable provider. The managed-identity audience and account-read
-investigation closed an earlier validation blocker, but that did **not** enable
-Speech Voice Live.
+### Speech Voice Live posture (enabled in the current environment)
 
-An earlier enabled deployment can leave its Speech API, operation policy,
-subscription, named values, or role assignment behind because ARM incremental
-mode does not delete conditional resources when the flag turns off. Those
-objects are dormant inventory, not evidence that the provider is live: the
-running API has no Speech key/configuration and the server allowlist excludes it.
-Follow [`feature-enablement.md`](./feature-enablement.md#speech-voice-live-second-voice-provider)
-and complete the authenticated and signed-in microphone canaries before claiming
-the provider is enabled.
+The template remains default-off:
+`speechVoiceLiveEnabled=false` and
+`AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai` are what a standup gets without
+azd/repository overrides. The current environment deliberately overrides that
+posture with:
+
+```text
+AI4IA_SPEECH_VOICE_LIVE_ENABLED=true
+AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live
+AI4IA_VOICE_DEFAULT_PROVIDER=azure_openai
+```
+
+Repository variables and the running API environment match those values, the
+Speech WebSocket API exists on the shared APIM plane, and authenticated canaries
+against the direct FastAPI Container App host returned `outcome=success` on
+2026-08-08 for both `speech_voice_live/gpt-realtime` and
+`azure_openai/gpt-realtime`. Azure OpenAI remains the server-authoritative
+default; Speech Voice Live is an additional selectable provider.
+
+The canary target must be the `wss://` form of `AZURE_API_URL` with
+`/api/voice/live`, never the web/Next.js hostname. Follow
+[`feature-enablement.md`](./feature-enablement.md#speech-voice-live-second-voice-provider)
+for the standing APIM review rules and the signed-in microphone regression check.
+If the provider is disabled later, ARM incremental mode can retain its Speech API,
+policy, subscription, named values, and role assignment; retained objects alone
+would then be inventory, not evidence of enablement.
 
 ### Consumption APIM removal (done)
 

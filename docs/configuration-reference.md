@@ -73,17 +73,16 @@ the container — those names are *outputs*, not knobs you set.
 > particular environment currently has, because azd environment variables
 > override these without changing a tracked file.
 >
-> Do not write "and live in this deployment" here. Claims of that form drifted
-> from the parameters they described (the Speech Voice Live row below is the
-> worked example) and cannot be verified from the repository. Live posture
-> belongs in generated deployment evidence, not in hand-maintained prose — see
-> `docs/repository-audit-2026-08-03.md`.
+> Do not infer "and live in this deployment" from a parameter row. A separately
+> labeled, dated observation may record evidence gathered from repository
+> variables, running Container App settings, deployed resources, and authenticated
+> canaries; it is not a template default and must not be copied into a standup.
 
 | Feature | azd / CI variable | Bicep parameter | Runtime setting emitted | Required companion config |
 | --- | --- | --- | --- | --- |
 | Voice Live | checked-in parameter | `voiceLiveEnabled` | `AI4IA_REALTIME_ENABLED`, `VOICE_LIVE_ENABLED`, `API_PUBLIC_URL`, `AI4IA_REALTIME_ALLOWED_ORIGINS` | None. The Origin allowlist is derived in Bicep from the deployed web origins (ACA default FQDN + `webCustomDomain`); `AI4IA_REALTIME_ALLOWED_ORIGINS` is optional and only *adds* origins. |
 | Voice Live tools | checked-in parameter | `voiceLiveToolsEnabled` | `AI4IA_REALTIME_TOOLS_ENABLED`, `VOICE_LIVE_TOOLS_ENABLED` | Requires Voice Live. |
-| Speech Voice Live (second voice provider) | checked-in parameter | `speechVoiceLiveEnabled` | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | Requires `AI4IA_REALTIME_ENABLED=true`, `AI4IA_VOICE_PROVIDER_ALLOWLIST` to include `speech_voice_live`, and both `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`. The six managed models and default are catalog-controlled. **Template default OFF** in both Bicep and `infra/main.parameters.json`, which resolves `${AI4IA_SPEECH_VOICE_LIVE_ENABLED=false}` — and the checked-in `voiceProviderAllowlist` (`${AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai}`) does not list `speech_voice_live`, so a standup that sets neither azd variable gets this provider off *and* unreachable. Turning it on takes both variables in the azd environment, not a file edit. (This row previously said "enabled in `infra/main.parameters.json` and live in this deployment"; the first half contradicted the file and the second was never generated from deployment evidence — see the observed-state note below.) A narrower gate still applies to the managed-identity *audience* default — see [Speech Voice Live](#speech-voice-live-second-voice-provider) — but it does not gate enablement. |
+| Speech Voice Live (second voice provider) | checked-in parameter | `speechVoiceLiveEnabled` | `AI4IA_SPEECH_VOICE_LIVE_ENABLED` | Requires `AI4IA_REALTIME_ENABLED=true`, `AI4IA_VOICE_PROVIDER_ALLOWLIST` to include `speech_voice_live`, and both `AI4IA_SPEECH_VOICE_LIVE_BASE_URL` + `AI4IA_SPEECH_VOICE_LIVE_GATEWAY_API_KEY`. The six managed models and default are catalog-controlled. **Template default OFF** in both Bicep and `infra/main.parameters.json`, which resolves `${AI4IA_SPEECH_VOICE_LIVE_ENABLED=false}`; the default allowlist is only `azure_openai`. Turning it on takes both azd variables, not a file edit. |
 | Voice provider allowlist / default | n/a (server-authoritative) | `voiceProviderAllowlist`, `voiceDefaultProvider` | `AI4IA_VOICE_PROVIDER_ALLOWLIST` (default `azure_openai`), `AI4IA_VOICE_DEFAULT_PROVIDER` (default `azure_openai`) | Allowlist must always include `azure_openai`; default provider must be an allowlist member. The browser may only select an advertised, allowlisted provider. |
 | Data residency | azd / CI variable | n/a (API setting) | `AI4IA_DATA_RESIDENCY` (default `global`) | `global` \| `zonal` \| `us` \| `eu`. Restricts model routing to deployments whose **processing** is bounded to that zone. See [Data residency](#data-residency): `zonal`/`us` leave 14 conversational models, `eu` leaves 10, all served from `DataZoneStandard` deployments. |
 | Document library / Content Understanding | checked-in parameter | `documentUnderstandingEnabled` | `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED`, `DOCUMENT_LIBRARY_ENABLED` | Cosmos + blob storage; CU endpoint defaults to the primary Foundry endpoint unless overridden. |
@@ -202,9 +201,9 @@ server-authoritative default). It routes
   account using a managed-identity audience set by the **deployment-only** Bicep
   parameter `speechVoiceLiveManagedIdentityAudience` (default `https://ai.azure.com`,
   matching the `azure-ai-voicelive` SDK default) — this is not an app runtime
-  setting and the browser cannot influence it. Confirming that the selected account
-  accepts this exact audience is a pending live-validation gate; do not change the
-  default before that gate closes.
+  setting and the browser cannot influence it. The selected account accepted this
+  audience during the authenticated 2026-08-08 Speech canary; do not change the
+  default without repeating that validation.
 - APIM grants that identity **Cognitive Services User** and **Foundry User**
   (formerly Azure AI User) roles scoped only to the one selected AIServices
   account, on top of (not instead of) the roles it already holds on every Foundry
@@ -241,8 +240,11 @@ default `session.update` and bounded synthetic history frame shapes as the brows
 then succeeds only on `session.created` followed by `session.updated`:
 
 ```powershell
+$apiUrl = azd env get-value AZURE_API_URL
+$voiceUrl = ($apiUrl -replace '^https://', 'wss://').TrimEnd('/') + '/api/voice/live'
+
 python scripts/voice-live-canary.py `
-  --url wss://<api-host>/api/voice/live `
+  --url $voiceUrl `
   --origin https://<web-origin> `
   --provider speech_voice_live `
   --model gpt-realtime `
@@ -253,7 +255,19 @@ Populate the environment variable through the approved operator sign-in flow;
 never put the token on the command line. `--region` is Azure OpenAI-only.
 `--agent` and `--tools` are explicit governed opt-ins and default off. A direct
 bare APIM handshake tests infrastructure only; it does not prove app auth, Origin,
-entitlement, catalog resolution, normalization, or relay behavior.
+entitlement, catalog resolution, normalization, or relay behavior. `AZURE_API_URL`
+must resolve to the direct FastAPI Container App origin. Never point this canary
+at the web/Next.js hostname: that HTTP proxy does not support WebSockets. The web
+origin is still required as `--origin`.
+
+> **Observed current environment, 2026-08-08.** Repository variables set
+> `AI4IA_SPEECH_VOICE_LIVE_ENABLED=true` and
+> `AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live`; the running API
+> environment matches, the shared APIM contains the Speech API, and authenticated
+> direct-FastAPI canaries returned `outcome=success` for both
+> `speech_voice_live/gpt-realtime` and `azure_openai/gpt-realtime`. The default
+> remains `azure_openai`. This evidence does not change the template-default table
+> above.
 
 The relay's `voice_live_completion` record carries `correlationId`, provider,
 model/usage target, outcome, bounded protocol error and close metadata, source

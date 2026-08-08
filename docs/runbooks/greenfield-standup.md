@@ -495,6 +495,13 @@ Run the first-release checks:
 5. Verify the authenticated API path reaches SimpleL7Proxy → APIM → Foundry.
 6. Exercise enabled document, memory, MCP, media, and voice capabilities
    separately; the deployment canary proves only one non-streaming chat turn.
+   For Voice Live, derive `wss://.../api/voice/live` from the direct
+   `AZURE_API_URL`; never use the web/Next.js hostname, which cannot proxy
+   WebSockets. A fresh standup keeps Speech Voice Live off unless both
+   `AI4IA_SPEECH_VOICE_LIVE_ENABLED=true` and
+   `AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live` are supplied.
+   The current production override and its 2026-08-08 successful canaries do not
+   change that template default.
 7. Confirm the expected admin user can reach `/api/admin/*`.
 8. Confirm Web search health reports the intended auth mode.
 9. If Pages is enabled, run/publish it and confirm the status snapshot names the
