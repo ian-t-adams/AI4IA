@@ -20,8 +20,8 @@ param keyVaultReaderPrincipalIds array = []
 @description('Principal IDs granted App Configuration Data Reader. The SimpleL7Proxy identity consumes this plane; web and api do not.')
 param appConfigReaderPrincipalIds array = []
 
-@description('Optional App Configuration label used by the proxy hot-reload scope.')
-param appConfigLabel string = ''
+@description('Principal IDs granted App Configuration Data Owner for provisioning-only data reconciliation. Keep application identities out of this list.')
+param appConfigDataOwnerPrincipalIds array = []
 
 @description('''Principal IDs granted Key Vault Secrets Officer (read/write secrets).
 The api managed identity gets this only when custom tools / BYO MCP is enabled, so
@@ -82,22 +82,11 @@ resource appConfig 'Microsoft.AppConfiguration/configurationStores@2024-05-01' =
   }
 }
 
-// App Configuration key-value resource names encode an optional label after `$`.
-// This harmless warm key makes the managed-identity bootstrap and refresh path
-// observable without changing any proxy routing or policy setting.
-resource appConfigSentinel 'Microsoft.AppConfiguration/configurationStores/keyValues@2024-05-01' = {
-  parent: appConfig
-  name: empty(appConfigLabel) ? 'Warm:Sentinel' : 'Warm:Sentinel$${appConfigLabel}'
-  properties: {
-    value: 'ready'
-    contentType: 'text/plain'
-  }
-}
-
 // Built-in role IDs
 var kvSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6' // Key Vault Secrets User
 var kvSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7' // Key Vault Secrets Officer (built-in role GUID as defined in this Azure environment)
 var appConfigDataReaderRoleId = '516239f1-63e1-4d78-a4de-a74fb236a071' // App Configuration Data Reader
+var appConfigDataOwnerRoleId = '5ae67dd6-50cb-40e7-96ff-dc2bfa4b606b' // App Configuration Data Owner
 
 resource kvRoleAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in keyVaultReaderPrincipalIds: {
   name: guid(keyVault.id, pid, kvSecretsUserRoleId)
@@ -124,6 +113,16 @@ resource appConfigRoleAssignments 'Microsoft.Authorization/roleAssignments@2022-
   scope: appConfig
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', appConfigDataReaderRoleId)
+    principalId: pid
+    principalType: 'ServicePrincipal'
+  }
+}]
+
+resource appConfigDataOwnerAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in appConfigDataOwnerPrincipalIds: {
+  name: guid(appConfig.id, pid, appConfigDataOwnerRoleId)
+  scope: appConfig
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', appConfigDataOwnerRoleId)
     principalId: pid
     principalType: 'ServicePrincipal'
   }

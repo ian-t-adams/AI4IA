@@ -96,9 +96,9 @@ window.AI4IA_SERVICES = [
   {
     key: "appconfig", name: "App Configuration", azureType: "Microsoft.AppConfiguration/configurationStores",
     group: "Config", icon: "🎛️", module: "keyvault.bicep", resourcePattern: "appcs-ai4ia-*",
-    summary: "A label-aware Warm:Sentinel makes the proxy managed-identity bootstrap and refresh path active without " +
-      "seeding any behavior-changing routing or policy setting; the web and API do not consume this plane.",
-    identity: "id-proxy alone has App Configuration Data Reader",
+    summary: "Postprovision reconciles a label-aware Warm:Sentinel through the OIDC deployment identity with Entra auth, making " +
+      "the proxy bootstrap/refresh path active without behavior-changing settings or an ARM pass-through race.",
+    identity: "deployment identity has narrow Data Owner for reconciliation; id-proxy is read-only; web/API have no data role",
     docs: [["Azure App Configuration", "https://learn.microsoft.com/azure/azure-app-configuration/overview"]],
   },
   {

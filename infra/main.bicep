@@ -13,7 +13,7 @@ param environmentName string
 @description('Primary location for the resource group and shared resources.')
 param location string = 'eastus2'
 
-@description('Object/principal id of the OIDC deployment identity. When set, it receives Content Understanding Contributor on the primary account, Foundry User on the enabled primary toolbox project, and API Center Data Reader on the enabled private catalog. This is a principalId, never the managed identity clientId.')
+@description('Object/principal id of the OIDC deployment identity. When set, it receives provisioning-only App Configuration Data Owner, Content Understanding Contributor on the primary account, Foundry User on the enabled primary toolbox project, and API Center Data Reader on the enabled private catalog. This is a principalId, never the managed identity clientId.')
 param deploymentPrincipalId string = ''
 
 @description('Accountable owner tag value. Override per deployment; do not rely on a personal repo default.')
@@ -389,9 +389,11 @@ module keyvault 'modules/keyvault.bicep' = {
     // runtime vault path is the optional per-user MCP secret store, and Secrets
     // Officer already includes read/write when that feature is enabled.
     keyVaultReaderPrincipalIds: []
-    // SimpleL7Proxy is the only runtime App Configuration consumer.
+    // SimpleL7Proxy is the only runtime App Configuration consumer and remains read-only.
     appConfigReaderPrincipalIds: [proxyIdentity.principalId]
-    appConfigLabel: proxyAppConfigLabel
+    // The deployment identity reconciles Warm:Sentinel after ARM completes. Never
+    // grant this write role to web, api, or proxy runtime identities.
+    appConfigDataOwnerPrincipalIds: empty(deploymentPrincipalId) ? [] : [deploymentPrincipalId]
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     enablePurgeProtection: keyVaultPurgeProtection
     // Custom tools / BYO MCP: the api MI writes per-user MCP
@@ -1066,6 +1068,7 @@ output AZURE_TAGS object = tags
 output AZURE_KEY_VAULT_NAME string = keyvault.outputs.keyVaultName
 output AZURE_KEY_VAULT_URI string = keyvault.outputs.keyVaultUri
 output AZURE_APP_CONFIG_ENDPOINT string = keyvault.outputs.appConfigEndpoint
+output AZURE_APP_CONFIG_LABEL string = proxyAppConfigLabel
 output AZURE_COSMOS_ENDPOINT string = data.outputs.cosmosEndpoint
 output AZURE_COSMOS_DATABASE string = data.outputs.cosmosDatabaseName
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = platform.outputs.acrLoginServer

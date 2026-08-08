@@ -24,7 +24,7 @@ feature resources.
 | `identity.bicep` | User-assigned managed identities |
 | `monitoring.bicep` | Log Analytics and workspace-based Application Insights |
 | `network.bicep` / `privateendpoints.bicep` | Optional VNet/private-endpoint isolation |
-| `keyvault.bicep` | Key Vault and App Configuration with a label-aware warm sentinel |
+| `keyvault.bicep` | Key Vault and App Configuration RBAC; postprovision reconciles the label-aware warm sentinel with the deployment identity |
 | `foundry.bicep` / `models.bicep` | Foundry accounts/projects and catalog-driven deployments |
 | `data.bicep` | Cosmos (canonical state) plus document/media/blob containers; PostgreSQL was retired and deleted |
 | `search.bicep` | Azure AI Search service and RBAC |

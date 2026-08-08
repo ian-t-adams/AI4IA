@@ -21,6 +21,7 @@ STATUS_SOURCE = (ROOT / "scripts" / "status-snapshot.ps1").read_text(encoding="u
 PROXY_APPCONFIG = (
     ROOT / "proxy" / "SimpleL7Proxy" / "Config" / "AppConfigService.cs"
 ).read_text(encoding="utf-8")
+POSTPROVISION = (ROOT / "scripts" / "postprovision.ps1").read_text(encoding="utf-8")
 
 
 def _block(text: str, start_pattern: str) -> str:
@@ -79,18 +80,56 @@ class EventHubsPostureTests(unittest.TestCase):
 
 
 class ActiveConfigurationTests(unittest.TestCase):
-    def test_label_aware_sentinel_matches_the_proxy_refresh_contract(self) -> None:
-        self.assertIn(
-            "Microsoft.AppConfiguration/configurationStores/keyValues@2024-05-01",
+    @staticmethod
+    def _assert_sentinel_contract(main: str, keyvault: str, postprovision: str) -> None:
+        # ARM keyValue children require pass-through auth when local auth is off.
+        # The hook intentionally avoids that same-deployment RBAC propagation race.
+        assert "Microsoft.AppConfiguration/configurationStores/keyValues@" not in keyvault
+        assert "param appConfigDataOwnerPrincipalIds array = []" in keyvault
+        assert "for pid in appConfigDataOwnerPrincipalIds" in keyvault
+        assert "scope: appConfig" in keyvault
+        assert "5ae67dd6-50cb-40e7-96ff-dc2bfa4b606b" in keyvault
+        assert (
+            "appConfigDataOwnerPrincipalIds: empty(deploymentPrincipalId) "
+            "? [] : [deploymentPrincipalId]"
+        ) in main
+        assert "appConfigReaderPrincipalIds: [proxyIdentity.principalId]" in main
+        assert "output AZURE_APP_CONFIG_LABEL string = proxyAppConfigLabel" in main
+        assert "function Register-AppConfigurationSentinel" in postprovision
+        assert "'--auth-mode', 'login'" in postprovision
+        assert "$maxAttempts = 6" in postprovision
+        assert "-Status 'WARN'" in postprovision
+
+    def test_sentinel_uses_postprovision_entra_auth_and_narrow_roles(self) -> None:
+        self._assert_sentinel_contract(MAIN, KEYVAULT, POSTPROVISION)
+        owner_assignment = _block(
             KEYVAULT,
+            r"resource appConfigDataOwnerAssignments "
+            r"'Microsoft\.Authorization/roleAssignments@2022-04-01'",
         )
-        self.assertIn("'Warm:Sentinel$${appConfigLabel}'", KEYVAULT)
-        self.assertIn("value: 'ready'", KEYVAULT)
-        self.assertIn("appConfigLabel: proxyAppConfigLabel", MAIN)
+        self.assertIn("for pid in appConfigDataOwnerPrincipalIds", owner_assignment)
+        self.assertNotIn("apiIdentity", owner_assignment)
+        self.assertNotIn("proxyIdentity", owner_assignment)
+        self.assertNotIn("webIdentity", owner_assignment)
         self.assertIn(
             'GetConfigurationSettingAsync("Warm:Sentinel", _labelFilter',
             PROXY_APPCONFIG,
         )
+
+    def test_contract_detects_auth_retry_and_role_guard_mutations(self) -> None:
+        mutations = (
+            (MAIN.replace(
+                "appConfigDataOwnerPrincipalIds: empty(deploymentPrincipalId) "
+                "? [] : [deploymentPrincipalId]",
+                "appConfigDataOwnerPrincipalIds: [deploymentPrincipalId]",
+            ), KEYVAULT, POSTPROVISION),
+            (MAIN, KEYVAULT, POSTPROVISION.replace("'--auth-mode', 'login'", "'--auth-mode', 'key'")),
+            (MAIN, KEYVAULT, POSTPROVISION.replace("$maxAttempts = 6", "$maxAttempts = 1")),
+        )
+        for mutated in mutations:
+            with self.subTest(mutation=mutated):
+                with self.assertRaises(AssertionError):
+                    self._assert_sentinel_contract(*mutated)
 
 
 class LeanMonitoringTests(unittest.TestCase):

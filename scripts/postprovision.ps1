@@ -37,9 +37,14 @@
        proxy /openai URL, while realtime must be the APIM /openai URL. This catches
        reversed or looped module wiring before an application image is deployed.
 
+    5. App Configuration sentinel (ADDITIVE). Reconciles Warm:Sentinel through the
+       signed-in deployment identity after ARM role creation, with bounded retries
+       for data-plane RBAC propagation. A final failure is a visible WARN.
+
   Cross-platform: uses .NET (HttpClient, System.Net.Dns) instead of Windows-only
   cmdlets so the same script runs under Windows PowerShell 5.1 and pwsh 7 on the
-  Linux CI runner. Read-only and idempotent - safe to re-run.
+  Linux CI runner. Idempotent and safe to re-run; its only writes are the documented
+  App Configuration sentinel and Content Understanding defaults reconciliation.
 #>
 [CmdletBinding()]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'RequireApiHealth',
@@ -287,6 +292,63 @@ function Test-CustomDomainDns {
 Write-Host '== AI4IA postprovision smoke tests ==' -ForegroundColor Cyan
 $script:AzdEnv = Get-AzdEnvMap
 
+function Register-AppConfigurationSentinel {
+  # Do not deploy keyValues as ARM children: a store with local authentication
+  # disabled requires ARM pass-through mode, and a role created in that same
+  # deployment may not have propagated to the data plane yet. Reconcile after
+  # provision through the already signed-in deployment identity instead.
+  $endpoint = Get-EnvValue 'AZURE_APP_CONFIG_ENDPOINT'
+  if ([string]::IsNullOrWhiteSpace($endpoint)) {
+    Add-Result -Name 'App Configuration sentinel' -Status 'SKIP' -Detail 'AZURE_APP_CONFIG_ENDPOINT not set'
+    return
+  }
+
+  $label = Get-EnvValue 'AZURE_APP_CONFIG_LABEL'
+  if ([string]::IsNullOrWhiteSpace($label)) {
+    # Backward-compatible fallback for an existing azd environment that predates
+    # the explicit Bicep output. Keep an empty value truly unlabeled.
+    $label = Get-EnvValue 'AI4IA_PROXY_APPCONFIG_LABEL'
+  }
+
+  $arguments = @(
+    'appconfig', 'kv', 'set',
+    '--endpoint', $endpoint,
+    '--key', 'Warm:Sentinel',
+    '--value', 'ready',
+    '--auth-mode', 'login',
+    '--yes',
+    '--output', 'none'
+  )
+  if (-not [string]::IsNullOrWhiteSpace($label)) {
+    $arguments += @('--label', $label)
+  }
+
+  $maxAttempts = 6
+  for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    try {
+      # Suppress CLI output so credentials or service diagnostics cannot leak.
+      & az @arguments 2>$null | Out-Null
+      if ($LASTEXITCODE -eq 0) {
+        $scope = if ([string]::IsNullOrWhiteSpace($label)) { 'unlabeled' } else { 'configured label' }
+        Add-Result -Name 'App Configuration sentinel' -Status 'PASS' -Detail "Warm:Sentinel=ready ($scope)"
+        return
+      }
+    } catch {
+      # Retry below. Deliberately do not echo the exception or command arguments.
+      Write-Verbose 'App Configuration data-plane set attempt failed; retrying without emitting CLI details.'
+    }
+    if ($attempt -lt $maxAttempts) {
+      # The store-scoped Data Owner assignment from the immediately preceding ARM
+      # deployment can take tens of seconds to reach App Configuration data plane.
+      Start-Sleep -Seconds 10
+    }
+  }
+
+  # Sentinel registration is additive, like CU defaults: keep the deploy moving,
+  # but never let an unconfigured warm-refresh path look like a silent success.
+  Add-Result -Name 'App Configuration sentinel' -Status 'WARN' -Detail "Entra-authenticated set failed after $maxAttempts attempts"
+}
+
 function Register-ContentUnderstandingDefault {
   param(
     [string]$CatalogPath = (Join-Path $PSScriptRoot '..\app\api\src\ai4ia_api\data\model_catalog.json')
@@ -383,6 +445,7 @@ $checks = @(
   @{ Label = 'API health'; Fn = { Test-ApiHealth } }
   @{ Label = 'Custom-domain DNS'; Fn = { Test-CustomDomainDns } }
   @{ Label = 'Gateway topology outputs (hard gate)'; Fn = { Test-GatewayTopology } }
+  @{ Label = 'App Configuration sentinel'; Fn = { Register-AppConfigurationSentinel } }
   @{ Label = 'Content Understanding defaults'; Fn = { Register-ContentUnderstandingDefault } }
 )
 foreach ($check in $checks) {
