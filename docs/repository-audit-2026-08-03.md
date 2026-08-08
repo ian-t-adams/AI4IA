@@ -779,11 +779,10 @@ to have made. Web-search results, recalled memory, and session-uploaded document
 are still cited as prose and remain unattested.
 
 The span-level fix does not bind a toolbox skill. Foundry exposes skills as MCP
-resources, while AI4IA's MCP client implements only `tools/list` and `tools/call`;
-the authored draft also required Markdown URL citations, conflicting with the
-server-owned `[[cite:S1]]` contract above. The dead draft and provisioner were
-removed rather than publishing an asset the app cannot consume. This still does
-**not** close claim-level entailment, which remains the point of this finding.
+resources, while AI4IA's MCP client implements only `tools/list` and `tools/call`.
+Its server-owned `[[cite:S1]]` contract also cannot be delegated to instructions
+that produce a different citation syntax. This still does **not** close claim-level
+entailment, which remains the point of this finding.
 
 #### P1-15: Admin refresh can consume most of a 1 GiB API replica
 
@@ -939,7 +938,6 @@ as EU-resident merely because its endpoint is in Sweden.
 | Voice dictation hook | `useVoiceRecorder` and `transcribeAudio` have no production consumer. |
 | Voice agent/tool preferences | Computed in `ChatApp`, not accepted/rendered by the settings panel. |
 | Foundry safety annotations | Generated for every deployment but neither enforced nor consumed by the application. |
-| Citation-discipline skill | Authored and included in the example manifest; the canonical live toolbox binds no skills. |
 | Image background studio | Duplicates chat image generation and conflicts with the conversation-first product design. |
 | Azure Monitor workspace | **Closed:** removed from IaC; Log Analytics, workspace-based Application Insights, and admin Azure Monitor queries remain. |
 | App Configuration | **Closed:** a label-aware `Warm:Sentinel` now exercises managed-identity bootstrap and refresh without changing runtime policy. |

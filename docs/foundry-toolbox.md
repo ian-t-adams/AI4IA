@@ -127,7 +127,7 @@ valid.
 | `raiPolicyName` | Optional Responsible AI policy already on the project (`foundry.bicep` provisions `ai4ia-annotate-only`). |
 | `connections` | Project connections referenced by name (credentials live in the connection, never here). |
 | `tools` | Built-in and MCP tools (see per-tool table below). At most one unnamed tool per `type`. |
-| `skills` | Existing project skills to bind (create them first with the skills script). |
+| `skills` | Generic Foundry skill references. Keep empty in AI4IA manifests until the runtime supports MCP resources. |
 
 `camelCase` keys in the manifest (e.g. `serverLabel`, `projectConnectionId`) are translated to
 the API's `snake_case` by `scripts/provision-foundry-toolbox.py`.
@@ -413,8 +413,8 @@ scaffold and the APIM-fronting commands are shipped and tested.
 - `app/api/tests/test_foundry_toolbox.py` pins, with no Azure SDK or network: manifest
   validation (checked-in manifest matches the live toolbox, bad name / too many unnamed tools /
   non-toolbox tool types flagged), camelCase→snake_case tool projection, the consumer URL, the
-  portable mcp-servers.json entry shape (`foundryToolbox: true`, no hardcoded URL), the azd YAML,
-  and SKILL.md parse/validate. `jsonschema`-guarded tests assert the projected entry validates
+  portable mcp-servers.json entry shape (`foundryToolbox: true`, no hardcoded URL), and the azd
+  YAML. `jsonschema`-guarded tests assert the projected entry validates
   against `infra/mcp-servers.schema.json` (the load-bearing cross-seam guarantee) and that the
   manifests match `toolbox.manifest.schema.json`, including strict per-type positive/negative
   cases for every one of the 13 tool types (required fields, cardinality, and cross-type field

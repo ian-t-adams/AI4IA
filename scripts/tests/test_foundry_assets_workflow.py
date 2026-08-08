@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -9,6 +10,13 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "foundry-assets.yml"
+REMOVED_SKILL_REFERENCES = (
+    "citation-" + "discipline",
+    "provision-foundry-" + "skills.py",
+    "foundry/" + "skills/",
+    "SKILL.md parse/" + "validate",
+    "toolbox/" + "skills scripts",
+)
 
 
 class FoundryAssetsWorkflowTests(unittest.TestCase):
@@ -65,6 +73,26 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
             self.assertNotIn("continue-on-error", step)
         self.assertIn("--check-access", steps[access_index]["run"])
         self.assertIn("--create", steps[toolbox_index]["run"])
+
+    def test_deleted_skill_has_no_stale_repository_references(self) -> None:
+        tracked = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout.decode().split("\0")
+        stale: list[str] = []
+        for relative_path in tracked:
+            if not relative_path:
+                continue
+            try:
+                text = (ROOT / relative_path).read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            for reference in REMOVED_SKILL_REFERENCES:
+                if reference.lower() in text.lower():
+                    stale.append(f"{relative_path}: {reference}")
+        self.assertEqual([], stale)
 
 
 if __name__ == "__main__":

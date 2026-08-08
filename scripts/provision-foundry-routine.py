@@ -152,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {e}", file=sys.stderr)
         return 1
 
-    # Informational only: unlike the toolbox/skills scripts, this script has no live call, so a
+    # Informational only: unlike the toolbox script, this script has no live call, so a
     # missing endpoint is not fatal here (see module docstring: 'Why there is no --create').
     try:
         endpoint = resolve_project_endpoint(args.project_endpoint)
