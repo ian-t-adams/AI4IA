@@ -29,7 +29,7 @@ Omitting it is exactly what broke the first cutover attempt — see
 | Storage | **yes** | `st<uniqueString(rg)>` / `sti<uniqueString(rg)>` | `stabc123…` |
 | APIM | **yes** | `apim-mcp-<workload>-<env>-<suffix>` (≤50) | `apim-mcp-ai4ia-dev-3k7x` |
 | API Center | **yes** | `apic-<workload>-<env>-<suffix>` | `apic-ai4ia-dev-3k7x` |
-| Event Hubs namespace | **yes** | `evhns-<workload>-<env>-<suffix>` | `evhns-ai4ia-dev-3k7x` |
+| Event Hubs namespace (when proxy telemetry is enabled) | **yes** | `evhns-<workload>-<env>-<suffix>` | `evhns-ai4ia-dev-3k7x` |
 | App Configuration | **yes** | `appcs-<workload>-<env>-<suffix>` | `appcs-ai4ia-dev-3k7x` |
 | Log Analytics | no | `log-<workload>-<env>` | `log-ai4ia-dev` |
 | App Insights | no | `appi-<workload>-<env>` | `appi-ai4ia-dev` |

@@ -1750,8 +1750,10 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("name: 'proxyasyncbus'", main)
         self.assertIn("serviceBusDnsZoneId", network)
         self.assertIn(
-            "proxyEventHubTelemetryEnabled ? [\n  proxyIdentity.principalId", main
+            "module eventhubs 'modules/eventhubs.bicep' = if (proxyEventHubTelemetryEnabled)",
+            main,
         )
+        self.assertNotIn("telemetrySenderPrincipalIds", main)
 
     def test_proxy_pin_is_consistent(self) -> None:
         pin = "d9eb1d1fa42820792a9699bfc253562fba07d977"

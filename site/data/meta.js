@@ -66,7 +66,7 @@ window.AI4IA_META = {
     { name: "Official MCP plane (shared APIM + Foundry toolbox)", on: true,
       note: "Curated servers reached through the shared active APIM, gated on one subscription key." },
     { name: "Private tool catalog (API Center)", on: true,
-      note: "Inventories the official MCP servers for governance + Foundry discovery." },
+      note: "IaC-owned MCP assets deploy the governed APIM consumer URLs for Foundry discovery." },
     { name: "Automatic context summarization (auto-fold)", on: true, param: "autoSummarizationEnabled" },
     { name: "Admin dashboards (usage rollups + Azure Monitor resource panels)", on: true },
     { name: "Inline-attachment code interpreter", on: true, param: "inlineDocumentComputeEnabled",
@@ -91,7 +91,7 @@ window.AI4IA_META = {
     { layer: "Search", tech: "Azure AI Search (optional retrieval)", host: "Azure AI Search" },
     { layer: "Storage", tech: "Blob (documents + generated media)", host: "Azure Storage" },
     { layer: "AI services", tech: "Azure AI Foundry (3 regions) + Content Understanding", host: "Azure AI Foundry" },
-    { layer: "Observability", tech: "App Insights · Log Analytics · Azure Monitor workspace", host: "Azure Monitor" },
+    { layer: "Observability", tech: "App Insights · Log Analytics", host: "Azure Monitor" },
     { layer: "IaC / deploy", tech: "Bicep + Azure Developer CLI (azd)", host: "GitHub Actions (OIDC)" },
   ],
 };

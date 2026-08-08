@@ -8,9 +8,9 @@ window.AI4IA_REQUIREMENTS = {
     catalog: "infra/models.json is the deployment source of truth for model deployments and also generates the packaged API model catalog",
     modules: [
       { name: "identity.bicep", purpose: "User-assigned managed identities for the web/api/proxy services (keyless auth foundation)." },
-      { name: "monitoring.bicep", purpose: "Observability baseline: Log Analytics + Application Insights + Azure Monitor workspace." },
+      { name: "monitoring.bicep", purpose: "Observability baseline: Log Analytics + workspace-based Application Insights." },
       { name: "containerapps.bicep", purpose: "Container platform: Azure Container Registry + Container Apps managed environment." },
-      { name: "keyvault.bicep", purpose: "Secrets + configuration baseline: RBAC-mode Key Vault + App Configuration." },
+      { name: "keyvault.bicep", purpose: "Secrets + configuration baseline: RBAC-mode Key Vault + active App Configuration sentinel." },
       { name: "data.bicep", purpose: "Application data store: Cosmos DB (canonical). Identity-only auth." },
       { name: "search.bicep", purpose: "Azure AI Search for indexing/retrieval. AAD-only; provisioned only when search is enabled." },
       { name: "foundry.bicep", purpose: "Azure AI Foundry (Cognitive Services) account + default project for one region." },
@@ -19,8 +19,8 @@ window.AI4IA_REQUIREMENTS = {
       { name: "gateway.bicep", purpose: "Model gateway: public SimpleL7Proxy HTTP/SSE edge -> APIM policy/realtime APIs -> Foundry." },
       { name: "proxyasync.bicep", purpose: "Default-off AVM Blob + Service Bus backing for explicit durable proxy async jobs." },
       { name: "mcpgateway.bicep", purpose: "Official MCP children on the shared active Basic v2 APIM, isolated by an MCP-only product and subscription key." },
-      { name: "apicenter.bicep", purpose: "Private tool catalog (API Center) inventorying the official MCP servers." },
-      { name: "eventhubs.bicep", purpose: "Identity-only Event Hubs namespace + hub reserved for optional proxy metadata export; the live export flag is off." },
+      { name: "apicenter.bicep", purpose: "Private tool catalog with IaC-owned MCP APIs, versions, APIM environment, and deployments." },
+      { name: "eventhubs.bicep", purpose: "Default-off Event Hubs namespace + hub created only for optional proxy metadata export." },
       { name: "durabletask.bicep", purpose: "Opt-in Durable Task Scheduler + task hub for workflow runs that must survive replica loss." },
       { name: "web.bicep", purpose: "Next.js frontend container app (azd-service-name: web)." },
       { name: "api.bicep", purpose: "FastAPI backend container app (azd-service-name: api)." },
@@ -42,11 +42,11 @@ window.AI4IA_REQUIREMENTS = {
     { assignee: "id-api", role: "Durable Task Data Contributor", scope: "Durable Task hub", why: "Schedule and resume owner-scoped durable workflow runs when the feature is enabled.", module: "durabletask.bicep" },
     { assignee: "id-web / id-api / id-proxy", role: "AcrPull", scope: "Container Registry", why: "Pull container images to deploy.", module: "containerapps.bicep" },
     { assignee: "Shared apim-mcp APIM (system-assigned)", role: "Cognitive Services OpenAI User + Cognitive Services User", scope: "Foundry accounts", why: "Reach model deployments with managed identity (no keys).", module: "apimcore.bicep / gateway.bicep / foundry.bicep" },
-    { assignee: "id-proxy", role: "App Configuration Data Reader", scope: "App Configuration", why: "Read warm/cold proxy settings without local-auth credentials.", module: "keyvault.bicep / gateway.bicep" },
+    { assignee: "id-proxy", role: "App Configuration Data Reader", scope: "App Configuration", why: "Read the label-aware sentinel and any governed warm/cold proxy settings without local-auth credentials.", module: "keyvault.bicep / gateway.bicep" },
     { assignee: "id-proxy", role: "Event Hubs Data Sender", scope: "Telemetry namespace", why: "Optional metadata-only proxy telemetry when enabled.", module: "eventhubs.bicep / gateway.bicep" },
     { assignee: "id-proxy", role: "Storage Blob Data Contributor + Service Bus Data Sender/Receiver", scope: "Dedicated proxy async resources", why: "Optional durable async request/result processing when enabled.", module: "proxyasync.bicep" },
     { assignee: "Shared apim-mcp APIM (system-assigned)", role: "Foundry User", scope: "Primary Foundry project", why: "Mint the AAD bearer the Foundry toolbox MCP endpoint requires (when toolbox enabled).", module: "apimcore.bicep / foundry.bicep" },
-    { assignee: "Telemetry principals", role: "Event Hubs Data Sender / Data Receiver", scope: "Event Hubs namespace", why: "Reserved identity-only telemetry access; no API producer/consumer is active and live proxy export is off.", module: "eventhubs.bicep" },
+
   ],
   packages: {
     api: {

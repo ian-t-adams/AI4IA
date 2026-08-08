@@ -115,13 +115,13 @@ $TypeMap = @{
     'microsoft.documentdb/databaseaccounts'                 = @{ label = 'Cosmos DB (NoSQL)';             group = 'Data' }
     'microsoft.durabletask/schedulers'                       = @{ label = 'Durable Task Scheduler';        group = 'Compute' }
     'microsoft.search/searchservices'                       = @{ label = 'Azure AI Search';               group = 'Data' }
-    'microsoft.eventgrid/systemtopics'                      = @{ label = 'Event Grid System Topic';       group = 'Messaging' }
-    'microsoft.eventhub/namespaces'                         = @{ label = 'Event Hubs Namespace';          group = 'Messaging' }
+    'microsoft.eventgrid/systemtopics'                      = @{ label = 'Defender for Storage Event Topic'; group = 'Security' }
+    'microsoft.eventhub/namespaces'                         = @{ label = 'Event Hubs (optional telemetry)'; group = 'Messaging' }
     'microsoft.insights/components'                         = @{ label = 'Application Insights';           group = 'Observability' }
     'microsoft.insights/actiongroups'                       = @{ label = 'Monitor Action Group';          group = 'Observability' }
     'microsoft.keyvault/vaults'                             = @{ label = 'Key Vault';                     group = 'Security' }
     'microsoft.managedidentity/userassignedidentities'      = @{ label = 'User-Assigned Managed Identity';group = 'Security' }
-    'microsoft.monitor/accounts'                            = @{ label = 'Azure Monitor Workspace';       group = 'Observability' }
+    'microsoft.monitor/accounts'                            = @{ label = 'Retained Monitor Workspace (not in IaC)'; group = 'Other' }
     'microsoft.operationalinsights/workspaces'              = @{ label = 'Log Analytics Workspace';       group = 'Observability' }
     'microsoft.storage/storageaccounts'                     = @{ label = 'Storage Account';               group = 'Data' }
     'microsoft.apicenter/services'                          = @{ label = 'API Center';                    group = 'Gateway' }

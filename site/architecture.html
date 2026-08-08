@@ -109,7 +109,7 @@ flowchart LR
   subgraph Obs["Observability"]
     Ai["App Insights"]
     La["Log Analytics"]
-    Amw["Monitor workspace"]
+
   end
   WebCA --> ApiCA
   ApiCA --> ProxyCA --> ApimMcp --> AI
@@ -139,7 +139,7 @@ flowchart LR
   idapi -->|"Storage Blob Data Contributor"| St["Storage x2"]
   idapi -->|"Search Index + Service Contributor"| Srch["AI Search"]
   idapi -->|"Key Vault Secrets User / Officer"| Kv["Key Vault"]
-  idapi -->|"App Config Data Reader"| Ac["App Configuration"]
+
   idapi -->|"Monitoring Reader (sub scope)"| Mon["Azure Monitor"]
   idweb["id-web"] -->|"AcrPull"| Acr["ACR"]
   idproxy["id-proxy"] -->|"AcrPull"| Acr

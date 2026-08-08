@@ -198,6 +198,10 @@ covered. The following are now closed:
   approved (#331);
 - an unavailable entitlement store now renders **Unavailable**, never
   **Unlimited** (#332);
+- dormant Event Hubs and Managed Prometheus infrastructure no longer ships by
+  default, App Configuration has a real sentinel, Defender-owned Event Grid is
+  documented as active security eventing, and API Center assets are IaC-owned
+  rather than a manual half-step (current follow-up);
 - rollback state is captured before infrastructure reconciliation can replace
   app images with Bicep's greenfield quickstart placeholders; failures after
   provision starts restore the true pre-provision revisions, while manual
@@ -420,7 +424,7 @@ environment.
 | Content safety | **Critical intentional gap** | Foundry harm, jailbreak, and protected-material filters annotate but never block; the application does not consume those annotations or provide an equivalent enforcement layer. |
 | Agents and built-in tools | **Implemented** | User ownership, allowlists, execution-time authorization, budgets, aliases, and redaction are real. |
 | BYO MCP | **Implemented, default-off, partial approval** | Key Vault secret storage, public-HTTPS validation, DNS revalidation, and IP pinning exist. Per-invocation human approval is not exposed; CGNAT is not rejected. |
-| Official MCP/Foundry Toolbox | **Partial/manual** | APIM and runtime discovery exist. Toolbox/API Center assets require operator scripts and can drift from IaC. |
+| Official MCP/Foundry Toolbox | **Implemented, toolbox provisioning manual** | APIM/runtime discovery and API Center MCP assets are IaC-owned. Creating the Foundry toolbox itself remains an operator script. |
 | Workflows | **Implemented, partial tool contract** | Sync and Durable Task execution exist. Server validation accepts/inherits tools the workflow runner cannot execute; the web warns but does not make the server authoritative. |
 | Durable workflows | **Implemented and enabled by the checked-in azd parameter default** | Scheduler-backed runs are owner-scoped. Live state was not revalidated; documentation describes the template/live posture inconsistently, and timeout termination depends on polling. |
 | Memory | **Implemented, partial UX** | Cosmos text/vector memory, ETags, epochs, CRUD, recall, and deletion fencing are strong. Global consent and recall provenance remain intentional gaps. |
@@ -432,7 +436,7 @@ environment.
 | Admin telemetry | **Implemented, partial truth** | Server-owned metrics/KQL and partial/unavailable states exist. Some web panels convert failure/unknown cost to empty or zero. |
 | Foundry A2A runtime | **Not present** | Repository scripts generate/validate projections; FastAPI does not execute remote A2A agents. |
 | Foundry routine runtime | **Not present, intentional** | Current SDK path is validation/planning-only, despite conflicting wording in schema/example docs. |
-| Clean-room `azd up` | **Conditional demo reproduction** | Core resources deploy from Bicep. Identity, quota/model access, provider checks, domains, Toolbox/API Center assets, and production posture require additional work. |
+| Clean-room `azd up` | **Conditional demo reproduction** | Core resources and API Center MCP assets deploy from Bicep. Identity, quota/model access, provider checks, domains, Foundry Toolbox creation, and production posture require additional work. |
 | Self-documenting portal | **Implemented, stale/incorrect operational truth** | Docs catalog is complete and generated. Status, requirements, architecture, feature posture, and per-service live counts contain drift; mobile navigation does not reflow. |
 
 ## Does the application work?
@@ -941,10 +945,10 @@ as EU-resident merely because its endpoint is in Sweden.
 | Foundry safety annotations | Generated for every deployment but neither enforced nor consumed by the application. |
 | Citation-discipline skill | Authored and included in the example manifest; the canonical live toolbox binds no skills. |
 | Image background studio | Duplicates chat image generation and conflicts with the conversation-first product design. |
-| Azure Monitor workspace | Provisioned without DCR/scrape wiring. |
-| App Configuration | Provisioned unconditionally with no key-values; proxy use is optional. |
-| Event Hubs | Standard namespace is unconditional while proxy Event Hub telemetry defaults off. |
-| API Center identity/assets | Container/identity are IaC; asset registration remains manual and the identity has no demonstrated role use. |
+| Azure Monitor workspace | **Closed:** removed from IaC; Log Analytics, workspace-based Application Insights, and admin Azure Monitor queries remain. |
+| App Configuration | **Closed:** a label-aware `Warm:Sentinel` now exercises managed-identity bootstrap and refresh without changing runtime policy. |
+| Event Hubs | **Closed:** the namespace, diagnostics, proxy sender role, gateway inputs, and outputs are conditional on the default-off telemetry flag; API sender/receiver grants were removed. |
+| API Center assets | **Closed:** each official MCP server is an IaC-owned API/version/deployment using its APIM consumer URL; the unused service identity and manual registration script were removed. |
 | APIM official-MCP product | Exists even when the official-MCP runtime feature is disabled. |
 | Numerous Bicep outputs | Not consumed by downstream IaC; either remove them or declare them stable operator contracts. |
 | Manual operator scripts | Model availability, APIM compilation, Entra bootstrap, Foundry provisioning, migration, canary, teardown, and purge are not live-behavior CI. Some are intentionally manual; several need stronger behavioral tests. |
@@ -1045,7 +1049,7 @@ name.
 - Two Entra application registrations and, for GitHub, OIDC federation.
 - Real owner/publisher/budget/alert values.
 - Custom-domain DNS and initial hostname bootstrap.
-- Foundry Toolbox and API Center data-plane asset reconciliation.
+- Foundry Toolbox creation (API Center asset reconciliation is IaC-owned).
 - Web IQ credentials or verified managed-identity entitlement.
 - Potential retry around the documented Cosmos vector-capability ordering.
 

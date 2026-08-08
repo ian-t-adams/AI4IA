@@ -1,4 +1,5 @@
-// Telemetry/eventing backbone: Event Hubs namespace + hub for cost/usage events.
+// Optional metadata telemetry export for SimpleL7Proxy. The root module invokes
+// this module only when proxyEventHubTelemetryEnabled is true.
 // Identity-based auth only (local/SAS auth disabled).
 @description('Location for the namespace.')
 param location string
@@ -16,10 +17,10 @@ param environmentName string
 @minLength(8)
 param uniqueSuffix string
 
-@description('Principal IDs granted Event Hubs Data Sender (api/proxy emit telemetry).')
+@description('Principal IDs granted Event Hubs Data Sender (proxy metadata export).')
 param senderPrincipalIds array = []
 
-@description('Principal IDs granted Event Hubs Data Receiver (consumers of telemetry).')
+@description('Principal IDs granted Event Hubs Data Receiver (optional external consumers).')
 param receiverPrincipalIds array = []
 
 @description('Central Log Analytics workspace resource id. Diagnostic settings stream namespace logs/metrics there for the admin observability plane.')
@@ -76,10 +77,9 @@ resource receiverAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01
 }]
 
 // Stream namespace operational logs + all platform metrics to the central Log
-// Analytics workspace. The `telemetry` hub is dormant today, so volume is near
-// zero; `OperationalLogs` is the cost-aware management-plane category (verbose
-// archive/Kafka categories are deliberately excluded). Retention follows the
-// workspace (30 days).
+// Analytics workspace. `OperationalLogs` is the cost-aware management-plane
+// category (verbose archive/Kafka categories are deliberately excluded).
+// Retention follows the workspace (30 days).
 resource namespaceDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: 'to-log-analytics'
   scope: namespace

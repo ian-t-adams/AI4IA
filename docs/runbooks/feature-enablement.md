@@ -35,12 +35,12 @@ feature posture.
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | Cosmos, Key Vault URI, Entra auth outside local |
 | Official MCP plane | `AI4IA_OFFICIAL_MCP_ENABLED` | none | `enableOfficialMcp` | MCP-only product/subscription on the shared active Basic v2 APIM + ≥1 server in `infra/mcp-servers.json`; gateway URL + key auto-wired |
 | Foundry toolbox (bridge) | consumed via the official MCP plane (no dedicated flag) | none | `enableFoundryToolbox` (+ `enableOfficialMcp`) | Provisioned toolbox in the default Foundry project + a `foundry-toolbox` entry in `infra/mcp-servers.json`; grants APIM MI the project "Foundry User" role. See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
-| Private tool catalog (API Center) | admin/IaC only (no app-runtime env) | none | `enablePrivateToolCatalog` | Provisions an Azure API Center to inventory the APIM-fronted MCP servers; asset registration is a documented script step (`scripts/provision-private-tool-catalog.py`). See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
+| Private tool catalog (API Center) | admin/IaC only (no app-runtime env) | none | `enablePrivateToolCatalog` | Requires `enableOfficialMcp`; IaC registers each official MCP server with an APIM-fronted deployment. Preview. See [`../foundry-toolbox.md`](../foundry-toolbox.md) |
 | Web IQ search tools | `AI4IA_WEB_SEARCH_ENABLED` | none | `webSearchEnabled` | Web IQ API key or Entra managed identity outside local |
 | Admin resource panels | `AI4IA_RESOURCE_METRICS_ENABLED` + resource ids | admin dashboard | resource-id env from modules | Monitoring Reader and ARM resource ids |
 | Proxy application profiles | proxy runtime only | none | `proxyProfilesEnabled` | Secret-mounted minimal projection **and verified identity-aware app header**; validator blocks enablement with shared-key ingress |
 | Proxy priority reservations | `AI4IA_PROXY_PRIORITIES_ENABLED` | none | `proxyPrioritiesEnabled`, `proxyPriorityWorkers` | Valid `priority:count` reservations; per-replica fairness only. The API and proxy read the **same** switch — see the note below the table |
-| Proxy metadata telemetry | proxy runtime only | none | `proxyEventHubTelemetryEnabled` | Existing Event Hub sender RBAC; no prompt/response/header logging |
+| Proxy metadata telemetry | proxy runtime only | none | `proxyEventHubTelemetryEnabled` | Creates Event Hubs + proxy sender RBAC only when enabled; no prompt/response/header logging |
 | Proxy durable async | proxy runtime only | none | `proxyAsyncEnabled` | Dedicated AVM Blob + Service Bus resources and proxy MI RBAC |
 | Raw-file compute (code interpreter) | `AI4IA_CODE_INTERPRETER_RAW_FILES_ENABLED` | none | `codeInterpreterRawFilesEnabled` | Requires document understanding + document compute + a code-interpreter base URL; `api.bicep` emits the env var only when all three hold. Uploads a document's **original bytes** to the sandbox instead of Content Understanding's parsed text, falling back transparently on unsupported/oversize/failed uploads. Had **no Bicep parameter at all** until now, so it was implemented but unreachable from a normal `azd` deploy |
 | Azure Monitor alerting baseline | n/a (infra only) | none | `enableAlerts`, `alertEmail` | Action group + api-5xx / Cosmos-429 metric alerts. An action group with **no** receiver is legal ARM and notifies nobody — see the note below |
@@ -269,9 +269,10 @@ Normal HTTP/SSE model calls flow:
 application -> SimpleL7Proxy -> APIM -> catalog-selected Foundry deployment
 ```
 
-App Configuration is always connected with the proxy managed identity. Warm
-settings such as priority reservations and header policy refresh on the configured
-interval; Event Hub and async settings are cold and need a revision/restart.
+App Configuration is always connected with the proxy managed identity and contains
+a label-aware `Warm:Sentinel`, so bootstrap and refresh are real even before any
+behavior-changing settings are added. Additional warm settings refresh on the
+configured interval; cold settings need a revision/restart.
 
 - `proxyPrioritiesEnabled=true` requires `proxyPriorityWorkers` such as
   `1:2,3:1`. Reserved capacity and fairness are in-memory **per replica**.
@@ -311,7 +312,7 @@ interval; Event Hub and async settings are cold and need a revision/restart.
   - Unrelated to Azure's paid **Priority Processing** meters, which bill at 2x
     standard. This is queue fairness inside our own proxy and costs nothing.
 - `proxyEventHubTelemetryEnabled=true` sends routing/status/latency metadata to
-  the existing telemetry hub. Request and response header logging remain false;
+  a telemetry namespace and sends routing/status/latency metadata to its hub. Request and response header logging remain false;
   prompts, responses, and profile PII are not emitted. Event Hub is not a queue.
 - `proxyAsyncEnabled=true` provisions dedicated Blob + Service Bus resources,
   disables local auth, and grants `id-proxy` only the data-plane roles needed to
@@ -530,31 +531,18 @@ toolbox/skills/tool-search features are **public preview**.
 ### Private tool catalog (Azure API Center)
 
 `enablePrivateToolCatalog=true` (activated in this repo) provisions an Azure API Center
-(`infra/modules/apicenter.bicep`) to act as a governed inventory of the
-APIM-fronted MCP servers. Its region is `apiCenterLocation` (default `eastus`;
-override via `AI4IA_API_CENTER_LOCATION`) because API Center is not available in
-every region (notably not `eastus2`). It is independent of the MCP plane flags --
-it catalogs whatever exists -- and has **no app-runtime impact** (admin/IaC concern only).
+(`infra/modules/apicenter.bicep`) as a governed inventory of the APIM-fronted MCP
+servers. Its region is `apiCenterLocation` (default `eastus`; override via
+`AI4IA_API_CENTER_LOCATION`) because API Center is unavailable in some regions,
+including `eastus2`. It requires `enableOfficialMcp=true` and has no app-runtime
+setting.
 
-1. Set `enablePrivateToolCatalog=true` and `azd up`. `main.bicep` emits the service
-   name as `AZURE_API_CENTER_NAME`.
-2. Register the servers as MCP assets (a preview, script-driven step; not baked into
-   Bicep):
-
-   ```bash
-   # dry run
-   python scripts/provision-private-tool-catalog.py \
-     --api-center "$AZURE_API_CENTER_NAME" --gateway-url "$AZURE_OFFICIAL_MCP_GATEWAY_URL"
-   # register via SDK (needs the `foundry` extra)
-   python scripts/provision-private-tool-catalog.py --create \
-     --api-center "$AZURE_API_CENTER_NAME" --gateway-url "$AZURE_OFFICIAL_MCP_GATEWAY_URL" \
-     --resource-group "$AZURE_RESOURCE_GROUP" --subscription-id "$AZURE_SUBSCRIPTION_ID"
-   ```
-
-The script catalogs each server's **APIM consumer URL**
-(`https://<mcp-apim-gateway>/<name>/mcp`), so discovery stays on the proxy and the
-catalog integrates with Microsoft Foundry private tool catalogs. API Center MCP
-asset registration is **public preview**.
+Run `azd up`; no follow-up registration command is required. For each official MCP
+server, Bicep creates an MCP API, preview version, shared APIM environment, and active
+deployment whose runtime URI is `https://<shared-apim>/<name>/mcp`. API Center MCP
+inventory remains public preview. ARM incremental mode does not delete unrelated
+portal-created samples; an authorized operator must remove a retained sample such as
+`swagger-petstore` separately after exact-resource verification.
 
 ### Web IQ tools
 

@@ -204,6 +204,28 @@ class RealtimeOriginTests(unittest.TestCase):
         self.assertEqual(code, 0, f"supplying extra origins must validate:\n{err}")
 
 
+class PrivateToolCatalogPrerequisiteTests(unittest.TestCase):
+    def test_catalog_without_official_mcp_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_parameters(
+                tmp,
+                {"enablePrivateToolCatalog": True, "enableOfficialMcp": False},
+            )
+            with _environment():
+                code, _, err = _run(path)
+        self.assertEqual(code, 1)
+        self.assertIn("requires enableOfficialMcp=true", err)
+
+    def test_catalog_with_official_mcp_passes_that_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_parameters(
+                tmp,
+                {"enablePrivateToolCatalog": True, "enableOfficialMcp": True},
+            )
+            with _environment():
+                code, _, err = _run(path)
+        self.assertEqual(code, 0, err)
+
 class ContradictionTests(unittest.TestCase):
     """Spot-check that the validator still catches contradictions at all.
 
