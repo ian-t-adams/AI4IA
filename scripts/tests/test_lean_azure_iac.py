@@ -15,6 +15,7 @@ APICENTER = (ROOT / "infra" / "modules" / "apicenter.bicep").read_text(encoding=
 FOUNDRY = (ROOT / "infra" / "modules" / "foundry.bicep").read_text(encoding="utf-8")
 MAIN_PARAMETERS = (ROOT / "infra" / "main.parameters.json").read_text(encoding="utf-8")
 DEPLOY_WORKFLOW = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+INFRA_WORKFLOW = (ROOT / ".github" / "workflows" / "infra-validate.yml").read_text(encoding="utf-8")
 SERVICES = (ROOT / "site" / "data" / "services.js").read_text(encoding="utf-8")
 STATUS_SOURCE = (ROOT / "scripts" / "status-snapshot.ps1").read_text(encoding="utf-8")
 PROXY_APPCONFIG = (
@@ -170,6 +171,7 @@ class ApiCenterCatalogTests(unittest.TestCase):
         for resource_type in (
             "services/workspaces/apis@2024-06-01-preview",
             "services/workspaces/apis/versions@2024-06-01-preview",
+            "services/workspaces/apis/versions/definitions@2024-06-01-preview",
             "services/workspaces/environments@2024-06-01-preview",
             "services/workspaces/apis/deployments@2024-06-01-preview",
         ):
@@ -178,6 +180,13 @@ class ApiCenterCatalogTests(unittest.TestCase):
         self.assertNotIn("type: 'SystemAssigned'", APICENTER)
         self.assertIn("for server in servers", APICENTER)
         self.assertIn("'${normalizedGatewayBaseUrl}/${server.name}/mcp'", APICENTER)
+        self.assertIn("environmentId: '/workspaces/default/environments/official-mcp-apim'", APICENTER)
+        self.assertIn(
+            "definitionId: '/workspaces/default/apis/${server.name}/versions/"
+            "v1-preview/definitions/streamable'",
+            APICENTER,
+        )
+        self.assertNotIn("environmentId: apimEnvironment.id", APICENTER)
         self.assertIn("state: 'active'", APICENTER)
         call = _block(MAIN, r"module apicenter 'modules/apicenter\.bicep'")
         self.assertIn("if (enablePrivateToolCatalog && enableOfficialMcp)", call)
@@ -188,6 +197,42 @@ class ApiCenterCatalogTests(unittest.TestCase):
         )
         self.assertIn("servers: officialMcpServers", call)
         self.assertIn("gatewayBaseUrl: apimcore.outputs.gatewayUrl", call)
+
+    def test_operator_reader_is_narrow_and_feature_gated(self) -> None:
+        self.assertIn(
+            "var apiCenterCatalogReaderPrincipalIds = "
+            "(enablePrivateToolCatalog && !empty(deploymentPrincipalId)) "
+            "? [deploymentPrincipalId] : []",
+            MAIN,
+        )
+        self.assertIn("dataReaderPrincipalIds: apiCenterCatalogReaderPrincipalIds", MAIN)
+        assignment = _block(
+            APICENTER,
+            r"resource apiCenterDataReaders "
+            r"'Microsoft\.Authorization/roleAssignments@2022-04-01'",
+        )
+        self.assertIn("scope: apiCenter", assignment)
+        self.assertIn("principalId: principalId", assignment)
+        self.assertIn("c7244dfb-f447-457d-b2ba-3999044d1706", APICENTER)
+        self.assertNotIn("subscriptionResourceId('Microsoft.ApiCenter/services'", APICENTER)
+
+    def test_mutation_capable_contract_runs_in_always_reported_ci(self) -> None:
+        self.assertIn(
+            "python -m unittest scripts.tests.test_lean_azure_iac",
+            INFRA_WORKFLOW,
+        )
+        for guarded_path in (
+            '      - "scripts/tests/test_lean_azure_iac.py"',
+            '      - "scripts/status-snapshot.ps1"',
+            '      - "site/data/services.js"',
+            '      - "proxy/SimpleL7Proxy/Config/AppConfigService.cs"',
+            '      - "app/api/pyproject.toml"',
+            '      - "docs/**"',
+            '      - ".github/workflows/deploy.yml"',
+        ):
+            self.assertIn(guarded_path, INFRA_WORKFLOW)
+        pull_request = INFRA_WORKFLOW.split("pull_request:", 1)[1].split("push:", 1)[0]
+        self.assertNotIn("paths:", pull_request)
 
     def test_manual_half_wiring_and_sdk_are_retired(self) -> None:
         self.assertFalse((ROOT / "scripts" / "provision-private-tool-catalog.py").exists())

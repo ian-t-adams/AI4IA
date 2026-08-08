@@ -47,6 +47,7 @@ window.AI4IA_REQUIREMENTS = {
     { assignee: "id-proxy", role: "Storage Blob Data Contributor + Service Bus Data Sender/Receiver", scope: "Dedicated proxy async resources", why: "Optional durable async request/result processing when enabled.", module: "proxyasync.bicep" },
     { assignee: "Shared apim-mcp APIM (system-assigned)", role: "Foundry User", scope: "Primary Foundry project", why: "Mint the AAD bearer the Foundry toolbox MCP endpoint requires (when toolbox enabled).", module: "apimcore.bicep / foundry.bicep" },
     { assignee: "OIDC deployment / foundry-assets identity", role: "Foundry User", scope: "Primary Foundry project", why: "Provisioning-only reconciliation of canonical toolbox assets when enabled; not app runtime access.", module: "main.bicep / foundry.bicep" },
+    { assignee: "OIDC deployment / catalog-reader identity", role: "Azure API Center Data Reader", scope: "API Center service", why: "Read the governed private MCP inventory when enabled; provisioning/operator access only.", module: "main.bicep / apicenter.bicep" },
 
   ],
   packages: {

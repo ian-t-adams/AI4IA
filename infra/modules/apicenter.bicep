@@ -32,14 +32,18 @@ param servers array
 @description('Shared APIM gateway base URL. Catalog deployments append /<server>/mcp.')
 param gatewayBaseUrl string
 
+@description('Principal/object IDs granted Azure API Center Data Reader at this API Center service scope. Use operator or catalog-reconciliation identities only; never app runtime identities.')
+param dataReaderPrincipalIds array = []
+
 var normalizedGatewayBaseUrl = endsWith(gatewayBaseUrl, '/') ? substring(gatewayBaseUrl, 0, max(length(gatewayBaseUrl) - 1, 0)) : gatewayBaseUrl
+var apiCenterDataReaderRoleId = 'c7244dfb-f447-457d-b2ba-3999044d1706'
 
 // ---------------- API Center (private tool catalog) ----------------
 // Free plan. The `sku` MUST be declared explicitly: Azure defaults it to Free on
 // CREATE, but a later UPDATE (any redeploy) sends a null sku and fails validation
 // ("A valid Sku is required to create or update an API Catalog") unless it is set
-// here. System-assigned identity is included so the catalog can later be granted
-// read access from Foundry / consumers without a resource replace.
+// here. Catalog readers receive only the built-in API Center data-plane reader
+// role at this service scope; no subscription-wide grant or app identity is used.
 resource apiCenter 'Microsoft.ApiCenter/services@2024-06-01-preview' = {
   name: take('apic-${workload}-${environmentName}-${uniqueSuffix}', 90)
   location: location
@@ -51,6 +55,16 @@ resource apiCenter 'Microsoft.ApiCenter/services@2024-06-01-preview' = {
 }
 
 // API Center currently supports a single, default workspace for all child assets.
+resource apiCenterDataReaders 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principalId in dataReaderPrincipalIds: {
+  name: guid(apiCenter.id, principalId, apiCenterDataReaderRoleId)
+  scope: apiCenter
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', apiCenterDataReaderRoleId)
+    principalId: principalId
+    principalType: 'ServicePrincipal'
+  }
+}]
+
 resource defaultWorkspace 'Microsoft.ApiCenter/services/workspaces@2024-06-01-preview' = {
   parent: apiCenter
   name: 'default'
@@ -92,13 +106,25 @@ resource mcpApiVersions 'Microsoft.ApiCenter/services/workspaces/apis/versions@2
 }]
 
 @batchSize(1)
+resource mcpApiDefinitions 'Microsoft.ApiCenter/services/workspaces/apis/versions/definitions@2024-06-01-preview' = [for (server, i) in servers: {
+  parent: mcpApiVersions[i]
+  name: 'streamable'
+  properties: {
+    title: 'Streamable HTTP'
+    description: 'Streamable HTTP definition for the governed APIM consumer endpoint.'
+  }
+}]
+
+@batchSize(1)
 resource mcpDeployments 'Microsoft.ApiCenter/services/workspaces/apis/deployments@2024-06-01-preview' = [for (server, i) in servers: {
   parent: mcpApis[i]
   name: 'apim'
   properties: {
     title: 'APIM consumer endpoint'
     description: 'Governed Streamable HTTP endpoint exposed by the shared APIM gateway.'
-    environmentId: apimEnvironment.id
+    // API Center deployments use API-Center-scoped IDs, not ARM resource IDs.
+    environmentId: '/workspaces/default/environments/official-mcp-apim'
+    definitionId: '/workspaces/default/apis/${server.name}/versions/v1-preview/definitions/streamable'
     server: {
       runtimeUri: [
         '${normalizedGatewayBaseUrl}/${server.name}/mcp'
@@ -107,7 +133,7 @@ resource mcpDeployments 'Microsoft.ApiCenter/services/workspaces/apis/deployment
     state: 'active'
   }
   dependsOn: [
-    mcpApiVersions[i]
+    mcpApiDefinitions[i]
   ]
 }]
 

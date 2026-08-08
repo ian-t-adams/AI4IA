@@ -13,7 +13,7 @@ param environmentName string
 @description('Primary location for the resource group and shared resources.')
 param location string = 'eastus2'
 
-@description('Object/principal id of the OIDC deployment identity. When set, it receives Content Understanding Contributor on the primary account and, only when enableFoundryToolbox, Foundry User on the primary project for asset reconciliation. This is a principalId, never the managed identity clientId.')
+@description('Object/principal id of the OIDC deployment identity. When set, it receives Content Understanding Contributor on the primary account, Foundry User on the enabled primary toolbox project, and API Center Data Reader on the enabled private catalog. This is a principalId, never the managed identity clientId.')
 param deploymentPrincipalId string = ''
 
 @description('Accountable owner tag value. Override per deployment; do not rely on a personal repo default.')
@@ -777,6 +777,8 @@ var foundryToolboxDeploymentPrincipal = (enableFoundryToolbox && !empty(deployme
 var foundryToolboxPrincipalIds = union(foundryToolboxApimPrincipal, foundryToolboxDeploymentPrincipal)
 
 // --- Private tool catalog (Azure API Center; opt-in) ---
+var apiCenterCatalogReaderPrincipalIds = (enablePrivateToolCatalog && !empty(deploymentPrincipalId)) ? [deploymentPrincipalId] : []
+
 // Inventories the APIM-fronted official MCP servers as a discoverable/governable
 // private catalog (and integrates with Foundry private tool catalogs). Default OFF:
 // no resources unless explicitly enabled. MCP APIs, versions, environment, and
@@ -792,6 +794,7 @@ module apicenter 'modules/apicenter.bicep' = if (enablePrivateToolCatalog && ena
     uniqueSuffix: uniqueSuffix
     servers: officialMcpServers
     gatewayBaseUrl: apimcore.outputs.gatewayUrl
+    dataReaderPrincipalIds: apiCenterCatalogReaderPrincipalIds
   }
 }
 

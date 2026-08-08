@@ -309,6 +309,14 @@ jobs:
           # queryable the moment the account is deleted.
           python3 -m unittest scripts.tests.test_teardown_data_loss_gate
 
+      - name: Run Lean Azure retained-resource cleanup tests
+        run: |
+          set -euo pipefail
+          # Incremental ARM retains resources removed from Bicep. This suite
+          # executes the standalone cleanup's dry-run/refusal paths and pins its
+          # exact-resource-ID and no-deployment-hook safety boundaries.
+          python3 -m unittest scripts.tests.test_lean_azure_cleanup
+
       - name: Run documented-path reachability tests
         run: |
           set -euo pipefail

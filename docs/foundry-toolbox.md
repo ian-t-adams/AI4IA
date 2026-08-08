@@ -335,13 +335,18 @@ workspace) as a private, governed inventory. The Bicep parameter defaults off an
 `eastus2`.
 
 The complete registration graph is IaC-owned. For every entry in `infra/mcp-servers.json`, Bicep
-creates or updates an MCP-kind API, preview version, shared production APIM environment, and active
-deployment. Each deployment carries the **APIM consumer URL**
+creates or updates an MCP-kind API, preview version, Streamable HTTP definition, shared production
+APIM environment, and active deployment. Deployment `environmentId` and `definitionId` values are
+API-Center-scoped (`/workspaces/default/...`), as required by the API Center contract rather than
+full ARM IDs. Each deployment carries the **APIM consumer URL**
 (`https://<shared-apim>/<name>/mcp`), never the raw upstream, so discovery and governance stay on the
 same authenticated front door the app consumes. The MCP inventory and registry integration remain
-public preview. Existing portal-created samples such as `swagger-petstore` are retained by ARM
-incremental deployments and must be removed separately by an authorized operator after verifying
-the exact asset; they are not created or advertised by this repo.
+public preview. When the catalog is enabled and `deploymentPrincipalId` is nonempty, that
+provisioning/operator identity receives only **Azure API Center Data Reader** at the API Center
+service scope; no app runtime identity or subscription-wide reader is granted. Existing
+portal-created samples such as `swagger-petstore` are retained by ARM incremental deployments and
+must be removed separately with `scripts/cleanup-lean-azure-retained.ps1` after verifying the exact
+asset; they are not created or advertised by this repo.
 
 ## P7 — Routines and Agent-to-Agent (A2A): mixed status (routines validation-only by design; A2A endpoint scaffold shipped)
 

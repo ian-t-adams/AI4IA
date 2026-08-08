@@ -375,6 +375,7 @@ python -m unittest scripts.tests.test_gateway_policy
 python scripts/gen-voice-provider-catalog.py --check
 python -m unittest scripts.tests.test_voice_provider_catalog
 python scripts/validate-feature-prereqs.py
+python -m unittest scripts.tests.test_lean_azure_iac
 bicep build infra/main.bicep --stdout > /dev/null
 ```
 
@@ -396,6 +397,7 @@ python3 -m unittest scripts.tests.test_lockfile_provenance     # uv.lock must re
 python3 -m unittest scripts.tests.test_status_consistency       # roadmap/audit current-state dispositions cannot conflict
 python3 -m unittest scripts.tests.test_post_deploy_verify       # executes capture/verify/rollback behavior with Azure stubbed
 python3 -m unittest scripts.tests.test_teardown_data_loss_gate  # destructive teardown requires explicit data-loss acknowledgement
+python3 -m unittest scripts.tests.test_lean_azure_cleanup       # retained-resource migration is exact-ID, dry-run, and never automatic
 python3 -m unittest scripts.tests.test_documented_paths_exist   # machine-readable source paths named by docs must resolve
 python3 -m unittest scripts.tests.test_gating_workflows         # required PR checks always report and match the ruleset inventory
 python3 -m unittest scripts.tests.test_markdown_tables          # Markdown tables cannot silently swallow rows/columns

@@ -538,11 +538,13 @@ including `eastus2`. It requires `enableOfficialMcp=true` and has no app-runtime
 setting.
 
 Run `azd up`; no follow-up registration command is required. For each official MCP
-server, Bicep creates an MCP API, preview version, shared APIM environment, and active
-deployment whose runtime URI is `https://<shared-apim>/<name>/mcp`. API Center MCP
-inventory remains public preview. ARM incremental mode does not delete unrelated
-portal-created samples; an authorized operator must remove a retained sample such as
-`swagger-petstore` separately after exact-resource verification.
+server, Bicep creates an MCP API, preview version, Streamable HTTP definition, shared
+APIM environment, and active deployment whose runtime URI is
+`https://<shared-apim>/<name>/mcp`. Definition and environment references use API-Center-scoped
+`/workspaces/default/...` IDs. The nonempty deployment principal receives only Azure API Center
+Data Reader at the service scope for catalog inspection/reconciliation. API Center MCP inventory
+remains public preview. ARM incremental mode does not delete unrelated portal-created samples;
+remove `swagger-petstore` only through the exact-ID cleanup procedure in the teardown runbook.
 
 ### Web IQ tools
 
