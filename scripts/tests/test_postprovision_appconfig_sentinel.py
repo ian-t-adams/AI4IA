@@ -15,12 +15,18 @@ def _ps_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _run(*, label: str | None = None, failures: int = 0) -> dict[str, object]:
+def _run(
+    *,
+    label: str | None = None,
+    failures: int = 0,
+    principal_id: str | None = "deploy-principal",
+) -> dict[str, object]:
     if shutil.which("pwsh") is None:
         raise unittest.SkipTest("pwsh is required for executable postprovision tests")
     values = {
         "AZURE_APP_CONFIG_ENDPOINT": "https://appcs-example.azconfig.io",
         "AZURE_APP_CONFIG_LABEL": label,
+        "AZURE_PRINCIPAL_ID": principal_id,
     }
     env_cases = "\n".join(
         f"    {_ps_literal(name)} {{ return {('$null' if value is None else _ps_literal(value))} }}"
@@ -116,6 +122,13 @@ class AppConfigurationSentinelTests(unittest.TestCase):
         call = payload["calls"][0]
         self._assert_keyless_login_call(call)
         self.assertNotIn("--label", call)
+
+    def test_local_provision_without_oidc_principal_leaves_existing_sentinel(self) -> None:
+        payload = _run(principal_id=None)
+        self.assertEqual(payload["results"][0]["status"], "SKIP")
+        self.assertIn("AZURE_PRINCIPAL_ID not set", payload["results"][0]["detail"])
+        self.assertEqual(payload["calls"], [])
+        self.assertEqual(payload["sleeps"], 0)
 
     def test_label_is_passed_as_one_exact_argument(self) -> None:
         payload = _run(label="Production Blue")

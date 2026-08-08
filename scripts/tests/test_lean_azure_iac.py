@@ -96,6 +96,8 @@ class ActiveConfigurationTests(unittest.TestCase):
         assert "appConfigReaderPrincipalIds: [proxyIdentity.principalId]" in main
         assert "output AZURE_APP_CONFIG_LABEL string = proxyAppConfigLabel" in main
         assert "function Register-AppConfigurationSentinel" in postprovision
+        assert "Get-EnvValue 'AZURE_PRINCIPAL_ID'" in postprovision
+        assert "workflow-owned sentinel left unchanged" in postprovision
         assert "'--auth-mode', 'login'" in postprovision
         assert "$maxAttempts = 31" in postprovision
         assert "$retrySeconds = 30" in postprovision

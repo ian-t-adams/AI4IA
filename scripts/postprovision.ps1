@@ -303,6 +303,16 @@ function Register-AppConfigurationSentinel {
     return
   }
 
+  # The narrow Data Owner role is granted to the OIDC deployment principal.
+  # A workstation user running a break-glass local provision is a different
+  # identity; do not wait 15 minutes on a role it was never granted. Greenfield
+  # setup is workflow-only, and an existing sentinel survives local provisions.
+  $provisionerPrincipalId = Get-EnvValue 'AZURE_PRINCIPAL_ID'
+  if ([string]::IsNullOrWhiteSpace($provisionerPrincipalId)) {
+    Add-Result -Name 'App Configuration sentinel' -Status 'SKIP' -Detail 'AZURE_PRINCIPAL_ID not set; workflow-owned sentinel left unchanged'
+    return
+  }
+
   $label = Get-EnvValue 'AZURE_APP_CONFIG_LABEL'
   if ([string]::IsNullOrWhiteSpace($label)) {
     # Backward-compatible fallback for an existing azd environment that predates
