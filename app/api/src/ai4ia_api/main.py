@@ -256,9 +256,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             catalog=app.state.catalog,
             usage=app.state.usage,
         )
-        # Recover documents left stuck at ``analyzing`` by an enrich task that was
-        # cancelled on a prior shutdown (or lost to a crash): flip them to
-        # ``failed`` so they aren't permanent zombies. Best-effort, startup-only.
+        # Recover only STALE ``analyzing`` rows left by a lost enrich task. A
+        # fresh row may still belong to another healthy replica during rolling
+        # deploy/scale-out, so the ingestor applies a conservative age lease and
+        # preserves the user's raw upload. Best-effort, startup-only.
         if app.state.document_ingestor is not None:
             try:
                 await app.state.document_ingestor.recover_interrupted()

@@ -29,6 +29,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from ..catalog import DeploymentOption
 from ..config import Settings
@@ -250,6 +251,32 @@ class DocumentIngestor:
         digest = content_hash(data)
         existing = await self._library.find_by_dedupe_key(user_id, digest, analyzer_id)
         if existing is not None:
+            if existing.status == DocumentStatus.failed:
+                # A failed row is not a successful dedupe hit. The old behavior
+                # returned it forever, so the UI's own "Re-upload to retry"
+                # recovery message could never trigger another enrich.
+                raw_path = existing.rawPath or blob_path(
+                    user_id, existing.id, f"{RAW_NAME}{_extension(filename)}"
+                )
+                await self._blob.put(raw_path, data, _base_content_type(content_type) or None)
+                changes: dict[str, object] = {
+                    "filename": _safe_filename(filename),
+                    "contentType": _base_content_type(content_type),
+                    "size": len(data),
+                    "rawPath": raw_path,
+                    "parsedPath": None,
+                    "chunksPath": None,
+                    "chunkCount": 0,
+                    "status": DocumentStatus.stored,
+                    "error": None,
+                }
+                outcome, reset = await self._safe_update(
+                    existing, changes, require_status=DocumentStatus.failed
+                )
+                if outcome == "committed" and reset is not None:
+                    return IngestResult(document=reset, deduped=False)
+                if reset is not None:
+                    return IngestResult(document=reset, deduped=True)
             return IngestResult(document=existing, deduped=True)
 
         modality = classify_modality(content_type, filename)
@@ -567,26 +594,39 @@ class DocumentIngestor:
             except Exception:  # noqa: BLE001 - shutdown must not surface
                 logger.warning("ingestor resource close failed", exc_info=True)
 
-    async def recover_interrupted(self) -> int:
-        """Fail out documents left mid-analysis by an interrupted worker.
+    async def recover_interrupted(self, *, now: datetime | None = None) -> int:
+        """Fail out *stale* documents left mid-analysis by an interrupted worker.
 
         An enrich task that was cancelled on shutdown (or lost to a crash) leaves
-        its manifest stuck at ``analyzing`` with no task to resume it. Run once at
-        startup: flip every such document to ``failed`` with a recoverable message
-        so it is not a permanent zombie. Best-effort and cross-user (startup only,
-        not a hot path). Returns the number of documents swept.
+        its manifest stuck at ``analyzing`` with no task to resume it. A second,
+        healthy replica looks identical unless age is considered, so never sweep a
+        fresh row: rolling deployment/scale-out can start this code while the old
+        replica is still enriching it. One hour is deliberately much larger than
+        the normal CU poll ceiling and indexing time. Best-effort and cross-user
+        (startup only, not a hot path). Returns the number of documents swept.
         """
         try:
             stuck = await self._library.list_by_status([DocumentStatus.analyzing])
         except Exception:  # noqa: BLE001 - startup sweep must never block boot
             logger.warning("recover_interrupted: list failed", exc_info=True)
             return 0
+        observed_at = now or datetime.now(timezone.utc)
+        stale_seconds = max(3_600, int(self._settings.cu_max_poll_seconds) + 600)
+        stale_before = observed_at - timedelta(seconds=stale_seconds)
         swept = 0
         for doc in stuck:
+            updated_at = doc.updatedAt
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            if updated_at > stale_before:
+                continue
             outcome, committed = await self._safe_update(
                 doc,
                 {
                     "status": DocumentStatus.failed,
+                    "parsedPath": None,
+                    "chunksPath": None,
+                    "chunkCount": 0,
                     "error": (
                         "Analysis was interrupted (service restart). "
                         "Re-upload to retry."
@@ -600,12 +640,11 @@ class DocumentIngestor:
                 or committed.status != DocumentStatus.failed
             ):
                 continue
-            # An enrich cancelled inside _persist_enrichment (shutdown/crash) may
-            # have written partial blob/pgvector artifacts before dying, with the
-            # manifest left at ``analyzing``. Now that it is ``failed``, purge those
-            # so a failed document contributes nothing to retrieval (no orphan
-            # chunks under a failed manifest). Best-effort + idempotent.
-            await self.purge(doc.userId, doc.id)
+            # Purge only the retrieval-reachable index. Preserve the raw upload
+            # and quick summary so the user does not lose their file merely
+            # because a replica restarted; derived blob paths are cleared above
+            # and a retry overwrites their deterministic paths.
+            await self._purge_chunks(doc.userId, doc.id)
             emit_custom_event(
                 "document_ingest_terminal",
                 {
