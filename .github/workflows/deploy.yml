@@ -34,6 +34,13 @@ on:
       - "proxy/**"
       - "azure.yaml"
       - ".github/workflows/deploy.yml"
+      # These files ARE the release path. A script-only bugfix must run once in
+      # production to prove itself; before this list existed such a merge sat
+      # dormant until an unrelated app/infra change happened to trigger deploy.
+      - "scripts/postprovision.ps1"
+      - "scripts/post-deploy-verify.py"
+      - "scripts/check-resource-providers.py"
+      - "scripts/validate-feature-prereqs.py"
   workflow_dispatch:
     inputs:
       provision:

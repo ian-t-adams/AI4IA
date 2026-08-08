@@ -573,12 +573,7 @@ def rollout_problems(
     if not current_revision:
         problems.append(f"{service}: no revision is receiving traffic")
         return problems
-    if previous_revision and current_revision == previous_revision:
-        problems.append(
-            f"{service}: still serving the pre-deploy revision {current_revision} -- "
-            "azd reported success but Container Apps never promoted a new template"
-        )
-    elif expected_image:
+    if expected_image:
         if current_image != expected_image:
             problems.append(
                 f"{service}: revision {current_revision} runs "
@@ -586,6 +581,11 @@ def rollout_problems(
                 f"({expected_image}) -- the container that is live is not the "
                 "artifact CI built"
             )
+    elif previous_revision and current_revision == previous_revision:
+        problems.append(
+            f"{service}: still serving the pre-deploy revision {current_revision} -- "
+            "azd reported success but Container Apps never promoted a new template"
+        )
     elif previous_image and current_image and previous_image == current_image:
         # A NEW revision running the OLD image. Capture happens after
         # `azd provision`, so when the caller cannot name the intended image the

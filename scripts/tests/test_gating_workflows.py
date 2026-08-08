@@ -121,5 +121,30 @@ class GatingWorkflowsAlwaysReportTests(unittest.TestCase):
         )
 
 
+class DeployWorkflowOperationalScriptTriggers(unittest.TestCase):
+    """A release-path change must exercise itself on main.
+
+    `postprovision.ps1` broke production deploys in #320, and its fix would not
+    have triggered deploy if it touched only the script: the workflow watched
+    app/infra/proxy and its own YAML, but not the code it executes.
+    """
+
+    def test_direct_release_scripts_trigger_deploy(self) -> None:
+        raw = (WORKFLOWS / "deploy.yml").read_text(encoding="utf-8")
+        doc = yaml.safe_load(raw)
+        triggers = doc.get("on", doc.get(True, {}))
+        paths = set(triggers["push"]["paths"])
+        self.assertTrue(
+            {
+                "scripts/postprovision.ps1",
+                "scripts/post-deploy-verify.py",
+                "scripts/check-resource-providers.py",
+                "scripts/validate-feature-prereqs.py",
+            }.issubset(paths),
+            "a script deploy.yml executes can change without ever exercising "
+            "itself in production",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
