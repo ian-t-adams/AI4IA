@@ -46,12 +46,16 @@ describe("app authentication boundary", () => {
 
   it("wraps valid application routes in authentication", () => {
     const html = renderToStaticMarkup(
-      <ProtectedLayout>
-        <main>Known application route</main>
-      </ProtectedLayout>,
+      <RootLayout>
+        <ProtectedLayout>
+          <main id="main">Known application route</main>
+        </ProtectedLayout>
+      </RootLayout>,
     );
 
     expect(html).toContain("Known application route");
     expect(html).toContain('data-testid="auth-boundary"');
+    expect(html).toContain('href="#main"');
+    expect(html.match(/<main\b/g)).toHaveLength(1);
   });
 });

@@ -716,10 +716,7 @@ export function MessageList({
   };
 
   return (
-    <main
-      id="main"
-      style={{ flex: 1, minHeight: 0, position: "relative" }}
-    >
+    <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
       <div
         ref={viewportRef}
         role="log"
@@ -833,7 +830,7 @@ export function MessageList({
           Jump to latest
         </button>
       )}
-    </main>
+    </div>
   );
 }
 

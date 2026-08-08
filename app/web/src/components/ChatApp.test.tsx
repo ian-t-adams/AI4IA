@@ -358,6 +358,16 @@ afterEach(() => {
   document.documentElement.style.removeProperty("--font-scale");
 });
 
+describe("ChatApp landmarks", () => {
+  it("owns exactly one main landmark and the skip-link target", () => {
+    render(<ChatApp />);
+
+    const mainLandmarks = screen.getAllByRole("main");
+    expect(mainLandmarks).toHaveLength(1);
+    expect(mainLandmarks[0]).toHaveAttribute("id", "main");
+    expect(screen.getByLabelText("Conversation")).not.toHaveAttribute("id", "main");
+  });
+});
 describe("ChatApp citations", () => {
   it("opens shared media directly by the attested document id", async () => {
     mocks.getLibraryDocument.mockResolvedValue({

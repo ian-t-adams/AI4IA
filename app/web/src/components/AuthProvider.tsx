@@ -75,7 +75,7 @@ function EntraAuthProvider({
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    const msal = initAuth(config);
+    let msal: PublicClientApplication | null = null;
     let cancelled = false;
     let callbackId: string | null = null;
 
@@ -84,33 +84,35 @@ function EntraAuthProvider({
         // Yield once so every state transition from initialization is async and
         // can be cancelled by the effect cleanup.
         await Promise.resolve();
-        if (!msal) throw new Error("Authentication is unavailable");
-        await withTimeout(msal.initialize());
-        const redirect = await withTimeout(msal.handleRedirectPromise());
+        const client = initAuth(config);
+        msal = client;
+        if (!client) throw new Error("Authentication is unavailable");
+        await withTimeout(client.initialize());
+        const redirect = await withTimeout(client.handleRedirectPromise());
         if (redirect?.account) {
-          msal.setActiveAccount(redirect.account);
-        } else if (!msal.getActiveAccount()) {
-          const existing = msal.getAllAccounts();
-          if (existing.length > 0) msal.setActiveAccount(existing[0]);
+          client.setActiveAccount(redirect.account);
+        } else if (!client.getActiveAccount()) {
+          const existing = client.getAllAccounts();
+          if (existing.length > 0) client.setActiveAccount(existing[0]);
         }
 
-        const registeredId = msal.addEventCallback((event: EventMessage) => {
+        const registeredId = client.addEventCallback((event: EventMessage) => {
           if (
             (event.eventType === EventType.LOGIN_SUCCESS ||
               event.eventType === EventType.ACQUIRE_TOKEN_SUCCESS) &&
             event.payload
           ) {
             const account = (event.payload as AuthenticationResult).account;
-            if (account) msal.setActiveAccount(account);
+            if (account) client.setActiveAccount(account);
           }
         });
 
         if (cancelled) {
-          if (registeredId) msal.removeEventCallback(registeredId);
+          if (registeredId) client.removeEventCallback(registeredId);
           return;
         }
         callbackId = registeredId;
-        setAuthState({ status: "ready", instance: msal });
+        setAuthState({ status: "ready", instance: client });
       } catch {
         if (!cancelled) setAuthState({ status: "error" });
       }

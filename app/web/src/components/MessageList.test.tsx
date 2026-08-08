@@ -50,6 +50,7 @@ describe("MessageList", () => {
     expect(
       screen.getByRole("log", { name: "Conversation" }),
     ).toBeInTheDocument();
+    expect(screen.queryByRole("main")).toBeNull();
   });
 
   it("renders user and assistant bubbles but hides system messages", () => {

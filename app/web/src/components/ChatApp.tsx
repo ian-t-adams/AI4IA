@@ -2729,6 +2729,7 @@ export function ChatApp() {
       </div>
 
       <main
+        id="main"
         inert={mobileSidebarOpen || mobileInspectorOpen ? true : undefined}
         aria-hidden={mobileSidebarOpen || mobileInspectorOpen ? true : undefined}
         style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}

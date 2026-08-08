@@ -43,6 +43,30 @@ beforeEach(() => mocks.initAuth.mockReset());
 afterEach(cleanup);
 
 describe("AuthProvider Entra initialization", () => {
+  it("catches synchronous client construction failures and retries", async () => {
+    const user = userEvent.setup();
+    const msal = authClient();
+    mocks.initAuth
+      .mockImplementationOnce(() => {
+        throw new Error("sensitive constructor details");
+      })
+      .mockReturnValueOnce(msal);
+
+    render(
+      <AuthProvider config={config}>
+        <div>Protected application</div>
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "We couldn't finish signing you in.",
+    );
+    expect(screen.queryByText(/sensitive constructor details/i)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("Protected application")).toBeInTheDocument();
+    expect(mocks.initAuth).toHaveBeenCalledTimes(2);
+  });
   it("shows a safe failure state and retries initialization", async () => {
     const user = userEvent.setup();
     const msal = authClient();
