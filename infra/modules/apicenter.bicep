@@ -134,6 +134,8 @@ resource mcpDeployments 'Microsoft.ApiCenter/services/workspaces/apis/deployment
   }
   dependsOn: [
     mcpApiDefinitions[i]
+    // environmentId is API-Center-scoped, so it does not create an ARM dependency.
+    apimEnvironment
   ]
 }]
 

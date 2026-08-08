@@ -187,6 +187,16 @@ class ApiCenterCatalogTests(unittest.TestCase):
             APICENTER,
         )
         self.assertNotIn("environmentId: apimEnvironment.id", APICENTER)
+        deployment = _block(
+            APICENTER,
+            r"resource mcpDeployments "
+            r"'Microsoft\.ApiCenter/services/workspaces/apis/deployments@2024-06-01-preview'",
+        )
+        self.assertRegex(
+            deployment,
+            r"dependsOn:\s*\[\s*mcpApiDefinitions\[i\]\s*"
+            r"(?://.*\s*)?apimEnvironment\s*\]",
+        )
         self.assertIn("state: 'active'", APICENTER)
         call = _block(MAIN, r"module apicenter 'modules/apicenter\.bicep'")
         self.assertIn("if (enablePrivateToolCatalog && enableOfficialMcp)", call)
