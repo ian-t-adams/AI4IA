@@ -29,7 +29,10 @@ resource modelDeployments 'Microsoft.CognitiveServices/accounts/deployments@2024
       name: d.modelName
       version: d.version
     }
-    versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
+    // models.json pins an explicit version and is the reviewed source of truth.
+    // Auto-upgrade would change model behavior without a repository diff,
+    // evaluation, or deploy and could not be undone by container rollback.
+    versionUpgradeOption: 'NoAutoUpgrade'
     raiPolicyName: empty(raiPolicyName) ? null : raiPolicyName
   }
 }]

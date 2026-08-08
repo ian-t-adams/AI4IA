@@ -337,7 +337,8 @@ module monitoring 'modules/monitoring.bicep' = {
   }
 }
 
-// All app identity principals (api, web, proxy) may read secrets/config.
+// All app identities pull images; runtime data-plane access is split below by
+// demonstrated need. Never reuse this array for Key Vault or App Configuration.
 var allPrincipalIds = map(identity.outputs.identities, x => x.principalId)
 // The api identity owns the canonical data store (Cosmos).
 var apiIdentity = filter(identity.outputs.identities, x => x.service == 'api')[0]
@@ -389,7 +390,13 @@ module keyvault 'modules/keyvault.bicep' = {
     workload: workload
     environmentName: environmentName
     uniqueSuffix: uniqueSuffix
-    readerPrincipalIds: allPrincipalIds
+    // Container App secretRefs are resolved by ARM at deploy time; the web and
+    // proxy workloads do not need Key Vault data-plane access. The API's only
+    // runtime vault path is the optional per-user MCP secret store, and Secrets
+    // Officer already includes read/write when that feature is enabled.
+    keyVaultReaderPrincipalIds: []
+    // SimpleL7Proxy is the only runtime App Configuration consumer.
+    appConfigReaderPrincipalIds: [proxyIdentity.principalId]
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     enablePurgeProtection: keyVaultPurgeProtection
     // Custom tools / BYO MCP: the api MI writes per-user MCP

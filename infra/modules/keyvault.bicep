@@ -14,8 +14,11 @@ param environmentName string
 @description('Deterministic alphanumeric suffix for globally-unique names.')
 param uniqueSuffix string
 
-@description('Principal IDs granted Key Vault Secrets User + App Config Data Reader (app identities).')
-param readerPrincipalIds array = []
+@description('Principal IDs granted Key Vault Secrets User. Keep empty unless a workload has a demonstrated runtime secret-read path.')
+param keyVaultReaderPrincipalIds array = []
+
+@description('Principal IDs granted App Configuration Data Reader. The SimpleL7Proxy identity consumes this plane; web and api do not.')
+param appConfigReaderPrincipalIds array = []
 
 @description('''Principal IDs granted Key Vault Secrets Officer (read/write secrets).
 The api managed identity gets this only when custom tools / BYO MCP is enabled, so
@@ -81,7 +84,7 @@ var kvSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6' // Key Vault Se
 var kvSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7' // Key Vault Secrets Officer (built-in role GUID as defined in this Azure environment)
 var appConfigDataReaderRoleId = '516239f1-63e1-4d78-a4de-a74fb236a071' // App Configuration Data Reader
 
-resource kvRoleAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in readerPrincipalIds: {
+resource kvRoleAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in keyVaultReaderPrincipalIds: {
   name: guid(keyVault.id, pid, kvSecretsUserRoleId)
   scope: keyVault
   properties: {
@@ -101,7 +104,7 @@ resource kvSecretsOfficerAssignments 'Microsoft.Authorization/roleAssignments@20
   }
 }]
 
-resource appConfigRoleAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in readerPrincipalIds: {
+resource appConfigRoleAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid in appConfigReaderPrincipalIds: {
   name: guid(appConfig.id, pid, appConfigDataReaderRoleId)
   scope: appConfig
   properties: {
