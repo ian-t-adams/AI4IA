@@ -273,12 +273,12 @@ export function AgentBuilder({
   );
 
   return (
-    <div style={{ display: "flex", gap: 20, minHeight: 0, flex: 1 }}>
-      <div style={{ width: 200, flexShrink: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+    <div className="studio-pane">
+      <div className="studio-list">
         <button onClick={startNew} disabled={busy} style={primaryBtn}>
           + New agent
         </button>
-        <ul style={{ listStyle: "none", margin: 0, padding: 0, overflowY: "auto", flex: 1 }}>
+        <ul className="studio-list-scroll">
           {mine.length === 0 && (
             <li style={{ color: "var(--fg-muted)", fontSize: "0.85em", padding: 8 }}>
               No agents yet.
@@ -319,7 +319,7 @@ export function AgentBuilder({
         </ul>
       </div>
 
-      <div style={{ flex: 1, minWidth: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+      <div className="studio-workpanel">
         <h3 style={{ margin: 0, fontSize: "1em" }}>
           {editing ? `Edit @${editing}` : "New agent"}
         </h3>

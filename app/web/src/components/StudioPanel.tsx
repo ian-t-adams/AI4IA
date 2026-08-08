@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import type { AgentSummary, ModelEntry } from "@/lib/types";
 import { AgentBuilder } from "./AgentBuilder";
 import { WorkflowBuilder } from "./WorkflowBuilder";
@@ -8,6 +8,12 @@ import { McpServerBuilder } from "./McpServerBuilder";
 import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 
 type Tab = "agents" | "workflows" | "tools";
+
+const TAB_LABELS: Record<Tab, string> = {
+  agents: "Agents",
+  workflows: "Workflows",
+  tools: "Custom tools",
+};
 
 export function StudioPanel({
   models,
@@ -29,16 +35,26 @@ export function StudioPanel({
   const [tab, setTab] = useState<Tab>("agents");
   const modalRef = useModalFocus();
   const onModalKeyDown = useModalKeyDown(onClose);
+  const tabs: Tab[] = customToolsEnabled
+    ? ["agents", "workflows", "tools"]
+    : ["agents", "workflows"];
 
-  const tabBtn = (id: Tab): React.CSSProperties => ({
-    padding: "8px 16px",
-    borderRadius: 8,
-    border: "1px solid var(--border)",
-    background: tab === id ? "var(--accent)" : "var(--bg)",
-    color: tab === id ? "var(--accent-fg)" : "var(--fg)",
-    fontWeight: tab === id ? 600 : 400,
-    cursor: "pointer",
-  });
+  const selectTab = (nextTab: Tab, focus = false) => {
+    setTab(nextTab);
+    if (focus) document.getElementById(`studio-tab-${nextTab}`)?.focus();
+  };
+
+  const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const index = tabs.indexOf(tab);
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+    if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = tabs.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    selectTab(tabs[nextIndex], true);
+  };
 
   return (
     <div
@@ -50,6 +66,7 @@ export function StudioPanel({
       style={{
         position: "fixed",
         inset: 0,
+        padding: 8,
         background: "rgba(0,0,0,0.45)",
         display: "flex",
         alignItems: "center",
@@ -59,44 +76,107 @@ export function StudioPanel({
       onClick={onClose}
     >
       <div
-        onClick={(e) => e.stopPropagation()}
+        data-testid="studio-surface"
+        onClick={(event) => event.stopPropagation()}
         style={{
           background: "var(--bg-elevated)",
           color: "var(--fg)",
-          width: "min(880px, 95vw)",
-          height: "min(680px, 90vh)",
+          width: "min(880px, 100%)",
+          maxWidth: "100%",
+          height: "min(680px, 100%)",
+          maxHeight: "100%",
+          minWidth: 0,
           borderRadius: "var(--radius)",
           border: "1px solid var(--border)",
-          padding: 24,
+          padding: "clamp(12px, 3vw, 24px)",
           display: "flex",
           flexDirection: "column",
           gap: 16,
+          overflow: "hidden",
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => setTab("agents")} aria-pressed={tab === "agents"} style={tabBtn("agents")}>
-              Agents
-            </button>
-            <button onClick={() => setTab("workflows")} aria-pressed={tab === "workflows"} style={tabBtn("workflows")}>
-              Workflows
-            </button>
-            {customToolsEnabled && (
-              <button onClick={() => setTab("tools")} aria-pressed={tab === "tools"} style={tabBtn("tools")}>
-                Custom tools
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 8,
+            minWidth: 0,
+          }}
+        >
+          <div
+            role="tablist"
+            aria-label="Studio sections"
+            style={{
+              display: "flex",
+              gap: 8,
+              flex: "1 1 auto",
+              minWidth: 0,
+              maxWidth: "100%",
+              overflowX: "auto",
+              paddingBottom: 2,
+            }}
+          >
+            {tabs.map((id) => (
+              <button
+                key={id}
+                id={`studio-tab-${id}`}
+                type="button"
+                role="tab"
+                aria-selected={tab === id}
+                aria-controls="studio-tabpanel"
+                tabIndex={tab === id ? 0 : -1}
+                onClick={() => selectTab(id)}
+                onKeyDown={onTabKeyDown}
+                style={{
+                  minHeight: 44,
+                  flex: "0 0 auto",
+                  padding: "8px 16px",
+                  borderRadius: 8,
+                  border: "1px solid var(--border)",
+                  background: tab === id ? "var(--accent)" : "var(--bg)",
+                  color: tab === id ? "var(--accent-fg)" : "var(--fg)",
+                  fontWeight: tab === id ? 600 : 400,
+                  cursor: "pointer",
+                }}
+              >
+                {TAB_LABELS[id]}
               </button>
-            )}
+            ))}
           </div>
           <button
+            type="button"
             onClick={onClose}
             aria-label="Close builder"
-            style={{ border: "none", background: "transparent", color: "var(--fg)", fontSize: "1.2em", cursor: "pointer" }}
+            style={{
+              minWidth: 44,
+              minHeight: 44,
+              border: "none",
+              borderRadius: 8,
+              background: "transparent",
+              color: "var(--fg)",
+              fontSize: "1.2em",
+              cursor: "pointer",
+            }}
           >
             ✕
           </button>
         </div>
 
-        <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+        <div
+          id="studio-tabpanel"
+          role="tabpanel"
+          aria-labelledby={`studio-tab-${tab}`}
+          tabIndex={0}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            minHeight: 0,
+            display: "flex",
+            overflow: "auto",
+          }}
+        >
           {tab === "agents" ? (
             <AgentBuilder
               agents={agents}

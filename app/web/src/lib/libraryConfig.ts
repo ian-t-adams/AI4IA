@@ -1,5 +1,5 @@
 // Server-only: resolves the document-library runtime configuration
-// from environment variables. Read in the root layout (a server component) and
+// from environment variables. Read in the protected route-group layout (a server component) and
 // passed as a plain prop into the client LibraryProvider, exactly like the auth
 // and voice-live configs — so the value is evaluated at
 // request time in the container, NOT inlined at build time the way NEXT_PUBLIC_*

@@ -9,51 +9,16 @@ import {
   useRef,
   useState,
 } from "react";
-import type { BackgroundConfig } from "@/lib/types";
 
 export type ThemeName = "light" | "dark" | "contrast";
-
-export interface PresetBackground {
-  id: string;
-  label: string;
-  css: string;
-}
-
-// Curated gradient presets (sci-fi / cyberpunk leaning, per the desk theme).
-export const BACKGROUND_PRESETS: PresetBackground[] = [
-  {
-    id: "cyberpunk-orange",
-    label: "Cyberpunk Orange",
-    css: "linear-gradient(135deg, #160a00 0%, #2b1400 45%, #ff7a18 135%)",
-  },
-  {
-    id: "synthwave",
-    label: "Synthwave",
-    css: "linear-gradient(160deg, #1a0033 0%, #3d0a5e 45%, #ff2d95 115%)",
-  },
-  {
-    id: "deep-space",
-    label: "Deep Space",
-    css: "radial-gradient(circle at 30% 20%, #14264f 0%, #060912 70%)",
-  },
-  {
-    id: "matrix",
-    label: "Matrix",
-    css: "linear-gradient(180deg, #001b00 0%, #00120a 60%, #001b00 100%)",
-  },
-];
 
 interface ThemeState {
   theme: ThemeName;
   fontScale: number;
   accent: string | null;
-  background: BackgroundConfig | null;
-  backgroundDim: number;
   setTheme: (t: ThemeName) => void;
   setFontScale: (s: number) => void;
   setAccent: (c: string | null) => void;
-  setBackground: (b: BackgroundConfig | null) => void;
-  setBackgroundDim: (d: number) => void;
 }
 
 // `accent: null` means "use the stylesheet's brand accent". That has to be the
@@ -62,10 +27,6 @@ interface ThemeState {
 // theme, so it stays legible on near-black), and one inline hex cannot serve both.
 const DEFAULTS = { theme: "light" as ThemeName, fontScale: 1, accent: null };
 const STORAGE_KEY = "ai4ia-theme";
-const MAX_DIM = 0.7;
-// A generated background larger than this (data-URL chars) is kept for the
-// session but NOT persisted, to stay well under the localStorage quota.
-const MAX_PERSIST_BG_CHARS = 1_800_000;
 
 const ThemeContext = createContext<ThemeState | null>(null);
 
@@ -91,11 +52,6 @@ function readableForeground(accent: string): string {
   return luminance > 0.1791 ? "#000000" : "#ffffff";
 }
 
-function clampDim(d: number): number {
-  if (Number.isNaN(d)) return 0;
-  return Math.min(MAX_DIM, Math.max(0, d));
-}
-
 // The pre-rebrand default accent. It was written to localStorage automatically on
 // first render rather than chosen, so on hydration it is treated as "no choice"
 // and dropped -- otherwise every existing user would stay on the old indigo and
@@ -111,78 +67,45 @@ function sanitizeAccent(value: unknown): string | null {
   return hex === LEGACY_DEFAULT_ACCENT ? null : hex;
 }
 
-// Validate a hydrated background to a known-good shape (untrusted localStorage).
-function sanitizeBackground(value: unknown): BackgroundConfig | null {
-  if (!value || typeof value !== "object") return null;
-  const v = value as Record<string, unknown>;
-  if (v.kind === "preset" && typeof v.id === "string") {
-    const id = v.id;
-    return BACKGROUND_PRESETS.some((p) => p.id === id)
-      ? { kind: "preset", id }
-      : null;
-  }
-  if (
-    v.kind === "generated" &&
-    typeof v.dataUrl === "string" &&
-    v.dataUrl.startsWith("data:image/png;base64,") &&
-    v.dataUrl.length <= MAX_PERSIST_BG_CHARS
-  ) {
-    return { kind: "generated", dataUrl: v.dataUrl };
-  }
-  return null;
+function sanitizeTheme(value: unknown): ThemeName | null {
+  return value === "light" || value === "dark" || value === "contrast"
+    ? value
+    : null;
 }
 
-// Compose the final CSS `background-image` value, layering a dark overlay (for
-// legibility) on top of the chosen preset gradient or generated image.
-function backgroundImageValue(
-  bg: BackgroundConfig | null,
-  dim: number,
-): string | null {
-  if (!bg) return null;
-  let base: string;
-  if (bg.kind === "preset") {
-    const preset = BACKGROUND_PRESETS.find((p) => p.id === bg.id);
-    if (!preset) return null;
-    base = preset.css;
-  } else {
-    base = `url("${bg.dataUrl}")`;
-  }
-  if (dim > 0) {
-    const overlay = `linear-gradient(rgba(0,0,0,${dim}), rgba(0,0,0,${dim}))`;
-    return `${overlay}, ${base}`;
-  }
-  return base;
+function preferredTheme(): ThemeName {
+  return typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = useState<ThemeName>(DEFAULTS.theme);
   const [fontScale, setFontScaleState] = useState<number>(DEFAULTS.fontScale);
   const [accent, setAccentState] = useState<string | null>(DEFAULTS.accent);
-  const [background, setBackgroundState] = useState<BackgroundConfig | null>(null);
-  const [backgroundDim, setBackgroundDimState] = useState<number>(0.35);
-  // Debounce timer for localStorage writes (a generated background can be ~MBs;
-  // dragging the dim slider must not stringify + write it synchronously each tick).
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Hydrate persisted preferences once on mount.
+  // Hydrate persisted preferences once on mount. A stored choice is explicit;
+  // only an absent/invalid theme delegates the initial effective theme to the OS.
   useEffect(() => {
+    let saved: Record<string, unknown> = {};
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const saved = JSON.parse(raw);
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time hydration of persisted prefs from localStorage on mount; localStorage isn't readable during SSR render, so this can't be a lazy useState initializer
-        if (saved.theme) setThemeState(saved.theme);
-        if (saved.fontScale) setFontScaleState(saved.fontScale);
-        const savedAccent = sanitizeAccent(saved.accent);
-        if (savedAccent) setAccentState(savedAccent);
-        const bg = sanitizeBackground(saved.background);
-        if (bg) setBackgroundState(bg);
-        if (typeof saved.backgroundDim === "number")
-          setBackgroundDimState(clampDim(saved.backgroundDim));
+      const parsed: unknown = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === "object") {
+        saved = parsed as Record<string, unknown>;
       }
     } catch {
-      /* ignore corrupt storage */
+      // Corrupt local preferences are treated as absent.
     }
+
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time hydration from browser-only preferences
+    setThemeState(sanitizeTheme(saved.theme) ?? preferredTheme());
+    if (typeof saved.fontScale === "number" && Number.isFinite(saved.fontScale)) {
+      setFontScaleState(Math.min(1.6, Math.max(0.8, saved.fontScale)));
+    }
+    setAccentState(sanitizeAccent(saved.accent));
   }, []);
 
   // Reflect state onto <html> + persist.
@@ -205,42 +128,20 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       root.style.removeProperty("--accent-fg");
       root.style.removeProperty("--user-bubble-fg");
     }
-    // Custom background is disabled entirely in high-contrast (a11y floor). When
-    // there is no background we REMOVE the inline var so the stylesheet's
-    // `none` default wins rather than overriding it inline.
-    const bgValue =
-      theme === "contrast" ? null : backgroundImageValue(background, backgroundDim);
-    if (bgValue) root.style.setProperty("--app-bg-image", bgValue);
-    else root.style.removeProperty("--app-bg-image");
 
-    // Debounce the (potentially large) persistence write off the render path.
     if (persistTimer.current) clearTimeout(persistTimer.current);
     persistTimer.current = setTimeout(() => {
       try {
-        // Never persist an oversized generated image (quota safety): keep it for
-        // the session only, falling back to no saved background on reload.
-        const persistBg =
-          background?.kind === "generated" &&
-          background.dataUrl.length > MAX_PERSIST_BG_CHARS
-            ? null
-            : background;
         localStorage.setItem(
           STORAGE_KEY,
-          JSON.stringify({
-            theme,
-            fontScale,
-            accent,
-            background: persistBg,
-            backgroundDim,
-          }),
+          JSON.stringify({ theme, fontScale, accent }),
         );
       } catch {
         /* ignore (e.g. quota) */
       }
     }, 300);
-  }, [theme, fontScale, accent, background, backgroundDim]);
+  }, [theme, fontScale, accent]);
 
-  // Flush any pending persistence on unmount.
   useEffect(() => {
     return () => {
       if (persistTimer.current) clearTimeout(persistTimer.current);
@@ -253,40 +154,17 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     [],
   );
   const setAccent = useCallback((c: string | null) => setAccentState(c), []);
-  const setBackground = useCallback(
-    (b: BackgroundConfig | null) => setBackgroundState(b),
-    [],
-  );
-  const setBackgroundDim = useCallback(
-    (d: number) => setBackgroundDimState(clampDim(d)),
-    [],
-  );
 
   const value = useMemo(
     () => ({
       theme,
       fontScale,
       accent,
-      background,
-      backgroundDim,
       setTheme,
       setFontScale,
       setAccent,
-      setBackground,
-      setBackgroundDim,
     }),
-    [
-      theme,
-      fontScale,
-      accent,
-      background,
-      backgroundDim,
-      setTheme,
-      setFontScale,
-      setAccent,
-      setBackground,
-      setBackgroundDim,
-    ],
+    [theme, fontScale, accent, setTheme, setFontScale, setAccent],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

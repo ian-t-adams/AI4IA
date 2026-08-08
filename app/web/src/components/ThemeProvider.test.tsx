@@ -1,22 +1,63 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { SettingsPanel } from "./SettingsPanel";
 import { ThemeProvider } from "./ThemeProvider";
 
+function setSystemDark(matches: boolean) {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: vi.fn((query: string) => ({
+      matches: matches && query === "(prefers-color-scheme: dark)",
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+}
 function inlineVar(name: string): string {
   return document.documentElement.style.getPropertyValue(name);
 }
 
 beforeEach(() => {
+  setSystemDark(false);
   localStorage.clear();
   document.documentElement.removeAttribute("style");
 });
 afterEach(cleanup);
 
 describe("ThemeProvider accent handling", () => {
+  it("uses the system dark preference when no theme has been saved", () => {
+    setSystemDark(true);
+    render(
+      <ThemeProvider>
+        <SettingsPanel onClose={() => {}} />
+      </ThemeProvider>,
+    );
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+  });
+
+  it.each(["light", "dark", "contrast"] as const)(
+    "lets an explicitly stored %s theme override the system preference",
+    (savedTheme) => {
+      setSystemDark(savedTheme !== "dark");
+      localStorage.setItem("ai4ia-theme", JSON.stringify({ theme: savedTheme }));
+      render(
+        <ThemeProvider>
+          <SettingsPanel onClose={() => {}} />
+        </ThemeProvider>,
+      );
+
+      expect(document.documentElement).toHaveAttribute("data-theme", savedTheme);
+    },
+  );
   // Non-vacuity floor. Four assertions below expect an EMPTY custom property to
   // mean "no inline override". If jsdom's CSSOM ever stops round-tripping custom
   // properties, those would all pass for entirely the wrong reason. jsdom 29
@@ -38,7 +79,7 @@ describe("ThemeProvider accent handling", () => {
     // cannot satisfy both, so "no choice" must mean "no inline override".
     render(
       <ThemeProvider>
-        <SettingsPanel models={[]} onClose={() => {}} />
+        <SettingsPanel onClose={() => {}} />
       </ThemeProvider>,
     );
     expect(inlineVar("--accent")).toBe("");
@@ -50,7 +91,7 @@ describe("ThemeProvider accent handling", () => {
     const user = userEvent.setup();
     render(
       <ThemeProvider>
-        <SettingsPanel models={[]} onClose={() => {}} />
+        <SettingsPanel onClose={() => {}} />
       </ThemeProvider>,
     );
 
@@ -68,7 +109,7 @@ describe("ThemeProvider accent handling", () => {
     const user = userEvent.setup();
     render(
       <ThemeProvider>
-        <SettingsPanel models={[]} onClose={() => {}} />
+        <SettingsPanel onClose={() => {}} />
       </ThemeProvider>,
     );
 
@@ -85,7 +126,7 @@ describe("ThemeProvider accent handling", () => {
     const user = userEvent.setup();
     render(
       <ThemeProvider>
-        <SettingsPanel models={[]} onClose={() => {}} />
+        <SettingsPanel onClose={() => {}} />
       </ThemeProvider>,
     );
 
@@ -109,7 +150,7 @@ describe("ThemeProvider accent handling", () => {
     );
     render(
       <ThemeProvider>
-        <SettingsPanel models={[]} onClose={() => {}} />
+        <SettingsPanel onClose={() => {}} />
       </ThemeProvider>,
     );
     expect(inlineVar("--accent")).toBe("");
@@ -122,7 +163,7 @@ describe("ThemeProvider accent handling", () => {
     );
     render(
       <ThemeProvider>
-        <SettingsPanel models={[]} onClose={() => {}} />
+        <SettingsPanel onClose={() => {}} />
       </ThemeProvider>,
     );
     expect(inlineVar("--accent")).toBe("#15803d");
@@ -138,7 +179,7 @@ describe("ThemeProvider accent handling", () => {
     );
     render(
       <ThemeProvider>
-        <SettingsPanel models={[]} onClose={() => {}} />
+        <SettingsPanel onClose={() => {}} />
       </ThemeProvider>,
     );
     expect(inlineVar("--accent")).toBe("");
@@ -148,7 +189,7 @@ describe("ThemeProvider accent handling", () => {
     const user = userEvent.setup();
     render(
       <ThemeProvider>
-        <SettingsPanel models={[]} onClose={() => {}} />
+        <SettingsPanel onClose={() => {}} />
       </ThemeProvider>,
     );
 

@@ -1,7 +1,5 @@
 "use client";
 
-import type { ModelEntry } from "@/lib/types";
-import { ImageryPanel } from "./ImageryPanel";
 import { ThemeName, useTheme } from "./ThemeProvider";
 import { useModalFocus, useModalKeyDown } from "./useModalFocus";
 
@@ -26,10 +24,8 @@ const ACCENTS: { value: string | null; label: string; swatch: string }[] = [
 ];
 
 export function SettingsPanel({
-  models,
   onClose,
 }: {
-  models: ModelEntry[];
   onClose: () => void;
 }) {
   const { theme, setTheme, fontScale, setFontScale, accent, setAccent } =
@@ -168,8 +164,6 @@ export function SettingsPanel({
             </div>
           </fieldset>
         </div>
-
-        <ImageryPanel models={models} />
       </div>
     </div>
   );

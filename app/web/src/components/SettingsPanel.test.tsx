@@ -13,7 +13,7 @@ describe("SettingsPanel", () => {
     const user = userEvent.setup();
     render(
       <ThemeProvider>
-        <SettingsPanel models={[]} onClose={() => {}} />
+        <SettingsPanel onClose={() => {}} />
       </ThemeProvider>,
     );
     await user.click(screen.getByRole("button", { name: "High contrast" }));
@@ -31,12 +31,25 @@ describe("SettingsPanel", () => {
   it("does not render the accent explanation outside high contrast", () => {
     render(
       <ThemeProvider>
-        <SettingsPanel models={[]} onClose={() => {}} />
+        <SettingsPanel onClose={() => {}} />
       </ThemeProvider>,
     );
     expect(
       screen.queryByText(/Disabled while High contrast is active/),
     ).toBeNull();
     expect(screen.getByRole("group", { name: "Accent color" })).toBeEnabled();
+  });
+  it("contains only appearance and accessibility controls", () => {
+    render(
+      <ThemeProvider>
+        <SettingsPanel onClose={() => {}} />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByRole("dialog")).toHaveAccessibleName(
+      "Appearance and accessibility settings",
+    );
+    expect(screen.queryByRole("group", { name: /Background/i })).toBeNull();
+    expect(screen.queryByText(/Generate a background/i)).toBeNull();
   });
 });

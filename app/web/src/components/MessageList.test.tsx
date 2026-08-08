@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { MessageList, type DisplayMessage } from "./MessageList";
@@ -9,7 +9,10 @@ import type { RetrievedSource } from "@/lib/types";
 // Speech playback owns <audio> + object-URL plumbing and hits the TTS endpoint on
 // toggle. Stub the hook so we can assert the speak button wiring without audio or
 // network, and observe the toggle call.
-const { mockToggle } = vi.hoisted(() => ({ mockToggle: vi.fn() }));
+const { mockToggle, scrollIntoViewMock } = vi.hoisted(() => ({
+  mockToggle: vi.fn(),
+  scrollIntoViewMock: vi.fn(),
+}));
 vi.mock("@/lib/voice", () => ({
   useSpeechPlayback: () => ({ activeId: null, busyId: null, toggle: mockToggle }),
 }));
@@ -17,16 +20,29 @@ vi.mock("@/lib/voice", () => ({
 // jsdom has no layout engine, so scrollIntoView (called in an effect after every
 // render) is undefined; provide a no-op so rendering doesn't throw.
 beforeAll(() => {
-  window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  window.HTMLElement.prototype.scrollIntoView = scrollIntoViewMock;
 });
 
 afterEach(cleanup);
-beforeEach(() => mockToggle.mockReset());
+beforeEach(() => {
+  mockToggle.mockReset();
+  scrollIntoViewMock.mockReset();
+});
 
 function msg(over: Partial<DisplayMessage> & Pick<DisplayMessage, "id" | "role">): DisplayMessage {
   return { content: "", ...over };
 }
 
+function setScrollMetrics(
+  element: HTMLElement,
+  { scrollHeight, clientHeight, scrollTop }: Record<"scrollHeight" | "clientHeight" | "scrollTop", number>,
+) {
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, value: scrollHeight },
+    clientHeight: { configurable: true, value: clientHeight },
+    scrollTop: { configurable: true, writable: true, value: scrollTop },
+  });
+}
 describe("MessageList", () => {
   it("renders the empty-state prompt when there are no messages", () => {
     render(<MessageList messages={[]} />);
@@ -590,5 +606,66 @@ describe("MessageList content-safety panel", () => {
     // A newly added Foundry filter must still surface rather than vanish.
     await userEvent.click(screen.getByText("Content safety · 1 flagged"));
     expect(screen.getByText("new filter")).toBeInTheDocument();
+  });
+  it("labels deployment status truthfully and announces the new tab", () => {
+    render(<MessageList messages={[]} />);
+
+    expect(screen.queryByRole("link", { name: /Live status/i })).toBeNull();
+    expect(
+      screen.getByRole("link", {
+        name: /Deployment status.*opens in a new tab/i,
+      }),
+    ).toHaveAttribute("target", "_blank");
+  });
+
+  it("continues following streaming content while the reader is near the bottom", () => {
+    const first = msg({ id: "a-scroll", role: "assistant", content: "A" });
+    const { rerender } = render(<MessageList messages={[first]} />);
+    const viewport = screen.getByRole("log", { name: "Conversation" });
+    setScrollMetrics(viewport, {
+      scrollHeight: 1_000,
+      clientHeight: 400,
+      scrollTop: 550,
+    });
+    fireEvent.scroll(viewport);
+    scrollIntoViewMock.mockClear();
+
+    rerender(
+      <MessageList
+        messages={[msg({ ...first, content: "A streaming delta" })]}
+      />,
+    );
+
+    expect(scrollIntoViewMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Jump to latest" })).toBeNull();
+  });
+
+  it("preserves a reader's position and offers Jump to latest for offscreen updates", async () => {
+    const user = userEvent.setup();
+    const first = msg({ id: "a-scroll", role: "assistant", content: "A" });
+    const { rerender } = render(<MessageList messages={[first]} />);
+    const viewport = screen.getByRole("log", { name: "Conversation" });
+    setScrollMetrics(viewport, {
+      scrollHeight: 1_000,
+      clientHeight: 400,
+      scrollTop: 100,
+    });
+    fireEvent.scroll(viewport);
+    scrollIntoViewMock.mockClear();
+
+    rerender(
+      <MessageList
+        messages={[msg({ ...first, content: "A streaming delta" })]}
+      />,
+    );
+
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
+    expect(viewport.scrollTop).toBe(100);
+    const jump = screen.getByRole("button", { name: "Jump to latest" });
+    jump.focus();
+    expect(jump).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(scrollIntoViewMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Jump to latest" })).toBeNull();
   });
 });

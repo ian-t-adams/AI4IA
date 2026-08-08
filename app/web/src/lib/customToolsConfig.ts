@@ -1,5 +1,5 @@
 // Server-only: resolves the custom-tools / bring-your-own-MCP runtime
-// configuration from environment variables. Read in the root layout (a server
+// configuration from environment variables. Read in the protected route-group layout (a server
 // component) and passed as a plain prop into the client CustomToolsProvider,
 // exactly like the auth, voice-live, and library configs — so the value is
 // evaluated at request time in the

@@ -2922,7 +2922,7 @@ export function ChatApp() {
       </div>
 
       {settingsOpen && (
-        <SettingsPanel models={models} onClose={() => setSettingsOpen(false)} />
+        <SettingsPanel onClose={() => setSettingsOpen(false)} />
       )}
       {studioOpen && (
         <StudioPanel
