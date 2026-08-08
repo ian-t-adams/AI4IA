@@ -143,9 +143,22 @@ grants the identity nothing. Verify assignments by subscription/resource scope
 and inspect the literal `principalId`; `az role assignment list --assignee`
 resolves identifiers and can hide this mistake.
 
-After the first successful provision, narrow `Contributor` to the created
-resource group when practical. The RBAC Administrator role remains necessary
-while Bicep assigns data-plane roles to application identities.
+Retain both roles at subscription scope for routine provisioning. This is the
+tested permission boundary, not merely first-run bootstrap:
+
+- `infra/main.bicep` has `targetScope = 'subscription'`, creates the resource
+  group, and submits subscription-scoped role assignments.
+- The deploy preflight discovers and registers resource providers at subscription
+  scope whenever the template adds a namespace.
+- Bicep continues assigning application data-plane roles during later
+  reconciliations.
+
+Do **not** narrow `Contributor` to the resource group: that makes a routine
+`azd provision` unable to execute the same subscription-scoped deployment. A
+future least-privilege replacement must be a tested custom role that covers the
+template's subscription deployment, resource-group lifecycle, provider
+registration, and role-assignment operations; no such role is maintained here
+today.
 
 The deploy workflow resolves the identity's principal id from
 `AZURE_CLIENT_ID`, exports azd's `AZURE_PRINCIPAL_ID`, and grants the deployment
@@ -235,19 +248,28 @@ The deployment identity provisions Azure resources. User sign-in requires two
 separate tenant objects that Bicep cannot create: an API registration and a web
 SPA registration.
 
-Use the maintained provisioning script:
+The first provision has no deployed web FQDN yet, so bootstrap the registrations
+with the local redirect first. This creates the API audience, scope, SPA client,
+and service principals needed by the deployment and its app-only canary:
 
 ```powershell
 # Inspect planned changes.
 ./scripts/provision-entra-apps.ps1 `
-  -WebRedirectUri https://<web-host>,http://localhost:3000
+  -WebRedirectUri http://localhost:3000
 
 # Create/update the apps and print the repository-variable values.
 ./scripts/provision-entra-apps.ps1 `
-  -WebRedirectUri https://<web-host>,http://localhost:3000 `
+  -WebRedirectUri http://localhost:3000 `
   -AdminUpn <admin-upn> `
   -Apply
 ```
+
+Set the printed `AI4IA_ENTRA_*` repository variables before the first provision.
+Browser sign-in on Azure is not ready yet; section 6.1 discovers the default ACA
+web FQDN and reruns this idempotent script to add that real origin. Section 6.2
+runs it once more if a vanity web hostname is bound. Existing redirects are
+retained, so each pass adds the newly available origin without breaking local or
+default-host access.
 
 The script creates:
 
@@ -361,22 +383,39 @@ promotes images by digest, and verifies the resulting release. On the first
 standup there are no prior revisions to restore, so a failed first release must
 be corrected and rerun.
 
-The default Container Apps hostnames are usable immediately. Record:
+The default Container Apps hostnames are reachable immediately, but browser
+sign-in is not valid there until the web origin is added to the SPA registration.
+Record:
 
 ```powershell
-az containerapp show -g rg-ai4ia-<environment> -n ca-web-<environment> `
-  --query "{fqdn:properties.configuration.ingress.fqdn,verificationId:properties.customDomainVerificationId}"
+$web = az containerapp show -g rg-ai4ia-<environment> -n ca-web-<environment> `
+  --query "{fqdn:properties.configuration.ingress.fqdn,verificationId:properties.customDomainVerificationId}" |
+  ConvertFrom-Json
+$web
 
 az containerapp show -g rg-ai4ia-<environment> -n ca-proxy-<environment> `
   --query "{fqdn:properties.configuration.ingress.fqdn,verificationId:properties.customDomainVerificationId}"
 ```
+
+Now add the deployed web origin to the existing SPA registration:
+
+```powershell
+./scripts/provision-entra-apps.ps1 `
+  -WebRedirectUri "https://$($web.fqdn)",http://localhost:3000 `
+  -AdminUpn <admin-upn> `
+  -Apply
+```
+
+This post-provision rerun is required even when no custom domain will be used.
+Confirm browser sign-in on `https://$($web.fqdn)` before moving to optional DNS.
 
 ### 6.2 Bind custom domains (optional)
 
 The first managed-certificate bind cannot converge in one ARM pass. Azure
 requires the hostname to exist in the Container Apps environment before it
 issues a certificate, while Bicep declares the certificate and ingress binding
-together and ARM creates the certificate first.
+together and ARM creates the certificate first. Reversing the sequence fails
+with `RequireCustomHostnameInEnvironment`.
 
 Use this order:
 
@@ -384,9 +423,18 @@ Use this order:
 2. At the public DNS provider, point each `CNAME` to the new Container App FQDN
    and set `TXT asuid.<host>` to that app's verification id.
 3. Wait for the old TTL and verify through a public resolver.
-4. Set `AI4IA_WEB_CUSTOM_DOMAIN` and `AI4IA_PROXY_CUSTOM_DOMAIN`. Leave managed
+4. Add the vanity web origin to the existing Entra SPA registration:
+
+   ```powershell
+   ./scripts/provision-entra-apps.ps1 `
+     -WebRedirectUri https://<web-host>,"https://$($web.fqdn)",http://localhost:3000 `
+     -AdminUpn <admin-upn> `
+     -Apply
+   ```
+
+5. Set `AI4IA_WEB_CUSTOM_DOMAIN` and `AI4IA_PROXY_CUSTOM_DOMAIN`. Leave managed
    certificate names empty for this first bind so Bicep derives new names.
-5. Rerun the GitHub deployment with provision enabled.
+6. Rerun the GitHub deployment with provision enabled.
 
 The workflow's **Preflight custom-domain bindings** step runs
 `az containerapp hostname add` before provision when the hostname is new. For a
@@ -442,7 +490,8 @@ Run the first-release checks:
    local `azd up` does not produce this evidence.
 2. Confirm API `/health/live` and `/health/ready`, web `/`, and proxy ingress.
 3. Confirm every configured custom domain is `SniEnabled`.
-4. Sign in through the SPA and perform one model-backed chat.
+4. Sign in through the SPA at the default ACA FQDN and, when configured, the
+   vanity hostname; perform one model-backed chat.
 5. Verify the authenticated API path reaches SimpleL7Proxy → APIM → Foundry.
 6. Exercise enabled document, memory, MCP, media, and voice capabilities
    separately; the deployment canary proves only one non-streaming chat turn.
@@ -468,11 +517,13 @@ A tenant migration is a parallel standup, not an in-place retarget:
 1. Complete sections 1-5 in the new tenant.
 2. Keep the old environment serving.
 3. Provision the new environment without custom domains.
-4. Recreate any required data-plane toolbox/catalog assets.
-5. Decide what canonical data must move. Cosmos is user-scoped canonical storage;
+4. Add the new default ACA web FQDN to the Entra SPA registration and validate
+   sign-in before changing DNS.
+5. Recreate any required data-plane toolbox/catalog assets.
+6. Decide what canonical data must move. Cosmos is user-scoped canonical storage;
    blob source files and per-user Key Vault secrets need separate handling.
-6. Validate the new default hostnames and sign-in before changing DNS.
-7. Move DNS and complete the two-phase domain bind.
+7. Add the vanity origin to the SPA registration, move DNS, and complete the
+   two-phase domain bind.
 8. Regenerate published status/inventory data.
 9. Retire the old environment only through the
    [teardown runbook](./teardown.md), with its explicit data-loss gate.

@@ -1011,27 +1011,33 @@ keeps the content in the app's control.
 
 ## APIM plane (single Basic v2 service)
 
-The model/realtime/MCP plane is the `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>` Basic v2 service (capacity 1), and it is the **only** APIM service in the environment. `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` owns the MCP children and `gateway.bicep` adds model/realtime children through the shared contract, including the `speech_voice_live` WebSocket API (`/speech/voice-live/realtime`) and its own distinct subscription (`ai4ia-api-speech-voice-live`) alongside the `/openai/realtime` API and subscription. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; equally, neither voice provider's key can call the other's API, the model API, or the MCP plane. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update.
+The model/realtime/MCP plane is the `apim-mcp-<workload>-<environmentName>-<uniqueSuffix>` Basic v2 service (capacity 1), and it is the **only** APIM service in the environment. `apimcore.bicep` owns its identity and single diagnostic setting; `mcpgateway.bicep` owns the MCP children and `gateway.bicep` adds model/realtime children through the shared contract. When `speech_voice_live` is enabled, that same service also carries its WebSocket API (`/speech/voice-live/realtime`) and distinct subscription (`ai4ia-api-speech-voice-live`) alongside the Azure OpenAI `/openai/realtime` API and subscription. MCP uses an MCP-only product/subscription, so its key cannot call model/realtime APIs; each enabled voice provider also has a distinct key. Configure APIs, policies, keys, and Foundry RBAC before caller revisions update.
 
-Because MCP, HTTP/SSE, and both voice providers share one service, they share its
-blast radius and resilience posture. Any change that touches APIM still gets a
-**zero-delete what-if review** before it is applied.
+MCP, HTTP/SSE, Azure OpenAI Realtime, and any enabled Speech Voice Live objects
+share the service's blast radius and resilience posture. Any change that touches
+APIM still gets a **zero-delete what-if review** before it is applied.
 
 The superseded PR-only `apim-v2-*` design was never deployed. A what-if must contain
 no `apim-v2-*` creation. If resource inventory unexpectedly finds such a service, stop
 and handle it through a separate explicitly approved cleanup.
 
-### Speech Voice Live gating (satisfied)
+### Speech Voice Live posture (off)
 
-This section previously recorded a `403 AuthorizationFailed` blocker: the available
-identity could not read `rg-ai4ia-slurmfactory`, so the APIM/AIServices posture could
-not be verified against live Azure and `speechVoiceLiveEnabled` was held at `false`.
+The checked-in and current deployment posture is
+`AI4IA_SPEECH_VOICE_LIVE_ENABLED=false` with
+`AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai`. Azure OpenAI Realtime remains the
+only selectable provider. The managed-identity audience and account-read
+investigation closed an earlier validation blocker, but that did **not** enable
+Speech Voice Live.
 
-That gate is closed. The resource group reads normally, the stack is deployed, and
-`AI4IA_SPEECH_VOICE_LIVE_ENABLED=true` with
-`AI4IA_VOICE_PROVIDER_ALLOWLIST=azure_openai,speech_voice_live`, so both providers are
-live. The remaining validation is a signed-in manual microphone canary, tracked in
-[`roadmap.md`](../roadmap.md) — not a deployment blocker.
+An earlier enabled deployment can leave its Speech API, operation policy,
+subscription, named values, or role assignment behind because ARM incremental
+mode does not delete conditional resources when the flag turns off. Those
+objects are dormant inventory, not evidence that the provider is live: the
+running API has no Speech key/configuration and the server allowlist excludes it.
+Follow [`feature-enablement.md`](./feature-enablement.md#speech-voice-live-second-voice-provider)
+and complete the authenticated and signed-in microphone canaries before claiming
+the provider is enabled.
 
 ### Consumption APIM removal (done)
 

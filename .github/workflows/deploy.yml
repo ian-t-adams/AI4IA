@@ -6,7 +6,8 @@ name: deploy
 # build / test). Nothing redeployed on merge, so main could be many commits
 # ahead of what is actually running. This workflow closes that gap — once the
 # one-time OIDC setup below is done, every merge to main reconciles infra and
-# ships the new app images. See docs/runbooks/deployment.md.
+# ships the new app images. See docs/runbooks/greenfield-standup.md for setup
+# and docs/runbooks/deployment.md for routine operation.
 #
 # One-time setup (no secrets in this file): create a user-assigned managed
 # identity (or app registration) with a GitHub federated credential, grant it
@@ -125,8 +126,8 @@ jobs:
       # environment. Anything not plumbed here silently deploys its placeholder no
       # matter what the repo variable says -- which is how the live APIM ended up on
       # ai4ia@example.com and every resource on owner=ai4ia-operator while both repo
-      # variables were set. deployment.md section 3 lists all of these as required for
-      # a new-tenant standup, so they must be reachable from CI.
+      # variables were set. greenfield-standup.md section 3 lists all of these as
+      # required for a new-tenant standup, so they must be reachable from CI.
       AI4IA_APIM_PUBLISHER_EMAIL: ${{ vars.AI4IA_APIM_PUBLISHER_EMAIL }}
       AI4IA_OWNER: ${{ vars.AI4IA_OWNER }}
       AI4IA_COST_CENTER: ${{ vars.AI4IA_COST_CENTER }}
@@ -142,7 +143,8 @@ jobs:
       # today, so Actions expands them to '', and azd resolves an empty ${VAR=default}
       # to the default (verified live -- they landed on centralus/eastus/eastus). A
       # fallback here would be dead weight that has to be kept in sync with
-      # main.parameters.json by hand. Do not "harden" this; see deployment.md section 3.
+      # main.parameters.json by hand. Do not "harden" this; see
+      # greenfield-standup.md section 3.
       AI4IA_POSTGRES_LOCATION: ${{ vars.AI4IA_POSTGRES_LOCATION }}
       AI4IA_SEARCH_LOCATION: ${{ vars.AI4IA_SEARCH_LOCATION }}
       AI4IA_API_CENTER_LOCATION: ${{ vars.AI4IA_API_CENTER_LOCATION }}
@@ -221,8 +223,9 @@ jobs:
       # that do not pass "durable": true are unaffected either way.
       # Do NOT add `|| 'false'` style fallbacks to the three below: azd's
       # ${VAR=default} already behaves like POSIX ${VAR:-default}, so an unset
-      # repo variable correctly takes the parameter default (see deployment.md
-      # §3). This line carried one anyway, directly under this comment, and it
+      # repo variable correctly takes the parameter default (see
+      # greenfield-standup.md §3). This line carried one anyway, directly under
+      # this comment, and it
       # silently pinned the deploy to `false` for a full release after the
       # parameter default was changed to `true` -- the parameter file said the
       # feature was on, no scheduler was ever provisioned, and the deploy stayed
@@ -359,7 +362,7 @@ jobs:
                 --query "properties.configuration.ingress.customDomains[].name" -o tsv 2>/dev/null || true)"
             else
               if [ -n "$var_val" ]; then
-                echo "::error::$app does not exist yet but $var_name is set to '$var_val'. That is the wrong order for a new tenant: the managed certificate needs the app, and DNS has to point at an environment that exists. Clear $var_name (and its *_MANAGED_CERT_NAME), provision once, cut DNS over, then re-run. See docs/runbooks/deployment.md section 3 step 3a."
+                echo "::error::$app does not exist yet but $var_name is set to '$var_val'. That is the wrong order for a new tenant: the managed certificate needs the app, and DNS has to point at an environment that exists. Clear $var_name (and its *_MANAGED_CERT_NAME), provision once, cut DNS over, then re-run. See docs/runbooks/greenfield-standup.md section 6.2."
                 rc=1
               else
                 echo "OK: $app does not exist yet and $var_name is empty (correct greenfield order)."
@@ -388,7 +391,7 @@ jobs:
               if az containerapp hostname add -g "$rg" -n "$app" --hostname "$var_val" -o none; then
                 echo "OK: $var_val registered; bicep will issue the cert and switch it to SniEnabled."
               else
-                echo "::error::Could not register $var_val on $app. Azure validates domain control here, so public DNS must ALREADY have: CNAME $var_val -> the app's <name>.<envdomain>.azurecontainerapps.io FQDN, and TXT asuid.$var_val = the app's customDomainVerificationId. Confirm with a public resolver (your corporate resolver may still cache the old target). See docs/runbooks/deployment.md section 3 step 3a."
+                echo "::error::Could not register $var_val on $app. Azure validates domain control here, so public DNS must ALREADY have: CNAME $var_val -> the app's <name>.<envdomain>.azurecontainerapps.io FQDN, and TXT asuid.$var_val = the app's customDomainVerificationId. Confirm with a public resolver (your corporate resolver may still cache the old target). See docs/runbooks/greenfield-standup.md section 6.2."
                 rc=1
               fi
             fi
@@ -558,7 +561,7 @@ jobs:
             exit 0
           fi
           if [ -z "${AI4IA_ENTRA_AUDIENCE:-}" ]; then
-            echo "::error::AI4IA_ENTRA_AUDIENCE is empty, so there is no API audience to request a token for and the post-deploy canary cannot run. A deploy that silently skips its own end-to-end proof is the failure mode this gate exists to remove. Set the variable (docs/runbooks/deployment.md section 2.7), or set AI4IA_DEPLOY_VERIFY_CANARY=false to skip the canary deliberately and visibly."
+            echo "::error::AI4IA_ENTRA_AUDIENCE is empty, so there is no API audience to request a token for and the post-deploy canary cannot run. A deploy that silently skips its own end-to-end proof is the failure mode this gate exists to remove. Set the variable (docs/runbooks/greenfield-standup.md section 4), or set AI4IA_DEPLOY_VERIFY_CANARY=false to skip the canary deliberately and visibly."
             exit 1
           fi
           if ! az account get-access-token --resource "$AI4IA_ENTRA_AUDIENCE" --query accessToken -o tsv >/dev/null 2>&1; then

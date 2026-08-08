@@ -12,8 +12,9 @@
     2. a web single-page-application (SPA) client with the site's redirect URI, granted
        that scope.
 
-  The `AI4IA_ENTRA_*` repository variables (see docs/runbooks/deployment.md 2.7) point at
-  these two apps. This script makes a fresh new-tenant stand-up turnkey instead of manual.
+  The `AI4IA_ENTRA_*` repository variables (see
+  docs/runbooks/greenfield-standup.md section 4) point at these two apps. This script makes
+  a fresh new-tenant stand-up turnkey instead of manual.
 
   READ-ONLY BY DEFAULT. It prints the plan and, if the apps already exist, their current
   values. Pass -Apply to create/patch. It is idempotent: existing apps (matched by display
@@ -33,8 +34,9 @@
   Display name for the web SPA app registration. Default: "AI4IA Web".
 
 .PARAMETER WebRedirectUri
-  SPA redirect URIs for the browser client. Pass the vanity host (e.g.
-  https://ai4ia.example.com) plus any dev origin. Default: http://localhost:3000.
+  SPA redirect URIs for the browser client. Bootstrap with the default
+  http://localhost:3000 before the first provision, then rerun idempotently with the
+  deployed Container Apps web FQDN and, if used, the vanity host. Existing URIs are retained.
 
 .PARAMETER AdminUpn
   Optional user principal name; its object id is emitted as AI4IA_ADMIN_SUBJECTS.
@@ -43,10 +45,10 @@
   Actually create/patch the registrations. Omit for a dry run.
 
 .EXAMPLE
-  ./scripts/provision-entra-apps.ps1 -WebRedirectUri https://ai4ia.example.com,http://localhost:3000
+  ./scripts/provision-entra-apps.ps1 -WebRedirectUri http://localhost:3000 -Apply
 
 .EXAMPLE
-  ./scripts/provision-entra-apps.ps1 -WebRedirectUri https://ai4ia.example.com -AdminUpn me@example.com -Apply
+  ./scripts/provision-entra-apps.ps1 -WebRedirectUri https://ca-web-prod.example.azurecontainerapps.io,http://localhost:3000 -AdminUpn me@example.com -Apply
 #>
 [CmdletBinding()]
 param(
