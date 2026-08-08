@@ -366,22 +366,29 @@ For a new environment, leave these four values empty:
 - `AI4IA_PROXY_CUSTOM_DOMAIN`
 - `AI4IA_PROXY_MANAGED_CERT_NAME`
 
-Then start the deployment workflow from `main`, or provision locally:
+The first standup must use the GitHub deployment workflow from `main`:
 
 ```powershell
-azd env new <environment>
-azd env set AZURE_SUBSCRIPTION_ID <subscription-id>
-azd env set AZURE_LOCATION <primary-region>
-# Mirror every required repository variable from sections 3-5 into this azd env.
-azd up
+gh workflow run deploy.yml -f provision=true --ref main
 ```
 
-Repository variables are not read by a local `azd up`; set the same required
-posture and Entra values in the selected azd environment before using this path.
-The workflow is preferred because it captures rollback state before provision,
-promotes images by digest, and verifies the resulting release. On the first
-standup there are no prior revisions to restore, so a failed first release must
-be corrected and rerun.
+This is required, not merely preferred. The workflow resolves the deployment
+identity's **principal/object id** from `AZURE_CLIENT_ID` (never treating the
+client id as an object id), exports it as azd's native
+`AZURE_PRINCIPAL_ID`, and Bicep grants that service principal the narrow
+**Cognitive Services Content Understanding Contributor** role on the primary
+Foundry account. The postprovision hook runs under the same OIDC identity and can
+therefore PATCH the Content Understanding model defaults.
+
+A local human operator is neither the API managed identity nor that service
+principal. The current role-assignment template declares
+`principalType: 'ServicePrincipal'`, so putting a signed-in user's object id into
+`AZURE_PRINCIPAL_ID` is not a supported workaround. A local `azd up` can otherwise
+finish while postprovision reports a Content Understanding defaults `WARN`; do
+not treat that as a completed greenfield standup. The workflow also captures
+rollback state, promotes images by digest, and verifies the resulting release.
+On the first standup there are no prior revisions to restore, so a failed first
+release must be corrected and rerun.
 
 The default Container Apps hostnames are reachable immediately, but browser
 sign-in is not valid there until the web origin is added to the SPA registration.
@@ -482,6 +489,19 @@ python scripts/provision-foundry-toolbox.py --create
 Skipping this can leave APIM and the MCP initialize handshake healthy while
 `tools/list` returns `Toolbox '<name>' not found`. Verify through the admin
 official-MCP metric with refresh enabled and require a nonzero tool count.
+
+In the workflow's **Provision infrastructure** log, require the postprovision
+result `Content Understanding defaults | PASS`. A `WARN` or `SKIP` is not success:
+it means the defaults PATCH was unauthorized, its role had not propagated, or
+the required Foundry output was absent. After correcting the reported cause or
+allowing RBAC propagation, rerun:
+
+```powershell
+gh workflow run deploy.yml -f provision=true --ref main
+```
+
+Do not continue until the rerun reports `PASS`; document upload can otherwise
+reach the live Content Understanding account without model defaults.
 
 Run the first-release checks:
 
