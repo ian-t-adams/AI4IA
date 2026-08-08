@@ -30,11 +30,17 @@ PR #125, with **zero new runtime code**. APIM injects the managed-identity beare
 ## Reconciliation
 
 `.github/workflows/foundry-assets.yml` uses GitHub OIDC to reconcile these preview
-data-plane assets after changes under `foundry/**` and on manual dispatch. The project
-endpoint comes only from the `AZURE_FOUNDRY_PROJECT_ENDPOINT` repository or production
-environment variable. A fail-closed preflight requires the OIDC identity to hold the
-project-scoped Foundry User role before reconciliation. Failures stop the workflow;
-unchanged defaults create no immutable versions.
+data-plane assets. It is **not** triggered directly by changes under `foundry/**`:
+it runs on `workflow_run` after the `deploy` workflow completes successfully for a
+push to `main`, and on manual dispatch. That ordering is the point — `deploy` is
+what provisions the project-scoped Foundry User role, so reconciling in parallel
+with (or ahead of) it would race RBAC creation and propagation. `foundry/**` is
+included in `deploy`'s push paths, so editing a manifest still reaches
+reconciliation; it just arrives after the infrastructure it depends on. The project
+endpoint comes only from the `AZURE_FOUNDRY_PROJECT_ENDPOINT` repository or
+production environment variable. A fail-closed preflight requires the OIDC identity
+to hold the project-scoped Foundry User role before reconciliation. Failures stop
+the workflow; unchanged defaults create no immutable versions.
 
 For a local/operator run:
 

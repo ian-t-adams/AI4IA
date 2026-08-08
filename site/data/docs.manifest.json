@@ -26,7 +26,7 @@
         { "path": "docs/configuration-reference.md", "title": "Configuration reference", "desc": "Every feature/env/parameter mapping across bicep, params, workflow vars and app env." },
         { "path": "docs/region-capability-matrix.md", "title": "Region & capability map", "desc": "Which models and capabilities live in East US 2, Sweden Central and West US." },
         { "path": "docs/naming-and-tagging.md", "title": "Naming & tagging", "desc": "Resource naming tokens and the tag scheme applied across the deployment." },
-        { "path": "docs/foundry-toolbox.md", "title": "Foundry toolbox", "desc": "The official MCP plane: toolbox, skills, A2A and the private tool catalog." },
+        { "path": "docs/foundry-toolbox.md", "title": "Foundry toolbox", "desc": "The official MCP plane: toolbox tools, A2A and the private tool catalog, and why the canonical toolbox ships no skills." },
         { "path": "docs/document-multimodal-understanding.md", "title": "Document & multimodal understanding", "desc": "Content Understanding ingest, retrieval, compute and the library." },
         { "path": "docs/memory.md", "title": "Memory architecture", "desc": "Canonical Cosmos memory, owner-scoped CRUD, vector recall, concurrency fences, deletion, privacy, and remaining gaps." },
         { "path": "infra/README.md", "title": "Infrastructure (Bicep) overview", "desc": "How infra/main.bicep and the parameters, model catalog and azd hooks fit together." },

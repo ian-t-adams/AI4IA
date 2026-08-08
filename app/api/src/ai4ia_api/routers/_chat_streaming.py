@@ -66,7 +66,13 @@ def _has_gateway_stream_error(raw: str) -> bool:
 def _mint_approval_events(
     assistant: Message, drafts: Sequence[ApprovalDraft]
 ) -> list[dict[str, object]]:
-    """Attach durable pending approvals and return their one-time client grants."""
+    """Attach durable pending-approval records to ``assistant`` and return the
+    client payloads (record + its one-time grant).
+
+    Splitting mint from persist is the point: the record that lands in Cosmos
+    carries only ``grantHash``, while the grant itself exists solely in the
+    payload returned to the caller, once. Nothing else can reconstruct it.
+    """
     if not drafts:
         return []
     records: list[PendingToolApproval] = []
@@ -189,6 +195,24 @@ async def _stream_with_placeholder(
             await _persist_terminal_assistant(repo, user_id, assistant)
 
 
+# Live activity + final answer for an agentic (tool-using) turn. Runs the turn as
+# a shielded task and forwards its step trace live as ``{"step": {...}}`` SSE
+# events (older clients that only read ``choices[0].delta.content`` ignore them).
+#
+# With ``stream_tokens`` the turn's assistant text is forwarded the same way, as
+# ordinary content deltas, interleaved with those step events — so a tool-using
+# turn shows text and "running X" while it works instead of going silent for a
+# whole model round trip (audit finding P1-16). What was streamed is then exactly
+# what is persisted, so a reloaded conversation matches what the user watched
+# arrive; a partially-streamed turn that is cancelled or fails keeps its partial
+# text on the row, the way the plain (non-tool) streaming path already does.
+#
+# Without ``stream_tokens`` the generator behaves as before: nothing but steps
+# until the run finishes, then a single content delta. That is the kill switch's
+# job — one flag, one branch, and the pre-change bytes on the wire.
+#
+# Either way the terminal row is durably persisted BEFORE ``[DONE]``, and any
+# approval prompts ride out after that write and before ``[DONE]``.
 async def _agentic_stream(
     *,
     assistant: Message,
@@ -276,6 +300,9 @@ async def _agentic_stream(
             content = streamed_text if streamed_text else partial.text
             raise run_error.cause
 
+        # ``pending_delta`` is the text still owed to the client. Under streaming
+        # that is normally nothing (it already went out increment by increment);
+        # without streaming it is the whole answer, exactly as before.
         pending_delta = ""
         if result is not None and (result.text or "").strip():
             content = streamed_text if streamed_text.strip() else result.text
@@ -285,6 +312,10 @@ async def _agentic_stream(
                 total_usage = total_usage.add(extra)
             persisted = persisted_trace(result.steps) or None
         elif fallback is not None:
+            # Empty (or failed) tool turn: complete the answer with a plain call so
+            # the turn never dead-ends. The steps that did run are still shown, and
+            # anything already streamed is kept rather than retracted — the user
+            # cannot un-see it.
             if isinstance(run_error, ModelGatewayError):
                 logger.warning(
                     "agentic stream gateway run failed; using fallback",
@@ -312,6 +343,8 @@ async def _agentic_stream(
             content = f"{streamed_text}{pending_delta}" if streamed_text.strip() else fb_text
             total_usage = total_usage.add(fb_usage)
         elif streamed_text.strip():
+            # Streamed text but no reported final answer and no fallback: keep what
+            # the user saw rather than persisting an empty row over it.
             content = streamed_text
             if result is not None:
                 total_usage = result.usage
@@ -328,7 +361,8 @@ async def _agentic_stream(
             assistant.attachments = get_attachments()
         # Mint BEFORE the terminal write so the durable record and the message it
         # belongs to land in one upsert, but hand the grants to the client only
-        # AFTER that write succeeds.
+        # AFTER that write succeeds — a grant whose record was never saved would
+        # be unredeemable, and worse, would look approvable to the user.
         approval_events = (
             _mint_approval_events(assistant, get_approval_drafts())
             if get_approval_drafts is not None
@@ -472,6 +506,9 @@ async def _plain_gateway_stream(
             if chunk.usage:
                 stream_usage = chunk.usage
             if chunk.safety is not None:
+                # Prompt verdicts arrive on an early chunk and completion
+                # verdicts on a later one, so the full picture only exists
+                # after merging across the stream.
                 stream_safety = merge_safety(stream_safety, chunk.safety)
                 assistant.safety = stream_safety
             if chunk.raw and _has_gateway_stream_error(chunk.raw):
@@ -548,6 +585,9 @@ async def _plain_gateway_stream(
         assistant.status = final
         if not terminal_persisted:
             await _persist_terminal_assistant(repo, user.internal_user_id, assistant)
+        # Meter the turn (best-effort, shielded so a client disconnect still
+        # records it). Non-complete turns are recorded as non-billable status
+        # rows; record_completion gates billability on status == "complete".
         _status_map = {
             MessageStatus.complete: "complete",
             MessageStatus.cancelled: "cancelled",
@@ -572,6 +612,10 @@ async def _plain_gateway_stream(
         except Exception:  # noqa: BLE001 - metering must never break a turn
             logger.warning("usage metering failed for %s", assistant.id, exc_info=True)
         if final == MessageStatus.complete and saw_done and terminal_persisted:
+            # Remember the user's turn only when the model stream completed
+            # cleanly (a clean end-of-stream marker), so a truncated or errored
+            # turn doesn't seed memory. Best-effort: remember() swallows its own
+            # failures. (A durable store will move this off the response path.)
             await asyncio.shield(
                 memory.remember(user.internal_user_id, session_id, content_for_model)
             )

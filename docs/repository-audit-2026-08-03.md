@@ -14,7 +14,7 @@ defect requires immediate incident response. Several other boundaries rely on
 cooperative clients, manual deployment work, mutable builds, or documentation that
 has drifted from the implementation and live environment.
 
-> **Written 2026-08-03. See [the disposition](#immediate-action--status-as-of-2026-08-05)
+> **Written 2026-08-03. See [the disposition](#immediate-action--status-as-of-2026-08-08)
 > for what has since been fixed** — the credential defect is fixed and the key is
 > rotated, but the production-completeness verdict above still stands. P1-3 and
 > P1-4 both remain open (P1-4's first half landed in #294; see the

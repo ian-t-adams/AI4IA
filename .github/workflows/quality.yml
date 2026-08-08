@@ -336,6 +336,19 @@ jobs:
           # worse than no citation. Globs and CHANGELOG.md are excluded by design.
           python3 -m unittest scripts.tests.test_documented_paths_exist
 
+      - name: Run Markdown anchor tests
+        run: |
+          set -euo pipefail
+          # test_documented_paths_exist splits on "#" and validates only the file
+          # part, so a [text](doc.md#heading) link whose heading was renamed passes
+          # every existing gate while silently landing the reader at the top of the
+          # document. Two such links reached main: an audit cross-reference dated
+          # 2026-08-05 after the heading moved to 2026-08-08, and a roadmap link into
+          # deployment.md that the greenfield/routine split retargeted. This
+          # reimplements GitHub's slug algorithm (including duplicate -1/-2
+          # suffixing) and refuses to pass vacuously on too few checked links.
+          python3 -m unittest scripts.tests.test_markdown_anchors
+
       - name: Run gating-workflow tests
         run: |
           set -euo pipefail
