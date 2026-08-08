@@ -1,20 +1,12 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
-import { AuthProvider } from "@/components/AuthProvider";
-import { VoiceLiveProvider } from "@/components/VoiceLiveProvider";
-import { LibraryProvider } from "@/components/LibraryProvider";
-import { CustomToolsProvider } from "@/components/CustomToolsProvider";
 import { ClientTelemetryBoot } from "@/components/ClientTelemetryBoot";
-import { getAuthConfig } from "@/lib/authConfig";
-import { getVoiceLiveConfig } from "@/lib/voiceLiveConfig";
-import { getLibraryConfig } from "@/lib/libraryConfig";
-import { getCustomToolsConfig } from "@/lib/customToolsConfig";
 
 export const metadata: Metadata = {
   title: "AI4IA — Agentic Chat",
   description:
-    "Multi-model agentic chat for personal use and customer demos, powered by Azure AI Foundry.",
+    "Governed multimodal agent chat for enterprise knowledge work, built on Azure AI Foundry.",
 };
 
 export default function RootLayout({
@@ -22,10 +14,6 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const authConfig = getAuthConfig();
-  const voiceLiveConfig = getVoiceLiveConfig();
-  const libraryConfig = getLibraryConfig();
-  const customToolsConfig = getCustomToolsConfig();
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
@@ -33,17 +21,7 @@ export default function RootLayout({
           Skip to main content
         </a>
         <ClientTelemetryBoot />
-        <ThemeProvider>
-          <AuthProvider config={authConfig}>
-            <VoiceLiveProvider config={voiceLiveConfig}>
-              <LibraryProvider config={libraryConfig}>
-                <CustomToolsProvider config={customToolsConfig}>
-                  {children}
-                </CustomToolsProvider>
-              </LibraryProvider>
-            </VoiceLiveProvider>
-          </AuthProvider>
-        </ThemeProvider>
+        <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>
   );

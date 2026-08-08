@@ -675,105 +675,172 @@ function Bubble({
 
 export function MessageList({
   messages,
+  conversationId,
   onError,
   onCitation,
 }: {
   messages: DisplayMessage[];
+  conversationId?: string | null;
   onError?: (message: string) => void;
   onCitation?: (target: CitationTarget) => void;
 }) {
+  const viewportRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
+  const conversationIdRef = useRef(conversationId);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const playback = useSpeechPlayback((msg) => onError?.(msg));
+  const latest = messages.at(-1);
+  const messageRevision = `${messages.length}:${latest?.id ?? ""}:${latest?.content.length ?? 0}:${latest?.pending ?? false}:${latest?.steps?.length ?? 0}`;
 
   useEffect(() => {
+    const conversationChanged = conversationIdRef.current !== conversationId;
+    conversationIdRef.current = conversationId;
+    if (conversationChanged) {
+      isNearBottomRef.current = true;
+      setShowJumpToLatest(false);
+      endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+      return;
+    }
+    if (isNearBottomRef.current) {
+      endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      setShowJumpToLatest(false);
+    } else {
+      setShowJumpToLatest(true);
+    }
+  }, [conversationId, messageRevision]);
+
+  const updateScrollPosition = () => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const distanceFromBottom =
+      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    const isNearBottom = distanceFromBottom <= 96;
+    isNearBottomRef.current = isNearBottom;
+    if (isNearBottom) setShowJumpToLatest(false);
+  };
+
+  const jumpToLatest = () => {
+    isNearBottomRef.current = true;
+    setShowJumpToLatest(false);
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages]);
+  };
 
   return (
-    <div
-      id="main"
-      role="log"
-      aria-live="polite"
-      aria-label="Conversation"
-      style={{
-        flex: 1,
-        overflowY: "auto",
-        padding: "24px max(24px, 6%)",
-      }}
-    >
-      {messages.length === 0 ? (
-        <div
-          style={{
-            height: "100%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "var(--fg-muted)",
-            textAlign: "center",
-          }}
-        >
-          <div style={{ maxWidth: 520 }}>
-            <p style={{ fontSize: "1.3em", marginBottom: 8, color: "var(--fg)" }}>
-              Start a conversation
-            </p>
-            <p style={{ marginBottom: 12 }}>
-              Type <strong>/</strong> for commands, <strong>@</strong> to call an agent, or
-              attach a file to ground the reply. Pick a model only when you need to.
-            </p>
-            <div
-              style={{
-                display: "flex",
-                gap: 12,
-                justifyContent: "center",
-                flexWrap: "wrap",
-                fontSize: "0.9em",
-              }}
-            >
-              <a
-                href={USER_GUIDE_URL}
-                target="_blank"
-                rel="noreferrer"
-                style={{ color: "var(--accent)" }}
+    <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+      <div
+        ref={viewportRef}
+        role="log"
+        aria-live="polite"
+        aria-label="Conversation"
+        onScroll={updateScrollPosition}
+        style={{
+          height: "100%",
+          overflowY: "auto",
+          padding: `24px max(24px, 6%) ${showJumpToLatest ? "80px" : "24px"}`,
+        }}
+      >
+        {messages.length === 0 ? (
+          <div
+            style={{
+              height: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--fg-muted)",
+              textAlign: "center",
+            }}
+          >
+            <div style={{ maxWidth: 520 }}>
+              <p style={{ fontSize: "1.3em", marginBottom: 8, color: "var(--fg)" }}>
+                Start a conversation
+              </p>
+              <p style={{ marginBottom: 12 }}>
+                Type <strong>/</strong> for commands, <strong>@</strong> to call an agent, or
+                attach a file to ground the reply. Pick a model only when you need to.
+              </p>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 12,
+                  justifyContent: "center",
+                  flexWrap: "wrap",
+                  fontSize: "0.9em",
+                }}
               >
-                User guide
-              </a>
-              <a
-                href={DOCS_INDEX_URL}
-                target="_blank"
-                rel="noreferrer"
-                style={{ color: "var(--accent)" }}
-              >
-                Documentation
-              </a>
-              <a
-                href={STATUS_URL}
-                target="_blank"
-                rel="noreferrer"
-                style={{ color: "var(--accent)" }}
-              >
-                Live status
-              </a>
+                <a
+                  href={USER_GUIDE_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: "var(--accent)" }}
+                >
+                  User guide
+                  <span className="visually-hidden"> (opens in a new tab)</span>
+                </a>
+                <a
+                  href={DOCS_INDEX_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: "var(--accent)" }}
+                >
+                  Documentation
+                  <span className="visually-hidden"> (opens in a new tab)</span>
+                </a>
+                <a
+                  href={STATUS_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: "var(--accent)" }}
+                >
+                  Deployment status
+                  <span className="visually-hidden"> (opens in a new tab)</span>
+                </a>
+              </div>
             </div>
           </div>
-        </div>
-      ) : (
-        messages.map((m) => (
-          <Bubble
-            key={m.id}
-            msg={m}
-            speechState={
-              playback.activeId === m.id
-                ? "playing"
-                : playback.busyId === m.id
-                  ? "busy"
-                  : "idle"
-            }
-            onToggleSpeak={playback.toggle}
-            onCitation={onCitation}
-          />
-        ))
+        ) : (
+          messages.map((m) => (
+            <Bubble
+              key={m.id}
+              msg={m}
+              speechState={
+                playback.activeId === m.id
+                  ? "playing"
+                  : playback.busyId === m.id
+                    ? "busy"
+                    : "idle"
+              }
+              onToggleSpeak={playback.toggle}
+              onCitation={onCitation}
+            />
+          ))
+        )}
+        <div ref={endRef} />
+      </div>
+      {showJumpToLatest && (
+        <button
+          type="button"
+          onClick={jumpToLatest}
+          style={{
+            position: "absolute",
+            left: "50%",
+            bottom: 16,
+            transform: "translateX(-50%)",
+            minHeight: 44,
+            padding: "8px 14px",
+            border: "1px solid var(--border)",
+            borderRadius: 999,
+            background: "var(--bg-elevated)",
+            color: "var(--fg)",
+            font: "inherit",
+            fontWeight: 650,
+            cursor: "pointer",
+            zIndex: 1,
+          }}
+        >
+          Jump to latest
+        </button>
       )}
-      <div ref={endRef} />
     </div>
   );
 }

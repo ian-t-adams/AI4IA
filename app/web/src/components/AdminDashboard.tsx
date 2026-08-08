@@ -659,7 +659,8 @@ function WebSearchHealthPanel({ report }: { report: WebSearchHealthReport | null
 }
 
 export function AdminDashboard() {
-  const [phase, setPhase] = useState<"checking" | "forbidden" | "ready">("checking");
+  const [phase, setPhase] = useState<"checking" | "forbidden" | "error" | "ready">("checking");
+  const [accessAttempt, setAccessAttempt] = useState(0);
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -682,12 +683,12 @@ export function AdminDashboard() {
         setPhase(canShowAdmin(who) ? "ready" : "forbidden");
       })
       .catch(() => {
-        if (!cancelled) setPhase("forbidden");
+        if (!cancelled) setPhase("error");
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [accessAttempt]);
 
   useEffect(() => {
     try {
@@ -772,6 +773,39 @@ export function AdminDashboard() {
 
   if (phase === "checking") {
     return <Shell>Checking access…</Shell>;
+  }
+  if (phase === "error") {
+    return (
+      <Shell>
+        <div role="alert" style={card}>
+          <h2 style={{ marginTop: 0 }}>Unable to verify admin access</h2>
+          <p style={muted}>
+            The access check could not be completed. Try again before assuming
+            this account is not an administrator.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setPhase("checking");
+              setAccessAttempt((value) => value + 1);
+            }}
+            style={{
+              minHeight: 44,
+              padding: "8px 14px",
+              border: "none",
+              borderRadius: 8,
+              background: "var(--accent)",
+              color: "var(--accent-fg)",
+              font: "inherit",
+              fontWeight: 650,
+              cursor: "pointer",
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      </Shell>
+    );
   }
   if (phase === "forbidden") {
     return (

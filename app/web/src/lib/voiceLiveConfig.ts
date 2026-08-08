@@ -1,5 +1,5 @@
 // Server-only: resolves the Voice Live runtime configuration from
-// environment variables. Read in the root layout (a server component) and passed
+// environment variables. Read in the protected route-group layout (a server component) and passed
 // as plain props into the client VoiceLiveProvider, exactly like the auth config,
 // so values are evaluated at request time in the container, NOT inlined at build
 // time the way NEXT_PUBLIC_* vars are.

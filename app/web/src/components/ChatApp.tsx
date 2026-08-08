@@ -2729,6 +2729,7 @@ export function ChatApp() {
       </div>
 
       <main
+        id="main"
         inert={mobileSidebarOpen || mobileInspectorOpen ? true : undefined}
         aria-hidden={mobileSidebarOpen || mobileInspectorOpen ? true : undefined}
         style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}
@@ -2803,6 +2804,7 @@ export function ChatApp() {
 
         <MessageList
           messages={displayMessages}
+          conversationId={activeId}
           onError={setError}
           onCitation={libraryEnabled ? handleCitation : undefined}
         />
@@ -2922,7 +2924,7 @@ export function ChatApp() {
       </div>
 
       {settingsOpen && (
-        <SettingsPanel models={models} onClose={() => setSettingsOpen(false)} />
+        <SettingsPanel onClose={() => setSettingsOpen(false)} />
       )}
       {studioOpen && (
         <StudioPanel

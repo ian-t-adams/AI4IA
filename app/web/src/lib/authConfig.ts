@@ -1,5 +1,5 @@
 // Server-only: resolves the web frontend's auth configuration from runtime
-// environment variables. Read in the root layout (a server component) and passed
+// environment variables. Read in the protected route-group layout (a server component) and passed
 // as plain props into the client AuthProvider, so values are evaluated at
 // request time in the container — NOT inlined at build time the way NEXT_PUBLIC_*
 // vars are. This mirrors how API_BASE_URL is handled (server-side env only).

@@ -432,12 +432,6 @@ export interface ImageResponse {
   images: GeneratedImageData[];
 }
 
-// Persisted custom-background selection. A preset references a named gradient;
-// a generated background carries a full data URL produced by image generation.
-export type BackgroundConfig =
-  | { kind: "preset"; id: string }
-  | { kind: "generated"; dataUrl: string };
-
 // --- Document upload ---
 
 // Summary of an uploaded document (never carries the full extracted text).

@@ -1,7 +1,7 @@
 "use client";
 
 // Custom-tools config boundary. Mirrors the AuthProvider, VoiceLiveProvider, and
-// LibraryProvider pattern: the root layout
+// LibraryProvider pattern: the protected route-group layout
 // (server) reads the runtime env and passes a plain config object in as a prop; this
 // client provider exposes it via context to the chat UI. In the default (disabled)
 // config this is an inert passthrough — no custom-tools control is ever rendered, so

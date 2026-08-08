@@ -16,21 +16,45 @@ import {
 import { initAuth, type WebAuthConfig } from "@/lib/auth";
 import { SignInGate } from "./SignInGate";
 
+const AUTH_INIT_TIMEOUT_MS = 15_000;
+
+type AuthState =
+  | { status: "initializing" }
+  | { status: "ready"; instance: PublicClientApplication }
+  | { status: "error" };
+
+function withTimeout<T>(operation: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = window.setTimeout(
+      () => reject(new Error("Authentication initialization timed out")),
+      AUTH_INIT_TIMEOUT_MS,
+    );
+    operation.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        window.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
 function FullScreenNote({ children }: { children: React.ReactNode }) {
   return (
-    // <main id="main"> so the layout's "Skip to main content" link always has a
-    // target. The signed-out and initialising screens replace the whole app
-    // subtree, so before this the skip link pointed at nothing and the page
-    // exposed no main landmark at all.
     <main
       id="main"
       style={{
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        height: "100vh",
+        minHeight: "100vh",
+        padding: "1.5rem",
         color: "var(--fg-muted)",
         fontSize: "0.95em",
+        textAlign: "center",
       }}
     >
       {children}
@@ -45,43 +69,99 @@ function EntraAuthProvider({
   config: WebAuthConfig;
   children: React.ReactNode;
 }) {
-  const [instance, setInstance] = useState<PublicClientApplication | null>(null);
+  const [authState, setAuthState] = useState<AuthState>({
+    status: "initializing",
+  });
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    const msal = initAuth(config);
-    if (!msal) return;
+    let msal: PublicClientApplication | null = null;
     let cancelled = false;
+    let callbackId: string | null = null;
+
     void (async () => {
-      await msal.initialize();
-      const redirect = await msal.handleRedirectPromise();
-      if (redirect?.account) {
-        msal.setActiveAccount(redirect.account);
-      } else if (!msal.getActiveAccount()) {
-        const existing = msal.getAllAccounts();
-        if (existing.length > 0) msal.setActiveAccount(existing[0]);
-      }
-      // Keep the active account current across future logins / token refreshes.
-      msal.addEventCallback((event: EventMessage) => {
-        if (
-          (event.eventType === EventType.LOGIN_SUCCESS ||
-            event.eventType === EventType.ACQUIRE_TOKEN_SUCCESS) &&
-          event.payload
-        ) {
-          const account = (event.payload as AuthenticationResult).account;
-          if (account) msal.setActiveAccount(account);
+      try {
+        // Yield once so every state transition from initialization is async and
+        // can be cancelled by the effect cleanup.
+        await Promise.resolve();
+        const client = initAuth(config);
+        msal = client;
+        if (!client) throw new Error("Authentication is unavailable");
+        await withTimeout(client.initialize());
+        const redirect = await withTimeout(client.handleRedirectPromise());
+        if (redirect?.account) {
+          client.setActiveAccount(redirect.account);
+        } else if (!client.getActiveAccount()) {
+          const existing = client.getAllAccounts();
+          if (existing.length > 0) client.setActiveAccount(existing[0]);
         }
-      });
-      if (!cancelled) setInstance(msal);
+
+        const registeredId = client.addEventCallback((event: EventMessage) => {
+          if (
+            (event.eventType === EventType.LOGIN_SUCCESS ||
+              event.eventType === EventType.ACQUIRE_TOKEN_SUCCESS) &&
+            event.payload
+          ) {
+            const account = (event.payload as AuthenticationResult).account;
+            if (account) client.setActiveAccount(account);
+          }
+        });
+
+        if (cancelled) {
+          if (registeredId) client.removeEventCallback(registeredId);
+          return;
+        }
+        callbackId = registeredId;
+        setAuthState({ status: "ready", instance: client });
+      } catch {
+        if (!cancelled) setAuthState({ status: "error" });
+      }
     })();
+
     return () => {
       cancelled = true;
+      if (msal && callbackId) msal.removeEventCallback(callbackId);
     };
-  }, [config]);
+  }, [attempt, config]);
 
-  if (!instance) return <FullScreenNote>Signing you in…</FullScreenNote>;
+  if (authState.status === "initializing") {
+    return <FullScreenNote>Signing you in…</FullScreenNote>;
+  }
+
+  if (authState.status === "error") {
+    return (
+      <FullScreenNote>
+        <div role="alert">
+          <p style={{ margin: "0 0 0.75rem", color: "var(--fg)" }}>
+            We couldn&apos;t finish signing you in.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setAuthState({ status: "initializing" });
+              setAttempt((value) => value + 1);
+            }}
+            style={{
+              minHeight: 44,
+              padding: "0.65rem 1rem",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              background: "var(--accent)",
+              color: "var(--accent-fg)",
+              font: "inherit",
+              fontWeight: 650,
+              cursor: "pointer",
+            }}
+          >
+            Try again
+          </button>
+        </div>
+      </FullScreenNote>
+    );
+  }
 
   return (
-    <MsalProvider instance={instance}>
+    <MsalProvider instance={authState.instance}>
       <SignInGate>{children}</SignInGate>
     </MsalProvider>
   );

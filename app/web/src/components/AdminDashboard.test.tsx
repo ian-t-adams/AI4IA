@@ -181,6 +181,40 @@ async function panelByHeading(name: string): Promise<HTMLElement> {
 }
 
 describe("AdminDashboard new analytics panels", () => {
+  it("shows a retryable access error when whoami cannot be reached", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchWhoAmI)
+      .mockRejectedValueOnce(new Error("internal gateway details"))
+      .mockResolvedValueOnce({ subject: "alice", isAdmin: true });
+
+    render(<AdminDashboard />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Unable to verify admin access" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/internal gateway details/i)).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Admins only" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(
+      await screen.findByRole("heading", { name: "Usage dashboard" }),
+    ).toBeInTheDocument();
+    expect(fetchWhoAmI).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows Admins only after a successful non-admin response", async () => {
+    vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "alice", isAdmin: false });
+
+    render(<AdminDashboard />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Admins only" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Unable to verify admin access" }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
   it("renders real operations freshness and explicit no-data states", async () => {
     render(<AdminDashboard />);
     const operations = await panelByHeading("Operations and latency");
