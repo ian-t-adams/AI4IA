@@ -203,6 +203,24 @@ def test_by_model_and_by_user_and_agents(client):
     assert agents["agents"][0]["agent"] == "research"
 
 
+def test_entitlement_store_failure_is_unavailable_not_unlimited(client):
+    class BrokenEntitlements:
+        async def list_overrides(self):
+            raise RuntimeError("cosmos unavailable")
+
+    client.app.state.entitlements = BrokenEntitlements()
+    _seed(client, [_rec("alice", totalTokens=10)])
+
+    by_user = client.get("/api/admin/usage/by-user", headers=ADMIN).json()
+    row = by_user["byUser"][0]
+    assert row["entitlement"] is None
+    assert row["entitlementKnown"] is False
+
+    overview = client.get("/api/admin/usage/overview", headers=ADMIN).json()
+    assert overview["byUser"][0]["entitlementKnown"] is False
+    assert "entitlements" in overview["partialSections"]
+
+
 def test_agents_surface_error_and_cancelled_counts(client):
     _seed(
         client,

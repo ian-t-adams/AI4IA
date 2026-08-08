@@ -371,7 +371,7 @@ function TopUsers({ rows, identified }: { rows: AdminUserRow[]; identified: bool
                     : "No override — shipped unlimited default"
                 }
               >
-                {entitlementLabel(u.entitlement)}
+                {entitlementLabel(u.entitlement, u.entitlementKnown)}
               </span>
             </td>
           </tr>
