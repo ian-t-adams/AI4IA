@@ -779,11 +779,11 @@ Clean-room notes for a brand-new subscription/tenant:
   one. Run `python scripts/check-resource-providers.py --register` (step 0 above) rather
   than registering by hand: the script derives the full set from `infra/**/*.bicep`, so it
   stays correct as modules change, and it waits for registration to actually complete.
-- **Activate memory** — `AI4IA_MEMORY_STORE` defaults to `disabled` in `deploy.yml` (fail-closed).
-  A greenfield stand-up has no legacy `mem0` data to migrate, so set the `AI4IA_MEMORY_STORE` repo
-  variable to `cosmos` and deploy — no migration runbook needed. (The [memory-migration
-  runbook](./memory-migration.md) is a historical record: the legacy `mem0` source it
-  migrated from was retired on 2026-08-06.)
+- **Memory is already active** — `AI4IA_MEMORY_STORE` defaults to `cosmos` in the
+  checked-in azd parameters. Use `disabled` only as an explicit freeze/rollback
+  posture; a greenfield deployment has no legacy `mem0` data to migrate. The
+  [memory-migration runbook](./memory-migration.md) is historical: PostgreSQL was
+  retired and deleted.
 - The first provision can hit the Cosmos vector-capability race in §7.4; re-running `azd provision`
   resolves it.
 

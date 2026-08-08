@@ -15,33 +15,22 @@ ships, add one when a real gap appears.
 | **P1** | **Deployment parity isn't automatically proven.** Repository truth can lead the live revision. | Keep recording deployed api/web/proxy revision SHAs + post-deploy smoke evidence after each deploy. | [`deployment.md`](./runbooks/deployment.md) |
 | **P1** | **A second app can now claim its own APIM credentials, but cannot yet onboard across subscriptions.** The naming collision is fixed: every APIM **child entity** name is derived from `${workload}` (`apimcore.bicep`, `gateway.bicep`, `mcpgateway.bicep`), `workload` has an `${AI4IA_WORKLOAD=ai4ia}` override, `deploy.yml` derives `rg-${AI4IA_WORKLOAD:-ai4ia}-${AZURE_ENV_NAME}`, and `ApimChildNamingTests` in `test_bicep_naming.py` fails any child name that reverts to a literal. The default resolves byte-identically to today's names, so no live subscription key rotated. What remains is genuine platform work: `apimcore.bicep` **creates** the APIM service, so a second app in another subscription has no way to reference the existing one; the `openai` and `realtime` **APIs** are deliberately shared rather than workload-derived (a second app reuses them, and the guard excludes them on purpose); and nothing registers a second app in API Center. | Split the shared plane from the consumer: a module that takes an **existing** APIM by resource id, and per-app product/subscription/policy attached to it. Adopt **APIM workspaces** at that point rather than a second instance — they already work on Basic v2, so federation does not by itself force the Standard v2 upgrade (private backends do). | `infra/modules/apimcore.bicep`, `gateway.bicep`, `mcpgateway.bicep`, [`architecture.md`](./architecture.md) |
 | **P2** | **Durable execution now covers workflows but not the other background work.** `POST /api/workflows/{name}/run` accepts an opt-in `"durable": true` that runs the workflow on an Azure Durable Task Scheduler orchestration (`workflows/durable.py`). The flag is **enabled in production as of 2026-08-02**, so a scheduler is provisioned and a workflow no longer has to die with the replica. The rest of the background work is unchanged: `routers/chat.py` and `library/ingest.py` still use in-process `asyncio.create_task`, and no Container Apps jobs are deployed. Those sites are shielded, logged, and surface a `persistenceFailed` frame — so they are *observable*, not silent — but they are still not durable across a deploy or scale-in. | Move document cracking onto **Container Apps Jobs** (same image, identity, and networking; no new SDK). **Not Durable Functions** — it couples to Functions compute, adding a second platform, pipeline, and RBAC surface for no gain here. Any new compute must still route model calls proxy → APIM → Foundry per AGENTS.md rule 1. | `workflows/durable.py`, `routers/chat.py`, `library/ingest.py`, [`feature-enablement.md`](./runbooks/feature-enablement.md) |
-| **P2** | **`main` branch protection now requires the app/infra checks.** The three formerly path-filtered workflows (`app-ci`, `infra-validate`, `docker-build`) run on **every** PR, so their six contexts — `web`, `api`, `bicep-lint-build`, `web image`, `api image`, `dockerignore context boundary` — are always reported. Verified on a PR touching none of the old filter paths before the ruleset was changed, then added to the required list (17 contexts total). `scripts/tests/test_gating_workflows.py` pins the property. **Remaining:** docs-only PRs now also require the container images to build, so a flaky Docker build blocks a docs merge — revisit if that becomes noisy. | Nothing required. To revert, remove those six contexts from the ruleset; the workflow change is independent and can stay. | Owner (repo settings), [`AGENTS.md`](../AGENTS.md) |
 | **P2** | **Gateway is single-region / capacity-1** (APIM Basic v2) and the SimpleL7Proxy queue is per-replica memory (no global ordering/fairness). | Decide whether the capacity/region posture meets the target SLO and budget; set scaling + alert thresholds if not. | [`architecture.md`](./architecture.md) |
 | **P1** | **Rollback cannot undo an infrastructure regression.** `post-deploy-verify.py rollback` restores container *revisions*; nothing reverts what `azd provision` changed (APIM policy and fragments, named values, model deployments, RBAC). A bad generated gateway policy therefore survives rollback and re-fails every subsequent deploy. Demonstrated on 2026-08-05: a duplicate backend label took the whole model plane down and seven consecutive deploys rolled back without touching the cause. **Partially mitigated**: `scripts/tests/test_policy_json_shape.py` now fails CI on a duplicate `JObject` property in any committed policy, which is the specific class that caused that outage. The general gap stands — any *other* runtime-only policy failure still ships and still cannot be rolled back. | Either capture and restore the prior APIM policy/fragment revisions alongside the container revisions, or gate policy changes behind a pre-deploy validation that executes a request against the compiled policy rather than only compiling it. Compilation is not enough — the failing expression was valid C#. | `scripts/post-deploy-verify.py`, [`deployment.md`](./runbooks/deployment.md) |
 | **P2** | **Memory UX gaps.** No global memory-consent control and no recalled-memory provenance indicator; management is owner-scoped CRUD only. | Design explicit consent + provenance UX before expanding memory surfaces. | [`memory.md`](./memory.md) |
 | **Ops** | **Speech Voice Live final proof.** Both voice providers are enabled in production; the last open validation is a signed-in manual microphone canary. | Run the authenticated canary + manual retest and record correlated evidence. | [`deployment.md` §7.3](./runbooks/deployment.md), [`feature-enablement.md`](./runbooks/feature-enablement.md) |
+| **P2** | **The app still has large orchestration components.** `ChatApp.tsx` (~2.9K lines), `routers/chat.py` (~2.3K), `routers/realtime.py` (~1.9K), and `ConversationInspector.tsx` (~1.6K) are functional and well-tested, but expensive to review and easy for sibling changes to touch simultaneously. | Extract state machines/hooks/services by responsibility (session navigation, stream lifecycle, approval lifecycle, voice lifecycle, inspector drafts) while preserving the mutation-tested seams. Do this incrementally; a rewrite would discard the hard-won race coverage. | Source modules + `AGENTS.md` sibling-merge rule |
+| **P2** | **Repository → live parity is still a release concern, not automatically true.** Exact-digest promotion and canary verification are shipped, but infra/APIM/RBAC changes are incremental and container rollback cannot restore them. | Keep live assertions for forbidden stale roles/resources, add APIM policy/version rollback, and consider deployment stacks only for narrowly allowlisted resource groups. | [`deployment.md`](./runbooks/deployment.md), `post-deploy-verify.py` |
 
-> **Document understanding has never successfully enriched a document.**
-> Discovered 2026-08-07 while verifying the P1-4 role narrowing end to end.
-> `AI4IA_DOCUMENT_UNDERSTANDING_ENABLED=true` in production, but Content
-> Understanding had **never been called at all** in the preceding 30 days, so
-> nothing had exercised it. An upload now reaches CU and is *authorized* — POST
-> returns `202 Accepted`, the polling GETs return `200 OK` — and the analyzer
-> then reports `status=Failed`. Both a `.txt` and a valid PDF failed identically.
->
-> This is not caused by the role change: authorization succeeds (a wrong role
-> returns `403`, not `202`), and there is no prior success to have regressed from.
-> It is a latent defect in an enabled feature, which is precisely the
-> "claimed but not present" class the 2026-08-03 audit was written to find — it
-> survived that audit because the audit read code and configuration rather than
-> uploading a file. The instant quick-text summary still works (it is local
-> `pypdf` extraction), so the library is not wholly inert, but no CU-derived
-> fields, no chunks and no RAG grounding are ever produced.
->
-> Next step is to read the analyzer error body: the client logs
-> `content understanding status=Failed` without the `error` payload CU returns
-> alongside it, so the reason is currently unobservable. Widen that log first;
-> do not guess at analyzer ids or API versions.
+> **Document understanding is now live-verified.** On 2026-08-07 the first real
+> upload exposed that the account had no Content Understanding model defaults.
+> The resource now maps the analyzer's logical completion names to its supported
+> `gpt-5.2` deployment and its embedding name to `text-embedding-3-large`;
+> direct CU analysis and the app upload path both returned **Succeeded / ready**
+> with grounded Markdown and a Summary field. The postprovision hook now makes
+> those data-plane defaults durable, is executed by regression tests, and the
+> production deploy + canary completed successfully (#320, #321). The failed
+> deployment that exposed the first hook bug is part of the record, not hidden.
 
 ## Owner decisions from the 2026-08-03 audit
 
@@ -70,10 +59,9 @@ decision does not have to be re-derived. Full context in the
 
 | Item | The lever | What it costs | Why it wasn't done |
 | --- | --- | --- | --- |
-| **P1-4 — gateway-only routing is convention, not IAM.** **Closed for app identities 2026-08-07.** `disableLocalAuth` is `true` (no key bypass), and `id-api` no longer holds the wildcard `Cognitive Services User` role — replaced by `Cognitive Services Content Understanding Contributor`, scoped to `accounts/MultiModalIntelligence/*`. | **The original plan was wrong and is not being built.** It said: move Code Interpreter to its own workload, then drop `Cognitive Services OpenAI User` from `id-api`. Measured: `Cognitive Services User` grants the single dataAction `Microsoft.CognitiveServices/*`, a strict superset that already includes `chat/completions` and `responses/*`. While that role was held, dropping the OpenAI role would have achieved **nothing** — a whole Container App for no security gain. Narrowing the broad role was the prerequisite, and it cost one Bicep edit. | Residual: APIM still holds the wildcard (defensible — it *is* the gateway and proxies Speech Voice Live too); narrowing it to `Cognitive Services Speech User` touches the live voice path. `id-api` keeps `Cognitive Services OpenAI User` because Code Interpreter needs it; that is now the **only** inference grant, so a separate workload would finally mean something — but it is optional, not the blocker it was described as. | `scripts/tests/test_foundry_role_scope.py` |
+| **P1-4 — gateway-only routing is convention, not IAM.** **Key and wildcard bypasses closed; one explicit direct-inference exception remains.** `disableLocalAuth=true`; `id-api` holds only narrow Content Understanding access plus `Cognitive Services OpenAI User` for the Responses-API Code Interpreter. | The original “move CI then drop OpenAI User” plan was wrong while `id-api` also held `Cognitive Services User` (`Microsoft.CognitiveServices/*`); that wildcard was the real bypass and is gone. A separate CI workload would now remove the last direct OpenAI role, but it adds a Container App/identity/deploy surface for a documented, metered, entitlement-gated exception. | Residuals: Code Interpreter remains direct by design; APIM still holds the broad Cognitive Services User role because it fronts OpenAI + Speech Voice Live. Narrowing APIM should follow the manual Voice Live proof, not precede it. | `scripts/tests/test_foundry_role_scope.py`, [`architecture.md`](./architecture.md) |
 | **P1-7 — the tested artifact is not the *PR-tested* artifact.** *Partly closed by #296:* both app base images are digest-pinned and `deploy.yml` builds each service once and deploys `--from-package <ref>@sha256:<digest>`, so nothing rebuilds inside a deploy and the running revision traces back to a commit. What remains is that the image is built by the **deploy** workflow, not promoted from the PR that tested it — plus no SBOM, signature, provenance, or blocking image scan, and `proxy/Dockerfile`'s MCR bases stay on moving tags because CI does not build that image. | Publish the PR-built image to a staging repository (or GHCR) under a PR-scoped identity, then re-tag it by digest into the production ACR after merge. Separately: add SBOM/signing/provenance and a blocking scan to the build step. | Letting PR code push to a registry the production apps pull from is a **security-posture change**: a malicious or merely broken PR could publish there, and the OIDC identity would need `AcrPush` reachable from PR-triggered workflows. | The posture tradeoff is the owner's call. The mechanical half was doable and was done. |
 | **P1-14 — citations are presentation, not provenance.** ~~A citation is rendered from what the model emitted; nothing binds a claim to the span it came from.~~ **Span-level half closed 2026-08-07 (#309).** Library Tier-2 mints a server-owned span id per injected excerpt (with content hash, retrieval timestamp, and a persisted verbatim excerpt), the registry lands on the answer, and a cited id that was never retrieved is caught and rendered distinctly. `untrusted_context` remains a *turn-level* taint bit and is still not claimed as more than that. | What remains: **claim-level support** (does the cited span actually say it), and attesting the other context sources — web search, recalled memory, session-uploaded documents — which are still cited as prose. | Claim support is entailment. Every check cheap enough to run inline is approximate, and this finding's own logic is that a partially-trustworthy badge is worse than none — so the honest version needs an evaluation set and a measured threshold, not a heuristic. | The span half was mechanical once the provenance survived prompt assembly, and was done. The claim half was refused rather than approximated. |
-| **P1-2 — Code Interpreter has no entitlement or usage accounting.** `store: false` is locked and tested, but nothing meters who ran what or bills it back. | Add an entitlement check at the execution seam and emit usage rows the way chat does. | Design work on what an entitlement *is* here (per-user? per-agent? quota?) before any code. | The design question is the owner's, not the implementer's. |
 
 ### What P1-14 and P1-16 actually mean
 
@@ -103,27 +91,22 @@ partial, because a *partially* trustworthy citation badge is worse than none.
 > an approximate badge is worse than none. The excerpt is shown to the reader
 > instead of a verdict the app is not entitled to reach.
 
-**P1-16 — a turn that uses a tool stops streaming.** The transport is fixed (the
-proxy flushes per SSE event). What remains is that when a turn calls a tool, each
-model iteration runs to completion before the next begins, so the user sees
-nothing until a round trip finishes. A plain chat turn streams; a tool-using turn
-feels like a hang. This is the one that most directly punishes growth: it is a
-*latency* defect, so its cost is per-turn and rises linearly with usage, and it
-lands hardest on exactly the turns the platform is built for. The risk is that
-`run_agent_turn` and the SSE contract are the single path every chat request
-takes, and `test_chat_stream_protocol.py` pins terminal-row ordering,
-cancellation and single-error framing — all three of which a restructure touches.
+**P1-16 — the tool loop now token-streams.** This was open when the section was
+written. It closed in #307: every model iteration streams, fragmented tool calls
+are reassembled under bounds, and terminal persistence/cancellation/error
+framing remain pinned. Measured through real uvicorn with a paced model, median
+time-to-first-token fell from 1247.9 ms to 31.7 ms (39.3x) while total turn time
+stayed unchanged. #312 then added the sibling-merge interaction coverage that
+proved citation attestation survives every new tool-loop persist path.
 
 > **On sequencing.** Measured production usage over the 30 days to 2026-08-06 was
 > 23 chat turns across 4 active days, 10 tool invocations (all `remember_memory`),
 > and zero `browse_url` / `web_search` / `run_code`. That is why neither is urgent
-> *today*. It is not an argument that they stay cheap: P1-16's cost is per-turn,
-> and P1-14's is per-answer-read. Both are best done while the surface is small
-> and a regression is cheap to notice — which is now, not after the traffic
-> arrives. Neither is blocked on anything; they are blocked on someone choosing to
-> spend the weeks.
+> *then*. Both mechanical halves are now shipped: P1-16 is closed, and P1-14
+> has airtight span-level receipts. P1-14's claim-level entailment and non-library
+> provenance remain deliberately open rather than approximated.
 
-Two more that are **contained rather than closed**, recorded so the containment is
+Other items that are **contained rather than closed**, recorded so the containment is
 not mistaken for a fix:
 
 - **P1-10 — sharing is still not tenant-aware.** `Visibility.public` grants read to
@@ -167,7 +150,7 @@ not mistaken for a fix:
 - **`main` branch protection.** A repository ruleset now requires a pull request
   (with **0** required approving reviews, so a solo maintainer is not self-blocked),
   requires conversation resolution, blocks force-pushes and branch deletion, and
-  requires the 11 always-emitted status checks. No bypass actors, so it applies to
+  requires the 17 always-emitted status checks. No bypass actors, so it applies to
   admins too; disabling it is a deliberate, visible settings change rather than a
   silent `git push`.
 - **Legacy Consumption APIM removed** from Azure, the IaC, and the docs. The Basic v2

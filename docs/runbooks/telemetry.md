@@ -100,8 +100,11 @@ is preserved rather than overwritten by the recovery snapshot.
 The current first release does not claim exact SimpleL7Proxy admission queue depth,
 profile fairness, requeue, or circuit-breaker panels because the pinned proxy does
 not expose stable queryable event dimensions for all of them. Quota forecasting,
-shared realtime presence, Workbooks, and alert rules also remain backlog. Do not
-infer zero for any unsupported dimension.
+shared realtime presence, and Workbooks remain backlog. A baseline **is deployed**:
+API Container App `Requests` filtered to 5xx and Cosmos `TotalRequests` filtered
+to 429, both severity 2, email the configured alert recipient. Additional APIM,
+CU, no-ready-replica, and synthetic-path alerting remains open. Do not infer zero
+for any unsupported dimension.
 
 Do not add RBAC, a workspace, alerts, or a workbook during incident response without
 separate approval and an infrastructure what-if.

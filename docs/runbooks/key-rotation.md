@@ -177,16 +177,28 @@ the same place the old one was.
 Measured on 2026-08-04, this deployment's exposure was narrower than it looks:
 `EVENT_LOGGERS` is unset, so the event goes to the default **file** client
 (`eventslog.json`) inside the container, which is ephemeral and dies with the
-revision. A search of Application Insights (`traces`, `customEvents`,
-`exceptions`) and of `ContainerAppConsoleLogs_CL` found **no** occurrence of
-either key. Re-check that before assuming it holds — it depends on
-`EVENT_LOGGERS` and `AppInsightsConnectionString`, both of which are
-configurable:
+revision. A workspace-table search found no occurrence in API telemetry, and a
+separate `ContainerAppConsoleLogs_CL` search covered the proxy. **Do not use**
+`az monitor app-insights query` with the classic `traces`/`customEvents` names
+here: this is a workspace-based component, and that command returns an empty
+result set rather than an error — a false all-clear documented in
+[`telemetry.md`](./telemetry.md). Pair every absence query with a row-count
+control over the same window.
 
 ```powershell
-$appId = (az monitor app-insights component show -g $rg --query '[0].AppId' -o tsv)
-az monitor app-insights query --app $appId --analytics-query `
-  "union traces, customEvents, exceptions | where timestamp > ago(24h) | where tostring(customDimensions) contains '$new' or message contains '$new' | count"
+$workspace = '<Log Analytics workspace customerId>'
+
+# Non-vacuity: this must return rows for the chosen window before an absence
+# result below means anything.
+az monitor log-analytics query -w $workspace --analytics-query `
+  "union AppTraces, AppEvents, AppExceptions | where TimeGenerated > ago(24h) | count"
+
+az monitor log-analytics query -w $workspace --analytics-query `
+  "union AppTraces, AppEvents, AppExceptions | where TimeGenerated > ago(24h) | where tostring(Properties) contains '$new' or Message contains '$new' | count"
+
+# Proxy console logs are a separate source; the proxy has no App Insights logger.
+az monitor log-analytics query -w $workspace --analytics-query `
+  "ContainerAppConsoleLogs_CL | where TimeGenerated > ago(24h) | where ContainerAppName_s == 'ca-proxy-<env>' | where Log_s contains '$new' | count"
 ```
 
 ## Related

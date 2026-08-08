@@ -26,7 +26,7 @@ feature resources.
 | `network.bicep` / `privateendpoints.bicep` | Optional VNet/private-endpoint isolation |
 | `keyvault.bicep` | Key Vault and App Configuration |
 | `foundry.bicep` / `models.bicep` | Foundry accounts/projects and catalog-driven deployments |
-| `data.bicep` | Cosmos, Postgres/pgvector, document/media/blob containers |
+| `data.bicep` | Cosmos (canonical state) plus document/media/blob containers; PostgreSQL was retired and deleted |
 | `search.bicep` | Azure AI Search service and RBAC |
 | `containerapps.bicep` | Container Apps environment and ACR |
 | `api.bicep` / `web.bicep` | API and web Container Apps |
