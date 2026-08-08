@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import json
 
-from tests.conftest import stream_like_gateway
+from fastapi.testclient import TestClient
+
+from ai4ia_api.gateway.client import ModelGatewayError
+from ai4ia_api.main import create_app
+from tests.conftest import make_settings, stream_like_gateway
 
 
 def _create_session(client, model="gpt-5.2"):
@@ -162,3 +166,143 @@ def test_tool_agent_on_responses_model_is_rejected_before_persist(client):
     # The session stays on its original model, not the unusable Responses one.
     session = client.get(f"/api/sessions/{sid}").json()
     assert session["model"] == "gpt-5.2"
+
+
+def test_nonstreaming_agent_failure_persists_partial_error_and_usage():
+    class FailingSecondIterationGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.entered_second_iteration = False
+
+        async def complete(self, *, messages, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                response = {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "Working. ",
+                                "tool_calls": [
+                                    {
+                                        "id": "c1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "calculator",
+                                            "arguments": json.dumps({"expression": "6*7"}),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 7,
+                        "completion_tokens": 3,
+                        "total_tokens": 10,
+                    },
+                }
+                return response
+            self.entered_second_iteration = any(
+                message.get("role") == "tool" and message.get("tool_call_id") == "c1"
+                for message in messages
+            )
+            raise ModelGatewayError(502, "second iteration failed")
+
+    app = create_app(make_settings())
+    with TestClient(app, raise_server_exceptions=False) as client:
+        gateway = FailingSecondIterationGateway()
+        metered: list[dict] = []
+
+        async def capture_usage(**kwargs):
+            metered.append(kwargs)
+
+        client.app.state.gateway = gateway
+        client.app.state.usage.record_completion = capture_usage
+        session_id = _create_session(client)["id"]
+
+        response = client.post(
+            "/api/chat",
+            json={
+                "sessionId": session_id,
+                "content": "@analyst what is 6*7?",
+                "stream": False,
+            },
+        )
+        messages = client.get(f"/api/sessions/{session_id}/messages").json()
+
+    assistants = [message for message in messages if message["role"] == "assistant"]
+    assistant = assistants[-1] if assistants else None
+    usage = metered[-1]["usage"] if metered else None
+    assert {
+        "status_code": response.status_code,
+        "calls": gateway.calls,
+        "entered_second_iteration": gateway.entered_second_iteration,
+        "assistant_status": assistant["status"] if assistant else None,
+        "steps": [
+            (step["kind"], step["tool"])
+            for step in (assistant.get("steps") or [] if assistant else [])
+        ],
+        "metered": (
+            usage.prompt,
+            usage.completion,
+            usage.total,
+            usage.calls,
+            usage.complete,
+            metered[-1]["status"],
+        )
+        if usage is not None
+        else None,
+    } == {
+        "status_code": 502,
+        "calls": 2,
+        "entered_second_iteration": True,
+        "assistant_status": "error",
+        "steps": [("tool_result", "calculator")],
+        "metered": (7, 3, 10, 2, False, "error"),
+    }
+    assert response.json()["detail"] == "Chat completion failed."
+
+
+def test_nonstreaming_agent_first_gateway_failure_persists_terminal_error():
+    class FailingGateway:
+        async def complete(self, **_kwargs):
+            raise ModelGatewayError(502, "upstream echoed agent secret")
+
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        metered: list[dict] = []
+
+        async def capture_usage(**kwargs):
+            metered.append(kwargs)
+
+        client.app.state.gateway = FailingGateway()
+        client.app.state.usage.record_completion = capture_usage
+        session_id = _create_session(client)["id"]
+
+        response = client.post(
+            "/api/chat",
+            json={
+                "sessionId": session_id,
+                "content": "@analyst fail before answering",
+                "stream": False,
+            },
+        )
+        messages = client.get(f"/api/sessions/{session_id}/messages").json()
+
+    usage = metered[-1]["usage"]
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Chat completion failed."
+    assert "upstream echoed" not in response.text
+    assert [(message["role"], message["status"]) for message in messages] == [
+        ("user", "complete"),
+        ("assistant", "error"),
+    ]
+    assert messages[-1]["agent"] == "analyst"
+    assert messages[-1]["steps"] is None
+    assert (usage.calls, usage.known, usage.complete, metered[-1]["status"]) == (
+        1,
+        False,
+        False,
+        "error",
+    )

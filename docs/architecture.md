@@ -150,9 +150,9 @@ voice-capable tools before opening the APIM socket. The API replaces client voic
 instructions with the selected agent persona or saved session prompt.
 
 `azure_openai` resolves a realtime deployment from `infra/models.json`. The
-optional `speech_voice_live` provider is implemented but default-off and has a
-separate APIM API/key and account-scoped managed-identity path. Its production
-enablement remains subject to the operator gates in
+optional `speech_voice_live` provider is implemented but is off in the checked-in
+and live production profile. It has a separate APIM API/key and account-scoped
+managed-identity path. Its production enablement remains subject to the operator gates in
 [`runbooks/feature-enablement.md`](./runbooks/feature-enablement.md).
 FastAPI presents key 3 only to the Azure OpenAI realtime APIM API and optional key
 4 only to the Speech Voice Live APIM API; neither key crosses the APIM boundary.
@@ -294,10 +294,13 @@ dataflow. Posture is selectable via `AI4IA_TOOL_APPROVAL_MODE`; see
 
 ### Durable workflow execution
 
-Multi-step workflows run **synchronously inside the HTTP request** by default, so
-they die with the replica on deploy, scale-in, or crash. A default-off flag
-(`durableWorkflowsEnabled`) moves an opt-in run onto an **Azure Durable Task
-Scheduler** orchestration instead: `POST /api/workflows/{name}/run` with
+Multi-step workflows run **synchronously inside the HTTP request** unless a run
+explicitly requests durability, so synchronous runs die with the replica on
+deploy, scale-in, or crash. The Bicep feature gate defaults off for a minimal
+stand-up, but the checked-in production profile enables it; live state was
+revalidated on 2026-08-08 (scheduler, task hub, and all three API settings were
+present). When available, an opt-in run moves onto an **Azure Durable Task
+Scheduler** orchestration: `POST /api/workflows/{name}/run` with
 `"durable": true` returns `202` and a run id, polled from
 `GET /api/workflows/runs/{run_id}`.
 
@@ -399,8 +402,9 @@ label those gaps rather than infer precision.
   the only APIM plane — MCP, HTTP/SSE, and both voice providers share its blast radius.
 - Proxy application profiles remain blocked until ingress derives a verified
   workload identity rather than trusting caller-supplied profile headers.
-- Speech Voice Live is enabled and serving; the outstanding validation is a signed-in
-  manual microphone canary, tracked in [`roadmap.md`](roadmap.md).
+- Speech Voice Live is implemented but off in the checked-in and live profile.
+  Incremental ARM retained its APIM children and account-scoped roles from an
+  earlier trial; they are dormant privilege until a targeted teardown removes them.
 - Memory has no global user-facing consent toggle or recalled-memory provenance
   indicator. Users can create, edit, and delete individual owned records.
 - Active-store deletion removes Cosmos plaintext and vectors, but Azure backup

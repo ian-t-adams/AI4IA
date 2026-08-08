@@ -341,7 +341,15 @@ Both the image build/push step and the custom-domain preflight derive the resour
 
 This interacts with the P1-6 verification harness, and getting it wrong would roll back healthy releases. `rollout_problems` used to treat "new revision, unchanged image string" as a failure — sound only while azd tagged every build `azd-deploy-<unix-ts>`. A digest is content-addressed, so an identical rebuild yields an identical reference. `deploy.yml` therefore passes `--expect-image <service>=<reference>` to `post-deploy-verify.py verify`, which asserts the app runs *exactly* the digest this run pushed. That is strictly stronger than the old "it changed" heuristic, which remains as the fallback for callers that cannot name the image. Do not drop those flags.
 
-The images are built **before** the rollback capture on purpose: the rollback step is gated on `steps.capture.outcome == 'success'`, so capturing first would make every failed build "restore" revisions nothing had touched.
+The rollback capture runs **before `azd provision`**, not merely before application
+deployment. All three Bicep app modules require an image and use a quickstart
+placeholder for greenfield creation, so an infrastructure reconciliation can
+create a placeholder revision before image build starts. Capturing afterward
+would make that placeholder the rollback target. The rollback gate distinguishes
+a manual run that skipped provision (a pre-deploy build/preflight failure touched
+nothing) from a run where provision started (restore on provision/build/preflight
+failure), while retaining the deliberate no-rollback exception when the
+*post-deploy* canary token cannot be reacquired.
 
 ```powershell
 python -m unittest scripts.tests.test_base_image_pins
@@ -372,23 +380,37 @@ bicep build infra/main.bicep --stdout > /dev/null
 
 `infra-validate` installs a pinned standalone Bicep CLI release (`BICEP_VERSION` env var in the workflow, matching the `ACTIONLINT_VERSION`/`HADOLINT_VERSION` pattern used elsewhere — never `releases/latest`, for reproducibility). Locally, if you don't have the standalone `bicep` CLI but already have Azure CLI, `az bicep build --file infra/main.bicep --stdout` produces equivalent output.
 
-`quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on `scripts`, hadolint on `app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile`, the proxy .NET build/auth tests, `python3 -m yamllint -c .yamllint .`, a docs-catalog drift gate (`python scripts/gen-docs-catalog.py --check`) that keeps `site/data/docs.js` in sync with `site/data/docs.manifest.json`, and stdlib-only unit tests for operator scripts and CI configuration not already covered by `app-ci`/`infra-validate`:
+`quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on `scripts`, hadolint on `app/api/Dockerfile app/web/Dockerfile proxy/Dockerfile`, the proxy .NET build/auth tests, `python3 -m yamllint -c .yamllint .`, a docs-catalog drift gate (`python scripts/gen-docs-catalog.py --check`) that keeps `site/data/docs.js` in sync with `site/data/docs.manifest.json`, and operator/CI contract tests not already covered by `app-ci`/`infra-validate`:
 
 ```powershell
 python3 -m unittest scripts.tests.test_voice_live_canary        # voice-live-canary.py URL/redaction rules
 python3 -m unittest scripts.tests.test_subscription_preflight   # new-subscription provider/model preflight logic
 python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app bootstrap (runs once, by hand, so CI can't)
 python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deploy.yml's real run: block with `az` stubbed
+python3 -m unittest scripts.tests.test_pages_status_refresh     # Pages status refresh targets live RG/URLs and fails closed
+python3 -m unittest scripts.tests.test_status_snapshot_labels   # live services have human portal labels/cards
 python3 -m unittest scripts.tests.test_portal_contrast          # WCAG gate for site/assets/styles.css (no build, no other runner)
 python3 -m unittest scripts.tests.test_brand_assets             # every committed logo: coverage, palette, size
 python3 -m unittest scripts.tests.test_dependabot_config        # keeps dependabot.yml and the uv.lock gate in step
 python3 -m unittest scripts.tests.test_lockfile_provenance     # uv.lock must resolve from public PyPI, not a corporate mirror
+python3 -m unittest scripts.tests.test_status_consistency       # roadmap/audit current-state dispositions cannot conflict
+python3 -m unittest scripts.tests.test_post_deploy_verify       # executes capture/verify/rollback behavior with Azure stubbed
+python3 -m unittest scripts.tests.test_teardown_data_loss_gate  # destructive teardown requires explicit data-loss acknowledgement
+python3 -m unittest scripts.tests.test_documented_paths_exist   # machine-readable source paths named by docs must resolve
+python3 -m unittest scripts.tests.test_gating_workflows         # required PR checks always report and match the ruleset inventory
+python3 -m unittest scripts.tests.test_markdown_tables          # Markdown tables cannot silently swallow rows/columns
 python3 -m unittest scripts.tests.test_base_image_pins          # base images CI builds must be digest-pinned
 python3 -m unittest scripts.tests.test_immutable_image_promotion # deploy.yml builds once and deploys that digest
 python3 -m unittest scripts.tests.test_configuration_reference_reachability  # docs may only name azd vars a deploy can actually read
 ```
 
-`test_custom_domain_preflight`, `test_dependabot_config`, `test_base_image_pins` and `test_immutable_image_promotion` need `PyYAML` (pinned in the workflow); `test_immutable_image_promotion` additionally needs `bash` and skips without it. The rest are stdlib-only. `security-scan` runs Trivy filesystem/config scans and gitleaks.
+`test_custom_domain_preflight`, `test_pages_status_refresh`,
+`test_dependabot_config`, `test_post_deploy_verify`,
+`test_gating_workflows`, `test_base_image_pins`, and
+`test_immutable_image_promotion` need `PyYAML` (pinned in the workflow);
+`test_immutable_image_promotion` additionally needs `bash` and skips without it.
+The rest are stdlib-only. `security-scan` runs Trivy filesystem/config scans and
+gitleaks.
 
 The vendored proxy plus AI4IA auth guard tests use .NET 10:
 

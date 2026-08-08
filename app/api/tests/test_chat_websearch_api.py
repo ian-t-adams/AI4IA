@@ -23,7 +23,7 @@ import json
 
 from fastapi.testclient import TestClient
 
-from ai4ia_api.gateway.client import ChatChunk
+from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
 from ai4ia_api.main import create_app
 from ai4ia_api.routers.chat import _RESPONSES_NO_TOOLS_NOTICE
 from ai4ia_api.websearch.factory import build_web_search_service
@@ -371,3 +371,230 @@ def test_chat_completions_model_still_gets_tools_not_a_notice():
         assert all(s != _RESPONSES_NO_TOOLS_NOTICE for s in systems)
     finally:
         client.__exit__(None, None, None)
+
+
+def test_nonstreaming_plain_tool_failure_persists_partial_error_without_fallthrough():
+    class FailingSecondIterationGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.entered_second_iteration = False
+            self.fallback_calls = 0
+
+        async def complete(self, *, messages, params=None, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "Searching. ",
+                                "tool_calls": [
+                                    {
+                                        "id": "call-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "web_search",
+                                            "arguments": json.dumps(
+                                                {"query": "today headlines"}
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 17,
+                        "completion_tokens": 3,
+                        "total_tokens": 20,
+                    },
+                }
+            if self.calls == 2:
+                self.entered_second_iteration = any(
+                    message.get("role") == "tool"
+                    and message.get("tool_call_id") == "call-1"
+                    for message in messages
+                )
+                raise ModelGatewayError(502, "second iteration failed")
+            self.fallback_calls += 1
+            return {
+                "choices": [
+                    {"message": {"role": "assistant", "content": "fallback answer"}}
+                ],
+                "usage": {
+                    "prompt_tokens": 99,
+                    "completion_tokens": 1,
+                    "total_tokens": 100,
+                },
+            }
+
+    client = _make_client()
+    try:
+        web = FakeWebClient()
+        _inject_web(client, web)
+        gateway = FailingSecondIterationGateway()
+        metered: list[dict] = []
+
+        async def capture_usage(**kwargs):
+            metered.append(kwargs)
+
+        client.app.state.gateway = gateway
+        client.app.state.usage.record_completion = capture_usage
+        session_id = _new_session(client)
+
+        response = client.post(
+            "/api/chat",
+            json={
+                "sessionId": session_id,
+                "content": "What is happening in the news today?",
+                "stream": False,
+            },
+        )
+        messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    finally:
+        client.__exit__(None, None, None)
+
+    assistants = [message for message in messages if message["role"] == "assistant"]
+    assistant = assistants[-1] if assistants else None
+    usage = metered[-1]["usage"] if metered else None
+    assert {
+        "status_code": response.status_code,
+        "calls": gateway.calls,
+        "entered_second_iteration": gateway.entered_second_iteration,
+        "fallback_calls": gateway.fallback_calls,
+        "handler_calls": [(call["tool"], call["query"]) for call in web.calls],
+        "assistant_status": assistant["status"] if assistant else None,
+        "steps": [
+            (step["kind"], step["tool"])
+            for step in (assistant.get("steps") or [] if assistant else [])
+        ],
+        "metered": (
+            usage.prompt,
+            usage.completion,
+            usage.total,
+            usage.calls,
+            usage.complete,
+            metered[-1]["status"],
+        )
+        if usage is not None
+        else None,
+    } == {
+        "status_code": 502,
+        "calls": 2,
+        "entered_second_iteration": True,
+        "fallback_calls": 0,
+        "handler_calls": [("web", "today headlines")],
+        "assistant_status": "error",
+        "steps": [("delegate", "web_search")],
+        "metered": (17, 3, 20, 2, False, "error"),
+    }
+    assert response.json()["detail"] == "Chat completion failed."
+
+
+def test_first_nonstreaming_plain_tool_failure_falls_through_to_normal_chat(caplog):
+    marker = "nonstream-fallback-hostile-detail"
+
+    class FirstCallFailureGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise ModelGatewayError(502, marker)
+            return {
+                "choices": [
+                    {"message": {"role": "assistant", "content": "fallback answer"}}
+                ],
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 2,
+                    "total_tokens": 7,
+                },
+            }
+
+    client = _make_client()
+    try:
+        web = FakeWebClient()
+        _inject_web(client, web)
+        gateway = FirstCallFailureGateway()
+        metered: list[dict] = []
+
+        async def capture_usage(**kwargs):
+            metered.append(kwargs)
+
+        client.app.state.gateway = gateway
+        client.app.state.usage.record_completion = capture_usage
+        session_id = _new_session(client)
+
+        response = client.post(
+            "/api/chat",
+            json={"sessionId": session_id, "content": "find news", "stream": False},
+        )
+        messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    finally:
+        client.__exit__(None, None, None)
+
+    assert response.status_code == 200
+    assert gateway.calls == 2
+    assert web.calls == []
+    assert messages[-1]["status"] == "complete"
+    assert messages[-1]["content"] == "fallback answer"
+    usage = metered[-1]["usage"]
+    assert (
+        usage.prompt,
+        usage.completion,
+        usage.total,
+        usage.calls,
+        usage.complete,
+        metered[-1]["status"],
+    ) == (5, 2, 7, 2, False, "complete")
+    assert marker not in caplog.text
+
+
+def test_nonstreaming_plain_tool_and_normal_fallback_failures_count_both(caplog):
+    first_marker = "plain-tool-first-hostile-detail"
+    second_marker = "normal-fallback-second-hostile-detail"
+
+    class TwiceFailingGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **_kwargs):
+            self.calls += 1
+            marker = first_marker if self.calls == 1 else second_marker
+            raise ModelGatewayError(502, marker)
+
+    client = _make_client()
+    try:
+        _inject_web(client, FakeWebClient())
+        gateway = TwiceFailingGateway()
+        metered: list[dict] = []
+
+        async def capture_usage(**kwargs):
+            metered.append(kwargs)
+
+        client.app.state.gateway = gateway
+        client.app.state.usage.record_completion = capture_usage
+        session_id = _new_session(client)
+        response = client.post(
+            "/api/chat",
+            json={"sessionId": session_id, "content": "find news", "stream": False},
+        )
+        messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    finally:
+        client.__exit__(None, None, None)
+
+    usage = metered[-1]["usage"]
+    assert response.status_code == 502
+    assert gateway.calls == 2
+    assert messages[-1]["status"] == "error"
+    assert (usage.calls, usage.known, usage.complete, metered[-1]["status"]) == (
+        2,
+        False,
+        False,
+        "error",
+    )
+    assert first_marker not in caplog.text
+    assert second_marker not in caplog.text

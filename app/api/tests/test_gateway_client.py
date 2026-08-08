@@ -787,3 +787,64 @@ async def test_stream_responses_http_error_raises():
     with pytest.raises(ModelGatewayError) as exc:
         [c async for c in client.stream(deployment="d", messages=[], api="responses")]
     assert exc.value.status_code == 429
+
+
+async def test_complete_normalizes_transport_failure_to_fixed_gateway_error():
+    marker = "transport-secret-marker"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(marker, request=request)
+
+    client = _client(transport=httpx.MockTransport(handler))
+    with pytest.raises(ModelGatewayError) as excinfo:
+        await client.complete(deployment="dep-1", messages=[])
+
+    assert excinfo.value.status_code == 502
+    assert excinfo.value.detail == "Model gateway request failed."
+    assert marker not in str(excinfo.value)
+
+
+async def test_complete_normalizes_2xx_json_decode_failure():
+    marker = "invalid-json-secret-marker"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=f"<html>{marker}</html>")
+
+    client = _client(transport=httpx.MockTransport(handler))
+    with pytest.raises(ModelGatewayError) as excinfo:
+        await client.complete(deployment="dep-1", messages=[])
+
+    assert excinfo.value.status_code == 502
+    assert excinfo.value.detail == "Model gateway request failed."
+    assert marker not in str(excinfo.value)
+
+
+async def test_complete_rejects_a_2xx_json_value_with_the_wrong_shape():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["not", "a", "completion"])
+
+    client = _client(transport=httpx.MockTransport(handler))
+    with pytest.raises(ModelGatewayError) as excinfo:
+        await client.complete(deployment="dep-1", messages=[])
+
+    assert excinfo.value.status_code == 502
+    assert excinfo.value.detail == "Model gateway request failed."
+
+
+@pytest.mark.parametrize("api", ["chat", "responses"])
+async def test_stream_normalizes_transport_failure_for_both_apis(api):
+    marker = f"{api}-stream-transport-secret"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadError(marker, request=request)
+
+    client = _client(
+        transport=httpx.MockTransport(handler),
+        gateway_provider_style="azure_openai_native",
+    )
+    with pytest.raises(ModelGatewayError) as excinfo:
+        [c async for c in client.stream(deployment="dep-1", messages=[], api=api)]
+
+    assert excinfo.value.status_code == 502
+    assert excinfo.value.detail == "Model stream failed."
+    assert marker not in str(excinfo.value)

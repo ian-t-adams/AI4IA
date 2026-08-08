@@ -64,6 +64,11 @@ class FailingStreamGateway:
         raise ModelGatewayError(502, "upstream boom")
 
 
+class FailingCompleteGateway:
+    async def complete(self, **_kwargs):
+        raise ModelGatewayError(502, "upstream echoed private prompt")
+
+
 @pytest.fixture
 def usage_client():
     app = create_app(make_settings())
@@ -93,6 +98,31 @@ def test_non_stream_turn_is_metered(usage_client):
     assert summary["totalTokens"] == 1500
     assert summary["totalCostMicroUsd"] == _EXPECTED_MICRO_USD
     assert summary["byModel"][0]["model"] == "gpt-5.2"
+
+
+def test_non_stream_gateway_failure_persists_error_and_unknown_usage(usage_client):
+    usage_client.app.state.gateway = FailingCompleteGateway()
+    sid = _new_session(usage_client)
+
+    response = usage_client.post(
+        "/api/chat", json={"sessionId": sid, "content": "private prompt", "stream": False}
+    )
+    messages = usage_client.get(f"/api/sessions/{sid}/messages").json()
+    summary = usage_client.get("/api/usage").json()
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Chat completion failed."
+    assert "upstream echoed" not in response.text
+    assert [(message["role"], message["status"]) for message in messages] == [
+        ("user", "complete"),
+        ("assistant", "error"),
+    ]
+    assert messages[-1]["content"] == ""
+    assert "upstream echoed" not in json.dumps(messages)
+    assert summary["totalRequests"] == 1
+    assert summary["erroredRequests"] == 1
+    assert summary["unknownUsageRequests"] == 1
+    assert summary["billableRequests"] == 0
 
 
 def test_streaming_turn_captures_usage(usage_client):

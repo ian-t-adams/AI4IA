@@ -42,10 +42,10 @@ from typing import Any
 from ..agents.agent_catalog import AgentCatalog
 from ..agents.approvals import ApprovalPolicy
 from ..agents.capabilities import CapabilityBuilder, Handler
-from ..agents.runtime import run_agent_turn
+from ..agents.runtime import AgentRunFailed, run_agent_turn
 from ..agents.tool_exec import ToolContext, ToolExecutor
 from ..agents.tools import ToolRegistry
-from ..gateway.client import ModelGatewayClient
+from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..usage.models import TokenUsage
 from .models import INPUT_TOKEN, PREVIOUS_TOKEN, Workflow, WorkflowStep
 
@@ -252,6 +252,39 @@ async def run_workflow_step(
             max_iters=_STEP_MAX_ITERS,
             extra_tools=extra_tools,
             extra_handlers=extra_handlers,
+        )
+    except ModelGatewayError as exc:
+        logger.warning(
+            "workflow '%s' step %d (agent=%s) gateway failed status=%d",
+            workflow_name,
+            index + 1,
+            step.agent,
+            exc.status_code,
+        )
+        err = f"Step {index + 1}: agent '{step.agent}' failed while running."
+        return StepOutcome(
+            result=WorkflowStepResult(agent=step.agent, ok=False, error=err),
+            usage=TokenUsage.parse(None),
+            fatal=True,
+        )
+    except AgentRunFailed as exc:
+        logger.warning(
+            "workflow '%s' step %d (agent=%s) failed after partial execution",
+            workflow_name,
+            index + 1,
+            step.agent,
+        )
+        err = f"Step {index + 1}: agent '{step.agent}' failed while running."
+        return StepOutcome(
+            result=WorkflowStepResult(
+                agent=step.agent,
+                ok=False,
+                text=exc.partial.text,
+                error=err,
+                iterations=exc.partial.iterations,
+            ),
+            usage=exc.partial.usage,
+            fatal=True,
         )
     except Exception as exc:  # noqa: BLE001 — total runner: never propagate.
         logger.warning(

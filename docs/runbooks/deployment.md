@@ -828,6 +828,19 @@ postprovision hook cannot close this: it runs before application deployment, whe
 the `api` container may still be the azd placeholder image, which is exactly why
 it treats app probes as best-effort.
 
+The workflow captures the active app revisions **before `azd provision`**.
+This ordering is load-bearing: the web/API/proxy Bicep modules must submit an
+image in every Container App template and their greenfield defaults are
+`mcr.microsoft.com/k8se/quickstart:latest`. An infrastructure reconciliation can
+therefore create a placeholder revision before release images are built. A
+capture taken after provision would faithfully record the wrong rollback target.
+If provision starts, a later provision/build/preflight failure restores the
+pre-provision revisions. A manual run that skipped provision does not roll back
+for a pre-deploy build/preflight failure; deploy/verification failures still do.
+Failure to reacquire the *post-deploy* canary token remains the deliberate
+exception: the exact-digest release is already live and is left in place but
+reported unverified.
+
 ### What is asserted, and what each assertion catches
 
 | Assertion | Catches |

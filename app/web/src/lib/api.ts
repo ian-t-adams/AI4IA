@@ -637,6 +637,18 @@ export async function listLibraryDocuments(): Promise<LibraryDocument[]> {
   );
 }
 
+// Resolve one document the signed-in user may read. Unlike the owned-library
+// listing, this also resolves explicitly shared and tenant-public documents by id.
+export async function getLibraryDocument(
+  documentId: string,
+): Promise<LibraryDocument> {
+  return jsonOrThrow(
+    await apiFetch(`/api/library/documents/${documentId}`, {
+      cache: "no-store",
+    }),
+  );
+}
+
 export async function uploadLibraryDocument(
   file: File,
   analyzerId?: string | null,

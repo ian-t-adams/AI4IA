@@ -44,9 +44,17 @@ uvicorn ai4ia_api.main:app --reload
 CI checks:
 
 ```powershell
+uv lock --check
 ruff check .
 pyright
 pytest -q
+```
+
+CI also runs the Cosmos migration regression from the repository root after the
+API development dependencies are installed:
+
+```powershell
+pytest -q scripts\tests\test_memory_cosmos_migration.py
 ```
 
 From the repo root, also run catalog checks when catalogs, MCP manifests, Foundry manifests, or related scripts change:
@@ -61,6 +69,11 @@ python -m unittest scripts.tests.test_voice_provider_catalog
 python scripts\validate-catalog.py
 python scripts\validate-feature-prereqs.py
 ```
+
+`AGENTS.md` is the authoritative CI inventory. It also lists the workflow-only
+schema, Docker, shell/PowerShell, proxy, documentation, security, and operator
+script gates; use that list rather than assuming the short commands above are
+the whole required-check surface.
 
 ### Infra and operations
 

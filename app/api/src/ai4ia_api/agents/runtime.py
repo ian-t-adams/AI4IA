@@ -46,6 +46,7 @@ The real Microsoft Agent Framework / Foundry toolbox / MCP can later replace the
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -119,6 +120,15 @@ class AgentRunResult:
     # that up..."), which the user has already seen. A streaming caller must
     # persist this, so the saved row matches what was actually delivered.
     streamed_text: str = ""
+
+
+class AgentRunFailed(RuntimeError):
+    """A failed model round trip with the safe work completed so far."""
+
+    def __init__(self, *, cause: Exception, partial: AgentRunResult) -> None:
+        super().__init__("agent model round trip failed")
+        self.cause: Exception = cause
+        self.partial: AgentRunResult = partial
 
 
 def _tool_message(call_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
@@ -221,6 +231,9 @@ async def run_agent_turn(
     # the whole existing test surface), rather than an AttributeError.
     stream_tokens = on_delta is not None and callable(getattr(gateway, "stream", None))
     streamed_parts: list[str] = []
+    completed_text_parts: list[str] = []
+    completed_model_calls = 0
+    current_stream_usage: dict[str, Any] | None = None
 
     async def emit_delta(text: str) -> None:
         """Forward one assistant text increment, best-effort.
@@ -237,6 +250,10 @@ async def run_agent_turn(
         except Exception:  # noqa: BLE001 - a UI callback must never break a turn
             logger.debug("on_delta callback failed", exc_info=True)
 
+    def observe_stream_usage(usage: dict[str, Any]) -> None:
+        nonlocal current_stream_usage
+        current_stream_usage = usage
+
     async def call_model(request_params: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
         """One model round trip, streamed or not, folded into shared usage.
 
@@ -244,27 +261,57 @@ async def run_agent_turn(
         deliberately reduced to the same pair here so everything downstream —
         governance, budget, trace, taint — has exactly one shape to reason about.
         """
-        nonlocal usage_agg
-        if stream_tokens:
-            iteration = await stream_iteration(
-                gateway=gateway,
+        nonlocal completed_model_calls, current_stream_usage, usage_agg
+        current_stream_usage = None
+        try:
+            if stream_tokens:
+                iteration = await stream_iteration(
+                    gateway=gateway,
+                    deployment=deployment,
+                    messages=convo,
+                    params=request_params,
+                    correlation_id=ctx.correlation_id,
+                    on_delta=emit_delta,
+                    on_usage=observe_stream_usage,
+                )
+                completed_model_calls += 1
+                usage_agg = usage_agg.add(TokenUsage.parse(iteration.usage))
+                return iteration.content, iteration.tool_calls
+            result = await gateway.complete(
                 deployment=deployment,
                 messages=convo,
                 params=request_params,
                 correlation_id=ctx.correlation_id,
-                on_delta=emit_delta,
             )
-            usage_agg = usage_agg.add(TokenUsage.parse(iteration.usage))
-            return iteration.content, iteration.tool_calls
-        result = await gateway.complete(
-            deployment=deployment,
-            messages=convo,
-            params=request_params,
-            correlation_id=ctx.correlation_id,
-        )
-        usage_agg = usage_agg.add(TokenUsage.parse(result.get("usage")))
-        message = (result.get("choices") or [{}])[0].get("message") or {}
-        return message.get("content") or "", message.get("tool_calls") or []
+            completed_model_calls += 1
+            usage_agg = usage_agg.add(TokenUsage.parse(result.get("usage")))
+            message = (result.get("choices") or [{}])[0].get("message") or {}
+            content = message.get("content") or ""
+            completed_text_parts.append(content)
+            return content, message.get("tool_calls") or []
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not (
+                streamed_parts
+                or current_stream_usage is not None
+                or completed_model_calls
+                or usage_agg.calls
+                or steps
+            ):
+                raise
+            partial_text = (
+                "".join(streamed_parts) if stream_tokens else "".join(completed_text_parts)
+            )
+            partial = AgentRunResult(
+                text=partial_text,
+                model=deployment,
+                steps=list(steps),
+                iterations=iterations,
+                usage=usage_agg.add(TokenUsage.parse(current_stream_usage)),
+                streamed_text="".join(streamed_parts),
+            )
+            raise AgentRunFailed(cause=exc, partial=partial) from exc
 
     def finish(text: str, iterations: int) -> AgentRunResult:
         return AgentRunResult(
@@ -516,6 +563,30 @@ async def run_agent_turn(
                     unspent_approvals.discard(approval_token)
                 try:
                     raw_result = await handlers[name](parsed, ctx)
+                except AgentRunFailed as exc:
+                    for nested_step in exc.partial.steps:
+                        await record(nested_step)
+                    await record(
+                        AgentStep(
+                            kind="tool_error",
+                            tool=safe_name,
+                            detail="delegate_failed",
+                        )
+                    )
+                    partial_text = (
+                        "".join(streamed_parts)
+                        if stream_tokens
+                        else "".join(completed_text_parts)
+                    )
+                    partial = AgentRunResult(
+                        text=partial_text,
+                        model=deployment,
+                        steps=list(steps),
+                        iterations=iterations,
+                        usage=usage_agg.add(exc.partial.usage),
+                        streamed_text="".join(streamed_parts),
+                    )
+                    raise AgentRunFailed(cause=exc.cause, partial=partial) from exc.cause
                 except Exception as exc:  # noqa: BLE001 - never crash the turn
                     convo.append(
                         _tool_message(

@@ -6,6 +6,8 @@ registry/executor so the runtime sub-turn path is covered end to end.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from ai4ia_api.agents.agent_catalog import AgentCatalog, AgentSpec
@@ -15,7 +17,9 @@ from ai4ia_api.agents.orchestration import (
     build_delegate_capability,
     sanitize_links,
 )
+from ai4ia_api.agents.runtime import AgentRunFailed, run_agent_turn
 from ai4ia_api.agents.tool_exec import ToolContext, build_tools
+from ai4ia_api.gateway.client import ModelGatewayError
 
 
 class _Gateway:
@@ -204,3 +208,205 @@ async def test_handler_enforces_delegation_budget():
     assert "error" in over and "budget" in over["error"]
     assert gw.calls == MAX_DELEGATIONS_PER_TURN
     assert len(sink) == MAX_DELEGATIONS_PER_TURN
+
+
+@pytest.mark.asyncio
+async def test_nested_partial_failure_combines_usage_and_trace_without_usage_sink_duplication():
+    failure = ModelGatewayError(502, "nested model failed")
+
+    class NestedFailureGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "Delegating. ",
+                                "tool_calls": [
+                                    {
+                                        "id": "delegate-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": DELEGATE_TOOL_NAME,
+                                            "arguments": json.dumps(
+                                                {"agent": "helper", "task": "calculate"}
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 2,
+                        "completion_tokens": 1,
+                        "total_tokens": 3,
+                    },
+                }
+            if self.calls == 2:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "Calculating. ",
+                                "tool_calls": [
+                                    {
+                                        "id": "calc-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "calculator",
+                                            "arguments": json.dumps({"expression": "6*7"}),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 3,
+                        "completion_tokens": 1,
+                        "total_tokens": 4,
+                    },
+                }
+            raise failure
+
+    gateway = NestedFailureGateway()
+    registry, executor = build_tools()
+    helper = AgentSpec(
+        name="helper",
+        displayName="helper",
+        description="leaf",
+        systemPrompt="You are helper.",
+        tools=["calculator"],
+    )
+    tools, handlers, usage_sink = build_delegate_capability(
+        orchestrator=_orchestrator(["helper"]),
+        composed=_catalog(helper),
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        deployment="boss-deployment",
+    )
+
+    with pytest.raises(AgentRunFailed) as excinfo:
+        await run_agent_turn(
+            deployment="boss-deployment",
+            messages=[
+                {"role": "system", "content": "You coordinate."},
+                {"role": "user", "content": "solve this"},
+            ],
+            tool_names=[],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+            extra_tools=tools,
+            extra_handlers=handlers,
+        )
+
+    partial = excinfo.value.partial
+    assert excinfo.value.cause is failure
+    assert gateway.calls == 3
+    assert usage_sink == []
+    assert (
+        partial.usage.prompt,
+        partial.usage.completion,
+        partial.usage.total,
+        partial.usage.calls,
+        partial.usage.complete,
+    ) == (5, 2, 7, 3, False)
+    assert [(step.kind, step.tool, step.detail) for step in partial.steps] == [
+        ("tool_result", "calculator", None),
+        ("tool_error", DELEGATE_TOOL_NAME, "delegate_failed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_nested_first_call_failure_is_safe_and_metered():
+    marker = "nested-upstream-secret"
+
+    class NestedFirstCallFailureGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.requests: list[list[dict]] = []
+
+        async def complete(self, *, messages, **_kwargs):
+            self.calls += 1
+            self.requests.append(list(messages))
+            if self.calls == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "Delegating. ",
+                                "tool_calls": [
+                                    {
+                                        "id": "delegate-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": DELEGATE_TOOL_NAME,
+                                            "arguments": json.dumps(
+                                                {"agent": "helper", "task": "calculate"}
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 2,
+                        "completion_tokens": 1,
+                        "total_tokens": 3,
+                    },
+                }
+            raise ModelGatewayError(502, marker)
+
+    gateway = NestedFirstCallFailureGateway()
+    registry, executor = build_tools()
+    tools, handlers, usage_sink = build_delegate_capability(
+        orchestrator=_orchestrator(["helper"]),
+        composed=_catalog(_leaf("helper")),
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        deployment="boss-deployment",
+    )
+
+    with pytest.raises(AgentRunFailed) as excinfo:
+        await run_agent_turn(
+            deployment="boss-deployment",
+            messages=[
+                {"role": "system", "content": "You coordinate."},
+                {"role": "user", "content": "solve this"},
+            ],
+            tool_names=[],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+            extra_tools=tools,
+            extra_handlers=handlers,
+        )
+
+    partial = excinfo.value.partial
+    assert gateway.calls == 2
+    assert usage_sink == []
+    assert (
+        partial.usage.prompt,
+        partial.usage.completion,
+        partial.usage.total,
+        partial.usage.calls,
+        partial.usage.complete,
+    ) == (2, 1, 3, 2, False)
+    assert [(step.kind, step.tool, step.detail) for step in partial.steps] == [
+        ("tool_error", DELEGATE_TOOL_NAME, "delegate_failed")
+    ]
+    assert marker not in json.dumps(gateway.requests)

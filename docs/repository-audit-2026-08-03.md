@@ -1,4 +1,4 @@
-# Repository audit - 2026-08-03 (continued 2026-08-04, disposition updated 2026-08-05)
+# Repository audit - 2026-08-03 (continued through 2026-08-08)
 
 ## Audit status
 
@@ -41,7 +41,7 @@ model, search, document, tool, workflow, media, and voice data planes end to end
 | Performance/scalability | **Bounded and suitable for low-volume demos; no scale proof and several confirmed memory/latency multipliers** |
 | Agent/human comprehensibility | **Good maps and invariants; oversized modules and incident-heavy docs impose high cognitive load** |
 
-### Immediate action — status as of 2026-08-05
+### Immediate action — status as of 2026-08-08
 
 > **This section is the audit's living disposition. The findings below it are
 > preserved as originally written (2026-08-03/04) and are NOT edited when they
@@ -140,7 +140,7 @@ assessment). A code comment and a CI test are not an approval record.
 
 ### Disposition of the P0/P1 findings
 
-Verified against the tree at `main` on 2026-08-05, not from memory.
+Verified against the tree and live environment through 2026-08-08, not from memory.
 
 | Finding | Status | Where |
 | --- | --- | --- |
@@ -167,6 +167,67 @@ Verified against the tree at `main` on 2026-08-05, not from memory.
 Selected P2 items also closed: CGNAT SSRF gap, portal service counts, portal
 narrow-screen reflow, the missing `main` landmark, the APIM compiler harness
 rejecting its own shards, and two documentation current-state contradictions.
+
+### 2026-08-08 full-tree re-audit
+
+A second complete review of backend seams, frontend/UX, IaC/live parity, and
+documentation found that the application is functional and substantially better
+defended, but also found real defects that the existing green suite had not
+covered. The following are now closed:
+
+- approval previews can no longer collapse distinct whitespace-bearing argument
+  keys, and `analyze_attachment` cannot bypass per-invocation approval (#323);
+- identical image digests no longer trigger false rollback, and operator-script
+  changes trigger deployment (#324);
+- cross-replica document recovery no longer deletes another worker's valid raw
+  artifact (#325);
+- remote Markdown images cannot create browser egress and nested citation tokens
+  cannot evade provenance rendering (#326);
+- unknown Code Interpreter cost no longer renders as known zero (#327);
+- the portal status pipeline no longer publishes stale fail-open state or deleted
+  PostgreSQL inventory (#328);
+- current audit, runbook, Responsible-AI, memory, key-rotation, and portal claims
+  were reconciled with the served system (#329);
+- Key Vault/App Configuration runtime roles are now split by consumer and every
+  model deployment uses `NoAutoUpgrade` (#330). After the successful production
+  provision, five obsolete incremental-ARM role assignments were deleted by exact
+  assignment id. Scope-local verification now shows only API as Key Vault Secrets
+  Officer and only proxy as App Configuration Data Reader;
+- session navigation clears session-bound approval state, loading blocks stale
+  sends, sibling prompts survive one approval, and expired prompts cannot be
+  approved (#331);
+- an unavailable entitlement store now renders **Unavailable**, never
+  **Unlimited** (#332);
+- rollback state is captured before infrastructure reconciliation can replace
+  app images with Bicep's greenfield quickstart placeholders; failures after
+  provision starts restore the true pre-provision revisions, while manual
+  no-provision runs avoid pointless pre-deploy rollback (current follow-up);
+- the final open dependency alert is removed by moving transitive `nanoid`
+  3.3.16 to 3.3.17. npm 11 generated the three-line lockfile change against the
+  public registry on a GitHub-hosted runner; no integrity value was hand-written
+  (current follow-up);
+- a late model failure after a successful tool call now retains redacted finalized
+  work and incomplete usage, persists an error rather than false success, and does
+  not hide the failure behind a plain fallback. First-call non-stream failures now
+  get a terminal assistant error row instead of leaving an orphan user row, chat
+  never returns raw gateway bodies, and cancelled stream runners are awaited.
+  Attested media citations resolve shared documents by their server-owned document
+  id (current follow-up).
+
+The combined production deployment for #330-#332 completed successfully in
+GitHub Actions run `31240851997`: infrastructure provision, exact-digest image
+promotion, authenticated canary, and post-deploy verification all passed with no
+rollback. Live Durable Task settings and scheduler, narrowed RBAC, and
+`NoAutoUpgrade` model posture were read back directly afterward.
+
+**What remains material:** the checked-in profile is still a broad paid/demo
+profile rather than separate minimal and production profiles; PR-tested images
+are rebuilt rather than promoted and the proxy image lacks equivalent provenance;
+incremental ARM and APIM changes are not rollback-safe; APIM, application/data
+planes, and readiness/alerting remain single-region or shallow; unattended
+workflows intentionally lack interactive tool approval; background ingestion is
+not crash-durable; Responsible-AI outcome evaluation is not a release gate; and
+the largest chat/realtime/UI coordinators remain expensive to reason about.
 
 ### The remediation caused an outage, and the remediation caught it
 

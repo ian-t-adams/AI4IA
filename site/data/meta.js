@@ -48,6 +48,8 @@ window.AI4IA_META = {
       note: "Non-spoofable identity; an internal user id is decoupled from the IdP." },
     { name: "Agents, workflows & governed tools", on: true, core: true,
       note: "Curated + user-defined agents, multi-step workflows, per-turn tool executor." },
+    { name: "Durable workflow execution", on: true, param: "enableDurableWorkflows",
+      note: "Opt-in runs use Azure Durable Task Scheduler; synchronous runs remain available." },
     { name: "Per-user memory (Cosmos DB vectors)", on: true,
       note: "LLM fact-extraction + semantic recall, scoped per user." },
     { name: "Usage metering & entitlements", on: true, core: true,

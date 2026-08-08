@@ -204,6 +204,7 @@ async def stream_iteration(
     params: dict[str, Any] | None,
     correlation_id: str | None,
     on_delta: Callable[[str], Awaitable[None]] | None = None,
+    on_usage: Callable[[dict[str, Any]], None] | None = None,
 ) -> StreamedIteration:
     """Run ONE model iteration over SSE, forwarding text the instant it arrives.
 
@@ -228,6 +229,8 @@ async def stream_iteration(
     ):
         if chunk.usage:
             usage = chunk.usage
+            if on_usage is not None:
+                on_usage(chunk.usage)
         if chunk.delta:
             content.append(chunk.delta)
             if on_delta is not None:

@@ -113,6 +113,7 @@ $TypeMap = @{
     'microsoft.cognitiveservices/accounts/projects'         = @{ label = 'Foundry project';               group = 'AI' }
     'microsoft.containerregistry/registries'                = @{ label = 'Container Registry';            group = 'Compute' }
     'microsoft.documentdb/databaseaccounts'                 = @{ label = 'Cosmos DB (NoSQL)';             group = 'Data' }
+    'microsoft.durabletask/schedulers'                       = @{ label = 'Durable Task Scheduler';        group = 'Compute' }
     'microsoft.search/searchservices'                       = @{ label = 'Azure AI Search';               group = 'Data' }
     'microsoft.eventgrid/systemtopics'                      = @{ label = 'Event Grid System Topic';       group = 'Messaging' }
     'microsoft.eventhub/namespaces'                         = @{ label = 'Event Hubs Namespace';          group = 'Messaging' }

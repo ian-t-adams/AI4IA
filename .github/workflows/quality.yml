@@ -252,6 +252,20 @@ jobs:
           # be Open in one document and closed in the other. stdlib-only.
           python3 -m unittest scripts.tests.test_status_consistency
 
+      - name: Run portal status publication tests
+        run: |
+          set -euo pipefail
+          # A failed Azure login/refresh must fail Pages rather than republish an
+          # old snapshot as current. The label check also keeps a deployed,
+          # user-facing service from falling into the portal's opaque "Other"
+          # bucket (Durable Task did exactly that).
+          python3 -m pip install --user --quiet "PyYAML==${PYYAML_VERSION}"
+          python3 -m unittest \
+            scripts.tests.test_pages_status_refresh \
+            scripts.tests.test_status_snapshot_labels
+        env:
+          PYYAML_VERSION: 6.0.3
+
       - name: Run post-deploy verification tests
         run: |
           set -euo pipefail

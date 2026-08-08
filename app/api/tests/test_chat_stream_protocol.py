@@ -571,7 +571,8 @@ def test_gateway_error_is_persisted_before_terminal_error(client, monkeypatch):
     )
     payloads = _sse_payloads(response.text)
     assert events == ["upsert:error", "error"]
-    assert json.loads(payloads[-1])["error"] == "gateway failed"
+    assert json.loads(payloads[-1])["error"] == "Chat completion failed."
+    assert "gateway failed" not in response.text
     assert "[DONE]" not in payloads
 
 
@@ -869,3 +870,387 @@ async def test_cancellation_during_terminal_upsert_confirms_then_persists_cancel
         MessageStatus.complete,
         MessageStatus.cancelled,
     ]
+
+
+@pytest.mark.asyncio
+async def test_closing_agentic_stream_waits_for_runner_cleanup():
+    class Repo:
+        async def upsert_message(self, _user_id, message):
+            return message
+
+    class Memory:
+        async def remember(self, *_args, **_kwargs):
+            return None
+
+    class Metering:
+        async def record_completion(self, **_kwargs):
+            return None
+
+    started = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    async def run(_on_step):
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        finally:
+            # Model clients may need asynchronous socket/response cleanup after
+            # cancellation. The stream must not orphan that work.
+            await asyncio.sleep(0.05)
+            cleanup_finished.set()
+
+    assistant = Message(
+        sessionId="session",
+        userId="user",
+        role=MessageRole.assistant,
+        status=MessageStatus.streaming,
+    )
+    stream = _agentic_stream(
+        assistant=assistant,
+        run=run,
+        repo=Repo(),  # type: ignore[arg-type]
+        memory=Memory(),  # type: ignore[arg-type]
+        metering=Metering(),  # type: ignore[arg-type]
+        user=AuthenticatedUser(
+            internal_user_id="user",
+            subject="subject",
+            issuer="issuer",
+            provider="dev",
+            email="user@example.com",
+            name="User",
+        ),
+        session_id="session",
+        model_id="model",
+        deployment=DeploymentOption(
+            region="eastus",
+            dataZone=None,
+            sku="GlobalStandard",
+            deploymentName="deployment",
+        ),
+        agent_name="analyst",
+        correlation_id="correlation",
+        content_for_model="hello",
+        user_message_id="user-message",
+    )
+
+    assert "metadata" in await anext(stream)
+    await started.wait()
+    await stream.aclose()
+
+    assert cleanup_finished.is_set()
+
+
+def test_later_plain_tool_gateway_failure_persists_partial_stream_without_fallback(
+    client, monkeypatch
+):
+    """A failed second iteration must terminate honestly after a successful tool."""
+    handler_calls: list[dict] = []
+    raw_argument = "argument-secret"
+    raw_result = "result-secret"
+
+    class WebSearch:
+        async def close(self):
+            return None
+
+        def build_capability(self, **_kwargs):
+            async def handler(arguments, _ctx):
+                handler_calls.append(dict(arguments))
+                return {"headlines": ["one"], "token": raw_result}
+
+            return (
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                {"web_search": handler},
+            )
+
+    class FailingSecondIterationGateway:
+        def __init__(self) -> None:
+            self.stream_calls = 0
+            self.fallback_calls = 0
+
+        async def stream(self, **_kwargs):
+            self.stream_calls += 1
+            if self.stream_calls == 1:
+                first = {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "Searching now. ",
+                                "tool_calls": [
+                                    {
+                                        "id": "call-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "web_search",
+                                            "arguments": json.dumps(
+                                                {"authorization": raw_argument}
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 13,
+                        "completion_tokens": 2,
+                        "total_tokens": 15,
+                    },
+                }
+                async for chunk in stream_like_gateway(first):
+                    yield chunk
+                return
+            delta = {"choices": [{"delta": {"content": "Almost done. "}}]}
+            yield ChatChunk(delta="Almost done. ", raw=json.dumps(delta))
+            raise ModelGatewayError(
+                502, f"upstream echoed {raw_argument} and {raw_result}"
+            )
+
+        async def complete(self, **_kwargs):
+            self.fallback_calls += 1
+            return {
+                "choices": [
+                    {"message": {"role": "assistant", "content": "fallback answer"}}
+                ],
+                "usage": {
+                    "prompt_tokens": 99,
+                    "completion_tokens": 1,
+                    "total_tokens": 100,
+                },
+            }
+
+    metered: list[dict] = []
+
+    async def capture_usage(**kwargs):
+        metered.append(kwargs)
+
+    gateway = FailingSecondIterationGateway()
+    client.app.state.web_search = WebSearch()
+    client.app.state.gateway = gateway
+    monkeypatch.setattr(client.app.state.usage, "record_completion", capture_usage)
+    session_id = _create_session(client)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "sessionId": session_id,
+            "content": "find current news",
+            "stream": True,
+        },
+    )
+    frames = _frames(response.text)
+    messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    assistant = messages[-1]
+    delivered = "".join(str(value) for kind, value in frames if kind == "delta")
+    tool_results = [
+        step
+        for step in assistant.get("steps") or []
+        if step["kind"] in {"tool_result", "delegate"}
+    ]
+    usage = metered[-1]["usage"]
+
+    assert {
+        "status_code": response.status_code,
+        "stream_calls": gateway.stream_calls,
+        "handler_calls": handler_calls,
+        "fallback_calls": gateway.fallback_calls,
+        "delivered": delivered,
+        "terminal_frames": [kind for kind, _ in frames if kind in {"error", "done"}],
+        "public_error": next(value for kind, value in frames if kind == "error"),
+        "assistant_status": assistant["status"],
+        "assistant_content": assistant["content"],
+        "tool_results": [(step["kind"], step["tool"]) for step in tool_results],
+        "metered": (
+            usage.prompt,
+            usage.completion,
+            usage.total,
+            usage.calls,
+            usage.complete,
+            metered[-1]["status"],
+        ),
+    } == {
+        "status_code": 200,
+        "stream_calls": 2,
+        "handler_calls": [{"authorization": raw_argument}],
+        "fallback_calls": 0,
+        "delivered": "Searching now. Almost done. ",
+        "terminal_frames": ["error"],
+        "public_error": "Chat completion failed.",
+        "assistant_status": "error",
+        "assistant_content": "Searching now. Almost done. ",
+        "tool_results": [("delegate", "web_search")],
+        "metered": (13, 2, 15, 2, False, "error"),
+    }
+    persisted = json.dumps(messages)
+    assert raw_argument not in response.text and raw_argument not in persisted
+    assert raw_result not in response.text and raw_result not in persisted
+
+
+def test_first_plain_tool_stream_failure_without_partial_work_falls_back(
+    client, monkeypatch, caplog
+):
+    marker = "stream-fallback-hostile-detail"
+
+    class WebSearch:
+        async def close(self):
+            return None
+
+        def build_capability(self, **_kwargs):
+            async def handler(_arguments, _ctx):  # pragma: no cover
+                raise AssertionError("no tool should run")
+
+            return (
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                {"web_search": handler},
+            )
+
+    class FirstCallFailureGateway:
+        def __init__(self) -> None:
+            self.stream_calls = 0
+            self.fallback_calls = 0
+
+        async def stream(self, **_kwargs):
+            self.stream_calls += 1
+            raise ModelGatewayError(502, marker)
+            yield  # pragma: no cover
+
+        async def complete(self, **_kwargs):
+            self.fallback_calls += 1
+            return {
+                "choices": [
+                    {"message": {"role": "assistant", "content": "fallback answer"}}
+                ],
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 2,
+                    "total_tokens": 7,
+                },
+            }
+
+    metered: list[dict] = []
+
+    async def capture_usage(**kwargs):
+        metered.append(kwargs)
+
+    gateway = FirstCallFailureGateway()
+    client.app.state.web_search = WebSearch()
+    client.app.state.gateway = gateway
+    monkeypatch.setattr(client.app.state.usage, "record_completion", capture_usage)
+    session_id = _create_session(client)
+
+    response = client.post(
+        "/api/chat",
+        json={"sessionId": session_id, "content": "find news", "stream": True},
+    )
+    frames = _frames(response.text)
+    messages = client.get(f"/api/sessions/{session_id}/messages").json()
+
+    assert gateway.stream_calls == 1
+    assert gateway.fallback_calls == 1
+    assert "".join(str(value) for kind, value in frames if kind == "delta") == "fallback answer"
+    assert [kind for kind, _ in frames if kind in {"error", "done"}] == ["done"]
+    assert messages[-1]["status"] == "complete"
+    assert messages[-1]["content"] == "fallback answer"
+    usage = metered[-1]["usage"]
+    assert (
+        usage.prompt,
+        usage.completion,
+        usage.total,
+        usage.calls,
+        usage.complete,
+        metered[-1]["status"],
+    ) == (5, 2, 7, 2, False, "complete")
+    assert marker not in caplog.text
+
+
+def test_first_plain_tool_stream_failure_after_delta_is_partial_and_does_not_fallback(
+    client, monkeypatch
+):
+    class WebSearch:
+        async def close(self):
+            return None
+
+        def build_capability(self, **_kwargs):
+            async def handler(_arguments, _ctx):  # pragma: no cover
+                raise AssertionError("no tool should run")
+
+            return (
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                {"web_search": handler},
+            )
+
+    class PartialFirstCallFailureGateway:
+        def __init__(self) -> None:
+            self.stream_calls = 0
+            self.fallback_calls = 0
+
+        async def stream(self, **_kwargs):
+            self.stream_calls += 1
+            delta = {"choices": [{"delta": {"content": "partial answer"}}]}
+            yield ChatChunk(delta="partial answer", raw=json.dumps(delta))
+            raise ModelGatewayError(502, "hostile upstream detail")
+
+        async def complete(self, **_kwargs):  # pragma: no cover
+            self.fallback_calls += 1
+            raise AssertionError("partial work must not fall back")
+
+    metered: list[dict] = []
+
+    async def capture_usage(**kwargs):
+        metered.append(kwargs)
+
+    gateway = PartialFirstCallFailureGateway()
+    client.app.state.web_search = WebSearch()
+    client.app.state.gateway = gateway
+    monkeypatch.setattr(client.app.state.usage, "record_completion", capture_usage)
+    session_id = _create_session(client)
+
+    response = client.post(
+        "/api/chat",
+        json={"sessionId": session_id, "content": "find news", "stream": True},
+    )
+    frames = _frames(response.text)
+    messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    usage = metered[-1]["usage"]
+
+    assert gateway.stream_calls == 1
+    assert gateway.fallback_calls == 0
+    assert "".join(str(value) for kind, value in frames if kind == "delta") == "partial answer"
+    assert [(kind, value) for kind, value in frames if kind in {"error", "done"}] == [
+        ("error", "Chat completion failed.")
+    ]
+    assert messages[-1]["status"] == "error"
+    assert messages[-1]["content"] == "partial answer"
+    assert (usage.calls, usage.known, usage.complete, metered[-1]["status"]) == (
+        1,
+        False,
+        False,
+        "error",
+    )

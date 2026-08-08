@@ -2095,10 +2095,22 @@ export function ChatApp() {
                 d.filename.toLowerCase() ===
                   (target.filename ?? "").toLowerCase(),
             );
-      let doc = libraryIndexRef.current
-        ? resolve(libraryIndexRef.current)
-        : undefined;
-      if (!doc) {
+      let doc = libraryIndexRef.current ? resolve(libraryIndexRef.current) : undefined;
+      if (!doc && target.documentId) {
+        try {
+          const accessible = await api.getLibraryDocument(target.documentId);
+          doc = playable(accessible) ? accessible : undefined;
+          if (doc) {
+            libraryIndexRef.current = [
+              ...(libraryIndexRef.current ?? []).filter((item) => item.id !== doc?.id),
+              doc,
+            ];
+          }
+        } catch {
+          setError("Couldn't open the cited media.");
+          return;
+        }
+      } else if (!doc) {
         try {
           const all = await api.listLibraryDocuments();
           libraryIndexRef.current = all;

@@ -1672,8 +1672,11 @@ class DeployWorkflowWiringTests(unittest.TestCase):
     def step(self, needle: str) -> dict:
         return self.steps[self.index(needle)]
 
-    def test_capture_runs_before_the_deploy_it_is_the_rollback_target_for(self) -> None:
-        self.assertLess(self.index("Capture pre-deploy revisions"), self.index("Deploy application"))
+    def test_capture_runs_before_provision_can_change_the_rollback_target(self) -> None:
+        self.assertLess(
+            self.index("Capture pre-provision revisions"),
+            self.index("Provision infrastructure"),
+        )
 
     def test_verification_runs_after_the_deploy(self) -> None:
         self.assertLess(self.index("Deploy application"), self.index("Verify the deploy"))
@@ -1719,11 +1722,12 @@ class DeployWorkflowWiringTests(unittest.TestCase):
         self.assertIn("failure()", condition)
         self.assertIn("steps.capture.outcome", condition)
 
-    def test_rollback_also_covers_a_deploy_that_died_partway_through(self) -> None:
-        """`failure()` rather than a check on the verify step alone: a half-applied
-        deploy is exactly as much of a split brain as a failed assertion."""
+    def test_rollback_covers_provision_deploy_and_verification_failures(self) -> None:
+        """A rollback cannot be gated only on the final verification outcome."""
         condition = str(self.step("Roll back").get("if", ""))
-        self.assertNotIn("steps.verify", condition)
+        self.assertIn("steps.provision.outcome", condition)
+        self.assertIn("steps.deploy.outcome == 'failure'", condition)
+        self.assertIn("steps.verify.outcome == 'failure'", condition)
 
     def test_the_az_login_is_not_gated_on_provisioning(self) -> None:
         """Verification and rollback need `az` on a provision-skipping manual run,
@@ -1732,7 +1736,7 @@ class DeployWorkflowWiringTests(unittest.TestCase):
 
     def test_every_new_step_invokes_the_real_script(self) -> None:
         for needle, mode in (
-            ("Capture pre-deploy revisions", "capture"),
+            ("Capture pre-provision revisions", "capture"),
             ("Verify the deploy", "verify"),
             ("Roll back", "rollback"),
         ):

@@ -316,8 +316,13 @@ Skill `name` must match `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (max 64). The create p
    then `azd up`. The toolbox surfaces in the agent tool picker as the `foundry-toolbox`
    official MCP server; the grant lets APIM's MI bearer invoke it.
 
-To disable: set `enableFoundryToolbox=false` (drops the RBAC grant) and/or remove the entry and
-regenerate the catalog. Setting `enableOfficialMcp=false` tears down the whole MCP plane.
+To stop serving the toolbox, set `enableFoundryToolbox=false` and/or remove the
+entry and regenerate the catalog. To stop serving every official MCP endpoint,
+set `enableOfficialMcp=false`. These flags stop runtime wiring and stop declaring
+the corresponding Bicep resources, but **do not delete** previously deployed
+RBAC assignments or APIM children under ARM incremental mode. Full removal is a
+separately approved, scope-by-scope teardown; verify the literal resource and
+principal IDs afterward.
 
 ## Private tool catalog (Azure API Center)
 
