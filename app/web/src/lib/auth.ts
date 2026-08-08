@@ -60,10 +60,6 @@ export function initAuth(config: WebAuthConfig): PublicClientApplication | null 
   return _msal;
 }
 
-export function getMsalInstance(): PublicClientApplication | null {
-  return _msal;
-}
-
 function activeAccount(): AccountInfo | null {
   if (!_msal) return null;
   return _msal.getActiveAccount() ?? _msal.getAllAccounts()[0] ?? null;

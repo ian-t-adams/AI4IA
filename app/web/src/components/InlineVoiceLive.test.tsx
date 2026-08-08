@@ -35,7 +35,6 @@ const mocks = vi.hoisted(() => ({
   stop: vi.fn(),
   toggle: vi.fn(),
   useVoiceLive: vi.fn(),
-  recorderToggle: vi.fn(),
 }));
 
 vi.mock("@/lib/voiceLive", async (importOriginal) => {
@@ -44,12 +43,6 @@ vi.mock("@/lib/voiceLive", async (importOriginal) => {
 });
 
 vi.mock("@/lib/voice", () => ({
-  useVoiceRecorder: () => ({
-    recording: false,
-    transcribing: false,
-    supported: false,
-    toggle: mocks.recorderToggle,
-  }),
   useSpeechPlayback: () => ({
     activeId: null,
     busyId: null,

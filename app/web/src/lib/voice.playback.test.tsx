@@ -3,15 +3,13 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // useSpeechPlayback only calls synthesizeSpeech (never fetch/apiFetch directly),
-// so mock it the same way Composer.test.tsx mocks useVoiceRecorder: deterministic,
-// no network, no MediaRecorder/getUserMedia plumbing to fake.
+// so keep the API deterministic without touching the network.
 const { mockSynthesizeSpeech, mockReportClientEvent } = vi.hoisted(() => ({
   mockSynthesizeSpeech: vi.fn(),
   mockReportClientEvent: vi.fn(),
 }));
 vi.mock("./api", () => ({
   synthesizeSpeech: mockSynthesizeSpeech,
-  transcribeAudio: vi.fn(),
 }));
 vi.mock("./clientTelemetry", () => ({
   reportClientEvent: mockReportClientEvent,

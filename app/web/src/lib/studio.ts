@@ -21,7 +21,6 @@ export const MAX_INSTRUCTION_LEN = 4000;
 // guard reads as protection while providing none.
 export const MAX_RUN_INPUT_LEN = 8000;
 export const INPUT_TOKEN = "{input}";
-export const PREVIOUS_TOKEN = "{previous}";
 
 // The backend's user-attachable tool allowlist. Mirrored here so the builder can
 // offer the tools as checkboxes.

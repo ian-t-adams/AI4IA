@@ -192,11 +192,3 @@ export function parseCitations(
   }
   return segments;
 }
-
-// True when a message carries at least one token this renderer would lift out.
-export function hasCitations(
-  text: string,
-  sources?: RetrievedSource[] | null,
-): boolean {
-  return parseCitations(text, sources).some((s) => s.type === "cite");
-}

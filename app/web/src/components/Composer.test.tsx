@@ -6,31 +6,8 @@ import userEvent from "@testing-library/user-event";
 import { Composer } from "./Composer";
 import type { AgentSummary } from "@/lib/types";
 
-// The voice recorder hook owns MediaRecorder/getUserMedia plumbing that jsdom
-// doesn't implement, and it pulls in the API client transitively. Stub it with a
-// deterministic "unsupported" recorder so these tests exercise only the composer's
-// own logic (typing, submit, autocomplete) and never touch the network or mic.
-const { mockToggle, recorderState } = vi.hoisted(() => ({
-  mockToggle: vi.fn(),
-  recorderState: {
-    recording: false,
-    transcribing: false,
-    supported: false,
-  },
-}));
-vi.mock("@/lib/voice", () => ({
-  useVoiceRecorder: () => ({
-    ...recorderState,
-    toggle: mockToggle,
-  }),
-}));
-
 afterEach(() => {
   cleanup();
-  mockToggle.mockReset();
-  recorderState.recording = false;
-  recorderState.transcribing = false;
-  recorderState.supported = false;
 });
 
 const AGENTS: AgentSummary[] = [

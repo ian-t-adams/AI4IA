@@ -323,29 +323,6 @@ export async function testMcpServer(
   );
 }
 
-// --- Voice ---
-
-export interface TranscriptionResult {
-  text: string;
-  model: string;
-  deployment: string;
-}
-
-// Transcribes a recorded audio blob (speech-to-text via whisper). The browser
-// sets the multipart boundary, so we never set Content-Type ourselves.
-export async function transcribeAudio(
-  audio: Blob,
-  opts?: { model?: string; language?: string; filename?: string },
-): Promise<TranscriptionResult> {
-  const form = new FormData();
-  form.append("file", audio, opts?.filename ?? "recording.webm");
-  if (opts?.model) form.append("model", opts.model);
-  if (opts?.language) form.append("language", opts.language);
-  return jsonOrThrow(
-    await apiFetch("/api/voice/transcriptions", { method: "POST", body: form }),
-  );
-}
-
 // Synthesizes speech (text-to-speech via gpt-4o-mini-tts). Returns the raw audio
 // blob; callers wrap it in an object URL for playback.
 //
@@ -503,14 +480,6 @@ export async function updateSession(
       body: JSON.stringify(patch),
     }),
   );
-}
-
-export async function listTools(sessionId?: string | null): Promise<ToolCatalogItem[]> {
-  const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
-  const result = await jsonOrThrow<{ tools: ToolCatalogItem[] }>(
-    await apiFetch(`/api/tools${query}`, { cache: "no-store" }),
-  );
-  return result.tools;
 }
 
 export async function getToolCatalog(

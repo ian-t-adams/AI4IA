@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
-  hasCitations,
   msToTimecode,
   parseCitations,
   timecodeToMs,
@@ -123,7 +122,6 @@ describe("parseCitations on an unattested turn", () => {
     // No registry means no evidence either way. Marking this unverified would
     // be an accusation built out of a missing field.
     expect(cites(parseCitations("Grew [[cite:S1]]."))).toHaveLength(0);
-    expect(hasCitations("Grew [[cite:S1]].")).toBe(false);
   });
 
   it("leaves plain text untouched", () => {
@@ -131,7 +129,6 @@ describe("parseCitations on an unattested turn", () => {
       { type: "text", value: "no tokens here" },
     ]);
     expect(parseCitations("")).toEqual([]);
-    expect(hasCitations("no tokens here")).toBe(false);
   });
 });
 
