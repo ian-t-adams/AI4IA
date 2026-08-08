@@ -466,8 +466,12 @@ def _toolbox_state(value: Any) -> dict[str, Any]:
     fields = {
         "description": getattr(value, "description", None),
         "tools": getattr(value, "tools", None),
-        "skills": getattr(value, "skills", None),
-        "policies": getattr(value, "policies", None),
+        # Foundry materializes omitted top-level optionals as empty service
+        # defaults. Normalize only these known fields; nested tool payloads
+        # (especially opaque OpenAPI specs) must preserve meaningful empty
+        # arrays/objects such as operation-level `security: []`.
+        "skills": getattr(value, "skills", None) or None,
+        "policies": getattr(value, "policies", None) or None,
     }
     return _canonical_state(fields)
 
@@ -476,8 +480,8 @@ def _desired_toolbox_state(kwargs: dict[str, Any]) -> dict[str, Any]:
     fields = {
         "description": kwargs.get("description"),
         "tools": kwargs.get("tools"),
-        "skills": kwargs.get("skills"),
-        "policies": kwargs.get("policies"),
+        "skills": kwargs.get("skills") or None,
+        "policies": kwargs.get("policies") or None,
     }
     return _canonical_state(fields)
 
