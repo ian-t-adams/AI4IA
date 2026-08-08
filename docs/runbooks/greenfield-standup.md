@@ -384,10 +384,13 @@ gh workflow run deploy.yml -f provision=true --ref main
 This is required, not merely preferred. The workflow resolves the deployment
 identity's **principal/object id** from `AZURE_CLIENT_ID` (never treating the
 client id as an object id), exports it as azd's native
-`AZURE_PRINCIPAL_ID`, and Bicep grants that service principal the narrow
-**Cognitive Services Content Understanding Contributor** role on the primary
-Foundry account. The postprovision hook runs under the same OIDC identity and can
-therefore PATCH the Content Understanding model defaults.
+`AZURE_PRINCIPAL_ID`, and Bicep grants that service principal narrow roles:
+**App Configuration Data Owner** on the configuration store and
+**Cognitive Services Content Understanding Contributor** on the primary Foundry
+account. The postprovision hook runs under the same OIDC identity, reconciles the label-aware
+`Warm:Sentinel` with Entra authentication, and PATCHes the Content Understanding
+model defaults. The proxy retains only App Configuration Data Reader; web and API
+receive no App Configuration data role.
 
 A local human operator is neither the API managed identity nor that service
 principal. The current role-assignment template declares
@@ -499,11 +502,15 @@ Skipping this can leave APIM and the MCP initialize handshake healthy while
 `tools/list` returns `Toolbox '<name>' not found`. Verify through the admin
 official-MCP metric with refresh enabled and require a nonzero tool count.
 
-In the workflow's **Provision infrastructure** log, require the postprovision
-result `Content Understanding defaults | PASS`. A `WARN` or `SKIP` is not success:
-it means the defaults PATCH was unauthorized, its role had not propagated, or
-the required Foundry output was absent. After correcting the reported cause or
-allowing RBAC propagation, rerun:
+In the workflow's **Provision infrastructure** log, require both postprovision
+results:
+
+- `App Configuration sentinel | PASS`
+- `Content Understanding defaults | PASS`
+
+A `WARN` or `SKIP` is not success; it remains visible because the deployment
+identity may still be waiting for a data-plane role to propagate, or a required output may be absent.
+After correcting the reported cause or allowing RBAC propagation, rerun:
 
 ```powershell
 gh workflow run deploy.yml -f provision=true --ref main

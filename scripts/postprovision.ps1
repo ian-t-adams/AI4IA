@@ -37,9 +37,14 @@
        proxy /openai URL, while realtime must be the APIM /openai URL. This catches
        reversed or looped module wiring before an application image is deployed.
 
+    5. App Configuration sentinel (ADDITIVE). Reconciles Warm:Sentinel through the
+       signed-in deployment identity after ARM role creation, with bounded retries
+       for data-plane RBAC propagation. A final failure is a visible WARN.
+
   Cross-platform: uses .NET (HttpClient, System.Net.Dns) instead of Windows-only
   cmdlets so the same script runs under Windows PowerShell 5.1 and pwsh 7 on the
-  Linux CI runner. Read-only and idempotent - safe to re-run.
+  Linux CI runner. Idempotent and safe to re-run; its only writes are the documented
+  App Configuration sentinel and Content Understanding defaults reconciliation.
 #>
 [CmdletBinding()]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'RequireApiHealth',
@@ -287,6 +292,78 @@ function Test-CustomDomainDns {
 Write-Host '== AI4IA postprovision smoke tests ==' -ForegroundColor Cyan
 $script:AzdEnv = Get-AzdEnvMap
 
+function Register-AppConfigurationSentinel {
+  # Do not deploy keyValues as ARM children: a store with local authentication
+  # disabled requires ARM pass-through mode, and a role created in that same
+  # deployment may not have propagated to the data plane yet. Reconcile after
+  # provision through the already signed-in deployment identity instead.
+  $endpoint = Get-EnvValue 'AZURE_APP_CONFIG_ENDPOINT'
+  if ([string]::IsNullOrWhiteSpace($endpoint)) {
+    Add-Result -Name 'App Configuration sentinel' -Status 'SKIP' -Detail 'AZURE_APP_CONFIG_ENDPOINT not set'
+    return
+  }
+
+  # The narrow Data Owner role is granted to the OIDC deployment principal.
+  # A workstation user running a break-glass local provision is a different
+  # identity; do not wait 15 minutes on a role it was never granted. Greenfield
+  # setup is workflow-only, and an existing sentinel survives local provisions.
+  $provisionerPrincipalId = Get-EnvValue 'AZURE_PRINCIPAL_ID'
+  if ([string]::IsNullOrWhiteSpace($provisionerPrincipalId)) {
+    Add-Result -Name 'App Configuration sentinel' -Status 'SKIP' -Detail 'AZURE_PRINCIPAL_ID not set; workflow-owned sentinel left unchanged'
+    return
+  }
+
+  $label = Get-EnvValue 'AZURE_APP_CONFIG_LABEL'
+  if ([string]::IsNullOrWhiteSpace($label)) {
+    # Backward-compatible fallback for an existing azd environment that predates
+    # the explicit Bicep output. Keep an empty value truly unlabeled.
+    $label = Get-EnvValue 'AI4IA_PROXY_APPCONFIG_LABEL'
+  }
+
+  $arguments = @(
+    'appconfig', 'kv', 'set',
+    '--endpoint', $endpoint,
+    '--key', 'Warm:Sentinel',
+    '--value', 'ready',
+    '--auth-mode', 'login',
+    '--yes',
+    '--output', 'none'
+  )
+  if (-not [string]::IsNullOrWhiteSpace($label)) {
+    $arguments += @('--label', $label)
+  }
+
+  # Azure documents that a new data-plane role assignment can take up to
+  # 15 minutes to propagate. Ordinary deploys complete on the first attempt;
+  # greenfield and role-repair deploys must wait out the documented window
+  # rather than publishing an empty store as a healthy warm-refresh plane.
+  $maxAttempts = 31
+  $retrySeconds = 30
+  for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    try {
+      # Suppress CLI output so credentials or service diagnostics cannot leak.
+      & az @arguments 2>$null | Out-Null
+      if ($LASTEXITCODE -eq 0) {
+        $scope = if ([string]::IsNullOrWhiteSpace($label)) { 'unlabeled' } else { 'configured label' }
+        Add-Result -Name 'App Configuration sentinel' -Status 'PASS' -Detail "Warm:Sentinel=ready ($scope)"
+        return
+      }
+    } catch {
+      # Retry below. Deliberately do not echo the exception or command arguments.
+      Write-Verbose 'App Configuration data-plane set attempt failed; retrying without emitting CLI details.'
+    }
+    if ($attempt -lt $maxAttempts) {
+      Start-Sleep -Seconds $retrySeconds
+    }
+  }
+
+  # Unlike optional context, this store is always wired into the proxy. Failing
+  # after the full RBAC window means the deployed configuration plane is not the
+  # one the template claims, so fail the provision instead of shipping a false
+  # healthy state.
+  Add-Result -Name 'App Configuration sentinel' -Status 'FAIL' -Detail "Entra-authenticated set failed after $maxAttempts attempts"
+}
+
 function Register-ContentUnderstandingDefault {
   param(
     [string]$CatalogPath = (Join-Path $PSScriptRoot '..\app\api\src\ai4ia_api\data\model_catalog.json')
@@ -383,6 +460,7 @@ $checks = @(
   @{ Label = 'API health'; Fn = { Test-ApiHealth } }
   @{ Label = 'Custom-domain DNS'; Fn = { Test-CustomDomainDns } }
   @{ Label = 'Gateway topology outputs (hard gate)'; Fn = { Test-GatewayTopology } }
+  @{ Label = 'App Configuration sentinel'; Fn = { Register-AppConfigurationSentinel } }
   @{ Label = 'Content Understanding defaults'; Fn = { Register-ContentUnderstandingDefault } }
 )
 foreach ($check in $checks) {

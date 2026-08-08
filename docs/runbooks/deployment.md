@@ -194,6 +194,12 @@ azd provision
 azd deploy
 ```
 
+The App Configuration sentinel is owned by the OIDC deployment identity. A local
+`azd provision` therefore leaves an existing sentinel unchanged when
+`AZURE_PRINCIPAL_ID` is absent; it does not wait on or fabricate a data-plane role
+for the signed-in human. Use the workflow for greenfield setup or any repair that
+must reconcile the sentinel.
+
 This local path rebuilds and has no automatic post-deploy rollback. Prefer the
 workflow when the goal is a production release with recorded digest evidence.
 Validate potentially destructive infrastructure changes in a parallel resource

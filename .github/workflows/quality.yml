@@ -132,6 +132,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run App Configuration postprovision tests
+        run: |
+          set -euo pipefail
+          # Executes the real PowerShell function with az stubbed: Entra login,
+          # exact optional labels, RBAC-propagation retries, and visible WARN on
+          # final failure. No Azure resources or credentials are used.
+          python3 -m unittest scripts.tests.test_postprovision_appconfig_sentinel
+
       - name: Run voice-live-canary unit tests
         run: |
           set -euo pipefail
