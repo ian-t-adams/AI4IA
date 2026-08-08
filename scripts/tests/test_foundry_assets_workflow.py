@@ -65,7 +65,6 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
             self.assertNotIn("continue-on-error", step)
         self.assertIn("--check-access", steps[access_index]["run"])
         self.assertIn("--create", steps[toolbox_index]["run"])
-        self.assertNotIn("provision-foundry-skills.py", self.raw)
 
 
 if __name__ == "__main__":

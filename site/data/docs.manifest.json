@@ -7,7 +7,6 @@
     "site/README.md",
     "PRODUCT.md",
     "DESIGN.md",
-    "foundry/skills/**",
     "proxy/SimpleL7Proxy/**"
   ],
   "sections": [

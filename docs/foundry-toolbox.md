@@ -241,10 +241,10 @@ then activates that new version (see the idempotency note below).
 
 Foundry exposes toolbox skills as MCP resources, not tools. AI4IA's current MCP client
 implements `tools/list` and `tools/call`, but not `resources/list` or `resources/read`, so
-binding a skill would create an asset the runtime cannot consume. The removed
-`citation-discipline` draft also required Markdown URL citations, conflicting with the
-server-owned `[[cite:S1]]` contract used for verified library citations. Skills remain a
-Foundry public-preview capability, but adding runtime MCP resource support is separate work.
+binding a skill would create an asset the runtime cannot consume. A previous draft also
+required Markdown URL citations, conflicting with the server-owned `[[cite:S1]]` contract
+used for verified library citations. Skills remain a Foundry public-preview capability,
+but adding runtime MCP resource support is separate work.
 
 ## Operator runbook (end to end)
 
@@ -288,7 +288,9 @@ Foundry public-preview capability, but adding runtime MCP resource support is se
    > **Idempotency note:** `--create` compares the desired source with the currently served
    > default and creates nothing when they match. A changed toolbox creates exactly one immutable
    > version and then explicitly advances `default_version`. Read, create, and activation errors
-   > propagate, so reconciliation cannot report success while leaving an old default served.
+   > propagate, so reconciliation cannot report success while leaving an old default served. If
+   > creation succeeded but activation failed, the next run scans immutable versions, reuses the
+   > matching version, and retries activation without creating a duplicate.
 
 5. **Automated reconciliation.** `.github/workflows/foundry-assets.yml` runs on changes under
    `foundry/**` and on manual dispatch. It authenticates with OIDC, reads

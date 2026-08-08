@@ -19,7 +19,7 @@ Scope is deliberately narrow so this stays signal:
   known source extension. Prose like `` `--Force` `` or `` `GlobalStandard` `` is
   ignored.
 * Anything containing a glob or placeholder character is skipped: docs legitimately
-  write `` `infra/**/*.bicep` `` and `` `foundry/skills/<name>/SKILL.md` ``.
+  write `` `infra/**/*.bicep` `` and `` `foundry/routines/<name>.json` ``.
 * ``CHANGELOG.md`` is skipped entirely. It is a historical record, so naming a file
   that was later deleted (``infra/policies/realtime-routing-legacy.xml``) is correct
   and must not be "fixed".

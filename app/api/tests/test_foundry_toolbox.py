@@ -1065,8 +1065,10 @@ def test_create_toolbox_fails_loud_when_create_version_has_no_version(monkeypatc
 
 
 class _EnsureToolboxesOps:
-    def __init__(self, current):
+    def __init__(self, current, *, activation_failures=0):
         self.current = current
+        self.versions = [current]
+        self.activation_failures = activation_failures
         self.create_calls: list[tuple[str, dict]] = []
         self.update_calls: list[tuple[str, dict]] = []
         self.read_calls: list[tuple[str, tuple, dict]] = []
@@ -1081,12 +1083,23 @@ class _EnsureToolboxesOps:
         assert version == "1"
         return self.current
 
+    def list_versions(self, name, **kwargs):
+        self.read_calls.append(("list_versions", (name,), kwargs))
+        return iter(self.versions)
+
     def create_version(self, name, **kwargs):
         self.create_calls.append((name, kwargs))
-        return SimpleNamespace(name=name, version="2")
+        created = SimpleNamespace(name=name, version="2", **{
+            key: value for key, value in kwargs.items() if key != "headers"
+        })
+        self.versions.append(created)
+        return created
 
     def update(self, name, **kwargs):
         self.update_calls.append((name, kwargs))
+        if self.activation_failures:
+            self.activation_failures -= 1
+            raise RuntimeError("activation failed")
         return SimpleNamespace(name=name, default_version=kwargs["default_version"])
 
 
@@ -1137,6 +1150,36 @@ def test_ensure_toolbox_changed_default_creates_and_activates_exactly_one_versio
             {"default_version": "2", "headers": _tb.TOOLBOX_FEATURES_HEADER},
         )
     ]
+    assert (
+        "list_versions",
+        ("ai4ia-toolbox",),
+        {"headers": _tb.TOOLBOX_FEATURES_HEADER},
+    ) in project.toolboxes.read_calls
+
+
+def test_retry_after_activation_failure_reuses_matching_immutable_version():
+    pytest.importorskip("azure.ai.projects")
+    manifest = _valid_manifest()
+    project = _ensure_project_for(manifest)
+    project.toolboxes.current.description = "stale"
+    project.toolboxes.activation_failures = 1
+
+    with pytest.raises(RuntimeError, match="activation failed"):
+        _tb.ensure_toolbox(manifest, _ENDPOINT, project=project)
+
+    assert len(project.toolboxes.create_calls) == 1
+    assert [version.version for version in project.toolboxes.versions] == ["1", "2"]
+
+    result, created = _tb.ensure_toolbox(manifest, _ENDPOINT, project=project)
+
+    assert created is False
+    assert result.version == "2"
+    assert len(project.toolboxes.create_calls) == 1
+    assert [version.version for version in project.toolboxes.versions] == ["1", "2"]
+    assert project.toolboxes.update_calls[-1] == (
+        "ai4ia-toolbox",
+        {"default_version": "2", "headers": _tb.TOOLBOX_FEATURES_HEADER},
+    )
 
 
 def test_check_toolbox_access_uses_preview_header():

@@ -570,8 +570,32 @@ def ensure_toolbox(
         toolbox.default_version,
         headers=TOOLBOX_FEATURES_HEADER,
     )
-    if _toolbox_state(current) == _desired_toolbox_state(kwargs):
+    desired_state = _desired_toolbox_state(kwargs)
+    if _toolbox_state(current) == desired_state:
         return current, False
+
+    # create_version() and update(default_version=...) are separate service calls. If
+    # activation failed after a successful create, retrying must reuse that immutable
+    # version rather than append an identical one on every run.
+    for candidate in project.toolboxes.list_versions(
+        manifest["name"],
+        headers=TOOLBOX_FEATURES_HEADER,
+    ):
+        if _toolbox_state(candidate) != desired_state:
+            continue
+        version = getattr(candidate, "version", None)
+        if not version:
+            raise SystemExit(
+                f"toolboxes.list_versions('{manifest['name']}') returned matching content "
+                f"without a usable `version` (got: {candidate!r}); refusing to create a "
+                "duplicate immutable version."
+            )
+        project.toolboxes.update(
+            manifest["name"],
+            default_version=version,
+            headers=TOOLBOX_FEATURES_HEADER,
+        )
+        return candidate, False
     return create_toolbox(manifest, project_endpoint, project=project), True
 
 
@@ -677,7 +701,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nCreated toolbox '{manifest['name']}' version {version} and activated it as the default version.")
     else:
         print(
-            f"\nToolbox '{manifest['name']}' already matches default version "
+            f"\nToolbox '{manifest['name']}' reconciled to existing version "
             f"{getattr(result, 'version', '?')}; no version created."
         )
     return 0
