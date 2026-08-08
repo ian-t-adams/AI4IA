@@ -30,7 +30,6 @@ on:
       - "scripts/gen-voice-provider-catalog.py"
       - "scripts/migrate-memory-to-cosmos.py"
       - "scripts/provision-foundry-toolbox.py"
-      - "scripts/provision-foundry-skills.py"
       - "scripts/provision-foundry-routine.py"
       - "scripts/provision-foundry-a2a.py"
       - "scripts/tests/test_voice_provider_catalog.py"
@@ -85,7 +84,7 @@ jobs:
           # `foundry` (not just `dev`) so tests/test_foundry_toolbox.py's real-SDK-construction
           # cases actually run here instead of skipping via pytest.importorskip("azure.ai.projects")
           # -- CI is the only place that would otherwise exercise the >=2.3.0 toolbox model
-          # classes (scripts/provision-foundry-*.py's own extra) end to end.
+          # classes (scripts/provision-foundry-toolbox.py's own extra) end to end.
           pip install -e ".[dev,foundry]"
       - name: Model catalog drift check
         working-directory: .

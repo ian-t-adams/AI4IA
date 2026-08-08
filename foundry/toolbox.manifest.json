@@ -21,9 +21,5 @@
       "description": "Tool search: lets the model pick from the toolbox's tools."
     }
   ],
-  "skills": [
-    {
-      "name": "citation-discipline"
-    }
-  ]
+  "skills": []
 }

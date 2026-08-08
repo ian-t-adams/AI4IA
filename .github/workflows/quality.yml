@@ -354,7 +354,7 @@ jobs:
           set -euo pipefail
           # Foundry assets are preview data-plane resources outside azd/Bicep. This
           # pins the OIDC workflow's path trigger, explicit endpoint variable,
-          # fail-closed commands, and skill-before-toolbox reconciliation order.
+          # project-role preflight, and fail-closed reconciliation command.
           python3 -m pip install --user --quiet "PyYAML==${PYYAML_VERSION}"
           python3 -m unittest scripts.tests.test_foundry_assets_workflow
         env:

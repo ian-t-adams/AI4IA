@@ -501,8 +501,8 @@ in each turn, sharing one per-turn MCP call budget.
 
 A Foundry **toolbox** is itself an MCP endpoint, so AI4IA consumes it as a single
 entry in the official MCP plane above — **no new runtime code, no dedicated app
-flag**. This routes the whole toolbox (web/AI search, code interpreter, tool
-search, and bound skills) through the same MCP APIM front door. **Activated in this
+flag**. This routes the toolbox tools (web/AI search, code interpreter, and tool
+search) through the same MCP APIM front door. **Activated in this
 repo:** `foundry/toolbox.manifest.json` is the canonical `ai4ia-toolbox` and
 `enableOfficialMcp`/`enableFoundryToolbox` are `true`.
 
@@ -510,11 +510,11 @@ To reproduce in a new subscription/environment (full runbook + preview caveats i
 [`../foundry-toolbox.md`](../foundry-toolbox.md)), reconcile the ordered data-plane assets
 after `azd up`:
 
-1. Provision the toolbox (and any skills) in that environment's Foundry project:
+1. Verify data-plane access, then provision the toolbox in that environment's Foundry project:
 
    ```text
    uv pip install -e "app/api[foundry]"
-   python scripts/provision-foundry-skills.py --create
+   python scripts/provision-foundry-toolbox.py --check-access
    python scripts/provision-foundry-toolbox.py --create
    ```
 
@@ -531,7 +531,9 @@ after `azd up`:
 role on the project (data-plane scope), so APIM's injected bearer for
 `https://ai.azure.com` can invoke the toolbox. `main.bicep` emits the project
 endpoint as `AZURE_FOUNDRY_PROJECT_ENDPOINT` for the provisioning scripts. All
-toolbox/skills/tool-search features are **public preview**.
+toolbox/tool-search features are **public preview**. The access check requires the
+workflow/deployment identity to hold project-scoped Foundry User; Azure OIDC login alone
+does not grant data-plane access.
 
 ### Private tool catalog (Azure API Center)
 

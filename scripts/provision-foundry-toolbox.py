@@ -502,7 +502,9 @@ def create_toolbox(manifest: dict[str, Any], project_endpoint: str, *, project: 
     project = project or _project_client(project_endpoint)
     m = _sdk_models()
     kwargs = _build_toolbox_kwargs(manifest, m)
-    result = project.toolboxes.create_version(manifest["name"], **kwargs)
+    result = project.toolboxes.create_version(
+        manifest["name"], headers=TOOLBOX_FEATURES_HEADER, **kwargs
+    )
 
     version = getattr(result, "version", None)
     if not version:
@@ -512,8 +514,39 @@ def create_toolbox(manifest: dict[str, Any], project_endpoint: str, *, project: 
             "SDK response and activate the correct version manually via "
             "`project.toolboxes.update(name, default_version=...)`."
         )
-    project.toolboxes.update(manifest["name"], default_version=version)
+    project.toolboxes.update(
+        manifest["name"],
+        default_version=version,
+        headers=TOOLBOX_FEATURES_HEADER,
+    )
     return result
+
+
+def check_toolbox_access(project_endpoint: str, *, project: Any | None = None) -> None:
+    """Fail closed unless the caller can read the Foundry toolbox data plane."""
+    from azure.core.exceptions import HttpResponseError
+
+    project = project or _project_client(project_endpoint)
+    try:
+        next(
+            iter(
+                project.toolboxes.list(
+                    limit=1,
+                    headers=TOOLBOX_FEATURES_HEADER,
+                )
+            ),
+            None,
+        )
+    except HttpResponseError as exc:
+        status = getattr(exc, "status_code", None)
+        if status in {401, 403}:
+            raise SystemExit(
+                "Foundry toolbox data-plane access denied. Grant the workflow OIDC "
+                "identity the project-scoped 'Foundry User' role "
+                "(53ca6127-db72-4b80-b1b0-d745d6d5456d) on the primary Foundry "
+                "project; the Azure login alone grants no toolbox access."
+            ) from exc
+        raise
 
 
 def ensure_toolbox(
@@ -526,11 +559,17 @@ def ensure_toolbox(
     m = _sdk_models()
     kwargs = _build_toolbox_kwargs(manifest, m)
     try:
-        toolbox = project.toolboxes.get(manifest["name"])
+        toolbox = project.toolboxes.get(
+            manifest["name"], headers=TOOLBOX_FEATURES_HEADER
+        )
     except ResourceNotFoundError:
         return create_toolbox(manifest, project_endpoint, project=project), True
 
-    current = project.toolboxes.get_version(manifest["name"], toolbox.default_version)
+    current = project.toolboxes.get_version(
+        manifest["name"],
+        toolbox.default_version,
+        headers=TOOLBOX_FEATURES_HEADER,
+    )
     if _toolbox_state(current) == _desired_toolbox_state(kwargs):
         return current, False
     return create_toolbox(manifest, project_endpoint, project=project), True
@@ -544,6 +583,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help="Path to toolbox.manifest.json.")
     parser.add_argument("--project-endpoint", default=None, help="Foundry project endpoint (else AZURE_FOUNDRY_PROJECT_ENDPOINT).")
     parser.add_argument("--create", action="store_true", help="Actually create the toolbox version (needs azure-ai-projects). Default is a dry run.")
+    parser.add_argument(
+        "--check-access",
+        action="store_true",
+        help="Verify project-scoped toolbox data-plane access and exit.",
+    )
     parser.add_argument("--emit-yaml", type=Path, default=None, metavar="PATH", help="Write the `azd ai toolbox create --from-file` YAML and exit.")
     args = parser.parse_args(argv)
 
@@ -604,6 +648,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     endpoint = resolve_project_endpoint(args.project_endpoint)
+    if args.check_access:
+        check_toolbox_access(endpoint)
+        print(
+            "Foundry toolbox data-plane access is ready "
+            "(project-scoped Foundry User role confirmed)."
+        )
+        return 0
     planned = plan_tools(manifest)
     entry = build_mcp_server_entry(manifest, endpoint)
 

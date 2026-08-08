@@ -1,4 +1,4 @@
-"""Guard the Foundry toolbox + skills provisioning seam (docs/foundry-toolbox.md).
+"""Guard the Foundry toolbox provisioning seam (docs/foundry-toolbox.md).
 
 These pin the *pure* projection/validation logic of the provisioning scripts without any
 Azure SDK, network, or new runtime dependency. The load-bearing guarantee: the toolbox
@@ -18,12 +18,10 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _TOOLBOX_SCRIPT = _REPO_ROOT / "scripts" / "provision-foundry-toolbox.py"
-_SKILLS_SCRIPT = _REPO_ROOT / "scripts" / "provision-foundry-skills.py"
 _MANIFEST = _REPO_ROOT / "foundry" / "toolbox.manifest.json"
 _MANIFEST_SCHEMA = _REPO_ROOT / "foundry" / "toolbox.manifest.schema.json"
 _EXAMPLE_MANIFEST = _REPO_ROOT / "foundry" / "toolbox.manifest.example.json"
 _MCP_SCHEMA = _REPO_ROOT / "infra" / "mcp-servers.schema.json"
-_EXAMPLE_SKILL = _REPO_ROOT / "foundry" / "skills" / "citation-discipline" / "SKILL.md"
 
 _ENDPOINT = "https://acct.services.ai.azure.com/api/projects/proj"
 
@@ -37,7 +35,6 @@ def _load(name: str, path: Path):
 
 
 _tb = _load("provision_foundry_toolbox", _TOOLBOX_SCRIPT)
-_sk = _load("provision_foundry_skills", _SKILLS_SCRIPT)
 
 
 def _valid_manifest() -> dict:
@@ -58,7 +55,7 @@ def _valid_manifest() -> dict:
                 "projectConnectionId": "learn-conn",
             },
         ],
-        "skills": [{"name": "citation-discipline"}],
+        "skills": [],
     }
 
 
@@ -71,7 +68,7 @@ def test_checked_in_manifest_matches_the_live_toolbox():
     assert manifest["name"] == "ai4ia-toolbox"
     tool_types = [t["type"] for t in manifest["tools"]]
     assert tool_types == ["web_search", "code_interpreter", "toolbox_search_preview"]
-    assert manifest["skills"] == [{"name": "citation-discipline"}]
+    assert manifest["skills"] == []
     # Every tool is named (the service allows at most one unnamed tool total).
     assert all(t.get("name") for t in manifest["tools"])
 
@@ -1040,7 +1037,16 @@ def test_create_toolbox_activates_returned_version_as_default(monkeypatch, retur
     manifest = _valid_manifest()
     _tb.create_toolbox(manifest, _ENDPOINT)
 
-    assert captured["update_calls"] == [(manifest["name"], {"default_version": returned_version})]
+    assert captured["create_version"][1]["headers"] == _tb.TOOLBOX_FEATURES_HEADER
+    assert captured["update_calls"] == [
+        (
+            manifest["name"],
+            {
+                "default_version": returned_version,
+                "headers": _tb.TOOLBOX_FEATURES_HEADER,
+            },
+        )
+    ]
 
 
 def test_create_toolbox_fails_loud_when_create_version_has_no_version(monkeypatch):
@@ -1063,11 +1069,14 @@ class _EnsureToolboxesOps:
         self.current = current
         self.create_calls: list[tuple[str, dict]] = []
         self.update_calls: list[tuple[str, dict]] = []
+        self.read_calls: list[tuple[str, tuple, dict]] = []
 
-    def get(self, name):
+    def get(self, name, **kwargs):
+        self.read_calls.append(("get", (name,), kwargs))
         return SimpleNamespace(name=name, default_version="1")
 
-    def get_version(self, name, version):
+    def get_version(self, name, version, **kwargs):
+        self.read_calls.append(("get_version", (name, version), kwargs))
         assert name == "ai4ia-toolbox"
         assert version == "1"
         return self.current
@@ -1100,6 +1109,14 @@ def test_ensure_toolbox_unchanged_default_is_a_true_noop():
     assert result.version == "1"
     assert project.toolboxes.create_calls == []
     assert project.toolboxes.update_calls == []
+    assert project.toolboxes.read_calls == [
+        ("get", ("ai4ia-toolbox",), {"headers": _tb.TOOLBOX_FEATURES_HEADER}),
+        (
+            "get_version",
+            ("ai4ia-toolbox", "1"),
+            {"headers": _tb.TOOLBOX_FEATURES_HEADER},
+        ),
+    ]
 
 
 def test_ensure_toolbox_changed_default_creates_and_activates_exactly_one_version():
@@ -1113,9 +1130,52 @@ def test_ensure_toolbox_changed_default_creates_and_activates_exactly_one_versio
     assert changed is True
     assert result.version == "2"
     assert len(project.toolboxes.create_calls) == 1
+    assert project.toolboxes.create_calls[0][1]["headers"] == _tb.TOOLBOX_FEATURES_HEADER
     assert project.toolboxes.update_calls == [
-        ("ai4ia-toolbox", {"default_version": "2"})
+        (
+            "ai4ia-toolbox",
+            {"default_version": "2", "headers": _tb.TOOLBOX_FEATURES_HEADER},
+        )
     ]
+
+
+def test_check_toolbox_access_uses_preview_header():
+    class Ops:
+        def __init__(self):
+            self.calls = []
+
+        def list(self, **kwargs):
+            self.calls.append(kwargs)
+            return iter([])
+
+    ops = Ops()
+    _tb.check_toolbox_access(_ENDPOINT, project=SimpleNamespace(toolboxes=ops))
+
+    assert ops.calls == [{"limit": 1, "headers": _tb.TOOLBOX_FEATURES_HEADER}]
+
+
+def test_check_toolbox_access_explains_missing_project_scoped_role():
+    from azure.core.exceptions import HttpResponseError
+
+    class Ops:
+        def list(self, **kwargs):
+            response = SimpleNamespace(
+                status_code=403,
+                reason="Forbidden",
+                headers={},
+                request=SimpleNamespace(method="GET", url=_ENDPOINT),
+            )
+            raise HttpResponseError(response=response)
+
+    with pytest.raises(SystemExit) as exc_info:
+        _tb.check_toolbox_access(
+            _ENDPOINT, project=SimpleNamespace(toolboxes=Ops())
+        )
+
+    message = str(exc_info.value)
+    assert "project-scoped 'Foundry User' role" in message
+    assert "53ca6127-db72-4b80-b1b0-d745d6d5456d" in message
+    assert "Azure login alone grants no toolbox access" in message
 
 
 # ----------------- provisioner-side schema enforcement (Finding 3, round 4) ------------
@@ -1273,7 +1333,7 @@ def test_main_emit_yaml_reports_malformed_connections_cleanly_without_jsonschema
 
 def test_main_emit_yaml_reports_malformed_skills_cleanly_without_jsonschema_instead_of_crashing(tmp_path, capsys, monkeypatch):
     monkeypatch.setitem(sys.modules, "jsonschema", None)
-    bad_manifest = {**_valid_manifest(), "skills": [{"name": "citation-discipline"}, {"version": 2}]}
+    bad_manifest = {**_valid_manifest(), "skills": [{"name": "example-skill"}, {"version": 2}]}
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(bad_manifest), encoding="utf-8")
     yaml_path = tmp_path / "out.yaml"
@@ -1301,13 +1361,13 @@ def test_validate_manifest_rejects_malformed_skills_entries():
     assert any("skills[0].name is required" in e for e in wrong_type_name)
 
     wrong_type_version = _tb.validate_manifest(
-        {**_valid_manifest(), "skills": [{"name": "citation-discipline", "version": 2}]}
+        {**_valid_manifest(), "skills": [{"name": "example-skill", "version": 2}]}
     )
     assert any("skills[0].version must be a string" in e for e in wrong_type_version)
 
     # A present, correctly-typed version is fine.
     ok_version = _tb.validate_manifest(
-        {**_valid_manifest(), "skills": [{"name": "citation-discipline", "version": "2"}]}
+        {**_valid_manifest(), "skills": [{"name": "example-skill", "version": "2"}]}
     )
     assert ok_version == []
 
@@ -1399,10 +1459,13 @@ def test_validate_manifest_defaults_absent_tools_skills_connections_to_empty_wit
     # check (`manifest.get(key) or []`) cannot make, since `.get()` returns the same `None` both
     # when a key is absent and when it is explicitly `"key": null`.
     base = _valid_manifest()
-    for key in ("tools", "skills", "connections"):
+    for key in ("skills", "connections"):
         manifest = {k: v for k, v in base.items() if k != key}
         errors = _tb.validate_manifest(manifest)
         assert errors == [], f"dropping `{key}` entirely should still validate cleanly: {errors}"
+
+    without_tools = {k: v for k, v in base.items() if k != "tools"}
+    assert any("manifest is inert" in error for error in _tb.validate_manifest(without_tools))
 
 
 # ----------------- round 7: new SDK 2.4.0 toolbox types --------------------------------
@@ -2014,40 +2077,16 @@ def test_reflection_driven_parity_covers_every_sdk_toolbox_type_and_field():
         )
 
 
-# ----------------------------------- skills -------------------------------------------
-def test_parse_skill_md_splits_frontmatter_and_body():
-    parsed = _sk.parse_skill_md(
-        '---\nname: greeting\ndescription: Say hi.\n---\n\nBe warm and brief.\n'
-    )
-    assert parsed["name"] == "greeting"
-    assert parsed["description"] == "Say hi."
-    assert parsed["instructions"] == "Be warm and brief."
-    assert _sk.validate_skill(parsed) == []
-
-
-def test_validate_skill_flags_bad_name_and_missing_fields():
-    assert any("name" in e for e in _sk.validate_skill({"name": "Bad_Name", "description": "d", "instructions": "i"}))
-    assert any("description" in e for e in _sk.validate_skill({"name": "ok", "description": "", "instructions": "i"}))
-    assert any("instruction" in e for e in _sk.validate_skill({"name": "ok", "description": "d", "instructions": ""}))
-
-
-def test_checked_in_example_skill_is_valid():
-    parsed = _sk.parse_skill_md(_EXAMPLE_SKILL.read_text(encoding="utf-8"))
-    assert parsed["name"] == "citation-discipline"
-    assert _sk.validate_skill(parsed) == []
-
-
 # ----------------------------- config fail-closed -------------------------------------
-@pytest.mark.parametrize("module", [_tb, _sk], ids=["toolbox", "skills"])
-def test_resolve_project_endpoint_fails_closed(module, monkeypatch):
+def test_resolve_project_endpoint_fails_closed(monkeypatch):
     # No --project-endpoint arg and no env var => hard stop (never a silent default).
     monkeypatch.delenv("AZURE_FOUNDRY_PROJECT_ENDPOINT", raising=False)
     with pytest.raises(SystemExit):
-        module.resolve_project_endpoint(None)
+        _tb.resolve_project_endpoint(None)
     # Explicit arg wins; env var is the fallback.
-    assert module.resolve_project_endpoint("https://x/api/projects/p") == "https://x/api/projects/p"
+    assert _tb.resolve_project_endpoint("https://x/api/projects/p") == "https://x/api/projects/p"
     monkeypatch.setenv("AZURE_FOUNDRY_PROJECT_ENDPOINT", "https://env/api/projects/p")
-    assert module.resolve_project_endpoint(None) == "https://env/api/projects/p"
+    assert _tb.resolve_project_endpoint(None) == "https://env/api/projects/p"
 
 
 # ----------------- round 8: toolConfigs map keys / strict openapi.auth ------------------
@@ -2194,15 +2233,7 @@ def _simulate_azure_ai_projects_missing(monkeypatch):
     monkeypatch.setitem(sys.modules, "azure.ai.projects", None)
 
 
-@pytest.mark.parametrize(
-    ("call", "label"),
-    [
-        (lambda: _tb.create_toolbox({"tools": []}, _ENDPOINT), "toolbox"),
-        (lambda: _sk._project_client(_ENDPOINT), "skills"),
-    ],
-    ids=["toolbox", "skills"],
-)
-def test_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch, call, label):
+def test_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch):
     # Round 8 pinned `azure-ai-projects==2.4.0` exactly in pyproject.toml/uv.lock so every
     # install path lands on the one version this whole audit reflection-verified field-by-field
     # -- but both create_toolbox()'s and _project_client()'s ImportError fallback still told an
@@ -2213,7 +2244,7 @@ def test_missing_sdk_fallback_message_pins_the_audited_exact_version(monkeypatch
     # the message is built still has to keep the guarantee).
     _simulate_azure_ai_projects_missing(monkeypatch)
     with pytest.raises(SystemExit) as exc_info:
-        call()
+        _tb.create_toolbox({"tools": []}, _ENDPOINT)
     message = str(exc_info.value)
-    assert "pip install azure-ai-projects==2.4.0 azure-identity" in message, label
-    assert "pip install azure-ai-projects azure-identity" not in message, label
+    assert "pip install azure-ai-projects==2.4.0 azure-identity" in message
+    assert "pip install azure-ai-projects azure-identity" not in message

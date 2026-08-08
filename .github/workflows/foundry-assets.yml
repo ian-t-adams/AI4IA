@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - "foundry/**"
-      - "scripts/provision-foundry-skills.py"
       - "scripts/provision-foundry-toolbox.py"
       - ".github/workflows/foundry-assets.yml"
   workflow_dispatch:
@@ -56,12 +55,12 @@ jobs:
             exit 1
           }
 
-      - name: Ensure Foundry skills
+      - name: Verify Foundry toolbox data-plane access
         run: |
           set -euo pipefail
-          python scripts/provision-foundry-skills.py \
+          python scripts/provision-foundry-toolbox.py \
             --project-endpoint "$AZURE_FOUNDRY_PROJECT_ENDPOINT" \
-            --create
+            --check-access
 
       - name: Ensure Foundry toolbox
         run: |

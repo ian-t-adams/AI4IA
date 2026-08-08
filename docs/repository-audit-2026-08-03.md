@@ -742,8 +742,7 @@ egress.
 Persisted messages contain prose, attachments, and coarse activity but no immutable
 claim-to-source registry (`sessions/models.py:99-128`). Web tools instruct the model to
 cite URLs, and Markdown renders model-supplied links; media references resolve by
-filename, where the first case-insensitive duplicate wins. The authored
-`citation-discipline` skill is absent from the canonical toolbox's empty `skills` list.
+filename, where the first case-insensitive duplicate wins.
 
 Persist server-owned source IDs, document/version or URL, retrieval timestamp,
 excerpt/span, and content hash per turn. Accept only citations to sources actually
@@ -779,13 +778,12 @@ judgement the reader makes against the real text rather than one the app pretend
 to have made. Web-search results, recalled memory, and session-uploaded documents
 are still cited as prose and remain unattested.
 
-The span-level fix did not bind `citation-discipline`: the live project had no
-skills, so changing only the manifest would have described an asset that did not
-exist. The later Foundry-assets reliability change closes that operational gap:
-an OIDC workflow now ensures the skill before reconciling the canonical toolbox,
-with content-based no-op semantics. This still does **not** close claim-level
-entailment. The skill instructs the model to cite well; it cannot verify that it
-did, which remains the point of this finding.
+The span-level fix does not bind a toolbox skill. Foundry exposes skills as MCP
+resources, while AI4IA's MCP client implements only `tools/list` and `tools/call`;
+the authored draft also required Markdown URL citations, conflicting with the
+server-owned `[[cite:S1]]` contract above. The dead draft and provisioner were
+removed rather than publishing an asset the app cannot consume. This still does
+**not** close claim-level entailment, which remains the point of this finding.
 
 #### P1-15: Admin refresh can consume most of a 1 GiB API replica
 

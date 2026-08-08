@@ -218,9 +218,5 @@
       "description": "Lets the model schedule reminders for the caller (azure-ai-projects 2.4.0's ReminderPreviewToolboxTool). No type-specific fields or connection required."
     }
   ],
-  "skills": [
-    {
-      "name": "citation-discipline"
-    }
-  ]
+  "skills": []
 }

@@ -14,7 +14,7 @@ AI4IA is a governed, multi-model, multi-region agentic chat app on Azure Contain
 - `proxy` — vendored `microsoft/SimpleL7Proxy` source plus AI4IA Dockerfile/notes.
 - `scripts` — catalog generators, validators, provisioning helpers, status snapshots, teardown/purge scripts, and azd hooks.
 - `docs` and `site` — architecture, runbooks, audit findings, user/operator docs, and the GitHub Pages portal.
-- `foundry` — toolbox, skills, routine, and A2A manifests validated by CI.
+- `foundry` — toolbox, routine, and A2A manifests validated by CI.
 
 ## Non-negotiable rules
 

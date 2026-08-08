@@ -46,25 +46,26 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
             login["with"]["subscription-id"], "${{ vars.AZURE_SUBSCRIPTION_ID }}"
         )
 
-    def test_skills_are_ensured_before_toolbox_and_failures_are_not_suppressed(self) -> None:
+    def test_access_preflight_precedes_toolbox_and_failures_are_not_suppressed(self) -> None:
         steps = self.job["steps"]
-        skill_index = next(
-            index for index, step in enumerate(steps) if step.get("name") == "Ensure Foundry skills"
+        access_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("name") == "Verify Foundry toolbox data-plane access"
         )
         toolbox_index = next(
             index for index, step in enumerate(steps) if step.get("name") == "Ensure Foundry toolbox"
         )
-        self.assertLess(skill_index, toolbox_index)
-        for index, script in (
-            (skill_index, "scripts/provision-foundry-skills.py"),
-            (toolbox_index, "scripts/provision-foundry-toolbox.py"),
-        ):
+        self.assertLess(access_index, toolbox_index)
+        for index in (access_index, toolbox_index):
             step = steps[index]
             self.assertIn("set -euo pipefail", step["run"])
-            self.assertIn(script, step["run"])
-            self.assertIn("--create", step["run"])
+            self.assertIn("scripts/provision-foundry-toolbox.py", step["run"])
             self.assertIn("--project-endpoint", step["run"])
             self.assertNotIn("continue-on-error", step)
+        self.assertIn("--check-access", steps[access_index]["run"])
+        self.assertIn("--create", steps[toolbox_index]["run"])
+        self.assertNotIn("provision-foundry-skills.py", self.raw)
 
 
 if __name__ == "__main__":
