@@ -97,8 +97,12 @@ class ActiveConfigurationTests(unittest.TestCase):
         assert "output AZURE_APP_CONFIG_LABEL string = proxyAppConfigLabel" in main
         assert "function Register-AppConfigurationSentinel" in postprovision
         assert "'--auth-mode', 'login'" in postprovision
-        assert "$maxAttempts = 6" in postprovision
-        assert "-Status 'WARN'" in postprovision
+        assert "$maxAttempts = 31" in postprovision
+        assert "$retrySeconds = 30" in postprovision
+        assert (
+            "Add-Result -Name 'App Configuration sentinel' -Status 'FAIL'"
+            in postprovision
+        )
 
     def test_sentinel_uses_postprovision_entra_auth_and_narrow_roles(self) -> None:
         self._assert_sentinel_contract(MAIN, KEYVAULT, POSTPROVISION)
@@ -124,7 +128,15 @@ class ActiveConfigurationTests(unittest.TestCase):
                 "appConfigDataOwnerPrincipalIds: [deploymentPrincipalId]",
             ), KEYVAULT, POSTPROVISION),
             (MAIN, KEYVAULT, POSTPROVISION.replace("'--auth-mode', 'login'", "'--auth-mode', 'key'")),
-            (MAIN, KEYVAULT, POSTPROVISION.replace("$maxAttempts = 6", "$maxAttempts = 1")),
+            (MAIN, KEYVAULT, POSTPROVISION.replace("$maxAttempts = 31", "$maxAttempts = 1")),
+            (
+                MAIN,
+                KEYVAULT,
+                POSTPROVISION.replace(
+                    "Add-Result -Name 'App Configuration sentinel' -Status 'FAIL'",
+                    "Add-Result -Name 'App Configuration sentinel' -Status 'WARN'",
+                ),
+            ),
         )
         for mutated in mutations:
             with self.subTest(mutation=mutated):

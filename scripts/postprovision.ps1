@@ -323,7 +323,12 @@ function Register-AppConfigurationSentinel {
     $arguments += @('--label', $label)
   }
 
-  $maxAttempts = 6
+  # Azure documents that a new data-plane role assignment can take up to
+  # 15 minutes to propagate. Ordinary deploys complete on the first attempt;
+  # greenfield and role-repair deploys must wait out the documented window
+  # rather than publishing an empty store as a healthy warm-refresh plane.
+  $maxAttempts = 31
+  $retrySeconds = 30
   for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
     try {
       # Suppress CLI output so credentials or service diagnostics cannot leak.
@@ -338,15 +343,15 @@ function Register-AppConfigurationSentinel {
       Write-Verbose 'App Configuration data-plane set attempt failed; retrying without emitting CLI details.'
     }
     if ($attempt -lt $maxAttempts) {
-      # The store-scoped Data Owner assignment from the immediately preceding ARM
-      # deployment can take tens of seconds to reach App Configuration data plane.
-      Start-Sleep -Seconds 10
+      Start-Sleep -Seconds $retrySeconds
     }
   }
 
-  # Sentinel registration is additive, like CU defaults: keep the deploy moving,
-  # but never let an unconfigured warm-refresh path look like a silent success.
-  Add-Result -Name 'App Configuration sentinel' -Status 'WARN' -Detail "Entra-authenticated set failed after $maxAttempts attempts"
+  # Unlike optional context, this store is always wired into the proxy. Failing
+  # after the full RBAC window means the deployed configuration plane is not the
+  # one the template claims, so fail the provision instead of shipping a false
+  # healthy state.
+  Add-Result -Name 'App Configuration sentinel' -Status 'FAIL' -Detail "Entra-authenticated set failed after $maxAttempts attempts"
 }
 
 function Register-ContentUnderstandingDefault {

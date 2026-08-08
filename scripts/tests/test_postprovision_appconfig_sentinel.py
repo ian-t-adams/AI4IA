@@ -44,6 +44,7 @@ Invoke-Expression $fn.Extent.Text
 $script:Results = @()
 $script:Calls = [System.Collections.Generic.List[object]]::new()
 $script:Sleeps = 0
+$script:SleepSeconds = [System.Collections.Generic.List[int]]::new()
 $script:FailuresRemaining = {failures}
 function Add-Result {{
   param([string]$Name, [string]$Status, [string]$Detail)
@@ -56,7 +57,11 @@ function Get-EnvValue {{
     default {{ return $null }}
   }}
 }}
-function Start-Sleep {{ param($Seconds); $script:Sleeps++ }}
+function Start-Sleep {{
+  param($Seconds)
+  $script:Sleeps++
+  $script:SleepSeconds.Add([int]$Seconds)
+}}
 function az {{
   $script:Calls.Add([string[]]@($args))
   if ($script:FailuresRemaining -gt 0) {{
@@ -72,6 +77,7 @@ Register-AppConfigurationSentinel
   results = $script:Results
   calls = $script:Calls
   sleeps = $script:Sleeps
+  sleepSeconds = $script:SleepSeconds
 }} | ConvertTo-Json -Depth 8 -Compress
 """
     proc = subprocess.run(
@@ -124,13 +130,14 @@ class AppConfigurationSentinelTests(unittest.TestCase):
         self.assertEqual(len(payload["calls"]), 3)
         self.assertEqual(payload["sleeps"], 2)
 
-    def test_final_failure_is_visible_warn(self) -> None:
+    def test_final_failure_fails_after_the_documented_rbac_window(self) -> None:
         payload = _run(failures=99)
         result = payload["results"][0]
-        self.assertEqual(result["status"], "WARN")
-        self.assertIn("failed after 6 attempts", result["detail"])
-        self.assertEqual(len(payload["calls"]), 6)
-        self.assertEqual(payload["sleeps"], 5)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("failed after 31 attempts", result["detail"])
+        self.assertEqual(len(payload["calls"]), 31)
+        self.assertEqual(payload["sleeps"], 30)
+        self.assertEqual(payload["sleepSeconds"], [30] * 30)
 
 
 if __name__ == "__main__":
