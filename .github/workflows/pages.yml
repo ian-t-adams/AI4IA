@@ -9,11 +9,12 @@ name: pages
 #
 # Status data: site/data/status.js + inventory.js are committed as an accurate seed and
 # refreshed here. On main this job authenticates with the existing deploy
-# identity (id-ai4ia-deploy) via its `ref:refs/heads/main` federated credential — note
+# identity (id-ai4ia-deploy) via the required credential with subject`n# `repo:ian-t-adams/AI4IA:ref:refs/heads/main` — note
 # NO `environment:` is set on the build job, so the OIDC subject matches that credential
 # (setting an environment would change the subject to environment:<name> and break login).
-# A configured refresh is not allowed to fail open: publishing an old seed under
-# a "live" label was the exact stale-evidence defect this workflow exists to prevent.
+# The main-branch credential and repository variables are required. Publishing an old
+# seed because Azure authentication was skipped is the stale-evidence defect this
+# workflow exists to prevent, so missing configuration fails the build before upload.
 #
 # Docs index: site/data/docs.js is regenerated from site/data/docs.manifest.json on every
 # publish (scripts/gen-docs-catalog.py) so the portal's documentation hub always reflects
@@ -32,7 +33,7 @@ on:
       - ".github/workflows/pages.yml"
   workflow_dispatch:
   schedule:
-    # Twice daily: refresh the live status snapshot and republish.
+    # Twice daily: regenerate the timestamped status snapshot and republish.
     - cron: "0 6,18 * * *"
 
 # id-token: write covers BOTH the Azure OIDC login (status refresh) and Pages OIDC deploy.
@@ -61,9 +62,25 @@ jobs:
           set -euo pipefail
           python3 scripts/gen-docs-catalog.py
 
-      # --- Best-effort live status refresh (only when the deploy identity is configured) ---
+      - name: Require status snapshot credentials
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_ENV_NAME; do
+            if [[ -z "${!name:-}" ]]; then missing+=("$name"); fi
+          done
+          if (( ${#missing[@]} )); then
+            echo "::error::Pages status publication requires repository variable(s): ${missing[*]}"
+            exit 1
+          fi
+
       - name: Log in to Azure (OIDC, main-branch federated credential)
-        if: ${{ vars.AZURE_CLIENT_ID != '' }}
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -71,7 +88,6 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Refresh deployment status snapshot
-        if: ${{ vars.AZURE_CLIENT_ID != '' }}
         shell: pwsh
         run: |
           $workload = '${{ vars.AI4IA_WORKLOAD }}'

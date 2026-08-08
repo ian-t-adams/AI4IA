@@ -33,8 +33,8 @@ site/
     services.js     Azure service catalogue                 (hand-maintained)
     requirements.js IaC modules, RBAC, packages             (hand-maintained)
     docs.js         documentation index                     (generated)
-    inventory.js    live resource inventory                 (generated)
-    status.js       live health snapshot                    (generated)
+    inventory.js    timestamped resource inventory          (generated)
+    status.js       timestamped health snapshot             (generated)
 ```
 
 ## Data
@@ -43,7 +43,7 @@ site/
   [`scripts/status-snapshot.ps1`](../scripts/status-snapshot.ps1), which reads the live
   environment through **Azure Resource Graph** (the authoritative inventory — `az resource
   list` omits several provider types AI4IA actually uses) plus Azure Resource Health, and
-  probes the public endpoints. Run it with an `az login` that can read the subscription:
+  probes the public endpoints. The required inventory query must return a non-empty, well-shaped`n  `data` array; CLI, JSON, or shape failures stop before either generated file is replaced.`n  Run it with an `az login` that can read the subscription:
 
   ```powershell
   ./scripts/status-snapshot.ps1
@@ -67,6 +67,7 @@ site/
 ## Deploy
 
 [`.github/workflows/pages.yml`](../.github/workflows/pages.yml) publishes `site/` to GitHub
-Pages on every push to `main` (and twice daily). On `main` it also refreshes the status
-snapshot best-effort using the deploy identity's `ref:refs/heads/main` federated
-credential; if that is unavailable it simply ships the committed seed data.
+Pages on every push to `main` (and twice daily). Every publish refreshes the status snapshot
+using the existing deploy identity's required `ref:refs/heads/main` federated credential.
+Missing repository variables or failed Azure authentication stop publication rather than
+shipping committed seed data as if it were current.

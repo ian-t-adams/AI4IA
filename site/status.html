@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI4IA — Deployment snapshot &amp; health</title>
-  <meta name="description" content="Live health of every deployed AI4IA Azure resource and public endpoint, generated from Azure Resource Graph and endpoint probes." />
+  <meta name="description" content="Timestamped AI4IA deployment snapshot generated from Azure Resource Graph, Azure Resource Health, and public endpoint probes." />
   <link rel="icon" href="assets/favicon.ico" />
   <link rel="stylesheet" href="assets/styles.css" />
 </head>
@@ -33,7 +33,7 @@
         <p class="lede">The deployed footprint of AI4IA in <span class="mono">rg-ai4ia-slurmfactory</span>, generated
           from Azure Resource Graph (the authoritative inventory), Azure Resource Health, and probes of the public
           web and model-proxy endpoints.</p>
-        <p class="updated" id="updated">Loading snapshot…</p>
+        <p class="updated" id="updated" aria-live="polite">Loading snapshot…</p>
       </div>
     </section>
 
@@ -43,7 +43,8 @@
         <div class="notice" style="margin-top:16px">
           This is a <strong>static snapshot</strong>, not a live poll: a scheduled GitHub Actions workflow regenerates
           <span class="mono">status.js</span> using the deployment's federated (OIDC) identity, then republishes this
-          page. Health is derived from provisioning state, Resource Health availability, and endpoint reachability.
+          page. A snapshot older than 24 hours is visibly marked stale. Health is derived from provisioning state,
+          Resource Health availability, and endpoint reachability.
         </div>
       </div>
     </section>

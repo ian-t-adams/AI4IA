@@ -14,6 +14,9 @@
   function el(id) { return document.getElementById(id); }
   function h(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content; }
 
+  // Two missed twice-daily refresh windows make the snapshot operationally stale.
+  var STATUS_STALE_AFTER_HOURS = 24;
+
   function stateBadge(state, label) {
     var map = {
       healthy: "ok", up: "ok", ok: "ok",
@@ -21,7 +24,7 @@
       // Health published no availability state for it. That is NOT a positive
       // health signal, so it must not render as a green "ok" badge.
       provisioned: "unknown",
-      degraded: "warn", unknown: "unknown", unavailable: "bad", down: "bad"
+      current: "ok", stale: "warn", degraded: "warn", unknown: "unknown", unavailable: "bad", down: "bad"
     };
     var cls = map[state] || "unknown";
     var text = label || state;
@@ -40,6 +43,39 @@
     else if (mins < 1440) rel = Math.round(mins / 60) + " h ago";
     else rel = Math.round(mins / 1440) + " d ago";
     return d.toUTCString().replace("GMT", "UTC") + " (" + rel + ")";
+  }
+
+  function snapshotFreshness(iso) {
+    var generated = new Date(iso);
+    if (!iso || isNaN(generated.getTime())) {
+      return {
+        state: "unknown",
+        label: "freshness unknown",
+        detail: "The snapshot timestamp is unavailable, so freshness cannot be verified."
+      };
+    }
+    var ageHours = (Date.now() - generated.getTime()) / 3600000;
+    if (ageHours > STATUS_STALE_AFTER_HOURS) {
+      return {
+        state: "stale",
+        label: "stale snapshot",
+        detail: "Older than " + STATUS_STALE_AFTER_HOURS + " hours; the deployment may have changed."
+      };
+    }
+    return {
+      state: "current",
+      label: "current snapshot",
+      detail: "Within the " + STATUS_STALE_AFTER_HOURS + "-hour freshness window."
+    };
+  }
+
+  function renderSnapshotFreshness(host, generatedAt) {
+    var freshness = snapshotFreshness(generatedAt);
+    if (host) {
+      host.innerHTML = stateBadge(freshness.state, freshness.label) +
+        "<span>Generated " + fmtDate(generatedAt) + ". " + esc(freshness.detail) + "</span>";
+    }
+    return freshness;
   }
 
   function groupBy(arr, key) {
@@ -93,8 +129,7 @@
     var s = window.AI4IA_STATUS;
     var host = el("status-stats");
     if (!s || !host) return;
-    var up = el("updated");
-    if (up) up.textContent = "Snapshot generated " + fmtDate(s.generatedAt);
+    renderSnapshotFreshness(el("updated"), s.generatedAt);
 
     var sum = s.summary;
     var resources = s.resources || [];
@@ -161,11 +196,15 @@
     var svc = window.AI4IA_SERVICES;
     var host = el("services-root");
     if (!svc || !host) return;
-    // Count live instances per service using the generated inventory (best effort).
-    var inv = (window.AI4IA_INVENTORY && window.AI4IA_INVENTORY.resources) || [];
+    var inventory = window.AI4IA_INVENTORY || {};
+    var inv = Array.isArray(inventory.resources) ? inventory.resources : [];
+    var freshness = renderSnapshotFreshness(el("services-updated"), inventory.generatedAt);
+    var countFreshnessLabel = freshness.state === "unknown"
+      ? "snapshot (freshness unknown)"
+      : freshness.label;
     // Match on BOTH the Azure type and the service's own name pattern. Matching
-    // type alone made every service sharing a type report the same number, so the
-    // web app, API and model proxy each claimed "3 live" when exactly one
+    // type alone made every service sharing a type report the same count, so the
+    // web app, API and model proxy each claimed three instances when exactly one
     // container app matches each of ca-web-*, ca-api-* and ca-proxy-*.
     // `resourcePattern` uses shell-style `*` plus `{a,b}`/`{region}` placeholders,
     // both of which become "any run of characters" here -- deliberately loose,
@@ -175,7 +214,7 @@
       var body = escaped.replace(/\{[^}]*\}/g, "*").replace(/\*/g, ".*");
       return new RegExp("^" + body + "$", "i");
     }
-    function liveCount(service) {
+    function snapshotCount(service) {
       var t = String(service.azureType).toLowerCase();
       var rx = patternToRegExp(service.resourcePattern);
       return inv.filter(function (r) {
@@ -187,10 +226,10 @@
     Object.keys(groups).sort().forEach(function (g) {
       html += '<h2 class="group-title">' + esc(g) + "</h2><div class='grid cols-2'>";
       groups[g].forEach(function (s) {
-        var n = liveCount(s);
+        var n = snapshotCount(s);
         var docs = (s.docs || []).map(function (d) { return '<a href="' + esc(d[1]) + '" target="_blank" rel="noopener">' + esc(d[0]) + "</a>"; }).join(" · ");
         html += '<div class="card"><h3><span class="icon">' + esc(s.icon) + "</span> " + esc(s.name) +
-          (n ? ' <span class="tag">' + n + " live</span>" : "") + "</h3>" +
+          (n ? ' <span class="tag snapshot-' + esc(freshness.state) + '">' + n + " in " + esc(countFreshnessLabel) + "</span>" : "") + "</h3>" +
           "<p>" + esc(s.summary) + "</p>" +
           '<p class="meta"><strong>Azure type:</strong> <span class="mono">' + esc(s.azureType) + "</span></p>" +
           '<p class="meta"><strong>IaC:</strong> <span class="mono">' + esc(s.module) + '</span> · <strong>Names:</strong> <span class="mono">' + esc(s.resourcePattern) + "</span></p>" +

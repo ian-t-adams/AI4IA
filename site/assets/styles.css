@@ -47,7 +47,7 @@
     --ok: #0f7a53;
     --warn: #8a6108;
     --bad: #d6304a;
-    --unknown: #6b7aa0;
+    --unknown: #52617f;
     --shadow: 0 8px 24px rgba(20, 40, 90, 0.12);
   }
 }
@@ -66,6 +66,11 @@ body {
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
+
+/* Prose can contain CI variables, resource names, and URLs with no natural
+   breakpoints. Let those tokens wrap rather than widening a 390px viewport. */
+p, li, dd, figcaption { overflow-wrap: anywhere; }
+.grid > *, .stats > *, .feat .body, .nav-links { min-width: 0; }
 
 a { color: var(--brand); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -151,6 +156,9 @@ section { padding: 30px 0; }
   display: inline-block; font-size: 0.72rem; padding: 2px 8px; border-radius: 999px;
   background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); margin: 2px 4px 2px 0;
 }
+.card .tag.snapshot-stale {
+  color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
 
 /* ---------- KPI stat tiles ---------- */
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
@@ -201,7 +209,10 @@ figcaption { color: var(--muted); font-size: 0.9rem; margin-top: 8px; }
 
 /* ---------- Misc ---------- */
 .notice { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; color: var(--muted); }
-.updated { color: var(--unknown); font-size: 0.85rem; }
+.updated {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  color: var(--unknown); font-size: 0.85rem;
+}
 .group-title { margin: 26px 0 12px; font-size: 1.05rem; color: var(--brand-2); font-weight: 800; letter-spacing: 0.4px; }
 .legend { display: flex; gap: 16px; flex-wrap: wrap; color: var(--muted); font-size: 0.85rem; margin-top: 12px; }
 
