@@ -231,8 +231,4 @@ export type VoiceProviderCatalog = typeof voiceProviderCatalog;
 export type VoiceProvider = VoiceProviderCatalog["providers"][number];
 export type VoiceProviderId = VoiceProvider["id"];
 export const DEFAULT_VOICE_PROVIDER_ID = voiceProviderCatalog.defaultProviderId;
-export const VOICE_PROVIDER_IDS = [
-  "azure_openai",
-  "speech_voice_live"
-] as const;
 

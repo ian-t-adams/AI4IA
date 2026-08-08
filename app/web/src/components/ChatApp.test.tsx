@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatApp } from "./ChatApp";
-import type { Session } from "@/lib/types";
+import type { Session, ToolCatalogItem } from "@/lib/types";
 
 const mocks = vi.hoisted(() => ({
   listModels: vi.fn(),
@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => ({
   uploadDocument: vi.fn(),
   associateLibraryDocument: vi.fn(),
   deleteSession: vi.fn(),
-  listTools: vi.fn(),
+  toolCatalog: [] as ToolCatalogItem[],
   getToolCatalog: vi.fn(),
   updateSession: vi.fn(),
   getInspector: vi.fn(),
@@ -36,6 +36,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/api", () => mocks);
+
+function mockToolCatalog(tools: ToolCatalogItem[]): void {
+  mocks.toolCatalog = tools;
+}
 vi.mock("@/lib/inspector", () => ({
   getInspector: mocks.getInspector,
   listMemories: mocks.listMemories,
@@ -248,9 +252,9 @@ beforeEach(() => {
     }),
   );
   mocks.deleteSession.mockResolvedValue(undefined);
-  mocks.listTools.mockResolvedValue([]);
+  mockToolCatalog([]);
   mocks.getToolCatalog.mockImplementation(async () => ({
-    tools: await mocks.listTools(),
+    tools: mocks.toolCatalog,
     inheritedTools: [],
   }));
   mocks.updateSession.mockImplementation(async (id: string, value: object) => ({
@@ -387,7 +391,7 @@ describe("ChatApp uploads", () => {
         enabled: true,
       },
     ]);
-    mocks.listTools.mockResolvedValue([
+    mockToolCatalog([
       {
         name: "calculator",
         label: "Calculator",
@@ -2636,7 +2640,7 @@ describe("ChatApp uploads", () => {
   // those fields still correctly supersedes an already-active, differently
   // (but blank-)configured one.
   it("supersedes on a later-resolving intent that differs only by tool overrides and library documents, not the system prompt", async () => {
-    mocks.listTools.mockResolvedValue([
+    mockToolCatalog([
       {
         name: "calculator",
         label: "Calculator",

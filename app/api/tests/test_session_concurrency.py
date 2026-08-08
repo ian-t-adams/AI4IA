@@ -23,7 +23,7 @@ from ai4ia_api.catalog import load_catalog
 from ai4ia_api.sessions.cosmos_repo import CosmosSessionRepository
 from ai4ia_api.sessions.memory_repo import InMemorySessionRepository
 from ai4ia_api.sessions.models import Message, MessageRole, Session, ToolOverrides
-from ai4ia_api.sessions.repository import SessionConflictError, SessionNotFoundError
+from ai4ia_api.sessions.repository import SessionNotFoundError
 
 
 async def test_model_and_document_updates_survive_concurrency():
@@ -430,13 +430,6 @@ async def test_stale_summarizer_preserves_workspace_policy():
     assert final.model == "gpt-5.2"
     assert final.toolOverrides.added == ["calculator"]
     assert final.libraryDocumentIds == ["doc-a"]
-
-
-async def test_unversioned_full_replacement_is_rejected():
-    repo = InMemorySessionRepository()
-    created = await repo.create_session(Session(userId="u1"))
-    with pytest.raises(SessionConflictError):
-        await repo.update_session(created)
 
 
 def test_application_has_no_unversioned_full_session_writers():

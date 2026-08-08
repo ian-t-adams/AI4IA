@@ -111,11 +111,6 @@ class CosmosSessionRepository:
         ]
         return items
 
-    async def update_session(self, session: Session) -> Session:
-        raise SessionConflictError(
-            "Unversioned full session replacement is disabled; use patch_session."
-        )
-
     async def patch_session(
         self, user_id: str, session_id: str, changes: dict[str, object]
     ) -> Session:

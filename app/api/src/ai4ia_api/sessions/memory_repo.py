@@ -15,7 +15,7 @@ from .models import (
     normalize_session_patch_changes,
     normalize_session_title,
 )
-from .repository import SessionConflictError, SessionNotFoundError
+from .repository import SessionNotFoundError
 
 
 class InMemorySessionRepository:
@@ -47,11 +47,6 @@ class InMemorySessionRepository:
             if s.userId == user_id
         ]
         return sorted(items, key=lambda s: s.updatedAt, reverse=True)
-
-    async def update_session(self, session: Session) -> Session:
-        raise SessionConflictError(
-            "Unversioned full session replacement is disabled; use patch_session."
-        )
 
     async def patch_session(
         self, user_id: str, session_id: str, changes: dict[str, object]

@@ -5,12 +5,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 
 import type { InspectorSnapshot } from "@/lib/inspector";
-import type { ConversationDraftDefaults } from "@/lib/types";
+import type { ConversationDraftDefaults, ToolCatalogItem } from "@/lib/types";
 import { ConversationInspector } from "./ConversationInspector";
 
 const mocks = vi.hoisted(() => ({
   getInspector: vi.fn(),
-  listTools: vi.fn(),
+  toolCatalog: [] as ToolCatalogItem[],
   getToolCatalog: vi.fn(),
   listMemories: vi.fn(),
   getLibrarySummary: vi.fn(),
@@ -23,12 +23,15 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/api", () => ({
-  listTools: mocks.listTools,
   getToolCatalog: mocks.getToolCatalog,
   updateSession: mocks.updateSession,
   associateLibraryDocument: mocks.associateLibraryDocument,
   disassociateLibraryDocument: mocks.disassociateLibraryDocument,
 }));
+
+function mockToolCatalog(tools: ToolCatalogItem[]): void {
+  mocks.toolCatalog = tools;
+}
 
 vi.mock("@/lib/inspector", () => ({
   getInspector: mocks.getInspector,
@@ -129,10 +132,10 @@ function props(sessionId: string | null = "s1") {
 
 beforeEach(() => {
   mocks.getInspector.mockImplementation(async (id: string) => snapshot(id));
-  mocks.listTools.mockResolvedValue([]);
+  mockToolCatalog([]);
   mocks.getToolCatalog.mockImplementation(
     async (_sessionId: string | null, agentName: string | null) => ({
-      tools: await mocks.listTools(),
+      tools: mocks.toolCatalog,
       inheritedTools: agentName === "analyst" ? ["calculator"] : [],
     }),
   );
@@ -184,7 +187,7 @@ describe("ConversationInspector", () => {
       toolOverrides: { added: [], removed: [] },
       libraryDocumentIds: [],
     };
-    mocks.listTools.mockResolvedValue([
+    mockToolCatalog([
       {
         name: "calculator",
         label: "Calculator",
@@ -438,7 +441,7 @@ describe("ConversationInspector", () => {
   });
 
   it("renders snapshot sections while an unrelated tool catalog is still loading", async () => {
-    mocks.listTools.mockImplementation(() => new Promise(() => {}));
+    mocks.getToolCatalog.mockImplementation(() => new Promise(() => {}));
     render(<ConversationInspector {...props()} />);
     await userEvent.click(screen.getByRole("button", { name: "Instructions" }));
     expect(
@@ -517,7 +520,7 @@ describe("ConversationInspector", () => {
     mocks.getInspector.mockImplementation((id: string) =>
       Promise.resolve(id === "A" ? value : snapshot("B")),
     );
-    mocks.listTools.mockResolvedValue([
+    mockToolCatalog([
       {
         name: "calculator",
         label: "Calculator",
@@ -559,7 +562,7 @@ describe("ConversationInspector", () => {
     const value = snapshot("s1");
     value.tools.effective = ["mystery"];
     mocks.getInspector.mockResolvedValue(value);
-    mocks.listTools.mockResolvedValue([
+    mockToolCatalog([
       {
         name: "mystery",
         label: "mystery",
@@ -585,7 +588,7 @@ describe("ConversationInspector", () => {
   });
 
   it("surfaces a tool's description and an accessible reason it can't be toggled here", async () => {
-    mocks.listTools.mockResolvedValue([
+    mockToolCatalog([
       {
         name: "shell",
         label: "Shell",
@@ -628,7 +631,7 @@ describe("ConversationInspector", () => {
   });
 
   it("computes a correct accessible description for a discovered tool whose name contains whitespace", async () => {
-    mocks.listTools.mockResolvedValue([
+    mockToolCatalog([
       {
         name: "foo bar",
         label: "Foo Bar",
@@ -664,7 +667,7 @@ describe("ConversationInspector", () => {
   });
 
   it("explains the tool list's dot-joined columns via a glossary tooltip", async () => {
-    mocks.listTools.mockResolvedValue([
+    mockToolCatalog([
       {
         name: "calculator",
         label: "Calculator",
