@@ -452,17 +452,11 @@ def _canonical_state(value: Any) -> Any:
     if hasattr(value, "as_dict"):
         value = value.as_dict()
     if isinstance(value, dict):
-        canonical: dict[str, Any] = {}
-        for key, item in sorted(value.items()):
-            normalized = _canonical_state(item)
-            # Foundry materializes omitted optional arrays/objects as empty
-            # service defaults (for example `skills: []`). They are semantically
-            # identical to an omitted request field and must not mint a new
-            # immutable toolbox version on every reconciliation.
-            if normalized in (None, [], {}):
-                continue
-            canonical[key] = normalized
-        return canonical
+        return {
+            key: _canonical_state(item)
+            for key, item in sorted(value.items())
+            if item is not None
+        }
     if isinstance(value, list):
         return [_canonical_state(item) for item in value]
     return value
@@ -472,8 +466,12 @@ def _toolbox_state(value: Any) -> dict[str, Any]:
     fields = {
         "description": getattr(value, "description", None),
         "tools": getattr(value, "tools", None),
-        "skills": getattr(value, "skills", None),
-        "policies": getattr(value, "policies", None),
+        # Foundry materializes omitted top-level optionals as empty service
+        # defaults. Normalize only these known fields; nested tool payloads
+        # (especially opaque OpenAPI specs) must preserve meaningful empty
+        # arrays/objects such as operation-level `security: []`.
+        "skills": getattr(value, "skills", None) or None,
+        "policies": getattr(value, "policies", None) or None,
     }
     return _canonical_state(fields)
 
@@ -482,8 +480,8 @@ def _desired_toolbox_state(kwargs: dict[str, Any]) -> dict[str, Any]:
     fields = {
         "description": kwargs.get("description"),
         "tools": kwargs.get("tools"),
-        "skills": kwargs.get("skills"),
-        "policies": kwargs.get("policies"),
+        "skills": kwargs.get("skills") or None,
+        "policies": kwargs.get("policies") or None,
     }
     return _canonical_state(fields)
 

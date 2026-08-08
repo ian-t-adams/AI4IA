@@ -1152,6 +1152,30 @@ def test_service_empty_defaults_are_equivalent_to_omitted_manifest_fields():
     assert project.toolboxes.create_calls == []
 
 
+def test_canonical_state_preserves_meaningful_empty_openapi_collections():
+    inherited_security = {
+        "tools": [{"type": "openapi", "spec": {"paths": {"/items": {"get": {}}}}}]
+    }
+    explicitly_public = {
+        "tools": [
+            {
+                "type": "openapi",
+                "spec": {"paths": {"/items": {"get": {"security": []}}}},
+            }
+        ]
+    }
+
+    assert _tb._canonical_state(inherited_security) != _tb._canonical_state(
+        explicitly_public
+    )
+    assert (
+        _tb._canonical_state(explicitly_public)["tools"][0]["spec"]["paths"]["/items"][
+            "get"
+        ]["security"]
+        == []
+    )
+
+
 def test_ensure_toolbox_changed_default_creates_and_activates_exactly_one_version():
     pytest.importorskip("azure.ai.projects")
     manifest = _valid_manifest()
