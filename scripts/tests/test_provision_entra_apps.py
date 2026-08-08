@@ -90,7 +90,12 @@ class TestGreenfieldRunbookContract(unittest.TestCase):
 
     def test_runbook_bootstraps_then_adds_the_deployed_web_origin(self) -> None:
         self.assertIn('-WebRedirectUri http://localhost:3000', self.runbook)
-        self.assertIn('"https://$($web.fqdn)"', self.runbook)
+        self.assertGreaterEqual(
+            self.runbook.count('"https://$($web.fqdn)"'),
+            2,
+            "The default ACA origin must be added immediately after first provision "
+            "and retained when the optional vanity origin is added.",
+        )
         self.assertIn(
             "This post-provision rerun is required even when no custom domain",
             self.runbook,
