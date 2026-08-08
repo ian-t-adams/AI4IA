@@ -103,6 +103,20 @@ _RUN_CODE = ToolSpec(
     # to it. Arbitrary execution outside the governed path earns a human.
 )
 
+_ANALYZE_ATTACHMENT = ToolSpec(
+    name="analyze_attachment",
+    description=(
+        "Upload an attachment to a direct Foundry Code Interpreter sandbox, "
+        "run model-authored analysis over it, and read the result back."
+    ),
+    risk=ToolRisk.external,
+    # This is the same direct sandbox primitive as run_code. The closure-bound
+    # user/file access prevents cross-user reads, but it does not bound what code
+    # the model asks the remote sandbox to run or remove the provider side effect.
+    # Treating it as a safe read let a poisoned attachment trigger the very
+    # primitive that run_code always asks a human to approve.
+)
+
 # --- Generation: fixed destination, model-chosen prompt, real spend -------------
 
 _GENERATE_IMAGE = ToolSpec(
@@ -173,7 +187,6 @@ _READ_ONLY_DESCRIPTIONS = {
     "recall_memory": "Read your durable memory into this conversation.",
     "fetch_document": "Read one of your library documents into this conversation.",
     "process_document": "Extract structure from one of your stored documents.",
-    "analyze_attachment": "Extract structure from a file attached to this conversation.",
 }
 
 # --- Orchestration ---------------------------------------------------------------
@@ -215,6 +228,7 @@ SYNTHETIC_TOOL_SPECS: dict[str, ToolSpec] = {
         _BROWSE_URL,
         *(_search_spec(n, d) for n, d in _SEARCH_DESCRIPTIONS.items()),
         _RUN_CODE,
+        _ANALYZE_ATTACHMENT,
         _GENERATE_IMAGE,
         _GENERATE_VIDEO,
         _REMEMBER_MEMORY,

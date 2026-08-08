@@ -47,6 +47,9 @@ ALWAYS_GATED: dict[str, str] = {
     "run_code": "Executes model-authored code in an Azure-managed sandbox reached "
     "directly rather than through the gateway, so the usual APIM-side controls "
     "do not apply to it either.",
+    "analyze_attachment": "Uploads the attachment to the same direct Foundry "
+    "sandbox and executes model-authored analysis over it; closure-bound file "
+    "access does not make the external execution itself a safe read.",
 }
 
 # Held only on a turn that actually carried untrusted content. The destination is
@@ -78,7 +81,6 @@ UNGATED: dict[str, str] = {
     "recall_memory": "Reads durable memory into the turn.",
     "fetch_document": "Reads a stored library document into the turn.",
     "process_document": "Server-side document understanding over stored bytes.",
-    "analyze_attachment": "As process_document, for an inline attachment.",
     "delegate_to_agent": "A router, not a capability: the sub-turn runs through "
     "the same governed runtime and is built with no extra_handlers, so it cannot "
     "re-enter this table. Bounded fan-out on the supervisor's own deployment.",

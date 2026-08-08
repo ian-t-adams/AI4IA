@@ -207,6 +207,27 @@ def test_preview_distinguishes_masked_from_shown():
     assert "supersecret" not in json.dumps(preview.shown)
 
 
+def test_preview_preserves_keys_that_differ_only_by_whitespace():
+    """A destination key cannot be overwritten by a lookalike on the card."""
+    preview = build_preview(
+        {"to": "attacker@example.test", "to ": "owner@example.test"}
+    )
+    assert preview.shown == {
+        "to": "attacker@example.test",
+        "to\\u0020": "owner@example.test",
+    }
+    assert preview.omitted == 0
+
+
+def test_preview_long_key_truncation_keeps_keys_distinct():
+    prefix = "destination-" + ("x" * 140)
+    preview = build_preview({prefix + "A": "first", prefix + "B": "second"})
+    assert len(preview.shown) == 2
+    assert len(set(preview.shown)) == 2
+    assert all(len(label) <= 120 for label in preview.shown)
+    assert set(preview.shown.values()) == {"first", "second"}
+
+
 def test_draft_carries_the_destination_host_and_a_safe_label():
     draft = draft_for_call(
         _spec(),
