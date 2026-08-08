@@ -165,8 +165,11 @@ today.
 
 The deploy workflow resolves the identity's principal id from
 `AZURE_CLIENT_ID`, exports azd's `AZURE_PRINCIPAL_ID`, and grants the deployment
-identity Content Understanding Contributor on the primary Foundry account so
-postprovision can register required defaults.
+identity **Cognitive Services Content Understanding Contributor** on the primary
+Foundry account. When the Foundry toolbox is enabled, Bicep also grants this
+provisioning identity project-scoped **Foundry User** so the foundry-assets
+workflow can reconcile canonical assets. These are provisioning grants, not app
+runtime access.
 
 ## 3. Configure GitHub
 

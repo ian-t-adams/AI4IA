@@ -12,6 +12,9 @@ EVENTHUBS = (ROOT / "infra" / "modules" / "eventhubs.bicep").read_text(encoding=
 KEYVAULT = (ROOT / "infra" / "modules" / "keyvault.bicep").read_text(encoding="utf-8")
 MONITORING = (ROOT / "infra" / "modules" / "monitoring.bicep").read_text(encoding="utf-8")
 APICENTER = (ROOT / "infra" / "modules" / "apicenter.bicep").read_text(encoding="utf-8")
+FOUNDRY = (ROOT / "infra" / "modules" / "foundry.bicep").read_text(encoding="utf-8")
+MAIN_PARAMETERS = (ROOT / "infra" / "main.parameters.json").read_text(encoding="utf-8")
+DEPLOY_WORKFLOW = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
 SERVICES = (ROOT / "site" / "data" / "services.js").read_text(encoding="utf-8")
 STATUS_SOURCE = (ROOT / "scripts" / "status-snapshot.ps1").read_text(encoding="utf-8")
 PROXY_APPCONFIG = (
@@ -115,6 +118,47 @@ class DefenderEventingTests(unittest.TestCase):
             self.assertIn(phrase, event_grid)
         self.assertIn("Defender for Storage Event Topic", STATUS_SOURCE)
         self.assertIn("group = 'Security'", STATUS_SOURCE)
+
+
+class FoundryAssetProvisioningRoleTests(unittest.TestCase):
+    def test_deployment_principal_is_gated_for_toolbox_asset_reconciliation(self) -> None:
+        self.assertIn(
+            "var foundryToolboxDeploymentPrincipal = "
+            "(enableFoundryToolbox && !empty(deploymentPrincipalId)) "
+            "? [deploymentPrincipalId] : []",
+            MAIN,
+        )
+        self.assertIn(
+            "union(foundryToolboxApimPrincipal, foundryToolboxDeploymentPrincipal)",
+            MAIN,
+        )
+        self.assertIn(
+            "toolboxPrincipalIds: (i == primaryFoundryIndex) "
+            "? foundryToolboxPrincipalIds : []",
+            MAIN,
+        )
+
+    def test_workflow_supplies_the_principal_object_id_not_the_client_id(self) -> None:
+        self.assertIn('"${AZURE_PRINCIPAL_ID=}"', MAIN_PARAMETERS)
+        self.assertIn(".principalId", DEPLOY_WORKFLOW)
+        self.assertIn("AZURE_PRINCIPAL_ID=$principal_id", DEPLOY_WORKFLOW)
+        self.assertNotIn("[AZURE_CLIENT_ID]", MAIN)
+        self.assertNotIn("[clientId]", MAIN)
+
+    def test_role_is_foundry_user_at_primary_project_scope(self) -> None:
+        assignment = _block(
+            FOUNDRY,
+            r"resource toolboxFoundryUserAssignments "
+            r"'Microsoft\.Authorization/roleAssignments@2022-04-01'",
+        )
+        self.assertIn("for pid in toolboxPrincipalIds", assignment)
+        self.assertIn("scope: project", assignment)
+        self.assertIn("principalId: pid", assignment)
+        self.assertIn(
+            "var foundryUserRoleId = "
+            "'53ca6127-db72-4b80-b1b0-d745d6d5456d'",
+            FOUNDRY,
+        )
 
 
 class ApiCenterCatalogTests(unittest.TestCase):

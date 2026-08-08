@@ -46,6 +46,7 @@ window.AI4IA_REQUIREMENTS = {
     { assignee: "id-proxy", role: "Event Hubs Data Sender", scope: "Telemetry namespace", why: "Optional metadata-only proxy telemetry when enabled.", module: "eventhubs.bicep / gateway.bicep" },
     { assignee: "id-proxy", role: "Storage Blob Data Contributor + Service Bus Data Sender/Receiver", scope: "Dedicated proxy async resources", why: "Optional durable async request/result processing when enabled.", module: "proxyasync.bicep" },
     { assignee: "Shared apim-mcp APIM (system-assigned)", role: "Foundry User", scope: "Primary Foundry project", why: "Mint the AAD bearer the Foundry toolbox MCP endpoint requires (when toolbox enabled).", module: "apimcore.bicep / foundry.bicep" },
+    { assignee: "OIDC deployment / foundry-assets identity", role: "Foundry User", scope: "Primary Foundry project", why: "Provisioning-only reconciliation of canonical toolbox assets when enabled; not app runtime access.", module: "main.bicep / foundry.bicep" },
 
   ],
   packages: {

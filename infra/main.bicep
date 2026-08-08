@@ -13,7 +13,7 @@ param environmentName string
 @description('Primary location for the resource group and shared resources.')
 param location string = 'eastus2'
 
-@description('Object/principal id of the OIDC identity running `azd provision`. When set, the primary Foundry account grants it the narrow Content Understanding Contributor role so postprovision can register CU model defaults. This is a principalId, never the managed identity clientId.')
+@description('Object/principal id of the OIDC deployment identity. When set, it receives Content Understanding Contributor on the primary account and, only when enableFoundryToolbox, Foundry User on the primary project for asset reconciliation. This is a principalId, never the managed identity clientId.')
 param deploymentPrincipalId string = ''
 
 @description('Accountable owner tag value. Override per deployment; do not rely on a personal repo default.')
@@ -769,12 +769,12 @@ module mcpgateway 'modules/mcpgateway.bicep' = if (enableOfficialMcp) {
   }
 }
 
-// Foundry-toolbox bridge (opt-in): when both the official MCP gateway and the
-// toolbox bridge are enabled, the shared active APIM's system-assigned identity
-// needs the "Foundry User" role on the PRIMARY project so it can mint the
-// toolbox bearer. Guarded on enableOfficialMcp so the role is granted only when
-// the official MCP APIs exist.
+// Foundry-toolbox bridge (opt-in): APIM needs Foundry User to invoke the toolbox;
+// the deployment identity needs the same project-scoped role to reconcile the
+// canonical toolbox assets. The latter is provisioning-only, never app runtime.
 var foundryToolboxApimPrincipal = (enableOfficialMcp && enableFoundryToolbox) ? [apimcore.outputs.principalId] : []
+var foundryToolboxDeploymentPrincipal = (enableFoundryToolbox && !empty(deploymentPrincipalId)) ? [deploymentPrincipalId] : []
+var foundryToolboxPrincipalIds = union(foundryToolboxApimPrincipal, foundryToolboxDeploymentPrincipal)
 
 // --- Private tool catalog (Azure API Center; opt-in) ---
 // Inventories the APIM-fronted official MCP servers as a discoverable/governable
@@ -1034,7 +1034,7 @@ module foundry 'modules/foundry.bicep' = [for (r, i) in regionList: {
     dataPlanePrincipalIds: nativeFoundryPrincipalIds
     contentUnderstandingPrincipalIds: (i == primaryFoundryIndex) ? contentUnderstandingPrincipalIds : []
     disableLocalAuth: foundryDisableLocalAuth
-    toolboxPrincipalIds: (i == primaryFoundryIndex) ? foundryToolboxApimPrincipal : []
+    toolboxPrincipalIds: (i == primaryFoundryIndex) ? foundryToolboxPrincipalIds : []
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
   }
 }]

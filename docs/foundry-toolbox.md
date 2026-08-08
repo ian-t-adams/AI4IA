@@ -101,9 +101,10 @@ requires. The general, reusable fix (already in the schema and the gateway modul
 | Concern | How it's wired |
 | --- | --- |
 | **Who can call the toolbox** | The MCP APIM system-assigned managed identity. |
-| **What grant it needs** | The **"Foundry User"** role (`53ca6127-db72-4b80-b1b0-d745d6d5456d`, formerly "Azure AI User") at **project** scope — data-plane, not the account-scope Cognitive Services roles. |
+| **Who reconciles canonical assets** | The OIDC deployment/foundry-assets identity supplied as `deploymentPrincipalId`; this is provisioning-only and is not an app runtime identity. |
+| **What grant they need** | The **"Foundry User"** role (`53ca6127-db72-4b80-b1b0-d745d6d5456d`, formerly "Azure AI User") at **project** scope — data-plane, not the account-scope Cognitive Services roles. |
 | **Where it's granted** | `infra/modules/foundry.bicep` adds a project-scoped role-assignment loop over `toolboxPrincipalIds`, passed only to the **primary** Foundry region from `main.bicep`. |
-| **How the app reaches it** | `main.bicep` var `foundryToolboxApimPrincipal` = the APIM MI principal, guarded on `enableOfficialMcp && enableFoundryToolbox`. |
+| **How each identity is gated** | `main.bicep` adds the APIM MI only under `enableOfficialMcp && enableFoundryToolbox`; it separately adds the nonempty deployment **principal/object ID** under `enableFoundryToolbox` so the asset workflow can reconcile the manifest. |
 | **Project endpoint for scripts** | `main.bicep` output `AZURE_FOUNDRY_PROJECT_ENDPOINT`, composed by `foundry.bicep` as `https://{toLower(accountName)}.services.ai.azure.com/api/projects/{project.name}`. |
 
 The Agent Service host (`*.services.ai.azure.com`) is deliberately **not** the account's
