@@ -121,6 +121,7 @@ To restore it after an access request is approved, re-add the entry to
 ```
 
 then re-run `gen-model-catalog.py`, `gen-gateway-policy.py`, and
-`validate-catalog.py` (see [`runbooks/deployment.md`](runbooks/deployment.md) §3
-step 2). Confirm with `check-model-availability.py` **before** deploying —
+`validate-catalog.py` (see
+[greenfield standup §1](runbooks/greenfield-standup.md#1-preflight-the-target)).
+Confirm with `check-model-availability.py` **before** deploying —
 approval is per-subscription and is not visible until the deployment step.

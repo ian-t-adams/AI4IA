@@ -1,8 +1,15 @@
 # AI4IA
 
-AI4IA is a multi-model, multi-region **agentic chat application** for personal use
-and customer demos. The repo is a monorepo: application code, model gateway, and
-Azure infrastructure all live here and deploy through `azd`.
+AI4IA is a governed, multi-model, multi-region **agentic chat workspace** and
+Azure capability showcase for enterprise knowledge workers, agent builders, and
+service administrators. It demonstrates durable conversations, models, tools,
+documents, memory, voice, usage, and governance in one deployable monorepo.
+
+The repository is not presented as a production-complete platform: current
+capabilities and known gaps are documented below, and every real deployment
+still needs tenant-specific security, identity, quota, data, and operational
+review. [`PRODUCT.md`](PRODUCT.md) defines the users, purpose, and design
+principles.
 
 ## Current state
 
@@ -92,14 +99,16 @@ azure.yaml  Azure Developer CLI service map
 > intentionally refuses insecure dev auth in a deployed environment.
 
 ```powershell
-# After completing the prerequisites in the deployment runbook:
+# After completing the greenfield standup guide:
 az login
 azd env new ai4ia-dev
 azd up
 ```
 
 Merges to `main` deploy only after the one-time GitHub OIDC setup is complete.
-See [`docs/runbooks/deployment.md`](docs/runbooks/deployment.md).
+Start with the [greenfield Azure standup guide](docs/runbooks/greenfield-standup.md);
+use the [routine deployment runbook](docs/runbooks/deployment.md) for subsequent
+exact-digest releases and rollback.
 
 ## Documentation
 
@@ -117,7 +126,8 @@ deployed resources. The authoritative Markdown lives here:
 - [Naming & tagging](docs/naming-and-tagging.md)
 - [Configuration reference](docs/configuration-reference.md)
 - [Roadmap & open items](docs/roadmap.md)
-- [Deployment runbook](docs/runbooks/deployment.md)
+- [Greenfield Azure standup](docs/runbooks/greenfield-standup.md)
+- [Routine deployment runbook](docs/runbooks/deployment.md)
 - [Feature enablement runbook](docs/runbooks/feature-enablement.md)
 - [Teardown & rebuild runbook](docs/runbooks/teardown.md)
 - [Document & multimodal understanding](docs/document-multimodal-understanding.md)

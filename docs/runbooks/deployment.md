@@ -1,258 +1,210 @@
-# Runbook: Deployment (CI/CD to Azure)
+# Runbook: Routine deployment (CI/CD to Azure)
 
-> How AI4IA gets from a merged commit on `main` to a running app in Azure, and the **one-time**
-> setup that makes merges deploy automatically.
+> How an already configured AI4IA environment promotes a commit from `main` to
+> Azure, proves the running digests, and rolls back failed application revisions.
 >
-> Source of truth: `.github/workflows/deploy.yml`, `azure.yaml` (azd service map),
-> `infra/main.bicep` + `infra/main.parameters.json`.
+> **New subscription or tenant?** Start with
+> [`greenfield-standup.md`](./greenfield-standup.md). This runbook assumes its
+> identity, repository variables, Entra registrations, first provision, and
+> optional custom-domain cutover are complete.
+>
+> Source of truth: `.github/workflows/deploy.yml`, `azure.yaml`,
+> `infra/main.bicep`, and `infra/main.parameters.json`.
 
-## TL;DR — does merging to `main` redeploy?
+## TL;DR - does merging to `main` redeploy?
 
-**Only after the one-time OIDC setup in [section 2](#2-one-time-setup-make-merges-deploy) is done.**
+Yes, when the deployment identity and required repository variables are
+configured. A push to `main` that touches `app/**`, `infra/**`, `proxy/**`, or
+`azure.yaml` runs `.github/workflows/deploy.yml`. Documentation-only changes do
+not deploy; use **Actions → deploy → Run workflow** when an explicit redeploy is
+needed.
 
-Before that setup, the repo has **no continuous deployment** — `app-ci.yml` and `infra-validate.yml`
-only *validate* (lint / build / test / Bicep build). They never call `azd`. So `main` can be many
-commits ahead of what is actually running, and the only way to ship was a manual `azd up` from a
-workstation. If the deployed app looks stale, that is why.
+The job deliberately becomes a no-op when `AZURE_CLIENT_ID` is empty. If a merge
+does not deploy, first confirm the workflow ran and that this variable exists.
 
-`deploy.yml` closes the gap: once configured, every push to `main` that touches `app/**`, `infra/**`,
-`proxy/**`, or `azure.yaml` provisions infra and deploys the new images. Until `AZURE_CLIENT_ID` is
-set, the job is a deliberate **no-op** (so the workflow is safe to merge before the identity exists).
+## Moved setup sections
 
-## 1. How a deploy runs
+The former one-time setup and tenant-migration sections now live in the
+[greenfield standup guide](./greenfield-standup.md). These compatibility anchors
+preserve old inbound links while keeping setup instructions in one place:
 
+<a id="2-one-time-setup-make-merges-deploy"></a>
+<a id="25-custom-domains-vanity-hostnames--required-if-you-use-them"></a>
+<a id="26-web-iq-api-key-secret"></a>
+<a id="27-application-entra-app-registrations-required-when-ai4ia_auth_providerentra"></a>
+<a id="3-moving-to-a-new-subscription-or-tenant-11-standup"></a>
+<a id="3a-custom-domains-bind-them-after-the-first-provision-not-during-it"></a>
+
+- [Subscription, provider, quota, and model preflight](./greenfield-standup.md#1-preflight-the-target)
+- [Deployment identity, both GitHub OIDC subjects, and RBAC](./greenfield-standup.md#2-create-the-deployment-identity-and-oidc-trust)
+- [Repository variables and secrets](./greenfield-standup.md#3-configure-github)
+- [Application Entra registrations and consent](./greenfield-standup.md#4-create-the-application-entra-registrations)
+- [First provision and two-phase custom domains](./greenfield-standup.md#6-provision-in-two-phases)
+- [Tenant migration and first validation](./greenfield-standup.md#8-migrate-an-existing-deployment)
+
+## 1. Exact-digest release flow
+
+```text
+push to main (app/infra/proxy/azure.yaml)       manual workflow_dispatch
+                    |                                   |
+                    +----------------+------------------+
+                                     v
+                         deploy.yml (production)
+                                     |
+                                     v
+                    OIDC login and repository checks
+                                     |
+                                     v
+              provider + custom-domain safety preflights
+                                     |
+                                     v
+               capture pre-provision Container App revisions
+                                     |
+                                     v
+                       azd provision --no-prompt
+                                     |
+                                     v
+             build/push web + api + proxy once at commit SHA
+                                     |
+                                     v
+                  resolve and record registry digests
+                                     |
+                                     v
+       azd deploy <service> --from-package <registry>@sha256:<digest>
+                                     |
+                                     v
+          verify exact images, rollout, health, domains, and model canary
+                                     |
+                          failure ---+---> restore captured revisions
 ```
-push to main (app/infra/proxy/azure.yaml)        manual: Actions -> deploy -> Run workflow
-                 │                                              │
-                 └──────────────────────┬───────────────────────┘
-                                        ▼
-                         deploy.yml  (environment: production)
-                                        ▼
-              azd auth login  (GitHub OIDC federated credential — no secrets)
-                                        ▼
-              azd provision --no-prompt   (Bicep: infra/main.bicep, idempotent)
-                                        ▼
-       docker build / push x3            (one build per service, tagged <commit sha>;
-                                          the registry digest is recorded)
-                                       ▼
-       post-deploy-verify.py capture     (record the revision each app is serving)
-                                       ▼
-       azd deploy <svc> --from-package   (one per service, by digest — no rebuild)
-                                       ▼
-       post-deploy-verify.py verify      (rollout, health, web, proxy, domains, canary)
-                                       ▼
-       post-deploy-verify.py rollback    (only on failure — restore the captured revisions)
-```
 
-- **Concurrency:** runs are serialized on the `deploy-production` group and **not** cancelled
-  mid-flight, so an in-progress provision/deploy always finishes cleanly.
-- **Rollback restores container revisions, not infrastructure.** This is the single most
-  important limit to know. `post-deploy-verify.py rollback` calls
-  `az containerapp revision copy`, so it undoes a bad *image*. It does not undo anything
-  `azd provision` changed — APIM policy and fragments, named values, model deployments,
-  RBAC. A regression in generated gateway policy therefore survives rollback and keeps
-  failing every subsequent deploy, because each run redeploys the same broken policy,
-  fails verification, and rolls the containers back again.
-  This is not hypothetical: on 2026-08-05 a duplicate backend label in the generated APIM
-  catalog made every model request return 500, and seven consecutive deploys rolled back
-  without touching the cause. The app stayed up and serving throughout — the rollback did
-  its job — but chat was down until the *policy* was fixed and redeployed. If verification
-  fails and the containers roll back cleanly yet the failure persists, suspect infra, and
-  fix it forward: there is no automatic path back.
-- **Provision on every app-only change** is intentional: `azd provision` is idempotent and keeps
-  infra reconciled. A manual run can skip it (`Run workflow` → uncheck *provision*).
-- **Images are built once and deployed by digest.** The workflow builds each service itself,
-  tags it with the commit SHA, pushes to the azd-managed ACR, reads back the digest the
-  *registry* assigned, and then runs `azd deploy <service> --from-package <ref>@sha256:<digest>`
-  — one invocation per service, because azd rejects `--from-package` with `--all`. Given a
-  digest reference that carries a registry hostname, azd skips its own build **and** its own
-  push and forwards the reference unchanged, so no rebuild happens inside the deploy. The
-  digests are written to the run's job summary, which is how you answer "what is production
-  running?" for a given revision. Ordering matters: the build runs *before* the rollback
-  capture, so a build failure fails the run without triggering a rollback of revisions
-  nothing touched. See [`AGENTS.md`](../../AGENTS.md) → *Deploying by digest, not by rebuild*.
-- **A local `azd deploy` still rebuilds.** Only the workflow promotes a digest; running
-  `azd deploy` from a workstation builds from your working tree, exactly as before, and does
-  not verify or roll back.
-- **Path filter:** doc-only merges (e.g. `docs/**`) do **not** trigger a deploy. Use the manual
-  `workflow_dispatch` trigger to force one.
+The capture happens **before `azd provision`**, not after the build. This ordering
+is load-bearing: each Container App Bicep module must submit an image, and a
+greenfield template can use a quickstart placeholder. Provisioning can therefore
+create a new placeholder revision before release images exist. Capturing after
+provision would record that placeholder as the rollback target.
 
-## 2. One-time setup: make merges deploy
+The workflow then builds each service once, tags it with the commit SHA, pushes
+it to the azd-managed ACR, reads the digest assigned by the registry, and deploys
+that fully qualified digest. `azd deploy --from-package` receives a registry
+reference and therefore does not rebuild or repush it. The job summary records
+all three immutable references.
 
-No secrets live in the repo. azd authenticates with a **GitHub OIDC federated credential**, so there
-is no client secret to rotate.
+Other operational properties:
 
-### 2.1 Create a deployment identity with a federated credential
+- Deploys are serialized in the `deploy-production` concurrency group and are
+  not cancelled mid-flight.
+- Push deployments always reconcile infrastructure. A manual run may uncheck
+  **provision**.
+- A local `azd deploy` still builds from the workstation and does not execute the
+  workflow's verification or rollback gate.
+- Rollback restores Container App revisions, not infrastructure. APIM policies,
+  fragments, named values, model deployments, and RBAC changed by provision must
+  be fixed forward or explicitly reverted and reprovisioned.
 
-Use a user-assigned managed identity (or an app registration). Two federated credentials on that
-same identity trust tokens GitHub Actions issues for this repo's `production` environment and
-`main` branch.
+That last limit is measured, not hypothetical. On 2026-08-05 a duplicate backend
+label in the generated APIM catalog made model requests return 500. Seven
+consecutive deployments restored the containers but could not restore the APIM
+policy; chat recovered only after the policy was corrected and provisioned.
+
+## 2. Before a routine deployment
+
+### 2.1 Confirm configuration and generated artifacts
+
+The deploy workflow runs the catalog, gateway-policy, and prerequisite checks
+before provisioning. Run the same checks before merging changes to those inputs:
 
 ```powershell
-az login
-$sub = az account show --query id -o tsv
-
-# 1) user-assigned managed identity
-az identity create -g rg-ai4ia-cicd -n id-ai4ia-deploy --location eastus2
-$clientId    = az identity show -g rg-ai4ia-cicd -n id-ai4ia-deploy --query clientId -o tsv
-$principalId = az identity show -g rg-ai4ia-cicd -n id-ai4ia-deploy --query principalId -o tsv
-
-# 2) federated credential for the 'production' environment on this repo
-az identity federated-credential create `
-  --identity-name id-ai4ia-deploy -g rg-ai4ia-cicd `
-  --name github-ai4ia-production `
-  --issuer https://token.actions.githubusercontent.com `
-  --subject "repo:ian-t-adams/AI4IA:environment:production" `
-  --audiences api://AzureADTokenExchange
-
-# 3) required credential on the same identity for the Pages status refresh
-az identity federated-credential create `
-  --identity-name id-ai4ia-deploy -g rg-ai4ia-cicd `
-  --name github-ai4ia-main `
-  --issuer https://token.actions.githubusercontent.com `
-  --subject "repo:ian-t-adams/AI4IA:ref:refs/heads/main" `
-  --audiences api://AzureADTokenExchange
+python scripts/gen-model-catalog.py --check
+python scripts/gen-mcp-catalog.py --check
+python scripts/gen-voice-provider-catalog.py --check
+python scripts/gen-gateway-policy.py --check
+python scripts/validate-feature-prereqs.py
 ```
 
-Both subjects are required on the same deployment identity. The `production` environment
-credential authorizes `deploy.yml`; the `ref:refs/heads/main` credential authorizes
-`pages.yml` to regenerate its timestamped status snapshot before every publish. Do not create
-a second Azure identity for Pages. Missing branch federation makes Azure login fail and the
-workflow intentionally refuses to publish stale seed data.
+Feature flags and their fail-closed prerequisites are maintained in
+[`feature-enablement.md`](./feature-enablement.md). Repository variables only
+reach Bicep when `.github/workflows/deploy.yml` exports them and
+`infra/main.parameters.json` consumes the matching token; the configuration
+reachability test guards that contract.
 
-### 2.2 Grant the identity the roles azd needs
+### 2.2 Protect existing custom domains
 
-azd provisions a full resource group (Container Apps, ACR, Cosmos, Key Vault, APIM, etc.) and pushes
-container images. At minimum:
+For an environment with vanity hostnames, every provision must receive all four
+values:
 
-```powershell
-# Provision + manage resources in the subscription (scope down to the RG once it exists if preferred)
-az role assignment create --assignee $principalId --role "Contributor"           --scope "/subscriptions/$sub"
-# Assign roles in Bicep (the template grants managed identities their data-plane roles)
-az role assignment create --assignee $principalId --role "Role Based Access Control Administrator" --scope "/subscriptions/$sub"
-# Push images to the provisioned ACR (AcrPush is also granted in-template; this covers first run)
-```
-
-> Prefer least privilege: after the first successful `azd provision`, narrow `Contributor` to the
-> created resource group scope. `Role Based Access Control Administrator` is needed because the Bicep
-> assigns data-plane roles (e.g. Cosmos, Storage, Key Vault) to the app's managed identities.
->
-> The workflow resolves this identity's **principal/object id** from
-> `AZURE_CLIENT_ID` on every provision and exports azd's native
-> `AZURE_PRINCIPAL_ID`. Bicep uses it to grant only
-> **Cognitive Services Content Understanding Contributor** on the primary
-> Foundry account, so the postprovision hook can register CU's required model
-> defaults. Do not supply the client id where a principal id is expected: Azure
-> can accept that wrong GUID without an error and create a role assignment that
-> grants the identity nothing (see the RBAC warning in `AGENTS.md`).
-
-### 2.3 Add the repository variables
-
-Settings → Secrets and variables → Actions → **Variables** (these are identifiers, not secrets):
-
-| Variable | Value |
+| Variable | Purpose |
 |---|---|
-| `AZURE_CLIENT_ID` | client ID of `id-ai4ia-deploy` |
-| `AZURE_TENANT_ID` | your Entra tenant ID |
-| `AZURE_SUBSCRIPTION_ID` | target subscription ID |
-| `AZURE_ENV_NAME` | azd environment name, e.g. `ai4ia-dev` |
-| `AZURE_LOCATION` | primary region, e.g. `eastus2` |
-| `AI4IA_OWNER` | accountable owner tag value for the deployed resources |
-| `AI4IA_APIM_PUBLISHER_EMAIL` | operator-owned APIM publisher mailbox |
-| `AI4IA_BUDGET_START_DATE` | *(optional, recommended)* fixed budget start month `yyyy-MM-01`. Empty defaults to the first of the current month, which **drifts and breaks the first deploy of each new month** (see §7.2). Pin it to keep redeploys idempotent. |
-| `AI4IA_PROXY_WORKERS` / `AI4IA_PROXY_MIN_REPLICAS` / `AI4IA_PROXY_MAX_REPLICAS` | Optional proxy capacity overrides. Minimum defaults to `1`; do not scale the active gateway to zero. |
-| `AI4IA_PROXY_PRIORITIES_ENABLED` / `AI4IA_PROXY_PRIORITY_WORKERS` | Optional, default off. Worker reservations such as `1:2,3:1`; fairness remains per replica. |
-| `AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED` | Optional, default off metadata telemetry. |
-| `AI4IA_PROXY_ASYNC_ENABLED` | Optional, default off dedicated Blob + Service Bus durable async plane. |
-| `AI4IA_PROXY_PROFILES_ENABLED` / `AI4IA_PROXY_PROFILE_PROJECTION_JSON` | Keep disabled until Entra workload identity is wired at the proxy edge; validation intentionally fails otherwise. The JSON value is a secret. |
-| `AI4IA_DEPLOY_VERIFY_CANARY` | *(optional)* Set to `false` to skip the post-deploy model canary. CI-only — it is **not** an azd parameter and has no `${...}` token in `main.parameters.json`. See [§6](#6-post-deploy-verification-and-rollback). |
+| `AI4IA_WEB_CUSTOM_DOMAIN` | Web hostname |
+| `AI4IA_WEB_MANAGED_CERT_NAME` | Existing web managed certificate |
+| `AI4IA_PROXY_CUSTOM_DOMAIN` | Proxy hostname |
+| `AI4IA_PROXY_MANAGED_CERT_NAME` | Existing proxy managed certificate |
 
-Once the repository variables and both federated credentials above are configured, the next
-qualifying push to `main` deploys and Pages can refresh its snapshot.
+An empty custom-domain value tells Bicep to set `customDomains: []`; it does not
+mean "leave the current binding unchanged." The workflow's custom-domain
+preflight fails before capture/provision when a live binding exists but its
+variable is missing. DNS remains external to Azure.
 
-Current live values:
+Current production evidence:
 
 | Setting | Value |
 |---|---|
-| Tenant | Planet Express `6907d2a4-685a-4aea-92ab-d930217467f1` (Entra display name may still show "Contoso") |
+| Tenant | Planet Express `6907d2a4-685a-4aea-92ab-d930217467f1` (Entra can still display "Contoso") |
 | Subscription | `sub-planetexpress-slurmfactory` / `e852113b-6cb5-441c-ac68-26cff884e479` |
 | Resource group | `rg-ai4ia-slurmfactory` |
-| Web app | `https://ai4ia.nomad-analytics.com` |
-| Model proxy | `https://genaiproxy.nomad-analytics.com` |
+| Web domain / certificate | `ai4ia.nomad-analytics.com` / `mc-cae-ai4ia-slur-ai4ia-nomad-anal-2891` |
+| Proxy domain / certificate | `genaiproxy.nomad-analytics.com` / `mc-cae-ai4ia-slur-genaiproxy-nomad-6552` |
 
-The model gateway has no Front Door in this phase. Point model clients at the
-proxy custom/default FQDN. DNS/custom domain terminates on the proxy Container
-App, which calls APIM; APIM alone has Foundry model RBAC.
+First-time bindings belong in the
+[greenfield two-phase sequence](./greenfield-standup.md#62-bind-custom-domains-optional).
+The workflow registers a new hostname before provision; a local provision needs
+the documented `az containerapp hostname add` step.
 
-Both `azd provision` and the deploy workflow run the model/MCP/gateway drift
-checks plus `validate-feature-prereqs.py` before provisioning. The validator
-resolves the actual `AI4IA_*` environment values, not only the defaults embedded
-in `main.parameters.json`.
+### 2.3 Validate gateway direction
 
-### 2.4 (Recommended) protect the `production` environment
+After gateway changes and before application smoke tests, confirm:
 
-Settings → Environments → `production` → add **Required reviewers** so a human approves each deploy,
-and/or restrict to the `main` branch. Until you add protection, the environment exists with no gate.
+1. `AZURE_MODEL_GATEWAY_URL` is the proxy `/openai` URL.
+2. `AZURE_APIM_GATEWAY_URL` is different and is not an application model URL.
+3. APIM's `openai` API terminates at Foundry, never at `ca-proxy`.
+4. The proxy `Host1` terminates at APIM and holds its subscription key as an ACA
+   secret.
+5. Voice Live uses the FastAPI relay to its provider-specific APIM WebSocket
+   route, never SimpleL7Proxy.
+6. `AZURE_PROXY_APP_NAME` names the Container App used for revision inspection
+   and rollback.
 
-### 2.5 Custom domains (vanity hostnames) — **required if you use them**
+Do not add a second model-write retry loop. APIM owns bounded same-dispatch
+regional failover; SimpleL7Proxy owns delayed requeue through `S7PREQUEUE`.
 
-Pre-deploy checklist:
+## 3. Trigger or perform a deployment
 
-1. Confirm the DNS `CNAME` and `asuid.<host>` `TXT` records already exist at the
-   DNS provider, and verify against a **public** resolver — a corporate or ISP
-   resolver can serve a stale answer for the whole TTL, and Azure reads public DNS.
-2. Confirm the target Container Apps managed certificate names if adopting
-   existing certs.
-3. Set all four custom-domain repository variables before `azd provision`.
-4. Treat missing variables as an outage risk, not a harmless omission.
-5. **Binding a hostname for the first time?** It needs a one-time registration
-   before Bicep can issue its certificate — see §3 step 3a. CI does this
-   automatically; a local `azd provision` needs `az containerapp hostname add`
-   run first, or the provision fails with `RequireCustomHostnameInEnvironment`.
+Normal releases are merges to `main`. To rerun the workflow:
 
-The app is reached at vanity hostnames (`ai4ia.nomad-analytics.com` for the web app,
-`genaiproxy.nomad-analytics.com` for the proxy). The binding + Azure-managed TLS cert are declared in
-Bicep (`infra/modules/web.bicep`, `infra/modules/gateway.bicep`) but only when these repo variables
-are set. **If they are empty, `azd provision` resets the ingress to *no* custom domain** and the live
-site fails with `ERR_CONNECTION_CLOSED` on the vanity hostname (the default
-`*.azurecontainerapps.io` FQDN keeps working). DNS records are untouched — only the Azure-side
-binding is dropped.
+```powershell
+gh workflow run deploy.yml -f provision=true --ref main
+```
 
-After provisioning gateway changes, verify direction before application smoke
-tests:
+For a manual break-glass deployment from a workstation:
 
-1. `AZURE_MODEL_GATEWAY_URL` ends in the proxy `/openai` URL.
-2. `AZURE_APIM_GATEWAY_URL` is different and is not configured as an application
-   model URL.
-3. APIM's `openai` API service URL terminates at Foundry, never at `ca-proxy`.
-4. The proxy `Host1` terminates at APIM and its subscription key is an ACA secret.
-5. Voice Live uses `AZURE_REALTIME_GATEWAY_URL` through the FastAPI relay for
-   `azure_openai`, and, when enabled, a second distinct
-   `AI4IA_SPEECH_VOICE_LIVE_BASE_URL`/key pair for `speech_voice_live` — never the
-   proxy.
-6. `AZURE_PROXY_APP_NAME` names the Container App used for revision-level
-   inspection and rollback.
+```powershell
+az login
+azd env select <environment>
+azd provision
+azd deploy
+```
 
-Do not add a second retry loop around model writes. APIM performs bounded
-same-dispatch regional failover; SimpleL7Proxy owns delayed requeue from the
-`S7PREQUEUE` contract.
+This local path rebuilds and has no automatic post-deploy rollback. Prefer the
+workflow when the goal is a production release with recorded digest evidence.
+Validate potentially destructive infrastructure changes in a parallel resource
+group first.
 
-The `postprovision` hook hard-gates these output relationships even though it runs
-before application image deployment.
+## 4. APIM policy changes and gateway canaries
 
-#### APIM policy compiler preflight
-
-ARM what-if validates resource changes, not APIM's policy-expression compiler.
-Likewise, a policy-fragment `PUT` can return `201 InProgress` before its
-`Azure-AsyncOperation` later fails. Neither result proves that the production
-include chain compiles. This applies equally to the model/priority policy
-fragments and to the Speech Voice Live `onHandshake` operation policy
-(`infra/policies/speech-voice-live.xml`); APIM's immutable `onHandshake` operation
-does not support `validate-parameters`, so that policy relies on `choose` /
-`return-response` / `set-query-parameter` instead, and still needs a real compile.
-
-Before merging an APIM policy-fragment change, run the disposable full-chain
-compiler harness against the target APIM:
+ARM what-if validates resources, not APIM's policy-expression compiler. A policy
+fragment `PUT` can also return `201 InProgress` before its async operation fails.
+Before merging a policy-fragment change, run the disposable compiler harness
+against the target APIM under separate explicit approval:
 
 ```powershell
 .\scripts\test-apim-policy-compiler.ps1 `
@@ -261,39 +213,26 @@ compiler harness against the target APIM:
   -ServiceName <apim-service-name>
 ```
 
-The harness creates uniquely named temporary copies of every generated
-model-policy fragment and a collision-free temporary API, waits for each
-fragment's async compiler operation, and applies the generated API wrapper with
-the complete fragment chain in production order. Its `finally` path deletes
-only those exact temporary names and verifies that all are absent. It never
-modifies a production API, policy, or fragment. A successful full-chain compile
-plus cleanup verification is the decisive APIM service validation. Running this
-harness — for either the model/priority fragments or the Speech Voice Live
-policy — requires its own separate, explicit approval; it is never triggered
-automatically because it creates temporary Azure resources.
+The harness creates uniquely named temporary fragments and an API, compiles the
+full production include chain, deletes only those temporary names in `finally`,
+and verifies cleanup. It never changes a production API, policy, or fragment.
+This runbook does not claim the live harness has been run.
 
-#### Gateway canary and rollback
+`ca-proxy` uses single-revision mode, so validate gateway changes in a parallel
+azd environment rather than attempting weighted traffic inside the production
+app:
 
-`ca-proxy` uses `activeRevisionsMode: Single`, so this template does not provide a
-same-app weighted canary. Use a parallel azd environment/resource group as the
-canary:
-
-1. deploy the branch to the parallel environment with a separate proxy hostname;
-2. verify `/startup`, `/liveness`, and `/readiness` on the proxy revision;
-3. send one non-streaming and one streaming model request through the proxy URL;
-4. run the authenticated app-path Voice Live canary through the API relay for each
-   enabled provider/model, then perform a signed-in browser microphone retest, and
-   confirm each one's upstream is the matching APIM WebSocket URL
-   (`/openai/realtime` for `azure_openai`, `/speech/voice-live/realtime` for
-   `speech_voice_live`), never the proxy;
-5. verify APIM logs show the proxy subscription for HTTP/SSE, the
-   `/openai/realtime` subscription only for Azure OpenAI Realtime, and — when
-   Speech Voice Live is enabled — its own distinct subscription only for
-   `/speech/voice-live/realtime`; and
-6. move the production DNS/custom-domain binding only after those checks pass.
+1. Deploy the branch with a separate proxy hostname.
+2. Verify proxy `/startup`, `/liveness`, and `/readiness`.
+3. Send one non-streaming and one streaming model request through the proxy.
+4. Run the authenticated Voice Live canary for each enabled provider/model, then
+   perform a signed-in browser microphone retest.
+5. Confirm APIM diagnostics show the proxy subscription for HTTP/SSE and the
+   correct distinct subscription for each realtime route.
+6. Move production DNS/custom-domain bindings only after those checks pass.
 
 Use an operator-obtained Entra API token in an environment variable, never a CLI
-argument. The canary sends no audio or real conversation:
+argument:
 
 ```powershell
 python scripts/voice-live-canary.py `
@@ -305,738 +244,148 @@ python scripts/voice-live-canary.py `
   --token-env AI4IA_VOICE_CANARY_TOKEN
 ```
 
-Repeat without `--region` for each enabled Speech managed model. Success requires
-`session.created` then `session.updated`; there is no automatic provider fallback.
-Correlate failures with `voice_live_completion`: provider, model/usage target,
-outcome, bounded protocol error or close metadata, source event, and directional
-frame counts/event types. Telemetry must not contain credentials, raw frames,
-audio, transcripts, prompts/history, or tool arguments/results. Direct APIM bare
-handshakes are infrastructure diagnostics only and are not proof of the
-authenticated app path.
+Repeat without `--region` for each enabled Speech managed model. A successful
+protocol canary receives `session.created` and `session.updated`; it sends no
+audio or conversation content. Direct APIM handshakes are infrastructure
+diagnostics, not proof of the authenticated app path.
 
-Stage this work: offline script/unit/catalog/docs checks; reviewed zero-delete
-what-if and policy compile under separate approval; deployment; authenticated
-app-path canary; then a manual signed-in microphone/selector/transcript retest.
-This runbook does not claim that a live canary, compiler, what-if, deployment, or
-manual retest has been run.
+For a policy regression, restore the known-good source and run `azd provision`
+as well as `azd deploy`. Restoring a Container App revision does not change APIM.
+The preserved emergency policy
+`infra/policies/simplel7proxy-rollback-policy.xml` requires a separately
+authorized operator change and is never deployed automatically by Bicep.
 
-For rollback, redeploy the known-good commit. If only the proxy image regressed,
-restore the previous Container App revision while preparing the source revert. If
-the APIM policy or subscription topology changed, revert and run `azd provision`
-as well as `azd deploy`; shifting Container App traffic alone does not roll back
-APIM.
+Generated policy fragments use content-addressed names. Incremental deployment
+retains older generations intentionally. Keep the active generation and one
+known-good rollback generation; deleting older fragments is a separate
+destructive operation requiring approval.
 
-For an API-policy-only emergency rollback, apply
-`infra/policies/simplel7proxy-rollback-policy.xml` through an explicitly
-authorized operator change. Bicep never deploys this preserved live policy.
-Rolling back Speech Voice Live specifically does not need a policy revert at all:
-setting `speechVoiceLiveEnabled=false` (or dropping `speech_voice_live` from
-`voiceProviderAllowlist`) is immediate and non-destructive. The flag prevents app
-wiring and fresh conditional Speech APIM/RBAC creation, but ARM Incremental mode
-does not remove a Speech API, operation policy, subscription, named values, or
-deterministic Speech-specific Foundry User assignment created by an earlier
-deployment. The retained API is still subscription-key protected and the running
-API has no Speech key, so it is unreachable through the app, but the retained
-objects remain dormant privilege and inventory. No automatic teardown occurs; see
-[`feature-enablement.md`](./feature-enablement.md#speech-voice-live-second-voice-provider).
+## 5. Data recovery posture
 
-For a managed-model/selector regression, first narrow the Speech model allowlist
-and default back to `gpt-realtime`, then restore the prior API/web Container App
-revision. If necessary, narrow the provider allowlist to `azure_openai`. Do not
-delete the shared APIM, AIServices account, role assignments, or other shared
-resources as an incident rollback.
+Application rollback does not restore data.
 
-Full deactivation requires a separately approved targeted teardown. Refresh live
-inventory, suspend or revoke `ai4ia-api-speech-voice-live` first, and then target
-only the Speech API and operation policy, its two named values, and the
-deterministic Speech-specific Foundry User role assignment. Review a targeted
-what-if that contains no unplanned deletes and obtain explicit approval before
-applying it. Never use complete deployment mode on the shared resource group or
-shared APIM.
-
-Generated model-policy fragments use content-addressed names. Incremental
-deployment intentionally retains superseded generations for rollback. After a
-new wrapper is stable, retain its active generation and one known-good rollback
-generation; removing older unreferenced fragments is a separate destructive
-operation that requires explicit approval.
-
-| Variable | Value (this deployment) |
+| Property | Current posture |
 |---|---|
-| `AI4IA_WEB_CUSTOM_DOMAIN` | `ai4ia.nomad-analytics.com` |
-| `AI4IA_WEB_MANAGED_CERT_NAME` | `mc-cae-ai4ia-slur-ai4ia-nomad-anal-2891` |
-| `AI4IA_PROXY_CUSTOM_DOMAIN` | `genaiproxy.nomad-analytics.com` |
-| `AI4IA_PROXY_MANAGED_CERT_NAME` | `mc-cae-ai4ia-slur-genaiproxy-nomad-6552` |
-
-The `*_MANAGED_CERT_NAME` values **adopt the existing managed cert** (look it up with
-`az containerapp env certificate list -n <managed-env> -g <rg> --managed-certificates-only`) so the
-deploy reuses the issued cert instead of creating a duplicate subject. DNS prerequisites must exist at
-your DNS provider: a `CNAME` from the vanity host to the app's `*.azurecontainerapps.io` FQDN, and an
-`asuid.<host>` `TXT` record holding the domain-verification ID
-(`az containerapp show ... --query properties.customDomainVerificationId`, or read it off the existing
-managed cert). These records are external to Azure, so a reprovision never touches them.
-
-If a deploy ever wipes the binding before these vars were set, rebind imperatively to restore service
-immediately (cert survives on the environment), then ensure the vars are set so it stays bound:
-
-```powershell
-az containerapp hostname bind --hostname ai4ia.nomad-analytics.com `
-  -g <rg> -n ca-web-<env> --environment <managed-env> `
-  --certificate mc-cae-ai4ia-slur-ai4ia-nomad-anal-2891
-```
-
-### 2.6 Web IQ API key (secret)
-
-Web search is enabled in `infra/main.parameters.json`, and `webIqApiKey` reads from the
-`AI4IA_WEBIQ_API_KEY` environment variable. Unlike the identifiers in §2.3, this is a **secret**, so
-it lives as a **`production` environment secret** and is mapped into the deploy job in
-`.github/workflows/deploy.yml` (`AI4IA_WEBIQ_API_KEY: ${{ secrets.AI4IA_WEBIQ_API_KEY }}`).
-
-Set it once (or via Settings → Environments → `production` → **Secrets**):
-
-```powershell
-gh secret set AI4IA_WEBIQ_API_KEY --env production
-```
-
-Like the custom-domain variables in §2.5, an **empty value at provision time is not harmless**: bicep
-computes `hasWebIqKey = false`, drops the `webiq-api-key` Container App secret, and falls back to
-authenticating Web IQ with the api's managed identity. That identity must be **entitled to Web IQ**
-(the `https://api.microsoft.ai/.default` scope) or every live-search call returns HTTP 401. So either
-keep this secret set, **or** entitle the managed identity and leave it empty on purpose.
-
-> Rotating the key is one update to this secret plus a deploy (the next `azd provision` re-writes the
-> Container App secret). Diagnose live-search auth state from the admin **Web search health** panel,
-> which reports `authMode` (`api_key` / `managed_identity` / `unconfigured`) and categorized failures.
-
-### 2.7 Application Entra app registrations (required when `AI4IA_AUTH_PROVIDER=entra`)
-
-The **deployment** identity in §2.1 only lets the pipeline provision Azure. Production
-*user* sign-in is separate: it needs **two Microsoft Entra app registrations** that the
-Bicep does **not** create (they are tenant objects, not subscription resources). The
-`AI4IA_ENTRA_*` repo variables in §2.3 are pointers to these apps — set them to empty
-values and they reference nothing, so every authenticated request returns `401`. Create
-them once per tenant:
-
-> **Automated:** `scripts/provision-entra-apps.ps1` does all of the below and prints the
-> repo-variable values. Dry-run first, then apply:
-> ```powershell
-> ./scripts/provision-entra-apps.ps1 -WebRedirectUri https://<web-host>,http://localhost:3000
-> ./scripts/provision-entra-apps.ps1 -WebRedirectUri https://<web-host> -AdminUpn you@tenant -Apply
-> ```
-> The manual steps below document exactly what it creates.
-
-1. **API app registration** — the audience the API validates (`aud`, `iss`, `tid`;
-   see `app/api/src/ai4ia_api/auth/entra.py`). Expose a delegated scope named
-   `access_as_user` and set its access-token version to 2.
-
-   ```powershell
-   # API app: exposes api://<api-app-id>/access_as_user
-   $api = az ad app create --display-name "AI4IA API (<env>)" `
-     --sign-in-audience AzureADMyOrg | ConvertFrom-Json
-   az ad app update --id $api.appId --identifier-uris "api://$($api.appId)"
-   # Set requestedAccessTokenVersion=2 and add the access_as_user scope in the
-   # portal (App registrations -> Expose an API -> Add a scope), or via Graph.
-   ```
-
-2. **Web SPA app registration** — the browser MSAL client. Add a **Single-page
-   application** redirect URI equal to the web origin (the vanity host, e.g.
-   `https://ai4ia.<domain>`, plus `http://localhost:3000` for local dev), and grant it
-   delegated permission to the API app's `access_as_user` scope (grant admin consent).
-
-   `az ad app create` has **no SPA redirect flag** (it only offers `--web-redirect-uris`
-   and `--public-client-redirect-uris`); `spa.redirectUris` is settable only through
-   Microsoft Graph, so create this one via `az rest`:
-
-   ```powershell
-   $body = @{
-     displayName    = "AI4IA Web (<env>)"
-     signInAudience = 'AzureADMyOrg'
-     spa            = @{ redirectUris = @("https://ai4ia.<domain>", "http://localhost:3000") }
-   } | ConvertTo-Json -Depth 5
-   $body | Set-Content -Path ./web-app.json -Encoding utf8
-   $web = az rest --method POST --url "https://graph.microsoft.com/v1.0/applications" `
-     --headers "Content-Type=application/json" --body '@./web-app.json' | ConvertFrom-Json
-   Remove-Item ./web-app.json
-   ```
-
-   > Granting **admin consent** needs Privileged Role Administrator, Cloud Application
-   > Administrator, or Global Administrator. Subscription **Owner is not sufficient** — a
-   > common surprise in MCAPS-managed tenants, where ARM ownership and directory roles are
-   > separate planes. See "Is admin consent actually required?" below before chasing a role.
-
-#### Is admin consent actually required? (usually not)
-
-`provision-entra-apps.ps1` prints a verdict on this, but the reasoning matters because the
-portal is genuinely ambiguous here — it shows a **Grant admin consent** control in two
-different blades and hedges about the "Admin consent required" column.
-
-Admin consent is **optional** when both of these hold:
-
-1. **The scope is user-consentable.** `access_as_user` is created with scope type `User`,
-   which is what makes API permissions show **Admin consent required: No**. (Type `Admin`
-   would make it mandatory.) Check with:
-   ```powershell
-   az ad app show --id <api-app-id> --query "api.oauth2PermissionScopes[].{value:value,whoCanConsent:type}"
-   ```
-2. **The tenant lets users consent for themselves.** True when the default user role is
-   assigned any `ManagePermissionGrantsForSelf.*` permission-grant policy:
-   ```powershell
-   az rest --method GET --url "https://graph.microsoft.com/v1.0/policies/authorizationPolicy" `
-     --query "defaultUserRolePermissions.permissionGrantPoliciesAssigned"
-   ```
-   An empty result means user consent is switched off and admin consent becomes the **only**
-   way anyone signs in.
-
-When both hold, the entire cost of skipping admin consent is a one-time per-user prompt
-("Access AI4IA as the signed-in user") at first sign-in. The web app requests only this one
-scope — no Microsoft Graph permissions — so that prompt is a single line. Granting admin
-consent later just removes the prompt; it is a UX improvement, not a prerequisite.
-
-If you do need it and the **App registrations → API permissions** link is greyed out, that
-is the portal telling you the signed-in account lacks the directory role. The
-**Enterprise applications → Security → Permissions** blade renders the same action as an
-enabled-looking blue button, but it calls the same API and fails the same way — it is not a
-second, lower-privileged path. Two things that also do *not* help, despite looking relevant:
-
-- **Expose an API / App roles** on the *web* app. The web app is a client; it exposes
-  nothing. `access_as_user` lives on the **API** app and is already exposed. AI4IA gates
-  admins with the `AI4IA_ADMIN_SUBJECTS` oid allowlist, not Entra app roles.
-- **Roles and administrators** on the app registration. That delegates *administration of
-  that app object*, and assigning a directory role there itself requires Privileged Role
-  Administrator or Global Administrator — so it cannot bootstrap you out of the gap.
-
-> **Who may sign in** is a separate control from consent, and is easy to conflate. A new
-> service principal has `appRoleAssignmentRequired: false`, so *every* user in the tenant
-> can sign in once consent exists. To restrict it, set Enterprise applications → the app →
-> Properties → **Assignment required = Yes**, then assign users/groups. The app's **owner**
-> can change this with no directory role:
-> ```powershell
-> az ad sp update --id <web-app-id> --set appRoleAssignmentRequired=true
-> ```
-
-> The **"Azure AD Graph / ADAL are deprecated"** banner on app registrations is generic and
-> does not apply here: the web app uses MSAL (`@azure/msal-browser`, `@azure/msal-react`),
-> and `provision-entra-apps.ps1` talks to Microsoft Graph (`graph.microsoft.com/v1.0`), not
-> the retired Azure AD Graph (`graph.windows.net`).
-
-Then map them to the repo variables (§2.3):
-
-| Repo variable | Value |
-|---|---|
-| `AI4IA_ENTRA_TENANT_ID` | the tenant GUID (also `AZURE_TENANT_ID`) |
-| `AI4IA_ENTRA_AUDIENCE` | the **API** app id GUID (the code accepts `api://<guid>` too) |
-| `AI4IA_ENTRA_API_SCOPE` | `api://<api-app-id>/access_as_user` |
-| `AI4IA_ENTRA_WEB_CLIENT_ID` | the **web SPA** app id GUID |
-| `AI4IA_ADMIN_SUBJECTS` | comma-separated `oid` of the admin user(s); gates `/api/admin/*` |
-
-Until all four `AI4IA_ENTRA_*` variables are set to real registrations, keep
-`AI4IA_AUTH_PROVIDER` unset/`dev` (the demo flow). With `AI4IA_AUTH_PROVIDER=entra` the
-API fails closed on a missing audience/tenant, and the web app falls open to the dev
-flow if any `ENTRA_*` value is missing (see `app/web/.env.example`).
-
-## 3. Moving to a new subscription or tenant (1:1 standup)
-
-The stack is data-driven, so standing it up in a **new subscription/tenant** is a small set of
-config edits plus the normal deploy — no code changes. What varies per environment is centralized:
-
-| What | Where | Notes |
-|---|---|---|
-| Environment name | `AZURE_ENV_NAME` repo/azd var | Feeds `environmentName`; names the RG (`rg-ai4ia-<env>`), Foundry accounts/projects (`mf-aiforia-<env>-<region>-<suffix>`), Container Apps, etc. Globally-unique names additionally carry `uniqueString(subscription().id, environmentName)` — see [naming](../naming-and-tagging.md) and §7.6. |
-| Subscription / tenant / region | `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `AZURE_LOCATION` repo vars | See §2.3. |
-| CI/CD deployment identity | `AZURE_CLIENT_ID` repo var | **Not portable.** Federated credentials are tenant objects; an identity from the old tenant cannot authenticate to the new one, so `azure/login` fails before any Bicep runs. Recreate per §2.1–2.2 with both required subjects on one managed identity: `repo:<owner>/<repo>:environment:production` for deploys and `repo:<owner>/<repo>:ref:refs/heads/main` for Pages, plus `Contributor` and `Role Based Access Control Administrator`. |
-| Application Entra app registrations | `AI4IA_ENTRA_AUDIENCE`, `AI4IA_ENTRA_API_SCOPE`, `AI4IA_ENTRA_WEB_CLIENT_ID`, `AI4IA_ENTRA_TENANT_ID` | **Not portable** — directory objects, not subscription resources, so nothing in Bicep creates them. Recreate with `scripts/provision-entra-apps.ps1` (§2.7). Carrying the old app IDs over leaves `AI4IA_AUTH_PROVIDER=entra` pointing at audiences that do not exist in the new tenant: the stack provisions green and every authenticated request then returns `401`. |
-| Admin subjects | `AI4IA_ADMIN_SUBJECTS` repo var | **Not portable, and fails silently.** An `oid` identifies a *user object in one directory*; the same human signing into a new tenant gets a **different** `oid`. A carried-over value is simply an id that matches nobody — no error anywhere, the operator just quietly stops being an admin (losing `/api/admin/*` **and** the P0 gateway priority band). Re-read it in the new tenant with `az ad signed-in-user show --query id -o tsv`. |
-| Model deployment-name token | `infra/models.json` → `naming.subscriptionToken` | Stamped into every model deployment name (`{model}-<token>-<region>-<sku>`). Read by bicep **and** the runtime catalog. |
-| Foundry account/project token | `infra/models.json` → `naming.foundryToken` | Names `mf-<token>-<env>-<region>` and the toolbox project endpoint. |
-| API Center region | `AI4IA_API_CENTER_LOCATION` | Only if `enablePrivateToolCatalog=true`; not available in every region (see §7.2 / the API Center note). |
-| Custom domains | `AI4IA_*_CUSTOM_DOMAIN` / `*_MANAGED_CERT_NAME` | Leave **all four empty for the first provision in a new tenant** — see step 3a below, this is ordering-sensitive and a wrong order fails the deploy. Leave empty permanently for a vanilla hostname; see §2.5. The values in §2.5's table are **this deployment's**, not portable — a new tenant has its own hostnames and certs. |
-| APIM publisher mailbox | `AI4IA_APIM_PUBLISHER_EMAIL` | Must be an operator-owned address in the new tenant. It receives APIM service notices, including **managed-certificate expiry** for the custom domains bound in step 3a. `validate-feature-prereqs.py` warns while it is still the `@example.com` placeholder. |
-| Owner / cost-center tags | `AI4IA_OWNER`, `AI4IA_COST_CENTER` | Accountability tags stamped on every resource; see [`naming-and-tagging.md`](../naming-and-tagging.md). |
-
-> **Setting a repo variable is only half the wiring.** `infra/main.parameters.json` reads
-> every knob as `${VAR=default}`, and azd substitutes **only variables that are actually
-> present in the environment** — it does not read GitHub repo variables. Any parameter that
-> `deploy.yml` does not export in its `env:` block therefore deploys its placeholder
-> default no matter what the repo variable says, with no warning. This was live: the first
-> standup provisioned APIM with `ai4ia@example.com` and tagged every resource
-> `owner=ai4ia-operator` while both repo variables were set correctly.
-> `test_every_azd_parameter_token_is_reachable_from_ci` now fails CI if a parameter token
-> is added without a matching export.
-
-> **Exporting a variable that has no repo variable is safe — do not add `|| 'default'`
-> fallbacks to "protect" against it.** GitHub Actions expands `${{ vars.MISSING }}` to an
-> *empty string* rather than omitting the variable, so it is reasonable to worry that
-> exporting an unset knob overwrites a non-empty parameter default with `''`. It does not:
-> azd's `${VAR=default}` resolves an empty value to the **default**, i.e. it behaves like
-> POSIX `${VAR:-default}`, not `${VAR=default}`. Verified live against
-> `main`'s own workflow — with `AI4IA_SEARCH_LOCATION` and
-> `AI4IA_API_CENTER_LOCATION` unset as repo variables, the resulting subscription
-> deployment resolved them to `eastus` and `eastus` respectively:
->
-> ```powershell
-> az deployment sub show -n <name> --query properties.parameters -o json
-> ```
->
-> This matters most for any parameter a module treats as a **feature switch** via
-> `!empty(...)` — had empty won, exporting an unset variable would have torn the
-> corresponding resource down. (That was originally verified on the retired
-> `AI4IA_POSTGRES_LOCATION` — retired 2026-08-06 — whose `postgresEnabled = !empty(postgresLocation)` derivation made the stakes concrete.) The
-> `|| 'literal'` fallbacks that some entries do carry (`AI4IA_PROXY_WORKERS`,
-> `AI4IA_MEMORY_STORE`) exist to pin a value that differs from the parameter default, not
-> to guard against empty. Re-confirm with the query above rather than re-deriving this
-> from first principles.
-
-Deliberately **not** in that list, because they need no per-tenant edit:
-
-- **Voice Live Origin allowlist.** Bicep derives it from the web app this deployment
-  actually creates (Container Apps default FQDN + `webCustomDomain` when bound), so it
-  is correct in a new tenant with no configuration. `AI4IA_REALTIME_ALLOWED_ORIGINS`
-  only *adds* origins. (This used to be a hardcoded hostname in
-  `infra/main.parameters.json` — a stale value still satisfied the API's non-empty
-  allowlist startup check, so the stack came up green and then rejected every browser.)
-- **Built-in Azure role IDs** in `infra/modules/*.bicep` are the same GUIDs in every
-  tenant.
-- **Operator scripts.** None carry a default subscription, resource group, or purge
-  filter. `status-snapshot.ps1` resolves its target from the selected azd environment
-  (falling back to the current `az` context); `inventory.ps1`,
-  `capture-data-recovery-state.ps1`, `teardown.ps1`, `purge-soft-deleted.ps1`, and
-  `seed-models.ps1` require the target explicitly.
-
-Procedure:
-
-0. **Preflight the target subscription.** Both checks below are read-only and take
-   under a minute. They exist because the failures they catch surface *late* —
-   `azd provision` creates the resource group, Foundry accounts, gateway, and data
-   tier first, so a missing provider or an unavailable model kills the run after
-   the slow, expensive part already succeeded, leaving a half-built stack.
-
-   ```powershell
-   az login
-   az account set --subscription <new-subscription-id>
-
-   python scripts/check-resource-providers.py     # add --register to fix
-   python scripts/check-model-availability.py
-   ```
-
-   `check-resource-providers.py` derives the required namespaces from
-   `infra/**/*.bicep`, so it cannot drift when a module adds a resource type. An
-   untouched subscription typically has **most of them unregistered** — a fresh
-   one measured 18 of them missing. `--register` requests them all and waits for
-   `Registered`, which is asynchronous and can take several minutes.
-
-   `check-model-availability.py` compares `infra/models.json` against what the
-   subscription is actually entitled to deploy, per region, on **two** axes that
-   fail independently:
-
-   * **Availability** — is the model offered here? Limited-access models need an
-     approved request and partner models need the Marketplace offer enabled.
-     Version mismatches are reported as warnings, not errors, because Azure
-     commonly rolls a retired pinned version forward.
-   * **Quota** — is there capacity left? A brand-new subscription is offered
-     nearly everything but ships small default quotas, so availability passes and
-     the deployment still dies on `InsufficientQuota`. Requested capacity is
-     summed per model+SKU, because quota is per subscription+region+model+SKU and
-     several deployments draw down one shared counter.
-
-   Quota counters are not named after the models they meter — they carry a
-   publisher prefix the catalog never mentions (`OpenAI.` vs `AIServices.`) and
-   respell the model (`model-router` → `ModelRouter`, `o3-deep-research` →
-   `o3-DeepResearch`, `Cohere-rerank-v4.0-pro` → `Cohere-Rerank-V4-Pro`). The
-   script reconciles these; a counter it still cannot match is a **warning**, not
-   an error, because the absence is ambiguous — verify by hand with
-   `az cognitiveservices usage list -l <region>`. Use `--skip-quota` to check
-   availability alone.
-
-   If a model is genuinely unavailable, either request access or drop its
-   deployment from `infra/models.json` and re-run `python scripts/gen-model-catalog.py`
-   (plus the generators in step 2). If it is merely out of quota, request an
-   increase or lower that deployment's `capacity`.
-
-1. Set the repo variables for the new subscription/tenant/env (§2.3), plus (if used)
-   `AI4IA_API_CENTER_LOCATION` to a region valid there.
-2. If you want a different naming token, edit `infra/models.json` `naming.subscriptionToken` and
-   `naming.foundryToken`, then **regenerate the runtime catalog** so routing matches the deployments:
-
-   ```powershell
-   python scripts/gen-model-catalog.py     # rewrites app/api/src/ai4ia_api/data/model_catalog.json
-   python scripts/gen-model-catalog.py --check   # CI drift guard; must pass
-   python scripts/gen-gateway-policy.py          # rewrites APIM deployment routing
-   python scripts/gen-gateway-policy.py --check
-   python scripts/validate-catalog.py            # names/regions/SKUs consistent
-   ```
-
-   The tokens are the single source of truth (bicep, the generator, the validator, and the app all
-   read `infra/models.json` `naming`), so there is nothing else to change for naming to stay 1:1.
-3. `azd up`. Model deployments, Foundry accounts/projects, and the whole stack come up under the new
-   names.
-3a. **Custom domains: bind them *after* the first provision, not during it.**
-
-   Set `AI4IA_WEB_CUSTOM_DOMAIN`, `AI4IA_PROXY_CUSTOM_DOMAIN`, and both
-   `*_MANAGED_CERT_NAME` variables to **empty** before step 3, then re-provision
-   once DNS has moved. This is not a preference — the first provision *fails*
-   otherwise, and it fails late.
-
-   Why: when `webCustomDomain`/`proxyCustomDomain` is non-empty, `web.bicep` and
-   `gateway.bicep` create a `managedCertificates` resource with
-   `domainControlValidation: 'CNAME'`. Azure only issues that certificate after it
-   can verify the hostname resolves to **this** environment — via the `CNAME` to
-   the app's `*.azurecontainerapps.io` FQDN, or the `asuid.<host>` `TXT` record
-   holding this app's `customDomainVerificationId`. During a migration both still
-   point at the *old* tenant's app, and the new app does not exist yet to point
-   them at. So issuance fails, the ARM resource fails, and the whole `azd up`
-   fails — after the Foundry accounts, gateway, and data tier are already built.
-
-   Order that works:
-
-   1. Provision with all four domain variables empty. Everything comes up on the
-      default `*.azurecontainerapps.io` hostnames and is fully usable.
-   2. Read the new coordinates:
-
-      ```powershell
-      az containerapp show -g rg-ai4ia-<env> -n ca-web-<env> `
-        --query "{fqdn:properties.configuration.ingress.fqdn, verificationId:properties.customDomainVerificationId}"
-      ```
-
-   3. **Cutover DNS** at your provider: point `CNAME <host>` at the new `fqdn`
-      and set `TXT asuid.<host>` to the new `verificationId`. Repeat for the proxy
-      hostname. Allow the old TTL to expire before continuing — validation reads
-      public DNS, not your zone file.
-   4. Set `AI4IA_WEB_CUSTOM_DOMAIN` / `AI4IA_PROXY_CUSTOM_DOMAIN` and re-provision.
-      Leave `*_MANAGED_CERT_NAME` empty: with no pinned name Bicep derives a stable
-      one (`mc-<host-with-dashes>`), which is what you want in a tenant that has no
-      pre-existing cert to adopt. Pinning a name copied from the old tenant does
-      not adopt anything — that cert lives in the old tenant's managed environment
-      — it just names the new one confusingly.
-
-      **The very first bind of a hostname takes two phases, and Bicep can only do
-      the second.** Container Apps refuses to create a managed certificate whose
-      subject is not *already* a custom hostname somewhere in the environment:
-
-      ```text
-      RequireCustomHostnameInEnvironment: Creating managed certificate requires
-      hostname '<host>' added as a custom hostname to a container app or route
-      in environment '<env>'
-      ```
-
-      `web.bicep` / `gateway.bicep` declare the certificate and the ingress binding
-      together, and ARM creates the certificate first (the app depends on
-      `webCert.id`). So the hostname that would satisfy the check is introduced by
-      the resource that is blocked *on* the check. No ordering inside Bicep can
-      break that cycle — the registration has to happen out of band, once.
-
-      The GitHub Actions deploy does this for you: the **Preflight custom-domain
-      bindings** step runs `az containerapp hostname add` for any hostname not yet
-      registered, before `azd provision`. Just set the variables and re-run.
-
-      Provisioning locally, do phase one by hand first:
-
-      ```powershell
-      az containerapp hostname add -g rg-ai4ia-<env> -n ca-web-<env> `
-        --hostname ai4ia.example.com
-      az containerapp hostname add -g rg-ai4ia-<env> -n ca-proxy-<env> `
-        --hostname genaiproxy.example.com
-      azd provision
-      ```
-
-      `hostname add` registers the hostname with `bindingType: Disabled` and no
-      certificate, which is exactly the precondition the certificate needs. It is
-      idempotent, and it is also where Azure validates domain control — so a DNS
-      mistake surfaces in seconds here instead of ~20 minutes into a provision.
-      `azd provision` then issues the certificate and flips the binding to
-      `SniEnabled`.
-   5. Optional: once issued, record the actual names back into
-      `AI4IA_*_MANAGED_CERT_NAME` so later deploys are explicit rather than derived.
-
-   Because the binding lives in Bicep rather than being added imperatively, once
-   step 4 succeeds it is durable — subsequent deploys re-assert it instead of
-   wiping it (§2.5). Phase one is a one-time bootstrap per hostname, not a
-   recurring step: afterwards the hostname is already registered and the preflight
-   is a no-op.
-4. **Foundry toolbox (data-plane, REQUIRED whenever `AI4IA_ENABLE_FOUNDRY_TOOLBOX=true`):** the
-   toolbox is a data-plane resource and is **not** created by `azd up`. After the deploy, run
-   `python scripts/provision-foundry-toolbox.py --create` against the new project (the
-   `infra/mcp-servers.json` entry is already portable — its APIM upstream URL is computed by bicep
-   from the new project endpoint). See [`../foundry-toolbox.md`](../foundry-toolbox.md).
-
-   **Skipping this leaves the official-MCP plane green but empty**, which is why it is worth
-   verifying rather than assuming. Every control-plane layer (APIM MCP API, backend, managed-identity
-   policy, product, subscription key) provisions correctly without a toolbox, and the MCP
-   `initialize` handshake still returns **200** — only the follow-up `tools/list` 404s with
-   `Toolbox '<name>' not found`. Any ping-style health check reports healthy. Confirm with the
-   admin endpoint, which performs full discovery rather than a ping:
-
-   ```bash
-   curl -sS -H "Authorization: Bearer $TOKEN" \
-     "https://<web-host>/api/admin/metrics/official-mcp?refresh=true"
-   ```
-
-   `toolCount: 0` together with a populated `lastError` is the signature of a missing toolbox.
-5. **Break-glass ops scripts** (`scripts/inventory.ps1`, `capture-data-recovery-state.ps1`,
-   `teardown.ps1`, `purge-soft-deleted.ps1`, `seed-models.ps1`) take their target explicitly — they have
-   no default subscription, resource group, or purge filter, so they cannot silently act
-   on the environment you moved away from. `purge-soft-deleted.ps1` reads
-   **subscription-wide** soft-delete lists, so its mandatory `-NameFilter` is what keeps
-   a purge scoped to this stack.
-6. **Regenerate the published status/inventory data** (only if you publish the portal):
-   `./scripts/status-snapshot.ps1` resolves the subscription, resource group, and probe
-   URLs from the selected azd environment, so run `azd env select <new-env>` first. The
-   checked-in `site/data/*.js` snapshots still describe the *previous* environment until
-   you do.
-
-Clean-room notes for a brand-new subscription/tenant:
-
-- **Entra app registrations** (§2.7) are per-tenant and not created by `azd`. Create the API + web
-  SPA apps and set the four `AI4IA_ENTRA_*` variables before enabling `AI4IA_AUTH_PROVIDER=entra`,
-  or the app returns `401`.
-- **Resource provider registration** — an untouched subscription has most of the required
-  providers unregistered, and provisioning fails partway through when it hits the first
-  one. Run `python scripts/check-resource-providers.py --register` (step 0 above) rather
-  than registering by hand: the script derives the full set from `infra/**/*.bicep`, so it
-  stays correct as modules change, and it waits for registration to actually complete.
-- **Memory is already active** — `AI4IA_MEMORY_STORE` defaults to `cosmos` in the
-  checked-in azd parameters. Use `disabled` only as an explicit freeze/rollback
-  posture; a greenfield deployment has no legacy `mem0` data to migrate. The
-  [memory-migration runbook](./memory-migration.md) is historical: PostgreSQL was retired and deleted.
-- The first provision can hit the Cosmos vector-capability race in §7.4; re-running `azd provision`
-  resolves it.
-
-## 4. Enabling feature-flagged capabilities at deploy time
-
-Feature flags (Voice Live, document library, memory, etc.) are **not** turned on by this pipeline —
-they are azd environment values consumed by `infra/main.parameters.json`. To enable one, set the azd
-env var (locally `azd env set <NAME> <value>`, or as an environment variable available to the
-workflow) and let the next provision apply it. The exact flags, required resources, and fail-closed
-prerequisites for each feature are in [`feature-enablement.md`](./feature-enablement.md).
-
-## 5. Manual deploy (no pipeline / break-glass)
-
-From a workstation with the azd env selected:
-
-```powershell
-az login
-azd env select ai4ia-dev
-azd up            # provision + deploy in one step
-# or, more granular:
-azd provision
-azd deploy
-```
-
-> Validate in a parallel resource group before reprovisioning a live stack — see
-> [`teardown.md`](./teardown.md).
-
-## 6. Post-deploy verification and rollback
-
-Every deploy is gated. `.github/workflows/deploy.yml` captures the revision each
-Container App is serving **before** `azd deploy`, asserts a list of things
-afterwards, and restores the captured revisions when any assertion fails.
-The logic lives in [`scripts/post-deploy-verify.py`](../../scripts/post-deploy-verify.py)
-and is unit-tested in `scripts/tests/test_post_deploy_verify.py`.
-
-### Why the gate exists
-
-`azd deploy` exiting 0 means ARM accepted a new Container App template. It does
-**not** mean the app runs. A crash-looping image,
-an unbound secret, a Python import error, a stale APIM route, or a gateway policy
-that no longer matches the catalog all finish as a **green** deploy. `azure.yaml`'s
-postprovision hook cannot close this: it runs before application deployment, when
-the `api` container may still be the azd placeholder image, which is exactly why
-it treats app probes as best-effort.
-
-The workflow captures the active app revisions **before `azd provision`**.
-This ordering is load-bearing: the web/API/proxy Bicep modules must submit an
-image in every Container App template and their greenfield defaults are
-`mcr.microsoft.com/k8se/quickstart:latest`. An infrastructure reconciliation can
-therefore create a placeholder revision before release images are built. A
-capture taken after provision would faithfully record the wrong rollback target.
-If provision starts, a later provision/build/preflight failure restores the
-pre-provision revisions. A manual run that skipped provision does not roll back
-for a pre-deploy build/preflight failure; deploy/verification failures still do.
-Failure to reacquire the *post-deploy* canary token remains the deliberate
-exception: the exact-digest release is already live and is left in place but
-reported unverified.
-
-### What is asserted, and what each assertion catches
-
-| Assertion | Catches |
-|---|---|
-| The revision taking traffic changed | `azd deploy` reported success but Container Apps never promoted a new template |
-| That revision runs **exactly** the digest this run pushed (`--expect-image`) | A revision that is not this deploy's. This used to be the weaker "the image string changed", which only worked while azd tagged every build `azd-deploy-<unix-ts>`; a content-addressed digest repeats for identical content, so "changed" would have failed healthy redeploys |
-| That revision is `active`, `healthState: Healthy`, `runningState: Running` | A revision that provisioned but never became ready. **Polled**, because ARM lags `azd deploy` by seconds to a minute |
-| Running replicas > 0 (apps with `minReplicas >= 1`) | A crash-looping image: the revision exists, no replica survives |
-| API `GET /health/live` = 200 | The process is up |
-| API `GET /health/ready` = 200 | Startup validation and dependency binding succeeded |
-| Web `GET /` = 2xx or 3xx | The Next.js server renders rather than 500ing. Redirects are never followed — that would replay an `Authorization` header at whatever host a response named |
-| Proxy ingress answers with anything below 500 | A replica is serving. A 401/404 from the authenticating gateway is a **pass**; every 5xx is a failure, and 503 is retried because that is what `/startup` returns during a cold start |
-| Custom domains still bound and `SniEnabled` | A provision that wiped a vanity hostname, or a managed certificate that failed to bind |
-| One authenticated turn: `/api/models` → `/api/sessions` → `/api/chat` (non-streaming) → cleanup | The **whole governed path** — Entra validation, catalog resolution, SimpleL7Proxy, the APIM subscription key, the gateway policy, and a real Foundry model deployment. Nothing else here touches any of that |
-
-All of it runs under one shared wall-clock budget (`--deadline-seconds`, 20
-minutes by default) inside a 30-minute step timeout, because per-check retry
-budgets multiply and would otherwise let the step be killed mid-flight rather
-than finish and report.
-
-The canary picks its model from `infra/models.json`, intersected with what the
-live API says it will route to, so it never names a deployment and a
-data-residency change produces a clear message instead of a mystery 400. It
-never prints the bearer token or the model's reply — only the reply's length.
-
-### What it still cannot catch
-
-- **Correctness.** A model that answers is not a model that answers *well*, and
-  no assertion here evaluates content.
-- **Anything past the first turn.** Streaming (SSE), tools, MCP, documents,
-  memory, images, video, and the realtime/Voice Live WebSocket relay are all
-  unexercised. `scripts/voice-live-canary.py` is the separate, operator-invoked
-  canary for the realtime path.
-- **The window before it runs.** The new revision takes traffic the moment ARM
-  promotes it. Verification and rollback happen after that, so a bad release is
-  live for the length of the checks (typically well under a minute, longer if a
-  cold start is being retried).
-- **Data.** Rollback restores code, not Cosmos. See below.
-- **Per-user or per-tenant failures.** The canary is one identity: the deploy
-  identity. An entitlement, admin, or per-user ownership regression is invisible
-  to it.
-- **A cancelled or job-timed-out run.** See "On failure" below.
-- **Content in an upstream error body.** A failing call logs a bounded, redacted
-  200-character snippet of the response so the failure is diagnosable. Redaction
-  covers credential shapes, not arbitrary prose. Successful responses are never
-  logged — the model's reply is reported only as a character count.
-
-### On failure
-
-The rollback step runs on **any** failure once a capture exists — including
-`azd deploy` itself dying partway through, which leaves some services replaced
-and others not. For each app whose active revision moved, it restores the
-captured one, **confirms** the app is actually serving the captured image again,
-and then the job fails loudly. A restore that Azure accepted but that did not
-take is reported as `unconfirmed` and still exits non-zero: `az` returning 0 only
-means ARM accepted the request, and believing that would be the same unverified
-success this gate exists to stop.
-
-The primitive differs by revision mode, and using the wrong one is a silent
-no-op:
-
-| Mode | Command |
-|---|---|
-| `Single` (what this stack uses) | `az containerapp revision copy --from-revision <captured>` — clones the captured revision's whole template into a new active revision. `ingress traffic set` is rejected in this mode |
-| `Multiple` | `az containerapp ingress traffic set --revision-weight <captured>=100` |
-
-An app that did not move is left alone. A greenfield app has no captured
-revision and is skipped — there is nothing to roll back **to** on a first deploy.
-
-**Rollback does not cover a cancelled or job-timed-out run.** `if: failure()`
-fires for a failed step, including the verification step hitting its own
-`timeout-minutes`, but a manual cancellation or the 180-minute job timeout kills
-the runner outright and no rollback runs. Recover those by hand (below).
-
-### Turning the canary off
-
-Set the `AI4IA_DEPLOY_VERIFY_CANARY` repository variable to `false`. Everything
-else still runs; only the end-to-end model turn is skipped, and the workflow says
-so with a warning. Do this if your tenant refuses to issue the deploy identity an
-app-only token for `AI4IA_ENTRA_AUDIENCE` — a deploy proven only as far as the
-ingress is worth more than a gate somebody disabled entirely.
-
-**That variable is the only way to skip it.** An empty `AI4IA_ENTRA_AUDIENCE`
-(or a grant the deploy identity does not have) **fails the run before anything is
-deployed**, rather than quietly shipping without end-to-end proof. Skipping has
-to be a decision someone made and can see.
-
-The grant is preflighted **before** `azd deploy`, and the token that preflight
-obtains is discarded: a separate step acquires a fresh one after the deploy. A
-missing grant is a gate misconfiguration, not a bad release, and discovering it
-afterwards would roll back a healthy app; and a three-image deploy plus a retried
-rollout can outlive an access token, which would present as a 401 and do exactly
-the same thing. That second acquisition is its own step so the rollback gate can
-exclude it — an Entra blip stops the run *without* reverting anything, leaving
-the deploy live but explicitly unverified.
-
-### Rolling back by hand
-
-```powershell
-$rg = 'rg-ai4ia-slurmfactory'
-az containerapp revision list -g $rg -n ca-api-slurmfactory `
-  --query "[].{name:name, created:properties.createdTime, active:properties.active}" -o table
-az containerapp revision copy -g $rg -n ca-api-slurmfactory --from-revision <previous>
-```
-
-Or redeploy a known-good commit. Note that a **local** `azd deploy` does not run
-the gate — it lives only in `deploy.yml` — so re-running the workflow is the
-option that re-verifies:
-
-```powershell
-git checkout <good-sha>
-azd deploy            # ships the images; does NOT verify or roll back
-```
-
-**Rollback recovers code, not data.** The two are separate problems, and the data
-side is the weaker of the two — see below before you need it.
-
-### Data recovery posture (know this before you need it)
-
-The Cosmos account is **serverless**, and this is the single most important
-operational fact in this runbook, so it is worth stating precisely.
-
-| | Reality |
-| --- | --- |
-| Backup mode | `Continuous` (tier `Continuous7Days`) — pinned in `infra/modules/data.bicep` |
-| Recovery granularity | **any second** within the last 7 days |
-| Self-service point-in-time restore | **Yes** — `az cosmosdb restore`, no support ticket |
-| Where it restores to | A **new serverless account** (`createMode=Restore`); the source account is left untouched |
-| Cost | **No backup-storage charge.** `Continuous7Days` is the only continuous tier that is free to store; 30/35-day tiers bill for it. Restore *operations* are billed when you run one |
-| Reversible? | **No.** Continuous mode cannot be switched back to periodic |
-
-So the effective recovery window for sessions, messages, usage, memory, and user
-agents is **seven days**, and exercising it is a self-service operation you can
-run yourself. "Restore yesterday" is a supported request.
-
-> **Correction, recorded deliberately.** This table previously stated the
-> opposite — that continuous backup was "not usable on a serverless account",
-> that restore required a support ticket, and that Azure "refuses to restore
-> *into* a serverless account", leaving an ~8-hour window. That was wrong. It was
-> disproved by building a throwaway serverless account, enabling continuous
-> backup on it, and restoring it: the restore succeeded and produced a
-> *serverless* account with the container and partition key intact. The claim is
-> called out rather than quietly edited because its failure mode was to document
-> the better posture as impossible, so nobody would attempt it. Where a
-> serverless restriction genuinely does exist is Azure Backup **vaulted** backup
-> (preview), which cannot restore to a serverless target — a different feature
-> that is easy to conflate with continuous backup.
-
-To restore, pick a timestamp and a *new* target account name:
+| Cosmos backup mode | `Continuous7Days`, declared in `infra/modules/data.bicep` |
+| Recovery point | Any second within the last seven days |
+| Restore mechanism | Self-service `az cosmosdb restore` |
+| Restore target | A new serverless account; the source is untouched |
+| Backup storage charge | No charge for the 7-day tier; restore operations are billed |
+
+This was verified with a throwaway serverless account: enabling continuous
+backup and restoring it produced a new serverless account with the container and
+partition key intact. The contrary historical claim that serverless required a
+support-ticket restore confused continuous backup with Azure Backup vaulted
+backup, which is a different feature.
 
 ```bash
 az cosmosdb restore \
-  --resource-group rg-ai4ia-slurmfactory \
-  --account-name cosmos-ai4ia-slurmfactory-vypvgrncoed2o \
+  --resource-group <resource-group> \
+  --account-name <source-account> \
   --target-database-account-name <new-account-name> \
-  --restore-timestamp 2026-08-02T13:40:00Z \
-  --location eastus2
+  --restore-timestamp <UTC-timestamp> \
+  --location <region>
 ```
 
-Then repoint `AI4IA_COSMOS_ENDPOINT` at the restored account, or copy the
-affected documents back. Two gotchas learned the hard way: the source must be
-non-empty *at the chosen timestamp* (an empty account fails with "No databases or
-collections found"), and a failed restore leaves the target name in a failed
-provisioning state that must be deleted before you can reuse it.
+The source must contain data at the chosen time. A failed restore reserves the
+target name in a failed state until that target is deleted. Repoint
+`AI4IA_COSMOS_ENDPOINT` or copy only the affected documents after validating the
+restored account.
 
-**Changing the backup mode is a standalone operation.** Azure rejects a
-mode change bundled with any other property update ("Cannot update continuous
-backup mode and other properties at the same time"), so it cannot be done by
-editing `data.bicep` and redeploying. The live account was migrated with a
-dedicated `az cosmosdb update --backup-policy-type Continuous --continuous-tier
-Continuous7Days`; the Bicep only restates the result so redeploys stay no-ops.
+Changing backup mode must be a standalone operation; Azure rejects a backup-mode
+change bundled with other account property updates. The live account was moved
+with `az cosmosdb update`, and Bicep now restates the resulting mode.
 
-Derived stores are exempt by design — document chunks, the AI Search index, and
-parsed artifacts are all rebuildable from the canonical manifests, so they need
-no backup story of their own.
+Key Vault has seven-day soft delete. Purge protection defaults off so a teardown
+can recreate the name; setting `AI4IA_KEYVAULT_PURGE_PROTECTION=true` is
+irreversible and prevents same-name recreation during the retention period.
+Blob source files and generated media have no equivalent restore path here.
+Document chunks, search indexes, and parsed artifacts are derived and rebuildable.
 
-Key Vault is soft-delete enabled with a 7-day retention. Purge protection is
-**off** so the wipe-and-rebuild workflow can recreate the vault under the same
-name; set `AI4IA_KEYVAULT_PURGE_PROTECTION=true` to harden it, but note the
-switch is **irreversible** and reserves the vault name for the retention window,
-which will block a teardown-and-redeploy of the same environment name.
+## 6. Post-deploy verification and rollback
+
+Every workflow deployment is gated. The implementation is
+[`scripts/post-deploy-verify.py`](../../scripts/post-deploy-verify.py), with
+contract tests in `scripts/tests/test_post_deploy_verify.py`.
+
+### Why the gate exists
+
+`azd deploy` returning zero proves ARM accepted a Container App template, not
+that the application runs. A crash-looping image, missing secret, import error,
+stale APIM route, or catalog/policy mismatch can all produce a green deployment.
+The `azure.yaml` postprovision hook runs before application deployment and cannot
+close this gap.
+
+The workflow captures active revisions before provision. If provision starts,
+later provision, build, preflight, deploy, or verification failures restore the
+pre-provision revisions. A manual workflow run that skips provision does not
+roll back for a build/preflight failure that touched no app. Deploy and
+verification failures still roll back.
+
+A failure to reacquire the **post-deploy** canary token is the deliberate
+exception: the exact-digest release remains live but is reported unverified.
+The grant is preflighted before deploy, and verification acquires a fresh token
+after deploy so an expired token cannot roll back a healthy release.
+
+### What verification asserts
+
+| Assertion | Failure it detects |
+|---|---|
+| Active revision moved when expected | Deployment never promoted a new template |
+| Running image equals this run's `--expect-image` digest | A stale or unrelated revision is serving |
+| Revision is active, healthy, and running | ARM accepted a revision that never became ready |
+| Running replicas are positive where minimum replicas require them | Crash loop or failed replica startup |
+| API `/health/live` and `/health/ready` return 200 | Process, startup validation, or dependency failure |
+| Web `/` returns 2xx/3xx without following redirects | Next.js failed to render |
+| Proxy ingress returns below 500 | No proxy replica is serving |
+| Configured domains remain bound and `SniEnabled` | Provision removed a binding or certificate failed |
+| Authenticated models/session/chat/cleanup turn succeeds | Entra, catalog, proxy, APIM, and Foundry path failure |
+
+The assertions share a 20-minute wall-clock budget inside a 30-minute step
+timeout. The canary intersects `infra/models.json` with the models the live API
+advertises, never hardcodes a deployment, never prints its bearer token or model
+reply, and logs successful replies only as a character count.
+
+It does not assess response quality, streaming, tools, MCP, documents, memory,
+media, or realtime. It is one identity and cannot detect per-user entitlement or
+ownership defects. Rollback does not run after manual cancellation or the
+180-minute job timeout because the runner is terminated.
+
+### Automatic and manual rollback
+
+For each app whose active revision moved, rollback restores the captured revision
+and confirms the captured image is serving again. A failed confirmation remains
+a failed job.
+
+| Revision mode | Restore primitive |
+|---|---|
+| `Single` (this stack) | `az containerapp revision copy --from-revision <captured>` |
+| `Multiple` | `az containerapp ingress traffic set --revision-weight <captured>=100` |
+
+A greenfield app has no prior revision and cannot be rolled back on its first
+deployment. An app that did not move is left unchanged.
+
+To disable only the end-to-end model turn, set
+`AI4IA_DEPLOY_VERIFY_CANARY=false`. Rollout, health, web, proxy, and domain checks
+still run. An empty audience never silently disables the canary; without the
+explicit variable, preflight fails.
+
+Manual recovery:
+
+```powershell
+$rg = '<resource-group>'
+az containerapp revision list -g $rg -n <container-app> `
+  --query "[].{name:name,created:properties.createdTime,active:properties.active}" -o table
+az containerapp revision copy -g $rg -n <container-app> --from-revision <previous>
+```
+
+Redeploying a known-good commit through the workflow is preferable because it
+also re-verifies the release. If an infrastructure regression persists after
+containers roll back, correct or revert the infrastructure source and provision
+again.
 
 ## 7. Troubleshooting
+
 
 > Entry numbers are stable identifiers, not positions — they are referenced from
 > other docs, from commit messages, and from CI failure output. A retired entry
@@ -1230,7 +579,8 @@ all in one pass rather than fixing one at a time.
 
 Prevention — `scripts/check-model-availability.py` now checks lifecycle as a third axis
 alongside availability and quota, and blocks on `Deprecating`/`Deprecated`. Run it before
-any cold provision (step 0). It reports whether a deployable version exists to repin to,
+any cold provision ([greenfield preflight](./greenfield-standup.md#1-preflight-the-target)).
+It reports whether a deployable version exists to repin to,
 or that the model must be removed.
 
 Fix — if another version of the same model is `GenerallyAvailable`/`Preview`, repin
@@ -1475,7 +825,8 @@ $ns = (Resolve-DnsName <zone> -Type NS -DnsOnly).NameHost
 Resolve-DnsName <host> -Type CNAME -Server (Resolve-DnsName $ns[0] -Type A).IPAddress
 ```
 
-Full cutover sequence, including where this sits: §3 step 3a.
+The full cutover sequence is in
+[greenfield standup §6.2](./greenfield-standup.md#62-bind-custom-domains-optional).
 
 ### 7.13 "This browser can't play the returned audio format" (Speak / TTS)
 

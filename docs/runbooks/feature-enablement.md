@@ -568,7 +568,8 @@ environment secret** (mapped into `.github/workflows/deploy.yml`). If that secre
 empty at provision time, bicep drops the `webiq-api-key` Container App secret and the
 api falls back to its managed identity — which must be **entitled to Web IQ**, or
 every call returns 401. Set it with `gh secret set AI4IA_WEBIQ_API_KEY --env
-production`; see [`deployment.md`](deployment.md#26-web-iq-api-key-secret).
+production`; see
+[`greenfield-standup.md`](greenfield-standup.md#32-secrets).
 
 **Diagnosing failures.** The admin dashboard has a **Web search health** panel
 (`GET /api/admin/metrics/web-search`, admin-gated) that reports per-replica call

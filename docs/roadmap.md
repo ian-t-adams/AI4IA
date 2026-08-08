@@ -167,7 +167,7 @@ not mistaken for a fix:
   now creates both application registrations, exposes `access_as_user`, sets redirect URIs
   and admin consent, and prints the `AI4IA_ENTRA_*` values — the last manual portal step.
   Validated end to end against an empty subscription in a new tenant — see
-  [deployment runbook §3](./runbooks/deployment.md).
+  [greenfield standup guide](./runbooks/greenfield-standup.md).
 - **Planet Express deployment live.** The stack is now running in
   `sub-planetexpress-slurmfactory` / `rg-ai4ia-slurmfactory` with custom domains for
   the app and proxy.

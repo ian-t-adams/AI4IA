@@ -44,7 +44,7 @@ watch the Bicep parameter, and know which runtime setting appears in the app.
 These are **not** env vars or Bicep parameters — they live in `infra/models.json` under `naming`,
 the single source of truth read by Bicep, the catalog scripts, and the app runtime. Change them
 (and regenerate the model catalog) when standing the stack up in a new subscription/tenant. Full
-procedure: [`runbooks/deployment.md` §3](runbooks/deployment.md#3-moving-to-a-new-subscription-or-tenant-11-standup).
+procedure: [greenfield standup §5](runbooks/greenfield-standup.md#5-select-environment-posture-and-names).
 
 | Token | `infra/models.json` path | What it names |
 | --- | --- | --- |
@@ -125,7 +125,7 @@ certificates, then set the four values and provision again so Bicep adopts and
 maintains them. Azure refuses to issue a managed certificate until the hostname
 already exists in the Container Apps environment
 (`RequireCustomHostnameInEnvironment`). The complete sequence is
-[deployment runbook section 3a](runbooks/deployment.md#3a-custom-domains-bind-them-after-the-first-provision-not-during-it).
+[greenfield standup §6.2](runbooks/greenfield-standup.md#62-bind-custom-domains-optional).
 Treat skipping either phase as an outage risk, not as a harmless omission.
 
 ## Model gateway direction and trust
