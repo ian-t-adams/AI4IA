@@ -31,7 +31,13 @@ from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel, Field
 
-from .models import DayUsageBucket, ModelUsageBucket, UsageRecord, UsageRollupSource
+from .models import (
+    DayUsageBucket,
+    ModelUsageBucket,
+    UsageRecord,
+    UsageRollupSource,
+    cost_bearing_attempt,
+)
 
 # Bound the window so an admin query can never scan unbounded history.
 DEFAULT_ADMIN_DAYS = 30
@@ -254,7 +260,7 @@ def aggregate_summary(records: Sequence[UsageRollupSource]) -> AdminUsageSummary
             summary.totalTokens += rec.totalTokens or 0
         if rec.costKnown and rec.estCostMicroUsd is not None:
             summary.totalCostMicroUsd += rec.estCostMicroUsd
-        elif rec.billable:
+        elif cost_bearing_attempt(rec):
             summary.costUnknownRequests += 1
     summary.activeUsers = len(users)
     summary.distinctModels = len(models)
@@ -281,7 +287,7 @@ def aggregate_by_model(records: Sequence[UsageRollupSource]) -> list[ModelUsageB
             bucket.totalTokens += rec.totalTokens or 0
         if rec.costKnown and rec.estCostMicroUsd is not None:
             bucket.costMicroUsd += rec.estCostMicroUsd
-        elif rec.billable:
+        elif cost_bearing_attempt(rec):
             bucket.costKnown = False
     return sorted(by_model.values(), key=lambda b: b.totalTokens, reverse=True)
 
@@ -316,7 +322,7 @@ def aggregate_by_user(records: Sequence[UsageRollupSource]) -> list[UserUsageBuc
             bucket.totalTokens += rec.totalTokens or 0
         if rec.costKnown and rec.estCostMicroUsd is not None:
             bucket.costMicroUsd += rec.estCostMicroUsd
-        elif rec.billable:
+        elif cost_bearing_attempt(rec):
             bucket.costKnown = False
         if bucket.lastActiveAt is None or rec.createdAt > bucket.lastActiveAt:
             bucket.lastActiveAt = rec.createdAt
@@ -403,7 +409,7 @@ def aggregate_dimension(
             bucket.totalTokens += rec.totalTokens or 0
         if rec.costKnown and rec.estCostMicroUsd is not None:
             bucket.costMicroUsd += rec.estCostMicroUsd
-        elif rec.billable:
+        elif cost_bearing_attempt(rec):
             bucket.costKnown = False
     return sorted(
         by_key.values(), key=lambda b: (b.requests, b.totalTokens), reverse=True

@@ -127,6 +127,26 @@ def test_summary_honesty_unknown_usage_and_cost():
     assert s.costUnknownRequests == 2  # two billable turns with no known cost
 
 
+def test_compute_attempt_is_unknown_cost_despite_nonbillable_tokens():
+    row = rec(
+        provider="azure_openai_code_interpreter",
+        model="code-interpreter",
+        target="code_interpreter",
+        usage_known=False,
+        billable=False,
+        cost_known=False,
+        cost_micro=None,
+        status="error",
+        total=0,
+    )
+    summary = aggregate_summary([row])
+    assert summary.totalCostMicroUsd == 0
+    assert summary.costUnknownRequests == 1
+    assert aggregate_by_model([row])[0].costKnown is False
+    assert aggregate_by_user([row])[0].costKnown is False
+    assert aggregate_by_provider([row])[0].costKnown is False
+
+
 def test_summary_counts_distinct_providers():
     records = [
         rec(provider="azure_openai"),
