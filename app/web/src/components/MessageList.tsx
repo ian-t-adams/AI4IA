@@ -675,29 +675,40 @@ function Bubble({
 
 export function MessageList({
   messages,
+  conversationId,
   onError,
   onCitation,
 }: {
   messages: DisplayMessage[];
+  conversationId?: string | null;
   onError?: (message: string) => void;
   onCitation?: (target: CitationTarget) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
+  const conversationIdRef = useRef(conversationId);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const playback = useSpeechPlayback((msg) => onError?.(msg));
   const latest = messages.at(-1);
   const messageRevision = `${messages.length}:${latest?.id ?? ""}:${latest?.content.length ?? 0}:${latest?.pending ?? false}:${latest?.steps?.length ?? 0}`;
 
   useEffect(() => {
+    const conversationChanged = conversationIdRef.current !== conversationId;
+    conversationIdRef.current = conversationId;
+    if (conversationChanged) {
+      isNearBottomRef.current = true;
+      setShowJumpToLatest(false);
+      endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+      return;
+    }
     if (isNearBottomRef.current) {
       endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
       setShowJumpToLatest(false);
     } else {
       setShowJumpToLatest(true);
     }
-  }, [messageRevision]);
+  }, [conversationId, messageRevision]);
 
   const updateScrollPosition = () => {
     const viewport = viewportRef.current;

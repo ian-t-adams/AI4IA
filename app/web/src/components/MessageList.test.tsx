@@ -669,4 +669,54 @@ describe("MessageList content-safety panel", () => {
     expect(scrollIntoViewMock).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "Jump to latest" })).toBeNull();
   });
+
+  it("resets follow state when switching between long conversations", () => {
+    const sessionA = Array.from({ length: 24 }, (_, index) =>
+      msg({
+        id: `a-${index}`,
+        role: "assistant",
+        content: `Session A message ${index}`,
+      }),
+    );
+    const sessionB = Array.from({ length: 24 }, (_, index) =>
+      msg({
+        id: `b-${index}`,
+        role: "assistant",
+        content: `Session B message ${index}`,
+      }),
+    );
+    const { rerender } = render(
+      <MessageList conversationId="session-a" messages={sessionA} />,
+    );
+    const viewport = screen.getByRole("log", { name: "Conversation" });
+    setScrollMetrics(viewport, {
+      scrollHeight: 4_000,
+      clientHeight: 400,
+      scrollTop: 100,
+    });
+    fireEvent.scroll(viewport);
+    scrollIntoViewMock.mockClear();
+
+    rerender(
+      <MessageList
+        conversationId="session-a"
+        messages={[
+          ...sessionA,
+          msg({ id: "a-new", role: "assistant", content: "New" }),
+        ]}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Jump to latest" }),
+    ).toBeInTheDocument();
+    scrollIntoViewMock.mockClear();
+
+    rerender(<MessageList conversationId="session-b" messages={sessionB} />);
+
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({
+      behavior: "auto",
+      block: "end",
+    });
+    expect(screen.queryByRole("button", { name: "Jump to latest" })).toBeNull();
+  });
 });

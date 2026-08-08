@@ -2804,6 +2804,7 @@ export function ChatApp() {
 
         <MessageList
           messages={displayMessages}
+          conversationId={activeId}
           onError={setError}
           onCitation={libraryEnabled ? handleCitation : undefined}
         />

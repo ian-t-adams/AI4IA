@@ -123,16 +123,18 @@ vi.mock("./Composer", () => ({
 vi.mock("./MessageList", () => ({
   MessageList: ({
     messages,
+    conversationId,
     onCitation,
   }: {
     messages: { id: string; content: string }[];
+    conversationId?: string | null;
     onCitation?: (target: {
       documentId: string;
       filename: string;
       ms: number;
     }) => void;
   }) => (
-    <div aria-label="Conversation">
+    <div aria-label="Conversation" data-conversation-id={conversationId ?? "draft"}>
       {messages.map((message) => (
         <div key={message.id}>{message.content}</div>
       ))}
@@ -366,6 +368,27 @@ describe("ChatApp landmarks", () => {
     expect(mainLandmarks).toHaveLength(1);
     expect(mainLandmarks[0]).toHaveAttribute("id", "main");
     expect(screen.getByLabelText("Conversation")).not.toHaveAttribute("id", "main");
+  });
+
+  it("passes session identity to the mounted conversation viewport", async () => {
+    const user = userEvent.setup();
+    render(<ChatApp />);
+
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Conversation")).toHaveAttribute(
+        "data-conversation-id",
+        "A",
+      ),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Session B" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Conversation")).toHaveAttribute(
+        "data-conversation-id",
+        "B",
+      ),
+    );
   });
 });
 describe("ChatApp citations", () => {
