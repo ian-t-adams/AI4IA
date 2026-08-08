@@ -101,7 +101,7 @@ azure.yaml  Azure Developer CLI service map
 ```powershell
 # After completing the greenfield standup guide:
 az login
-azd env new ai4ia-dev
+azd env select <environment>
 azd up
 ```
 

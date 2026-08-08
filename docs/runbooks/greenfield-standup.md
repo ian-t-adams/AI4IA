@@ -115,10 +115,13 @@ az identity federated-credential create `
   --audiences api://AzureADTokenExchange
 ```
 
-The production-environment subject is required for deployment. The main-branch
-subject is separately required for the Azure-backed status refresh in
-`.github/workflows/pages.yml`; adding an environment to that build job would
-change its subject and break this trust.
+Both subjects are required on the same deployment identity. The
+production-environment subject authorizes `deploy.yml`; the main-branch subject
+separately authorizes the Azure-backed status refresh in
+`.github/workflows/pages.yml`. Do not create a second Azure identity for Pages.
+Adding an environment to the Pages build job would change its subject and break
+this trust. Missing branch federation makes Azure login fail, and the workflow
+intentionally refuses to publish stale seed data.
 
 Grant the deployment identity the roles needed for the first subscription-level
 provision:
@@ -240,7 +243,9 @@ protection automatically.
 
 Under **Settings → Pages**, select **GitHub Actions** as the source. The Pages
 build uses the main-branch federated credential from section 2 to refresh live
-status before publishing.
+status before publishing. Its repository-variable check, Azure login, and status
+refresh are mandatory: any failure stops artifact upload rather than republishing
+an old snapshot.
 
 ## 4. Create the application Entra registrations
 
