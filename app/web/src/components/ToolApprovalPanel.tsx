@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { PendingToolApprovalPrompt } from "../lib/types";
 import { Pill } from "./Pill";
 
@@ -77,6 +78,11 @@ function ToolApprovalCard({
   const masked = new Set(prompt.argumentsMasked ?? []);
   const elided = new Set(prompt.argumentsElided ?? []);
   const omitted = prompt.argumentsOmitted ?? 0;
+  // Capture once rather than calling Date.now during render (React purity).
+  const [renderedAt] = useState(() => Date.now());
+  const expired = Number.isFinite(Date.parse(prompt.expiresAt))
+    ? Date.parse(prompt.expiresAt) <= renderedAt
+    : true;
   return (
     <div
       role="group"
@@ -121,8 +127,15 @@ function ToolApprovalCard({
         This request was not run. Content in this conversation — including
         uploaded documents, saved memories and tool results — can influence what
         a tool is asked to send, so outbound calls need your approval for these
-        exact values.
+        exact values. Approval starts a retry turn; the model must re-issue this
+        exact call before anything runs.
       </p>
+
+      {expired ? (
+        <p role="alert" style={{ margin: 0, fontSize: "0.82em", color: "var(--danger)" }}>
+          This approval has expired. Deny it and ask again to generate a fresh request.
+        </p>
+      ) : null}
 
       {preview.length > 0 ? (
         <dl
@@ -193,9 +206,9 @@ function ToolApprovalCard({
       <div style={{ display: "flex", gap: 8 }}>
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || expired}
           onClick={() => onApprove(prompt)}
-          aria-label={`Approve ${prompt.label}`}
+          aria-label={`Approve and retry ${prompt.label}`}
           style={{
             // --accent-fg is derived per accent by ThemeProvider, so it stays
             // readable on a user-chosen accent. Never hardcode a foreground
@@ -207,7 +220,7 @@ function ToolApprovalCard({
             padding: "6px 12px",
           }}
         >
-          Approve this call
+          Approve and retry
         </button>
         <button
           type="button"

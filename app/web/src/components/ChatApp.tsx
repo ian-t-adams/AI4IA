@@ -381,6 +381,7 @@ export function ChatApp() {
     useState<VoiceLiveProviderCatalogResponse | null>(null);
 
   const [streaming, setStreaming] = useState(false);
+  const [sessionLoading, setSessionLoading] = useState(false);
   const [streamingText, setStreamingText] = useState("");
   const [streamMaterialized, setStreamMaterialized] = useState(false);
   const [streamingStartedAt, setStreamingStartedAt] = useState<string | null>(
@@ -847,7 +848,15 @@ export function ChatApp() {
       activeIntentKeyRef.current = null;
       activeActivationSequenceRef.current = 0;
       setActiveId(id);
+      setSessionLoading(true);
       setError(null);
+      // Session-bound state must switch atomically. Keeping A's transcript,
+      // attachments or approval grants under B's header lets the user interact
+      // with visibly stale data while B loads.
+      setMessages([]);
+      setDocuments([]);
+      setLibraryDocs([]);
+      setToolApprovals([]);
       const mySessionListGeneration = ++sessionListGenerationRef.current;
       try {
         const [msgs, all, docs] = await Promise.all([
@@ -923,7 +932,13 @@ export function ChatApp() {
           }
         }
       } catch (e) {
-        setError((e as Error).message);
+        if (generation === selectionGenerationRef.current) {
+          setError((e as Error).message);
+        }
+      } finally {
+        if (generation === selectionGenerationRef.current) {
+          setSessionLoading(false);
+        }
       }
     },
     [
@@ -958,6 +973,8 @@ export function ChatApp() {
     setMessages([]);
     setDocuments([]);
     setLibraryDocs([]);
+    setToolApprovals([]);
+    setSessionLoading(false);
     setSelectedModel(pickDefaultModel(models));
     setSystemPrompt("");
     setDraftDefaults({
@@ -2141,9 +2158,18 @@ export function ChatApp() {
         return;
       }
       setError(null);
-      // A new turn supersedes any outstanding prompt: the grants not redeemed
-      // in `approvals` are simply abandoned, which is the denial path.
-      setToolApprovals([]);
+      if (approvals?.length) {
+        const redeemed = new Set(approvals.map((approval) => approval.requestId));
+        // Approving one prompt must not deny every sibling. The server can issue
+        // up to four independent prompts; only the selected grant is spent.
+        setToolApprovals((previous) =>
+          previous.filter((prompt) => !redeemed.has(prompt.id)),
+        );
+      } else {
+        // A fresh, unrelated user turn supersedes every old prompt; absence of a
+        // grant is the explicit denial path.
+        setToolApprovals([]);
+      }
       // Claim the in-flight slot synchronously so a rapid second submit can't
       // create a duplicate session or start an overlapping stream.
       streamingRef.current = true;
@@ -2787,7 +2813,7 @@ export function ChatApp() {
           }}
         />
         <Composer
-          disabled={streaming || !selectedModel}
+          disabled={streaming || sessionLoading || !selectedModel}
           streaming={streaming}
           agents={agents}
           documents={documents}
