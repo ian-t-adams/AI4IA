@@ -742,8 +742,7 @@ egress.
 Persisted messages contain prose, attachments, and coarse activity but no immutable
 claim-to-source registry (`sessions/models.py:99-128`). Web tools instruct the model to
 cite URLs, and Markdown renders model-supplied links; media references resolve by
-filename, where the first case-insensitive duplicate wins. The authored
-`citation-discipline` skill is absent from the canonical toolbox's empty `skills` list.
+filename, where the first case-insensitive duplicate wins.
 
 Persist server-owned source IDs, document/version or URL, retrieval timestamp,
 excerpt/span, and content hash per turn. Accept only citations to sources actually
@@ -779,15 +778,11 @@ judgement the reader makes against the real text rather than one the app pretend
 to have made. Web-search results, recalled memory, and session-uploaded documents
 are still cited as prose and remain unattested.
 
-The `citation-discipline` skill was deliberately **not** bound to the canonical
-toolbox as part of this. `foundry/toolbox.manifest.json` documents the toolbox
-that is actually deployed, and binding a skill that has not been provisioned into
-the project would make the manifest describe something that does not exist —
-drift of exactly the kind this repo gates against elsewhere. The skill also
-teaches a Markdown-URL citation style that now conflicts with the span-id token
-for library retrieval. Binding it would not have closed this finding either way:
-it instructs the model to cite well and cannot verify that it did, which is the
-whole point of the finding.
+The span-level fix does not bind a toolbox skill. Foundry exposes skills as MCP
+resources, while AI4IA's MCP client implements only `tools/list` and `tools/call`.
+Its server-owned `[[cite:S1]]` contract also cannot be delegated to instructions
+that produce a different citation syntax. This still does **not** close claim-level
+entailment, which remains the point of this finding.
 
 #### P1-15: Admin refresh can consume most of a 1 GiB API replica
 
@@ -943,7 +938,6 @@ as EU-resident merely because its endpoint is in Sweden.
 | Voice dictation hook | `useVoiceRecorder` and `transcribeAudio` have no production consumer. |
 | Voice agent/tool preferences | Computed in `ChatApp`, not accepted/rendered by the settings panel. |
 | Foundry safety annotations | Generated for every deployment but neither enforced nor consumed by the application. |
-| Citation-discipline skill | Authored and included in the example manifest; the canonical live toolbox binds no skills. |
 | Image background studio | Duplicates chat image generation and conflicts with the conversation-first product design. |
 | Azure Monitor workspace | **Closed:** removed from IaC; Log Analytics, workspace-based Application Insights, and admin Azure Monitor queries remain. |
 | App Configuration | **Closed:** a label-aware `Warm:Sentinel` now exercises managed-identity bootstrap and refresh without changing runtime policy. |

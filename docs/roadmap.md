@@ -73,8 +73,8 @@ closed 2026-08-07, #309; described here as it stood.)* When an answer says
 "according to the Q3 filing", the app renders that because the model wrote it.
 Nothing checks that a retrieved span actually says it, and nothing records which
 span the sentence came from. A correct citation and a fabricated one are
-byte-identical to the system. The `citation-discipline` skill instructs the model
-to cite well; it cannot verify that it did. Today the exposure is small because
+byte-identical to the system. Prompt instructions can ask the model to cite well;
+they cannot verify that it did. Today the exposure is small because
 volume is small. It scales badly in a specific way: the cost of an unverifiable
 citation is paid by the *reader*, so a system that produces ten a day and one
 that produces ten thousand a day fail identically per answer, and the second one

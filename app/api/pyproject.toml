@@ -162,7 +162,7 @@ dev = [
     # test_foundry_toolbox.py) instead of skipping via pytest.importorskip("jsonschema").
     "jsonschema>=4.18",
 ]
-# Provisioning-only extra for the Foundry toolbox/skills scripts (scripts/provision-foundry-*.py).
+# Provisioning-only extra for Foundry asset scripts (scripts/provision-foundry-*.py).
 # Installed by CI (see .github/workflows/app-ci.yml's `api` job) so the toolbox tests that
 # construct real azure.ai.projects.models classes run for real instead of skipping via
 # pytest.importorskip; NOT installed in the runtime container (the app never imports these

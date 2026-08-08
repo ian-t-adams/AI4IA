@@ -2176,7 +2176,7 @@
     },
     "skills": {
       "type": "array",
-      "description": "Existing project skills to bind to the toolbox as MCP resources. Create them first with scripts/provision-foundry-skills.py (or `azd ai skill create`).",
+      "description": "Existing project skills to bind to the toolbox as MCP resources. AI4IA's current MCP client does not implement resources/list or resources/read, so the canonical manifest intentionally leaves this empty.",
       "items": {
         "type": "object",
         "additionalProperties": false,

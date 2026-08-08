@@ -4,15 +4,15 @@
 > primary Foundry project, registered in `infra/mcp-servers.json`, and `enableOfficialMcp` +
 > `enableFoundryToolbox` + `enablePrivateToolCatalog` are `true` in `infra/main.parameters.json`. The
 > bicep param *defaults* remain `false`, so a consumer of this template starts off; this repo has
-> opted in. Every Foundry capability referenced here (toolboxes, skills, tool search, browser
+> opted in. Every Foundry capability referenced here (toolboxes, tool search, browser
 > automation, computer use, private tool catalog, routines, A2A) is **public preview** — do not use
 > in production without your own validation.
 >
-> **Portability (1:1 standup):** the toolbox is a data-plane resource, so `azd up` alone cannot
-> create it; a new subscription/tenant is **`azd up` + one command** (`provision-foundry-toolbox.py
-> --create`). The `mcp-servers.json` entry is portable — it sets `foundryToolbox: true` and omits
-> `upstreamUrl`, which `main.bicep` computes from the deployed project endpoint per environment.
-> `foundry/toolbox.manifest.json` is the canonical toolbox definition the script reproduces.
+> **Portability (1:1 standup):** the toolbox is a data-plane resource, so `azd up`
+> alone cannot create it. Run the access check and ensure commands below, or configure
+> `AZURE_FOUNDRY_PROJECT_ENDPOINT` and manually dispatch `foundry-assets.yml`. The
+> `mcp-servers.json` entry stays portable — it omits `upstreamUrl`, which `main.bicep` computes
+> per environment. `foundry/toolbox.manifest.json` is the canonical toolbox definition.
 
 ## TL;DR — the bridge
 
@@ -27,8 +27,8 @@ It requires an AAD bearer for `https://ai.azure.com` and the header
 managed agent runtime, AI4IA registers that one endpoint as a **single "official MCP server"**
 in `infra/mcp-servers.json`. The MCP APIM front door injects the
 managed-identity bearer, the static feature header, and the `api-version=v1` query; the app
-then consumes the entire toolbox — web/AI search, code interpreter, tool search, and bound
-skills — through the existing `OfficialMcpService` + agent tool picker with **zero new runtime
+then consumes the toolbox tools — web/AI search, code interpreter, and tool search —
+through the existing `OfficialMcpService` + agent tool picker with **zero new runtime
 code**.
 
 This is the maximal "through the proxy + APIM" outcome with minimal surface: one catalog
@@ -49,7 +49,7 @@ Toolbox's own `web_search`.
 - **Reuse, don't rebuild.** The app is a custom in-process agent runtime; tools are the
   abstraction. The official MCP plane already knows how to discover, gate, budget, and call an
   APIM-fronted MCP server. A toolbox *is* one, so it drops straight into that seam.
-- **One governance path.** Every tool and skill inside the toolbox inherits the same APIM
+- **One governance path.** Every tool inside the toolbox inherits the same APIM
   subscription-key gate, managed-identity egress, and per-turn call budget as the rest of the
   official plane. There is no second auth path to reason about.
 - **No runtime dependency creep.** `azure-ai-projects` is a *provisioning-time* extra
@@ -71,11 +71,10 @@ flowchart LR
         t1["web_search / azure_ai_search"]
         t2["code_interpreter"]
         t3["tool search (toolbox_search_preview)"]
-        sk["skills (SKILL.md)"]
     end
     picker --> mcpsvc -->|"subscription key\nhttps://<mcp-apim>/<name>/mcp"| pol
     pol -->|"bearer + header + query"| tb
-    tb --- t1 & t2 & t3 & sk
+    tb --- t1 & t2 & t3
 ```
 
 The app never sees the Foundry endpoint, the AAD token, or the preview header — APIM owns all
@@ -128,7 +127,7 @@ valid.
 | `raiPolicyName` | Optional Responsible AI policy already on the project (`foundry.bicep` provisions `ai4ia-annotate-only`). |
 | `connections` | Project connections referenced by name (credentials live in the connection, never here). |
 | `tools` | Built-in and MCP tools (see per-tool table below). At most one unnamed tool per `type`. |
-| `skills` | Existing project skills to bind (create them first with the skills script). |
+| `skills` | Generic Foundry skill references. Keep empty in AI4IA manifests until the runtime supports MCP resources. |
 
 `camelCase` keys in the manifest (e.g. `serverLabel`, `projectConnectionId`) are translated to
 the API's `snake_case` by `scripts/provision-foundry-toolbox.py`.
@@ -230,7 +229,7 @@ manifest covering all 13 toolbox tool types (17 tools total -- `web_search`, `az
 and `mcp` each appear twice, to show both of their alternative shapes, and tool search appears as
 both its GA `toolbox_search` and preview `toolbox_search_preview` spellings -- plus seven
 connections: Search, MCP-upstream, Playwright Workspace for browser automation, Bing Custom
-Search, and one each for the A2A/Fabric IQ/Work IQ examples, and a bound skill), all uniquely
+Search, and one each for the A2A/Fabric IQ/Work IQ examples), all uniquely
 identified (by `name`, or `serverLabel` for `mcp` tools).
 The shipped `foundry/toolbox.manifest.json` is the canonical `ai4ia-toolbox` definition; edit it (or
 the example, passing `--manifest foundry/toolbox.manifest.example.json`), prune what you don't need,
@@ -238,19 +237,14 @@ create any referenced connections, then run `provision-foundry-toolbox.py`. The 
 `project.toolboxes.create_version(name, tools=[...], description=..., skills=[...], policies=...)`,
 then activates that new version (see the idempotency note below).
 
-## Skills
+## Why the canonical toolbox has no skills
 
-A **skill** is a `foundry/skills/<name>/SKILL.md` file (Agent Skills spec,
-[agentskills.io](https://agentskills.io)): YAML front matter (`name`, `description`) plus a
-Markdown instruction body. `scripts/provision-foundry-skills.py` discovers, validates, and
-(`--create`) uploads each via `project.beta.skills.create(..., default=True)`, which both creates
-the version and activates it as the default in the same call (see the idempotency note below for
-how this differs from the toolbox script's two-call create-then-activate). Bind a skill to the
-toolbox by listing it under `skills` in the manifest. The example
-`foundry/skills/citation-discipline/SKILL.md` enforces grounded, cited answers.
-
-Skill `name` must match `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (max 64). The create path sends
-`Foundry-Features: Skills=V1Preview` and uses `allow_preview=True` on the client.
+Foundry exposes toolbox skills as MCP resources, not tools. AI4IA's current MCP client
+implements `tools/list` and `tools/call`, but not `resources/list` or `resources/read`, so
+binding a skill would create an asset the runtime cannot consume. A previous draft also
+required Markdown URL citations, conflicting with the server-owned `[[cite:S1]]` contract
+used for verified library citations. Skills remain a Foundry public-preview capability,
+but adding runtime MCP resource support is separate work.
 
 ## Operator runbook (end to end)
 
@@ -272,14 +266,15 @@ Skill `name` must match `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (max 64). The create p
 2. **Resolve the project endpoint.** With `enableFoundryToolbox=true` deployed, read it from
    `azd env get-values` (`AZURE_FOUNDRY_PROJECT_ENDPOINT`), or pass `--project-endpoint`.
 
-3. **Create skills (optional).** Dry-run, then create:
+3. **Verify data-plane access.** Azure OIDC login is authentication, not authorization.
+   The workflow identity must hold the project-scoped **Foundry User** role on the primary
+   Foundry project. Check it before any write:
 
    ```bash
-   python scripts/provision-foundry-skills.py
-   python scripts/provision-foundry-skills.py --create
+   python scripts/provision-foundry-toolbox.py --check-access
    ```
 
-4. **Populate `foundry/toolbox.manifest.json`** with tools (and any skills), then create the
+4. **Populate `foundry/toolbox.manifest.json`** with tools, then ensure the
    toolbox. The dry run prints the plan, the consumer MCP URL, and a ready-to-paste
    `infra/mcp-servers.json` entry:
 
@@ -290,30 +285,32 @@ Skill `name` must match `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` (max 64). The create p
    python scripts/provision-foundry-toolbox.py --emit-yaml foundry/toolbox.azd.yaml
    ```
 
-   > **Idempotency note:** re-running `--create` with the same manifest `name` does not fail or
-   > duplicate the toolbox -- it calls `create_version(name, ...)` again, which adds a new version
-   > under the same named toolbox. `create_version` alone does **not** change what the toolbox's
-   > MCP endpoint serves: a toolbox's `default_version` pointer is fixed at creation and does not
-   > auto-advance to newer versions. So after every successful `create_version`, the script also
-   > calls `project.toolboxes.update(name, default_version=<new version>)` to explicitly activate
-   > it -- without that, repeat `--create` runs would keep creating versions that are never
-   > actually served, silently. That makes repeat runs *safe* (each one activates cleanly) but not
-   > a true no-op: each `--create` still accumulates an immutable version even when the manifest is
-   > unchanged. There is no script-side dedup/diff against the latest version's content, so avoid
-   > scripting unconditional `--create` on every deploy; run it deliberately when the manifest
-   > changes. **Skills differ:** `provision-foundry-skills.py`'s `skills.create(name, ...,
-   > default=True)` is a single idempotent call that both creates the version (auto-creating the
-   > parent skill on first use) AND activates it as the default, so there is no separate
-   > "create-then-activate" step to forget for skills the way there is for the toolbox.
+   > **Idempotency note:** `--create` compares the desired source with the currently served
+   > default and creates nothing when they match. A changed toolbox creates exactly one immutable
+   > version and then explicitly advances `default_version`. Read, create, and activation errors
+   > propagate, so reconciliation cannot report success while leaving an old default served. If
+   > creation succeeded but activation failed, the next run scans immutable versions, reuses the
+   > matching version, and retries activation without creating a duplicate.
 
-5. **Register the entry.** Paste the printed object into `infra/mcp-servers.json` (`servers[]`)
+5. **Automated reconciliation.** Foundry asset and provisioner changes trigger
+   `.github/workflows/deploy.yml` first. After that named workflow completes successfully for a
+   push to `main`, `.github/workflows/foundry-assets.yml` checks out the exact deployed
+   `workflow_run.head_sha` and reconciles assets. It has no direct push trigger, so it cannot race
+   ahead of project creation or Foundry User role propagation. Manual dispatch remains available.
+   Both paths authenticate with OIDC, read `AZURE_FOUNDRY_PROJECT_ENDPOINT` from a repository or
+   production-environment variable, first verify project-scoped Foundry User, then ensure
+   `ai4ia-toolbox`. `main.bicep` includes `deploymentPrincipalId` in the primary project's
+   assignments; the preflight still fails with remediation if that grant has not reconciled.
+   Unchanged runs are no-ops.
+
+6. **Register the entry.** Paste the printed object into `infra/mcp-servers.json` (`servers[]`)
    and regenerate the packaged runtime catalog:
 
    ```bash
    python scripts/gen-mcp-catalog.py
    ```
 
-6. **Flip the flags and deploy:** `enableOfficialMcp=true` **and** `enableFoundryToolbox=true`,
+7. **Flip the flags and deploy:** `enableOfficialMcp=true` **and** `enableFoundryToolbox=true`,
    then `azd up`. The toolbox surfaces in the agent tool picker as the `foundry-toolbox`
    official MCP server; the grant lets APIM's MI bearer invoke it.
 
@@ -419,8 +416,8 @@ scaffold and the APIM-fronting commands are shipped and tested.
 - `app/api/tests/test_foundry_toolbox.py` pins, with no Azure SDK or network: manifest
   validation (checked-in manifest matches the live toolbox, bad name / too many unnamed tools /
   non-toolbox tool types flagged), camelCase→snake_case tool projection, the consumer URL, the
-  portable mcp-servers.json entry shape (`foundryToolbox: true`, no hardcoded URL), the azd YAML,
-  and SKILL.md parse/validate. `jsonschema`-guarded tests assert the projected entry validates
+  portable mcp-servers.json entry shape (`foundryToolbox: true`, no hardcoded URL), and the azd
+  YAML. `jsonschema`-guarded tests assert the projected entry validates
   against `infra/mcp-servers.schema.json` (the load-bearing cross-seam guarantee) and that the
   manifests match `toolbox.manifest.schema.json`, including strict per-type positive/negative
   cases for every one of the 13 tool types (required fields, cardinality, and cross-type field
@@ -450,6 +447,4 @@ scaffold and the APIM-fronting commands are shipped and tested.
   a missing project endpoint. `app/api/tests/test_foundry_a2a.py` separately pins the A2A endpoint
   script: manifest validation, the raw-vs-APIM endpoint URLs, the emitted `az` command shape, and
   that the emitted `agents.json` stub constructs as a real `AgentSpec` (so the links seam can
-  consume it). `app/api/tests/test_foundry_skills.py` pins the skills script: `SKILL.md`
-  parse/validate/discover, and that `create_skill()` always passes `default=True` so a new version
-  is activated on both first create and later updates.
+  consume it).

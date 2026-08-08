@@ -19,7 +19,8 @@ What it does
    ready-to-paste ``infra/mcp-servers.json`` entry that routes the toolbox through the
    existing official-MCP APIM (managed-identity bearer + the ``Foundry-Features`` header +
    ``api-version=v1`` query the toolbox endpoint requires).
-4. With ``--create``, calls ``project.toolboxes.create_version(...)`` via the
+4. With ``--create``, reads the served default version and calls
+   ``project.toolboxes.create_version(...)`` only when its content differs, via the
    ``azure-ai-projects`` SDK (install the optional dependency group: ``foundry``).
    Without it, the script is a dry run (safe, offline, no Azure calls).
 5. With ``--emit-yaml PATH``, writes the equivalent ``azd ai toolbox create --from-file``
@@ -394,7 +395,94 @@ def resolve_project_endpoint(arg: str | None) -> str:
 # --------------------------------------------------------------------------------------
 # Live path (isolated Azure SDK import; requires the optional `foundry` dependency group)
 # --------------------------------------------------------------------------------------
-def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
+def _project_client(project_endpoint: str) -> Any:
+    try:
+        from azure.ai.projects import AIProjectClient
+        from azure.identity import DefaultAzureCredential
+    except ImportError as exc:  # pragma: no cover - exercised only on live provisioning
+        raise SystemExit(
+            "azure-ai-projects is not installed. Install the optional provisioning group:\n"
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.4.0 azure-identity'
+        ) from exc
+    return AIProjectClient(endpoint=project_endpoint, credential=DefaultAzureCredential())
+
+
+def _sdk_models() -> Any:
+    try:
+        from azure.ai.projects import models
+    except ImportError as exc:  # pragma: no cover - exercised only without provisioning extra
+        raise SystemExit(
+            "azure-ai-projects is not installed. Install the optional provisioning group:\n"
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.4.0 azure-identity'
+        ) from exc
+    return models
+
+
+def _build_toolbox_kwargs(manifest: dict[str, Any], models: Any) -> dict[str, Any]:
+    """Build the exact SDK request fields used for creation and live-state comparison."""
+    tools: list[Any] = []
+    for tool in manifest.get("tools") or []:
+        cls_name = _TYPE_TO_MODEL.get(tool["type"])
+        if cls_name is None:  # pragma: no cover - guarded earlier by validate_manifest
+            raise SystemExit(
+                f"tool type '{tool['type']}' cannot be placed in a toolbox via azure-ai-projects "
+                f"(creatable types: {sorted(_ALLOWED_TOOL_TYPES)})."
+            )
+        model_cls = getattr(models, cls_name)
+        fields = {k: v for k, v in _convert_keys(tool).items() if k != "type"}
+        tools.append(model_cls(**fields))
+
+    kwargs: dict[str, Any] = {"tools": tools, "description": manifest.get("description", "")}
+    if manifest.get("skills"):
+        kwargs["skills"] = [
+            models.ToolboxSkillReference(name=s["name"], version=s["version"])
+            if s.get("version")
+            else models.ToolboxSkillReference(name=s["name"])
+            for s in manifest["skills"]
+        ]
+    if manifest.get("raiPolicyName"):
+        kwargs["policies"] = models.ToolboxPolicies(
+            rai_config=models.RaiConfig(rai_policy_name=manifest["raiPolicyName"])
+        )
+    return kwargs
+
+
+def _canonical_state(value: Any) -> Any:
+    """Reduce SDK models to stable request-visible content, omitting null/default gaps."""
+    if hasattr(value, "as_dict"):
+        value = value.as_dict()
+    if isinstance(value, dict):
+        return {
+            key: _canonical_state(item)
+            for key, item in sorted(value.items())
+            if item is not None
+        }
+    if isinstance(value, list):
+        return [_canonical_state(item) for item in value]
+    return value
+
+
+def _toolbox_state(value: Any) -> dict[str, Any]:
+    fields = {
+        "description": getattr(value, "description", None),
+        "tools": getattr(value, "tools", None),
+        "skills": getattr(value, "skills", None),
+        "policies": getattr(value, "policies", None),
+    }
+    return _canonical_state(fields)
+
+
+def _desired_toolbox_state(kwargs: dict[str, Any]) -> dict[str, Any]:
+    fields = {
+        "description": kwargs.get("description"),
+        "tools": kwargs.get("tools"),
+        "skills": kwargs.get("skills"),
+        "policies": kwargs.get("policies"),
+    }
+    return _canonical_state(fields)
+
+
+def create_toolbox(manifest: dict[str, Any], project_endpoint: str, *, project: Any | None = None) -> Any:
     """Create a toolbox version via azure-ai-projects and activate it as the default version.
 
     Imported lazily so dry runs need no SDK. Uses the real SDK surface: ``client.toolboxes.
@@ -411,47 +499,12 @@ def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
     default_version=<new version>)``, otherwise consumers would keep being served the old
     ``default_version`` forever after the first `--create`.
     """
-    try:
-        from azure.ai.projects import AIProjectClient
-        from azure.ai.projects import models as m
-        from azure.identity import DefaultAzureCredential
-    except ImportError as exc:  # pragma: no cover - exercised only on live provisioning
-        raise SystemExit(
-            "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.4.0 azure-identity'
-        ) from exc
-
-    project = AIProjectClient(endpoint=project_endpoint, credential=DefaultAzureCredential())
-
-    tools: list[Any] = []
-    for tool in manifest.get("tools") or []:
-        cls_name = _TYPE_TO_MODEL.get(tool["type"])
-        if cls_name is None:  # pragma: no cover - guarded earlier by validate_manifest
-            raise SystemExit(
-                f"tool type '{tool['type']}' cannot be placed in a toolbox via azure-ai-projects "
-                f"(creatable types: {sorted(_ALLOWED_TOOL_TYPES)})."
-            )
-        model_cls = getattr(m, cls_name)
-        # Recursive conversion matters here: nested config (azure_ai_search.indexes[].index_name,
-        # browser_automation_preview.connection.project_connection_id, ...) must also be
-        # snake_cased, or the SDK's typed nested models silently deserialize those fields as None
-        # instead of raising (see docs/foundry-toolbox.md's SDK-shape note).
-        fields = {k: v for k, v in _convert_keys(tool).items() if k != "type"}
-        tools.append(model_cls(**fields))
-
-    kwargs: dict[str, Any] = {"tools": tools, "description": manifest.get("description", "")}
-    if manifest.get("skills"):
-        kwargs["skills"] = [
-            m.ToolboxSkillReference(name=s["name"], version=s["version"])
-            if s.get("version")
-            else m.ToolboxSkillReference(name=s["name"])
-            for s in manifest["skills"]
-        ]
-    if manifest.get("raiPolicyName"):
-        kwargs["policies"] = m.ToolboxPolicies(
-            rai_config=m.RaiConfig(rai_policy_name=manifest["raiPolicyName"])
-        )
-    result = project.toolboxes.create_version(manifest["name"], **kwargs)
+    project = project or _project_client(project_endpoint)
+    m = _sdk_models()
+    kwargs = _build_toolbox_kwargs(manifest, m)
+    result = project.toolboxes.create_version(
+        manifest["name"], headers=TOOLBOX_FEATURES_HEADER, **kwargs
+    )
 
     version = getattr(result, "version", None)
     if not version:
@@ -461,8 +514,89 @@ def create_toolbox(manifest: dict[str, Any], project_endpoint: str) -> Any:
             "SDK response and activate the correct version manually via "
             "`project.toolboxes.update(name, default_version=...)`."
         )
-    project.toolboxes.update(manifest["name"], default_version=version)
+    project.toolboxes.update(
+        manifest["name"],
+        default_version=version,
+        headers=TOOLBOX_FEATURES_HEADER,
+    )
     return result
+
+
+def check_toolbox_access(project_endpoint: str, *, project: Any | None = None) -> None:
+    """Fail closed unless the caller can read the Foundry toolbox data plane."""
+    from azure.core.exceptions import HttpResponseError
+
+    project = project or _project_client(project_endpoint)
+    try:
+        next(
+            iter(
+                project.toolboxes.list(
+                    limit=1,
+                    headers=TOOLBOX_FEATURES_HEADER,
+                )
+            ),
+            None,
+        )
+    except HttpResponseError as exc:
+        status = getattr(exc, "status_code", None)
+        if status in {401, 403}:
+            raise SystemExit(
+                "Foundry toolbox data-plane access denied. Grant the workflow OIDC "
+                "identity the project-scoped 'Foundry User' role "
+                "(53ca6127-db72-4b80-b1b0-d745d6d5456d) on the primary Foundry "
+                "project; the Azure login alone grants no toolbox access."
+            ) from exc
+        raise
+
+
+def ensure_toolbox(
+    manifest: dict[str, Any], project_endpoint: str, *, project: Any | None = None
+) -> tuple[Any, bool]:
+    """Create and activate exactly one version when the served default differs."""
+    from azure.core.exceptions import ResourceNotFoundError
+
+    project = project or _project_client(project_endpoint)
+    m = _sdk_models()
+    kwargs = _build_toolbox_kwargs(manifest, m)
+    try:
+        toolbox = project.toolboxes.get(
+            manifest["name"], headers=TOOLBOX_FEATURES_HEADER
+        )
+    except ResourceNotFoundError:
+        return create_toolbox(manifest, project_endpoint, project=project), True
+
+    current = project.toolboxes.get_version(
+        manifest["name"],
+        toolbox.default_version,
+        headers=TOOLBOX_FEATURES_HEADER,
+    )
+    desired_state = _desired_toolbox_state(kwargs)
+    if _toolbox_state(current) == desired_state:
+        return current, False
+
+    # create_version() and update(default_version=...) are separate service calls. If
+    # activation failed after a successful create, retrying must reuse that immutable
+    # version rather than append an identical one on every run.
+    for candidate in project.toolboxes.list_versions(
+        manifest["name"],
+        headers=TOOLBOX_FEATURES_HEADER,
+    ):
+        if _toolbox_state(candidate) != desired_state:
+            continue
+        version = getattr(candidate, "version", None)
+        if not version:
+            raise SystemExit(
+                f"toolboxes.list_versions('{manifest['name']}') returned matching content "
+                f"without a usable `version` (got: {candidate!r}); refusing to create a "
+                "duplicate immutable version."
+            )
+        project.toolboxes.update(
+            manifest["name"],
+            default_version=version,
+            headers=TOOLBOX_FEATURES_HEADER,
+        )
+        return candidate, False
+    return create_toolbox(manifest, project_endpoint, project=project), True
 
 
 # --------------------------------------------------------------------------------------
@@ -473,6 +607,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help="Path to toolbox.manifest.json.")
     parser.add_argument("--project-endpoint", default=None, help="Foundry project endpoint (else AZURE_FOUNDRY_PROJECT_ENDPOINT).")
     parser.add_argument("--create", action="store_true", help="Actually create the toolbox version (needs azure-ai-projects). Default is a dry run.")
+    parser.add_argument(
+        "--check-access",
+        action="store_true",
+        help="Verify project-scoped toolbox data-plane access and exit.",
+    )
     parser.add_argument("--emit-yaml", type=Path, default=None, metavar="PATH", help="Write the `azd ai toolbox create --from-file` YAML and exit.")
     args = parser.parse_args(argv)
 
@@ -533,6 +672,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     endpoint = resolve_project_endpoint(args.project_endpoint)
+    if args.check_access:
+        check_toolbox_access(endpoint)
+        print(
+            "Foundry toolbox data-plane access is ready "
+            "(project-scoped Foundry User role confirmed)."
+        )
+        return 0
     planned = plan_tools(manifest)
     entry = build_mcp_server_entry(manifest, endpoint)
 
@@ -546,12 +692,18 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(entry, indent=2))
 
     if not args.create:
-        print("\n(dry run) Re-run with --create to create the toolbox version in Foundry.")
+        print("\n(dry run) Re-run with --create to ensure the toolbox in Foundry.")
         return 0
 
-    result = create_toolbox(manifest, endpoint)
-    version = getattr(result, "version", "?")
-    print(f"\nCreated toolbox '{manifest['name']}' version {version} and activated it as the default version.")
+    result, changed = ensure_toolbox(manifest, endpoint)
+    if changed:
+        version = getattr(result, "version", "?")
+        print(f"\nCreated toolbox '{manifest['name']}' version {version} and activated it as the default version.")
+    else:
+        print(
+            f"\nToolbox '{manifest['name']}' reconciled to existing version "
+            f"{getattr(result, 'version', '?')}; no version created."
+        )
     return 0
 
 

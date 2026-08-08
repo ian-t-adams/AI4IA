@@ -13,7 +13,7 @@
     },
     {
       "name": "synthesize",
-      "instructions": "Write a concise brief that answers the question. Follow the citation-discipline skill: every claim must cite one of the gathered sources.",
+      "instructions": "Write a concise brief that answers the question. Cite every claim from the gathered sources using the citation format required by the consuming application.",
       "tools": []
     }
   ]

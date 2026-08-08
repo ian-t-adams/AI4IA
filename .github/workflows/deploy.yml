@@ -33,8 +33,10 @@ on:
       - "app/**"
       - "infra/**"
       - "proxy/**"
+      - "foundry/**"
       - "azure.yaml"
       - ".github/workflows/deploy.yml"
+      - ".github/workflows/foundry-assets.yml"
       # These files ARE the release path. A script-only bugfix must run once in
       # production to prove itself; before this list existed such a merge sat
       # dormant until an unrelated app/infra change happened to trigger deploy.
@@ -42,6 +44,7 @@ on:
       - "scripts/post-deploy-verify.py"
       - "scripts/check-resource-providers.py"
       - "scripts/validate-feature-prereqs.py"
+      - "scripts/provision-foundry-toolbox.py"
   workflow_dispatch:
     inputs:
       provision:
