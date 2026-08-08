@@ -69,9 +69,11 @@ azure.yaml  Azure Developer CLI service map
 - **IaC:** Bicep + Azure Developer CLI (`azd`).
 - **Stack:** Next.js/TypeScript web, Python FastAPI API, .NET SimpleL7Proxy.
 - **Model gateway:** compatible HTTP/SSE calls go SimpleL7Proxy -> APIM; realtime
-  WebSockets go FastAPI relay -> APIM. Direct
-  Foundry calls are reserved for non-OpenAI control planes such as Content
-  Understanding and Azure Monitor where required.
+  WebSockets go FastAPI relay -> APIM. Two explicit direct Foundry exceptions are
+  documented in `AGENTS.md`: Content Understanding's native data plane and the
+  Responses-API Code Interpreter (the stateful sandbox is not a routable
+  chat-completions deployment). Azure Monitor is a separate native control/data
+  plane, not model inference.
 - **Catalog-driven models:** `infra/models.json` is the deployment source of truth
   and generates the packaged API model catalog, including per-model
   `reasoning_effort` values.
@@ -83,7 +85,14 @@ azure.yaml  Azure Developer CLI service map
 
 ## Deploy
 
+> `azd up` is appropriate only for an **already configured** environment. A
+> clean tenant also needs Entra app registrations, provider/model quota
+> preflight, deployment identity/RBAC, auth variables, and the custom-domain
+> two-pass sequence. The checked-in profile enables paid capabilities and
+> intentionally refuses insecure dev auth in a deployed environment.
+
 ```powershell
+# After completing the prerequisites in the deployment runbook:
 az login
 azd env new ai4ia-dev
 azd up

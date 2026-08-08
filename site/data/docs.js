@@ -52,7 +52,7 @@ window.AI4IA_DOCS = {
         { path: "SECURITY.md", title: "Security policy", desc: "How to report a vulnerability and what is in scope." },
         { path: "CODE_OF_CONDUCT.md", title: "Code of conduct", desc: "Contributor Covenant standards and enforcement for participating in the project." },
         { path: "THIRD_PARTY_NOTICES.md", title: "Third-party notices", desc: "License attribution and provenance for vendored and third-party dependencies the app ships \u2014 compliance reference." },
-        { path: "docs/rai-decision-record.md", title: "Responsible AI decision record", desc: "Why content filters are enabled but non-blocking, what compensates for it, and what is still missing \u2014 DRAFT, with owner, approval and expiry unfilled." },
+        { path: "docs/rai-decision-record.md", title: "Responsible AI decision record", desc: "Approved annotate-only content-safety posture: accountable owner, live approval evidence, compensating controls, annual review, and immediate invalidation triggers." },
       ],
     },
     {

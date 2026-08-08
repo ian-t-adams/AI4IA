@@ -4,7 +4,9 @@ Thanks for improving AI4IA. Start with the canonical agent/contributor guide in 
 
 ## Ground rules
 
-- Keep HTTP/SSE model traffic on SimpleL7Proxy -> APIM and realtime on the FastAPI relay -> APIM.
+- Keep compatible HTTP/SSE model traffic on SimpleL7Proxy -> APIM. Realtime
+  WebSockets and Responses-API Code Interpreter are the two explicit exceptions
+  in `AGENTS.md`; do not invent a third.
 - Keep models catalog-driven from `infra/models.json`; do not hardcode deployment names.
 - Keep feature gates server-authoritative and fail closed.
 - Preserve per-user ownership, Cosmos canonical data, and tool SSRF/scope/approval checks.
