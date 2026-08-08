@@ -146,7 +146,7 @@ Write-Host "Querying Resource Graph inventory for $ResourceGroup" -ForegroundCol
 # coalesce provisioningState with `state`: Postgres flexible servers (and a few other
 # providers) report readiness under properties.state, not properties.provisioningState.
 $invKql = "Resources | where resourceGroup =~ '$ResourceGroup' | project id, name, type, location, prov=tostring(coalesce(properties.provisioningState, properties.state))"
-$invOutput = @(az graph query -q $invKql --first 500 -o json --only-show-errors 2>&1)
+$invOutput = @(az graph query -q $invKql --subscriptions $Subscription --first 500 -o json --only-show-errors 2>&1)
 $invExitCode = $LASTEXITCODE
 if ($invExitCode -ne 0) {
     throw "Resource Graph inventory query failed (az exit $invExitCode)."
@@ -182,7 +182,7 @@ Write-Host 'Querying Resource Health availability states' -ForegroundColor Cyan
 $health = @{}
 try {
     $hKql = "healthresources | where type =~ 'microsoft.resourcehealth/availabilitystatuses' | project rid=tolower(tostring(properties.targetResourceId)), state=tostring(properties.availabilityState)"
-    $hOutput = @(az graph query -q $hKql --first 500 -o json --only-show-errors 2>&1)
+    $hOutput = @(az graph query -q $hKql --subscriptions $Subscription --first 500 -o json --only-show-errors 2>&1)
     $hExitCode = $LASTEXITCODE
     if ($hExitCode -ne 0) { throw "az exited $hExitCode" }
     $hRaw = ($hOutput -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop

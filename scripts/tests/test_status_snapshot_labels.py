@@ -65,6 +65,7 @@ class StatusSnapshotLabelTests(unittest.TestCase):
             f"""
             $mode = {_ps_quote(mode)}
             $inventoryJson = {_ps_quote(inventory_json)}
+            $global:graphQueries = @()
             function global:az {{
                 $joined = $args -join ' '
                 if ($joined -like 'account set*') {{
@@ -77,6 +78,7 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                     return
                 }}
                 if ($joined -like 'graph query*') {{
+                    $global:graphQueries += $joined
                     if ($joined -like '*healthresources*') {{
                         Write-Output '{{"data":[]}}'
                         $global:LASTEXITCODE = 0
@@ -97,6 +99,17 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                 -Subscription 'sub-test' `
                 -ResourceGroup 'rg-test' `
                 -OutDir {_ps_quote(str(out_dir))}
+            if ($mode -eq 'valid') {{
+                if ($global:graphQueries.Count -ne 2) {{
+                    throw "Expected inventory and health queries, got $($global:graphQueries.Count)."
+                }}
+                $unscoped = @($global:graphQueries | Where-Object {{
+                    $_ -notmatch '(?:^| )--subscriptions sub-test(?: |$)'
+                }})
+                if ($unscoped.Count -gt 0) {{
+                    throw "Resource Graph query was not scoped to sub-test: $($unscoped -join '; ')"
+                }}
+            }}
             """
         )
         return subprocess.run(
@@ -128,7 +141,7 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                 self.assertEqual(inventory.read_text(encoding="utf-8"), "inventory sentinel")
                 self.assertEqual(status.read_text(encoding="utf-8"), "status sentinel")
 
-    def test_valid_nonempty_inventory_reaches_both_output_writes(self) -> None:
+    def test_valid_nonempty_inventory_scopes_both_queries_and_writes_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
             result = self._run_snapshot("valid", out_dir)
