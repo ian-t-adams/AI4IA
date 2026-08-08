@@ -13,7 +13,10 @@ from ai4ia_api.catalog import DeploymentOption
 from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
 from ai4ia_api.main import create_app
 from ai4ia_api.routers import chat as chat_router
-from ai4ia_api.routers.chat import _agentic_stream, _stream_with_placeholder
+from ai4ia_api.routers._chat_streaming import (
+    _agentic_stream,
+    _stream_with_placeholder,
+)
 from ai4ia_api.sessions.models import Message, MessageRole, MessageStatus
 from tests.conftest import make_settings, stream_like_gateway
 
