@@ -8,6 +8,8 @@ that still listed the PostgreSQL server deleted six days later.
 """
 from __future__ import annotations
 
+import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -20,12 +22,55 @@ STATUS_HTML = REPO / "site" / "status.html"
 INDEX_HTML = REPO / "site" / "index.html"
 DEPLOYMENT_DOC = REPO / "docs" / "runbooks" / "deployment.md"
 META_JS = REPO / "site" / "data" / "meta.js"
+SERVICES_HTML = REPO / "site" / "services.html"
 
 
 class PagesStatusRefreshTests(unittest.TestCase):
     def _steps(self) -> list[dict]:
         document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
         return document["jobs"]["build"]["steps"]
+
+    def _render_services(self, generated_at: str) -> dict[str, str]:
+        app_path = json.dumps(str(APP_JS))
+        generated = json.dumps(generated_at)
+        harness = f"""
+        Date.now = () => Date.parse("2026-08-08T12:00:00Z");
+        const nodes = {{
+          "services-root": {{ innerHTML: "" }},
+          "services-updated": {{ innerHTML: "" }}
+        }};
+        global.window = {{
+          AI4IA_SERVICES: [{{
+            name: "Storage", icon: "S", group: "Data",
+            azureType: "Microsoft.Storage/storageAccounts",
+            resourcePattern: "st-*", summary: "Stores files.",
+            module: "data.bicep", identity: "Managed identity", docs: []
+          }}],
+          AI4IA_INVENTORY: {{
+            generatedAt: {generated},
+            resources: [{{ type: "microsoft.storage/storageaccounts", name: "st-one" }}]
+          }},
+          matchMedia: () => ({{ matches: false }})
+        }};
+        global.document = {{
+          getElementById: (id) => nodes[id] || null,
+          addEventListener: (name, callback) => callback(),
+          querySelector: () => null,
+          createElement: () => ({{ innerHTML: "", content: null }})
+        }};
+        require({app_path});
+        process.stdout.write(JSON.stringify({{
+          cards: nodes["services-root"].innerHTML,
+          freshness: nodes["services-updated"].innerHTML
+        }}));
+        """
+        result = subprocess.run(
+            ["node", "-e", harness],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return json.loads(result.stdout)
 
     def test_refresh_passes_the_resource_group_and_endpoint_urls(self) -> None:
         refresh = next(
@@ -97,7 +142,7 @@ class PagesStatusRefreshTests(unittest.TestCase):
     def test_public_copy_calls_status_a_timestamped_snapshot_not_live_health(self) -> None:
         public_copy = "\n".join(
             path.read_text(encoding="utf-8").lower()
-            for path in (STATUS_HTML, INDEX_HTML)
+            for path in (STATUS_HTML, INDEX_HTML, SERVICES_HTML)
         )
         self.assertIn("static snapshot", public_copy)
         self.assertIn("not a live poll", public_copy)
@@ -121,10 +166,29 @@ class PagesStatusRefreshTests(unittest.TestCase):
         self.assertIn("ageHours > STATUS_STALE_AFTER_HOURS", app)
         self.assertIn('label: "stale snapshot"', app)
         self.assertIn('label: "current snapshot"', app)
-        self.assertIn("snapshotFreshness(s.generatedAt)", app)
+        self.assertIn("var freshness = snapshotFreshness(generatedAt)", app)
+        self.assertIn('renderSnapshotFreshness(el("updated"), s.generatedAt)', app)
         self.assertIn("stateBadge(freshness.state, freshness.label)", app)
         self.assertIn("older than 24 hours is visibly marked stale", status.lower())
         self.assertIn('id="updated" aria-live="polite"', status)
+
+    def test_services_counts_use_the_shared_snapshot_freshness_state(self) -> None:
+        current = self._render_services("2026-08-08T11:00:00Z")
+        stale = self._render_services("2026-08-07T11:00:00Z")
+
+        self.assertIn("1 in current snapshot", current["cards"])
+        self.assertIn("current snapshot", current["freshness"])
+        self.assertIn("1 in stale snapshot", stale["cards"])
+        self.assertIn("stale snapshot", stale["freshness"])
+        self.assertNotIn(" live", current["cards"].lower())
+        self.assertNotIn(" live", stale["cards"].lower())
+
+    def test_services_copy_describes_timestamped_evidence_not_live_counts(self) -> None:
+        services = SERVICES_HTML.read_text(encoding="utf-8").lower()
+        self.assertIn("count badges come from the timestamped", services)
+        self.assertIn("whether that evidence is current or stale", services)
+        self.assertNotIn("live badge", services)
+        self.assertIn('id="services-updated" aria-live="polite"', services)
 
 
 if __name__ == "__main__":

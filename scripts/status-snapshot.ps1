@@ -146,14 +146,47 @@ Write-Host "Querying Resource Graph inventory for $ResourceGroup" -ForegroundCol
 # coalesce provisioningState with `state`: Postgres flexible servers (and a few other
 # providers) report readiness under properties.state, not properties.provisioningState.
 $invKql = "Resources | where resourceGroup =~ '$ResourceGroup' | project id, name, type, location, prov=tostring(coalesce(properties.provisioningState, properties.state))"
-$invRaw = az graph query -q $invKql --first 500 -o json | ConvertFrom-Json
+$invOutput = @(az graph query -q $invKql --first 500 -o json --only-show-errors 2>&1)
+$invExitCode = $LASTEXITCODE
+if ($invExitCode -ne 0) {
+    throw "Resource Graph inventory query failed (az exit $invExitCode)."
+}
+try {
+    $invRaw = ($invOutput -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop
+}
+catch {
+    throw "Resource Graph inventory query returned malformed JSON: $($_.Exception.Message)"
+}
+$dataProperty = $invRaw.PSObject.Properties['data']
+if (-not $dataProperty) {
+    throw 'Resource Graph inventory response is missing the required data array.'
+}
+if ($invRaw.data -isnot [System.Array]) {
+    throw 'Resource Graph inventory response data must be an array.'
+}
+if ($invRaw.data.Count -eq 0) {
+    throw "Resource Graph returned no resources for configured resource group '$ResourceGroup'; refusing to publish an empty snapshot."
+}
+$invalidResources = @($invRaw.data | Where-Object {
+    [string]::IsNullOrWhiteSpace($_.id) -or
+    [string]::IsNullOrWhiteSpace($_.name) -or
+    [string]::IsNullOrWhiteSpace($_.type) -or
+    [string]::IsNullOrWhiteSpace($_.location)
+})
+if ($invalidResources.Count -gt 0) {
+    throw "Resource Graph inventory contains $($invalidResources.Count) resource row(s) missing id, name, type, or location."
+}
 
 # --- 2) Resource health via Resource Graph healthresources table (one call) ---
 Write-Host 'Querying Resource Health availability states' -ForegroundColor Cyan
 $health = @{}
 try {
     $hKql = "healthresources | where type =~ 'microsoft.resourcehealth/availabilitystatuses' | project rid=tolower(tostring(properties.targetResourceId)), state=tostring(properties.availabilityState)"
-    $hRaw = az graph query -q $hKql --first 500 -o json --only-show-errors | ConvertFrom-Json
+    $hOutput = @(az graph query -q $hKql --first 500 -o json --only-show-errors 2>&1)
+    $hExitCode = $LASTEXITCODE
+    if ($hExitCode -ne 0) { throw "az exited $hExitCode" }
+    $hRaw = ($hOutput -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop
+    if ($hRaw.data -isnot [System.Array]) { throw 'response data is not an array' }
     foreach ($h in $hRaw.data) { if ($h.rid) { $health[$h.rid] = $h.state } }
 } catch {
     Write-Warning "Resource Health query failed (continuing without it): $($_.Exception.Message)"

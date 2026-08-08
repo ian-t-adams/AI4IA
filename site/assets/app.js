@@ -69,6 +69,15 @@
     };
   }
 
+  function renderSnapshotFreshness(host, generatedAt) {
+    var freshness = snapshotFreshness(generatedAt);
+    if (host) {
+      host.innerHTML = stateBadge(freshness.state, freshness.label) +
+        "<span>Generated " + fmtDate(generatedAt) + ". " + esc(freshness.detail) + "</span>";
+    }
+    return freshness;
+  }
+
   function groupBy(arr, key) {
     return arr.reduce(function (acc, x) { (acc[x[key]] = acc[x[key]] || []).push(x); return acc; }, {});
   }
@@ -120,12 +129,7 @@
     var s = window.AI4IA_STATUS;
     var host = el("status-stats");
     if (!s || !host) return;
-    var up = el("updated");
-    if (up) {
-      var freshness = snapshotFreshness(s.generatedAt);
-      up.innerHTML = stateBadge(freshness.state, freshness.label) +
-        "<span>Generated " + fmtDate(s.generatedAt) + ". " + esc(freshness.detail) + "</span>";
-    }
+    renderSnapshotFreshness(el("updated"), s.generatedAt);
 
     var sum = s.summary;
     var resources = s.resources || [];
@@ -192,11 +196,15 @@
     var svc = window.AI4IA_SERVICES;
     var host = el("services-root");
     if (!svc || !host) return;
-    // Count live instances per service using the generated inventory (best effort).
-    var inv = (window.AI4IA_INVENTORY && window.AI4IA_INVENTORY.resources) || [];
+    var inventory = window.AI4IA_INVENTORY || {};
+    var inv = Array.isArray(inventory.resources) ? inventory.resources : [];
+    var freshness = renderSnapshotFreshness(el("services-updated"), inventory.generatedAt);
+    var countFreshnessLabel = freshness.state === "unknown"
+      ? "snapshot (freshness unknown)"
+      : freshness.label;
     // Match on BOTH the Azure type and the service's own name pattern. Matching
-    // type alone made every service sharing a type report the same number, so the
-    // web app, API and model proxy each claimed "3 live" when exactly one
+    // type alone made every service sharing a type report the same count, so the
+    // web app, API and model proxy each claimed three instances when exactly one
     // container app matches each of ca-web-*, ca-api-* and ca-proxy-*.
     // `resourcePattern` uses shell-style `*` plus `{a,b}`/`{region}` placeholders,
     // both of which become "any run of characters" here -- deliberately loose,
@@ -206,7 +214,7 @@
       var body = escaped.replace(/\{[^}]*\}/g, "*").replace(/\*/g, ".*");
       return new RegExp("^" + body + "$", "i");
     }
-    function liveCount(service) {
+    function snapshotCount(service) {
       var t = String(service.azureType).toLowerCase();
       var rx = patternToRegExp(service.resourcePattern);
       return inv.filter(function (r) {
@@ -218,10 +226,10 @@
     Object.keys(groups).sort().forEach(function (g) {
       html += '<h2 class="group-title">' + esc(g) + "</h2><div class='grid cols-2'>";
       groups[g].forEach(function (s) {
-        var n = liveCount(s);
+        var n = snapshotCount(s);
         var docs = (s.docs || []).map(function (d) { return '<a href="' + esc(d[1]) + '" target="_blank" rel="noopener">' + esc(d[0]) + "</a>"; }).join(" · ");
         html += '<div class="card"><h3><span class="icon">' + esc(s.icon) + "</span> " + esc(s.name) +
-          (n ? ' <span class="tag">' + n + " live</span>" : "") + "</h3>" +
+          (n ? ' <span class="tag snapshot-' + esc(freshness.state) + '">' + n + " in " + esc(countFreshnessLabel) + "</span>" : "") + "</h3>" +
           "<p>" + esc(s.summary) + "</p>" +
           '<p class="meta"><strong>Azure type:</strong> <span class="mono">' + esc(s.azureType) + "</span></p>" +
           '<p class="meta"><strong>IaC:</strong> <span class="mono">' + esc(s.module) + '</span> · <strong>Names:</strong> <span class="mono">' + esc(s.resourcePattern) + "</span></p>" +

@@ -156,6 +156,9 @@ section { padding: 30px 0; }
   display: inline-block; font-size: 0.72rem; padding: 2px 8px; border-radius: 999px;
   background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); margin: 2px 4px 2px 0;
 }
+.card .tag.snapshot-stale {
+  color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
 
 /* ---------- KPI stat tiles ---------- */
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
