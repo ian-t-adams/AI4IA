@@ -113,6 +113,7 @@ export interface AdminUserRow {
   costKnown: boolean;
   lastActiveAt?: string | null;
   entitlement?: EntitlementView | null;
+  entitlementKnown?: boolean;
   // Admin-only directory enrichment: present going forward once the user signs
   // in; null/absent -> the UI falls back to the short hash.
   displayName?: string | null;
@@ -212,6 +213,7 @@ export const OVERVIEW_SECTION_LABELS: Record<string, string> = {
   agents: "agents",
   userAgents: "user agents",
   distributions: "distributions",
+  entitlements: "entitlements",
 };
 
 // Mirrors ai4ia_api.metrics.models.PanelStatus. "partial" means at least one
@@ -605,7 +607,11 @@ export function linePoints(
 }
 
 // Short, human label for a user's entitlement in the top-users table.
-export function entitlementLabel(ent: EntitlementView | null | undefined): string {
+export function entitlementLabel(
+  ent: EntitlementView | null | undefined,
+  known = true,
+): string {
+  if (!known) return "Unavailable";
   if (!ent) return "Unlimited";
   if (ent.disabled) return "Disabled";
   if (ent.isUnlimited) return "Unlimited";

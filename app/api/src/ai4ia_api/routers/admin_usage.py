@@ -118,6 +118,10 @@ class AdminUserRow(UserUsageBucket):
     """
 
     entitlement: EntitlementView | None = None
+    # False means the entitlement store could not be read. `entitlement=None`
+    # is otherwise the meaningful shipped unlimited default, so collapsing a
+    # store outage into None makes disabled/limited users look Unlimited.
+    entitlementKnown: bool = True
     displayName: str | None = None
     email: str | None = None
 
@@ -180,18 +184,19 @@ class AdminUsageOverviewResponse(AdminUsageWindow):
     partialSections: list[str] = []
 
 
-async def _entitlement_overrides(request: Request) -> dict[str, EntitlementView]:
+async def _entitlement_overrides(
+    request: Request,
+) -> tuple[dict[str, EntitlementView], bool]:
     """Best-effort userId -> entitlement override map (one store read).
 
     Users with no override are on the shipped unlimited default, so an absent key
-    is meaningful, not an error. Any store failure degrades to an empty map — the
-    join is advisory and must never fail the report.
+    is meaningful. The boolean distinguishes that from an unavailable store.
     """
     try:
         overrides = await request.app.state.entitlements.list_overrides()
     except Exception:  # noqa: BLE001 - the join is advisory; never fail the read
-        return {}
-    return {ent.userId: EntitlementView.of(ent.userId, ent) for ent in overrides}
+        return {}, False
+    return {ent.userId: EntitlementView.of(ent.userId, ent) for ent in overrides}, True
 
 
 async def _resolve_directory(
@@ -333,7 +338,7 @@ async def usage_overview(
     report = await _service(request).overview(
         days=days, user_limit=limit, user_offset=offset
     )
-    overrides_by_user = await _entitlement_overrides(request)
+    overrides_by_user, entitlements_known = await _entitlement_overrides(request)
     # Resolve every user id both sections need in ONE directory read.
     directory = (
         await _resolve_directory(
@@ -351,6 +356,7 @@ async def usage_overview(
             AdminUserRow(
                 **bucket.model_dump(),
                 entitlement=overrides_by_user.get(bucket.userId),
+                entitlementKnown=entitlements_known,
                 displayName=name,
                 email=email,
             )
@@ -381,7 +387,10 @@ async def usage_overview(
         byProvider=report.byProvider,
         byDeployment=report.byDeployment,
         byStatus=report.byStatus,
-        partialSections=report.partialSections,
+        partialSections=[
+            *report.partialSections,
+            *([] if entitlements_known else ["entitlements"]),
+        ],
     )
 
 
@@ -397,7 +406,7 @@ async def usage_by_user(
     report = await _service(request).by_user(days=days, limit=limit, offset=offset)
     # Join the page to entitlement overrides in a single store read (users with
     # no override are the unlimited default -> entitlement stays None).
-    overrides_by_user = await _entitlement_overrides(request)
+    overrides_by_user, entitlements_known = await _entitlement_overrides(request)
 
     # Best-effort enrich the page with directory display names only in identified
     # mode. De-identified mode leaves PII null so the UI shows only the short hash.
@@ -412,6 +421,7 @@ async def usage_by_user(
             AdminUserRow(
                 **bucket.model_dump(),
                 entitlement=overrides_by_user.get(bucket.userId),
+                entitlementKnown=entitlements_known,
                 displayName=name,
                 email=email,
             )

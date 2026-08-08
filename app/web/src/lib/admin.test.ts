@@ -116,6 +116,10 @@ describe("linePoints", () => {
 });
 
 describe("entitlementLabel", () => {
+  it("distinguishes an unavailable store from the unlimited default", () => {
+    expect(entitlementLabel(null, false)).toBe("Unavailable");
+    expect(entitlementLabel(undefined, false)).toBe("Unavailable");
+  });
   it("treats no override as Unlimited", () => {
     expect(entitlementLabel(null)).toBe("Unlimited");
     expect(entitlementLabel(undefined)).toBe("Unlimited");
