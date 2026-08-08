@@ -575,7 +575,7 @@ Do not carry these values across unchanged:
 
 Memory is already Cosmos-backed in a greenfield environment. The
 [memory migration runbook](./memory-migration.md) documents the retired
-PostgreSQL-to-Cosmos transition and is not a prerequisite for a new tenant.
+legacy memory-store transition and is not a prerequisite for a new tenant.
 
 Operator scripts such as `inventory.ps1`,
 `capture-data-recovery-state.ps1`, `teardown.ps1`,
