@@ -117,9 +117,16 @@ the container — those names are *outputs*, not knobs you set.
 | Proxy vanity host | `AI4IA_PROXY_CUSTOM_DOMAIN` | `proxyCustomDomain` | Empty value removes the custom domain binding on provision. |
 | Existing proxy managed certificate | `AI4IA_PROXY_MANAGED_CERT_NAME` | `proxyManagedCertName` | Empty value derives a cert name and can create/adopt a different cert. |
 
-If a vanity hostname matters, set the domain variables before running
-`azd provision`. Pretending this is optional is how you get a green deployment
-and a dead vanity URL.
+For an **existing** environment, set all four values before every provision;
+omitting them removes the bindings. A **new** environment is necessarily
+two-phase: leave all four values empty for the first provision, create the public
+DNS records, add each hostname to its Container App, create the managed
+certificates, then set the four values and provision again so Bicep adopts and
+maintains them. Azure refuses to issue a managed certificate until the hostname
+already exists in the Container Apps environment
+(`RequireCustomHostnameInEnvironment`). The complete sequence is
+[deployment runbook section 3a](runbooks/deployment.md#3a-custom-domains-bind-them-after-the-first-provision-not-during-it).
+Treat skipping either phase as an outage risk, not as a harmless omission.
 
 ## Model gateway direction and trust
 

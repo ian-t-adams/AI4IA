@@ -398,7 +398,22 @@ jobs:
           guard "ca-proxy-${AZURE_ENV_NAME}" "AI4IA_PROXY_CUSTOM_DOMAIN" "${AI4IA_PROXY_CUSTOM_DOMAIN:-}"
           exit $rc
 
+      # Capture BEFORE ARM can touch the Container Apps. The app modules need an
+      # image in every template and their greenfield defaults are quickstart
+      # placeholders; an infra reconciliation can therefore create a placeholder
+      # revision before the release images are built. Capturing afterward would
+      # record that placeholder as the rollback target. `capture` records
+      # exists:false for missing greenfield apps, so this ordering also supports a
+      # first stand-up.
+      - name: Capture pre-provision revisions (rollback target)
+        id: capture
+        run: |
+          set -euo pipefail
+          python scripts/post-deploy-verify.py capture \
+            --state "${RUNNER_TEMP}/ai4ia-deploy-state.json"
+
       - name: Provision infrastructure
+        id: provision
         # Skipped only when a manual run explicitly opts out; push events always
         # reconcile infra (azd provision is idempotent).
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
@@ -433,10 +448,11 @@ jobs:
       #     registry-LESS reference would silently fall back to azd's own push,
       #     hence the fully-qualified login server and the dot assertion below.
       #
-      # Deliberately BEFORE the rollback capture. A build failure here must fail
-      # the job WITHOUT firing the P1-6 rollback, and that step is gated on
-      # `steps.capture.outcome == 'success'`. Pushing to ACR changes no running
-      # revision, so at this point there is genuinely nothing to restore.
+      # The rollback target is already captured because provision may have touched
+      # the running app templates. A build failure after provision therefore
+      # restores the pre-provision revisions. On a manual run that skipped
+      # provision, the rollback condition below does not restore anything unless
+      # application deployment itself was attempted.
       #
       # Repository names match azd's own DefaultImageName
       # (`<project>/<service>-<env>`, lowercased -- pkg/project/container_helper.go)
@@ -520,16 +536,9 @@ jobs:
       # may still be the azd placeholder image, which is exactly why it treats
       # app probes as best-effort.
       #
-      # So: capture the rollback target first, deploy, then assert, then restore
-      # on failure.
+      # So: preserve the pre-provision target, reconcile/build/deploy, then assert
+      # and restore on failure.
       # ---------------------------------------------------------------------
-      - name: Capture pre-deploy revisions (rollback target)
-        id: capture
-        run: |
-          set -euo pipefail
-          python scripts/post-deploy-verify.py capture \
-            --state "${RUNNER_TEMP}/ai4ia-deploy-state.json"
-
       # Deliberately BEFORE `azd deploy`. If the deploy identity cannot obtain a
       # token for the API audience, that is a gate misconfiguration, not a bad
       # release -- and discovering it after deployment would roll back a healthy
@@ -570,6 +579,7 @@ jobs:
       # but not here would silently stop being deployed, which the old
       # deploy-everything form could not do.
       - name: Deploy application
+        id: deploy
         env:
           WEB_IMAGE: ${{ steps.images.outputs.web_image }}
           API_IMAGE: ${{ steps.images.outputs.api_image }}
@@ -664,7 +674,7 @@ jobs:
       # timeout, both of which kill the runner outright. See
       # docs/runbooks/deployment.md section 6.
       - name: Roll back to the captured revisions
-        if: ${{ failure() && steps.capture.outcome == 'success' && steps.canary_token.outcome != 'failure' }}
+        if: ${{ failure() && steps.capture.outcome == 'success' && steps.canary_token.outcome != 'failure' && (steps.provision.outcome != 'skipped' || steps.deploy.outcome == 'failure' || steps.verify.outcome == 'failure') }}
         timeout-minutes: 20
         run: |
           set -euo pipefail

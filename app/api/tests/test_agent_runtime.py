@@ -7,12 +7,17 @@ are honored.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
-from ai4ia_api.agents.runtime import run_agent_turn
+import pytest
+
+from ai4ia_api.agents.runtime import AgentRunFailed, run_agent_turn
 from ai4ia_api.agents.tool_exec import ToolContext, ToolDefinition, ToolExecutor, build_tools
 from ai4ia_api.agents.tools import ToolRegistry, ToolSpec
+from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
+from tests.conftest import stream_like_gateway
 
 
 def _assistant_tool_call(call_id: str, name: str, arguments: str) -> dict:
@@ -857,3 +862,186 @@ async def test_two_malicious_registered_names_do_not_collide_in_dispatch(caplog)
     assert len(tool_results) == 2
     assert all(name_a not in r.getMessage() and name_b not in r.getMessage() for r in caplog.records)
 
+
+async def test_gateway_failure_exposes_redacted_partial_result_after_tool_execution():
+    """Iteration-two failure must not erase iteration one's irreversible work."""
+    raw_argument = "argument-secret"
+    raw_result = "result-secret"
+    executed: list[dict] = []
+    registry = ToolRegistry()
+    executor = ToolExecutor()
+
+    def handler(args, _ctx):
+        executed.append(dict(args))
+        return {"ok": True, "token": raw_result}
+
+    definition = ToolDefinition(
+        spec=ToolSpec(name="side_effect", description="records a side effect"),
+        parameters={
+            "type": "object",
+            "properties": {"authorization": {"type": "string"}},
+            "required": ["authorization"],
+        },
+        handler=handler,
+    )
+    registry.register(definition.spec)
+    executor.register(definition)
+
+    first = _assistant_tool_call(
+        "c1",
+        "side_effect",
+        json.dumps({"authorization": raw_argument}),
+    )
+    first["choices"][0]["message"]["content"] = "Working. "
+    first["usage"] = _usage(11, 4)
+
+    class FailingSecondIterationGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.failure = ModelGatewayError(502, "second iteration failed")
+
+        async def stream(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                async for chunk in stream_like_gateway(first):
+                    yield chunk
+                return
+            raise self.failure
+            yield  # pragma: no cover
+
+    gateway = FailingSecondIterationGateway()
+    emitted: list[str] = []
+
+    async def on_delta(text: str) -> None:
+        emitted.append(text)
+
+    with pytest.raises(Exception) as excinfo:
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=["side_effect"],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+            on_delta=on_delta,
+        )
+
+    failure = excinfo.value
+    assert failure.__class__.__name__ == "AgentRunFailed"
+    partial = failure.partial
+    assert {
+        "cause": failure.cause,
+        "gateway_calls": gateway.calls,
+        "executed": executed,
+        "streamed": "".join(emitted),
+        "partial_streamed": partial.streamed_text,
+        "iterations": partial.iterations,
+        "usage": (
+            partial.usage.prompt,
+            partial.usage.completion,
+            partial.usage.total,
+            partial.usage.calls,
+            partial.usage.complete,
+        ),
+        "steps": [
+            (step.kind, step.tool, step.arguments, step.result)
+            for step in partial.steps
+        ],
+    } == {
+        "cause": gateway.failure,
+        "gateway_calls": 2,
+        "executed": [{"authorization": raw_argument}],
+        "streamed": "Working. ",
+        "partial_streamed": "Working. ",
+        "iterations": 2,
+        "usage": (11, 4, 15, 2, False),
+        "steps": [
+            (
+                "tool_result",
+                "side_effect",
+                {"authorization": "***REDACTED***"},
+                {"ok": True, "token": "***REDACTED***"},
+            )
+        ],
+    }
+    assert raw_argument not in repr(partial.steps)
+    assert raw_result not in repr(partial.steps)
+
+
+async def test_cancellation_is_not_wrapped_as_agent_run_failure():
+    class CancelledGateway:
+        async def complete(self, **_kwargs):
+            raise asyncio.CancelledError()
+
+    registry, executor = build_tools()
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=[],
+            gateway=CancelledGateway(),
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+        )
+
+
+async def test_first_model_failure_without_partial_work_is_not_wrapped():
+    failure = ModelGatewayError(502, "first call failed")
+
+    class FirstCallFailureGateway:
+        async def complete(self, **_kwargs):
+            raise failure
+
+    registry, executor = build_tools()
+    with pytest.raises(ModelGatewayError) as excinfo:
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=[],
+            gateway=FirstCallFailureGateway(),
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+        )
+
+    assert excinfo.value is failure
+    assert issubclass(AgentRunFailed, RuntimeError)
+
+
+async def test_first_failed_stream_with_observed_usage_is_partial_but_unknown():
+    failure = ModelGatewayError(502, "failed after usage")
+
+    class UsageThenFailureGateway:
+        async def stream(self, **_kwargs):
+            yield ChatChunk(
+                usage={
+                    "prompt_tokens": 9,
+                    "completion_tokens": 0,
+                    "total_tokens": 9,
+                }
+            )
+            raise failure
+
+    async def on_delta(_text: str) -> None:  # pragma: no cover
+        raise AssertionError("no delta expected")
+
+    registry, executor = build_tools()
+    with pytest.raises(AgentRunFailed) as excinfo:
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=[],
+            gateway=UsageThenFailureGateway(),
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+            on_delta=on_delta,
+        )
+
+    usage = excinfo.value.partial.usage
+    assert excinfo.value.cause is failure
+    assert (usage.prompt, usage.completion, usage.total) == (9, 0, 9)
+    assert (usage.calls, usage.known, usage.complete) == (1, True, True)

@@ -49,7 +49,7 @@ from ..agents.command_service import (
     execute_tool_command,
 )
 from ..agents.commands import CommandKind, parse_input
-from ..agents.runtime import AgentRunResult, AgentStep, run_agent_turn
+from ..agents.runtime import AgentRunFailed, AgentRunResult, AgentStep, run_agent_turn
 from ..agents.activity import persisted_trace, serialize_step
 from ..agents.approvals import (
     ApprovalDenied,
@@ -98,6 +98,7 @@ from ..websearch.factory import WebSearchService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
+_CHAT_COMPLETION_FAILED = "Chat completion failed."
 
 
 class ChatParams(BaseModel):
@@ -505,6 +506,51 @@ async def _persist_terminal_assistant(
         return False
 
 
+async def _persist_nonstream_failure(
+    *,
+    repo: SessionRepository,
+    metering: UsageService,
+    user: AuthenticatedUser,
+    session_id: str,
+    model_id: str,
+    deployment: DeploymentOption,
+    agent_name: str | None,
+    correlation_id: str,
+    usage: TokenUsage,
+    content: str = "",
+    steps: list[ActivityStep] | None = None,
+    sources: list[RetrievedSource] | None = None,
+    attachments: list[MessageAttachment] | None = None,
+) -> Message:
+    """Persist and meter a terminal error for an accepted non-streaming turn."""
+
+    assistant = Message(
+        sessionId=session_id,
+        userId=user.internal_user_id,
+        role=MessageRole.assistant,
+        content=content,
+        status=MessageStatus.error,
+        model=deployment.deploymentName,
+        agent=agent_name,
+        attachments=attachments or [],
+        steps=steps,
+        sources=sources,
+    )
+    attest_message(assistant)
+    await repo.add_message(user.internal_user_id, assistant)
+    await metering.record_completion(
+        user_id=user.internal_user_id,
+        session_id=session_id,
+        model_id=model_id,
+        deployment=deployment,
+        usage=usage,
+        status="error",
+        agent=agent_name,
+        correlation_id=correlation_id,
+    )
+    return assistant
+
+
 def _local_reply_response(
     session_id: str,
     assistant: Message,
@@ -669,6 +715,18 @@ async def _agentic_stream(
             elif kind == "error":
                 run_error = payload
 
+        if isinstance(run_error, ModelGatewayError):
+            total_usage = total_usage.add(TokenUsage.parse(None))
+
+        if isinstance(run_error, AgentRunFailed):
+            partial = run_error.partial
+            total_usage = partial.usage
+            for extra in extra_usage or []:
+                total_usage = total_usage.add(extra)
+            persisted = persisted_trace(partial.steps) or None
+            content = streamed_text if streamed_text else partial.text
+            raise run_error.cause
+
         # ``pending_delta`` is the text still owed to the client. Under streaming
         # that is normally nothing (it already went out increment by increment);
         # without streaming it is the whole answer, exactly as before.
@@ -685,14 +743,32 @@ async def _agentic_stream(
             # the turn never dead-ends. The steps that did run are still shown, and
             # anything already streamed is kept rather than retracted — the user
             # cannot un-see it.
-            if run_error is not None:
-                logger.warning("agentic stream fell back after run error", exc_info=run_error)
-            fb_text, fb_usage = await fallback()
+            if isinstance(run_error, ModelGatewayError):
+                logger.warning(
+                    "agentic stream gateway run failed; using fallback",
+                    extra={
+                        "ai4ia_gateway_status": run_error.status_code,
+                        "ai4ia_correlation_id": correlation_id,
+                    },
+                )
+            elif run_error is not None:
+                logger.warning(
+                    "agentic stream run failed; using fallback",
+                    extra={"ai4ia_correlation_id": correlation_id},
+                )
+            if result is not None:
+                total_usage = total_usage.add(result.usage)
+                for extra in extra_usage or []:
+                    total_usage = total_usage.add(extra)
+                persisted = persisted_trace(result.steps) or None
+            try:
+                fb_text, fb_usage = await fallback()
+            except ModelGatewayError:
+                total_usage = total_usage.add(TokenUsage.parse(None))
+                raise
             pending_delta = f"\n\n{fb_text}" if streamed_text.strip() else fb_text
             content = f"{streamed_text}{pending_delta}" if streamed_text.strip() else fb_text
-            total_usage = fb_usage
-            if result is not None:
-                persisted = persisted_trace(result.steps) or None
+            total_usage = total_usage.add(fb_usage)
         elif streamed_text.strip():
             # Streamed text but no reported final answer and no fallback: keep what
             # the user saw rather than persisting an empty row over it.
@@ -730,7 +806,7 @@ async def _agentic_stream(
             if approval_events:
                 yield f"data: {json.dumps({'approvals': approval_events})}\n\n"
             yield "data: [DONE]\n\n"
-    except ModelGatewayError as exc:
+    except ModelGatewayError:
         final = MessageStatus.error
         assistant.content = content
         assistant.status = final
@@ -740,7 +816,11 @@ async def _agentic_stream(
         terminal_persisted = await _persist_terminal_assistant(
             repo, user.internal_user_id, assistant
         )
-        detail = exc.detail if terminal_persisted else "The failed reply could not be saved."
+        detail = (
+            _CHAT_COMPLETION_FAILED
+            if terminal_persisted
+            else "The failed reply could not be saved."
+        )
         error_payload: dict[str, object] = {"error": detail}
         if not terminal_persisted:
             error_payload["persistenceFailed"] = True
@@ -755,7 +835,7 @@ async def _agentic_stream(
         terminal_persisted = await _persist_terminal_assistant(
             repo, user.internal_user_id, assistant
         )
-        error_payload = {"error": "Chat completion failed."}
+        error_payload = {"error": _CHAT_COMPLETION_FAILED}
         if not terminal_persisted:
             error_payload = {
                 "error": "The failed reply could not be saved.",
@@ -769,6 +849,10 @@ async def _agentic_stream(
     finally:
         if not task.done():
             task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
         if not terminal_persisted:
             assistant.content = content
             assistant.status = final
@@ -1846,18 +1930,61 @@ async def chat(
                 media_type="text/event-stream",
             )
 
-        run = await run_agent_turn(
-            deployment=deployment.deploymentName,
-            messages=payload_messages,
-            tool_names=agent.tools,
-            gateway=gateway,
-            registry=turn_registry,
-            executor=turn_executor,
-            ctx=ctx,
-            params=effective_params,
-            extra_tools=extra_tools or None,
-            extra_handlers=extra_handlers or None,
-        )
+        try:
+            run = await run_agent_turn(
+                deployment=deployment.deploymentName,
+                messages=payload_messages,
+                tool_names=agent.tools,
+                gateway=gateway,
+                registry=turn_registry,
+                executor=turn_executor,
+                ctx=ctx,
+                params=effective_params,
+                extra_tools=extra_tools or None,
+                extra_handlers=extra_handlers or None,
+            )
+        except AgentRunFailed as exc:
+            partial = exc.partial
+            total_usage = partial.usage
+            for sub_usage in usage_sink:
+                total_usage = total_usage.add(sub_usage)
+            await _persist_nonstream_failure(
+                repo=repo,
+                metering=metering,
+                user=user,
+                session_id=body.sessionId,
+                model_id=model_id,
+                deployment=deployment,
+                usage=total_usage,
+                agent_name=agent_name,
+                correlation_id=correlation_id,
+                content=partial.text or partial.streamed_text,
+                attachments=[*image_sink, *video_sink, *doc_sink],
+                steps=persisted_trace(partial.steps) or None,
+                sources=library_sources,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=_CHAT_COMPLETION_FAILED,
+            ) from exc.cause
+        except ModelGatewayError as exc:
+            await _persist_nonstream_failure(
+                repo=repo,
+                metering=metering,
+                user=user,
+                session_id=body.sessionId,
+                model_id=model_id,
+                deployment=deployment,
+                usage=TokenUsage.parse(None),
+                agent_name=agent_name,
+                correlation_id=correlation_id,
+                attachments=[*image_sink, *video_sink, *doc_sink],
+                sources=library_sources,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=_CHAT_COMPLETION_FAILED,
+            ) from exc
         # Meter the whole turn (supervisor calls + every delegated sub-turn) to the
         # supervisor's single deployment. Sub-turns ran on the same deployment, so
         # this is a faithful per-model total.
@@ -1924,6 +2051,7 @@ async def chat(
     # ``plain_capabilities_possible`` is False, BOTH branches are skipped (no tool
     # loop and no notice), and a no-web/no-compute plain turn takes the streaming
     # path below byte-for-byte unchanged.
+    plain_fallback_usage = TokenUsage.empty()
     plain_compute_active = (
         compute is not None
         and compute_decision is not None
@@ -2118,10 +2246,39 @@ async def chat(
                         # record keeps just their hashes.
                         plain_reply["approvals"] = approval_events
                     return plain_reply
-        except Exception:  # noqa: BLE001 - the plain tool loop must never break a turn
+        except AgentRunFailed as exc:
+            partial = exc.partial
+            await _persist_nonstream_failure(
+                repo=repo,
+                metering=metering,
+                user=user,
+                session_id=body.sessionId,
+                model_id=model_id,
+                deployment=deployment,
+                usage=partial.usage,
+                agent_name=agent_name,
+                correlation_id=correlation_id,
+                content=partial.text or partial.streamed_text,
+                steps=persisted_trace(partial.steps) or None,
+                sources=library_sources,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=_CHAT_COMPLETION_FAILED,
+            ) from exc.cause
+        except ModelGatewayError as exc:
+            plain_fallback_usage = plain_fallback_usage.add(TokenUsage.parse(None))
             logger.warning(
-                "plain-chat tool loop failed; falling back to normal answer",
-                exc_info=True,
+                "plain-chat tool loop gateway failure; using normal answer",
+                extra={
+                    "ai4ia_gateway_status": exc.status_code,
+                    "ai4ia_correlation_id": correlation_id,
+                },
+            )
+        except Exception:  # noqa: BLE001 - pre-execution failures may fall through
+            logger.warning(
+                "plain-chat tool loop failed; using normal answer",
+                extra={"ai4ia_correlation_id": correlation_id},
             )
     elif plain_capabilities_possible:
         # Same capabilities were available, but the model is served through the
@@ -2151,7 +2308,22 @@ async def chat(
                 api=api,
             )
         except ModelGatewayError as exc:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.detail)
+            await _persist_nonstream_failure(
+                repo=repo,
+                metering=metering,
+                user=user,
+                session_id=body.sessionId,
+                model_id=model_id,
+                deployment=deployment,
+                usage=plain_fallback_usage.add(TokenUsage.parse(None)),
+                agent_name=agent_name,
+                correlation_id=correlation_id,
+                sources=library_sources,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=_CHAT_COMPLETION_FAILED,
+            ) from exc
         text = _extract_text(result)
         assistant = Message(
             sessionId=body.sessionId,
@@ -2174,7 +2346,7 @@ async def chat(
             session_id=body.sessionId,
             model_id=model_id,
             deployment=deployment,
-            usage=TokenUsage.parse(result.get("usage")),
+            usage=plain_fallback_usage.add(TokenUsage.parse(result.get("usage"))),
             status="complete",
             agent=agent_name,
             correlation_id=correlation_id,
@@ -2256,14 +2428,18 @@ async def chat(
                 yield "data: [DONE]\n\n"
             else:
                 yield f"data: {json.dumps({'error': 'Stream ended unexpectedly.'})}\n\n"
-        except ModelGatewayError as exc:
+        except ModelGatewayError:
             final = MessageStatus.error
             assistant.content = "".join(parts)
             assistant.status = final
             terminal_persisted = await _persist_terminal_assistant(
                 repo, user.internal_user_id, assistant
             )
-            detail = exc.detail if terminal_persisted else "The failed reply could not be saved."
+            detail = (
+                _CHAT_COMPLETION_FAILED
+                if terminal_persisted
+                else "The failed reply could not be saved."
+            )
             error_payload: dict[str, object] = {"error": detail}
             if not terminal_persisted:
                 error_payload["persistenceFailed"] = True
@@ -2275,7 +2451,7 @@ async def chat(
             terminal_persisted = await _persist_terminal_assistant(
                 repo, user.internal_user_id, assistant
             )
-            error_payload = {"error": "Chat completion failed."}
+            error_payload = {"error": _CHAT_COMPLETION_FAILED}
             if not terminal_persisted:
                 error_payload = {
                     "error": "The failed reply could not be saved.",

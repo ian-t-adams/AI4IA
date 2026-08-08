@@ -90,15 +90,15 @@ window.AI4IA_SERVICES = [
     group: "Security", icon: "🔐", module: "keyvault.bicep", resourcePattern: "kvai4ia*",
     summary: "RBAC-mode Key Vault holding per-user (BYO) MCP connection credentials. Only opaque references land in " +
       "Cosmos; APIM hop keys are separate Container App secrets and are not stored here.",
-    identity: "app identities get Secrets User (read); id-api gets Secrets Officer when custom tools are enabled (write)",
+    identity: "id-api gets Secrets Officer only when custom tools are enabled; web and proxy have no vault data-plane role",
     docs: [["Azure Key Vault", "https://learn.microsoft.com/azure/key-vault/general/overview"]],
   },
   {
     key: "appconfig", name: "App Configuration", azureType: "Microsoft.AppConfiguration/configurationStores",
     group: "Config", icon: "🎛️", module: "keyvault.bicep", resourcePattern: "appcs-ai4ia-*",
-    summary: "Centralized configuration store paired with Key Vault. App identities read it with the App Configuration " +
-      "Data Reader role.",
-    identity: "app identities granted App Configuration Data Reader",
+    summary: "Centralized configuration store paired with Key Vault. SimpleL7Proxy alone reads warm/cold gateway settings; " +
+      "the web and API do not consume this plane.",
+    identity: "id-proxy alone has App Configuration Data Reader",
     docs: [["Azure App Configuration", "https://learn.microsoft.com/azure/azure-app-configuration/overview"]],
   },
   {
@@ -112,9 +112,9 @@ window.AI4IA_SERVICES = [
   {
     key: "eventhubs", name: "Event Hubs Namespace", azureType: "Microsoft.EventHub/namespaces",
     group: "Messaging", icon: "📨", module: "eventhubs.bicep", resourcePattern: "evhns-ai4ia-*",
-    summary: "Telemetry/eventing backbone for cost/usage events. Identity-based auth only (local/SAS auth disabled); " +
-      "senders/receivers use the Event Hubs Data Sender/Receiver roles.",
-    identity: "id-api sender/receiver; id-proxy sender only when proxy telemetry is enabled",
+    summary: "Provisioned identity-only namespace reserved for telemetry export. The live proxy Event Hub flag is off and " +
+      "the API has no producer/consumer integration, so this is dormant capacity rather than an active cost/usage pipeline.",
+    identity: "id-api retains sender/receiver; id-proxy gets sender only when proxy telemetry is enabled",
     docs: [["Azure Event Hubs", "https://learn.microsoft.com/azure/event-hubs/event-hubs-about"]],
   },
   {
@@ -126,10 +126,18 @@ window.AI4IA_SERVICES = [
     docs: [["Azure Service Bus", "https://learn.microsoft.com/azure/service-bus-messaging/service-bus-messaging-overview"]],
   },
   {
+    key: "durabletask", name: "Durable Task Scheduler", azureType: "Microsoft.DurableTask/schedulers",
+    group: "Compute", icon: "⏱️", module: "durabletask.bicep", resourcePattern: "dts-ai4ia-*",
+    summary: "Scheduler and task hub for workflow runs that explicitly request durability. The checked-in production " +
+      "profile enables it; ordinary workflow runs remain synchronous unless the caller opts in.",
+    identity: "id-api has Durable Task Data Contributor scoped to the task hub",
+    docs: [["Durable Task Scheduler", "https://learn.microsoft.com/azure/azure-functions/durable/durable-task-scheduler/durable-task-scheduler"]],
+  },
+  {
     key: "eventgrid", name: "Event Grid System Topics (×2)", azureType: "Microsoft.EventGrid/systemTopics",
     group: "Messaging", icon: "⚡", module: "data.bicep (implicit)", resourcePattern: "st*-{guid}",
-    summary: "Auto-created system topics that surface blob change events from the two storage accounts (e.g. to drive " +
-      "asynchronous document ingestion).",
+    summary: "Azure-created system topics associated with the two storage accounts. No event subscription currently " +
+      "drives document ingestion; ingestion remains API/process initiated.",
     identity: "n/a",
     docs: [["Event Grid system topics", "https://learn.microsoft.com/azure/event-grid/system-topics"]],
   },
@@ -153,9 +161,9 @@ window.AI4IA_SERVICES = [
   {
     key: "monitorworkspace", name: "Azure Monitor Workspace", azureType: "Microsoft.Monitor/accounts",
     group: "Observability", icon: "📊", module: "monitoring.bicep", resourcePattern: "amw-ai4ia-*",
-    summary: "Managed Prometheus metrics store. The admin dashboard's resource panels read Azure Monitor platform " +
-      "metrics via the batch metrics API (which requires Monitoring Reader at subscription scope).",
-    identity: "id-api granted Monitoring Reader at SUBSCRIPTION scope",
+    summary: "Provisioned Managed Prometheus workspace, but no scrape/data-collection rule currently writes to it. The " +
+      "admin dashboard instead reads Azure Monitor platform metrics directly through the batch metrics API.",
+    identity: "no workspace data-plane consumer; id-api's subscription Monitoring Reader supports the separate batch metrics API",
     docs: [["Azure Monitor workspace", "https://learn.microsoft.com/azure/azure-monitor/essentials/azure-monitor-workspace-overview"]],
   },
   {

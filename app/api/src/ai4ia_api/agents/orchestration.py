@@ -27,10 +27,10 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ..gateway.client import ModelGatewayClient
+from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..usage.models import TokenUsage
 from .agent_catalog import AgentCatalog, AgentSpec
-from .runtime import run_agent_turn
+from .runtime import AgentRunFailed, AgentRunResult, run_agent_turn
 from .tool_exec import ToolContext, ToolExecutor
 from .tools import ToolRegistry
 from .user_agents import MAX_LINKS, NAME_RE
@@ -152,17 +152,28 @@ def build_delegate_capability(
         # Depth-1: no extra_tools/extra_handlers, so the sub-agent cannot itself
         # delegate. Supervisor deployment + params=None for correct, simple
         # metering and to avoid inheriting the parent's sampling/token budget.
-        run = await run_agent_turn(
-            deployment=deployment,
-            messages=sub_messages,
-            tool_names=target.tools,
-            gateway=gateway,
-            registry=registry,
-            executor=executor,
-            ctx=ToolContext(correlation_id=ctx.correlation_id),
-            params=None,
-            max_iters=_SUB_AGENT_MAX_ITERS,
-        )
+        try:
+            run = await run_agent_turn(
+                deployment=deployment,
+                messages=sub_messages,
+                tool_names=target.tools,
+                gateway=gateway,
+                registry=registry,
+                executor=executor,
+                ctx=ToolContext(correlation_id=ctx.correlation_id),
+                params=None,
+                max_iters=_SUB_AGENT_MAX_ITERS,
+            )
+        except ModelGatewayError as exc:
+            raise AgentRunFailed(
+                cause=exc,
+                partial=AgentRunResult(
+                    text="",
+                    model=deployment,
+                    iterations=1,
+                    usage=TokenUsage.parse(None),
+                ),
+            ) from exc
         usage_sink.append(run.usage)
         logger.info(
             "delegated to agent=%s iters=%s", target_name, run.iterations

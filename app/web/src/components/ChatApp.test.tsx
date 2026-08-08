@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   listMessages: vi.fn(),
   listDocuments: vi.fn(),
   listLibraryDocuments: vi.fn(),
+  getLibraryDocument: vi.fn(),
   listSharedWithMe: vi.fn(),
   createSession: vi.fn(),
   streamChat: vi.fn(),
@@ -118,15 +119,44 @@ vi.mock("./Composer", () => ({
 vi.mock("./MessageList", () => ({
   MessageList: ({
     messages,
+    onCitation,
   }: {
     messages: { id: string; content: string }[];
+    onCitation?: (target: {
+      documentId: string;
+      filename: string;
+      ms: number;
+    }) => void;
   }) => (
     <div aria-label="Conversation">
       {messages.map((message) => (
         <div key={message.id}>{message.content}</div>
       ))}
+      {onCitation && (
+        <button
+          type="button"
+          onClick={() =>
+            onCitation({
+              documentId: "shared-media",
+              filename: "shared.mp4",
+              ms: 42_000,
+            })
+          }
+        >
+          Open shared citation
+        </button>
+      )}
     </div>
   ),
+}));
+vi.mock("./MediaPlayer", () => ({
+  MediaPlayer: ({
+    doc,
+    seekToMs,
+  }: {
+    doc: { id: string };
+    seekToMs?: number;
+  }) => <div>{`Playing ${doc.id} at ${seekToMs}`}</div>,
 }));
 vi.mock("./InlineVoiceLive", () => ({
   InlineVoiceLiveStatus: () => null,
@@ -204,6 +234,7 @@ beforeEach(() => {
   mocks.appendVoiceTurns.mockResolvedValue([]);
   mocks.listDocuments.mockResolvedValue([]);
   mocks.listLibraryDocuments.mockResolvedValue([]);
+  mocks.getLibraryDocument.mockRejectedValue(new Error("not configured"));
   mocks.listSharedWithMe.mockResolvedValue([]);
   mocks.createSession.mockImplementation(async (value: object) => ({
     ...session("C"),
@@ -321,6 +352,29 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   document.documentElement.style.removeProperty("--font-scale");
+});
+
+describe("ChatApp citations", () => {
+  it("opens shared media directly by the attested document id", async () => {
+    mocks.getLibraryDocument.mockResolvedValue({
+      ...libraryDocument("shared-media", "shared.mp4"),
+      contentType: "video/mp4",
+      modality: "video",
+      analyzerId: null,
+      summary: "",
+      visibility: "shared",
+    });
+    const user = userEvent.setup();
+
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Open shared citation" }),
+    );
+
+    expect(mocks.getLibraryDocument).toHaveBeenCalledWith("shared-media");
+    expect(await screen.findByText("Playing shared-media at 42000")).toBeInTheDocument();
+  });
 });
 
 describe("ChatApp uploads", () => {

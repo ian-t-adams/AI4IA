@@ -43,6 +43,8 @@ WORKFLOW = ROOT / ".github/workflows/deploy.yml"
 AZURE_YAML = ROOT / "azure.yaml"
 
 BUILD_STEP = "Build and push service images"
+CAPTURE_STEP = "Capture pre-provision revisions"
+PROVISION_STEP = "Provision infrastructure"
 DEPLOY_STEP = "Deploy application"
 VERIFY_STEP = "Verify the deploy actually landed"
 
@@ -374,19 +376,21 @@ class DeployWiringTests(unittest.TestCase):
         run = _step(BUILD_STEP)["run"]
         self.assertIn("${GITHUB_SHA}", run)
 
-    def test_images_are_built_before_the_rollback_capture(self) -> None:
-        """A build failure must not fire the P1-6 rollback.
+    def test_rollback_target_is_captured_before_provision_can_replace_images(self) -> None:
+        """ARM must not turn a quickstart revision into the rollback target."""
 
-        The rollback is gated on `steps.capture.outcome == 'success'`, so
-        capturing first would make every failed build "restore" revisions that
-        were never touched.
-        """
-
-        self.assertLess(_step_index(BUILD_STEP), _step_index("Capture pre-deploy"))
+        indexes = [
+            _step_index(CAPTURE_STEP),
+            _step_index(PROVISION_STEP),
+            _step_index(BUILD_STEP),
+        ]
+        self.assertEqual(indexes, sorted(indexes))
 
     def test_the_p1_6_ordering_is_preserved(self) -> None:
         order = [
-            "Capture pre-deploy",
+            CAPTURE_STEP,
+            PROVISION_STEP,
+            BUILD_STEP,
             "Preflight the post-deploy canary token",
             DEPLOY_STEP,
             "Acquire the canary token",
@@ -398,10 +402,16 @@ class DeployWiringTests(unittest.TestCase):
 
     def test_the_rollback_guards_are_unchanged(self) -> None:
         condition = str(_step("Roll back to the captured revisions")["if"])
+        self.assertEqual(_step(PROVISION_STEP).get("id"), "provision")
+        self.assertEqual(_step(DEPLOY_STEP).get("id"), "deploy")
+        self.assertEqual(_step(VERIFY_STEP).get("id"), "verify")
         for guard in (
             "failure()",
             "steps.capture.outcome == 'success'",
             "steps.canary_token.outcome != 'failure'",
+            "steps.provision.outcome != 'skipped'",
+            "steps.deploy.outcome == 'failure'",
+            "steps.verify.outcome == 'failure'",
         ):
             self.assertIn(guard, condition)
 

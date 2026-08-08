@@ -214,6 +214,10 @@ def _responses_json_to_chat(obj: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+_REQUEST_FAILED = "Model gateway request failed."
+_STREAM_FAILED = "Model stream failed."
+
+
 class ModelGatewayError(Exception):
     def __init__(self, status_code: int, detail: str) -> None:
         super().__init__(f"gateway error {status_code}: {detail}")
@@ -770,10 +774,18 @@ class ModelGatewayClient:
             )
         client, owned = self._client()
         try:
-            resp = await client.post(req.url, headers=req.headers, json=req.json)
+            try:
+                resp = await client.post(req.url, headers=req.headers, json=req.json)
+            except httpx.HTTPError as exc:
+                raise ModelGatewayError(502, _REQUEST_FAILED) from exc
             if resp.status_code >= 400:
                 raise ModelGatewayError(resp.status_code, resp.text)
-            data = resp.json()
+            try:
+                data = resp.json()
+            except ValueError as exc:
+                raise ModelGatewayError(502, _REQUEST_FAILED) from exc
+            if not isinstance(data, dict):
+                raise ModelGatewayError(502, _REQUEST_FAILED)
             if api == "responses":
                 if data.get("status") == "failed":
                     err = (data.get("error") or {}).get("message") or "responses failed"
@@ -863,6 +875,8 @@ class ModelGatewayClient:
                             if chunk.done:
                                 return
                     return
+        except httpx.HTTPError as exc:
+            raise ModelGatewayError(502, _STREAM_FAILED) from exc
         finally:
             if owned:
                 await client.aclose()
@@ -921,6 +935,8 @@ class ModelGatewayClient:
                     chunk = _parse_responses_event("\n".join(data_buf))
                     if chunk is not None:
                         yield chunk
+        except httpx.HTTPError as exc:
+            raise ModelGatewayError(502, _STREAM_FAILED) from exc
         finally:
             if owned:
                 await client.aclose()

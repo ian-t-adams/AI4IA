@@ -5,6 +5,7 @@ import pytest
 
 from ai4ia_api.agents.agent_catalog import AgentCatalog, AgentSpec
 from ai4ia_api.agents.tool_exec import build_tools
+from ai4ia_api.gateway.client import ModelGatewayError
 from ai4ia_api.workflows.models import (
     MAX_INSTRUCTION_LEN,
     MAX_STEP_TOOLS,
@@ -396,3 +397,87 @@ async def test_runner_blocks_placeholder_amplification():
     assert "exceeds" in result.text
     assert gw.seen == []  # no model call fired
     assert result.usage.calls == 0
+
+
+async def test_runner_partial_step_failure_keeps_attempted_call_usage():
+    class PartialFailureGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "Calculating. ",
+                                "tool_calls": [
+                                    {
+                                        "id": "calc-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "calculator",
+                                            "arguments": '{"expression": "6*7"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": _USAGE,
+                }
+            raise RuntimeError("gateway boom")
+
+    gateway = PartialFailureGateway()
+    agent = AgentSpec(
+        name="a1",
+        displayName="a1",
+        description="",
+        systemPrompt="You calculate.",
+        tools=["calculator"],
+    )
+    result = await _run(
+        [_step("a1", "Calculate {input}")],
+        gateway=gateway,
+        composed=_catalog(agent),
+    )
+
+    assert result.ok is False
+    assert "failed" in result.text
+    assert gateway.calls == 2
+    assert (
+        result.usage.prompt,
+        result.usage.completion,
+        result.usage.total,
+        result.usage.calls,
+        result.usage.complete,
+    ) == (3, 4, 7, 2, False)
+    assert result.steps[-1].iterations == 2
+    assert result.steps[-1].text == "Calculating. "
+
+
+async def test_runner_first_gateway_failure_counts_unknown_call_without_logging_detail(
+    caplog,
+):
+    marker = "workflow-hostile-gateway-detail"
+
+    class FirstFailureGateway:
+        async def complete(self, **_kwargs):
+            raise ModelGatewayError(502, marker)
+
+    result = await _run(
+        [_step("a1", "Process {input}")],
+        gateway=FirstFailureGateway(),
+        composed=_catalog(_leaf("a1")),
+    )
+
+    assert result.ok is False
+    assert (result.usage.calls, result.usage.known, result.usage.complete) == (
+        1,
+        False,
+        False,
+    )
+    assert "status=502" in caplog.text
+    assert marker not in caplog.text
