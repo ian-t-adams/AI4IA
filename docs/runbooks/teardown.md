@@ -116,11 +116,18 @@ quota/capacity is sufficient in every region in `infra/models.json`. Fix IaC unt
 > step 0 capture first.
 
 ```powershell
+# Supply typed exact soft-deleted names approved for purge.
+$foundryNames = @('<exact-foundry-account-name>')
+$vaultNames = @('<exact-key-vault-name>')
+
 # Dry run first (lists resources, deletes nothing):
-./scripts/teardown.ps1 -Subscription $sub -ResourceGroups $rg -PurgeNameFilter ai4ia
+./scripts/teardown.ps1 -Subscription $sub -ResourceGroups $rg `
+  -CognitiveAccountNames $foundryNames -KeyVaultNames $vaultNames
 
 # Execute:
-./scripts/teardown.ps1 -Subscription $sub -ResourceGroups $rg -PurgeNameFilter ai4ia -Force -AcknowledgeDataLoss
+./scripts/teardown.ps1 -Subscription $sub -ResourceGroups $rg `
+  -CognitiveAccountNames $foundryNames -KeyVaultNames $vaultNames `
+  -Force -AcknowledgeDataLoss
 ```
 
 `-Force` alone is refused (exit 2). `-Force` only ever acknowledged deleting the
@@ -128,9 +135,10 @@ quota/capacity is sufficient in every region in `infra/models.json`. Fix IaC unt
 acknowledges the part it cannot. Keeping them separate stops the irreversible
 acknowledgement from riding along with the routine one.
 
-This deletes the resource group and purges soft-deleted Cognitive/Key Vault resources
-matching the filter. The purge lists are **subscription-wide**, so choose a filter that
-matches only this stack — `-PurgeNameFilter` is mandatory for exactly that reason.
+This deletes the resource group and purges only the exact, type-specific
+soft-deleted Cognitive/Key Vault names supplied. The purge lists are
+**subscription-wide**, so wildcard and empty selectors are rejected; an approval
+for one resource kind never applies to a same-named resource of the other kind.
 
 ## 3. Provision the real environment
 ```powershell

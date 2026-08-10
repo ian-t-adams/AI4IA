@@ -42,6 +42,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'azure-cli.ps1')
+Assert-AzureSubscription -Subscription $Subscription
 
 # Containers the application treats as scratch. Recorded, but not counted as data
 # loss, so the summary stays honest about what actually matters.
@@ -53,7 +55,6 @@ $dir = Join-Path $OutDir $stamp
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
 Write-Host "Capturing data-recovery state for $ResourceGroup -> $dir" -ForegroundColor Cyan
-az account set --subscription $Subscription | Out-Null
 
 $warnings = [System.Collections.Generic.List[string]]::new()
 
@@ -67,12 +68,7 @@ function Invoke-AzJson {
     #>
     param([string[]] $AzArgs, [string] $What)
     try {
-        $raw = & az @AzArgs 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            $warnings.Add("${What}: az exited $LASTEXITCODE") | Out-Null
-            Write-Warning "  ! $What - not captured (az exited $LASTEXITCODE)"
-            return $null
-        }
+        $raw = Invoke-AzureCli -Arguments $AzArgs
         if (-not $raw) { return $null }
         return ($raw | ConvertFrom-Json)
     } catch {

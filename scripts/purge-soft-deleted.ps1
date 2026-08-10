@@ -7,49 +7,69 @@
   in a soft-deleted state, which blocks recreating same-named resources. This purges
   them. Destructive and irreversible - purged data cannot be recovered.
 
-  -NameFilter is REQUIRED. The soft-delete lists it reads
+  -CognitiveAccountNames and -KeyVaultNames are REQUIRED and accept only exact
+  resource names. Keeping approvals typed prevents a same-named resource of the
+  other kind from being purged. The soft-delete lists it reads
   (`az cognitiveservices account list-deleted` / `az keyvault list-deleted`) are
-  SUBSCRIPTION-wide, not scoped to a resource group, so an empty filter matches
-  every soft-deleted Cognitive account and Key Vault in the subscription --
-  including resources owned by other stacks sharing it.
+  SUBSCRIPTION-wide, not scoped to a resource group. Wildcards are rejected so
+  this script cannot accidentally approve resources owned by other stacks.
 
 .EXAMPLE
-  ./scripts/purge-soft-deleted.ps1 -Subscription <id> -NameFilter ai4ia -WhatIf
-  ./scripts/purge-soft-deleted.ps1 -Subscription <id> -NameFilter ai4ia -Force
+  ./scripts/purge-soft-deleted.ps1 -Subscription <id> -CognitiveAccountNames <foundry-name> -KeyVaultNames <vault-name> -WhatIf
+  ./scripts/purge-soft-deleted.ps1 -Subscription <id> -CognitiveAccountNames <foundry-name> -KeyVaultNames <vault-name> -Force
 #>
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = "High")]
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'NameFilter',
-    Justification = 'Consumed inside the Match nested function; the analyzer cannot resolve cross-scope use.')]
 param(
-    [Parameter(Mandatory)] [string] $Subscription,
-    [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $NameFilter,
+    [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $Subscription,
+    [Parameter(Mandatory)] [ValidateNotNullOrEmpty()]
+    [ValidateScript({
+        if ([string]::IsNullOrWhiteSpace($_) -or $_.IndexOfAny([char[]] '*?') -ge 0) {
+            throw 'Purge names must be exact non-wildcard resource names.'
+        }
+        return $true
+    })]
+    [string[]] $CognitiveAccountNames,
+    [Parameter(Mandatory)] [ValidateNotNullOrEmpty()]
+    [ValidateScript({
+        if ([string]::IsNullOrWhiteSpace($_) -or $_.IndexOfAny([char[]] '*?') -ge 0) {
+            throw 'Purge names must be exact non-wildcard resource names.'
+        }
+        return $true
+    })]
+    [string[]] $KeyVaultNames,
     [switch] $Force
 )
 
 $ErrorActionPreference = "Stop"
-az account set --subscription $Subscription | Out-Null
-
-function Match($name) { return $name -like "*$NameFilter*" }
+. (Join-Path $PSScriptRoot 'azure-cli.ps1')
+Assert-AzureSubscription -Subscription $Subscription
 
 Write-Host "== Soft-deleted Cognitive Services accounts ==" -ForegroundColor Cyan
-$cog = az cognitiveservices account list-deleted -o json | ConvertFrom-Json
+$cog = Invoke-AzureCli -Arguments @(
+    'cognitiveservices', 'account', 'list-deleted', '--output', 'json'
+) | ConvertFrom-Json
 foreach ($c in $cog) {
-    if (-not (Match $c.name)) { continue }
+    if ($CognitiveAccountNames -notcontains $c.name) { continue }
     $loc = $c.location
     $rg  = ($c.id -split "/resourceGroups/")[1].Split("/")[0]
     if ($Force -or $PSCmdlet.ShouldProcess("$($c.name) ($loc)", "Purge Cognitive account")) {
         Write-Host "  purging $($c.name) in $loc ..." -ForegroundColor Yellow
-        az cognitiveservices account purge --name $c.name --location $loc --resource-group $rg
+        Invoke-AzureCli -Arguments @(
+            'cognitiveservices', 'account', 'purge',
+            '--name', $c.name, '--location', $loc, '--resource-group', $rg
+        ) | Out-Null
     }
 }
 
 Write-Host "== Soft-deleted Key Vaults ==" -ForegroundColor Cyan
-$kv = az keyvault list-deleted -o json | ConvertFrom-Json
+$kv = Invoke-AzureCli -Arguments @('keyvault', 'list-deleted', '--output', 'json') | ConvertFrom-Json
 foreach ($v in $kv) {
-    if (-not (Match $v.name)) { continue }
+    if ($KeyVaultNames -notcontains $v.name) { continue }
     if ($Force -or $PSCmdlet.ShouldProcess("$($v.name) ($($v.properties.location))", "Purge Key Vault")) {
         Write-Host "  purging $($v.name) ..." -ForegroundColor Yellow
-        az keyvault purge --name $v.name --location $v.properties.location
+        Invoke-AzureCli -Arguments @(
+            'keyvault', 'purge', '--name', $v.name, '--location', $v.properties.location
+        ) | Out-Null
     }
 }
 

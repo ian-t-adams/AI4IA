@@ -80,5 +80,14 @@ azd env new ai4ia-dev
 azd up
 ```
 
+The azd `preprovision` hook runs catalog/feature validation and the live model
+availability, lifecycle, and quota check before submitting ARM. Azure CLI must be
+logged into the same `AZURE_SUBSCRIPTION_ID`; an absent or mismatched credential
+fails precisely rather than allowing a partial paid/shared-resource deployment.
+Lifecycle checks inventory the target Foundry deployments: an exact existing
+`Succeeded` deployment warns and reconciles, while greenfield/absent/drifted records block.
+Postprovision then hard-gates model state, gateway topology, App Configuration, and
+enabled Content Understanding defaults.
+
 Validate in a parallel resource group before replacing a live stack; see
 [`../docs/runbooks/teardown.md`](../docs/runbooks/teardown.md).

@@ -115,6 +115,52 @@ class CommittedParametersTests(unittest.TestCase):
         self.assertEqual(code, 0, f"production configuration failed validation:\n{err}")
 
 
+class PrimaryLocationCatalogTests(unittest.TestCase):
+    def test_non_catalog_location_is_rejected_before_provision(self) -> None:
+        with _environment(AZURE_LOCATION="moonbase"):
+            code, _, err = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 1)
+        self.assertIn("location='moonbase' is not defined in infra/models.json", err)
+
+    def test_catalog_region_not_marked_primary_is_rejected(self) -> None:
+        with _environment(AZURE_LOCATION="westus"):
+            code, _, err = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 1)
+        self.assertIn("location='westus'", err)
+        self.assertIn("not marked primary", err)
+
+    def test_swedencentral_is_a_supported_non_eastus2_primary(self) -> None:
+        with _environment(AZURE_LOCATION="swedencentral"):
+            code, _, err = _run(REAL_PARAMETERS)
+        self.assertEqual(code, 0, err)
+
+    def test_primary_outputs_require_cu_deployments_even_when_feature_is_disabled(self) -> None:
+        models = json.loads((ROOT / "infra" / "models.json").read_text(encoding="utf-8"))
+        embedding = next(
+            model for model in models["catalog"]
+            if model["name"] == "text-embedding-3-large"
+        )
+        embedding["deployments"] = [
+            deployment for deployment in embedding["deployments"]
+            if deployment["region"] != "swedencentral"
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            models_path = Path(tmp) / "models.json"
+            models_path.write_text(json.dumps(models), encoding="utf-8")
+            parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))
+            parameters["parameters"]["documentUnderstandingEnabled"]["value"] = False
+            parameters_path = Path(tmp) / "parameters.json"
+            parameters_path.write_text(json.dumps(parameters), encoding="utf-8")
+            with patch.object(VALIDATOR, "MODELS_FILE", models_path):
+                with _environment(AZURE_LOCATION="swedencentral"):
+                    code, _, err = _run(parameters_path)
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "text-embedding-3-large/GlobalStandard",
+            err,
+        )
+
+
 class BudgetNotificationTests(unittest.TestCase):
     """The budget shipped for months with an empty notifications map.
 

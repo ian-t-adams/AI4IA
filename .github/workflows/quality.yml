@@ -132,13 +132,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Run App Configuration postprovision tests
+      - name: Run postprovision hard-gate tests
         run: |
           set -euo pipefail
-          # Executes the real PowerShell function with az stubbed: Entra login,
-          # exact optional labels, RBAC-propagation retries, and visible WARN on
-          # final failure. No Azure resources or credentials are used.
-          python3 -m unittest scripts.tests.test_postprovision_appconfig_sentinel
+          # Executes the real PowerShell functions with azd, az, and HTTP stubbed:
+          # App Configuration reconciliation plus enabled CU/model/topology gates.
+          # No Azure resources or credentials are used.
+          python3 -m unittest \
+            scripts.tests.test_postprovision_appconfig_sentinel \
+            scripts.tests.test_postprovision_cu_defaults \
+            scripts.tests.test_postprovision_hard_gates
 
       - name: Run voice-live-canary unit tests
         run: |
@@ -306,9 +309,14 @@ jobs:
           # must be `prod` for a real environment) appeared in no document at all.
           python3 -m unittest scripts.tests.test_configuration_reference_reachability
 
-      - name: Run teardown data-loss gate tests
+      - name: Run Azure operator and teardown safety tests
         run: |
           set -euo pipefail
+          # Execute the real Azure-facing PowerShell scripts with az stubbed:
+          # native failures and wrong-subscription state must stop before later
+          # reads/writes, inventory failures must exit incomplete, and typed exact
+          # purge approvals must never cross resource kinds.
+          python3 -m unittest scripts.tests.test_azure_cli_safety
           # teardown.ps1 deletes an RG and PURGES the Key Vault holding per-user MCP
           # credentials. -Force only ever acknowledged the infrastructure, which azd
           # can rebuild; blobs have no restore path and purged secrets are gone. The

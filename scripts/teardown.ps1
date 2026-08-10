@@ -8,10 +8,11 @@
   be deleted unless -Force is supplied. Never touches NetworkWatcherRG,
   Default-ActivityLogAlerts, or DefaultResourceGroup-* (hard-coded protect list).
 
-  -ResourceGroups and -PurgeNameFilter are REQUIRED and have no defaults. A
+  -ResourceGroups, -CognitiveAccountNames, and -KeyVaultNames are REQUIRED and
+  have no defaults. A
   destructive script must never carry a built-in target: a default resource group
   is wrong the moment the stack moves to another subscription or tenant, and a
-  default purge filter is what turns "clean up my stack" into "purge every
+  broad purge filter is what turns "clean up my stack" into "purge every
   soft-deleted Cognitive account and Key Vault in this subscription".
 
   -AcknowledgeDataLoss is REQUIRED alongside -Force. -Force only ever meant "yes,
@@ -24,19 +25,35 @@
     ./scripts/capture-data-recovery-state.ps1 -Subscription <id> -ResourceGroup <rg>
 
 .EXAMPLE
-  ./scripts/teardown.ps1 -Subscription <id> -ResourceGroups rg-ai4ia-<env> -PurgeNameFilter ai4ia
-  ./scripts/teardown.ps1 -Subscription <id> -ResourceGroups rg-ai4ia-<env> -PurgeNameFilter ai4ia -Force -AcknowledgeDataLoss
+  ./scripts/teardown.ps1 -Subscription <id> -ResourceGroups rg-ai4ia-<env> -CognitiveAccountNames <foundry-name> -KeyVaultNames <vault-name>
+  ./scripts/teardown.ps1 -Subscription <id> -ResourceGroups rg-ai4ia-<env> -CognitiveAccountNames <foundry-name> -KeyVaultNames <vault-name> -Force -AcknowledgeDataLoss
 #>
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = "High")]
 param(
-    [Parameter(Mandatory)] [string] $Subscription,
+    [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $Subscription,
     [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string[]] $ResourceGroups,
-    [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $PurgeNameFilter,
+    [Parameter(Mandatory)] [ValidateNotNullOrEmpty()]
+    [ValidateScript({
+        if ([string]::IsNullOrWhiteSpace($_) -or $_.IndexOfAny([char[]] '*?') -ge 0) {
+            throw 'Purge names must be exact non-wildcard resource names.'
+        }
+        return $true
+    })]
+    [string[]] $CognitiveAccountNames,
+    [Parameter(Mandatory)] [ValidateNotNullOrEmpty()]
+    [ValidateScript({
+        if ([string]::IsNullOrWhiteSpace($_) -or $_.IndexOfAny([char[]] '*?') -ge 0) {
+            throw 'Purge names must be exact non-wildcard resource names.'
+        }
+        return $true
+    })]
+    [string[]] $KeyVaultNames,
     [switch] $Force,
     [switch] $AcknowledgeDataLoss
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'azure-cli.ps1')
 $Protected = @("NetworkWatcherRG", "Default-ActivityLogAlerts", "DefaultResourceGroup-EUS",
                "DefaultResourceGroup-WUS", "DefaultResourceGroup-WUS3", "DefaultResourceGroup-SCUS")
 
@@ -59,20 +76,23 @@ if ($Force -and -not $AcknowledgeDataLoss) {
     exit 2
 }
 
-az account set --subscription $Subscription | Out-Null
+Assert-AzureSubscription -Subscription $Subscription
 Write-Host "Subscription: $Subscription" -ForegroundColor Cyan
 
 foreach ($rg in $ResourceGroups) {
     if ($Protected -contains $rg) { Write-Warning "Refusing to delete protected RG: $rg"; continue }
-    $exists = az group exists -n $rg | ConvertFrom-Json
+    $exists = Invoke-AzureCli -Arguments @('group', 'exists', '--name', $rg) | ConvertFrom-Json
     if (-not $exists) { Write-Host "  $rg : not found (skip)" -ForegroundColor DarkGray; continue }
 
     Write-Host "== Resources in $rg ==" -ForegroundColor Cyan
-    az resource list -g $rg --query "[].{name:name, type:type}" -o table
+    Invoke-AzureCli -Arguments @(
+        'resource', 'list', '--resource-group', $rg,
+        '--query', '[].{name:name, type:type}', '--output', 'table'
+    )
 
     if ($Force -or $PSCmdlet.ShouldProcess($rg, "Delete resource group")) {
         Write-Host "  deleting $rg ..." -ForegroundColor Yellow
-        az group delete -n $rg --yes
+        Invoke-AzureCli -Arguments @('group', 'delete', '--name', $rg, '--yes') | Out-Null
         Write-Host "  deleted $rg" -ForegroundColor Green
     } else {
         Write-Host "  (dry run) re-run with -Force to delete $rg" -ForegroundColor Yellow
@@ -80,8 +100,12 @@ foreach ($rg in $ResourceGroups) {
 }
 
 if ($Force) {
-    Write-Host "== Purging soft-deleted Cognitive/Key Vault (filter: $PurgeNameFilter) ==" -ForegroundColor Cyan
-    & "$PSScriptRoot/purge-soft-deleted.ps1" -Subscription $Subscription -NameFilter $PurgeNameFilter -Force
+    Write-Host "== Purging approved soft-deleted Cognitive/Key Vault names ==" -ForegroundColor Cyan
+    & (Join-Path $PSScriptRoot 'purge-soft-deleted.ps1') `
+        -Subscription $Subscription `
+        -CognitiveAccountNames $CognitiveAccountNames `
+        -KeyVaultNames $KeyVaultNames `
+        -Force
 } else {
     Write-Host "Dry run complete. Nothing deleted. Add -Force to execute." -ForegroundColor Yellow
 }

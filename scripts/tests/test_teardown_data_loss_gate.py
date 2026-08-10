@@ -80,12 +80,16 @@ class TeardownDataLossGateTests(unittest.TestCase):
         """
         gate_at = self.teardown.find("-not $AcknowledgeDataLoss")
         self.assertGreater(gate_at, 0, "gate not found")
-        first_az = re.search(r"^\s*az\s", self.teardown, re.MULTILINE)
-        self.assertIsNotNone(first_az, "expected teardown.ps1 to invoke az")
-        assert first_az is not None
+        first_azure_operation = re.search(
+            r"^\s*(?:az\s|Assert-AzureSubscription\b|Invoke-AzureCli\b)",
+            self.teardown,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(first_azure_operation, "expected teardown.ps1 to invoke Azure CLI")
+        assert first_azure_operation is not None
         self.assertLess(
             gate_at,
-            first_az.start(),
+            first_azure_operation.start(),
             "the data-loss gate must run before any az call, not partway through a delete",
         )
 

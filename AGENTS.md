@@ -376,6 +376,7 @@ python scripts/gen-voice-provider-catalog.py --check
 python -m unittest scripts.tests.test_voice_provider_catalog
 python scripts/validate-feature-prereqs.py
 python -m unittest scripts.tests.test_lean_azure_iac
+python -m unittest scripts.tests.test_bicep_compilation  # fails on diagnostics; inspects compiled ARM behavior
 bicep build infra/main.bicep --stdout > /dev/null
 ```
 
@@ -386,6 +387,7 @@ bicep build infra/main.bicep --stdout > /dev/null
 ```powershell
 python3 -m unittest scripts.tests.test_voice_live_canary        # voice-live-canary.py URL/redaction rules
 python3 -m unittest scripts.tests.test_subscription_preflight   # new-subscription provider/model preflight logic
+python3 -m unittest scripts.tests.test_postprovision_appconfig_sentinel scripts.tests.test_postprovision_cu_defaults scripts.tests.test_postprovision_hard_gates
 python3 -m unittest scripts.tests.test_provision_entra_apps     # Entra app bootstrap (runs once, by hand, so CI can't)
 python3 -m unittest scripts.tests.test_custom_domain_preflight  # executes deploy.yml's real run: block with `az` stubbed
 python3 -m unittest scripts.tests.test_pages_status_refresh     # Pages status refresh targets live RG/URLs and fails closed
@@ -396,6 +398,7 @@ python3 -m unittest scripts.tests.test_dependabot_config        # keeps dependab
 python3 -m unittest scripts.tests.test_lockfile_provenance     # uv.lock must resolve from public PyPI, not a corporate mirror
 python3 -m unittest scripts.tests.test_status_consistency       # roadmap/audit current-state dispositions cannot conflict
 python3 -m unittest scripts.tests.test_post_deploy_verify       # executes capture/verify/rollback behavior with Azure stubbed
+python3 -m unittest scripts.tests.test_azure_cli_safety         # az exit/subscription assertions and typed purge approvals
 python3 -m unittest scripts.tests.test_teardown_data_loss_gate  # destructive teardown requires explicit data-loss acknowledgement
 python3 -m unittest scripts.tests.test_lean_azure_cleanup       # retained-resource migration is exact-ID, dry-run, and never automatic
 python3 -m unittest scripts.tests.test_documented_paths_exist   # machine-readable source paths named by docs must resolve

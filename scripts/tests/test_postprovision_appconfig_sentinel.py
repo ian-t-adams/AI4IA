@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -17,14 +20,16 @@ def _ps_literal(value: str) -> str:
 
 def _run(
     *,
+    endpoint: str | None = "https://appcs-example.azconfig.io",
     label: str | None = None,
     failures: int = 0,
     principal_id: str | None = "deploy-principal",
+    command_seconds: int = 0,
 ) -> dict[str, object]:
     if shutil.which("pwsh") is None:
         raise unittest.SkipTest("pwsh is required for executable postprovision tests")
     values = {
-        "AZURE_APP_CONFIG_ENDPOINT": "https://appcs-example.azconfig.io",
+        "AZURE_APP_CONFIG_ENDPOINT": endpoint,
         "AZURE_APP_CONFIG_LABEL": label,
         "AZURE_PRINCIPAL_ID": principal_id,
     }
@@ -51,6 +56,8 @@ $script:Results = @()
 $script:Calls = [System.Collections.Generic.List[object]]::new()
 $script:Sleeps = 0
 $script:SleepSeconds = [System.Collections.Generic.List[int]]::new()
+$script:NowSeconds = 0
+$script:CommandSeconds = {command_seconds}
 $script:FailuresRemaining = {failures}
 function Add-Result {{
   param([string]$Name, [string]$Status, [string]$Detail)
@@ -67,15 +74,18 @@ function Start-Sleep {{
   param($Seconds)
   $script:Sleeps++
   $script:SleepSeconds.Add([int]$Seconds)
+  $script:NowSeconds += [int]$Seconds
 }}
-function az {{
-  $script:Calls.Add([string[]]@($args))
+function Get-MonotonicTime {{ return [double]$script:NowSeconds }}
+function Invoke-AppConfigSet {{
+  param([string[]]$Arguments, [int]$TimeoutSec)
+  $script:Calls.Add([string[]]@($Arguments))
+  $script:NowSeconds += [Math]::Min($script:CommandSeconds, $TimeoutSec)
   if ($script:FailuresRemaining -gt 0) {{
     $script:FailuresRemaining--
-    $global:LASTEXITCODE = 1
-    return
+    return 1
   }}
-  $global:LASTEXITCODE = 0
+  return 0
 }}
 
 Register-AppConfigurationSentinel
@@ -84,6 +94,7 @@ Register-AppConfigurationSentinel
   calls = $script:Calls
   sleeps = $script:Sleeps
   sleepSeconds = $script:SleepSeconds
+  elapsedSeconds = $script:NowSeconds
 }} | ConvertTo-Json -Depth 8 -Compress
 """
     proc = subprocess.run(
@@ -97,6 +108,86 @@ Register-AppConfigurationSentinel
     if proc.returncode != 0:
         raise AssertionError(f"PowerShell failed ({proc.returncode}):\n{proc.stderr}\n{proc.stdout}")
     return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def _run_timeout_helper(*, mode: str, exit_code: int = 0) -> tuple[int, float]:
+    if shutil.which("pwsh") is None:
+        raise unittest.SkipTest("pwsh is required for executable postprovision tests")
+    with tempfile.TemporaryDirectory() as tmp:
+        stub_dir = Path(tmp)
+        if mode != "missing":
+            if os.name == "nt":
+                stub = stub_dir / "az.cmd"
+                stub.write_text(
+                    "@echo off\r\n"
+                    'if "%AZ_STUB_MODE%"=="hang" pwsh -NoProfile -Command '
+                    '"Start-Sleep -Seconds 5"\r\n'
+                    "exit /b %AZ_STUB_EXIT%\r\n",
+                    encoding="ascii",
+                )
+            else:
+                stub = stub_dir / "az"
+                stub.write_text(
+                    '#!/usr/bin/env sh\n'
+                    'if [ "$AZ_STUB_MODE" = "hang" ]; then sleep 5; fi\n'
+                    'exit "$AZ_STUB_EXIT"\n',
+                    encoding="ascii",
+                )
+                stub.chmod(0o755)
+
+        command = rf"""
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+  {_ps_literal(str(SCRIPT))}, [ref]$tokens, [ref]$errors
+)
+if ($errors.Count -gt 0) {{ throw ($errors | Out-String) }}
+$functions = $ast.FindAll({{
+  param($node)
+  $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -in @('Invoke-NativeWithTimeout', 'Invoke-AppConfigSet')
+}}, $true)
+if ($functions.Count -ne 2) {{ throw 'functions not found' }}
+$functions | Sort-Object {{ if ($_.Name -eq 'Invoke-NativeWithTimeout') {{ 0 }} else {{ 1 }} }} |
+  ForEach-Object {{ Invoke-Expression $_.Extent.Text }}
+$result = Invoke-AppConfigSet -Arguments @('appconfig', 'kv', 'set') -TimeoutSec 1
+Write-Output $result
+"""
+        env = dict(os.environ)
+        env["AZ_STUB_MODE"] = mode
+        env["AZ_STUB_EXIT"] = str(exit_code)
+        env["PATH"] = str(stub_dir) + os.pathsep + env.get("PATH", "")
+        started = time.monotonic()
+        proc = subprocess.run(
+            ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command],
+            cwd=REPO,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+        elapsed = time.monotonic() - started
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"PowerShell failed ({proc.returncode}):\n{proc.stderr}\n{proc.stdout}"
+            )
+        return int(proc.stdout.strip().splitlines()[-1]), elapsed
+
+
+class AppConfigurationTimeoutHelperTests(unittest.TestCase):
+    def test_native_nonzero_exit_is_propagated(self) -> None:
+        result, _ = _run_timeout_helper(mode="exit", exit_code=23)
+        self.assertEqual(result, 23)
+
+    def test_missing_azure_cli_is_not_success(self) -> None:
+        result, _ = _run_timeout_helper(mode="missing")
+        self.assertNotEqual(result, 0)
+
+    def test_hung_azure_cli_is_terminated_at_timeout(self) -> None:
+        result, elapsed = _run_timeout_helper(mode="hang")
+        self.assertEqual(result, 124)
+        self.assertLess(elapsed, 4)
 
 
 class AppConfigurationSentinelTests(unittest.TestCase):
@@ -123,6 +214,13 @@ class AppConfigurationSentinelTests(unittest.TestCase):
         self._assert_keyless_login_call(call)
         self.assertNotIn("--label", call)
 
+    def test_missing_unconditional_endpoint_output_fails_closed(self) -> None:
+        payload = _run(endpoint=None)
+        self.assertEqual(payload["results"][0]["status"], "FAIL")
+        self.assertIn("AZURE_APP_CONFIG_ENDPOINT", payload["results"][0]["detail"])
+        self.assertEqual(payload["calls"], [])
+        self.assertEqual(payload["sleeps"], 0)
+
     def test_local_provision_without_oidc_principal_leaves_existing_sentinel(self) -> None:
         payload = _run(principal_id=None)
         self.assertEqual(payload["results"][0]["status"], "SKIP")
@@ -147,10 +245,18 @@ class AppConfigurationSentinelTests(unittest.TestCase):
         payload = _run(failures=99)
         result = payload["results"][0]
         self.assertEqual(result["status"], "FAIL")
-        self.assertIn("failed after 31 attempts", result["detail"])
-        self.assertEqual(len(payload["calls"]), 31)
+        self.assertIn("900-second budget", result["detail"])
+        self.assertEqual(len(payload["calls"]), 30)
         self.assertEqual(payload["sleeps"], 30)
         self.assertEqual(payload["sleepSeconds"], [30] * 30)
+        self.assertEqual(payload["elapsedSeconds"], 900)
+
+    def test_full_timeout_commands_never_exceed_wall_clock_budget(self) -> None:
+        payload = _run(failures=99, command_seconds=60)
+        self.assertEqual(payload["results"][0]["status"], "FAIL")
+        self.assertLessEqual(payload["elapsedSeconds"], 900)
+        self.assertEqual(payload["elapsedSeconds"], 900)
+        self.assertEqual(len(payload["calls"]), 10)
 
 
 if __name__ == "__main__":

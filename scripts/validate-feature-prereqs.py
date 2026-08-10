@@ -17,6 +17,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 PARAMETERS_FILE = ROOT / "infra" / "main.parameters.json"
+MODELS_FILE = ROOT / "infra" / "models.json"
 PLACEHOLDER_RE = re.compile(r"^\$\{(?P<name>[A-Z0-9_]+)(?:=(?P<default>.*))?\}$")
 
 
@@ -55,8 +56,43 @@ def text(value: Any) -> str:
 def main() -> int:
     raw = json.loads(PARAMETERS_FILE.read_text(encoding="utf-8"))
     parameters = raw.get("parameters", {})
+    models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
     errors: list[str] = []
     warnings: list[str] = []
+
+    # The primary Foundry account and all CU postprovision outputs are selected by
+    # this value. Validate it against the same catalog Bicep loads before ARM can
+    # create shared/paid resources; an array-index failure late in deployment is
+    # not an acceptable location-validation strategy.
+    location = text(parameter_value(parameters, "location", "eastus2"))
+    region_config = (models.get("regions") or {}).get(location)
+    if region_config is None:
+        errors.append(
+            f"location={location!r} is not defined in infra/models.json regions."
+        )
+    elif not region_config.get("primary", False):
+        errors.append(
+            f"location={location!r} exists in infra/models.json but is not marked primary."
+        )
+
+    if region_config:
+        required_cu_deployments = {
+            ("gpt-5.2", "GlobalStandard"),
+            ("text-embedding-3-large", "GlobalStandard"),
+        }
+        available = {
+            (model.get("name"), deployment.get("sku"))
+            for model in models.get("catalog", [])
+            for deployment in model.get("deployments", [])
+            if deployment.get("region") == location
+        }
+        missing = sorted(required_cu_deployments - available)
+        if missing:
+            rendered = ", ".join(f"{name}/{sku}" for name, sku in missing)
+            errors.append(
+                "Bicep primary-region outputs require Content Understanding model "
+                f"deployments in {location}: missing {rendered}."
+            )
 
     app_environment = text(parameter_value(parameters, "appEnvironment", "dev")).lower()
     auth_provider = text(parameter_value(parameters, "apiAuthProvider", "dev")).lower()

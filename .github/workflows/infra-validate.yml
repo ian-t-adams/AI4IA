@@ -24,6 +24,7 @@ on:
       - "scripts/gen-voice-provider-catalog.py"
       - "scripts/tests/test_voice_provider_catalog.py"
       - "scripts/tests/test_lean_azure_iac.py"
+      - "scripts/tests/test_bicep_compilation.py"
       - "scripts/status-snapshot.ps1"
       - "site/data/services.js"
       - "proxy/SimpleL7Proxy/Config/AppConfigService.cs"
@@ -143,6 +144,11 @@ jobs:
 
       - name: Lean Azure capability-map contract tests
         run: python -m unittest scripts.tests.test_lean_azure_iac
+
+      # `bicep build` exits zero for warnings. This test captures diagnostics and
+      # inspects the compiled ARM expressions, so warnings or behavior drift fail CI.
+      - name: Bicep clean diagnostics and compiled behavior tests
+        run: python -m unittest scripts.tests.test_bicep_compilation
 
       - name: Bicep build (lint)
         run: bicep build infra/main.bicep --stdout > /dev/null

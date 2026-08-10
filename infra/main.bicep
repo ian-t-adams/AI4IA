@@ -10,7 +10,11 @@ param workload string = 'ai4ia'
 @description('azd environment name (e.g. ai4ia-dev). Drives RG + tags.')
 param environmentName string
 
-@description('Primary location for the resource group and shared resources.')
+@description('Primary location for the resource group and shared resources. Must be a catalog region marked primary; scripts/tests/test_bicep_compilation.py keeps this list synchronized with models.json.')
+@allowed([
+  'eastus2'
+  'swedencentral'
+])
 param location string = 'eastus2'
 
 @description('Object/principal id of the OIDC deployment identity. When set, it receives provisioning-only App Configuration Data Owner, Content Understanding Contributor on the primary account, Foundry User on the enabled primary toolbox project, and API Center Data Reader on the enabled private catalog. This is a principalId, never the managed identity clientId.')
@@ -306,6 +310,18 @@ var regionList = map(items(models.regions), r => {
   dataZone: r.value.dataZone
   primary: r.value.primary
 })
+
+// Build deployment records once, then use the exact same objects for the model
+// modules and for postprovision outputs. This prevents Content Understanding from
+// reconstructing deployment names independently of the resources ARM creates.
+var modelDeploymentsByRegion = [for r in regionList: flatten(map(catalog, m => map(filter(m.deployments, d => d.region == r.name), d => {
+  deploymentName: '${m.name}-${subscriptionToken}-${r.name}-${skuShort[d.sku]}'
+  modelName: m.name
+  format: m.format
+  version: d.version
+  sku: d.sku
+  capacity: d.capacity
+})))]
 
 var uniqueSuffix = uniqueString(subscription().id, environmentName)
 
@@ -611,6 +627,11 @@ var primaryFoundryIndex = filter(range(0, length(regionList)), i => regionNames[
 // without hand-wiring a URL. The CI model defaults to the primary-region
 // gpt-4.1-mini deployment (naming: {model}-slurmfactory-{region}-glbl).
 var primaryFoundryEndpoint = foundry[primaryFoundryIndex].outputs.endpoint
+// Content Understanding consumes these exact deployment records. The plan-time
+// validator proves both records exist in every catalog region allowed as primary.
+var primaryModelDeployments = modelDeploymentsByRegion[primaryFoundryIndex]
+var primaryCuCompletionDeployment = filter(primaryModelDeployments, d => d.modelName == 'gpt-5.2' && d.sku == 'GlobalStandard')[0]
+var primaryCuEmbeddingDeployment = filter(primaryModelDeployments, d => d.modelName == 'text-embedding-3-large' && d.sku == 'GlobalStandard')[0]
 
 // Speech Voice Live is fixed to the existing eastus2 AIServices account
 // regardless of which region this deployment's primary `location` is, because
@@ -915,8 +936,8 @@ module api 'modules/api.bicep' = {
     // Read the endpoint off the provisioned scheduler rather than rebuilding it
     // from name + region: a hand-built host would keep deploying happily while
     // pointing nowhere if the service's hostname format ever changed.
-    durableTaskEndpoint: enableDurableWorkflows ? durabletask.outputs.endpoint : ''
-    durableTaskHubName: enableDurableWorkflows ? durabletask.outputs.taskHubName : ''
+    durableTaskEndpoint: enableDurableWorkflows ? durabletask!.outputs.endpoint : ''
+    durableTaskHubName: enableDurableWorkflows ? durabletask!.outputs.taskHubName : ''
     durableWorkflowTimeoutSeconds: durableWorkflowTimeoutSeconds
     // Agent-callable image tool. Default OFF; the dedicated image blob
     // account/container are emitted to the api env only when the feature is on and
@@ -1052,14 +1073,7 @@ module modelDeployments 'modules/models.bicep' = [for (r, i) in regionList: {
   params: {
     accountName: foundry[i].outputs.accountName
     raiPolicyName: foundry[i].outputs.raiPolicyName
-    deployments: flatten(map(catalog, m => map(filter(m.deployments, d => d.region == r.name), d => {
-      deploymentName: '${m.name}-${subscriptionToken}-${r.name}-${skuShort[d.sku]}'
-      modelName: m.name
-      format: m.format
-      version: d.version
-      sku: d.sku
-      capacity: d.capacity
-    })))
+    deployments: modelDeploymentsByRegion[i]
   }
 }]
 
@@ -1108,6 +1122,23 @@ output AZURE_FOUNDRY_ENDPOINTS array = [for (r, i) in regionList: {
   endpoint: foundry[i].outputs.endpoint
   accountName: foundry[i].outputs.accountName
 }]
+// Exact desired deployment names per account for the postprovision hard gate.
+// The check compares these records with ARM instead of treating any nonempty
+// deployment list as proof that the catalog was fully provisioned.
+output AZURE_EXPECTED_MODEL_DEPLOYMENTS array = [for (r, i) in regionList: {
+  region: r.name
+  accountName: foundry[i].outputs.accountName
+  deploymentNames: map(modelDeploymentsByRegion[i], d => d.deploymentName)
+}]
+// Explicit primary-region facts for the postprovision CU data-plane PATCH. The
+// script consumes these outputs verbatim; it never chooses a region or rebuilds a
+// deployment name from a naming convention.
+output AZURE_CONTENT_UNDERSTANDING_ENABLED bool = documentUnderstandingEnabled
+output AZURE_PRIMARY_FOUNDRY_REGION string = location
+output AZURE_PRIMARY_FOUNDRY_ACCOUNT_NAME string = foundry[primaryFoundryIndex].outputs.accountName
+output AZURE_PRIMARY_FOUNDRY_ENDPOINT string = primaryFoundryEndpoint
+output AZURE_CONTENT_UNDERSTANDING_COMPLETION_DEPLOYMENT string = primaryCuCompletionDeployment.deploymentName
+output AZURE_CONTENT_UNDERSTANDING_EMBEDDING_DEPLOYMENT string = primaryCuEmbeddingDeployment.deploymentName
 output AZURE_APP_IDENTITIES array = identity.outputs.identities
 output AZURE_SEARCH_ENDPOINT string = search.outputs.searchEndpoint
 output AZURE_SEARCH_SERVICE_NAME string = search.outputs.searchServiceName
