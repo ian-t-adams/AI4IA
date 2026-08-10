@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from ai4ia_api.library.ingest import EnrichScheduleOutcome
 from ai4ia_api.main import create_app
 from tests.conftest import make_settings
 
@@ -55,6 +56,25 @@ def test_upload_happy_path_stored(client):
     # It appears in the user's library listing.
     listed = client.get("/api/library/documents").json()
     assert body["id"] in {d["id"] for d in listed}
+
+
+def test_upload_saturation_settles_failed_instead_of_stored_orphan(
+    client, monkeypatch
+):
+    ingestor = client.app.state.document_ingestor
+    ingestor._cu = object()
+    monkeypatch.setattr(
+        ingestor,
+        "schedule_enrich",
+        lambda **_kwargs: EnrichScheduleOutcome.saturated,
+    )
+
+    response = _upload(client, "busy.txt", b"retryable content")
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "failed"
+    assert "Re-upload to retry" in body["error"]
 
 
 def test_upload_dedupe_returns_same_document(client):

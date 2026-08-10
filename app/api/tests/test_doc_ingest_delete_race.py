@@ -340,6 +340,7 @@ async def test_scheduled_enrich_reloads_canonical_blob_after_admission():
 
 
 async def test_enrichment_concurrency_is_global_across_ingestors():
+    assert MAX_CONCURRENT_DOCUMENT_ENRICHMENTS == 4
     class CountingCU:
         def __init__(self) -> None:
             self.active = 0
@@ -362,7 +363,7 @@ async def test_enrichment_concurrency_is_global_across_ingestors():
 
     cu = CountingCU()
     ingestors = [_build(cu=cu), _build(cu=cu)]
-    for index in range(MAX_CONCURRENT_DOCUMENT_ENRICHMENTS + 2):
+    for index in range(6):
         ingestor = ingestors[index % 2]
         stored = await ingestor.ingest(
             user_id=f"u{index}",
@@ -378,13 +379,13 @@ async def test_enrichment_concurrency_is_global_across_ingestors():
 
     await asyncio.wait_for(cu.at_limit.wait(), timeout=5)
     await asyncio.sleep(0)
-    assert cu.maximum == MAX_CONCURRENT_DOCUMENT_ENRICHMENTS
-    assert cu.started == MAX_CONCURRENT_DOCUMENT_ENRICHMENTS
+    assert cu.maximum == 4
+    assert cu.started == 4
 
     cu.release.set()
     tasks = [task for ingestor in ingestors for task in ingestor._tasks.values()]
     await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
-    assert cu.started == MAX_CONCURRENT_DOCUMENT_ENRICHMENTS + 2
+    assert cu.started == 6
 
 
 async def test_enrichment_admission_cap_is_explicit_and_releases_on_failure(

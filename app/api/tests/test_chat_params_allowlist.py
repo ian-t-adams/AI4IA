@@ -98,7 +98,8 @@ def test_api_rejects_reserved_params_with_422(client, key):
 
 
 def test_chat_content_accepts_exact_boundary_and_rejects_one_character_over():
-    accepted = ChatRequest(sessionId="s", content="x" * MAX_CHAT_CONTENT_CHARS)
-    assert len(accepted.content) == MAX_CHAT_CONTENT_CHARS
+    assert MAX_CHAT_CONTENT_CHARS == 32_000
+    accepted = ChatRequest(sessionId="s", content="x" * 32_000)
+    assert len(accepted.content) == 32_000
     with pytest.raises(ValidationError):
-        ChatRequest(sessionId="s", content="x" * (MAX_CHAT_CONTENT_CHARS + 1))
+        ChatRequest(sessionId="s", content="x" * 32_001)

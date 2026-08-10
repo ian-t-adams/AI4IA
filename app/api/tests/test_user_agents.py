@@ -68,13 +68,14 @@ def test_attachable_tools_are_the_safe_builtins():
 
 
 def test_user_agent_prompt_accepts_boundary_and_rejects_one_character_over():
+    assert MAX_SYSTEM_PROMPT_LEN == 8000
     accepted = UserAgentCreate(
-        name="bounded", systemPrompt="x" * MAX_SYSTEM_PROMPT_LEN
+        name="bounded", systemPrompt="x" * 8000
     )
-    assert len(accepted.systemPrompt) == MAX_SYSTEM_PROMPT_LEN
+    assert len(accepted.systemPrompt) == 8000
     with pytest.raises(ValidationError):
         UserAgentCreate(
-            name="overflow", systemPrompt="x" * (MAX_SYSTEM_PROMPT_LEN + 1)
+            name="overflow", systemPrompt="x" * 8001
         )
 
 

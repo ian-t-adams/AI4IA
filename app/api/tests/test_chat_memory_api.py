@@ -170,6 +170,9 @@ def test_optional_memory_context_is_dropped_before_it_can_overflow_model_budget(
         async def remember(self, *_args):
             return None
 
+        async def close(self):
+            return None
+
     entry = mem_client.app.state.catalog.get("gpt-5.2")
     assert entry is not None
     entry.contextWindow = 7000

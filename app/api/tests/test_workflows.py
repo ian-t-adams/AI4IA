@@ -96,7 +96,8 @@ async def test_later_steps_need_not_reference_input():
 
 
 async def test_create_rejects_overlong_instruction():
-    long = "{input} " + "x" * (MAX_INSTRUCTION_LEN + 1)
+    assert MAX_INSTRUCTION_LEN == 4000
+    long = "x" * 4001
     with pytest.raises(ValidationError):
         _step("a1", long)
 

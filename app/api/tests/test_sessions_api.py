@@ -56,14 +56,13 @@ def _create(client, **overrides):
 
 
 def test_session_system_prompt_has_request_boundary():
+    assert MAX_SESSION_SYSTEM_PROMPT_CHARS == 8000
     request = CreateSessionRequest(
-        systemPrompt="x" * MAX_SESSION_SYSTEM_PROMPT_CHARS
+        systemPrompt="x" * 8000
     )
     assert request.systemPrompt is not None
     with pytest.raises(ValidationError):
-        CreateSessionRequest(
-            systemPrompt="x" * (MAX_SESSION_SYSTEM_PROMPT_CHARS + 1)
-        )
+        CreateSessionRequest(systemPrompt="x" * 8001)
 
 
 def test_create_session_accepts_static_tool_override(client):

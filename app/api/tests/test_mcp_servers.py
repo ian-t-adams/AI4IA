@@ -644,6 +644,7 @@ async def test_cosmos_health_patch_retries_etag_and_never_writes_config_fields()
         def __init__(self) -> None:
             self.item = {**server.model_dump(mode="json"), "_etag": "e1"}
             self.patch_calls: list[list[dict]] = []
+            self.etags: list[str] = []
 
         async def read_item(self, *, item, partition_key):
             return dict(self.item)
@@ -658,6 +659,7 @@ async def test_cosmos_health_patch_retries_etag_and_never_writes_config_fields()
             match_condition,
         ):
             self.patch_calls.append(patch_operations)
+            self.etags.append(etag)
             if len(self.patch_calls) == 1:
                 self.item["endpoint"] = "https://new.example.com/rpc"
                 self.item["host"] = "new.example.com"
@@ -679,6 +681,7 @@ async def test_cosmos_health_patch_retries_etag_and_never_writes_config_fields()
     assert container.item["endpoint"] == "https://new.example.com/rpc"
     assert container.item["host"] == "new.example.com"
     assert len(container.patch_calls) == 2
+    assert container.etags == ["e1", "e2"]
     assert {
         operation["path"] for call in container.patch_calls for operation in call
     } == {

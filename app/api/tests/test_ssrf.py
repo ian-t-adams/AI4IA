@@ -252,6 +252,7 @@ async def test_async_registration_resolution_allows_public_control():
 
 
 async def test_dns_worker_admission_stays_bounded_after_caller_timeouts():
+    assert MAX_CONCURRENT_DNS_RESOLUTIONS == 4
     release = threading.Event()
     lock = threading.Lock()
     started = 0
@@ -270,7 +271,7 @@ async def test_dns_worker_admission_stays_bounded_after_caller_timeouts():
                 resolver=blocked,
                 timeout_s=0.02,
             )
-            for index in range(MAX_CONCURRENT_DNS_RESOLUTIONS)
+            for index in range(4)
         ],
         return_exceptions=True,
     )
@@ -278,7 +279,7 @@ async def test_dns_worker_admission_stays_bounded_after_caller_timeouts():
         isinstance(result, SsrfError) and "timed out" in str(result)
         for result in timed_out
     )
-    assert started == MAX_CONCURRENT_DNS_RESOLUTIONS
+    assert started == 4
 
     extra_started = False
 

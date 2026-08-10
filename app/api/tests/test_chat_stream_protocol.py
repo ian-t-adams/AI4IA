@@ -695,6 +695,7 @@ async def test_agentic_stream_close_persists_cancelled_state():
 
 @pytest.mark.asyncio
 async def test_agentic_stream_backpressures_fast_producer_and_disconnect_unblocks_it():
+    assert AGENT_EVENT_QUEUE_MAXSIZE == 32
     class Repo:
         def __init__(self) -> None:
             self.persisted: list[Message] = []
@@ -717,7 +718,7 @@ async def test_agentic_stream_backpressures_fast_producer_and_disconnect_unblock
     async def run(_on_step, on_delta):
         nonlocal produced
         try:
-            for _ in range(AGENT_EVENT_QUEUE_MAXSIZE + 10):
+            for _ in range(42):
                 await on_delta("x")
                 produced += 1
             return AgentRunResult(text="done", model="deployment")
@@ -762,7 +763,7 @@ async def test_agentic_stream_backpressures_fast_producer_and_disconnect_unblock
 
     assert "metadata" in await anext(stream)
     await asyncio.sleep(0)
-    assert produced == AGENT_EVENT_QUEUE_MAXSIZE
+    assert produced == 32
     await asyncio.wait_for(stream.aclose(), timeout=1)
     await asyncio.wait_for(cancelled.wait(), timeout=1)
     assert repo.persisted[-1].status is MessageStatus.cancelled
