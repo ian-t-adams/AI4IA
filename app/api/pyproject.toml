@@ -27,7 +27,7 @@ dependencies = [
     "starlette>=1.4.1,<1.5",
     "uvicorn[standard]>=0.52.1",
     "pydantic>=2.7",
-    "pydantic-settings>=2.3",
+    "pydantic-settings>=2.15.0",
     "httpx>=0.27",
     # JWT validation for Microsoft Entra bearer tokens (auth/entra.py), RS256
     # only. PyJWT (cryptography backend) replaces python-jose, which transitively
@@ -79,7 +79,7 @@ dependencies = [
     # search capability (ai4ia_api.websearch). Imported lazily (only when
     # AI4IA_WEB_SEARCH_ENABLED=true and a search actually runs) so the app/tests
     # boot without it wired and the default-OFF path constructs nothing.
-    "webiq>=0.1.4",
+    "webiq>=0.1.5",
     # Azure Monitor metrics BATCH data plane (azure-monitor-querymetrics'
     # MetricsClient, the metrics:getBatch API) for the admin dashboard's resource
     # panels — AI Search / Postgres / Cosmos / Container Apps platform metrics.
@@ -156,7 +156,7 @@ dev = [
     # [tool.ruff.lint]), which closes that specific failure mode, and the ceiling
     # keeps the remaining surface (fix behavior, rule semantics within the
     # selected set) an explicit, CI-gated bump rather than a surprise.
-    "ruff>=0.16.0,<0.17",
+    "ruff>=0.16.2,<0.17",
     "pyright>=1.1.411",
     # Lets tests exercise real foundry/toolbox.manifest.schema.json validation (see
     # test_foundry_toolbox.py) instead of skipping via pytest.importorskip("jsonschema").
