@@ -2,9 +2,10 @@ import asyncio
 
 import pytest
 
+from ai4ia_api.config import GatewayAuthMode
+from ai4ia_api.main import create_app
 from ai4ia_api.routers.health import SessionStoreReadiness
 from tests.conftest import make_settings
-from ai4ia_api.main import create_app
 
 
 def test_health_live(client):
@@ -97,7 +98,7 @@ def test_openapi_is_environment_aware_and_explicitly_overridable():
         entra_audience="audience",
         model_gateway_url="https://proxy.example.com/openai",
         model_gateway_allowed_hosts="proxy.example.com",
-        model_gateway_auth_mode="api_key",
+        model_gateway_auth_mode=GatewayAuthMode.api_key,
         model_gateway_api_key="key",
         model_gateway_api_key_header="S7P-KEY",
     )
