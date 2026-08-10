@@ -390,6 +390,30 @@ class ExistingStateAwareLifecycleTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(len(warnings), 1)
 
+    def test_retired_model_absent_from_offer_list_exact_existing_warns_and_passes(self) -> None:
+        errors, warnings = AVAILABILITY.evaluate(
+            [self.DESIRED],
+            {},
+            {},
+            self.exact_existing(),
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("no longer listed as offered", warnings[0])
+        self.assertIn("routine reconcile", warnings[0])
+
+    def test_retired_sku_absent_from_offer_list_exact_existing_warns_and_passes(self) -> None:
+        errors, warnings = AVAILABILITY.evaluate(
+            [self.DESIRED],
+            {"gpt-4.1-mini": {"Standard": {"2025-04-14"}}},
+            {},
+            self.exact_existing(),
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("SKU GlobalStandard is no longer listed", warnings[0])
+        self.assertIn("routine reconcile", warnings[0])
+
     def test_same_name_with_version_drift_remains_blocking(self) -> None:
         existing = self.exact_existing()
         existing[("eastus2", self.DESIRED["deploymentName"].casefold())][
@@ -630,6 +654,74 @@ class QuotaEvaluationTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertTrue("needs 4" in errors[0], errors[0])
 
+    def test_reduced_quota_exact_existing_warns_and_passes(self) -> None:
+        desired = {
+            "deploymentName": "gpt-image-2-existing",
+            "name": "gpt-image-2",
+            "format": "OpenAI",
+            "sku": "GlobalStandard",
+            "version": "1",
+            "capacity": 10,
+            "versionUpgradeOption": "NoAutoUpgrade",
+            "region": "eastus2",
+        }
+        existing = {
+            ("eastus2", "gpt-image-2-existing"): {
+                "accountName": "mf-example",
+                "deploymentName": "gpt-image-2-existing",
+                "region": "eastus2",
+                "modelName": "gpt-image-2",
+                "format": "OpenAI",
+                "version": "1",
+                "sku": "GlobalStandard",
+                "capacity": 10,
+                "versionUpgradeOption": "NoAutoUpgrade",
+                "provisioningState": "Succeeded",
+            }
+        }
+        errors, warnings = AVAILABILITY.evaluate_quota(
+            [desired], self._index(2), existing
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("routine reconcile adds no capacity", warnings[0])
+
+    def test_mixed_exact_existing_and_new_group_still_blocks_total_capacity(self) -> None:
+        existing_item = {
+            "deploymentName": "gpt-image-2-existing",
+            "name": "gpt-image-2",
+            "format": "OpenAI",
+            "sku": "GlobalStandard",
+            "version": "1",
+            "capacity": 2,
+            "versionUpgradeOption": "NoAutoUpgrade",
+            "region": "eastus2",
+        }
+        new_item = dict(
+            existing_item,
+            deploymentName="gpt-image-2-new",
+            capacity=2,
+        )
+        existing = {
+            ("eastus2", "gpt-image-2-existing"): {
+                "accountName": "mf-example",
+                "deploymentName": "gpt-image-2-existing",
+                "region": "eastus2",
+                "modelName": "gpt-image-2",
+                "format": "OpenAI",
+                "version": "1",
+                "sku": "GlobalStandard",
+                "capacity": 2,
+                "versionUpgradeOption": "NoAutoUpgrade",
+                "provisioningState": "Succeeded",
+            }
+        }
+        errors, _ = AVAILABILITY.evaluate_quota(
+            [existing_item, new_item], self._index(3), existing
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("needs 4", errors[0])
+
     def test_unmatched_counter_warns_rather_than_blocks(self) -> None:
         """Absence is ambiguous: no grant, or a spelling we failed to reconcile.
 
@@ -745,6 +837,78 @@ class SharedQuotaTests(unittest.TestCase):
                 "subscription-wide 2, so a second region deterministically fails "
                 "with InsufficientQuota. Request a quota increase first.",
             )
+
+    def test_shared_overage_exact_existing_warns_and_passes(self) -> None:
+        def desired(region: str) -> dict:
+            return {
+                "deploymentName": f"mai-{region}",
+                "name": "MAI-Image-2.5",
+                "format": "OpenAI",
+                "sku": "GlobalStandard",
+                "version": "1",
+                "capacity": 2,
+                "versionUpgradeOption": "NoAutoUpgrade",
+                "region": region,
+            }
+
+        east = desired("eastus2")
+        sweden = desired("swedencentral")
+        existing = {}
+        for item in (east, sweden):
+            existing[(item["region"], item["deploymentName"])] = {
+                "accountName": f"mf-{item['region']}",
+                "deploymentName": item["deploymentName"],
+                "region": item["region"],
+                "modelName": item["name"],
+                "format": item["format"],
+                "version": item["version"],
+                "sku": item["sku"],
+                "capacity": item["capacity"],
+                "versionUpgradeOption": item["versionUpgradeOption"],
+                "provisioningState": "Succeeded",
+            }
+        errors, warnings = AVAILABILITY.evaluate_shared_quota(
+            {"eastus2": [east], "swedencentral": [sweden]},
+            self._index("AIServices.GlobalStandard.MAI-Image-2.5", 2),
+            existing,
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("routine reconcile adds no shared capacity", warnings[0])
+
+    def test_shared_mixed_existing_and_new_still_blocks(self) -> None:
+        east = {
+            "deploymentName": "mai-eastus2",
+            "name": "MAI-Image-2.5",
+            "format": "OpenAI",
+            "sku": "GlobalStandard",
+            "version": "1",
+            "capacity": 2,
+            "versionUpgradeOption": "NoAutoUpgrade",
+            "region": "eastus2",
+        }
+        sweden = dict(east, deploymentName="mai-sweden", region="swedencentral")
+        existing = {
+            ("eastus2", "mai-eastus2"): {
+                "accountName": "mf-eastus2",
+                "deploymentName": "mai-eastus2",
+                "region": "eastus2",
+                "modelName": "MAI-Image-2.5",
+                "format": "OpenAI",
+                "version": "1",
+                "sku": "GlobalStandard",
+                "capacity": 2,
+                "versionUpgradeOption": "NoAutoUpgrade",
+                "provisioningState": "Succeeded",
+            }
+        }
+        errors, _ = AVAILABILITY.evaluate_shared_quota(
+            {"eastus2": [east], "swedencentral": [sweden]},
+            self._index("AIServices.GlobalStandard.MAI-Image-2.5", 2),
+            existing,
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("4 total across 2 regions", errors[0])
 
 
 class ModelPreflightCredentialTests(unittest.TestCase):

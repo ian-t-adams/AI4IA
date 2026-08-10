@@ -57,7 +57,10 @@ When no target resource group/environment exists, the script says it is in
 routine reconcile it inventories only this environment's Foundry accounts. A
 `Deprecating`/`Deprecated` record is allowed only when the exact named deployment
 is already `Succeeded` with the desired model, version, SKU, capacity, and version
-upgrade posture; that path emits a migration warning. Any absence or drift blocks.
+upgrade posture; that path emits a migration warning. This exact-existing exception
+also covers a retired model/SKU disappearing from offer data or quota being reduced
+below already-provisioned capacity. Any absent/drifted member in the same model/SKU
+group restores full enforcement over the total desired capacity.
 
 The model preflight compares `infra/models.json` with the subscription on three
 independent axes:

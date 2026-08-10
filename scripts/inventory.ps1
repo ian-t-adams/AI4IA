@@ -37,6 +37,17 @@ function Save($name, [scriptblock]$cmd) {
     }
 }
 
+function Capture($name, [scriptblock]$cmd) {
+    Write-Host "  - $name"
+    try {
+        return [pscustomobject]@{ Succeeded = $true; Value = @(& $cmd) }
+    } catch {
+        $failedSections.Add($name) | Out-Null
+        Write-Warning "    failed: $($_.Exception.Message)"
+        return [pscustomobject]@{ Succeeded = $false; Value = @() }
+    }
+}
+
 Save "resources" {
     Invoke-AzureCli -Arguments @('resource', 'list', '--resource-group', $ResourceGroup, '--output', 'json')
 }
@@ -46,17 +57,22 @@ Save "cognitive-accounts" {
     )
 }
 
-# Per-account deployments + connections
-$accounts = Invoke-AzureCli -Arguments @(
-    'cognitiveservices', 'account', 'list', '--resource-group', $ResourceGroup,
-    '--query', '[].name', '--output', 'tsv'
-)
-foreach ($a in $accounts) {
-    Save "deployments-$a" {
-        Invoke-AzureCli -Arguments @(
-            'cognitiveservices', 'account', 'deployment', 'list',
-            '--resource-group', $ResourceGroup, '--name', $a, '--output', 'json'
-        )
+# Per-account deployment captures depend on enumeration, but independent
+# Key Vault/soft-delete sections must still run if enumeration fails.
+$accountCapture = Capture "cognitive-account-names" {
+    Invoke-AzureCli -Arguments @(
+        'cognitiveservices', 'account', 'list', '--resource-group', $ResourceGroup,
+        '--query', '[].name', '--output', 'tsv'
+    )
+}
+if ($accountCapture.Succeeded) {
+    foreach ($a in $accountCapture.Value) {
+        Save "deployments-$a" {
+            Invoke-AzureCli -Arguments @(
+                'cognitiveservices', 'account', 'deployment', 'list',
+                '--resource-group', $ResourceGroup, '--name', $a, '--output', 'json'
+            )
+        }
     }
 }
 

@@ -600,6 +600,10 @@ lists only the target environment's Foundry accounts/deployments and permits an 
 `Succeeded` deployment (same name, model, version, SKU, capacity, and version-upgrade
 posture) with a loud migration warning. A greenfield/addition, missing deployment, or
 any drift still blocks because provision would create or change the deprecated model.
+The same rule applies when Azure no longer lists the model/SKU or quota has since
+fallen below its existing capacity: an all-exact group warns and reconciles without
+adding capacity, while a mixed group with any new/drifted deployment evaluates the
+full desired capacity and remains blocking.
 If target identity is ambiguous or inventory fails, the check fails rather than guessing.
 Run it directly for diagnosis ([greenfield preflight](./greenfield-standup.md#1-preflight-the-target)).
 It reports whether a deployable version exists to repin to, or that the model must be removed.

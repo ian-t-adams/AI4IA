@@ -301,7 +301,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Azure provisioning now fails before shared/paid resources when model availability,
   lifecycle, or quota cannot be verified for the target subscription. Lifecycle checks
   are existing-state-aware: exact `Succeeded` deployments reconcile with a migration
-  warning, while greenfield additions or any model/version/SKU/capacity drift block.
+  warning even after offer removal or quota reduction, while greenfield additions,
+  mixed groups, or any model/version/SKU/capacity drift block.
   Postprovision compares the exact expected model deployment set and fails closed
   on missing model/topology/Content Understanding outputs or credentials.
   Primary Content Understanding setup follows `AZURE_LOCATION` through explicit Bicep

@@ -376,6 +376,17 @@ def existing_deployment_drift(
     return differences
 
 
+def all_deployments_exact_existing(
+    required: Iterable[dict[str, Any]],
+    inventory: dict[tuple[str, str], dict[str, Any]] | None,
+) -> bool:
+    """True only when every desired record is an exact Succeeded deployment."""
+    items = list(required)
+    return bool(items) and all(
+        not existing_deployment_drift(item, inventory) for item in items
+    )
+
+
 def offered_models(region: str) -> list[dict[str, Any]]:
     result = _az("cognitiveservices", "model", "list", "--location", region, "-o", "json")
     if result.returncode != 0:
@@ -454,7 +465,9 @@ def index_quota(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 
 def evaluate_quota(
-    required: list[dict[str, str]], index: dict[str, dict[str, Any]]
+    required: list[dict[str, Any]],
+    index: dict[str, dict[str, Any]],
+    existing_deployments: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Compare one region's requested capacity against quota.
 
@@ -463,8 +476,12 @@ def evaluate_quota(
     them individually would let a pair that each fit -- but together do not --
     pass.
 
-    **Only `capacity > limit` is an error here.** That is unarguable: the catalog
-    is asking for more than the subscription could ever hold, and no retry helps.
+    **Only `capacity > limit` can be an error here.** It blocks when any desired
+    deployment in that model+SKU group is absent or drifted, because reconcile
+    would need Azure to accept the total desired capacity. If every desired
+    deployment is already Succeeded and exact, a reduced limit is only a warning:
+    routine reconcile does not request capacity, although later recreation would
+    fail without a quota increase.
 
     Exceeding *remaining* quota (`limit - currentValue`) is only a **warning**,
     because a per-region reading of `currentValue` is not what ARM enforces
@@ -493,12 +510,14 @@ def evaluate_quota(
     errors: list[str] = []
     warnings: list[str] = []
 
-    wanted: dict[tuple[str, str], int] = {}
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for item in required:
         key = (item["sku"], item["name"])
-        wanted[key] = wanted.get(key, 0) + int(item.get("capacity") or 0)
+        grouped.setdefault(key, []).append(item)
 
-    for (sku, name), capacity in sorted(wanted.items()):
+    for (sku, name), items in sorted(grouped.items()):
+        capacity = sum(int(item.get("capacity") or 0) for item in items)
+        exact_existing = all_deployments_exact_existing(items, existing_deployments)
         entry = next((index[k] for k in _quota_keys(sku, name) if k in index), None)
         if entry is None:
             warnings.append(
@@ -508,11 +527,22 @@ def evaluate_quota(
             continue
         limit = entry["limit"]
         if capacity > limit:
-            errors.append(
+            detail = (
                 f"{name} ({sku}): needs {capacity} but the subscription limit is "
-                f"{limit:.0f} [{entry['counter']}]. Request a quota increase or lower "
-                "`capacity` in infra/models.json."
+                f"{limit:.0f} [{entry['counter']}]."
             )
+            if exact_existing:
+                warnings.append(
+                    detail
+                    + " Every desired deployment is already Succeeded and exactly "
+                    "matches the catalog, so routine reconcile adds no capacity; "
+                    "request quota before changing or recreating it."
+                )
+            else:
+                errors.append(
+                    detail
+                    + " Request a quota increase or lower `capacity` in infra/models.json."
+                )
             continue
         available = limit - entry["current"]
         if capacity > available:
@@ -535,7 +565,9 @@ def evaluate_quota(
 
 
 def evaluate_shared_quota(
-    by_region: dict[str, list[dict[str, str]]], index: dict[str, dict[str, Any]]
+    by_region: dict[str, list[dict[str, Any]]],
+    index: dict[str, dict[str, Any]],
+    existing_deployments: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Catch a model whose capacity fits each region but not the subscription.
 
@@ -564,18 +596,23 @@ def evaluate_shared_quota(
       reject a shape that demonstrably works.
 
     Single-region models are skipped: :func:`evaluate_quota` already covers them,
-    and re-reporting would double-count.
+    and re-reporting would double-count. An over-limit group made entirely of
+    exact Succeeded deployments is also warning-only because routine reconcile
+    adds no shared capacity; any absent or drifted member retains the normal
+    publisher-specific enforcement below.
     """
     errors: list[str] = []
     warnings: list[str] = []
 
     totals: dict[tuple[str, str], int] = {}
     regions: dict[tuple[str, str], set[str]] = {}
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for region, required in by_region.items():
         for item in required:
             key = (item["sku"], item["name"])
             totals[key] = totals.get(key, 0) + int(item.get("capacity") or 0)
             regions.setdefault(key, set()).add(region)
+            grouped.setdefault(key, []).append(item)
 
     for (sku, name), total in sorted(totals.items()):
         spread = regions[(sku, name)]
@@ -592,7 +629,14 @@ def evaluate_shared_quota(
             "Quota is shared across regions even though the usage API reports it "
             "per region."
         )
-        if counter.partition(".")[0].casefold() == "openai":
+        if all_deployments_exact_existing(grouped[(sku, name)], existing_deployments):
+            warnings.append(
+                detail
+                + " Every desired deployment is already Succeeded and exactly "
+                "matches the catalog, so routine reconcile adds no shared capacity; "
+                "request quota before changing or recreating one."
+            )
+        elif counter.partition(".")[0].casefold() == "openai":
             warnings.append(
                 detail + " OpenAI-published models have been observed to enforce this "
                 "per region (gpt-image-1.5 holds a full-limit deployment in two "
@@ -661,11 +705,12 @@ def evaluate(
 ) -> tuple[list[str], list[str]]:
     """Compare one region's requirements against what it offers.
 
-    Returns (errors, warnings). A missing model or SKU is an error. A
-    deprecating/deprecated desired version is blocking when its deployment is
-    absent or differs from the exact Bicep model/version/SKU/capacity posture.
-    An exact Succeeded deployment is allowed for a routine reconcile with a
-    migration warning because no model deployment addition/change is intended.
+    Returns (errors, warnings). A missing model or SKU is an error when the
+    desired deployment is absent or drifted. A deprecating/deprecated desired
+    version is blocking under the same condition. An exact Succeeded deployment
+    is allowed for a routine reconcile with a migration warning because no model
+    deployment addition/change is intended, even if Azure no longer lists its
+    offer or SKU.
 
     A model offered under a *different* version is a warning: Azure will often
     accept the deployment and roll the version forward, and treating it as fatal
@@ -680,26 +725,41 @@ def evaluate(
     warnings: list[str] = []
     for item in required:
         name, sku, version = item["name"], item["sku"], item["version"]
+        drift = existing_deployment_drift(item, existing_deployments)
+        deployment_name = str(item.get("deploymentName") or name)
         skus = index.get(name.casefold())
         if skus is None:
-            errors.append(
-                f"{name}: not offered in this subscription/region. "
-                "Limited-access models need an approved access request; partner "
-                "models need the Marketplace offer enabled."
-            )
+            if not drift:
+                warnings.append(
+                    f"{name}: no longer listed as offered, but exact existing "
+                    f"deployment {deployment_name} is Succeeded and routine reconcile "
+                    "does not create or change it; migrate before recreation is needed."
+                )
+            else:
+                errors.append(
+                    f"{name}: not offered in this subscription/region. "
+                    "Limited-access models need an approved access request; partner "
+                    "models need the Marketplace offer enabled."
+                )
             continue
         if sku not in skus:
-            errors.append(
-                f"{name}: offered, but not with SKU {sku} (available: {', '.join(sorted(skus))})."
-            )
+            if not drift:
+                warnings.append(
+                    f"{name}: SKU {sku} is no longer listed, but exact existing "
+                    f"deployment {deployment_name} is Succeeded and routine reconcile "
+                    "does not create or change it; migrate before recreation is needed."
+                )
+            else:
+                errors.append(
+                    f"{name}: offered, but not with SKU {sku} "
+                    f"(available: {', '.join(sorted(skus))})."
+                )
             continue
 
         status = (lifecycle.get(name.casefold()) or {}).get(version)
         if status:
             folded = status.casefold()
             if folded in UNDEPLOYABLE_LIFECYCLE:
-                drift = existing_deployment_drift(item, existing_deployments)
-                deployment_name = str(item.get("deploymentName") or name)
                 if not drift:
                     existing = (existing_deployments or {})[
                         (_normal_location(item.get("region")), deployment_name.casefold())
@@ -814,7 +874,9 @@ def main() -> int:
             # missing its counter, which is why this merges instead of picking one.
             for key, entry in quota_index.items():
                 merged_quota.setdefault(key, entry)
-            quota_errors, quota_warnings = evaluate_quota(required, quota_index)
+            quota_errors, quota_warnings = evaluate_quota(
+                required, quota_index, existing_deployments
+            )
             errors += quota_errors
             warnings += quota_warnings
         # Findings go to stdout, not stderr. They are the report -- and when the
@@ -837,7 +899,9 @@ def main() -> int:
         # shared pool is drawn down by every region's deployments regardless of
         # which one the caller asked about, so narrowing it would hide the
         # overcommit that `--region` was used to investigate.
-        shared_errors, shared_warnings = evaluate_shared_quota(by_region, merged_quota)
+        shared_errors, shared_warnings = evaluate_shared_quota(
+            by_region, merged_quota, existing_deployments
+        )
         if shared_errors or shared_warnings:
             print("\nSubscription-wide quota (shared across regions) ...")
             for warning in shared_warnings:

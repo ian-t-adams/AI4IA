@@ -277,6 +277,33 @@ class AzureCliSafetyExecutionTests(unittest.TestCase):
             "a later successful section must remain captured",
         )
 
+    def test_inventory_enumeration_failure_keeps_independent_captures(self) -> None:
+        result, calls, captured_files = self.run_script(
+            "inventory.ps1",
+            CASES["inventory.ps1"],
+            fail_prefix=(
+                "cognitiveservices account list --resource-group rg-ai4ia-test "
+                "--query"
+            ),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Inventory INCOMPLETE:", result.stdout)
+        self.assertIn("cognitive-account-names", result.stdout + result.stderr)
+        self.assertIn("keyvaults.json", captured_files)
+        self.assertIn("soft-deleted-cognitive.json", captured_files)
+        self.assertIn("soft-deleted-keyvaults.json", captured_files)
+        self.assertFalse(
+            any(name.startswith("deployments-") for name in captured_files)
+        )
+        failed_index = next(
+            index
+            for index, call in enumerate(calls)
+            if "--query" in call and call[:3] == ["cognitiveservices", "account", "list"]
+        )
+        self.assertTrue(
+            any(call[:2] == ["keyvault", "list"] for call in calls[failed_index + 1 :])
+        )
+
 
 class AzureCliSafetySourceTests(unittest.TestCase):
     def test_wrong_subscription_error_match_survives_linux_powershell_wrapping(self) -> None:
