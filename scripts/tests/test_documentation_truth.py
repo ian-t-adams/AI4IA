@@ -181,8 +181,8 @@ class DocumentationTruthTests(unittest.TestCase):
         for required in (
             'python -m pip install -e "app/api[foundry]"',
             "azd env get-value AZURE_FOUNDRY_PROJECT_ENDPOINT",
-            "gh variable set AZURE_FOUNDRY_PROJECT_ENDPOINT",
-            "gh workflow run foundry-assets.yml --ref main",
+            "foundry-assets-context",
+            "gh workflow run foundry-assets.yml --ref main -f project_endpoint=$projectEndpoint",
             "/api/admin/metrics/official-mcp?refresh=true",
             "initialize` -> `tools/list",
             "toolCount: 3",
@@ -192,28 +192,37 @@ class DocumentationTruthTests(unittest.TestCase):
         ):
             self.assertIn(required, standup)
 
-    def test_foundry_endpoint_has_one_authoritative_environment_scope(self) -> None:
+    def test_foundry_endpoint_comes_from_exact_deploy_or_manual_input(self) -> None:
         standup = read("docs/runbooks/greenfield-standup.md")
         workflow = read(".github/workflows/foundry-assets.yml")
-        self.assertIn("--env production --body $projectEndpoint", standup)
-        self.assertIn("gh variable delete AZURE_FOUNDRY_PROJECT_ENDPOINT", standup)
-        self.assertIn("gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT --env production", standup)
-        self.assertNotIn("Choose one scope", standup)
+        deploy = read(".github/workflows/deploy.yml")
+        self.assertIn(
+            "gh workflow run foundry-assets.yml --ref main -f project_endpoint=$projectEndpoint",
+            standup,
+        )
+        self.assertIn("exact triggering run", standup)
+        self.assertIn("foundry-assets-context", standup)
+        self.assertIn("deliberately skipped", standup)
+        self.assertIn("job output", standup)
+        self.assertIn("azd env get-value AZURE_FOUNDRY_PROJECT_ENDPOINT", deploy)
+        self.assertIn("actions/upload-artifact@", deploy)
+        self.assertIn("retention-days: 30", deploy)
+        self.assertIn("actions/download-artifact@", workflow)
+        self.assertIn(
+            "run-id: ${{ github.event.workflow_run.id }}",
+            workflow,
+        )
+        self.assertIn("MANUAL_PROJECT_ENDPOINT: ${{ inputs.project_endpoint }}", workflow)
+        self.assertNotIn("vars.AZURE_FOUNDRY_PROJECT_ENDPOINT", workflow)
+        self.assertNotIn("vars.AI4IA_PRODUCTION_FOUNDRY_PROJECT_ENDPOINT", workflow)
         self.assertIn("environment: production", workflow)
-        self.assertIn("production environment variables", workflow)
-        self.assertNotIn("repository or production-environment variable", workflow)
         self.assertIn(
-            "PRODUCTION_PROJECT_ENDPOINT: ${{ vars.AZURE_FOUNDRY_PROJECT_ENDPOINT }}",
+            "printf 'project_endpoint=%s\\n'",
             workflow,
         )
         self.assertIn(
-            'echo "AZURE_FOUNDRY_PROJECT_ENDPOINT=$PRODUCTION_PROJECT_ENDPOINT" >> "$GITHUB_ENV"',
+            "AZURE_FOUNDRY_PROJECT_ENDPOINT: ${{ needs.gate.outputs.project_endpoint }}",
             workflow,
-        )
-        self.assertNotIn("gh variable get", workflow)
-        self.assertNotRegex(
-            workflow,
-            r"(?m)^\s{4}env:\s*\n\s+AZURE_FOUNDRY_PROJECT_ENDPOINT:",
         )
 
     def test_teardown_and_rotation_targets_are_truthful(self) -> None:

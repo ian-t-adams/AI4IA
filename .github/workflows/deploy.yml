@@ -499,6 +499,34 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
         run: azd provision --no-prompt
 
+      # Preserve the endpoint produced by THIS successful provision for the
+      # workflow_run consumer. A GitHub variable can fall back across scopes and
+      # therefore cannot prove which deployment it names.
+      - name: Prepare Foundry asset handoff
+        if: ${{ steps.provision.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          endpoint="$(azd env get-value AZURE_FOUNDRY_PROJECT_ENDPOINT)"
+          mkdir -p "${RUNNER_TEMP}/foundry-assets-context"
+          if [ -z "$endpoint" ]; then
+            printf 'false\n' > "${RUNNER_TEMP}/foundry-assets-context/enabled.txt"
+          elif [[ "$endpoint" =~ ^https://[a-z0-9][a-z0-9-]{0,59}\.services\.ai\.azure\.com/api/projects/[a-z0-9][a-z0-9-]{0,59}$ ]]; then
+            printf 'true\n' > "${RUNNER_TEMP}/foundry-assets-context/enabled.txt"
+            printf '%s\n' "$endpoint" > "${RUNNER_TEMP}/foundry-assets-context/project-endpoint.txt"
+          else
+            echo "::error::Provision produced an invalid Foundry project endpoint."
+            exit 1
+          fi
+
+      - name: Retain Foundry asset handoff
+        if: ${{ steps.provision.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: foundry-assets-context
+          path: ${{ runner.temp }}/foundry-assets-context
+          if-no-files-found: error
+          retention-days: 30
+
       # ---------------------------------------------------------------------
       # Build each service image ONCE, push it, and record the digest the
       # registry assigned (audit finding P1-7).

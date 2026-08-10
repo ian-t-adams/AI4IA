@@ -5,29 +5,125 @@ on:
     workflows: [deploy]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      project_endpoint:
+        description: "Foundry project endpoint from `azd env get-value AZURE_FOUNDRY_PROJECT_ENDPOINT`"
+        required: true
+        type: string
 
-permissions:
-  id-token: write
-  contents: read
-
-concurrency:
-  group: foundry-assets-production
-  cancel-in-progress: false
+permissions: {}
 
 jobs:
-  reconcile:
-    name: reconcile Foundry assets
-    # workflow_run can also observe manual or non-main executions of deploy.
-    # Reconcile automatically only for a successful main push; manual dispatch
-    # remains an explicit, fail-closed operator path.
+  gate:
+    name: confirm deploy produced Foundry context
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      should_reconcile: ${{ steps.decide.outputs.should_reconcile }}
+      project_endpoint: ${{ steps.decide.outputs.project_endpoint }}
+    steps:
+      - name: Inspect triggering deploy job
+        id: deploy
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "deploy_ran=manual" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          conclusions="$(
+            gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${TRIGGER_RUN_ID}/jobs?per_page=100" \
+              --jq '.jobs[] | select(.name == "deploy") | .conclusion'
+          )"
+          if [ "$(printf '%s\n' "$conclusions" | grep -c .)" -ne 1 ]; then
+            echo "::error::Expected exactly one deploy job in triggering run ${TRIGGER_RUN_ID}."
+            exit 1
+          fi
+          case "$conclusions" in
+            success) echo "deploy_ran=true" >> "$GITHUB_OUTPUT" ;;
+            skipped) echo "deploy_ran=false" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::Triggering deploy job concluded '${conclusions}'."
+              exit 1
+              ;;
+          esac
+
+      - name: Download triggering deploy artifact
+        id: artifact
+        if: ${{ steps.deploy.outputs.deploy_ran == 'true' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: foundry-assets-context
+          path: .foundry-assets-gate
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Decide whether reconciliation is applicable
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DEPLOY_RAN: ${{ steps.deploy.outputs.deploy_ran }}
+          MANUAL_PROJECT_ENDPOINT: ${{ inputs.project_endpoint }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            endpoint="$MANUAL_PROJECT_ENDPOINT"
+          elif [ "$DEPLOY_RAN" = "false" ]; then
+            echo "::notice::Deployment is disabled; Foundry reconciliation is not applicable."
+            echo "should_reconcile=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            feature_state="$(cat .foundry-assets-gate/enabled.txt)"
+            if [ "$feature_state" = "false" ]; then
+              echo "::notice::Foundry toolbox is disabled; reconciliation is not applicable."
+              echo "should_reconcile=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$feature_state" != "true" ]; then
+              echo "::error::Foundry artifact has an invalid enabled state."
+              exit 1
+            fi
+            endpoint="$(cat .foundry-assets-gate/project-endpoint.txt)"
+          fi
+          if [[ "$endpoint" == *$'\n'* || "$endpoint" == *$'\r'* ]]; then
+            echo "::error::The production Foundry project endpoint must be a single line."
+            exit 1
+          fi
+          if [[ ! "$endpoint" =~ ^https://[a-z0-9][a-z0-9-]{0,59}\.services\.ai\.azure\.com/api/projects/[a-z0-9][a-z0-9-]{0,59}$ ]]; then
+            echo "::error::The production Foundry project endpoint has an invalid shape."
+            exit 1
+          fi
+          echo "should_reconcile=true" >> "$GITHUB_OUTPUT"
+          printf 'project_endpoint=%s\n' "$endpoint" >> "$GITHUB_OUTPUT"
+
+  reconcile:
+    name: reconcile Foundry assets
+    needs: gate
+    # A successful deploy workflow may still have skipped its deploy job when
+    # deployment is deliberately disabled. Only the exact-run artifact proves
+    # provisioning happened; manual dispatch remains explicitly operator-driven.
+    if: ${{ needs.gate.outputs.should_reconcile == 'true' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: foundry-assets-production
+      cancel-in-progress: false
     environment: production
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AZURE_FOUNDRY_PROJECT_ENDPOINT: ${{ needs.gate.outputs.project_endpoint }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,20 +149,6 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install -e "app/api[foundry]"
-
-      - name: Resolve production project endpoint
-        # Environment-level configuration becomes available in `vars` only after
-        # the runner declares the protected environment. Keep this binding at step
-        # scope; job-level materialization happens too early.
-        env:
-          PRODUCTION_PROJECT_ENDPOINT: ${{ vars.AZURE_FOUNDRY_PROJECT_ENDPOINT }}
-        run: |
-          set -euo pipefail
-          test -n "$PRODUCTION_PROJECT_ENDPOINT" || {
-            echo "::error::Set AZURE_FOUNDRY_PROJECT_ENDPOINT in the production environment variables."
-            exit 1
-          }
-          echo "AZURE_FOUNDRY_PROJECT_ENDPOINT=$PRODUCTION_PROJECT_ENDPOINT" >> "$GITHUB_ENV"
 
       - name: Verify Foundry toolbox data-plane access
         run: |

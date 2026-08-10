@@ -534,30 +534,19 @@ For GitHub reconciliation, Bicep grants that role to the nonempty
 `deploymentPrincipalId`; Azure OIDC login alone is not data-plane authorization.
 
 Keep the established order: the deploy workflow provisions RBAC first, then the
-Foundry-assets workflow reconciles the toolbox with the same OIDC identity. Set
-the endpoint as the authoritative `production` environment variable. Do not keep
-a same-named repository variable: GitHub makes environment-level configuration
-available to the `vars` context only after the protected job starts; if the
-environment value is absent, a repository value can become the lower-precedence
-fallback. The check/cleanup below removes that ambiguity.
+Foundry-assets workflow reconciles the toolbox with the same OIDC identity. A
+successful deploy uploads its azd-produced endpoint as the
+`foundry-assets-context` artifact with 30-day retention. An unprivileged gate
+downloads it from the exact triggering run and distinguishes a successful deploy
+job from a deliberately skipped one before the protected job can request OIDC.
+The validated endpoint then travels as a job output while approval or concurrency
+waits, so artifact expiry cannot strand an approved run. Manual dispatch instead
+requires the current selected azd environment's endpoint as an explicit input.
 
 ```powershell
-$repoEndpoint = gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT 2>$null
-if ($repoEndpoint -and $repoEndpoint -ne $projectEndpoint) {
-  Write-Warning "Removing conflicting repository-scoped endpoint: $repoEndpoint"
-}
-if ($repoEndpoint) {
-  gh variable delete AZURE_FOUNDRY_PROJECT_ENDPOINT
-}
-gh variable set AZURE_FOUNDRY_PROJECT_ENDPOINT --env production --body $projectEndpoint
-$storedEndpoint = gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT --env production
-if ($storedEndpoint -ne $projectEndpoint) {
-  throw "production AZURE_FOUNDRY_PROJECT_ENDPOINT does not match selected azd environment"
-}
-
 $previousRunId = gh run list --workflow foundry-assets.yml --event workflow_dispatch `
   --branch main --limit 1 --json databaseId --jq '.[0].databaseId'
-gh workflow run foundry-assets.yml --ref main
+gh workflow run foundry-assets.yml --ref main -f project_endpoint=$projectEndpoint
 $deadline = (Get-Date).AddMinutes(2)
 do {
   Start-Sleep -Seconds 3

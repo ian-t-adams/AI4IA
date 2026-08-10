@@ -299,17 +299,18 @@ but adding runtime MCP resource support is separate work.
    push to `main`, `.github/workflows/foundry-assets.yml` checks out the exact deployed
    `workflow_run.head_sha` and reconciles assets. It has no direct push trigger, so it cannot race
    ahead of project creation or Foundry User role propagation. Manual dispatch remains available.
-   Both paths authenticate with OIDC. After the runner declares the protected
-   `production` environment, GitHub exposes its configuration through the `vars`
-   context; a step-scoped binding validates and exports
-   `AZURE_FOUNDRY_PROJECT_ENDPOINT`, first verifies project-scoped Foundry User,
-   then ensures
+   Both paths authenticate with OIDC. The deploy workflow uploads its
+   azd-produced endpoint as a 30-day `foundry-assets-context` artifact. An
+   unprivileged gate verifies the triggering deploy job really ran, downloads the
+   exact-run artifact, validates the endpoint, and carries it as a job output
+   before production approval or reconciliation concurrency can wait. Manual
+   dispatch requires an explicit `project_endpoint` input. The protected job
+   receives the validated endpoint as `AZURE_FOUNDRY_PROJECT_ENDPOINT`, first
+   verifies project-scoped Foundry User, then ensures
    `ai4ia-toolbox`. `main.bicep` includes `deploymentPrincipalId` in the primary project's
    assignments; the preflight still fails with remediation if that grant has not reconciled.
-   A same-named repository variable is forbidden (it is a lower-precedence
-   fallback if the environment value is absent and is operationally ambiguous);
-   the greenfield runbook detects/deletes it before dispatch. Unchanged runs are
-   no-ops.
+   No merged GitHub `vars` endpoint can redirect the automatic path. Unchanged
+   runs are no-ops.
 
 6. **Register the entry.** Paste the printed object into `infra/mcp-servers.json` (`servers[]`)
    and regenerate the packaged runtime catalog:

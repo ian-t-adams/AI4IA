@@ -37,10 +37,12 @@ push to `main`, and on manual dispatch. That ordering is the point — `deploy` 
 what provisions the project-scoped Foundry User role, so reconciling in parallel
 with (or ahead of) it would race RBAC creation and propagation. `foundry/**` is
 included in `deploy`'s push paths, so editing a manifest still reaches
-reconciliation; it just arrives after the infrastructure it depends on. The project
-endpoint comes from the `AZURE_FOUNDRY_PROJECT_ENDPOINT` **production environment**
-variable. Keep the same-named repository variable absent; environment scope wins
-for this job and dual values are operationally ambiguous. A fail-closed preflight requires the OIDC identity
+reconciliation; it just arrives after the infrastructure it depends on. A successful
+deploy retains its azd-produced project endpoint for 30 days. An unprivileged gate
+downloads that exact run's artifact before the protected reconciliation job can
+request OIDC, then carries the validated endpoint as a job output while approval or
+concurrency waits. Manual dispatch requires the operator to pass the current azd
+output explicitly. A fail-closed preflight requires the OIDC identity
 to hold the project-scoped Foundry User role before reconciliation. Failures stop
 the workflow; unchanged defaults create no immutable versions.
 
@@ -70,13 +72,9 @@ python scripts/provision-foundry-toolbox.py            # dry run: prints plan + 
 python scripts/provision-foundry-routine.py --check
 python scripts/provision-foundry-a2a.py --check
 
-# 6. Configure the authoritative production-environment value only after deploy
-#    has provisioned project RBAC; remove any same-named repository variable.
-gh variable delete AZURE_FOUNDRY_PROJECT_ENDPOINT 2>$null
-gh variable set AZURE_FOUNDRY_PROJECT_ENDPOINT --env production --body $projectEndpoint
-$storedEndpoint = gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT --env production
-if ($storedEndpoint -ne $projectEndpoint) { throw "Stored endpoint mismatch" }
-gh workflow run foundry-assets.yml --ref main
+# 6. Manual repair only: pass the selected azd environment's endpoint explicitly.
+#    Automatic post-deploy reconciliation consumes the triggering deploy's artifact.
+gh workflow run foundry-assets.yml --ref main -f project_endpoint=$projectEndpoint
 ```
 
 The toolbox script reads the project endpoint from `--project-endpoint` or
