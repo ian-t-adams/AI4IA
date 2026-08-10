@@ -5,16 +5,15 @@ Operator-run, validation-only companion to the routines plan in docs/foundry-too
 It does NOT run during `azd up`, in CI (beyond validating the shipped example), or in the app
 runtime, and it never imports or calls the Azure SDK -- see "Why there is no --create" below.
 
-The bridge, in one line: a routine's tool calls target the shared toolbox, which is already
-fronted by the official-MCP APIM -- so routines inherit that governance and add NO new APIM
-surface for our runtime.
+The manifest uses names from the shared toolbox as a proposed namespace. That
+cross-reference does not prove a runtime or APIM dispatch path; a future
+implementation must wire and test governance explicitly.
 
 What it does
 ------------
 1. Loads + validates a routine manifest (default: foundry/routines/example.routine.json).
-2. Prints the *plan*: the steps, the model, and which toolbox tools each step calls (a reminder
-   that every tool call flows through the APIM-fronted toolbox MCP endpoint), plus the project
-   endpoint if one is configured (informational only -- this script never calls it).
+2. Prints the *plan*: steps, model, and proposed toolbox tool names, plus the
+   project endpoint if configured (informational only -- this script never calls it).
 
 Why there is no --create
 -------------------------
@@ -280,8 +279,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Toolbox (bridge)  : {toolbox}")
     print(f"Steps ({len(steps)})         : {', '.join(s['name'] for s in steps)}")
     print(f"Tool calls        : {', '.join(tools) or '(none)'}")
-    print("\nIf this design later gains an executable contract, its named tools resolve to the")
-    print("canonical APIM-fronted toolbox. Nothing in this file is served today.")
+    print("\nThe names above exist in the canonical toolbox manifest. No runtime/APIM")
+    print("dispatch or inherited governance path is implemented or proved by this design.")
     print("\n(validation-only -- there is no --create; azure-ai-projects 2.4.0's actual routines")
     print("surface cannot faithfully represent this manifest today. See module docstring / ")
     print("docs/foundry-toolbox.md's 'Routines' section for why.)")

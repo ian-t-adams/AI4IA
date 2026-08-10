@@ -22,7 +22,7 @@ PR #125, with **zero new runtime code**. APIM injects the managed-identity beare
 | Path | What it is |
 | --- | --- |
 | `toolbox.manifest.json` | Canonical definition of the live `ai4ia-toolbox` (a new tenant reproduces it 1:1). |
-| `toolbox.manifest.example.json` | Populated reference manifest with one of every tool (copy-paste starting point). |
+| `toolbox.manifest.example.json` | Populated `reference` manifest with one of every tool. It is never reconciled as-is. |
 | `toolbox.manifest.schema.json` | JSON Schema for the manifest; validated in CI (`infra-validate`). |
 | `routines/routine.schema.json` + `routines/example.routine.json` | Design/preview routine contract. It is validated against canonical toolbox names but is not created or served. |
 | `a2a/a2a.schema.json` + `a2a/example.a2a.json` | Design/preview A2A contract with an explicit blocker inventory. It does not create a callable integration. |
@@ -38,8 +38,9 @@ what provisions the project-scoped Foundry User role, so reconciling in parallel
 with (or ahead of) it would race RBAC creation and propagation. `foundry/**` is
 included in `deploy`'s push paths, so editing a manifest still reaches
 reconciliation; it just arrives after the infrastructure it depends on. The project
-endpoint comes only from the `AZURE_FOUNDRY_PROJECT_ENDPOINT` repository or
-production environment variable. A fail-closed preflight requires the OIDC identity
+endpoint comes from the `AZURE_FOUNDRY_PROJECT_ENDPOINT` **production environment**
+variable. Keep the same-named repository variable absent; environment scope wins
+for this job and dual values are operationally ambiguous. A fail-closed preflight requires the OIDC identity
 to hold the project-scoped Foundry User role before reconciliation. Failures stop
 the workflow; unchanged defaults create no immutable versions.
 
@@ -58,7 +59,8 @@ $env:AZURE_FOUNDRY_PROJECT_ENDPOINT = $projectEndpoint
 python scripts/provision-foundry-toolbox.py --check-access
 
 # 3. Populate toolbox.manifest.json, then inspect the reconciliation plan.
-#    Tip: copy toolbox.manifest.example.json (one of every tool) as a starting point.
+#    Tip: copy toolbox.manifest.example.json, prune/review it, and change
+#    lifecycle from reference to active before any approved reconciliation.
 python scripts/provision-foundry-toolbox.py            # dry run: prints plan + mcp-servers.json entry
 
 # 4. Paste the printed entry into infra/mcp-servers.json, set
@@ -68,8 +70,12 @@ python scripts/provision-foundry-toolbox.py            # dry run: prints plan + 
 python scripts/provision-foundry-routine.py --check
 python scripts/provision-foundry-a2a.py --check
 
-# 6. Configure automation only after deploy has provisioned the project RBAC.
-gh variable set AZURE_FOUNDRY_PROJECT_ENDPOINT --body $projectEndpoint
+# 6. Configure the authoritative production-environment value only after deploy
+#    has provisioned project RBAC; remove any same-named repository variable.
+gh variable delete AZURE_FOUNDRY_PROJECT_ENDPOINT 2>$null
+gh variable set AZURE_FOUNDRY_PROJECT_ENDPOINT --env production --body $projectEndpoint
+$storedEndpoint = gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT --env production
+if ($storedEndpoint -ne $projectEndpoint) { throw "Stored endpoint mismatch" }
 gh workflow run foundry-assets.yml --ref main
 ```
 

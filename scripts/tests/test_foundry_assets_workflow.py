@@ -56,7 +56,7 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
             "${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}",
         )
 
-    def test_uses_oidc_and_an_explicit_repository_project_endpoint(self) -> None:
+    def test_uses_oidc_and_the_production_environment_project_endpoint(self) -> None:
         self.assertEqual(
             self.document["permissions"], {"id-token": "write", "contents": "read"}
         )
@@ -64,6 +64,12 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
             self.job["env"]["AZURE_FOUNDRY_PROJECT_ENDPOINT"],
             "${{ vars.AZURE_FOUNDRY_PROJECT_ENDPOINT }}",
         )
+        self.assertEqual(self.job["environment"], "production")
+        self.assertIn(
+            "Set AZURE_FOUNDRY_PROJECT_ENDPOINT in the production environment variables",
+            self.raw,
+        )
+        self.assertNotIn("repository or production-environment variable", self.raw)
         self.assertNotIn(".services.ai.azure.com/api/projects/", self.raw)
         login = next(
             step for step in self.job["steps"] if step.get("name") == "Log in to Azure (OIDC)"
@@ -97,6 +103,7 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
             self.assertNotIn("continue-on-error", step)
         self.assertIn("--check-access", steps[access_index]["run"])
         self.assertIn("--create", steps[toolbox_index]["run"])
+        self.assertNotIn("--manifest", steps[toolbox_index]["run"])
 
     def test_deleted_skill_has_no_stale_repository_references(self) -> None:
         tracked = subprocess.run(

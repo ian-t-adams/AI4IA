@@ -78,7 +78,7 @@ window.AI4IA_META = {
     { name: "Automatic context summarization (auto-fold)", templateOn: true, observedOn: true, param: "autoSummarizationEnabled" },
     { name: "Admin dashboards (usage rollups + Azure Monitor resource panels)", templateOn: true, observedOn: true },
     { name: "Inline-attachment code interpreter", templateOn: true, observedOn: true, param: "inlineDocumentComputeEnabled",
-      note: "Attach a file in chat and the model runs sandboxed code over it via the same Responses API code interpreter path as document compute." },
+      note: "Sends attachment bytes to the external Responses sandbox; interactive use is held for exact-call approval under the default policy." },
     { name: "Web IQ search tools (web/news/videos/images/browse)", templateOn: true, observedOn: true, param: "webSearchEnabled",
       note: "Web/news/image/video/browse tools agents can call (approval + metering); uses the API managed identity unless AI4IA_WEBIQ_API_KEY is set." },
     { name: "Multi-app proxy profiles", templateOn: false, observedOn: false, param: "proxyProfilesEnabled",

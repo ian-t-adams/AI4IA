@@ -28,8 +28,9 @@
       "description": "Version of AI4IA's repository manifest contract, not a Foundry service API version."
     },
     "lifecycle": {
-      "const": "active",
-      "description": "This artifact is reconciled into the configured Foundry project by the foundry-assets workflow."
+      "type": "string",
+      "enum": ["active", "reference"],
+      "description": "`active` is eligible for reconciliation into a configured Foundry project. `reference` is documentation/test input only and must not be created or emitted as deployable YAML."
     },
     "owner": {
       "type": "string",

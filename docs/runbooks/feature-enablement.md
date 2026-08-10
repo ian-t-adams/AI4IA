@@ -68,9 +68,10 @@ web result or a previous tool response chooses an outbound call's arguments.
 * `off` — restore the pre-P1-13 behavior exactly. Not a supported posture for a
   deployment where users register their own MCP servers.
 
-**What a user actually sees under the default.** Only two capabilities prompt on
-every use: `browse_url` and `run_code`, because the model chooses the destination
-or the program. Everything else first-party whose destination is fixed by server
+**What a user actually sees under the default.** Three capabilities prompt on
+every use: `browse_url`, `run_code`, and `analyze_attachment`. The model chooses
+the destination or program for the first two; the third sends attachment bytes
+to the external Responses sandbox. Everything else first-party whose destination is fixed by server
 configuration — the four searches, image/video generation, `remember_memory`,
 `export_document` — prompts *only* on a turn that carried untrusted content, so an
 ordinary "search the web for X" or "remember that I prefer Y" is not interrupted.

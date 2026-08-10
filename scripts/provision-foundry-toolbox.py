@@ -670,6 +670,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {e}", file=sys.stderr)
         return 1
 
+    if (args.create or args.emit_yaml) and manifest.get("lifecycle") != "active":
+        print("Manifest is not ready to provision:", file=sys.stderr)
+        print(
+            "  - live creation/YAML emission requires lifecycle='active'; "
+            "reference manifests are validation examples only.",
+            file=sys.stderr,
+        )
+        return 1
+
     if args.emit_yaml:
         args.emit_yaml.write_text(to_azd_yaml(manifest), encoding="utf-8")
         print(f"Wrote azd toolbox YAML -> {args.emit_yaml}")

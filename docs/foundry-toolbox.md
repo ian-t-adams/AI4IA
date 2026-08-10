@@ -231,9 +231,11 @@ both its GA `toolbox_search` and preview `toolbox_search_preview` spellings -- p
 connections: Search, MCP-upstream, Playwright Workspace for browser automation, Bing Custom
 Search, and one each for the A2A/Fabric IQ/Work IQ examples), all uniquely
 identified (by `name`, or `serverLabel` for `mcp` tools).
-The shipped `foundry/toolbox.manifest.json` is the canonical `ai4ia-toolbox` definition; edit it (or
-the example, passing `--manifest foundry/toolbox.manifest.example.json`), prune what you don't need,
-create any referenced connections, then run `provision-foundry-toolbox.py`. The script creates the toolbox via
+The shipped `foundry/toolbox.manifest.json` is the canonical `ai4ia-toolbox`
+definition. To start from the example, copy it to an operator-owned manifest,
+prune/review it, and change `lifecycle` from `reference` to `active`; the
+provisioner rejects `--create`/`--emit-yaml` for reference manifests. Create any
+referenced connections, then run `provision-foundry-toolbox.py`. The script creates the toolbox via
 `project.toolboxes.create_version(name, tools=[...], description=..., skills=[...], policies=...)`,
 then activates that new version (see the idempotency note below).
 
@@ -345,7 +347,7 @@ portal-created samples such as `swagger-petstore` are retained by ARM incrementa
 must be removed separately with `scripts/cleanup-lean-azure-retained.ps1` after verifying the exact
 asset; they are not created or advertised by this repo.
 
-## P7 — Routines and Agent-to-Agent (A2A): mixed status (routines validation-only by design; A2A endpoint scaffold shipped)
+## P7 — Routines and Agent-to-Agent (A2A): design artifacts only
 
 Routine and A2A files are **design/preview artifacts**, not served capabilities.
 Routine creation has no faithful translation to the pinned SDK contract. The A2A
@@ -384,9 +386,9 @@ Shipped:
   `referenced_tools` functions (dependency-free, unit-tested in `test_foundry_routine.py`; the
   script never imports `azure.ai.projects`).
 - The routine references canonical toolbox **instance names**. Semantic validation
-  loads `foundry/toolbox.manifest.json` and rejects unknown names. If a live path
-  exists later, those names resolve to the APIM-fronted toolbox; nothing is
-  consumed by the app runtime today.
+  loads `foundry/toolbox.manifest.json` and rejects unknown names. That proves only
+  namespace consistency; no runtime/APIM dispatch or inherited governance path
+  exists today.
 
 Run it: `python scripts/provision-foundry-routine.py` (validates the manifest and prints the plan;
 there is no `--create`).

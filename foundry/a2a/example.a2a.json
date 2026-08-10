@@ -12,7 +12,7 @@
   },
   "agentName": "ai4ia-research-agent",
   "displayName": "Research Agent (A2A)",
-  "description": "Remote Foundry agent that runs the research-brief routine; delegated to over A2A, gated on APIM auth.",
+  "description": "Proposed remote research agent. Endpoint, APIM authentication, and runtime delegation remain blocking design requirements.",
   "linkAs": "remote-research",
   "blockingRequirements": [
     "protocol-and-version",

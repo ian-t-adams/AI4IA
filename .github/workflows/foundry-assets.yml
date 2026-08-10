@@ -29,6 +29,9 @@ jobs:
     timeout-minutes: 15
     environment: production
     env:
+      # This resolves from the production environment. Operators must keep the
+      # same-named repository variable absent so a stale lower-precedence value
+      # cannot be mistaken for the workflow's effective configuration.
       AZURE_FOUNDRY_PROJECT_ENDPOINT: ${{ vars.AZURE_FOUNDRY_PROJECT_ENDPOINT }}
     steps:
       - name: Checkout
@@ -60,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$AZURE_FOUNDRY_PROJECT_ENDPOINT" || {
-            echo "::error::Set the AZURE_FOUNDRY_PROJECT_ENDPOINT repository or production-environment variable."
+            echo "::error::Set AZURE_FOUNDRY_PROJECT_ENDPOINT in the production environment variables."
             exit 1
           }
 

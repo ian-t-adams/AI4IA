@@ -2,7 +2,7 @@
   "$schema": "./toolbox.manifest.schema.json",
   "_comment": "POPULATED REFERENCE manifest showing every azure-ai-projects 2.4.0 toolbox tool type AI4IA can place in a toolbox (all 13: web_search, azure_ai_search, code_interpreter, browser_automation_preview, file_search, openapi, mcp, toolbox_search, toolbox_search_preview, a2a_preview, fabric_iq_preview, work_iq_preview, reminder_preview), each with at least one populated example. This is an EXAMPLE only (the canonical live toolbox is foundry/toolbox.manifest.json). To use it, copy this over toolbox.manifest.json (or pass --manifest foundry/toolbox.manifest.example.json), prune the tools you do not want, create the referenced connections, then run scripts/provision-foundry-toolbox.py. Every tool listed here is consumed through the official-MCP APIM front door once the toolbox is registered in infra/mcp-servers.json. Note: computer_use and bing_custom_search are agent-level tools with no toolbox equivalent in the SDK, so they are not toolbox tools. The service allows at most one unnamed tool total, so every tool here has a `name` (or `serverLabel` for `mcp` tools). Tool types whose name ends in `_preview` (browser_automation_preview, toolbox_search_preview, a2a_preview, fabric_iq_preview, work_iq_preview, reminder_preview) are Azure public preview; the rest are generally available. `toolbox_search` and `toolbox_search_preview` are the GA and preview spellings of the SAME tool search capability and both appear here only because this file must demonstrate every supported type -- a real toolbox should carry just one of them, preferably `toolbox_search`.",
   "manifestVersion": "1.0",
-  "lifecycle": "active",
+  "lifecycle": "reference",
   "owner": "repository-owner",
   "sdkContract": {
     "package": "azure-ai-projects",
@@ -11,7 +11,7 @@
     "surface": "project.toolboxes"
   },
   "name": "ai4ia-toolbox",
-  "description": "AI4IA shared Foundry toolbox (populated reference). Groups grounding, code execution, browsing, and tool search behind one APIM-fronted MCP endpoint.",
+  "description": "Reference-only toolbox manifest demonstrating supported tool shapes. It is not reconciled or served unless an operator copies, prunes, reviews, and changes its lifecycle to active.",
   "raiPolicyName": "ai4ia-annotate-only",
   "connections": [
     {

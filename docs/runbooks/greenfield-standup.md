@@ -535,14 +535,24 @@ For GitHub reconciliation, Bicep grants that role to the nonempty
 
 Keep the established order: the deploy workflow provisions RBAC first, then the
 Foundry-assets workflow reconciles the toolbox with the same OIDC identity. Set
-the endpoint as a repository or `production` environment variable and dispatch:
+the endpoint as the authoritative `production` environment variable. Do not keep
+a same-named repository variable: the job declares `environment: production`, so
+the environment value wins and an old repository value can mislead an operator
+without affecting the run.
 
 ```powershell
-# Choose one scope. Repository scope:
-gh variable set AZURE_FOUNDRY_PROJECT_ENDPOINT --body $projectEndpoint
-
-# Or, instead, if production environment variables are used:
-# gh variable set AZURE_FOUNDRY_PROJECT_ENDPOINT --env production --body $projectEndpoint
+$repoEndpoint = gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT 2>$null
+if ($repoEndpoint -and $repoEndpoint -ne $projectEndpoint) {
+  Write-Warning "Removing conflicting repository-scoped endpoint: $repoEndpoint"
+}
+if ($repoEndpoint) {
+  gh variable delete AZURE_FOUNDRY_PROJECT_ENDPOINT
+}
+gh variable set AZURE_FOUNDRY_PROJECT_ENDPOINT --env production --body $projectEndpoint
+$storedEndpoint = gh variable get AZURE_FOUNDRY_PROJECT_ENDPOINT --env production
+if ($storedEndpoint -ne $projectEndpoint) {
+  throw "production AZURE_FOUNDRY_PROJECT_ENDPOINT does not match selected azd environment"
+}
 
 $previousRunId = gh run list --workflow foundry-assets.yml --event workflow_dispatch `
   --branch main --limit 1 --json databaseId --jq '.[0].databaseId'

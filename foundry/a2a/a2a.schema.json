@@ -28,7 +28,7 @@
     },
     "agentName": {
       "type": "string",
-      "description": "Name of the deployed Foundry agent to expose over A2A (its endpoint is minted when A2A is enabled).",
+      "description": "Proposed Foundry agent identifier. This design does not prove that the agent exists or expose an endpoint.",
       "minLength": 1
     },
     "displayName": {

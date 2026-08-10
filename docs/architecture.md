@@ -294,9 +294,9 @@ do with each capability:
 
 | posture | capabilities | why |
 | --- | --- | --- |
-| held on every turn | `browse_url`, `run_code` | the model chooses the destination or the program, so no server-side boundary constrains the effect |
+| held on every turn | `browse_url`, `run_code`, `analyze_attachment` | the model chooses the destination/program, or sends attachment bytes to the external Responses sandbox; none is a read confined to an existing local store |
 | held only on a turn carrying untrusted content | the four `*_search` tools, `generate_image`, `generate_video`, `remember_memory`, `export_document` | the destination is fixed by server config and the effect is confined to the caller's own data, so injected text choosing the payload is the whole of the risk — on a clean turn the user is the only possible author |
-| never held | `recall_memory`, `fetch_document`, `process_document`, `analyze_attachment`, `delegate_to_agent` | reads over the caller's own data, or a router onto an already-governed sub-turn: no egress, no durable write |
+| never held | `recall_memory`, `fetch_document`, `process_document`, `delegate_to_agent` | reads over the caller's own data, or a router onto an already-governed sub-turn: no egress, no durable write |
 
 The middle posture is declared per tool (`ToolSpec.injection_only_risk`), not by
 the operator, and it only ever relaxes a call to `tainted` strength — never to

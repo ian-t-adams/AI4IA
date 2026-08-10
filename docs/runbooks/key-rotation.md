@@ -47,13 +47,21 @@ $apiApp = "ca-api-$envName"
 az account set --subscription $sub
 $selectedSub = az account show --query id -o tsv
 if ($selectedSub -ne $sub) { throw "Azure CLI selected $selectedSub, expected $sub" }
-$apim = (az apim list -g $rg --query '[0].name' -o tsv)
+$apim = azd env get-value AZURE_APIM_NAME
+$apimId = azd env get-value AZURE_APIM_RESOURCE_ID
+if (-not $apim -or -not $apimId) {
+  throw "Selected azd environment did not emit AZURE_APIM_NAME/AZURE_APIM_RESOURCE_ID."
+}
+$resolvedApimId = az apim show -g $rg -n $apim --query id -o tsv
+if ($resolvedApimId.TrimEnd('/') -ne $apimId.TrimEnd('/')) {
+  throw "Resolved APIM id $resolvedApimId does not match azd output $apimId."
+}
 $sid = "$workload-api-proxy-ingress"
 $proxyFqdn = az containerapp show -g $rg -n $proxyApp `
   --query properties.configuration.ingress.fqdn -o tsv
 $url = "https://$proxyFqdn/openai/status"
 
-foreach ($required in @($sub, $envName, $rg, $proxyApp, $apiApp, $apim, $sid, $proxyFqdn)) {
+foreach ($required in @($sub, $envName, $rg, $proxyApp, $apiApp, $apim, $apimId, $sid, $proxyFqdn)) {
   if (-not $required) { throw "Selected azd environment did not resolve every rotation target." }
 }
 ```

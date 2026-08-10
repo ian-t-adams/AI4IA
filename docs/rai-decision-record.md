@@ -15,10 +15,12 @@
 
 ## Decision
 
-Every Azure AI Content Safety filter on every model deployment is **enabled but
-non-blocking**. Foundry evaluates each request and response, returns a verdict, and
-the platform records and displays it. Nothing is refused, rewritten, or withheld on
-the basis of that verdict.
+The `ai4ia-annotate-only` policy configured on the catalog model deployments is
+**enabled but non-blocking**. For text chat completions, Foundry returns safety
+annotations and AI4IA normalizes, persists, and displays them without refusing,
+rewriting, or withholding the text. This repository does not evidence equivalent
+annotation capture/persistence/display for image, video, Azure OpenAI Voice Live,
+or Speech Voice Live.
 
 ## Approval
 
@@ -96,11 +98,11 @@ Two details worth stating plainly, because both are easy to misread:
 
 ## Compensating controls
 
-**Implemented.** Annotations are no longer discarded. Foundry returns a verdict for
-every category on every turn; before 2026-08-04 the platform threw all of it away, so
-the safety system ran on every request and was completely invisible. Verdicts are now
-normalized (`app/api/src/ai4ia_api/safety.py`), persisted on the message, and shown in
-a per-turn panel that states plainly that nothing was blocked or rewritten.
+**Implemented for text chat completions.** Those annotations are no longer
+discarded: verdicts returned on the text-completion path are normalized
+(`app/api/src/ai4ia_api/safety.py`), persisted on the message, and shown in a
+per-turn panel that states plainly that the displayed text was not blocked or
+rewritten. Before 2026-08-04 that chat-path evidence was thrown away.
 `filtered: true` is always treated as notable, so a future switch to blocking would
 surface rather than change behaviour silently.
 
@@ -115,6 +117,9 @@ surface rather than change behaviour silently.
 4. **No tested moderation boundary.** The audit's premise for accepting an
    annotate-only posture was "a documented and validated replacement boundary". The
    replacement is currently visibility only.
+5. **No modality evidence.** Image, video, and both Voice Live providers are
+   enabled, but this record has no evidence that their safety outputs are
+   normalized, persisted, displayed, aggregated, or escalated.
 
 ## Why this is not simply wrong
 

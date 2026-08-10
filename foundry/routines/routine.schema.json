@@ -44,7 +44,7 @@
     },
     "toolbox": {
       "type": "string",
-      "description": "Optional name of the toolbox whose tools the steps reference. Documents that every tool call flows through the APIM-fronted toolbox MCP endpoint (the bridge). Defaults to the toolbox in toolbox.manifest.json.",
+      "description": "Optional name of the toolbox namespace whose tool names this design references. A future runtime would still need to prove APIM-fronted dispatch; this field does not create or route calls.",
       "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$"
     },
     "steps": {

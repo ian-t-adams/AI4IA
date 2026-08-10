@@ -250,9 +250,10 @@ export function parseMcpToolName(
 // approval gate below — it cannot undo either of these.
 export type McpBlockingState = "disabled" | "quarantined" | null;
 
-// The approval posture the backend projects for a server's tools
-// (discovered_tool_to_spec): external risk, egress scoped to the host, and human
-// approval required on every use UNLESS the server is marked trusted.
+// The standing discovery posture the backend projects for a server's tools
+// (discovered_tool_to_spec): external risk and host-scoped egress. Trust decides
+// whether the model sees the tool; interactive invocation approval is a separate
+// policy and defaults to exact-call approval for external/destructive calls.
 export interface ApprovalPosture {
   requiresApproval: boolean;
   label: string;

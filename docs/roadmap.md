@@ -121,10 +121,10 @@ not mistaken for a fix:
 - **P1-13 — closed for the capabilities that matter; unattended runs remain
   exempt.** Per-invocation approval now covers MCP tools *and* the 15 first-party
   synthetic capabilities, which get their risk from
-  `agents/synthetic_governance.py` rather than from the registry. `browse_url` and
-  `run_code` are held on every turn; the four searches, media generation,
+  `agents/synthetic_governance.py` rather than from the registry. `browse_url`,
+  `run_code`, and `analyze_attachment` are held on every turn; the four searches, media generation,
   `remember_memory` and `export_document` are held only on a turn that carried
-  untrusted content; the four read-only capabilities and `delegate_to_agent` are
+  untrusted content; the three local read-only capabilities and `delegate_to_agent` are
   not held. `test_ungated_capabilities.py` pins that split in both directions, and
   an unclassified capability is refused at runtime. What is still open: a
   **workflow step** runs unattended, so there is nobody to ask and

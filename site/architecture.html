@@ -185,7 +185,7 @@ flowchart TB
       <div class="container">
         <h2 class="section-title">5 · Anatomy of a chat turn</h2>
         <p class="section-sub">The governance order every request passes through: authenticate, gate, plan, route,
-          persist. Canonical message/session writes must surface failure; only telemetry and derived stores are best-effort.</p>
+          persist. Canonical message/session writes surface failure. Usage-ledger/metering writes, telemetry, and derived stores are best-effort and failures are logged rather than reported as canonical persistence success.</p>
         <figure class="diagram">
           <pre class="mermaid">
 sequenceDiagram
@@ -204,7 +204,8 @@ sequenceDiagram
   G->>F: managed-identity call to deployment
   F-->>A: streamed tokens
   A-->>B: stream response (via web proxy)
-  A->>C: persist canonical messages + usage ledger (failure is surfaced)
+  A->>C: persist canonical messages (failure is surfaced)
+  A-->>C: usage ledger + telemetry (best-effort; failures logged)
           </pre>
         </figure>
       </div>
