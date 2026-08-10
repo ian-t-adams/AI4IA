@@ -517,17 +517,59 @@ When the checked-in `enableFoundryToolbox=true` parameter is deployed, Bicep
 creates the control-plane wiring but not the Foundry data-plane toolbox:
 
 ```powershell
+# Run from the repository root. This exact extra is provisioning-only.
+python -m pip install -e "app/api[foundry]"
+
+# Derive the endpoint from the selected azd environment; do not construct it.
+$projectEndpoint = azd env get-value AZURE_FOUNDRY_PROJECT_ENDPOINT
+if (-not $projectEndpoint) { throw "AZURE_FOUNDRY_PROJECT_ENDPOINT is empty" }
+$env:AZURE_FOUNDRY_PROJECT_ENDPOINT = $projectEndpoint
+
+# Local access validation is diagnostic only; the workflow remains authoritative.
 python scripts/provision-foundry-toolbox.py --check-access
-python scripts/provision-foundry-toolbox.py --create
 ```
 
 The preflight fails closed unless the caller has project-scoped **Foundry User**.
 For GitHub reconciliation, Bicep grants that role to the nonempty
 `deploymentPrincipalId`; Azure OIDC login alone is not data-plane authorization.
 
-Skipping this can leave APIM and the MCP initialize handshake healthy while
-`tools/list` returns `Toolbox '<name>' not found`. Verify through the admin
-official-MCP metric with refresh enabled and require a nonzero tool count.
+Keep the established order: the deploy workflow provisions RBAC first, then the
+Foundry-assets workflow reconciles the toolbox with the same OIDC identity. A
+successful deploy uploads its azd-produced endpoint as the
+`foundry-assets-context` artifact with 30-day retention. An unprivileged gate
+downloads it from the exact triggering run and distinguishes a successful deploy
+job from a deliberately skipped one before the protected job can request OIDC.
+The validated endpoint then travels as a job output while approval or concurrency
+waits, so artifact expiry cannot strand an approved run. Manual dispatch instead
+requires the current selected azd environment's endpoint as an explicit input.
+
+```powershell
+$previousRunId = gh run list --workflow foundry-assets.yml --event workflow_dispatch `
+  --branch main --limit 1 --json databaseId --jq '.[0].databaseId'
+gh workflow run foundry-assets.yml --ref main -f project_endpoint=$projectEndpoint
+$deadline = (Get-Date).AddMinutes(2)
+do {
+  Start-Sleep -Seconds 3
+  $runId = gh run list --workflow foundry-assets.yml --event workflow_dispatch `
+    --branch main --limit 1 --json databaseId --jq '.[0].databaseId'
+} while ((-not $runId -or $runId -eq $previousRunId) -and (Get-Date) -lt $deadline)
+if (-not $runId -or $runId -eq $previousRunId) {
+  throw "No new foundry-assets workflow_dispatch run appeared within two minutes."
+}
+gh run watch $runId --exit-status
+```
+
+Do not replace this with a local `--create` for first standup evidence; a local
+operator and the GitHub deployment identity can have different project roles.
+The workflow installs the same `app/api[foundry]` extra, checks access, and then
+reconciles the canonical toolbox.
+
+Skipping this can leave APIM and the MCP `initialize` handshake healthy while
+`tools/list` returns `Toolbox '<name>' not found`. As an authenticated admin,
+request `/api/admin/metrics/official-mcp?refresh=true`; that endpoint performs
+the full `initialize` -> `tools/list` flow. Require the `ai4ia-toolbox` server to
+report `toolCount: 3` and `lastError: null`. A ping or `initialize` alone is not
+acceptance.
 
 In the workflow's **Provision infrastructure** log, require both postprovision
 results:
@@ -549,7 +591,9 @@ Do not continue until the rerun reports `PASS`; the workflow cannot proceed past
 an enabled Content Understanding defaults failure because document upload would
 otherwise reach the live account without model defaults.
 
-Run the first-release checks:
+Run the first-release checks. This is an **acceptance procedure**, not evidence
+that any check has run. Record timestamp, operator, revision/digest, and result
+for every row; keep failures as failures rather than converting them to notes.
 
 1. When deployed through GitHub, confirm all three Container Apps serve the exact
    digests in the deploy job summary and are active, healthy, and running. A
@@ -559,8 +603,8 @@ Run the first-release checks:
 4. Sign in through the SPA at the default ACA FQDN and, when configured, the
    vanity hostname; perform one model-backed chat.
 5. Verify the authenticated API path reaches SimpleL7Proxy → APIM → Foundry.
-6. Exercise enabled document, memory, MCP, media, and voice capabilities
-   separately; the deployment canary proves only one non-streaming chat turn.
+6. Exercise each enabled capability with the bounded fixtures below; the
+   deployment canary proves only one non-streaming chat turn.
    For Voice Live, derive `wss://.../api/voice/live` from the direct
    `AZURE_API_URL`; never use the web/Next.js hostname, which cannot proxy
    WebSockets. A fresh standup keeps Speech Voice Live off unless both
@@ -572,6 +616,25 @@ Run the first-release checks:
 8. Confirm Web search health reports the intended auth mode.
 9. If Pages is enabled, run/publish it and confirm the status snapshot names the
    new subscription, resource group, and endpoints.
+
+| Capability | Bounded fixture | Expected result | Cleanup |
+| --- | --- | --- | --- |
+| Chat/gateway | New session; prompt `Reply with exactly AI4IA-FIRST-RELEASE-OK.` once | One assistant reply with the sentinel; persisted session reloads; gateway correlation appears once | Delete the test session |
+| Document ingest/retrieval | Upload one UTF-8 text file under 1 KiB containing a unique UUID; ask for that UUID | Manifest reaches `ready`; retrieval returns the exact UUID from the owned document | Delete the library document and confirm it no longer retrieves |
+| Memory | Save `acceptance-color-<UUID> is blue`, query it once, then issue the supported forget action | Recall returns the exact UUID/value before forget and does not return it after | Confirm forget succeeded; delete the test session |
+| Official MCP | Admin request to `/api/admin/metrics/official-mcp?refresh=true` | Full `initialize` -> `tools/list`; `ai4ia-toolbox.toolCount == 3`; `lastError == null` | None; read-only |
+| BYO MCP (when enabled) | Register a disposable HTTPS MCP test server exposing one no-op tool; invoke it once in interactive chat | Discovery exposes one namespaced tool; the invocation is held for exact-argument approval before dispatch | Delete the MCP registration and its Key Vault secret |
+| Web search (when enabled) | One query for a stable public fact with a source requirement | One bounded result set with source links; invocation approval follows current policy | Delete the test session |
+| Image (when enabled) | One lowest-supported-size image: `solid blue square, no text` | One completed artifact owned by the operator; usage entry records the attempt | Delete the generated artifact |
+| Video (when enabled) | One shortest-supported-duration clip: `solid blue frame, no text or audio` | One completed artifact owned by the operator; an explicit provider failure is a failed acceptance result | Delete the generated artifact |
+| Azure OpenAI Voice Live | One session capped at 30 seconds; say `first release voice check`; stop immediately after transcript | Authenticated WebSocket succeeds and transcript contains the phrase | End and delete the test session; retain no audio |
+| Speech Voice Live (when enabled) | Repeat the same 30-second fixture with provider explicitly set to `speech_voice_live` | Provider switch is visible; authenticated WebSocket succeeds; transcript contains the phrase | End and delete the test session; retain no audio |
+| Admin | Open one usage rollup and one resource panel as the configured admin; repeat as a non-admin | Admin succeeds; non-admin receives the expected denial | None; read-only |
+
+Use one UUID per run so cleanup can be proved with a negative lookup. Stop after
+the first unexpected paid-operation result; do not fan out image/video/voice
+retries while diagnosing. The table deliberately has no checked boxes because
+the repository cannot truthfully claim live acceptance from static CI.
 
 For the published portal:
 

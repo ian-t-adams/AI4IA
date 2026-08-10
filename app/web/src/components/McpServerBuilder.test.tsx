@@ -59,11 +59,11 @@ describe("McpServerBuilder", () => {
     await user.click(await screen.findByRole("button", { name: /Weather/ }));
     expect(await screen.findByText(/Get a forecast/)).toBeInTheDocument();
 
-    // The per-tool approval <select> defaults to "default", whose meaning
+    // The standing discovery <select> defaults to "default", whose meaning
     // (MCP_TOOL_APPROVALS[].hint) was previously computed but never rendered.
     await user.click(screen.getByRole("button", { name: /Approval option: Default/ }));
     expect(screen.getByRole("tooltip")).toHaveTextContent(
-      /no live approval prompt/i,
+      /default interactive policy/i,
     );
 
     // The resolved outcome pill explains *why* in terms of network scope.

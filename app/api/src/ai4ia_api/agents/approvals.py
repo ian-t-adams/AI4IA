@@ -158,10 +158,11 @@ _UNKNOWN_TOOL = "unknown_tool"
 class ApprovalPolicy(str, Enum):
     """When a governed call needs a fresh, per-invocation human approval.
 
-    ``off`` restores the pre-existing behavior exactly: standing approvals
-    (``trusted`` server / ``requireApproval: never``) are sufficient and no live
-    prompt is ever raised. It exists so an operator can opt out deliberately and
-    visibly, not because it is a reasonable default.
+    ``off`` skips fresh invocation approval. Standing discovery/attachment posture
+    (``trusted`` server / ``requireApproval: never``) still determines whether a
+    tool is offered to the model, but must not be described as invocation approval.
+    This policy exists for the explicit unattended-workflow exception and deliberate
+    operator opt-out, not because it is a reasonable interactive default.
 
     ``tainted`` raises a prompt only when the turn actually carried untrusted
     content (documents, recalled memory, library excerpts, or an earlier tool

@@ -27,8 +27,8 @@ window.AI4IA_REQUIREMENTS = {
       { name: "monitoring-reader-sub.bicep", purpose: "Grants a managed identity Monitoring Reader at subscription scope (batch metrics API)." },
       { name: "cost.bicep", purpose: "Cost guardrail: a resource-group-scoped consumption budget with optional alerts." },
       { name: "alerts.bicep", purpose: "Opt-in Azure Monitor alerting baseline (action group + metric alerts). Off by default." },
-      { name: "network.bicep", purpose: "Opt-in VNet + private DNS for the network-isolation hardening pass. Off by default." },
-      { name: "privateendpoints.bicep", purpose: "Opt-in data-tier private endpoints + DNS zone groups. Off by default." },
+      { name: "network.bicep", purpose: "Partial VNet/private-DNS design scaffolding; not mapped through normal azd/CI and not a served isolation mode." },
+      { name: "privateendpoints.bicep", purpose: "Partial data-tier endpoint graph; omits ACR, App Configuration, Search, Foundry, APIM, and monitoring." },
     ],
   },
   // Azure service data planes use managed identity + RBAC. Gateway hop keys are
@@ -40,6 +40,7 @@ window.AI4IA_REQUIREMENTS = {
     { assignee: "id-api", role: "Key Vault Secrets Officer", scope: "Key Vault", why: "Write per-user (BYO) MCP connection secrets — only when custom tools enabled.", module: "keyvault.bicep" },
     { assignee: "id-api", role: "Monitoring Reader", scope: "Subscription", why: "Read Azure Monitor platform metrics via the batch metrics API for admin resource panels.", module: "monitoring-reader-sub.bicep" },
     { assignee: "id-api", role: "Durable Task Data Contributor", scope: "Durable Task hub", why: "Schedule and resume owner-scoped durable workflow runs when the feature is enabled.", module: "durabletask.bicep" },
+    { assignee: "id-api", role: "Cognitive Services OpenAI User", scope: "Every regional Foundry account", why: "Current direct Responses Code Interpreter authority; also permits broad direct inference, so a dedicated identity split is a pending owner-approved security decision.", module: "main.bicep / foundry.bicep" },
     { assignee: "id-web / id-api / id-proxy", role: "AcrPull", scope: "Container Registry", why: "Pull container images to deploy.", module: "containerapps.bicep" },
     { assignee: "Shared apim-mcp APIM (system-assigned)", role: "Cognitive Services OpenAI User + Cognitive Services User", scope: "Foundry accounts", why: "Reach model deployments with managed identity (no keys).", module: "apimcore.bicep / gateway.bicep / foundry.bicep" },
     { assignee: "id-proxy", role: "App Configuration Data Reader", scope: "App Configuration", why: "Read the label-aware sentinel and governed warm/cold proxy settings; no write or local-auth credentials.", module: "keyvault.bicep / gateway.bicep" },
@@ -73,7 +74,7 @@ window.AI4IA_REQUIREMENTS = {
         ["webiq", "Web IQ search SDK (default-OFF capability)"],
       ],
       dev: ["pytest / pytest-asyncio / anyio", "ruff (lint)", "pyright (type gate, basic mode)"],
-      extra: "foundry extra (azure-ai-projects, azure-mgmt-apicenter) — provisioning-only, not in CI/runtime",
+      extra: "foundry extra (azure-ai-projects==2.4.0, azure-identity, jsonschema) — provisioning-only; installed by app-ci and foundry-assets, never by the runtime image",
     },
     web: {
       runtime: "Node.js >=22.22.2 <23 (container image pinned to node:22-alpine by digest)",

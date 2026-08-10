@@ -404,15 +404,13 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
             checked={form.trusted}
             onChange={(e) => setForm((f) => ({ ...f, trusted: e.target.checked }))}
           />
-          Trusted — its default-posture tools become callable
+          Trusted for discovery — default-posture tools become attachable
         </label>
         <p style={{ ...labelStyle, marginTop: -8 }}>
-          Chat has no live approval prompt: leave this off (recommended) and
-          tools without a Never override stay unavailable, not merely
-          slower. Only trust a server you fully control, or pre-approve
-          individual tools below. Trusting it won&apos;t help while the
-          server is disabled or quarantined, though — either blocks every
-          tool regardless.
+          Leave this off unless you control the server. Trust changes discovery
+          and attachment only. Invocation is governed separately; the default
+          interactive policy holds external or destructive calls for exact-call
+          approval. A disabled or quarantined server blocks every tool regardless.
         </p>
 
         <label style={checkRow}>

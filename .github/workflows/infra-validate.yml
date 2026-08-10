@@ -78,6 +78,8 @@ jobs:
         run: |
           check-jsonschema --schemafile foundry/routines/routine.schema.json foundry/routines/example.routine.json
           check-jsonschema --schemafile foundry/a2a/a2a.schema.json foundry/a2a/example.a2a.json
+          python scripts/provision-foundry-routine.py --check
+          python scripts/provision-foundry-a2a.py --check
 
       - name: Validate catalog consistency (regions / SKUs / names)
         run: python scripts/validate-catalog.py

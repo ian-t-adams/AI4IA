@@ -50,8 +50,10 @@ Before a live run:
 
 ## Configuration
 
-Run from `app/api` so the locked API environment supplies `asyncpg`,
-`azure-identity`, and `azure-cosmos`:
+Run from `app/api`. The project environment supplies `azure-identity` and
+`azure-cosmos`; the retired PostgreSQL driver is intentionally absent from
+`pyproject.toml`. Supply it ephemerally with `uv run --with asyncpg` on every
+migration invocation so it never becomes a runtime dependency:
 
 ```powershell
 Set-Location app\api
@@ -72,7 +74,7 @@ the selected Azure identity and environment still determine production access.
 Dry-run needs PostgreSQL access but does not need a Cosmos endpoint:
 
 ```powershell
-uv run python ..\..\scripts\migrate-memory-to-cosmos.py `
+uv run --with asyncpg python ..\..\scripts\migrate-memory-to-cosmos.py `
   --source-table mem0_memories `
   --dimensions 3072 `
   --embedding-model text-embedding-3-large `
@@ -103,8 +105,9 @@ azd up
 
 > **CI deployment (this repo):** production ships through the `deploy.yml`
 > GitHub Actions workflow, not a local `azd up`. The equivalent freeze is to set
-> the `AI4IA_MEMORY_STORE` repository variable to `disabled` (the workflow already
-> defaults to `disabled` when unset) and run the workflow:
+> the `AI4IA_MEMORY_STORE` repository variable to `disabled` (the normal
+> repository/parameter default is now `cosmos`; the old CI-only `disabled`
+> fallback was removed after cutover) and run the workflow:
 >
 > ```powershell
 > gh variable set AI4IA_MEMORY_STORE --body disabled
@@ -136,7 +139,7 @@ quarantine decision and valid count become the apply baseline.
 With explicit production-data-write approval:
 
 ```powershell
-uv run python ..\..\scripts\migrate-memory-to-cosmos.py `
+uv run --with asyncpg python ..\..\scripts\migrate-memory-to-cosmos.py `
   --source-table mem0_memories `
   --dimensions 3072 `
   --embedding-model text-embedding-3-large `
@@ -275,9 +278,9 @@ Recommended order:
 ## Common failures
 
 > The migration script keeps its `--postgres-*` flags and its tests, so a restored
-> backup could still be migrated. It needs `pip install asyncpg`: that driver was
-> removed from the API's runtime dependencies because no API source imports it any
-> more.
+> backup could still be migrated. Invoke it with `uv run --with asyncpg ...`;
+> that driver was removed from runtime dependencies because no API source imports
+> it any more.
 
 | Failure | Meaning / response |
 | --- | --- |

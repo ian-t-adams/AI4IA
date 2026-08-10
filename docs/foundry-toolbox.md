@@ -9,8 +9,9 @@
 > in production without your own validation.
 >
 > **Portability (1:1 standup):** the toolbox is a data-plane resource, so `azd up`
-> alone cannot create it. Run the access check and ensure commands below, or configure
-> `AZURE_FOUNDRY_PROJECT_ENDPOINT` and manually dispatch `foundry-assets.yml`. The
+> alone cannot create it. Run the access check and ensure commands below. Automatic
+> reconciliation consumes the exact deploy artifact; manual dispatch supplies the
+> explicit `project_endpoint` input shown below. The
 > `mcp-servers.json` entry stays portable — it omits `upstreamUrl`, which `main.bicep` computes
 > per environment. `foundry/toolbox.manifest.json` is the canonical toolbox definition.
 
@@ -126,7 +127,7 @@ valid.
 | `description` | Human-readable scope (helps agents and operators). |
 | `raiPolicyName` | Optional Responsible AI policy already on the project (`foundry.bicep` provisions `ai4ia-annotate-only`). |
 | `connections` | Project connections referenced by name (credentials live in the connection, never here). |
-| `tools` | Built-in and MCP tools (see per-tool table below). At most one unnamed tool per `type`. |
+| `tools` | Built-in and MCP tools (see per-tool table below). At most one tool may be unnamed across the entire toolbox, regardless of `type`. |
 | `skills` | Generic Foundry skill references. Keep empty in AI4IA manifests until the runtime supports MCP resources. |
 
 `camelCase` keys in the manifest (e.g. `serverLabel`, `projectConnectionId`) are translated to
@@ -231,9 +232,11 @@ both its GA `toolbox_search` and preview `toolbox_search_preview` spellings -- p
 connections: Search, MCP-upstream, Playwright Workspace for browser automation, Bing Custom
 Search, and one each for the A2A/Fabric IQ/Work IQ examples), all uniquely
 identified (by `name`, or `serverLabel` for `mcp` tools).
-The shipped `foundry/toolbox.manifest.json` is the canonical `ai4ia-toolbox` definition; edit it (or
-the example, passing `--manifest foundry/toolbox.manifest.example.json`), prune what you don't need,
-create any referenced connections, then run `provision-foundry-toolbox.py`. The script creates the toolbox via
+The shipped `foundry/toolbox.manifest.json` is the canonical `ai4ia-toolbox`
+definition. To start from the example, copy it to an operator-owned manifest,
+prune/review it, and change `lifecycle` from `reference` to `active`; the
+provisioner rejects `--create`/`--emit-yaml` for reference manifests. Create any
+referenced connections, then run `provision-foundry-toolbox.py`. The script creates the toolbox via
 `project.toolboxes.create_version(name, tools=[...], description=..., skills=[...], policies=...)`,
 then activates that new version (see the idempotency note below).
 
@@ -297,11 +300,18 @@ but adding runtime MCP resource support is separate work.
    push to `main`, `.github/workflows/foundry-assets.yml` checks out the exact deployed
    `workflow_run.head_sha` and reconciles assets. It has no direct push trigger, so it cannot race
    ahead of project creation or Foundry User role propagation. Manual dispatch remains available.
-   Both paths authenticate with OIDC, read `AZURE_FOUNDRY_PROJECT_ENDPOINT` from a repository or
-   production-environment variable, first verify project-scoped Foundry User, then ensure
+   Both paths authenticate with OIDC. The deploy workflow uploads its
+   azd-produced endpoint as a 30-day `foundry-assets-context` artifact. An
+   unprivileged gate verifies the triggering deploy job really ran, downloads the
+   exact-run artifact, validates the endpoint, and carries it as a job output
+   before production approval or reconciliation concurrency can wait. Manual
+   dispatch requires an explicit `project_endpoint` input. The protected job
+   receives the validated endpoint as `AZURE_FOUNDRY_PROJECT_ENDPOINT`, first
+   verifies project-scoped Foundry User, then ensures
    `ai4ia-toolbox`. `main.bicep` includes `deploymentPrincipalId` in the primary project's
    assignments; the preflight still fails with remediation if that grant has not reconciled.
-   Unchanged runs are no-ops.
+   No merged GitHub `vars` endpoint can redirect the automatic path. Unchanged
+   runs are no-ops.
 
 6. **Register the entry.** Paste the printed object into `infra/mcp-servers.json` (`servers[]`)
    and regenerate the packaged runtime catalog:
@@ -345,14 +355,14 @@ portal-created samples such as `swagger-petstore` are retained by ARM incrementa
 must be removed separately with `scripts/cleanup-lean-azure-retained.ps1` after verifying the exact
 asset; they are not created or advertised by this repo.
 
-## P7 — Routines and Agent-to-Agent (A2A): mixed status (routines validation-only by design; A2A endpoint scaffold shipped)
+## P7 — Routines and Agent-to-Agent (A2A): design artifacts only
 
-Routines and A2A are Foundry **managed-agent-runtime** features, but their offline-verifiable
-surface diverges by design, not by omission. **Routines** is permanently validation/planning-only
--- see below for why no faithful `--create` exists against the pinned SDK. **A2A**'s
-schema/validation/`--emit-az` scaffold is shipped and green; only the final live calls (enabling
-the endpoint on a tenant) remain an operator step, using the pinned preview `az` CLI / SDK. Both
-keep every tool call and endpoint on the proxy.
+Routine and A2A files are **design/preview artifacts**, not served capabilities.
+Routine creation has no faithful translation to the pinned SDK contract. The A2A
+scaffold also lacks the protocol/version, endpoint, auth, APIM operation/product/
+subscription/policy, and runtime-client contracts needed to make an integration
+callable. Schema validation proves only that each design is internally shaped as
+documented.
 
 ### Routines
 
@@ -383,33 +393,33 @@ Shipped:
 - `scripts/provision-foundry-routine.py` -- pure `load_manifest`/`validate_manifest`/`plan_steps`/
   `referenced_tools` functions (dependency-free, unit-tested in `test_foundry_routine.py`; the
   script never imports `azure.ai.projects`).
-- The routine references toolbox tools by name, so if/when a live path exists, every tool call it
-  makes will still flow through the MCP APIM. Nothing is consumed by the app runtime today.
+- The routine references canonical toolbox **instance names**. Semantic validation
+  loads `foundry/toolbox.manifest.json` and rejects unknown names. That proves only
+  namespace consistency; no runtime/APIM dispatch or inherited governance path
+  exists today.
 
 Run it: `python scripts/provision-foundry-routine.py` (validates the manifest and prints the plan;
 there is no `--create`).
 
-### Agent-to-Agent (A2A) endpoint
+### Agent-to-Agent (A2A) design
 
-[A2A](https://learn.microsoft.com/azure/foundry/agents/how-to/enable-agent-to-agent-endpoint) exposes
-a Foundry agent over the Agent2Agent protocol at a per-agent endpoint. This is the one P7 capability
-with a genuine new APIM angle, and the plan keeps it on the proxy:
+[A2A](https://learn.microsoft.com/azure/foundry/agents/how-to/enable-agent-to-agent-endpoint)
+can expose a Foundry agent over the Agent2Agent protocol. AI4IA retains a useful
+design artifact for that direction, but it is not an implementation:
 
-1. Enable the A2A endpoint on a deployed Foundry agent (portal/CLI/SDK); capture its endpoint URL.
-2. Front that URL through APIM as a dedicated route, reusing the exact pattern the toolbox bridge
-   uses: APIM injects the Foundry managed-identity bearer for `https://ai.azure.com` (and any preview
-   feature header), so callers present only the APIM subscription key -- no second auth path.
-3. Consume the APIM-fronted A2A endpoint from the app via the existing agent **`links`
-   (agent-as-tool)** seam, so a remote Foundry agent appears as a delegated tool, gated on APIM auth
-   exactly like every other official MCP server.
+1. Select and pin the A2A protocol/version contract and endpoint discovery shape.
+2. Define backend authentication and the APIM API operation, product/subscription,
+   and policy.
+3. Implement an authenticated runtime client and wire it to a server-authoritative
+   agent/tool contract.
+4. Add live-compatible tests for both APIM and runtime behavior before changing
+   the lifecycle from `design-preview`.
 
-Shipped: `foundry/a2a/a2a.schema.json` + `foundry/a2a/example.a2a.json` and
-`scripts/provision-foundry-a2a.py` -- pure `validate` / `a2a_endpoint` / `consumer_url` /
-`build_agent_link` functions (unit-tested in `test_foundry_a2a.py`, including that the emitted
-`agents.json` stub is a valid `AgentSpec`). `--emit-az` prints the enable + APIM-front commands. Steps
-1-3 above still need a live project and a deployed agent to mint the endpoint URL, and the enabling
-`az`/SDK surface is public preview -- so the final enable + catalog wiring is an operator step, but the
-scaffold and the APIM-fronting commands are shipped and tested.
+Shipped: `foundry/a2a/a2a.schema.json`,
+`foundry/a2a/example.a2a.json`, and
+`scripts/provision-foundry-a2a.py`. The script validates and prints the complete
+blocker inventory. It deliberately has no `--emit-az`, endpoint builder, or
+`AgentSpec` projection: none would prove a callable integration.
 
 ## Testing and CI
 
@@ -434,17 +444,17 @@ scaffold and the APIM-fronting commands are shipped and tested.
   future SDK type or field has no `_TYPE_TO_MODEL`/`_CAMEL_TO_SNAKE` coverage and no explicit,
   documented secret exclusion.
 - `infra-validate` runs `check-jsonschema` on `foundry/toolbox.manifest.json`, the populated
-  `foundry/toolbox.manifest.example.json`, and the routine + A2A example manifests, and builds
-  `infra/main.bicep` (which compiles `apicenter.bicep`).
+  `foundry/toolbox.manifest.example.json`, and the routine + A2A example manifests,
+  then runs semantic design checks so unknown routine tool names and incomplete
+  A2A blocker inventories fail.
 - `app-ci` runs the pytest suite whenever `app/**`, `foundry/**`, or the provisioning scripts
   change.
 - `scripts/tests/test_lean_azure_iac.py` pins the API Center ARM graph: every curated server is
   passed from `main.bicep`, registered as MCP, versioned, and deployed through its **APIM consumer
   URL**; it also guards the default-off Event Hubs and active App Configuration sentinel.
-- `app/api/tests/test_foundry_routine.py` pins the routine script: manifest validation, the
-  toolbox-tool references a routine makes, that `--create`/`create_routine` no longer exist
+- `app/api/tests/test_foundry_routine.py` pins the routine script: manifest validation, canonical
+  toolbox cross-validation, that `--create`/`create_routine` no longer exist
   (guarding against a silent regression back to fake-mapping), and that the dry-run plan tolerates
-  a missing project endpoint. `app/api/tests/test_foundry_a2a.py` separately pins the A2A endpoint
-  script: manifest validation, the raw-vs-APIM endpoint URLs, the emitted `az` command shape, and
-  that the emitted `agents.json` stub constructs as a real `AgentSpec` (so the links seam can
-  consume it).
+  a missing project endpoint. `app/api/tests/test_foundry_a2a.py` pins the design-only A2A script:
+  the full blocker inventory, non-callable lifecycle metadata, and the absence of
+  command emission or runtime registration.

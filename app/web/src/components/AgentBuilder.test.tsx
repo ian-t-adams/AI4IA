@@ -171,16 +171,15 @@ describe("AgentBuilder", () => {
     expect(checkbox.closest("label")).toBeNull();
     expect(checkbox).toHaveAccessibleName("forecast");
     const row = checkbox.parentElement as HTMLElement;
-    // Trusted server + no override -> auto-approved; shown alongside the
-    // checkbox rather than folded into its name.
-    expect(within(row).getByText("· auto")).toBeInTheDocument();
+    // Discovery trust makes the tool attachable; invocation approval remains separate.
+    expect(within(row).getByText("· attachable")).toBeInTheDocument();
 
     await user.click(within(row).getByRole("button", { name: "Help: forecast" }));
     expect(screen.getByRole("tooltip")).toHaveTextContent("Get a weather forecast");
     expect(checkbox).not.toBeChecked();
   });
 
-  it("labels a tool with an `always` approval override consistently as unavailable and explains the exact enabling path, even on a trusted server", async () => {
+  it("labels an always-withhold override as unavailable without implying invocation approval", async () => {
     const user = userEvent.setup();
     mocks.listMcpServers.mockResolvedValue([
       { ...MCP_SERVER, trusted: true, toolApprovals: { forecast: "always" } },
@@ -192,21 +191,17 @@ describe("AgentBuilder", () => {
     const mcpGroup = await screen.findByRole("group", { name: /MCP tools/i });
     const checkbox = within(mcpGroup).getByRole("checkbox", { name: "forecast" });
     const row = checkbox.parentElement as HTMLElement;
-    // Consistent "unavailable" wording — not "· approval (forced)" or
-    // "· approval", which read as a live per-use prompt that doesn't exist.
-    expect(within(row).getByText("· unavailable")).toBeInTheDocument();
+    expect(within(row).getByText("· withheld")).toBeInTheDocument();
     expect(within(row).queryByText(/approval \(forced\)/i)).not.toBeInTheDocument();
 
     await user.click(within(row).getByRole("button", { name: "Help: forecast approval" }));
     const tooltip = screen.getByRole("tooltip");
-    // Must explain the actual enabling path, and must not imply trusting the
-    // server alone would fix an `always` override.
-    expect(tooltip).toHaveTextContent(/no live approval prompt/i);
+    expect(tooltip).toHaveTextContent(/standing posture/i);
     expect(tooltip).toHaveTextContent(/even on a trusted server/i);
-    expect(tooltip).toHaveTextContent(/changed away from Always/i);
+    expect(tooltip).toHaveTextContent(/invocation approval is a separate gate/i);
   });
 
-  it("also labels a no-override tool on an untrusted server as unavailable, with a trust-the-server enabling path", async () => {
+  it("labels an untrusted discovery posture as withheld from the model", async () => {
     const user = userEvent.setup();
     mocks.listMcpServers.mockResolvedValue([{ ...MCP_SERVER, trusted: false }]);
     render(
@@ -216,15 +211,13 @@ describe("AgentBuilder", () => {
     const mcpGroup = await screen.findByRole("group", { name: /MCP tools/i });
     const checkbox = within(mcpGroup).getByRole("checkbox", { name: "forecast" });
     const row = checkbox.parentElement as HTMLElement;
-    // Same "unavailable" wording as the `always`-override case, so the badge
-    // is consistent regardless of *why* the tool is unavailable.
-    expect(within(row).getByText("· unavailable")).toBeInTheDocument();
+    expect(within(row).getByText("· withheld")).toBeInTheDocument();
 
     await user.click(within(row).getByRole("button", { name: "Help: forecast approval" }));
     const tooltip = screen.getByRole("tooltip");
-    expect(tooltip).toHaveTextContent(/no live approval prompt/i);
-    // Unlike `always`, trusting the server (or setting Never) does fix this one.
+    expect(tooltip).toHaveTextContent(/standing discovery posture/i);
     expect(tooltip).toHaveTextContent(/unless the server is trusted/i);
+    expect(tooltip).toHaveTextContent(/invocation approval is a separate gate/i);
   });
 
   it("shows a trusted, never-overridden tool as unavailable (not auto) when its server is disabled", async () => {
@@ -244,8 +237,7 @@ describe("AgentBuilder", () => {
     const checkbox = within(mcpGroup).getByRole("checkbox", { name: "forecast" });
     const row = checkbox.parentElement as HTMLElement;
     expect(within(row).getByText("· unavailable")).toBeInTheDocument();
-    expect(within(row).queryByText("· auto")).not.toBeInTheDocument();
-    expect(within(row).queryByText("· pre-approved")).not.toBeInTheDocument();
+    expect(within(row).queryByText("· attachable")).not.toBeInTheDocument();
 
     await user.click(within(row).getByRole("button", { name: "Help: forecast approval" }));
     expect(screen.getByRole("tooltip")).toHaveTextContent(/turned off/i);

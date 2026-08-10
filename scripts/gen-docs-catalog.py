@@ -16,10 +16,11 @@ What it guarantees (so the portal surfaces the *right*, current docs):
   * A manifest entry may omit ``title``/``desc``; they are derived from the file's
     first ``# H1`` and first paragraph, so lightly-curated docs still render well.
 
-It also validates the portal's *feature posture*: any entry in ``site/data/meta.js``
-that carries a ``param: "<bicepParam>"`` must show ``on:`` equal to that parameter's
-value in ``infra/main.parameters.json``. This catches the class of drift where the
-portal advertises a capability as off (or on) that the live parameters contradict.
+It also validates the portal's feature-template posture: any entry in
+``site/data/meta.js`` carrying ``param: "<bicepParam>"`` must show ``templateOn:``
+equal to that parameter's placeholder default in ``infra/main.parameters.json``.
+The separate dated ``observedOn`` value is not presented as CI-verified live state;
+CI deliberately does not query Azure or repository-variable values.
 
 Run from the repo root:  python scripts/gen-docs-catalog.py
 Verify-only (CI drift):  python scripts/gen-docs-catalog.py --check
@@ -175,7 +176,7 @@ def build_docs_js(manifest: dict, errors: list[str]) -> str:
 
 
 def check_meta_posture(errors: list[str]) -> None:
-    """Cross-check meta.js feature `on:` flags carrying a `param:` against live params."""
+    """Cross-check feature `templateOn:` flags against parameter defaults."""
     if not META.exists() or not PARAMETERS.exists():
         return
     meta_text = META.read_text(encoding="utf-8")
@@ -186,9 +187,11 @@ def check_meta_posture(errors: list[str]) -> None:
         if not pm:
             continue
         param = pm.group(1)
-        on_m = re.search(r"\bon:\s*(true|false)", obj)
+        on_m = re.search(r"\btemplateOn:\s*(true|false)", obj)
         if not on_m:
-            errors.append(f"meta.js: feature mapped to param '{param}' has no `on:` flag")
+            errors.append(
+                f"meta.js: feature mapped to param '{param}' has no `templateOn:` flag"
+            )
             continue
         shown = on_m.group(1) == "true"
         if param not in params:
@@ -209,7 +212,7 @@ def check_meta_posture(errors: list[str]) -> None:
             actual = bool(value)
         if shown != actual:
             errors.append(
-                f"meta.js: feature for '{param}' shows on={shown} but "
+                f"meta.js: feature for '{param}' shows templateOn={shown} but "
                 f"main.parameters.json has {param}={actual}"
             )
 

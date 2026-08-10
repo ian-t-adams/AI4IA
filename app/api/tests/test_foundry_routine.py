@@ -20,6 +20,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCRIPT = _REPO_ROOT / "scripts" / "provision-foundry-routine.py"
 _SCHEMA = _REPO_ROOT / "foundry" / "routines" / "routine.schema.json"
 _EXAMPLE = _REPO_ROOT / "foundry" / "routines" / "example.routine.json"
+_TOOLBOX = _REPO_ROOT / "foundry" / "toolbox.manifest.json"
 
 
 def _load(name: str, path: Path):
@@ -35,19 +36,36 @@ _r = _load("provision_foundry_routine", _SCRIPT)
 
 def _valid() -> dict:
     return {
+        "manifestVersion": "1.0",
+        "lifecycle": "design-preview",
+        "owner": "repository-owner",
+        "sdkContract": {
+            "package": "azure-ai-projects",
+            "version": "2.4.0",
+            "status": "not-executable",
+            "surface": "project.beta.routines.create_or_update",
+        },
         "name": "research-brief",
         "description": "Two-step brief.",
         "model": "gpt-5",
         "toolbox": "ai4ia-toolbox",
         "steps": [
-            {"name": "gather", "instructions": "collect", "tools": ["web_search", "ai4ia-rag"]},
-            {"name": "synthesize", "instructions": "write", "tools": ["web_search"]},
+            {"name": "gather", "instructions": "collect", "tools": ["web-search", "code-interpreter"]},
+            {"name": "synthesize", "instructions": "write", "tools": ["web-search"]},
         ],
     }
 
 
 def test_validate_accepts_a_well_formed_routine():
     assert _r.validate_manifest(_valid()) == []
+    assert _r.validate_manifest_schema(_valid()) == []
+
+
+def test_schema_validation_rejects_missing_lifecycle_metadata():
+    manifest = _valid()
+    del manifest["sdkContract"]
+    errors = _r.validate_manifest_schema(manifest)
+    assert any("sdkContract" in error for error in errors)
 
 
 def test_validate_rejects_empty_steps():
@@ -79,13 +97,30 @@ def test_validate_flags_step_missing_instructions():
 
 
 def test_referenced_tools_dedupes_and_preserves_order():
-    assert _r.referenced_tools(_valid()) == ["web_search", "ai4ia-rag"]
+    assert _r.referenced_tools(_valid()) == ["web-search", "code-interpreter"]
+
+
+def test_validate_rejects_unknown_tool_names_against_canonical_toolbox():
+    manifest = _valid()
+    manifest["steps"][0]["tools"] = ["web_search", "does-not-exist"]
+    errors = _r.validate_manifest(manifest)
+    assert any("unknown toolbox tool 'web_search'" in error for error in errors)
+    assert any("unknown toolbox tool 'does-not-exist'" in error for error in errors)
+    assert any(
+        "web-search" in error and "code-interpreter" in error for error in errors
+    )
+
+
+def test_validate_rejects_falsey_and_truthy_non_object_toolbox_manifests():
+    for malformed in ([], [1]):
+        errors = _r.validate_manifest(_valid(), malformed)
+        assert any("toolbox manifest must be a JSON object" in error for error in errors)
 
 
 def test_plan_steps_normalizes_shape():
     planned = _r.plan_steps(_valid())
     assert [s["name"] for s in planned] == ["gather", "synthesize"]
-    assert planned[0]["tools"] == ["web_search", "ai4ia-rag"]
+    assert planned[0]["tools"] == ["web-search", "code-interpreter"]
     # a step without tools gets an explicit empty list
     assert _r.plan_steps({"steps": [{"name": "x", "instructions": "y"}]})[0]["tools"] == []
 
@@ -100,6 +135,10 @@ def test_resolve_project_endpoint_fails_closed(monkeypatch):
 def test_shipped_example_is_valid():
     manifest = json.loads(_EXAMPLE.read_text(encoding="utf-8"))
     assert _r.validate_manifest(manifest) == []
+    toolbox = json.loads(_TOOLBOX.read_text(encoding="utf-8"))
+    assert set(_r.referenced_tools(manifest)) <= _r.toolbox_tool_names(toolbox)
+    assert manifest["lifecycle"] == "design-preview"
+    assert manifest["sdkContract"]["status"] == "not-executable"
 
 
 def test_example_validates_against_schema():
@@ -120,6 +159,11 @@ def test_create_routine_and_dash_dash_create_do_not_exist(monkeypatch):
         _r.main(["--manifest", str(_EXAMPLE), "--create"])
     # argparse rejects an unrecognized argument with exit code 2, not a live call.
     assert exc_info.value.code == 2
+
+
+def test_check_runs_semantic_validation(capsys):
+    assert _r.main(["--manifest", str(_EXAMPLE), "--check"]) == 0
+    assert "canonical toolbox" in capsys.readouterr().out
 
 
 def test_main_dry_run_tolerates_a_missing_project_endpoint(monkeypatch, capsys, tmp_path):
@@ -145,3 +189,43 @@ def test_main_reports_clean_validation_errors_without_crashing(tmp_path):
     exit_code = _r.main(["--manifest", str(bad)])
 
     assert exit_code == 1
+
+
+def test_main_rejects_schema_invalid_design(tmp_path, capsys):
+    invalid = _valid()
+    del invalid["owner"]
+    path = tmp_path / "schema-invalid.routine.json"
+    path.write_text(json.dumps(invalid), encoding="utf-8")
+    assert _r.main(["--manifest", str(path), "--check"]) == 1
+    assert "owner" in capsys.readouterr().err
+
+
+def test_main_rejects_non_object_and_non_object_steps_without_crashing(
+    tmp_path, capsys
+):
+    for name, value in (
+        ("root", []),
+        ("step", {**_valid(), "steps": [1]}),
+    ):
+        path = tmp_path / f"{name}.routine.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        assert _r.main(["--manifest", str(path), "--check"]) == 1
+        assert "is not" in capsys.readouterr().err
+
+
+def test_main_rejects_schema_invalid_toolbox_without_crashing(tmp_path, capsys):
+    toolbox = tmp_path / "bad.toolbox.json"
+    toolbox.write_text("[]", encoding="utf-8")
+    assert (
+        _r.main(
+            [
+                "--manifest",
+                str(_EXAMPLE),
+                "--toolbox-manifest",
+                str(toolbox),
+                "--check",
+            ]
+        )
+        == 1
+    )
+    assert "toolbox" in capsys.readouterr().err

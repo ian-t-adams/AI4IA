@@ -432,11 +432,11 @@ def build_mcp_turn_tools(
 
     * ``target_hosts = frozenset()`` — skip the registry egress check (see the module
       docstring; real egress is enforced per-handler via the SSRF re-validation), and
-    * ``approvals`` = pre-approved attached tool aliases (each binding's
-      ``auto_approved`` flag — trusted server without a per-tool ``always``
-      override, or an explicit per-tool ``never`` override; see
+    * ``approvals`` = standing discovery grants for attached tool aliases (each
+      binding's ``auto_approved`` flag — trusted server without a per-tool
+      ``always`` override, or an explicit per-tool ``never`` override; see
       :func:`_build_mcp_tool_bindings`), plus any explicitly ``approved`` names
-      supplied by the caller, e.g. a per-turn approval UI.
+      supplied by the caller.
 
     Note that ``approvals`` is now only half the story: when ``approval_policy``
     is not ``off``, the runtime *additionally* requires a per-invocation approval

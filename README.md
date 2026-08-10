@@ -50,6 +50,10 @@ authenticates with the API's managed identity unless `AI4IA_WEBIQ_API_KEY` is se
 
 Known gaps to keep visible:
 
+- The Responsible AI decision record is document-complete but the control is
+  **not approved for the full live modality scope**. Image, video, Azure OpenAI
+  Voice Live, and Speech Voice Live are enabled, while the record contains no
+  evidenced trigger-3 re-approval for those modalities.
 - The document library UI is still document-centric; custom analyzer authoring,
   folder-level sharing, and unauthenticated public links are not implemented.
 - Memory has save/forget APIs and automatic recall, but no global user-facing
@@ -57,6 +61,10 @@ Known gaps to keep visible:
 - Multi-application profiles remain blocked until the public proxy edge validates
   a workload identity; shared-key ingress is not sufficient for trusted app
   identity or per-app policy.
+- Network isolation is design-only and incomplete. Bicep contains partial
+  `vnetIsolationEnabled` / `dataTierPrivate` wiring, but normal azd/CI cannot set
+  those parameters and private endpoints do not yet cover ACR, App Configuration,
+  Search, Foundry, APIM, or monitoring.
 
 ## Repository layout
 

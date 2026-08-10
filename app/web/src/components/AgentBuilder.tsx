@@ -484,7 +484,7 @@ export function AgentBuilder({
                       <Pill
                         label="official · curated"
                         tone="ok"
-                        detail="Curated official server, reached through the MCP APIM front door and managed by your administrator. Its tools are pre-approved."
+                        detail="Curated for discovery and reached through the MCP APIM front door. Invocation is governed separately; the default interactive policy holds external or destructive calls for exact-call approval."
                         helpLabel="Official server"
                       />
                     ) : (
@@ -507,8 +507,8 @@ export function AgentBuilder({
                     // an id built from it wouldn't be a stable/unique DOM token.
                     const mcpInputId = `ag-mcp-${gi}-${ti}`;
                     // Folds in the server's disabled/quarantined state, not
-                    // just the tool's own approval override — a trusted or
-                    // pre-approved tool is still "unavailable" if its server
+                    // just the tool's own standing override — an attachable tool
+                    // is still "unavailable" if its server
                     // is off or quarantined, and the status word + tooltip
                     // below must say so, not just the persistent posture
                     // pill above.
@@ -534,16 +534,14 @@ export function AgentBuilder({
                           }}
                         >
                           {approval.requiresApproval
-                            ? "· unavailable"
-                            : t.approval === "never"
-                              ? "· pre-approved"
-                              : "· auto"}
+                            ? !t.enabled || quarantined
+                              ? "· unavailable"
+                              : "· withheld"
+                            : "· attachable"}
                         </span>
-                        {/* Chat has no live approval prompt, so an unavailable
-                            tool needs its exact enabling path spelled out
-                            (differs for an "always" override, an untrusted
-                            server, or a disabled/quarantined server) — not
-                            just a status word. */}
+                        {/* Standing discovery posture needs its enabling path
+                            explained without implying that attachment replaces
+                            interactive invocation approval. */}
                         {approval.requiresApproval && (
                           <HelpTooltip label={`${t.toolName} approval`} size="sm">
                             {approval.detail}

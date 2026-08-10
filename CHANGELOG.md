@@ -2,7 +2,12 @@
 
 All notable changes to AI4IA will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses date-based release notes until formal versioning is introduced.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+This project currently records repository changes under **Unreleased**; a merge,
+workflow deployment, and GitHub release/tag are distinct events. Text that says a
+specific production action occurred is dated operational evidence, not a declaration
+that every Unreleased change was released or deployed. Date-based release sections
+will be cut only from reviewed tags or release notes until formal versioning exists.
 
 ## [Unreleased]
 
@@ -19,12 +24,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   rather than silently disabling an enabled feature whose model the policy excludes:
   memory and library RAG previously failed *open* when their embedding model would not
   resolve. The weakest true claim is surfaced in the model picker.
-- **Content-safety annotations are visible** (`safety.py`, `SafetyPanel`, #266). Foundry
-  returns a verdict for every category on every turn and the application discarded all
-  of it, so the safety system ran on every request and was invisible. Annotations are
-  now normalized, persisted on the message, and shown in a per-turn panel that states
-  plainly that nothing was blocked. `filtered: true` is always treated as notable, so
-  changing the policy to blocking would surface rather than change behaviour silently.
+- **Content-safety annotations are visible** (`safety.py`, `SafetyPanel`, #266). For
+  text chat completions, returned per-category verdicts are normalized, persisted on
+  the message, and shown in a per-turn panel that states plainly when nothing was
+  blocked. This evidence does not cover image, video, or Voice Live modalities.
+  `filtered: true` is always treated as notable, so changing the policy to blocking
+  would surface rather than change behaviour silently.
 - **`scripts/capture-data-recovery-state.ps1`** — records the Cosmos restore
   coordinates, blob manifest and Key Vault secret names that stop being knowable once
   the resource group is deleted. See Security below.

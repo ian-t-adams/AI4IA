@@ -68,12 +68,13 @@ class McpTransport(str, Enum):
 
 
 class McpToolApproval(str, Enum):
-    """Per-tool human-approval posture, overriding the server-level default.
+    """Standing discovery/attachment posture, overriding the server default.
 
-    ``default`` inherits the server's posture (approval required unless the server
-    is *trusted*); ``always`` forces approval even on a trusted server; ``never``
-    pre-approves the tool even on an untrusted server. The default keeps the
-    established *approval-unless-trusted* behavior byte-for-byte.
+    This controls whether a discovered tool is offered to the model. It is not the
+    fresh invocation approval in :mod:`ai4ia_api.agents.approvals`: interactive
+    external/destructive calls on both MCP planes still use that exact-argument,
+    single-use gate. ``ApprovalPolicy.off`` is reserved for the explicit unattended
+    workflow exception.
     """
 
     default = "default"

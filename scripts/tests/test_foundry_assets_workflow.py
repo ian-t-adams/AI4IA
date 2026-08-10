@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -26,6 +29,7 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
         cls.raw = WORKFLOW.read_text(encoding="utf-8")
         cls.document = yaml.safe_load(cls.raw)
         cls.triggers = cls.document.get("on", cls.document.get(True, {}))
+        cls.gate = cls.document["jobs"]["gate"]
         cls.job = cls.document["jobs"]["reconcile"]
 
     def test_runs_after_successful_main_deploy_and_on_manual_dispatch(self) -> None:
@@ -33,11 +37,85 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
         self.assertEqual(self.triggers["workflow_run"]["workflows"], ["deploy"])
         self.assertEqual(self.triggers["workflow_run"]["types"], ["completed"])
         self.assertIn("workflow_dispatch", self.triggers)
-        condition = self.job["if"]
+        manual_input = self.triggers["workflow_dispatch"]["inputs"]["project_endpoint"]
+        self.assertTrue(manual_input["required"])
+        self.assertEqual("string", manual_input["type"])
+        self.assertIn("azd env get-value", manual_input["description"])
+        condition = self.gate["if"]
         self.assertIn("github.event.workflow_run.conclusion == 'success'", condition)
         self.assertIn("github.event.workflow_run.event == 'push'", condition)
         self.assertIn("github.event.workflow_run.head_branch == 'main'", condition)
         self.assertIn("github.event_name == 'workflow_dispatch'", condition)
+        self.assertEqual(["gate"], [self.job["needs"]])
+        self.assertEqual(
+            "${{ needs.gate.outputs.should_reconcile == 'true' }}",
+            self.job["if"],
+        )
+
+    def test_unprivileged_gate_requires_exact_run_artifact(self) -> None:
+        self.assertEqual({}, self.document["permissions"])
+        self.assertNotIn("concurrency", self.document)
+        self.assertEqual({"actions": "read"}, self.gate["permissions"])
+        self.assertNotIn("environment", self.gate)
+        self.assertNotIn("id-token", self.gate["permissions"])
+        inspect = next(
+            step
+            for step in self.gate["steps"]
+            if step.get("name") == "Inspect triggering deploy job"
+        )
+        self.assertEqual("${{ github.token }}", inspect["env"]["GH_TOKEN"])
+        self.assertEqual(
+            "${{ github.event.workflow_run.id }}",
+            inspect["env"]["TRIGGER_RUN_ID"],
+        )
+        self.assertIn("/actions/runs/${TRIGGER_RUN_ID}/jobs", inspect["run"])
+        self.assertIn('select(.name == "deploy")', inspect["run"])
+        self.assertIn('success) echo "deploy_ran=true"', inspect["run"])
+        self.assertIn('skipped) echo "deploy_ran=false"', inspect["run"])
+        probe = next(
+            step
+            for step in self.gate["steps"]
+            if step.get("name") == "Download triggering deploy artifact"
+        )
+        self.assertNotIn("continue-on-error", probe)
+        self.assertEqual(
+            "${{ steps.deploy.outputs.deploy_ran == 'true' }}",
+            probe["if"],
+        )
+        self.assertEqual(
+            "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            probe["uses"],
+        )
+        self.assertEqual(
+            "${{ github.event.workflow_run.id }}",
+            probe["with"]["run-id"],
+        )
+        decide = next(
+            step
+            for step in self.gate["steps"]
+            if step.get("name") == "Decide whether reconciliation is applicable"
+        )
+        self.assertEqual(
+            "${{ steps.deploy.outputs.deploy_ran }}",
+            decide["env"]["DEPLOY_RAN"],
+        )
+        self.assertEqual(
+            "${{ inputs.project_endpoint }}",
+            decide["env"]["MANUAL_PROJECT_ENDPOINT"],
+        )
+        self.assertIn('DEPLOY_RAN" = "false', decide["run"])
+        self.assertIn(".foundry-assets-gate/enabled.txt", decide["run"])
+        self.assertIn('feature_state" = "false', decide["run"])
+        self.assertIn('feature_state" != "true', decide["run"])
+        self.assertIn(".foundry-assets-gate/project-endpoint.txt", decide["run"])
+        self.assertIn("*$'\\n'*", decide["run"])
+        self.assertIn("invalid shape", decide["run"])
+        self.assertIn("should_reconcile=false", decide["run"])
+        self.assertIn("project_endpoint=%s", decide["run"])
+        self.assertEqual(
+            "${{ steps.decide.outputs.project_endpoint }}",
+            self.gate["outputs"]["project_endpoint"],
+        )
 
     def test_deploy_runs_for_foundry_assets_before_reconciliation(self) -> None:
         document = yaml.safe_load(DEPLOY_WORKFLOW.read_text(encoding="utf-8"))
@@ -46,6 +124,51 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
         self.assertIn("foundry/**", paths)
         self.assertIn("scripts/provision-foundry-toolbox.py", paths)
         self.assertIn(".github/workflows/foundry-assets.yml", paths)
+        self.assertNotIn("name", document["jobs"]["deploy"])
+        steps = document["jobs"]["deploy"]["steps"]
+        provision_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("name") == "Provision infrastructure"
+        )
+        prepare_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("name") == "Prepare Foundry asset handoff"
+        )
+        upload_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("name") == "Retain Foundry asset handoff"
+        )
+        self.assertLess(provision_index, prepare_index)
+        self.assertLess(prepare_index, upload_index)
+        prepare = steps[prepare_index]
+        self.assertEqual(
+            "${{ steps.provision.outcome == 'success' }}",
+            prepare["if"],
+        )
+        self.assertIn(
+            "azd env get-value AZURE_FOUNDRY_PROJECT_ENDPOINT",
+            prepare["run"],
+        )
+        self.assertIn('[ -z "$endpoint" ]', prepare["run"])
+        self.assertIn("foundry-assets-context/enabled.txt", prepare["run"])
+        self.assertIn("printf 'false\\n'", prepare["run"])
+        self.assertIn("printf 'true\\n'", prepare["run"])
+        self.assertIn("invalid Foundry project endpoint", prepare["run"])
+        upload = steps[upload_index]
+        self.assertEqual(
+            "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+            upload["uses"],
+        )
+        self.assertEqual("foundry-assets-context", upload["with"]["name"])
+        self.assertEqual(
+            "${{ runner.temp }}/foundry-assets-context",
+            upload["with"]["path"],
+        )
+        self.assertEqual(30, upload["with"]["retention-days"])
+        self.assertEqual("error", upload["with"]["if-no-files-found"])
 
     def test_workflow_run_checks_out_the_exact_deployed_sha(self) -> None:
         checkout = next(
@@ -56,14 +179,28 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
             "${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}",
         )
 
-    def test_uses_oidc_and_an_explicit_repository_project_endpoint(self) -> None:
+    def test_uses_oidc_and_exact_deploy_artifact_or_manual_endpoint(self) -> None:
         self.assertEqual(
-            self.document["permissions"], {"id-token": "write", "contents": "read"}
+            self.job["permissions"],
+            {"id-token": "write", "contents": "read"},
         )
+        self.assertEqual(self.job["environment"], "production")
         self.assertEqual(
+            "${{ needs.gate.outputs.project_endpoint }}",
             self.job["env"]["AZURE_FOUNDRY_PROJECT_ENDPOINT"],
-            "${{ vars.AZURE_FOUNDRY_PROJECT_ENDPOINT }}",
         )
+        self.assertEqual("foundry-assets-production", self.job["concurrency"]["group"])
+        self.assertFalse(self.job["concurrency"]["cancel-in-progress"])
+        self.assertEqual(
+            [],
+            [
+                step["name"]
+                for step in self.job["steps"]
+                if "download-artifact@" in step.get("uses", "")
+            ],
+        )
+        self.assertNotIn("vars.AZURE_FOUNDRY_PROJECT_ENDPOINT", self.raw)
+        self.assertNotIn("vars.AI4IA_PRODUCTION_FOUNDRY_PROJECT_ENDPOINT", self.raw)
         self.assertNotIn(".services.ai.azure.com/api/projects/", self.raw)
         login = next(
             step for step in self.job["steps"] if step.get("name") == "Log in to Azure (OIDC)"
@@ -77,6 +214,113 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
         self.assertEqual(
             login["with"]["subscription-id"], "${{ vars.AZURE_SUBSCRIPTION_ID }}"
         )
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is required")
+    @unittest.skipIf(os.name == "nt", "requires POSIX environment forwarding")
+    def test_gate_endpoint_controls_rejections_and_disabled_deploy(self) -> None:
+        decide = next(
+            step
+            for step in self.gate["steps"]
+            if step.get("name") == "Decide whether reconciliation is applicable"
+        )
+
+        def run(
+            endpoint: str,
+            *,
+            event_name: str,
+            deploy_ran: str,
+            feature_enabled: bool = True,
+        ) -> tuple[subprocess.CompletedProcess[str], str]:
+            with tempfile.TemporaryDirectory() as temp:
+                temp_path = Path(temp)
+                output_file = temp_path / "github-output"
+                if event_name == "workflow_run":
+                    artifact = temp_path / ".foundry-assets-gate"
+                    artifact.mkdir()
+                    (artifact / "enabled.txt").write_text(
+                        f"{str(feature_enabled).lower()}\n",
+                        encoding="utf-8",
+                    )
+                    if feature_enabled:
+                        (artifact / "project-endpoint.txt").write_text(
+                            f"{endpoint}\n",
+                            encoding="utf-8",
+                        )
+                completed = subprocess.run(
+                    ["bash", "-c", decide["run"]],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    cwd=temp_path,
+                    env={
+                        **os.environ,
+                        "EVENT_NAME": event_name,
+                        "DEPLOY_RAN": deploy_ran,
+                        "MANUAL_PROJECT_ENDPOINT": (
+                            endpoint if event_name == "workflow_dispatch" else ""
+                        ),
+                        "GITHUB_OUTPUT": output_file.as_posix(),
+                    },
+                )
+                exported = (
+                    output_file.read_text(encoding="utf-8")
+                    if output_file.exists()
+                    else ""
+                )
+                return completed, exported
+
+        valid = (
+            "https://mf-ai4ia-prod-eastus2-abc123.services.ai.azure.com"
+            "/api/projects/proj-default-ai4ia-prod-eastus2"
+        )
+        for event_name, deploy_ran in (
+            ("workflow_dispatch", "manual"),
+            ("workflow_run", "true"),
+        ):
+            with self.subTest(event_name=event_name):
+                accepted, exported = run(
+                    valid,
+                    event_name=event_name,
+                    deploy_ran=deploy_ran,
+                )
+                self.assertEqual(0, accepted.returncode, accepted.stderr)
+                self.assertEqual(
+                    f"should_reconcile=true\nproject_endpoint={valid}\n",
+                    exported,
+                )
+
+        multiline, exported = run(
+            f"{valid}\nINJECTED=value",
+            event_name="workflow_dispatch",
+            deploy_ran="manual",
+        )
+        self.assertNotEqual(0, multiline.returncode)
+        self.assertEqual("", exported)
+
+        foreign, exported = run(
+            "https://evil.example/api/projects/not-foundry",
+            event_name="workflow_dispatch",
+            deploy_ran="manual",
+        )
+        self.assertNotEqual(0, foreign.returncode)
+        self.assertEqual("", exported)
+
+        disabled, exported = run(
+            valid,
+            event_name="workflow_run",
+            deploy_ran="false",
+        )
+        self.assertEqual(0, disabled.returncode, disabled.stderr)
+        self.assertEqual("should_reconcile=false\n", exported)
+
+        feature_off, exported = run(
+            valid,
+            event_name="workflow_run",
+            deploy_ran="true",
+            feature_enabled=False,
+        )
+        self.assertEqual(0, feature_off.returncode, feature_off.stderr)
+        self.assertEqual("should_reconcile=false\n", exported)
 
     def test_access_preflight_precedes_toolbox_and_failures_are_not_suppressed(self) -> None:
         steps = self.job["steps"]
@@ -97,6 +341,7 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
             self.assertNotIn("continue-on-error", step)
         self.assertIn("--check-access", steps[access_index]["run"])
         self.assertIn("--create", steps[toolbox_index]["run"])
+        self.assertNotIn("--manifest", steps[toolbox_index]["run"])
 
     def test_deleted_skill_has_no_stale_repository_references(self) -> None:
         tracked = subprocess.run(

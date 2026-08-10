@@ -3,8 +3,10 @@
 The credential the FastAPI API presents to SimpleL7Proxy (`S7P-KEY`). Rotate it
 when it may have been disclosed, or on whatever schedule you adopt.
 
-This procedure is **zero-downtime** and was executed end-to-end on
-2026-08-04; every command below is one that was actually run.
+This procedure is designed for zero downtime. It was executed end-to-end in the
+production `slurmfactory` environment on 2026-08-04; the reusable commands below
+derive their targets from the selected azd environment rather than embedding those
+production names.
 
 ## Why it is not just "regenerate the key"
 
@@ -34,14 +36,45 @@ Two consequences, both of which this procedure depends on:
 
 ```powershell
 az login
-$sub  = 'e852113b-6cb5-441c-ac68-26cff884e479'   # or: azd env get-value AZURE_SUBSCRIPTION_ID
-$rg   = 'rg-ai4ia-slurmfactory'                   # or: azd env get-value AZURE_RESOURCE_GROUP
-$apim = (az apim list -g $rg --query '[0].name' -o tsv)
-$sid  = 'ai4ia-api-proxy-ingress'
+$sub = azd env get-value AZURE_SUBSCRIPTION_ID
+$envName = azd env get-value AZURE_ENV_NAME
+$workload = azd env get-value AI4IA_WORKLOAD 2>$null
+if (-not $workload) { $workload = 'ai4ia' }
+$rg = azd env get-value AZURE_RESOURCE_GROUP 2>$null
+if (-not $rg) { $rg = "rg-$workload-$envName" }
+$proxyApp = "ca-proxy-$envName"
+$apiApp = "ca-api-$envName"
+az account set --subscription $sub
+$selectedSub = az account show --query id -o tsv
+if ($selectedSub -ne $sub) { throw "Azure CLI selected $selectedSub, expected $sub" }
+$apim = azd env get-value AZURE_APIM_NAME
+$apimId = azd env get-value AZURE_APIM_RESOURCE_ID
+if (-not $apim -or -not $apimId) {
+  throw "Selected azd environment did not emit AZURE_APIM_NAME/AZURE_APIM_RESOURCE_ID."
+}
+$resolvedApimId = az apim show -g $rg -n $apim --query id -o tsv
+if ($resolvedApimId.TrimEnd('/') -ne $apimId.TrimEnd('/')) {
+  throw "Resolved APIM id $resolvedApimId does not match azd output $apimId."
+}
+$sid = "$workload-api-proxy-ingress"
+$proxyFqdn = az containerapp show -g $rg -n $proxyApp `
+  --query properties.configuration.ingress.fqdn -o tsv
+$url = "https://$proxyFqdn/openai/status"
+
+foreach ($required in @($sub, $envName, $rg, $proxyApp, $apiApp, $apim, $apimId, $sid, $proxyFqdn)) {
+  if (-not $required) { throw "Selected azd environment did not resolve every rotation target." }
+}
 ```
 
 `az apim subscription` does **not** exist in current Azure CLI — use `az rest`
 against the ARM endpoint, as below.
+
+The executed production instance resolved to subscription
+`e852113b-6cb5-441c-ac68-26cff884e479`, resource group
+`rg-ai4ia-slurmfactory`, apps `ca-proxy-slurmfactory` /
+`ca-api-slurmfactory`, subscription `ai4ia-api-proxy-ingress`, and proxy
+`https://genaiproxy.nomad-analytics.com`. Those values are evidence, not reusable
+inputs.
 
 ## 0. Establish the oracle
 
@@ -49,7 +82,6 @@ Every step is verified against the live proxy. Set this up first, because it is
 also how you prove the rotation worked:
 
 ```powershell
-$url = 'https://genaiproxy.nomad-analytics.com/openai/status'
 function Probe([string]$key) {
   (Invoke-WebRequest -UseBasicParsing -SkipHttpErrorCheck -Uri $url `
      -Headers @{ 'S7P-KEY' = $key } -TimeoutSec 45).StatusCode
@@ -107,9 +139,9 @@ If `$old` is not 200 here, stop: something else changed.
 ## 2. Stage the new key on the proxy (dual accept)
 
 ```powershell
-az containerapp secret set -g $rg -n ca-proxy-slurmfactory `
+az containerapp secret set -g $rg -n $proxyApp `
   --secrets "api-proxy-inbound-key-next=$new"
-az containerapp update -g $rg -n ca-proxy-slurmfactory `
+az containerapp update -g $rg -n $proxyApp `
   --set-env-vars "ValidateAuthKey2=secretref:api-proxy-inbound-key-next"
 ```
 
@@ -126,10 +158,10 @@ Do not continue until `$new` returns 200.
 ## 3. Move the API to the new key
 
 ```powershell
-az containerapp secret set -g $rg -n ca-api-slurmfactory `
+az containerapp secret set -g $rg -n $apiApp `
   --secrets "model-gateway-api-key=$new"
-$rev = (az containerapp show -g $rg -n ca-api-slurmfactory --query properties.latestRevisionName -o tsv)
-az containerapp revision restart -g $rg -n ca-api-slurmfactory --revision $rev
+$rev = (az containerapp show -g $rg -n $apiApp --query properties.latestRevisionName -o tsv)
+az containerapp revision restart -g $rg -n $apiApp --revision $rev
 ```
 
 A secret change alone does **not** restart the app — the CLI warns about this,
@@ -139,10 +171,10 @@ required.
 ## 4. Collapse to the new key
 
 ```powershell
-az containerapp secret set -g $rg -n ca-proxy-slurmfactory `
+az containerapp secret set -g $rg -n $proxyApp `
   --secrets "api-proxy-inbound-key=$new"
-az containerapp update -g $rg -n ca-proxy-slurmfactory --remove-env-vars ValidateAuthKey2
-az containerapp secret remove -g $rg -n ca-proxy-slurmfactory `
+az containerapp update -g $rg -n $proxyApp --remove-env-vars ValidateAuthKey2
+az containerapp secret remove -g $rg -n $proxyApp `
   --secret-names api-proxy-inbound-key-next
 ```
 
@@ -198,7 +230,7 @@ az monitor log-analytics query -w $workspace --analytics-query `
 
 # Proxy console logs are a separate source; the proxy has no App Insights logger.
 az monitor log-analytics query -w $workspace --analytics-query `
-  "ContainerAppConsoleLogs_CL | where TimeGenerated > ago(24h) | where ContainerAppName_s == 'ca-proxy-<env>' | where Log_s contains '$new' | count"
+  "ContainerAppConsoleLogs_CL | where TimeGenerated > ago(24h) | where ContainerAppName_s == '$proxyApp' | where Log_s contains '$new' | count"
 ```
 
 ## Related

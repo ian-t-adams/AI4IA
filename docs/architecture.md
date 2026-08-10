@@ -114,13 +114,32 @@ flowchart LR
 | Realtime APIM subscription key | FastAPI only | FastAPI relay -> `/openai/realtime` | Realtime API only; cannot invoke the normal model API |
 | Speech Voice Live key (optional) | FastAPI only when enabled | FastAPI relay -> `/speech/voice-live/realtime` | Separate default-off API and subscription; distinct from all three core keys |
 | Official MCP subscription key | FastAPI official MCP service | FastAPI -> official MCP APIM product | MCP APIs only; cannot invoke model/realtime APIs |
-| Code Interpreter identity | FastAPI managed identity (or an optional resource key) | FastAPI -> Foundry `/openai/v1/responses` and `/openai/v1/files` | Data-plane token scoped `https://ai.azure.com/.default`; holds no gateway subscription key, so it cannot reach the model or realtime APIs |
+| Code Interpreter identity | FastAPI managed identity (or an optional resource key) | FastAPI -> Foundry `/openai/v1/responses` and `/openai/v1/files` | The main API UAMI currently holds `Cognitive Services OpenAI User` on every regional Foundry account. That role permits direct inference against any deployment on each account; absence of a gateway key does not constrain direct Foundry access. See the pending decision below. |
 
 Each APIM API validates its own scoped subscription at ingress, removes the
 subscription-key header before the backend hop, and uses managed identity for
 Foundry or the approved AIServices backend. User tokens and gateway keys therefore
 do not flow downstream. Browser-supplied internal identity headers are not
 authoritative.
+
+### Pending decision: isolate direct Code Interpreter authority
+
+`infra/main.bicep` currently places the API UAMI in
+`nativeFoundryPrincipalIds`, and every regional `foundry.bicep` instance grants
+those principals
+[`Cognitive Services OpenAI User`](https://learn.microsoft.com/azure/role-based-access-control/built-in-roles/ai-machine-learning#cognitive-services-openai-user).
+Microsoft documents that role as model-inference permission at the resource
+scope; there is no documented deployment-only equivalent. Therefore a compromised API identity can invoke any
+deployment on any regional account directly and bypass SimpleL7Proxy/APIM,
+regardless of the application's gateway-first code paths.
+
+This is a verified authorization gap, not evidence that application code is
+currently violating the gateway invariant. The least-privilege direction is a
+dedicated identity/workload for the direct Responses Code Interpreter exception,
+scoped only to the required Foundry account, followed by removal of broad OpenAI
+inference access from the main API identity. That change creates identity, RBAC,
+deployment, and operational consequences and requires explicit owner approval.
+No RBAC is changed by documenting the decision.
 
 ### Compatible HTTP/SSE lifecycle
 
@@ -275,9 +294,9 @@ do with each capability:
 
 | posture | capabilities | why |
 | --- | --- | --- |
-| held on every turn | `browse_url`, `run_code` | the model chooses the destination or the program, so no server-side boundary constrains the effect |
+| held on every turn | `browse_url`, `run_code`, `analyze_attachment` | the model chooses the destination/program, or sends attachment bytes to the external Responses sandbox; none is a read confined to an existing local store |
 | held only on a turn carrying untrusted content | the four `*_search` tools, `generate_image`, `generate_video`, `remember_memory`, `export_document` | the destination is fixed by server config and the effect is confined to the caller's own data, so injected text choosing the payload is the whole of the risk — on a clean turn the user is the only possible author |
-| never held | `recall_memory`, `fetch_document`, `process_document`, `analyze_attachment`, `delegate_to_agent` | reads over the caller's own data, or a router onto an already-governed sub-turn: no egress, no durable write |
+| never held | `recall_memory`, `fetch_document`, `process_document`, `delegate_to_agent` | reads over the caller's own data, or a router onto an already-governed sub-turn: no egress, no durable write |
 
 The middle posture is declared per tool (`ToolSpec.injection_only_risk`), not by
 the operator, and it only ever relaxes a call to `tainted` strength — never to
@@ -398,6 +417,14 @@ label those gaps rather than infer precision.
 
 ## Tradeoffs and residual gaps
 
+- **No served private/regulated network mode.** `vnetIsolationEnabled` and
+  `dataTierPrivate` exist as direct Bicep parameters, but they are absent from
+  `infra/main.parameters.json` and normal azd/CI variable mapping. The partial
+  private-endpoint graph covers selected data-tier resources but omits ACR, App
+  Configuration, Azure AI Search, Foundry, APIM, and monitoring. Treat it as
+  design scaffolding only until an end-to-end endpoint/private-DNS matrix,
+  off-VNet deployment path, and deploy test prove every required control/data
+  plane. Do not use these flags as evidence of a private or regulated deployment.
 - SimpleL7Proxy queue/fairness state is in-memory and per replica; it is neither
   durable nor globally ordered.
 - Basic v2 APIM capacity is a single-region cost/reliability decision, and it is now

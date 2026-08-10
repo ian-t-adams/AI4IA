@@ -30,10 +30,9 @@ export function parseEnabledFlag(raw: string | undefined | null): boolean {
 export type McpAuthMode = "none" | "api_key" | "bearer";
 export type McpTransport = "streamable_http";
 
-// Per-tool human-approval posture, overriding the server-level default. Mirrors
-// the backend McpToolApproval enum: `default` inherits the server posture
-// (approval-unless-trusted), `always` forces approval even on a trusted server,
-// `never` pre-approves the tool even on an untrusted server.
+// Per-tool standing discovery/attachment posture, overriding the server-level
+// default. This decides whether the model is offered a discovered tool; it does
+// not replace interactive exact-argument invocation approval.
 export type McpToolApproval = "default" | "always" | "never";
 
 // A tool advertised by a remote MCP server, as cached on the record.
@@ -133,8 +132,9 @@ export const MCP_AUTH_MODES: { value: McpAuthMode; label: string; hint: string }
   { value: "bearer", label: "Bearer token", hint: "Sent as an Authorization: Bearer header." },
 ];
 
-// Per-tool approval options for the builder select. `default` inherits the server
-// posture; `always`/`never` override it. Mirrors the backend McpToolApproval enum.
+// Per-tool discovery options for the builder select. `default` inherits the
+// server posture; `always`/`never` override it. Mirrors McpToolApproval's stored
+// wire values while distinguishing this standing posture from invocation approval.
 // `default` and `never` are the two options a user might read as "this will make
 // the tool work" — so their hints call out that they only ever clear the
 // *approval* gate, not a separately disabled or quarantined server (see
@@ -142,29 +142,30 @@ export const MCP_AUTH_MODES: { value: McpAuthMode; label: string; hint: string }
 export const MCP_TOOL_APPROVALS: { value: McpToolApproval; label: string; hint: string }[] = [
   {
     value: "default",
-    label: "Default (inherit server)",
+    label: "Default discovery posture (inherit server)",
     hint:
-      "Chat has no live approval prompt, so on an untrusted server this " +
-      "tool is left out of what the model can call. Trusting the server, " +
-      "or setting this override to Never, clears that approval gate — but " +
-      "a server that's turned off or quarantined still blocks the tool " +
-      "either way.",
+      "On an untrusted server this tool is left out of what the model can " +
+      "call. Trusting the server or setting Never makes it attachable, but " +
+      "invocation is governed separately. Under the default interactive policy, " +
+      "external/destructive calls require fresh exact-call approval. A server " +
+      "that is turned off or quarantined remains blocked.",
   },
   {
     value: "always",
-    label: "Always require approval",
+    label: "Always withhold from model",
     hint:
-      "Chat has no live approval prompt, so this tool is simply left out of " +
-      "what the model can call — even on a trusted server — until you pick " +
-      "a different option here.",
+      "This standing posture leaves the tool out of what the model can call, " +
+      "even on a trusted server. It is separate from invocation approval.",
   },
   {
     value: "never",
-    label: "Never require approval",
+    label: "Allow model attachment",
     hint:
-      "Clears the approval gate for this tool, even on an untrusted server " +
-      "— but a server that's turned off or quarantined still blocks it " +
-      "either way.",
+      "Makes the tool attachable even on an untrusted server. Interactive " +
+      "invocation is governed separately; the default policy holds external/" +
+      "destructive calls for fresh exact-call approval, while unattended " +
+      "workflows explicitly run with ApprovalPolicy.off. " +
+      "A server that is turned off or quarantined remains blocked.",
   },
 ];
 
@@ -249,9 +250,10 @@ export function parseMcpToolName(
 // approval gate below — it cannot undo either of these.
 export type McpBlockingState = "disabled" | "quarantined" | null;
 
-// The approval posture the backend projects for a server's tools
-// (discovered_tool_to_spec): external risk, egress scoped to the host, and human
-// approval required on every use UNLESS the server is marked trusted.
+// The standing discovery posture the backend projects for a server's tools
+// (discovered_tool_to_spec): external risk and host-scoped egress. Trust decides
+// whether the model sees the tool; interactive invocation approval is a separate
+// policy and defaults to exact-call approval for external/destructive calls.
 export interface ApprovalPosture {
   requiresApproval: boolean;
   label: string;
@@ -288,18 +290,19 @@ export function approvalPosture(server: {
   if (server.trusted) {
     return {
       requiresApproval: false,
-      label: "Trusted — runs without approval",
-      detail: scopeDetail,
+      label: "Trusted for discovery",
+      detail:
+        `${scopeDetail} Eligible for model attachment. Invocation is governed ` +
+        "separately; the default interactive policy holds external/destructive calls.",
     };
   }
   return {
     requiresApproval: true,
-    label: "Unavailable until trusted",
+    label: "Withheld from model by default",
     detail:
-      `${scopeDetail} Chat has no live approval prompt, so these tools are ` +
-      "left out of what the model can call until the server is trusted, or " +
-      "a tool is individually pre-approved below. Trusting the server won't " +
-      "help if it's turned off or quarantined, though — those block it too.",
+      `${scopeDetail} This standing discovery posture leaves the tools out ` +
+      "of what the model can call until the server is trusted or a tool is " +
+      "individually allowed below. Invocation approval is a separate gate.",
   };
 }
 
@@ -314,10 +317,9 @@ export function effectiveToolApproval(
   return server.toolApprovals?.[toolName] ?? "default";
 }
 
-// Whether a remote tool needs human approval on each use: `always` -> true,
-// `never` -> false, `default` -> the existing rule (required unless trusted).
-// Single source of truth shared by the badge + the attach projection, mirroring
-// the backend tool_requires_approval so the UI matches the runtime gate.
+// Whether standing discovery posture withholds a remote tool: `always` -> true,
+// `never` -> false, `default` -> withheld unless trusted. The historical field
+// name is retained for API compatibility; invocation approval is separate.
 export function toolRequiresApproval(
   server: { trusted: boolean; toolApprovals?: Record<string, McpToolApproval> | null },
   toolName: string,
@@ -367,21 +369,19 @@ function describeToolApprovalPosture(
   let label: string;
   let detail = scopeDetail;
   if (posture === "always") {
-    label = "Unavailable — approval set to Always";
+    label = "Unavailable — withheld from model";
     detail =
-      `${scopeDetail} Chat has no live approval prompt, so this tool is ` +
-      "left out of what the model can call — even on a trusted server — " +
-      "until this override is changed away from Always (set it to Never, " +
-      "or to Default on a trusted server).";
-  } else if (posture === "never") label = "Pre-approved — runs without approval";
+      `${scopeDetail} This standing posture leaves the tool out of what the ` +
+      "model can call, even on a trusted server, until the override changes. " +
+      "Invocation approval is a separate gate.";
+  } else if (posture === "never") label = "Attachable — standing grant";
   else if (requiresApproval) {
-    label = "Unavailable until trusted";
+    label = "Withheld from model";
     detail =
-      `${scopeDetail} Chat has no live approval prompt, so this tool is ` +
-      "left out of what the model can call unless the server is trusted, " +
-      "or this tool's approval is set to Never. Neither helps if the " +
-      "server is turned off or quarantined, though — those block it too.";
-  } else label = "Trusted — runs without approval";
+      `${scopeDetail} This standing discovery posture leaves the tool out of ` +
+      "what the model can call unless the server is trusted or the tool is " +
+      "set to Never. Invocation approval is a separate gate.";
+  } else label = "Attachable — trusted discovery";
   return { posture, requiresApproval, label, detail };
 }
 
@@ -506,10 +506,9 @@ export interface AttachableMcpTool {
   trusted: boolean;
   enabled: boolean;
   host: string;
-  // Resolved per-tool approval requirement + posture (mirrors the runtime gate).
-  // Chat has no live approval prompt: `requiresApproval: true` means the tool
-  // is left out of what the model can call, not that attaching it will ask
-  // for a per-use approval.
+  // Resolved standing discovery requirement + posture. The historical field
+  // name is retained on the API contract. `true` means the tool is withheld
+  // from the model; interactive invocation approval is separate.
   requiresApproval: boolean;
   approval: McpToolApproval;
   // True when the tool comes from the curated **official** plane (APIM-fronted),

@@ -39,6 +39,15 @@ _tb = _load("provision_foundry_toolbox", _TOOLBOX_SCRIPT)
 
 def _valid_manifest() -> dict:
     return {
+        "manifestVersion": "1.0",
+        "lifecycle": "active",
+        "owner": "repository-owner",
+        "sdkContract": {
+            "package": "azure-ai-projects",
+            "version": "2.4.0",
+            "status": "validated",
+            "surface": "project.toolboxes",
+        },
         "name": "ai4ia-toolbox",
         "description": "Web search + code interpreter + tool search",
         "raiPolicyName": "ai4ia-annotate-only",
@@ -157,10 +166,11 @@ def test_manifest_matches_its_schema():
 
 def test_example_manifest_is_populated_valid_and_schema_valid():
     # The reference manifest shows one of *every* supported tool type (docs/foundry-toolbox.md
-    # and foundry/README.md both claim this); unlike the shipped inert one it must be populated,
-    # provisionable, and schema-valid so operators can copy it verbatim.
+    # and foundry/README.md both claim this). It must be populated and schema-valid,
+    # but its reference lifecycle deliberately prevents direct reconciliation.
     manifest = _tb.load_manifest(_EXAMPLE_MANIFEST)
     assert _tb.validate_manifest(manifest) == []
+    assert manifest["lifecycle"] == "reference"
     tool_types = {t["type"] for t in manifest["tools"]}
     # Pin the "one of each type" doc claim as an executable invariant so the two never drift
     # apart again (this is exactly what regressed before: the example was missing file_search,
@@ -1335,6 +1345,20 @@ def test_main_accepts_schema_valid_manifest_in_dry_run(tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert "dry run" in captured.out
+
+
+@pytest.mark.parametrize("action", ["create", "emit-yaml"])
+def test_reference_manifest_cannot_be_reconciled_or_emitted(action, tmp_path, capsys):
+    pytest.importorskip("jsonschema")
+    argv = [
+        "--manifest",
+        str(_EXAMPLE_MANIFEST),
+        "--project-endpoint",
+        _ENDPOINT,
+    ]
+    argv += ["--create"] if action == "create" else ["--emit-yaml", str(tmp_path / "out.yaml")]
+    assert _tb.main(argv) == 1
+    assert "lifecycle='active'" in capsys.readouterr().err
 
 
 # ----------------- round 10: malformed-shape crash guard (Finding 3) -------------------

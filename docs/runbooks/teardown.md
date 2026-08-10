@@ -99,14 +99,35 @@ step 2 is safe:
 - **`secret names NOT captured`** means you will not know which users to tell that
   their MCP credentials were purged.
 
-## 1. Validate IaC in a PARALLEL resource group (no deletion yet)
+## 1. Validate IaC without pretending subscription-wide quota is duplicable
+
+The full `infra/models.json` catalog cannot be stood up twice in the same
+subscription when subscription-wide MAI quota is already consumed. A parallel
+resource group does not create a new quota boundary. Choose one truthful path:
+
+1. **Full-fidelity validation:** use a separate subscription with provider
+   registration and sufficient quota for the complete catalog.
+2. **Reduced-profile validation:** in the current subscription, use a reviewed
+   temporary catalog/profile containing only models with independently available
+   capacity. Record every omitted model/capability, run the same schema/policy/
+   Bicep gates, and treat the result as infrastructure-path validation only.
+
+Do not claim a reduced profile proves full model availability, and do not scale
+down or delete the live catalog merely to manufacture parallel quota.
+
 ```powershell
+# Full-fidelity example in a separate validation subscription:
+az account set --subscription <separate-validation-subscription>
 azd env new ai4ia-validate
 azd env set AZURE_RESOURCE_GROUP rg-ai4ia-validate
 azd provision
 ```
-Confirm Foundry accounts, model deployments, and core services come up cleanly and that
-quota/capacity is sufficient in every region in `infra/models.json`. Fix IaC until green.
+
+For the reduced path, create the reviewed catalog/profile on a branch, regenerate
+its derived catalog and gateway policy, and retain the diff plus omitted-capability
+list with the teardown evidence. Restore the canonical catalog before any real
+environment deployment. In either path, fix IaC until the claims appropriate to
+that profile are green.
 
 ## 2. Tear down the live stack
 
