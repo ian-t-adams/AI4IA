@@ -530,11 +530,16 @@ class _InitialReadBarrierRepository:
             await self.both_read.wait()
         return snapshot
 
-    async def add_message_if_absent(
-        self, user_id: str, message: Message
+    async def claim_workflow_run_if_absent(
+        self,
+        user_id: str,
+        user_message: Message,
+        pending_assistant: Message,
     ) -> bool:
-        created = await self.inner.add_message_if_absent(user_id, message)
-        if message.role is MessageRole.assistant and not created:
+        created = await self.inner.claim_workflow_run_if_absent(
+            user_id, user_message, pending_assistant
+        )
+        if not created:
             await self.winner_finished.wait()
         return created
 

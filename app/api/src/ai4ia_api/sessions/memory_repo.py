@@ -174,14 +174,28 @@ class InMemorySessionRepository:
             self._messages.setdefault(message.sessionId, []).append(message)
             return True
 
-    async def add_message_if_absent(self, user_id: str, message: Message) -> bool:
+    async def claim_workflow_run_if_absent(
+        self,
+        user_id: str,
+        user_message: Message,
+        pending_assistant: Message,
+    ) -> bool:
+        if user_message.sessionId != pending_assistant.sessionId:
+            raise ValueError("workflow claim messages must share one session")
         async with self._lock:
-            await self._owned_session(user_id, message.sessionId)
-            message.userId = user_id
-            bucket = self._messages.setdefault(message.sessionId, [])
-            if any(existing.id == message.id for existing in bucket):
+            await self._owned_session(user_id, user_message.sessionId)
+            bucket = self._messages.setdefault(user_message.sessionId, [])
+            claimed_ids = {user_message.id, pending_assistant.id}
+            if any(existing.id in claimed_ids for existing in bucket):
                 return False
-            bucket.append(message.model_copy(deep=True))
+            user_message.userId = user_id
+            pending_assistant.userId = user_id
+            bucket.extend(
+                [
+                    user_message.model_copy(deep=True),
+                    pending_assistant.model_copy(deep=True),
+                ]
+            )
             return True
 
     async def replace_message_if_workflow_status(

@@ -451,15 +451,39 @@ class CosmosSessionRepository:
             pass
         return False
 
-    async def add_message_if_absent(self, user_id: str, message: Message) -> bool:
-        from azure.cosmos.exceptions import CosmosResourceExistsError
+    async def claim_workflow_run_if_absent(
+        self,
+        user_id: str,
+        user_message: Message,
+        pending_assistant: Message,
+    ) -> bool:
+        from azure.cosmos.exceptions import CosmosBatchOperationError
 
-        await self._owned_session(user_id, message.sessionId)
-        message.userId = user_id
+        if user_message.sessionId != pending_assistant.sessionId:
+            raise ValueError("workflow claim messages must share one session")
+        await self._owned_session(user_id, user_message.sessionId)
+        user_message.userId = user_id
+        pending_assistant.userId = user_id
+        operations = [
+            ("create", (self._to_doc(user_message),), {}),
+            ("create", (self._to_doc(pending_assistant),), {}),
+        ]
         try:
-            await self._messages.create_item(self._to_doc(message))
-        except CosmosResourceExistsError:
-            return False
+            await self._messages.execute_item_batch(
+                batch_operations=operations,
+                partition_key=user_message.sessionId,
+            )
+        except CosmosBatchOperationError as exc:
+            if getattr(exc, "status_code", None) == 409:
+                return False
+            operation_responses = getattr(exc, "operation_responses", None) or []
+            if any(
+                isinstance(response, dict)
+                and response.get("statusCode") == 409
+                for response in operation_responses
+            ):
+                return False
+            raise
         return True
 
     async def replace_message_if_workflow_status(

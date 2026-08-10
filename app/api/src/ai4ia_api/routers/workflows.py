@@ -143,6 +143,11 @@ async def _claim_durable_run(
     def validate(
         existing_user: Message | None, existing_assistant: Message | None
     ) -> None:
+        if (existing_user is None) != (existing_assistant is None):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Durable workflow claim is incomplete.",
+            )
         if existing_user is not None and (
             existing_user.role is not MessageRole.user
             or existing_user.workflowRunId != user_message.workflowRunId
@@ -159,24 +164,11 @@ async def _claim_durable_run(
         ):
             raise conflict()
 
-    async def ensure_user(existing_user: Message | None) -> None:
-        if existing_user is not None:
-            return
-        if await repo.add_message_if_absent(user_id, user_message):
-            return
-        latest_user, _ = records(
-            await repo.list_messages(user_id, pending_assistant.sessionId)
-        )
-        validate(latest_user, pending_assistant)
-        if latest_user is None:
-            raise conflict()
-
     prior_user, prior_assistant = records(
         await repo.list_messages(user_id, pending_assistant.sessionId)
     )
     validate(prior_user, prior_assistant)
     if prior_assistant is not None:
-        await ensure_user(prior_user)
         if prior_assistant.workflowRunStatus != "acceptance_unknown":
             return False, prior_assistant
         retry = prior_assistant.model_copy(
@@ -193,8 +185,9 @@ async def _claim_durable_run(
         ):
             return True, retry
 
-    elif await repo.add_message_if_absent(user_id, pending_assistant):
-        await ensure_user(prior_user)
+    elif await repo.claim_workflow_run_if_absent(
+        user_id, user_message, pending_assistant
+    ):
         return True, pending_assistant
     else:
         # Both concurrent first requests may have read absence. Only the create

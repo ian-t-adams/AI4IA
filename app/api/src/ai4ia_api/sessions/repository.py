@@ -73,11 +73,16 @@ class SessionRepository(Protocol):
         self, user_id: str, message: Message, *, expected_version: int
     ) -> bool: ...
 
-    async def add_message_if_absent(self, user_id: str, message: Message) -> bool:
-        """Atomically create a message with its deterministic id.
+    async def claim_workflow_run_if_absent(
+        self,
+        user_id: str,
+        user_message: Message,
+        pending_assistant: Message,
+    ) -> bool:
+        """Atomically create both deterministic workflow claim messages.
 
-        Returns False when that id already exists. Implementations must not
-        replace or mutate the existing row on conflict.
+        Both rows share the session partition. Returns False when either id
+        exists; implementations must create both rows or neither row.
         """
         ...
 
