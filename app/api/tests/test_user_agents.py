@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from ai4ia_api.agents.agent_catalog import AgentCatalog, AgentSpec
 from ai4ia_api.agents.service import AgentService
@@ -9,6 +10,7 @@ from ai4ia_api.agents.store import InMemoryUserAgentStore
 from ai4ia_api.agents.tool_exec import attachable_tool_names, build_tools
 from ai4ia_api.agents.user_agents import (
     MAX_AGENTS_PER_USER,
+    MAX_SYSTEM_PROMPT_LEN,
     AgentConflictError,
     AgentNotFoundError,
     AgentValidationError,
@@ -63,6 +65,17 @@ def test_attachable_tools_are_the_safe_builtins():
             "remember_memory",
         }
     )
+
+
+def test_user_agent_prompt_accepts_boundary_and_rejects_one_character_over():
+    accepted = UserAgentCreate(
+        name="bounded", systemPrompt="x" * MAX_SYSTEM_PROMPT_LEN
+    )
+    assert len(accepted.systemPrompt) == MAX_SYSTEM_PROMPT_LEN
+    with pytest.raises(ValidationError):
+        UserAgentCreate(
+            name="overflow", systemPrompt="x" * (MAX_SYSTEM_PROMPT_LEN + 1)
+        )
 
 
 async def test_create_then_compose_into_catalog():

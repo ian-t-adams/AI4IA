@@ -20,7 +20,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from ai4ia_api.routers.chat import ChatParams, ChatRequest
+from ai4ia_api.routers.chat import MAX_CHAT_CONTENT_CHARS, ChatParams, ChatRequest
 
 # Every field a caller has ever been able to smuggle through to the provider.
 FORBIDDEN = [
@@ -95,3 +95,10 @@ def test_api_rejects_reserved_params_with_422(client, key):
         },
     )
     assert response.status_code == 422
+
+
+def test_chat_content_accepts_exact_boundary_and_rejects_one_character_over():
+    accepted = ChatRequest(sessionId="s", content="x" * MAX_CHAT_CONTENT_CHARS)
+    assert len(accepted.content) == MAX_CHAT_CONTENT_CHARS
+    with pytest.raises(ValidationError):
+        ChatRequest(sessionId="s", content="x" * (MAX_CHAT_CONTENT_CHARS + 1))

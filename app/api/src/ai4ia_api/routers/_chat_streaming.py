@@ -34,6 +34,7 @@ from ..usage.service import UsageService
 logger = logging.getLogger(__name__)
 
 CHAT_COMPLETION_FAILED = "Chat completion failed."
+AGENT_EVENT_QUEUE_MAXSIZE = 32
 
 
 def _stream_metadata(
@@ -235,26 +236,42 @@ async def _agentic_stream(
     stream_tokens: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream an agent run and own its terminal persistence lifecycle."""
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue[object] = asyncio.Queue(maxsize=AGENT_EVENT_QUEUE_MAXSIZE)
     sentinel = object()
+
+    async def enqueue(item: object) -> None:
+        if queue.full():
+            logger.info(
+                "chat.agent_stream_backpressure",
+                extra={
+                    "session_id": session_id,
+                    "correlation_id": correlation_id,
+                    "queue_maxsize": AGENT_EVENT_QUEUE_MAXSIZE,
+                },
+            )
+        await queue.put(item)
 
     async def on_step(step: AgentStep) -> None:
         view = serialize_step(step)
         if view is not None:
-            queue.put_nowait(("step", view))
+            await enqueue(("step", view))
 
     async def on_delta(text: str) -> None:
         if text:
-            queue.put_nowait(("delta", text))
+            await enqueue(("delta", text))
 
     async def runner() -> None:
         try:
             result = await (run(on_step, on_delta) if stream_tokens else run(on_step))
-            queue.put_nowait(("result", result))
+            await enqueue(("result", result))
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001 - surfaced below; never crashes the response
-            queue.put_nowait(("error", exc))
+            await enqueue(("error", exc))
         finally:
-            queue.put_nowait(sentinel)
+            current = asyncio.current_task()
+            if current is None or current.cancelling() == 0:
+                await enqueue(sentinel)
 
     task = asyncio.create_task(runner())
     final = MessageStatus.complete
@@ -272,6 +289,7 @@ async def _agentic_stream(
             item = await queue.get()
             if item is sentinel:
                 break
+            assert isinstance(item, tuple)
             kind, payload = item
             if kind == "step":
                 yield f"data: {json.dumps({'step': payload.model_dump(exclude_none=True)})}\n\n"

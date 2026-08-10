@@ -24,7 +24,11 @@ import pytest
 from ai4ia_api.content_understanding.models import CUResult
 from ai4ia_api.library.blob_store import InMemoryBlobStore, document_prefix
 from ai4ia_api.library.doc_chunks import InMemoryDocChunkStore
-from ai4ia_api.library.ingest import DocumentIngestor
+from ai4ia_api.library.ingest import (
+    MAX_CONCURRENT_DOCUMENT_ENRICHMENTS,
+    DocumentIngestor,
+    EnrichScheduleOutcome,
+)
 from ai4ia_api.library.memory_repo import InMemoryDocumentLibraryRepository
 from ai4ia_api.library.models import (
     DocumentAnnotation,
@@ -202,7 +206,7 @@ async def test_cancel_enrich_on_delete_does_not_resurrect(monkeypatch):
     doc_id = stored.document.id
 
     ingestor.schedule_enrich(
-        user_id="u1", document_id=doc_id, data=b"BYTES", content_type="application/pdf"
+        user_id="u1", document_id=doc_id, content_type="application/pdf"
     )
     await asyncio.wait_for(cu.started.wait(), timeout=5)
 
@@ -284,7 +288,6 @@ async def test_schedule_enrich_noop_when_cu_disabled():
     ingestor.schedule_enrich(
         user_id="u1",
         document_id=stored.document.id,
-        data=b"X",
         content_type="application/pdf",
     )
     assert ingestor._tasks == {}
@@ -301,12 +304,169 @@ async def test_schedule_enrich_runs_to_ready():
     )
     doc_id = stored.document.id
     ingestor.schedule_enrich(
-        user_id="u1", document_id=doc_id, data=b"X", content_type="application/pdf"
+        user_id="u1", document_id=doc_id, content_type="application/pdf"
     )
     task = ingestor._tasks[("u1", doc_id)]
     await asyncio.wait_for(task, timeout=5)
     doc = await library.get_document("u1", doc_id)
     assert doc.status == DocumentStatus.ready
+
+
+async def test_scheduled_enrich_reloads_canonical_blob_after_admission():
+    class CapturingCU(_CU):
+        seen: bytes | None = None
+
+        async def analyze(self, analyzer_id, data, content_type):
+            self.seen = data
+            return await super().analyze(analyzer_id, data, content_type)
+
+    blob = InMemoryBlobStore()
+    cu = CapturingCU("# ready")
+    ingestor = _build(cu=cu, blob=blob)
+    stored = await ingestor.ingest(
+        user_id="u1", filename="d.txt", content_type="text/plain", data=b"upload"
+    )
+    assert stored.document.rawPath is not None
+    await blob.put(stored.document.rawPath, b"canonical", "text/plain")
+
+    assert ingestor.schedule_enrich(
+        user_id="u1",
+        document_id=stored.document.id,
+        content_type="text/plain",
+    ) is EnrichScheduleOutcome.scheduled
+    await asyncio.wait_for(ingestor._tasks[("u1", stored.document.id)], timeout=5)
+
+    assert cu.seen == b"canonical"
+
+
+async def test_enrichment_concurrency_is_global_across_ingestors():
+    class CountingCU:
+        def __init__(self) -> None:
+            self.active = 0
+            self.maximum = 0
+            self.started = 0
+            self.at_limit = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def analyze(self, analyzer_id, data, content_type):
+            self.active += 1
+            self.started += 1
+            self.maximum = max(self.maximum, self.active)
+            if self.active == MAX_CONCURRENT_DOCUMENT_ENRICHMENTS:
+                self.at_limit.set()
+            try:
+                await self.release.wait()
+                return CUResult(status="Succeeded", analyzer_id="a", markdown="# ready")
+            finally:
+                self.active -= 1
+
+    cu = CountingCU()
+    ingestors = [_build(cu=cu), _build(cu=cu)]
+    for index in range(MAX_CONCURRENT_DOCUMENT_ENRICHMENTS + 2):
+        ingestor = ingestors[index % 2]
+        stored = await ingestor.ingest(
+            user_id=f"u{index}",
+            filename=f"{index}.txt",
+            content_type="text/plain",
+            data=f"doc-{index}".encode(),
+        )
+        assert ingestor.schedule_enrich(
+            user_id=f"u{index}",
+            document_id=stored.document.id,
+            content_type="text/plain",
+        ) is EnrichScheduleOutcome.scheduled
+
+    await asyncio.wait_for(cu.at_limit.wait(), timeout=5)
+    await asyncio.sleep(0)
+    assert cu.maximum == MAX_CONCURRENT_DOCUMENT_ENRICHMENTS
+    assert cu.started == MAX_CONCURRENT_DOCUMENT_ENRICHMENTS
+
+    cu.release.set()
+    tasks = [task for ingestor in ingestors for task in ingestor._tasks.values()]
+    await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+    assert cu.started == MAX_CONCURRENT_DOCUMENT_ENRICHMENTS + 2
+
+
+async def test_enrichment_admission_cap_is_explicit_and_releases_on_failure(
+    monkeypatch,
+):
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.library.ingest.MAX_PENDING_DOCUMENT_ENRICHMENTS", 1
+    )
+    monkeypatch.setattr(
+        "ai4ia_api.library.ingest.emit_custom_event",
+        lambda name, attributes: events.append((name, attributes)),
+    )
+    cu = _BlockingCU()
+    ingestor = _build(cu=cu)
+    first = await ingestor.ingest(
+        user_id="u1", filename="1.txt", content_type="text/plain", data=b"one"
+    )
+    second = await ingestor.ingest(
+        user_id="u1", filename="2.txt", content_type="text/plain", data=b"two"
+    )
+
+    assert ingestor.schedule_enrich(
+        user_id="u1", document_id=first.document.id, content_type="text/plain"
+    ) is EnrichScheduleOutcome.scheduled
+    assert ingestor.schedule_enrich(
+        user_id="u1", document_id=second.document.id, content_type="text/plain"
+    ) is EnrichScheduleOutcome.saturated
+    assert any(
+        name == "document_ingest_saturated" and attrs["stage"] == "admission"
+        for name, attrs in events
+    )
+
+    failed = await ingestor.settle_saturated(second.document)
+    assert failed.status is DocumentStatus.failed
+    assert failed.error is not None and "Re-upload to retry" in failed.error
+
+    await ingestor.cancel_enrich("u1", first.document.id)
+    retried = await ingestor.ingest(
+        user_id="u1", filename="2.txt", content_type="text/plain", data=b"two"
+    )
+    assert retried.deduped is False
+    assert retried.document.status is DocumentStatus.stored
+    assert ingestor.schedule_enrich(
+        user_id="u1", document_id=retried.document.id, content_type="text/plain"
+    ) is EnrichScheduleOutcome.scheduled
+    await ingestor.cancel_enrich("u1", retried.document.id)
+
+
+async def test_enrichment_admission_permit_releases_after_failed_task(monkeypatch):
+    class FailThenSucceedCU:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def analyze(self, analyzer_id, data, content_type):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("provider failed")
+            return CUResult(status="Succeeded", analyzer_id="a", markdown="# ready")
+
+    monkeypatch.setattr(
+        "ai4ia_api.library.ingest.MAX_PENDING_DOCUMENT_ENRICHMENTS", 1
+    )
+    cu = FailThenSucceedCU()
+    ingestor = _build(cu=cu)
+    first = await ingestor.ingest(
+        user_id="u1", filename="1.txt", content_type="text/plain", data=b"one"
+    )
+    second = await ingestor.ingest(
+        user_id="u1", filename="2.txt", content_type="text/plain", data=b"two"
+    )
+
+    assert ingestor.schedule_enrich(
+        user_id="u1", document_id=first.document.id, content_type="text/plain"
+    ) is EnrichScheduleOutcome.scheduled
+    await asyncio.wait_for(ingestor._tasks[("u1", first.document.id)], timeout=5)
+    await asyncio.sleep(0)
+    assert ingestor.schedule_enrich(
+        user_id="u1", document_id=second.document.id, content_type="text/plain"
+    ) is EnrichScheduleOutcome.scheduled
+    await asyncio.wait_for(ingestor._tasks[("u1", second.document.id)], timeout=5)
+    assert cu.calls == 2
 
 
 async def test_enrich_failure_midpersist_purges_partial_chunks():

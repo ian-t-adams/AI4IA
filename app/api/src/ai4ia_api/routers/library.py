@@ -43,7 +43,7 @@ from ..library.access import (
 )
 from ..library.chunking import chunk_markdown
 from ..library.compute_factory import DocumentComputeService
-from ..library.ingest import DocumentIngestor
+from ..library.ingest import DocumentIngestor, EnrichScheduleOutcome
 from ..library.models import (
     Analyzer,
     AnalyzerKind,
@@ -386,12 +386,13 @@ async def upload_document(
     # already terminal). schedule_enrich is a no-op when CU is not configured and
     # tracks the task so a delete can cancel it mid-crack.
     if not result.deduped and doc.status == DocumentStatus.stored:
-        ingestor.schedule_enrich(
+        scheduled = ingestor.schedule_enrich(
             user_id=uid,
             document_id=doc.id,
-            data=data,
             content_type=content_type,
         )
+        if scheduled is EnrichScheduleOutcome.saturated:
+            doc = await ingestor.settle_saturated(doc)
     logger.info(
         "library upload user=%s id=%s status=%s deduped=%s",
         uid, doc.id, doc.status, result.deduped,

@@ -40,12 +40,15 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 # against an abusive/garbage client payload, not normal use.
 MAX_VOICE_TURNS = 200
 MAX_VOICE_TURN_CHARS = 8000
+MAX_SESSION_SYSTEM_PROMPT_CHARS = 8000
 
 
 class CreateSessionRequest(BaseModel):
     title: str | None = None
     model: str | None = None
-    systemPrompt: str | None = None
+    systemPrompt: str | None = Field(
+        default=None, max_length=MAX_SESSION_SYSTEM_PROMPT_CHARS
+    )
     agentName: str | None = None
     toolOverrides: ToolOverrides = Field(default_factory=ToolOverrides)
     libraryDocumentIds: list[str] | None = Field(
@@ -61,7 +64,9 @@ class CreateSessionRequest(BaseModel):
 class UpdateSessionRequest(BaseModel):
     title: str | None = None
     model: str | None = None
-    systemPrompt: str | None = None
+    systemPrompt: str | None = Field(
+        default=None, max_length=MAX_SESSION_SYSTEM_PROMPT_CHARS
+    )
     agentName: str | None = None
     toolOverrides: ToolOverrides | None = None
     libraryDocumentIds: list[str] | None = Field(

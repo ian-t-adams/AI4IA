@@ -22,8 +22,11 @@ re-validate at connect time (the recommended posture against rebinding).
 """
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import ipaddress
 import socket
+import threading
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
@@ -35,6 +38,13 @@ Resolver = Callable[[str], list[str]]
 # Hard cap on a single endpoint URL so a pathological value can't blow up logs
 # or storage. MCP endpoints are short in practice.
 MAX_URL_LEN = 2048
+DEFAULT_DNS_TIMEOUT_S = 5.0
+MAX_CONCURRENT_DNS_RESOLUTIONS = 4
+_DNS_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=MAX_CONCURRENT_DNS_RESOLUTIONS,
+    thread_name_prefix="ai4ia-dns",
+)
+_DNS_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_DNS_RESOLUTIONS)
 
 
 class SsrfError(ValueError):
@@ -82,6 +92,28 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 def validate_public_https_url(url: str, *, resolver: Resolver | None = None) -> str:
     try:
         return _validate_public_https_url(url, resolver=resolver)
+    except SsrfError:
+        emit_security_block("ssrf", "endpoint_rejected", "ssrf_guard")
+        raise
+
+
+async def async_validate_public_https_url(
+    url: str,
+    *,
+    resolver: Resolver | None = None,
+    timeout_s: float = DEFAULT_DNS_TIMEOUT_S,
+) -> str:
+    """Validate an endpoint without running user-controlled DNS on the event loop."""
+    try:
+        return await _run_bounded_dns(
+            _validate_public_https_url,
+            url,
+            resolver=resolver,
+            timeout_s=timeout_s,
+        )
+    except TimeoutError as exc:
+        emit_security_block("ssrf", "endpoint_rejected", "ssrf_guard")
+        raise SsrfError("Endpoint host resolution timed out.") from exc
     except SsrfError:
         emit_security_block("ssrf", "endpoint_rejected", "ssrf_guard")
         raise
@@ -149,6 +181,55 @@ def resolve_pinned_ip(host: str, *, resolver: Resolver | None = None) -> str:
     except SsrfError:
         emit_security_block("ssrf", "connection_rejected", "ssrf_guard")
         raise
+
+
+async def async_resolve_pinned_ip(
+    host: str,
+    *,
+    resolver: Resolver | None = None,
+    timeout_s: float = DEFAULT_DNS_TIMEOUT_S,
+) -> str:
+    """Resolve and validate a connect-time pin in a bounded worker."""
+    try:
+        return await _run_bounded_dns(
+            _resolve_pinned_ip,
+            host,
+            resolver=resolver,
+            timeout_s=timeout_s,
+        )
+    except TimeoutError as exc:
+        emit_security_block("ssrf", "connection_rejected", "ssrf_guard")
+        raise SsrfError("Endpoint host resolution timed out.") from exc
+    except SsrfError:
+        emit_security_block("ssrf", "connection_rejected", "ssrf_guard")
+        raise
+
+
+async def _run_bounded_dns(
+    operation,
+    value: str,
+    *,
+    resolver: Resolver | None,
+    timeout_s: float,
+) -> str:
+    """Submit DNS work only while a dedicated worker slot is truly available.
+
+    A timed-out ``getaddrinfo`` thread cannot be interrupted. Its permit is
+    therefore released by the concurrent future only when the worker actually
+    exits, preventing timed-out lookups from filling an unbounded executor queue.
+    """
+    if not _DNS_SLOTS.acquire(blocking=False):
+        raise SsrfError("Endpoint DNS resolution capacity is exhausted.")
+    try:
+        future = _DNS_EXECUTOR.submit(operation, value, resolver=resolver)
+    except Exception:
+        _DNS_SLOTS.release()
+        raise
+    future.add_done_callback(lambda _future: _DNS_SLOTS.release())
+    wrapped = asyncio.wrap_future(future)
+    return await asyncio.wait_for(
+        asyncio.shield(wrapped), timeout=max(0.001, timeout_s)
+    )
 
 
 def _resolve_pinned_ip(host: str, *, resolver: Resolver | None = None) -> str:

@@ -33,7 +33,7 @@ from .mcp_servers import (
     McpConnectionError,
     is_valid_remote_tool_name,
 )
-from .ssrf import Resolver, SsrfError, resolve_pinned_ip
+from .ssrf import Resolver, SsrfError, async_resolve_pinned_ip
 
 # The MCP protocol revision we advertise. Servers negotiate down if needed; this
 # is sent both in the initialize params and as a header on later requests.
@@ -161,7 +161,7 @@ class HttpxMcpConnector:
             timeout=self._timeout_s, follow_redirects=False, transport=transport
         )
 
-    def _pin_for(self, endpoint: str) -> str:
+    async def _pin_for(self, endpoint: str) -> str:
         """Resolve+validate the endpoint host ONCE and return the public IP to pin.
 
         The single chokepoint for the transport-owned guard: the scheme must be
@@ -176,11 +176,13 @@ class HttpxMcpConnector:
         host = url.host
         if not host:
             raise SsrfError("Endpoint URL must include a host.")
-        return resolve_pinned_ip(host, resolver=self._resolver)
+        return await async_resolve_pinned_ip(
+            host, resolver=self._resolver, timeout_s=self._timeout_s
+        )
 
-    def _pin_or_raise(self, endpoint: str, method_label: str) -> str:
+    async def _pin_or_raise(self, endpoint: str, method_label: str) -> str:
         try:
-            return self._pin_for(endpoint)
+            return await self._pin_for(endpoint)
         except SsrfError as exc:
             raise McpConnectionError(
                 f"{method_label}: endpoint is not a permitted egress target: {exc}"
@@ -189,7 +191,7 @@ class HttpxMcpConnector:
     async def discover(self, *, endpoint: str, auth: McpAuth) -> list[DiscoveredTool]:
         if self._client is not None:
             return await self._discover_with(self._client, endpoint, auth)
-        pinned_ip = self._pin_or_raise(endpoint, "tools/list")
+        pinned_ip = await self._pin_or_raise(endpoint, "tools/list")
         async with self._new_client(pinned_ip) as client:
             return await self._discover_with(client, endpoint, auth)
 
@@ -198,7 +200,7 @@ class HttpxMcpConnector:
     ) -> McpToolResult:
         if self._client is not None:
             return await self._call_with(self._client, endpoint, auth, tool, arguments)
-        pinned_ip = self._pin_or_raise(endpoint, "tools/call")
+        pinned_ip = await self._pin_or_raise(endpoint, "tools/call")
         async with self._new_client(pinned_ip) as client:
             return await self._call_with(client, endpoint, auth, tool, arguments)
 
@@ -280,7 +282,30 @@ class HttpxMcpConnector:
     ) -> _RpcResult:
         body = {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params}
         try:
-            resp = await client.post(endpoint, headers=headers, json=body)
+            async with client.stream(
+                "POST", endpoint, headers=headers, json=body
+            ) as resp:
+                if resp.status_code >= 400:
+                    raise McpConnectionError(
+                        f"{method}: server returned HTTP {resp.status_code}."
+                    )
+                declared = resp.headers.get("content-length")
+                if declared is not None:
+                    try:
+                        if int(declared) > self._max_bytes:
+                            raise McpConnectionError(f"{method}: response too large.")
+                    except ValueError:
+                        pass
+                parts: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes():
+                    total += len(chunk)
+                    if total > self._max_bytes:
+                        raise McpConnectionError(f"{method}: response too large.")
+                    parts.append(chunk)
+                raw = b"".join(parts)
+                content_type = resp.headers.get("content-type", "")
+                session_id = resp.headers.get("mcp-session-id")
         except SsrfError as exc:
             # Defense in depth: the pinned transport refused the target (e.g. a
             # non-https URL slipped through). The primary rebind rejection happens
@@ -290,17 +315,10 @@ class HttpxMcpConnector:
             ) from exc
         except httpx.HTTPError as exc:
             raise McpConnectionError(f"{method}: transport error.") from exc
-        if resp.status_code >= 400:
-            raise McpConnectionError(
-                f"{method}: server returned HTTP {resp.status_code}."
-            )
-        raw = resp.content
-        if len(raw) > self._max_bytes:
-            raise McpConnectionError(f"{method}: response too large.")
-        payload = _decode_jsonrpc(raw, resp.headers.get("content-type", ""), rpc_id)
+        payload = _decode_jsonrpc(raw, content_type, rpc_id)
         if payload is None:
             raise McpConnectionError(f"{method}: no JSON-RPC response found.")
-        return _RpcResult(payload=payload, session_id=resp.headers.get("mcp-session-id"))
+        return _RpcResult(payload=payload, session_id=session_id)
 
     async def _notify(
         self,
@@ -312,7 +330,10 @@ class HttpxMcpConnector:
     ) -> None:
         body = {"jsonrpc": "2.0", "method": method}
         try:
-            await client.post(endpoint, headers=headers, json=body)
+            async with client.stream(
+                "POST", endpoint, headers=headers, json=body
+            ):
+                pass
         except SsrfError as exc:
             # Defense in depth: the pinned transport refused the target. The primary
             # rebind rejection happens up front in _pin_for; a notification must still

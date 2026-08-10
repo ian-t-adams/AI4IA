@@ -98,8 +98,8 @@ class UserAgentCreate(BaseModel):
 
     name: str
     displayName: str | None = None
-    description: str = ""
-    systemPrompt: str
+    description: str = Field(default="", max_length=MAX_DESCRIPTION_LEN)
+    systemPrompt: str = Field(min_length=1, max_length=MAX_SYSTEM_PROMPT_LEN)
     defaultModel: str | None = None
     tools: list[str] = Field(default_factory=list)
     links: list[str] = Field(default_factory=list)
@@ -110,8 +110,8 @@ class UserAgentUpdate(BaseModel):
     """Client payload for replacing a user agent (the name comes from the path)."""
 
     displayName: str | None = None
-    description: str = ""
-    systemPrompt: str
+    description: str = Field(default="", max_length=MAX_DESCRIPTION_LEN)
+    systemPrompt: str = Field(min_length=1, max_length=MAX_SYSTEM_PROMPT_LEN)
     defaultModel: str | None = None
     tools: list[str] = Field(default_factory=list)
     links: list[str] = Field(default_factory=list)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+from collections.abc import AsyncIterator
 
 import httpcore
 import httpx
@@ -27,6 +28,21 @@ from ai4ia_api.agents.mcp_servers import (
 from ai4ia_api.agents.ssrf import SsrfError, validate_public_https_url
 
 _ENDPOINT = "https://mcp.example.com/rpc"
+
+
+class _TrackingStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+        self.reads = 0
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            self.reads += 1
+            yield chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 def _json(body: dict, *, status: int = 200, headers: dict | None = None) -> httpx.Response:
@@ -387,6 +403,74 @@ async def test_call_tool_oversized_response_raises():
         await _connector_maxbytes(handler, 1000).call_tool(
             endpoint=_ENDPOINT, auth=McpAuth(), tool="t", arguments={}
         )
+
+
+async def test_call_tool_stream_stops_reading_immediately_after_incremental_cap():
+    big = json.dumps(_call_result([{"type": "text", "text": "x" * 4000}])).encode()
+    chunks = [big[index : index + 128] for index in range(0, len(big), 128)]
+    stream = _TrackingStream(chunks)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return httpx.Response(200, stream=stream)
+
+    with pytest.raises(McpConnectionError, match="response too large"):
+        await _connector_maxbytes(handler, 512).call_tool(
+            endpoint=_ENDPOINT, auth=McpAuth(), tool="t", arguments={}
+        )
+
+    assert stream.reads == 5
+    assert stream.reads < len(chunks)
+    assert stream.closed is True
+
+
+async def test_call_tool_rejects_declared_oversize_without_reading_body():
+    stream = _TrackingStream([b"must not be read"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return httpx.Response(
+            200, headers={"content-length": "513"}, stream=stream
+        )
+
+    with pytest.raises(McpConnectionError, match="response too large"):
+        await _connector_maxbytes(handler, 512).call_tool(
+            endpoint=_ENDPOINT, auth=McpAuth(), tool="t", arguments={}
+        )
+
+    assert stream.reads == 0
+    assert stream.closed is True
+
+
+async def test_call_tool_accepts_response_at_exact_streaming_boundary():
+    raw = json.dumps(_call_result([{"type": "text", "text": "boundary"}])).encode()
+    stream = _TrackingStream([raw[:10], raw[10:]])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content).get("method")
+        if method == "initialize":
+            return _json(_init_result())
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        return httpx.Response(
+            200, headers={"content-length": str(len(raw))}, stream=stream
+        )
+
+    result = await _connector_maxbytes(handler, len(raw)).call_tool(
+        endpoint=_ENDPOINT, auth=McpAuth(), tool="t", arguments={}
+    )
+
+    assert result.content == "boundary"
+    assert stream.reads == 2
+    assert stream.closed is True
 
 
 async def test_call_tool_jsonrpc_error_raises():

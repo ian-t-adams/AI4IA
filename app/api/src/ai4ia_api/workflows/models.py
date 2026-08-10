@@ -111,7 +111,7 @@ class WorkflowStep(BaseModel):
     """
 
     agent: str
-    instruction: str
+    instruction: str = Field(min_length=1, max_length=MAX_INSTRUCTION_LEN)
     extraTools: list[str] = Field(default_factory=list)
 
 
@@ -139,7 +139,7 @@ class WorkflowCreate(BaseModel):
 
     name: str
     displayName: str | None = None
-    description: str = ""
+    description: str = Field(default="", max_length=MAX_DESCRIPTION_LEN)
     steps: list[WorkflowStep] = Field(default_factory=list)
     enabled: bool = True
 
@@ -148,6 +148,6 @@ class WorkflowUpdate(BaseModel):
     """Client payload for replacing a workflow (the name comes from the path)."""
 
     displayName: str | None = None
-    description: str = ""
+    description: str = Field(default="", max_length=MAX_DESCRIPTION_LEN)
     steps: list[WorkflowStep] = Field(default_factory=list)
     enabled: bool = True
