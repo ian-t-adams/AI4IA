@@ -37,9 +37,16 @@ from .mcp_servers import (
     UserMcpServerCreate,
     UserMcpServerUpdate,
     _now,
+    health_config_revision,
+    new_configuration_revision,
 )
 from .mcp_store import UserMcpServerStore
-from .ssrf import Resolver, SsrfError, validate_public_https_url
+from .ssrf import (
+    DnsCapacityError,
+    Resolver,
+    SsrfError,
+    async_validate_public_https_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +128,7 @@ class McpServerService:
                 f"You have reached the maximum of {self._max_servers} MCP servers."
             )
 
-        display, desc, host, endpoint = self._validate_fields(
+        display, desc, host, endpoint = await self._validate_fields(
             name=name,
             display_name=req.displayName,
             description=req.description,
@@ -154,6 +161,7 @@ class McpServerService:
             enabled=bool(req.enabled),
             secretRef=secret_ref,
             discoveredTools=tools,
+            configurationRevision=new_configuration_revision(),
             createdAt=now,
             updatedAt=now,
             lastConnectedAt=now,
@@ -178,7 +186,7 @@ class McpServerService:
             and not (req.secret and req.secret.strip())
             and current.secretRef is not None
         )
-        display, desc, host, endpoint = self._validate_fields(
+        display, desc, host, endpoint = await self._validate_fields(
             name=current.name,
             display_name=req.displayName,
             description=req.description,
@@ -238,6 +246,7 @@ class McpServerService:
             secretRef=secret_ref,
             discoveredTools=tools,
             toolApprovals=tool_approvals,
+            configurationRevision=new_configuration_revision(),
             createdAt=current.createdAt,
             updatedAt=now,
             lastConnectedAt=now,
@@ -285,6 +294,7 @@ class McpServerService:
             await self._store.put(current)
             raise
         current.discoveredTools = tools
+        current.configurationRevision = new_configuration_revision()
         current.lastConnectedAt = _now()
         current.updatedAt = current.lastConnectedAt
         current.lastError = None
@@ -309,17 +319,26 @@ class McpServerService:
         is unaffected.
         """
         try:
-            was_quarantined = server.quarantinedUntil is not None
-            changed = (
-                mcp_health.record_success(server)
-                if ok
-                else mcp_health.record_failure(server, error)
+            updated, changed, became_quarantined = await self._store.update_health(
+                server.userId,
+                server.name,
+                expected_revision=health_config_revision(server),
+                ok=ok,
+                error=error,
             )
+            if updated is None:
+                return
+            for field in (
+                "consecutiveFailures",
+                "quarantinedUntil",
+                "lastHealthCheck",
+                "lastHealthError",
+            ):
+                setattr(server, field, getattr(updated, field))
             if not changed:
                 return
-            if not ok and not was_quarantined:
-                self._emit_quarantine_if_any(server)
-            await self._store.put(server)
+            if not ok and became_quarantined:
+                self._emit_quarantine_if_any(updated)
         except Exception:  # noqa: BLE001 - health persistence must never break a turn
             logger.warning("mcp record_health failed", exc_info=True)
 
@@ -357,7 +376,7 @@ class McpServerService:
                 "'.', or '-'."
             )
 
-    def _validate_fields(
+    async def _validate_fields(
         self,
         *,
         name: str,
@@ -389,13 +408,19 @@ class McpServerService:
         # it does not have.
         if auth_mode is McpAuthMode.apim_subscription:
             raise McpValidationError("Unsupported auth mode.")
-        host = self._validate_endpoint(endpoint)
+        host = await self._validate_endpoint(endpoint)
         self._validate_secret(auth_mode, secret, optional=secret_optional)
         return display, desc, host, endpoint
 
-    def _validate_endpoint(self, endpoint: str) -> str:
+    async def _validate_endpoint(self, endpoint: str) -> str:
         try:
-            return validate_public_https_url(endpoint, resolver=self._resolver)
+            return await async_validate_public_https_url(
+                endpoint, resolver=self._resolver
+            )
+        except DnsCapacityError as exc:
+            raise McpConnectionError(
+                "MCP DNS capacity is temporarily unavailable; retry shortly."
+            ) from exc
         except SsrfError as exc:
             raise McpValidationError(str(exc)) from exc
 

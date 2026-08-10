@@ -62,7 +62,12 @@ from .mcp_servers import (
     namespaced_tool_name,
     tool_alias,
 )
-from .ssrf import Resolver, SsrfError, validate_public_https_url
+from .ssrf import (
+    DnsCapacityError,
+    Resolver,
+    SsrfError,
+    async_validate_public_https_url,
+)
 from .tool_exec import (
     ToolContext,
     ToolDefinition,
@@ -181,7 +186,7 @@ def _make_handler(
             # the same resolver discovery used. A host that resolved public at
             # registration could now resolve to an internal address.
             try:
-                validate_public_https_url(endpoint, resolver=resolver)
+                await async_validate_public_https_url(endpoint, resolver=resolver)
             except SsrfError as exc:
                 raise ToolExecutionError(
                     f"MCP endpoint is not a permitted egress target: {exc}"
@@ -195,6 +200,19 @@ def _make_handler(
                 tool=raw_tool_name,
                 arguments=args or {},
             )
+        except DnsCapacityError as exc:
+            obs.emit(
+                event=obs.EVENT_TOOL_CALL,
+                server=server.name,
+                host=server.host,
+                tool=alias,
+                outcome=obs.OUTCOME_ERROR,
+                latency_ms=timer.ms,
+                detail="local_dns_capacity",
+            )
+            raise ToolExecutionError(
+                "MCP DNS capacity is temporarily unavailable; retry the tool call."
+            ) from exc
         except Exception as exc:  # noqa: BLE001 - record health, then re-raise mapped
             # A reachable host that re-validates internal, a transport failure, or a
             # protocol error: all count against the server's health so a persistently

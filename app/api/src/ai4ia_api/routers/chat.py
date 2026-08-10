@@ -41,6 +41,13 @@ from ..agents.command_service import (
     execute_tool_command,
 )
 from ..agents.commands import CommandKind, parse_input
+from ..agents.prompt_budget import (
+    MESSAGE_ENVELOPE_RESERVE_BYTES,
+    TOOL_CONTEXT_RESERVE_TOKENS,
+    bound_payload_history,
+    message_budget_bytes,
+    prompt_byte_budget,
+)
 from ..agents.runtime import AgentRunFailed, AgentStep, run_agent_turn
 from ..agents.activity import persisted_trace
 from ..agents.approvals import (
@@ -98,6 +105,10 @@ from ._chat_streaming import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
 
+# Request-body trust boundary. Model-specific validation below can narrow this
+# further after routing resolves the selected catalog entry.
+MAX_CHAT_CONTENT_CHARS = 32_000
+
 
 class ChatParams(BaseModel):
     """Generation controls a CLIENT may set, as a strict allowlist.
@@ -150,11 +161,11 @@ class ToolApprovalDecision(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    sessionId: str
-    content: str
-    model: str | None = None
-    region: str | None = None
-    dataZone: str | None = None
+    sessionId: str = Field(min_length=1, max_length=128)
+    content: str = Field(min_length=1, max_length=MAX_CHAT_CONTENT_CHARS)
+    model: str | None = Field(default=None, max_length=128)
+    region: str | None = Field(default=None, max_length=64)
+    dataZone: str | None = Field(default=None, max_length=64)
     stream: bool = True
     params: ChatParams = ChatParams()
     # Per-invocation tool approvals the user granted in response to a prompt
@@ -198,6 +209,60 @@ def _history(messages: list[Message], system_prompt: str | None) -> list[dict]:
         if not m.fromCommand
     )
     return out
+
+
+# Context metadata is in tokens. Counting UTF-8 bytes as tokens is deliberately
+# conservative for byte-based model tokenizers: it may trim early, but it cannot
+# let a non-ASCII payload evade the bound by packing multiple bytes into one
+# Python character.
+def _prompt_byte_budget(entry: ModelEntry | None, params: dict) -> int:
+    """Prompt budget after reserving the requested output and tool-loop overhead."""
+    return prompt_byte_budget(
+        entry.contextWindow if entry is not None else None,
+        params,
+        default_max_tokens=GLOBAL_DEFAULT_MAX_TOKENS,
+    )
+
+
+def _message_budget_bytes(message: dict) -> int:
+    return message_budget_bytes(message)
+
+
+def _bound_payload_history(
+    messages: list[dict], *, prompt_budget_bytes: int
+) -> tuple[list[dict], int, int]:
+    """Drop the oldest contiguous history suffix overflow.
+
+    Every system message and the current (last) user message are fixed. Remaining
+    conversational history is admitted newest-first as a contiguous suffix, so
+    truncation never keeps an older turn while dropping a newer one.
+    """
+    return bound_payload_history(messages, prompt_budget_bytes=prompt_budget_bytes)
+
+
+def _bound_history_with_optional_summary(
+    recent_messages: list[dict],
+    fallback_messages: list[dict],
+    summary_block: str,
+    *,
+    prompt_budget_bytes: int,
+) -> tuple[list[dict], int, int, bool]:
+    """Admit a summary only after the newest verbatim suffix has won its budget."""
+    bounded, dropped, dropped_bytes = _bound_payload_history(
+        recent_messages, prompt_budget_bytes=prompt_budget_bytes
+    )
+    if not summary_block:
+        return bounded, dropped, dropped_bytes, False
+    summary_message = {"role": "system", "content": summary_block}
+    used = sum(_message_budget_bytes(message) for message in bounded)
+    if used + _message_budget_bytes(summary_message) <= prompt_budget_bytes:
+        insert_at = 1 if bounded and bounded[0].get("role") == "system" else 0
+        bounded.insert(insert_at, summary_message)
+        return bounded, dropped, dropped_bytes, True
+    bounded, dropped, dropped_bytes = _bound_payload_history(
+        fallback_messages, prompt_budget_bytes=prompt_budget_bytes
+    )
+    return bounded, dropped, dropped_bytes, False
 
 
 # Total chars of uploaded-document text injected into a single turn. Kept below
@@ -919,6 +984,38 @@ async def chat(
     # translation. When the model has no metadata this returns body.params
     # unchanged, so the turn is byte-for-byte identical to before.
     effective_params = _effective_params(body.params.model_dump(exclude_none=True), entry)
+    prompt_budget_bytes = _prompt_byte_budget(entry, effective_params)
+    # This notice is conditionally added later after capability construction.
+    # Reserve it on every path so that late insertion cannot bypass the bound.
+    bounded_prompt_budget = max(
+        1,
+        prompt_budget_bytes
+        - _message_budget_bytes(
+            {"role": "system", "content": _RESPONSES_NO_TOOLS_NOTICE}
+        ),
+    )
+    user_input_bytes = len(content_for_model.encode("utf-8"))
+    if user_input_bytes + MESSAGE_ENVELOPE_RESERVE_BYTES > bounded_prompt_budget:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "Message is too large for the selected model's context window "
+                "after reserving output and tool capacity."
+            ),
+        )
+    required_input_bytes = user_input_bytes + MESSAGE_ENVELOPE_RESERVE_BYTES
+    if system_prompt:
+        required_input_bytes += (
+            len(system_prompt.encode("utf-8")) + MESSAGE_ENVELOPE_RESERVE_BYTES
+        )
+    if required_input_bytes > bounded_prompt_budget:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "The system prompt and message do not fit the selected model's "
+                "context window after reserving output and tool capacity."
+            ),
+        )
 
     # Capability models (image, video, tts, transcription, embedding, rerank) and
     # voice models (realtime, audio) aren't chat targets — they're driven through
@@ -1077,31 +1174,92 @@ async def chat(
             library_block = ""
             library_sources = None
 
-    # Insert context system blocks after the main system prompt: the rolling
-    # summary first (it recaps the folded-away turns), then memory, then session
-    # documents, then the library, so session/agent instructions retain top
-    # authority. ``summary_block`` is "" unless auto-summarization folded turns.
+    # Newest verbatim turns outrank every optional context block. Bound them first;
+    # the rolling summary is admitted only if it fits without displacing that suffix.
+    dropped_context_blocks: list[str] = []
+
+    current_message = {"role": "user", "content": content_for_model}
+    payload_messages.append(current_message)
+    fallback_messages = [*_history(prior, system_prompt), current_message]
+    payload_messages, dropped_messages, dropped_bytes, summary_retained = (
+        _bound_history_with_optional_summary(
+            payload_messages,
+            fallback_messages,
+            summary_block,
+            prompt_budget_bytes=bounded_prompt_budget,
+        )
+    )
+    if summary_block and not summary_retained:
+        summary_block = ""
+        dropped_context_blocks.append("summary")
+    used_prompt_bytes = sum(_message_budget_bytes(message) for message in payload_messages)
     insert_at = 1 if (payload_messages and payload_messages[0]["role"] == "system") else 0
-    for block in (summary_block, memory_block, doc_block, library_block):
-        if block:
-            payload_messages.insert(insert_at, {"role": "system", "content": block})
-            insert_at += 1
+    if summary_retained:
+        insert_at += 1
 
-    # Turn-level provenance taint. These four blocks are exactly the untrusted
-    # content this turn promoted into system messages: a rolling summary of prior
-    # turns, recalled per-user memory, session-uploaded documents, and library
-    # retrieval excerpts. Each is nonce-fenced, which stops delimiter forgery but
-    # is not an information-flow boundary — text inside a fence can still steer
-    # what the model decides to *do*. The runtime latches this ON further once any
-    # tool result comes back mid-turn.
-    #
-    # SEAM (stated plainly): this is a turn-level bit, not per-argument
-    # provenance. It answers "did untrusted content enter this turn", not "did
-    # THIS argument derive from it". Real dataflow tracking would tag each
-    # retrieved span and follow it into argument construction.
+    kept_context_blocks: set[str] = set()
+    for block_name, block in (
+        ("memory", memory_block),
+        ("documents", doc_block),
+        ("library", library_block),
+    ):
+        if not block:
+            continue
+        context_message = {"role": "system", "content": block}
+        context_bytes = _message_budget_bytes(context_message)
+        if used_prompt_bytes + context_bytes > bounded_prompt_budget:
+            dropped_context_blocks.append(block_name)
+            if block_name == "library":
+                library_sources = None
+            continue
+        payload_messages.insert(insert_at, context_message)
+        insert_at += 1
+        used_prompt_bytes += context_bytes
+        kept_context_blocks.add(block_name)
+    memory_block = memory_block if "memory" in kept_context_blocks else ""
+    doc_block = doc_block if "documents" in kept_context_blocks else ""
+    library_block = library_block if "library" in kept_context_blocks else ""
+    # Turn-level provenance taint over only the blocks that actually survived
+    # admission. The runtime latches this on again after any tool result.
     untrusted_context = bool(summary_block or memory_block or doc_block or library_block)
-
-    payload_messages.append({"role": "user", "content": content_for_model})
+    if dropped_messages:
+        logger.info(
+            "chat.history_truncated",
+            extra={
+                "session_id": body.sessionId,
+                "model": model_id,
+                "dropped_messages": dropped_messages,
+                "dropped_bytes": dropped_bytes,
+                "prompt_budget_bytes": prompt_budget_bytes,
+            },
+        )
+        emit_custom_event(
+            "chat_history_truncated",
+            {
+                "model": model_id,
+                "droppedMessages": dropped_messages,
+                "droppedBytes": dropped_bytes,
+                "promptBudgetBytes": prompt_budget_bytes,
+            },
+        )
+    if dropped_context_blocks:
+        logger.info(
+            "chat.context_truncated",
+            extra={
+                "session_id": body.sessionId,
+                "model": model_id,
+                "dropped_blocks": dropped_context_blocks,
+                "prompt_budget_bytes": bounded_prompt_budget,
+            },
+        )
+        emit_custom_event(
+            "chat_context_truncated",
+            {
+                "model": model_id,
+                "droppedBlocks": dropped_context_blocks,
+                "promptBudgetBytes": bounded_prompt_budget,
+            },
+        )
 
     # Intent routing (best-effort, flag-gated). Deterministically
     # classify the turn against the user's library into Q&A / compute / transform.
@@ -1466,6 +1624,7 @@ async def chat(
                     extra_handlers=extra_handlers or None,
                     on_step=on_step,
                     on_delta=on_delta,
+                    prompt_budget_bytes=prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS,
                 )
 
             return StreamingResponse(
@@ -1508,6 +1667,9 @@ async def chat(
                 params=effective_params,
                 extra_tools=extra_tools or None,
                 extra_handlers=extra_handlers or None,
+                prompt_budget_bytes=(
+                    prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS
+                ),
             )
         except AgentRunFailed as exc:
             partial = exc.partial
@@ -1716,6 +1878,7 @@ async def chat(
                             extra_handlers=plain_handlers or None,
                             on_step=on_step,
                             on_delta=on_delta,
+                            prompt_budget_bytes=prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS,
                         )
 
                     async def _rag_fallback() -> tuple[str, TokenUsage]:
@@ -1766,6 +1929,9 @@ async def chat(
                     params=effective_params,
                     extra_tools=plain_tools or None,
                     extra_handlers=plain_handlers or None,
+                    prompt_budget_bytes=(
+                        prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS
+                    ),
                 )
                 plain_drafts = approval_sink.drafts()
                 # Normally the model answers in prose after a held call (see

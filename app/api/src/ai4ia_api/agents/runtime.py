@@ -57,6 +57,12 @@ from typing import Any
 from ..gateway.client import ModelGatewayClient
 from ..usage.models import TokenUsage
 from ..logging_setup import emit_custom_event, emit_security_block
+from .prompt_budget import (
+    TOOL_CONTEXT_RESERVE_TOKENS,
+    bound_agent_context,
+    prompt_byte_budget,
+    serialized_budget_bytes,
+)
 from .approvals import (
     arguments_digest,
     approval_key,
@@ -77,6 +83,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_ITERS = 4
 _MAX_TOOL_CALLS = 8
 _MAX_TOOL_RESULT_BYTES = 8192
+_DEFAULT_MAX_OUTPUT_TOKENS = 1024
 
 # What the model is told when a call is held for human approval. It is phrased so
 # the turn ends in a useful sentence ("I need you to approve X") instead of the
@@ -131,8 +138,16 @@ class AgentRunFailed(RuntimeError):
         self.partial: AgentRunResult = partial
 
 
+class AgentContextBudgetError(RuntimeError):
+    """The fixed/current tool-loop context cannot fit without breaking protocol."""
+
+
 def _tool_message(call_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
-    return {"role": "tool", "tool_call_id": call_id, "content": json.dumps(payload)}
+    return {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": _truncate(json.dumps(payload)),
+    }
 
 
 def _truncate(text: str) -> str:
@@ -158,6 +173,7 @@ async def run_agent_turn(
     | None = None,
     on_step: Callable[[AgentStep], Awaitable[None]] | None = None,
     on_delta: Callable[[str], Awaitable[None]] | None = None,
+    prompt_budget_bytes: int | None = None,
 ) -> AgentRunResult:
     """Run a single agent turn with tool calling and return the final answer.
 
@@ -201,6 +217,12 @@ async def run_agent_turn(
                 f"extra_handlers collide with executor tool names: {sorted(collisions)}"
             )
     schema = [*real_schema, *(extra_tools or [])]
+    effective_prompt_budget = prompt_budget_bytes or (
+        prompt_byte_budget(
+            None, dict(params or {}), default_max_tokens=_DEFAULT_MAX_OUTPUT_TOKENS
+        )
+        + TOOL_CONTEXT_RESERVE_TOKENS
+    )
     steps: list[AgentStep] = []
     denied_once: set[str] = set()
     tool_calls_used = 0
@@ -261,8 +283,33 @@ async def run_agent_turn(
         deliberately reduced to the same pair here so everything downstream —
         governance, budget, trace, taint — has exactly one shape to reason about.
         """
-        nonlocal completed_model_calls, current_stream_usage, usage_agg
+        nonlocal completed_model_calls, current_stream_usage, usage_agg, convo
         current_stream_usage = None
+        offered_schema = request_params.get("tools") or []
+        schema_bytes = (
+            serialized_budget_bytes({"tools": offered_schema, "tool_choice": "auto"})
+            if offered_schema
+            else 0
+        )
+        try:
+            convo, dropped_messages, dropped_exchanges = bound_agent_context(
+                convo,
+                prompt_budget_bytes=effective_prompt_budget,
+                additional_fixed_bytes=schema_bytes,
+            )
+            if dropped_messages or dropped_exchanges:
+                emit_custom_event(
+                    "agent_context_truncated",
+                    {
+                        "stage": "model_iteration",
+                        "droppedMessages": dropped_messages,
+                        "droppedExchanges": dropped_exchanges,
+                    },
+                )
+        except ValueError as exc:
+            raise AgentContextBudgetError(
+                "Fixed agent input and offered tool schemas exceed the model context budget."
+            ) from exc
         try:
             if stream_tokens:
                 iteration = await stream_iteration(

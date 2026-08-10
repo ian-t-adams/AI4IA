@@ -25,12 +25,15 @@ class CapturingGateway:
     def __init__(self, reply: str = "Noted.") -> None:
         self.reply = reply
         self.last_messages: list[dict] | None = None
+        self.calls = 0
 
     async def complete(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
+        self.calls += 1
         self.last_messages = list(messages)
         return {"choices": [{"message": {"role": "assistant", "content": self.reply}}]}
 
     async def stream(self, *, deployment, messages, params=None, correlation_id=None, api="chat"):
+        self.calls += 1
         self.last_messages = list(messages)
         yield ChatChunk(delta=self.reply, raw=json.dumps({"choices": [{"delta": {"content": self.reply}}]}))
         yield ChatChunk(done=True, raw="[DONE]")
@@ -152,3 +155,73 @@ def test_forget_session_clears_recall(mem_client):
     )
     joined = "\n".join(m["content"] for m in gw.last_messages if m["role"] == "system")
     assert "My favorite color is orange" not in joined
+
+
+def test_optional_memory_context_is_dropped_before_it_can_overflow_model_budget(
+    mem_client, monkeypatch
+):
+    class OversizedMemory:
+        async def recall(self, *_args):
+            return []
+
+        def format_context(self, _recalled):
+            return "UNTRUSTED MEMORY\n" + ("x" * 5000)
+
+        async def remember(self, *_args):
+            return None
+
+        async def close(self):
+            return None
+
+    entry = mem_client.app.state.catalog.get("gpt-5.2")
+    assert entry is not None
+    monkeypatch.setattr(entry, "contextWindow", 7000)
+    monkeypatch.setattr(entry, "maxOutputTokens", 256)
+    mem_client.app.state.memory = OversizedMemory()
+    gateway = mem_client.app.state.gateway
+    sid = _new_session(mem_client)
+
+    response = mem_client.post(
+        "/api/chat",
+        json={"sessionId": sid, "content": "fit this turn", "stream": False},
+    )
+
+    assert response.status_code == 200, response.text
+    assert gateway.calls == 1
+    assert gateway.last_messages is not None
+    assert all(
+        "UNTRUSTED MEMORY" not in message["content"]
+        for message in gateway.last_messages
+    )
+
+
+def test_combined_fixed_prompt_overflow_fails_before_gateway_call(
+    mem_client, monkeypatch
+):
+    entry = mem_client.app.state.catalog.get("gpt-5.2")
+    assert entry is not None
+    monkeypatch.setattr(entry, "contextWindow", 7000)
+    monkeypatch.setattr(entry, "maxOutputTokens", 256)
+    gateway = mem_client.app.state.gateway
+    created = mem_client.post(
+        "/api/sessions",
+        json={
+            "title": "bounded",
+            "model": "gpt-5.2",
+            "systemPrompt": "s" * 1800,
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    response = mem_client.post(
+        "/api/chat",
+        json={
+            "sessionId": created.json()["id"],
+            "content": "u" * 800,
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "do not fit" in response.json()["detail"]
+    assert gateway.calls == 0

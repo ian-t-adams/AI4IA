@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from ai4ia_api.agents.agent_catalog import AgentCatalog, AgentSpec
 from ai4ia_api.agents.tool_exec import build_tools
@@ -95,9 +96,10 @@ async def test_later_steps_need_not_reference_input():
 
 
 async def test_create_rejects_overlong_instruction():
-    long = "{input} " + "x" * (MAX_INSTRUCTION_LEN + 1)
-    with pytest.raises(WorkflowValidationError):
-        await _svc().create(_UID, _create(steps=[_step("a1", long)]))
+    assert MAX_INSTRUCTION_LEN == 4000
+    long = "x" * 4001
+    with pytest.raises(ValidationError):
+        _step("a1", long)
 
 
 async def test_create_rejects_bad_step_agent_name():

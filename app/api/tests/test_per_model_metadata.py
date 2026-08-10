@@ -10,14 +10,24 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from ai4ia_api.catalog import DeploymentOption, ModelEntry, load_catalog
 from ai4ia_api.gateway.client import ModelGatewayClient
+from ai4ia_api.agents.prompt_budget import (
+    MESSAGE_ENVELOPE_RESERVE_BYTES,
+    TOOL_CONTEXT_RESERVE_TOKENS,
+)
 from ai4ia_api.routers.chat import (
     DOC_CONTEXT_BUDGET,
     DOC_CONTEXT_BUDGET_MAX,
     GLOBAL_DEFAULT_MAX_TOKENS,
+    _bound_history_with_optional_summary,
+    _bound_payload_history,
     _doc_budget_for,
     _effective_params,
+    _message_budget_bytes,
+    _prompt_byte_budget,
 )
 
 from .conftest import make_settings
@@ -183,6 +193,127 @@ def test_doc_budget_scales_between_bounds():
 def test_doc_budget_floored_at_constant_for_small_window():
     # 20_000 * 4 * 0.10 = 8_000, floored up to the fixed constant.
     assert _doc_budget_for(_entry(contextWindow=20000)) == DOC_CONTEXT_BUDGET
+
+
+# --- C. hard prompt/history budget --------------------------------------------
+
+
+def test_prompt_budget_reserves_output_and_tool_capacity_from_catalog_window():
+    entry = _entry(contextWindow=20_000, maxOutputTokens=2_000)
+    params = _effective_params({}, entry)
+    assert _prompt_byte_budget(entry, params) == (
+        20_000 - 2_000 - TOOL_CONTEXT_RESERVE_TOKENS
+    )
+
+
+def test_metadata_free_model_fallback_does_not_narrow_request_field_limit():
+    # Worst-case UTF-8 bytes for both accepted request fields still fit.
+    assert _prompt_byte_budget(None, {}) > (32_000 + 8_000) * 4
+
+
+def test_history_exact_boundary_keeps_newest_complete_turn_and_system_prompt():
+    messages = [
+        {"role": "system", "content": "safety"},
+        {"role": "user", "content": "old question"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "new question"},
+        {"role": "assistant", "content": "new answer"},
+        {"role": "user", "content": "current"},
+    ]
+    fixed = _message_budget_bytes(messages[0]) + _message_budget_bytes(messages[-1])
+    newest_turn = _message_budget_bytes(messages[3]) + _message_budget_bytes(messages[4])
+
+    bounded, dropped, _ = _bound_payload_history(
+        messages, prompt_budget_bytes=fixed + newest_turn
+    )
+
+    assert bounded == [messages[0], messages[3], messages[4], messages[5]]
+    assert dropped == 2
+
+
+def test_history_one_byte_below_boundary_drops_whole_turn_not_just_its_user():
+    messages = [
+        {"role": "system", "content": "safety"},
+        {"role": "user", "content": "new question"},
+        {"role": "assistant", "content": "new answer"},
+        {"role": "user", "content": "current"},
+    ]
+    exact = sum(_message_budget_bytes(message) for message in messages)
+
+    bounded, dropped, _ = _bound_payload_history(
+        messages, prompt_budget_bytes=exact - 1
+    )
+
+    assert bounded == [messages[0], messages[-1]]
+    assert dropped == 2
+
+
+def test_history_byte_accounting_is_not_bypassed_by_multibyte_input():
+    message = {"role": "user", "content": "🙂"}
+    assert _message_budget_bytes(message) == 4 + MESSAGE_ENVELOPE_RESERVE_BYTES
+
+
+def test_history_refuses_fixed_system_and_current_content_over_budget():
+    messages = [
+        {"role": "system", "content": "safety"},
+        {"role": "user", "content": "current"},
+    ]
+    fixed = sum(_message_budget_bytes(message) for message in messages)
+    with pytest.raises(ValueError, match="fixed prompt"):
+        _bound_payload_history(messages, prompt_budget_bytes=fixed - 1)
+
+
+def test_summary_fits_without_displacing_newest_verbatim_history_at_boundary():
+    recent = [
+        {"role": "system", "content": "safety"},
+        {"role": "user", "content": "newest question"},
+        {"role": "assistant", "content": "newest answer"},
+        {"role": "user", "content": "current"},
+    ]
+    summary = "compact summary"
+    summary_message = {"role": "system", "content": summary}
+    budget = sum(_message_budget_bytes(message) for message in recent) + (
+        _message_budget_bytes(summary_message)
+    )
+    out, dropped, _, retained = _bound_history_with_optional_summary(
+        recent,
+        recent,
+        summary,
+        prompt_budget_bytes=budget,
+    )
+
+    assert dropped == 0
+    assert retained is True
+    assert out == [recent[0], summary_message, *recent[1:]]
+
+
+def test_summary_cannot_displace_newest_suffix_and_falls_back_to_transcript():
+    recent = [
+        {"role": "system", "content": "safety"},
+        {"role": "user", "content": "newest question"},
+        {"role": "assistant", "content": "newest answer"},
+        {"role": "user", "content": "current"},
+    ]
+    fallback = [
+        recent[0],
+        {"role": "user", "content": "folded older question"},
+        {"role": "assistant", "content": "folded older answer"},
+        *recent[1:],
+    ]
+    summary = "compact summary"
+    exact = sum(_message_budget_bytes(message) for message in recent) + (
+        _message_budget_bytes({"role": "system", "content": summary})
+    )
+    out, dropped, _, retained = _bound_history_with_optional_summary(
+        recent,
+        fallback,
+        summary,
+        prompt_budget_bytes=exact - 1,
+    )
+
+    assert retained is False
+    assert out == recent
+    assert dropped == 2
 
 
 # --- reasoning_effort is validated server-side ------------------------------

@@ -18,8 +18,10 @@ Key-Vault-backed secrets + per-turn execution are a later sub-phase).
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import unicodedata
+import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -151,6 +153,9 @@ class UserMcpServer(BaseModel):
     # (not the namespaced name). Absent/``default`` -> inherit the server posture.
     # Persisted independently of ``discoveredTools`` so it survives re-discovery.
     toolApprovals: dict[str, McpToolApproval] = Field(default_factory=dict)
+    # Replaced whenever execution-affecting configuration changes. Optional only
+    # for backward compatibility with records created before this guard.
+    configurationRevision: str | None = None
     createdAt: datetime = Field(default_factory=_now)
     updatedAt: datetime = Field(default_factory=_now)
     lastConnectedAt: datetime | None = None
@@ -175,6 +180,38 @@ class UserMcpServer(BaseModel):
         """A management-view projection (no secrets exist to strip, but keep the
         shape explicit and stable for the API)."""
         return self.model_dump(mode="json")
+
+
+def health_config_revision(server: UserMcpServer) -> str:
+    """Fingerprint connection identity so stale health cannot taint a replacement."""
+    if server.configurationRevision:
+        return f"revision:{server.configurationRevision}"
+    payload = {
+        "userId": server.userId,
+        "name": server.name,
+        "createdAt": server.createdAt.isoformat(),
+        "endpoint": server.endpoint,
+        "host": server.host,
+        "transport": server.transport.value,
+        "authMode": server.authMode.value,
+        "secretRef": server.secretRef,
+        "trusted": server.trusted,
+        "enabled": server.enabled,
+        "discoveredTools": [
+            tool.model_dump(mode="json") for tool in server.discoveredTools
+        ],
+        "toolApprovals": {
+            name: posture.value for name, posture in server.toolApprovals.items()
+        },
+        "updatedAt": server.updatedAt.isoformat(),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def new_configuration_revision() -> str:
+    return uuid.uuid4().hex
 
 
 class UserMcpServerCreate(BaseModel):

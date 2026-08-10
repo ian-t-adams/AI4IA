@@ -28,8 +28,10 @@ import asyncio
 import json
 import logging
 import time
+import weakref
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 
 from ..catalog import DeploymentOption
 from ..config import Settings
@@ -66,6 +68,28 @@ _INGEST_SESSION = "document-ingest"
 _CU_MODEL_ID = "content-understanding"
 # Max characters of the one-line summary card surfaced in the library list.
 _SUMMARY_LIMIT = 240
+MAX_CONCURRENT_DOCUMENT_ENRICHMENTS = 4
+MAX_PENDING_DOCUMENT_ENRICHMENTS = 32
+
+_ENRICHMENT_GATES: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Semaphore
+] = weakref.WeakKeyDictionary()
+_ENRICHMENT_TASKS: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, set[asyncio.Task[None]]
+] = weakref.WeakKeyDictionary()
+
+
+def _global_enrichment_state() -> tuple[asyncio.Semaphore, set[asyncio.Task[None]]]:
+    loop = asyncio.get_running_loop()
+    gate = _ENRICHMENT_GATES.get(loop)
+    if gate is None:
+        gate = asyncio.Semaphore(MAX_CONCURRENT_DOCUMENT_ENRICHMENTS)
+        _ENRICHMENT_GATES[loop] = gate
+    tasks = _ENRICHMENT_TASKS.get(loop)
+    if tasks is None:
+        tasks = set()
+        _ENRICHMENT_TASKS[loop] = tasks
+    return gate, tasks
 
 
 @dataclass(slots=True)
@@ -74,6 +98,14 @@ class IngestResult:
     # True when an identical (bytes, analyzer) upload already existed — no work
     # was scheduled, the existing manifest is returned as-is.
     deduped: bool
+
+
+class EnrichScheduleOutcome(str, Enum):
+    scheduled = "scheduled"
+    already_running = "already_running"
+    disabled = "disabled"
+    closed = "closed"
+    saturated = "saturated"
 
 
 def resolve_cu_analyzer_id(
@@ -191,9 +223,8 @@ class DocumentIngestor:
         *,
         user_id: str,
         document_id: str,
-        data: bytes,
         content_type: str,
-    ) -> None:
+    ) -> EnrichScheduleOutcome:
         """Fire-and-forget :meth:`enrich`, tracked so delete/shutdown can cancel.
 
         A no-op when CU is not configured (the document simply settles at
@@ -201,25 +232,43 @@ class DocumentIngestor:
         ``BackgroundTasks.add_task`` so an in-flight crack can be cancelled the
         moment the user deletes the document.
         """
-        if self._cu is None or self._closed:
-            return
+        if self._cu is None:
+            return EnrichScheduleOutcome.disabled
+        if self._closed:
+            return EnrichScheduleOutcome.closed
         key = (user_id, document_id)
         existing = self._tasks.get(key)
         if existing is not None and not existing.done():
-            return
+            return EnrichScheduleOutcome.already_running
+        _, global_tasks = _global_enrichment_state()
+        if len(global_tasks) >= MAX_PENDING_DOCUMENT_ENRICHMENTS:
+            logger.warning(
+                "document enrichment queue saturated; leaving stored id=%s",
+                document_id,
+            )
+            emit_custom_event(
+                "document_ingest_saturated",
+                {
+                    "stage": "admission",
+                    "pending": len(global_tasks),
+                    "limit": MAX_PENDING_DOCUMENT_ENRICHMENTS,
+                },
+            )
+            return EnrichScheduleOutcome.saturated
         task = asyncio.create_task(
-            self.enrich(
+            self._run_scheduled_enrich(
                 user_id=user_id,
                 document_id=document_id,
-                data=data,
                 content_type=content_type,
             )
         )
         self._tasks[key] = task
+        global_tasks.add(task)
 
         def _done(t: asyncio.Task[None], _key=key) -> None:
             if self._tasks.get(_key) is t:
                 self._tasks.pop(_key, None)
+            global_tasks.discard(t)
             if not t.cancelled():
                 # enrich() never raises, but retrieve any exception so it is not
                 # reported as "never retrieved".
@@ -228,6 +277,43 @@ class DocumentIngestor:
                     logger.warning("enrich task errored: %s", exc, exc_info=exc)
 
         task.add_done_callback(_done)
+        return EnrichScheduleOutcome.scheduled
+
+    async def _run_scheduled_enrich(
+        self, *, user_id: str, document_id: str, content_type: str
+    ) -> None:
+        gate, _ = _global_enrichment_state()
+        if gate.locked():
+            emit_custom_event(
+                "document_ingest_saturated",
+                {
+                    "stage": "concurrency",
+                    "limit": MAX_CONCURRENT_DOCUMENT_ENRICHMENTS,
+                },
+            )
+        async with gate:
+            await self.enrich(
+                user_id=user_id,
+                document_id=document_id,
+                data=None,
+                content_type=content_type,
+            )
+
+    async def settle_saturated(self, doc: UserDocument) -> tuple[UserDocument, str]:
+        """Make an admission-rejected upload terminal and retryable."""
+        outcome, updated = await self._safe_update(
+            doc,
+            {
+                "status": DocumentStatus.failed,
+                "error": (
+                    "Analysis capacity is temporarily full. Re-upload to retry."
+                ),
+            },
+            require_status=DocumentStatus.stored,
+        )
+        if outcome == "committed" and updated is not None:
+            return updated, outcome
+        return doc, outcome
 
     async def cancel_enrich(self, user_id: str, document_id: str) -> None:
         """Cancel and drain the in-flight enrich for a document, if any."""
@@ -236,6 +322,8 @@ class DocumentIngestor:
             return
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+        _, global_tasks = _global_enrichment_state()
+        global_tasks.discard(task)
 
     async def ingest(
         self,
@@ -251,6 +339,11 @@ class DocumentIngestor:
         digest = content_hash(data)
         existing = await self._library.find_by_dedupe_key(user_id, digest, analyzer_id)
         if existing is not None:
+            if self._cu is not None and existing.status == DocumentStatus.stored:
+                # A prior admission failure may have persisted the raw upload but
+                # failed to mark it terminal. Re-drive scheduling on identical
+                # upload; schedule_enrich deduplicates an already-running task.
+                return IngestResult(document=existing, deduped=False)
             if existing.status == DocumentStatus.failed:
                 # A failed row is not a successful dedupe hit. The old behavior
                 # returned it forever, so the UI's own "Re-upload to retry"
@@ -324,7 +417,7 @@ class DocumentIngestor:
         *,
         user_id: str,
         document_id: str,
-        data: bytes,
+        data: bytes | None,
         content_type: str,
     ) -> None:
         """Crack with CU, index chunks, and flip the manifest to ready/failed.
@@ -371,9 +464,20 @@ class DocumentIngestor:
         terminal_status: str | None = None
         persistence_outcome = "not_attempted"
         try:
-            result = await self._cu.analyze(
-                cu_analyzer_id, data, content_type or "application/octet-stream"
-            )
+            payload = data
+            data = None
+            if payload is None:
+                if not doc.rawPath:
+                    raise RuntimeError("canonical raw document is unavailable")
+                payload = await self._blob.get(doc.rawPath)
+            try:
+                result = await self._cu.analyze(
+                    cu_analyzer_id,
+                    payload,
+                    content_type or "application/octet-stream",
+                )
+            finally:
+                payload = None
             if not result.succeeded:
                 # Surface WHY, not just that it failed. CU returns an `error`
                 # object alongside the terminal status; `parse_result` already

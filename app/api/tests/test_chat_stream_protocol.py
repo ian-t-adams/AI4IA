@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +15,7 @@ from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
 from ai4ia_api.main import create_app
 from ai4ia_api.routers import chat as chat_router
 from ai4ia_api.routers._chat_streaming import (
+    AGENT_EVENT_QUEUE_MAXSIZE,
     _agentic_stream,
     _stream_with_placeholder,
 )
@@ -689,6 +691,95 @@ async def test_agentic_stream_close_persists_cancelled_state():
     )
     assert "metadata" in await anext(stream)
     await stream.aclose()
+    assert repo.persisted[-1].status is MessageStatus.cancelled
+
+
+@pytest.mark.asyncio
+async def test_agentic_stream_backpressures_fast_producer_and_disconnect_unblocks_it(
+    caplog,
+):
+    assert AGENT_EVENT_QUEUE_MAXSIZE == 32
+    caplog.set_level(logging.INFO, logger="ai4ia_api.routers._chat_streaming")
+    class Repo:
+        def __init__(self) -> None:
+            self.persisted: list[Message] = []
+
+        async def upsert_message(self, _user_id, message):
+            self.persisted.append(message.model_copy(deep=True))
+            return message
+
+    class Memory:
+        async def remember(self, *_args, **_kwargs):
+            return None
+
+    class Metering:
+        async def record_completion(self, **_kwargs):
+            return None
+
+    produced = 0
+    cancelled = asyncio.Event()
+
+    async def run(_on_step, on_delta):
+        nonlocal produced
+        try:
+            for _ in range(42):
+                await on_delta("x")
+                produced += 1
+            return AgentRunResult(text="done", model="deployment")
+        finally:
+            cancelled.set()
+
+    repo = Repo()
+    assistant = Message(
+        sessionId="session",
+        userId="user",
+        role=MessageRole.assistant,
+        status=MessageStatus.streaming,
+    )
+    stream = _agentic_stream(
+        assistant=assistant,
+        run=run,
+        repo=repo,  # type: ignore[arg-type]
+        memory=Memory(),  # type: ignore[arg-type]
+        metering=Metering(),  # type: ignore[arg-type]
+        user=AuthenticatedUser(
+            internal_user_id="user",
+            subject="subject",
+            issuer="issuer",
+            provider="dev",
+            email="user@example.com",
+            name="User",
+        ),
+        session_id="session",
+        model_id="model",
+        deployment=DeploymentOption(
+            region="eastus",
+            dataZone=None,
+            sku="GlobalStandard",
+            deploymentName="deployment",
+        ),
+        agent_name="analyst",
+        correlation_id="correlation",
+        content_for_model="hello",
+        user_message_id="user-message",
+        stream_tokens=True,
+    )
+
+    assert "metadata" in await anext(stream)
+    await asyncio.sleep(0)
+    assert produced == 32
+    for _ in range(3):
+        assert "choices" in await anext(stream)
+        await asyncio.sleep(0)
+    assert produced == 35
+    backpressure_logs = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "chat.agent_stream_backpressure"
+    ]
+    assert len(backpressure_logs) == 1
+    await asyncio.wait_for(stream.aclose(), timeout=1)
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
     assert repo.persisted[-1].status is MessageStatus.cancelled
 
 

@@ -13,7 +13,15 @@ import logging
 
 import pytest
 
-from ai4ia_api.agents.runtime import AgentRunFailed, run_agent_turn
+from ai4ia_api.agents.prompt_budget import (
+    message_budget_bytes,
+    serialized_budget_bytes,
+)
+from ai4ia_api.agents.runtime import (
+    AgentContextBudgetError,
+    AgentRunFailed,
+    run_agent_turn,
+)
 from ai4ia_api.agents.tool_exec import ToolContext, ToolDefinition, ToolExecutor, build_tools
 from ai4ia_api.agents.tools import ToolRegistry, ToolSpec
 from ai4ia_api.gateway.client import ChatChunk, ModelGatewayError
@@ -119,6 +127,106 @@ async def test_first_call_advertises_only_allowlisted_tools():
     names = {t["function"]["name"] for t in tools}
     assert names == {"calculator"}
     assert gateway.calls[0]["params"]["tool_choice"] == "auto"
+
+
+async def test_oversized_actual_tool_schema_fails_before_provider_call():
+    async def handler(args, ctx):
+        return {"ok": True}
+
+    definition = ToolDefinition(
+        spec=ToolSpec(name="wide_schema", description="wide"),
+        parameters={
+            "type": "object",
+            "properties": {"value": {"type": "string", "description": "x" * 2000}},
+        },
+        handler=handler,
+    )
+    registry, executor = build_tools([definition])
+    gateway = ScriptedGateway([_assistant_text("must not be called")])
+
+    with pytest.raises(AgentContextBudgetError, match="offered tool schemas"):
+        await run_agent_turn(
+            deployment="dep",
+            messages=_messages(),
+            tool_names=["wide_schema"],
+            gateway=gateway,
+            registry=registry,
+            executor=executor,
+            ctx=ToolContext(),
+            prompt_budget_bytes=512,
+        )
+
+    assert gateway.calls == []
+
+
+async def test_tool_result_growth_rebounds_every_iteration_without_overflow():
+    async def handler(args, ctx):
+        return {"payload": "r" * 7000}
+
+    definition = ToolDefinition(
+        spec=ToolSpec(name="large_result", description="large"),
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    registry, executor = build_tools([definition])
+    gateway = ScriptedGateway(
+        [
+            _assistant_tool_call("c1", "large_result", "{}"),
+            _assistant_tool_call("c2", "large_result", "{}"),
+            _assistant_text("finished normally"),
+        ]
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old-u" * 600},
+        {"role": "assistant", "content": "old-a" * 600},
+        {"role": "user", "content": "current"},
+    ]
+    budget = 10_000
+
+    result = await run_agent_turn(
+        deployment="dep",
+        messages=messages,
+        tool_names=["large_result"],
+        gateway=gateway,
+        registry=registry,
+        executor=executor,
+        ctx=ToolContext(),
+        prompt_budget_bytes=budget,
+    )
+
+    assert result.text == "finished normally"
+    assert result.iterations == 3
+    assert "old-u" in gateway.calls[0]["messages"][1]["content"]
+    second = gateway.calls[1]
+    assert all("old-u" not in str(message.get("content")) for message in second["messages"])
+    assert any(message.get("tool_calls") for message in second["messages"])
+    assert any(message.get("role") == "tool" for message in second["messages"])
+    schema_bytes = serialized_budget_bytes(
+        {"tools": second["params"]["tools"], "tool_choice": "auto"}
+    )
+    assert (
+        sum(message_budget_bytes(message) for message in second["messages"])
+        + schema_bytes
+        <= budget
+    )
+    third = gateway.calls[2]
+    assistant_ids = {
+        call["id"]
+        for message in third["messages"]
+        for call in message.get("tool_calls") or []
+    }
+    tool_ids = {
+        message["tool_call_id"]
+        for message in third["messages"]
+        if message.get("role") == "tool"
+    }
+    assert assistant_ids == tool_ids == {"c2"}
+    assert (
+        sum(message_budget_bytes(message) for message in third["messages"])
+        + schema_bytes
+        <= budget
+    )
 
 
 async def test_caller_tools_params_are_stripped():

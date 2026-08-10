@@ -7,11 +7,19 @@ the DNS-rebinding case where one resolved record is internal.
 """
 from __future__ import annotations
 
+import time
+import threading
+import asyncio
+
 import pytest
 
 from ai4ia_api.agents.ssrf import (
     MAX_URL_LEN,
+    MAX_CONCURRENT_DNS_RESOLUTIONS,
+    DnsCapacityError,
     SsrfError,
+    async_resolve_pinned_ip,
+    async_validate_public_https_url,
     resolve_pinned_ip,
     validate_public_https_url,
 )
@@ -205,3 +213,99 @@ def test_pinned_ip_rejects_unresolvable_and_empty():
         resolve_pinned_ip("nope.example", resolver=boom)
     with pytest.raises(SsrfError):
         resolve_pinned_ip("empty.example", resolver=_only([]))
+
+
+async def test_async_resolution_times_out_without_blocking_the_event_loop():
+    released = threading.Event()
+
+    def slow(_host: str) -> list[str]:
+        released.wait(timeout=1)
+        return list(_PUBLIC)
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(SsrfError, match="timed out"):
+            await async_validate_public_https_url(
+                "https://mcp.example.com/rpc", resolver=slow, timeout_s=0.01
+            )
+        assert time.monotonic() - started < 0.15
+    finally:
+        released.set()
+        await asyncio.sleep(0.05)
+
+
+async def test_async_connect_time_resolution_preserves_rebind_rejection():
+    with pytest.raises(SsrfError, match="non-public"):
+        await async_resolve_pinned_ip(
+            "rebind.example",
+            resolver=_only(["93.184.216.34", "10.0.0.1"]),
+            timeout_s=1,
+        )
+
+
+async def test_async_registration_resolution_allows_public_control():
+    assert (
+        await async_validate_public_https_url(
+            "https://MCP.Example.com/rpc", resolver=_only(_PUBLIC), timeout_s=1
+        )
+        == "mcp.example.com"
+    )
+
+
+async def test_dns_worker_admission_stays_bounded_after_caller_timeouts():
+    assert MAX_CONCURRENT_DNS_RESOLUTIONS == 4
+    release = threading.Event()
+    lock = threading.Lock()
+    started = 0
+
+    def blocked(_host: str) -> list[str]:
+        nonlocal started
+        with lock:
+            started += 1
+        release.wait(timeout=2)
+        return list(_PUBLIC)
+
+    timed_out = await asyncio.gather(
+        *[
+            async_validate_public_https_url(
+                f"https://slow-{index}.example/rpc",
+                resolver=blocked,
+                timeout_s=0.02,
+            )
+            for index in range(4)
+        ],
+        return_exceptions=True,
+    )
+    assert all(
+        isinstance(result, SsrfError) and "timed out" in str(result)
+        for result in timed_out
+    )
+    assert started == 4
+
+    extra_started = False
+
+    def extra(_host: str) -> list[str]:
+        nonlocal extra_started
+        extra_started = True
+        return list(_PUBLIC)
+
+    with pytest.raises(DnsCapacityError, match="capacity is exhausted"):
+        await async_validate_public_https_url(
+            "https://overflow.example/rpc", resolver=extra, timeout_s=0.1
+        )
+    assert extra_started is False
+
+    release.set()
+    for _ in range(50):
+        try:
+            result = await async_validate_public_https_url(
+                "https://recovered.example/rpc", resolver=_only(_PUBLIC), timeout_s=1
+            )
+            break
+        except DnsCapacityError as exc:
+            if "capacity is exhausted" not in str(exc):
+                raise
+            await asyncio.sleep(0.01)
+    else:  # pragma: no cover - bounded workers must release promptly
+        pytest.fail("DNS worker permits did not release")
+    assert result == "recovered.example"

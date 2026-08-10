@@ -22,12 +22,16 @@ from ai4ia_api.agents.mcp_servers import (
     UserMcpServer,
     UserMcpServerCreate,
     UserMcpServerUpdate,
+    health_config_revision,
     discovered_tool_to_spec,
     is_valid_remote_tool_name,
     namespaced_tool_name,
     tool_alias,
 )
-from ai4ia_api.agents.mcp_store import InMemoryUserMcpServerStore
+from ai4ia_api.agents.mcp_store import (
+    CosmosUserMcpServerStore,
+    InMemoryUserMcpServerStore,
+)
 from ai4ia_api.agents.mcp_service import McpServerService
 from ai4ia_api.agents.tools import ToolRisk
 
@@ -481,10 +485,25 @@ class _CountingStore(InMemoryUserMcpServerStore):
     def __init__(self) -> None:
         super().__init__()
         self.put_count = 0
+        self.health_write_count = 0
 
     async def put(self, server: UserMcpServer) -> None:
         self.put_count += 1
         await super().put(server)
+
+    async def update_health(
+        self, user_id, name, *, expected_revision, ok, error
+    ):
+        updated, changed, became_quarantined = await super().update_health(
+            user_id,
+            name,
+            expected_revision=expected_revision,
+            ok=ok,
+            error=error,
+        )
+        if changed:
+            self.health_write_count += 1
+        return updated, changed, became_quarantined
 
 
 def _service_with_store(store, *, tools=None, error=None):
@@ -544,7 +563,8 @@ async def test_record_health_failure_persists_and_quarantines():
     for _ in range(QUARANTINE_THRESHOLD):
         await svc.record_health(server, ok=False, error="connection refused")
     # Every failure advanced the count, so every failure persisted.
-    assert store.put_count == base + QUARANTINE_THRESHOLD
+    assert store.put_count == base
+    assert store.health_write_count == QUARANTINE_THRESHOLD
     stored = await svc.get("u1", "weather")
     assert stored.consecutiveFailures == QUARANTINE_THRESHOLD
     assert is_quarantined(stored) is True
@@ -559,6 +579,7 @@ async def test_record_health_healthy_is_write_free():
     await svc.record_health(server, ok=True)
     # A healthy report on an already-healthy server forces no durable write.
     assert store.put_count == base
+    assert store.health_write_count == 0
 
 
 async def test_record_health_recovery_clears_quarantine_and_persists():
@@ -568,13 +589,158 @@ async def test_record_health_recovery_clears_quarantine_and_persists():
     for _ in range(QUARANTINE_THRESHOLD):
         await svc.record_health(server, ok=False, error="boom")
     assert is_quarantined(server) is True
-    before = store.put_count
+    before = store.health_write_count
     await svc.record_health(server, ok=True)
-    assert store.put_count == before + 1  # the recovery is a material change
+    assert store.health_write_count == before + 1
     stored = await svc.get("u1", "weather")
     assert stored.consecutiveFailures == 0
     assert stored.quarantinedUntil is None
     assert is_quarantined(stored) is False
+
+
+async def test_record_health_discards_old_failure_after_config_edit():
+    store = _CountingStore()
+    svc = _service_with_store(store)
+    execution_snapshot = (
+        await svc.create("u1", _create())
+    ).model_copy(deep=True)
+    await svc.update(
+        "u1",
+        "weather",
+        UserMcpServerUpdate(endpoint="https://new.example.com/rpc"),
+    )
+
+    await svc.record_health(execution_snapshot, ok=False, error="connection refused")
+
+    stored = await svc.get("u1", "weather")
+    assert stored.endpoint == "https://new.example.com/rpc"
+    assert stored.host == "new.example.com"
+    assert stored.consecutiveFailures == 0
+
+
+async def test_record_health_discards_old_failure_after_same_ref_secret_rotation():
+    store = _CountingStore()
+    svc = _service_with_store(store)
+    execution_snapshot = (
+        await svc.create(
+            "u1",
+            _create(authMode=McpAuthMode.bearer, secret="old-secret"),
+        )
+    ).model_copy(deep=True)
+    rotated = await svc.update(
+        "u1",
+        "weather",
+        UserMcpServerUpdate(
+            endpoint="https://mcp.example.com/rpc",
+            authMode=McpAuthMode.bearer,
+            secret="new-secret",
+        ),
+    )
+
+    assert rotated.secretRef == execution_snapshot.secretRef
+    assert rotated.configurationRevision != execution_snapshot.configurationRevision
+    assert await svc.secret_for(rotated) == "new-secret"
+
+    await svc.record_health(execution_snapshot, ok=False, error="old-secret failure")
+
+    assert (await svc.get("u1", "weather")).consecutiveFailures == 0
+
+
+async def test_record_health_discards_old_snapshot_after_recreate():
+    store = _CountingStore()
+    svc = _service_with_store(store)
+    execution_snapshot = (
+        await svc.create("u1", _create())
+    ).model_copy(deep=True)
+    await svc.delete("u1", "weather")
+    replacement = await svc.create("u1", _create())
+    assert replacement.configurationRevision != execution_snapshot.configurationRevision
+
+    await svc.record_health(execution_snapshot, ok=False, error="old failure")
+
+    assert (await svc.get("u1", "weather")).consecutiveFailures == 0
+
+
+async def test_record_health_store_failure_does_not_break_tool_result():
+    class FailingHealthStore(_CountingStore):
+        async def update_health(
+            self, user_id, name, *, expected_revision, ok, error
+        ):
+            raise RuntimeError("cosmos unavailable")
+
+    store = FailingHealthStore()
+    svc = _service_with_store(store)
+    server = await svc.create("u1", _create())
+
+    await svc.record_health(server, ok=False, error="connection refused")
+
+    assert (await svc.get("u1", "weather")).consecutiveFailures == 0
+
+
+async def test_cosmos_health_patch_retries_etag_and_never_writes_config_fields():
+    from azure.cosmos.exceptions import CosmosAccessConditionFailedError
+
+    server = UserMcpServer(
+        id="weather",
+        userId="u1",
+        name="weather",
+        displayName="Weather",
+        endpoint="https://old.example.com/rpc",
+        host="old.example.com",
+    )
+
+    class RacingContainer:
+        def __init__(self) -> None:
+            self.item = {**server.model_dump(mode="json"), "_etag": "e1"}
+            self.patch_calls: list[list[dict]] = []
+            self.etags: list[str] = []
+
+        async def read_item(self, *, item, partition_key):
+            return dict(self.item)
+
+        async def patch_item(
+            self,
+            *,
+            item,
+            partition_key,
+            patch_operations,
+            etag,
+            match_condition,
+        ):
+            self.patch_calls.append(patch_operations)
+            self.etags.append(etag)
+            if len(self.patch_calls) == 1:
+                self.item["_etag"] = "e2"
+                raise CosmosAccessConditionFailedError(message="etag")
+            for operation in patch_operations:
+                self.item[operation["path"].lstrip("/")] = operation["value"]
+
+    container = RacingContainer()
+    store = object.__new__(CosmosUserMcpServerStore)
+    store._container = container
+
+    updated, changed, _ = await store.update_health(
+        "u1",
+        "weather",
+        expected_revision=health_config_revision(server),
+        ok=False,
+        error="connection refused",
+    )
+
+    assert changed is True
+    assert updated is not None and updated.consecutiveFailures == 1
+    assert container.item["endpoint"] == "https://old.example.com/rpc"
+    assert container.item["host"] == "old.example.com"
+    assert len(container.patch_calls) == 2
+    assert container.etags == ["e1", "e2"]
+    assert {
+        operation["path"] for call in container.patch_calls for operation in call
+    } == {
+        "/consecutiveFailures",
+        "/quarantinedUntil",
+        "/lastHealthCheck",
+        "/lastHealthError",
+    }
 
 
 async def test_repeated_test_failures_quarantine_the_server():

@@ -8,8 +8,15 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+from pydantic import ValidationError
+
 from ai4ia_api.sessions.cosmos_repo import CosmosSessionRepository
 from ai4ia_api.sessions.models import Session
+from ai4ia_api.routers.sessions import (
+    MAX_SESSION_SYSTEM_PROMPT_CHARS,
+    CreateSessionRequest,
+)
 
 
 class _RaisingMcpService:
@@ -46,6 +53,16 @@ def _create(client, **overrides):
     body = {"title": "Chat"}
     body.update(overrides)
     return client.post("/api/sessions", json=body)
+
+
+def test_session_system_prompt_has_request_boundary():
+    assert MAX_SESSION_SYSTEM_PROMPT_CHARS == 8000
+    request = CreateSessionRequest(
+        systemPrompt="x" * 8000
+    )
+    assert request.systemPrompt is not None
+    with pytest.raises(ValidationError):
+        CreateSessionRequest(systemPrompt="x" * 8001)
 
 
 def test_create_session_accepts_static_tool_override(client):

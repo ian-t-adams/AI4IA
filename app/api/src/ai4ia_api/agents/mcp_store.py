@@ -22,7 +22,8 @@ import logging
 from typing import Protocol, runtime_checkable
 
 from ..config import Environment, Settings, SessionStoreKind
-from .mcp_servers import UserMcpServer
+from . import mcp_health
+from .mcp_servers import UserMcpServer, health_config_revision
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,16 @@ class UserMcpServerStore(Protocol):
     async def get(self, user_id: str, name: str) -> UserMcpServer | None: ...
 
     async def put(self, server: UserMcpServer) -> None: ...
+
+    async def update_health(
+        self,
+        user_id: str,
+        name: str,
+        *,
+        expected_revision: str,
+        ok: bool,
+        error: object | None,
+    ) -> tuple[UserMcpServer | None, bool, bool]: ...
 
     async def delete(self, user_id: str, name: str) -> None: ...
 
@@ -56,6 +67,34 @@ class InMemoryUserMcpServerStore:
 
     async def put(self, server: UserMcpServer) -> None:
         self._by_user.setdefault(server.userId, {})[server.name] = server
+
+    async def update_health(
+        self,
+        user_id: str,
+        name: str,
+        *,
+        expected_revision: str,
+        ok: bool,
+        error: object | None,
+    ) -> tuple[UserMcpServer | None, bool, bool]:
+        current = self._by_user.get(user_id, {}).get(name)
+        if current is None:
+            return None, False, False
+        if health_config_revision(current) != expected_revision:
+            return current, False, False
+        updated = current.model_copy(deep=True)
+        was_quarantined = mcp_health.is_quarantined(updated)
+        changed = (
+            mcp_health.record_success(updated)
+            if ok
+            else mcp_health.record_failure(updated, error)
+        )
+        became_quarantined = (
+            not was_quarantined and mcp_health.is_quarantined(updated)
+        )
+        if changed:
+            self._by_user.setdefault(user_id, {})[name] = updated
+        return updated, changed, became_quarantined
 
     async def delete(self, user_id: str, name: str) -> None:
         self._by_user.get(user_id, {}).pop(name, None)
@@ -115,6 +154,71 @@ class CosmosUserMcpServerStore:
 
     async def put(self, server: UserMcpServer) -> None:
         await self._container.upsert_item(server.model_dump(mode="json"))
+
+    async def update_health(
+        self,
+        user_id: str,
+        name: str,
+        *,
+        expected_revision: str,
+        ok: bool,
+        error: object | None,
+    ) -> tuple[UserMcpServer | None, bool, bool]:
+        from azure.core import MatchConditions
+        from azure.cosmos.exceptions import (
+            CosmosAccessConditionFailedError,
+            CosmosResourceNotFoundError,
+        )
+
+        for _ in range(4):
+            try:
+                raw = await self._container.read_item(item=name, partition_key=user_id)
+            except CosmosResourceNotFoundError:
+                return None, False, False
+            current = UserMcpServer.model_validate(raw)
+            if current.userId != user_id:
+                return None, False, False
+            if health_config_revision(current) != expected_revision:
+                return current, False, False
+            updated = current.model_copy(deep=True)
+            was_quarantined = mcp_health.is_quarantined(updated)
+            changed = (
+                mcp_health.record_success(updated)
+                if ok
+                else mcp_health.record_failure(updated, error)
+            )
+            became_quarantined = (
+                not was_quarantined and mcp_health.is_quarantined(updated)
+            )
+            if not changed:
+                return updated, False, became_quarantined
+            health = updated.model_dump(
+                mode="json",
+                include={
+                    "consecutiveFailures",
+                    "quarantinedUntil",
+                    "lastHealthCheck",
+                    "lastHealthError",
+                },
+            )
+            operations = [
+                {"op": "set", "path": f"/{field}", "value": value}
+                for field, value in health.items()
+            ]
+            try:
+                await self._container.patch_item(
+                    item=name,
+                    partition_key=user_id,
+                    patch_operations=operations,
+                    etag=raw.get("_etag"),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+                return updated, True, became_quarantined
+            except CosmosAccessConditionFailedError:
+                continue
+            except CosmosResourceNotFoundError:
+                return None, False, False
+        raise RuntimeError("MCP health update conflicted repeatedly.")
 
     async def delete(self, user_id: str, name: str) -> None:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
