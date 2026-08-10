@@ -1012,6 +1012,27 @@ def _persist_payload(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@pytest.mark.anyio
+async def test_accepted_execution_failure_is_persisted_as_run_failed() -> None:
+    state = _State(_CatalogThatWouldPickTheWrongOption(None))
+    context = _context_from_payload(_deployment("m-eastus", "eastus2", "US"))
+    context.update(
+        {
+            "runId": "u1:run",
+            "assistantMessageId": "assistant-1",
+            "runFingerprint": "f" * 64,
+        }
+    )
+    payload = _persist_payload(context)
+    payload["ok"] = False
+    payload["text"] = "step failed"
+    await _service_for(state)._persist(payload)
+    message = state.session_repo.messages[0]
+    assert message.status is MessageStatus.error
+    assert message.workflowRunStatus == "run_failed"
+    assert message.workflowRunFingerprint == "f" * 64
+
+
 def _context_from_payload(deployment: DeploymentOption) -> dict[str, Any]:
     from ai4ia_api.workflows.models import WorkflowStep
 
