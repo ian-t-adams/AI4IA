@@ -346,7 +346,13 @@ export default function SharePanel({
             {visibility === "shared" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 <div style={{ display: "flex", gap: 8 }}>
+                  <label className="visually-hidden" htmlFor="share-grantee-email">
+                    Grantee email address
+                  </label>
                   <input
+                    id="share-grantee-email"
+                    type="email"
+                    autoComplete="email"
                     value={draftEmail}
                     onChange={(e) => setDraftEmail(e.target.value)}
                     onKeyDown={(e) => {

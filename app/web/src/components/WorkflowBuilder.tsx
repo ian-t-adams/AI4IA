@@ -395,6 +395,14 @@ export function WorkflowBuilder({
 
   const remove = useCallback(
     async (name: string) => {
+      const label = mine.find((workflow) => workflow.name === name)?.displayName || name;
+      if (
+        !window.confirm(
+          `Permanently delete workflow "${label}"? This can't be undone.`,
+        )
+      ) {
+        return;
+      }
       setBusy(true);
       setError(null);
       try {
@@ -407,7 +415,7 @@ export function WorkflowBuilder({
         setBusy(false);
       }
     },
-    [editing, refreshMine, startNew],
+    [editing, mine, refreshMine, startNew],
   );
 
   const doRun = useCallback(
@@ -777,7 +785,7 @@ export function WorkflowBuilder({
                   </button>
                 </div>
                 <p style={{ ...labelStyle, margin: 0 }}>
-                  Use {INPUT_TOKEN} for the run input and {"{previous}"} for the prior step&apos;s
+                  Use {INPUT_TOKEN} for the run input and {"{previous}"}{" "}for the prior step&apos;s
                   output. The first step must include {INPUT_TOKEN}.
                 </p>
                 <div className="workflow-steps">

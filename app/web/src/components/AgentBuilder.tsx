@@ -256,6 +256,14 @@ export function AgentBuilder({
 
   const remove = useCallback(
     async (name: string) => {
+      const label = mine.find((agent) => agent.name === name)?.displayName || name;
+      if (
+        !window.confirm(
+          `Permanently delete agent "${label}"? This can't be undone.`,
+        )
+      ) {
+        return;
+      }
       setBusy(true);
       setError(null);
       try {
@@ -269,7 +277,7 @@ export function AgentBuilder({
         setBusy(false);
       }
     },
-    [editing, refreshMine, onChanged, startNew],
+    [editing, mine, refreshMine, onChanged, startNew],
   );
 
   return (
@@ -669,4 +677,3 @@ function groupByServer(tools: AttachableMcpTool[]): McpServerGroup[] {
   }
   return order.map((n) => byName.get(n)!);
 }
-

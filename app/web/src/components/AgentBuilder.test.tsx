@@ -11,12 +11,14 @@ const mocks = vi.hoisted(() => ({
   listMyAgents: vi.fn(),
   listMcpServers: vi.fn(),
   listOfficialMcpServers: vi.fn(),
+  deleteAgent: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
   listMyAgents: mocks.listMyAgents,
   listMcpServers: mocks.listMcpServers,
   listOfficialMcpServers: mocks.listOfficialMcpServers,
+  deleteAgent: mocks.deleteAgent,
 }));
 
 const AGENTS: AgentSummary[] = [
@@ -85,6 +87,29 @@ afterEach(() => {
 });
 
 describe("AgentBuilder", () => {
+  it("requires irreversible confirmation before deleting an agent", async () => {
+    const confirmSpy = vi
+      .spyOn(window, "confirm")
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    mocks.deleteAgent.mockResolvedValue(undefined);
+    const onChanged = vi.fn();
+    const user = userEvent.setup();
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={onChanged} />);
+    const remove = await screen.findByRole("button", { name: "Delete helper" });
+
+    await user.click(remove);
+    expect(mocks.deleteAgent).not.toHaveBeenCalled();
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/permanently delete agent "Helper".*can't be undone/i),
+    );
+
+    mocks.listMyAgents.mockResolvedValueOnce([]);
+    await user.click(remove);
+    await waitFor(() => expect(mocks.deleteAgent).toHaveBeenCalledWith("helper"));
+    expect(onChanged).toHaveBeenCalled();
+  });
+
   it("explains what a built-in tool does, when to use it, and its risk level", async () => {
     const user = userEvent.setup();
     render(<AgentBuilder agents={[]} models={[]} onChanged={async () => {}} />);

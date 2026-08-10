@@ -25,6 +25,28 @@ export interface LibraryDocument {
   updatedAt: string;
 }
 
+const LIBRARY_STATUS_RANK: Record<LibraryDocument["status"], number> = {
+  pending: 0,
+  stored: 1,
+  analyzing: 2,
+  ready: 3,
+  failed: 3,
+};
+
+export function keepMonotonicLibraryDocument(
+  current: LibraryDocument,
+  incoming: LibraryDocument,
+): LibraryDocument {
+  const currentUpdated = Date.parse(current.updatedAt);
+  const incomingUpdated = Date.parse(incoming.updatedAt);
+  if (Number.isFinite(currentUpdated) && Number.isFinite(incomingUpdated)) {
+    return incomingUpdated > currentUpdated ? incoming : current;
+  }
+  return LIBRARY_STATUS_RANK[incoming.status] < LIBRARY_STATUS_RANK[current.status]
+    ? current
+    : incoming;
+}
+
 // Mirrors the API's Analyzer (built-ins are merged in server-side).
 export interface LibraryAnalyzer {
   id: string;

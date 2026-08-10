@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { PendingToolApprovalPrompt } from "../lib/types";
 import { Pill } from "./Pill";
 
@@ -52,7 +52,7 @@ export function ToolApprovalPanel({
     >
       {prompts.map((prompt) => (
         <ToolApprovalCard
-          key={prompt.id}
+          key={`${prompt.id}:${prompt.expiresAt}`}
           prompt={prompt}
           onApprove={onApprove}
           onDeny={onDeny}
@@ -78,11 +78,29 @@ function ToolApprovalCard({
   const masked = new Set(prompt.argumentsMasked ?? []);
   const elided = new Set(prompt.argumentsElided ?? []);
   const omitted = prompt.argumentsOmitted ?? 0;
-  // Capture once rather than calling Date.now during render (React purity).
-  const [renderedAt] = useState(() => Date.now());
-  const expired = Number.isFinite(Date.parse(prompt.expiresAt))
-    ? Date.parse(prompt.expiresAt) <= renderedAt
-    : true;
+  const expiresAt = Date.parse(prompt.expiresAt);
+  const [expired, setExpired] = useState(
+    () => !Number.isFinite(expiresAt) || expiresAt <= Date.now(),
+  );
+  useEffect(() => {
+    if (expired) return;
+    let timer = 0;
+    const schedule = () => {
+      const remaining = expiresAt - Date.now();
+      timer = window.setTimeout(
+        () => {
+          if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+            setExpired(true);
+          } else {
+            schedule();
+          }
+        },
+        Math.max(0, Math.min(remaining, 2_147_483_647)),
+      );
+    };
+    schedule();
+    return () => window.clearTimeout(timer);
+  }, [expired, expiresAt]);
   return (
     <div
       role="group"
@@ -207,7 +225,13 @@ function ToolApprovalCard({
         <button
           type="button"
           disabled={busy || expired}
-          onClick={() => onApprove(prompt)}
+          onClick={() => {
+            if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+              setExpired(true);
+              return;
+            }
+            onApprove(prompt);
+          }}
           aria-label={`Approve and retry ${prompt.label}`}
           style={{
             // --accent-fg is derived per accent by ThemeProvider, so it stays

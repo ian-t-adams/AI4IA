@@ -110,6 +110,15 @@ export default function AnnotationsPanel({
   const handleDelete = useCallback(
     async (id: string) => {
       if (busy) return;
+      const note = annotations.find((item) => item.id === id);
+      const preview = note?.body.trim().slice(0, 80) || "this note";
+      if (
+        !window.confirm(
+          `Permanently delete "${preview}"? This can't be undone.`,
+        )
+      ) {
+        return;
+      }
       setBusy(true);
       setError(null);
       try {
@@ -122,7 +131,7 @@ export default function AnnotationsPanel({
         setBusy(false);
       }
     },
-    [busy, documentId, editingId, refresh],
+    [annotations, busy, documentId, editingId, refresh],
   );
 
   return (
@@ -195,7 +204,11 @@ export default function AnnotationsPanel({
         </p>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <label className="visually-hidden" htmlFor="annotation-body">
+            Note
+          </label>
           <textarea
+            id="annotation-body"
             ref={bodyRef}
             value={draftBody}
             onChange={(e) => setDraftBody(e.target.value)}
@@ -213,7 +226,11 @@ export default function AnnotationsPanel({
               fontSize: "0.9em",
             }}
           />
+          <label className="visually-hidden" htmlFor="annotation-anchor">
+            Note anchor (optional)
+          </label>
           <input
+            id="annotation-anchor"
             value={draftAnchor}
             onChange={(e) => setDraftAnchor(e.target.value)}
             placeholder="Anchor (optional) — e.g. p.3, 02:15, a quote"
@@ -277,7 +294,11 @@ export default function AnnotationsPanel({
               >
                 {editingId === note.id ? (
                   <>
+                    <label className="visually-hidden" htmlFor={`annotation-edit-body-${note.id}`}>
+                      Edit note
+                    </label>
                     <textarea
+                      id={`annotation-edit-body-${note.id}`}
                       value={editBody}
                       onChange={(e) => setEditBody(e.target.value)}
                       rows={3}
@@ -293,7 +314,11 @@ export default function AnnotationsPanel({
                         fontSize: "0.9em",
                       }}
                     />
+                    <label className="visually-hidden" htmlFor={`annotation-edit-anchor-${note.id}`}>
+                      Edit note anchor (optional)
+                    </label>
                     <input
+                      id={`annotation-edit-anchor-${note.id}`}
                       value={editAnchor}
                       onChange={(e) => setEditAnchor(e.target.value)}
                       placeholder="Anchor (optional)"

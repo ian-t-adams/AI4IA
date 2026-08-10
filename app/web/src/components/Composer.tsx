@@ -137,7 +137,10 @@ export function Composer({
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
-  const [highlight, setHighlight] = useState(0);
+  const [highlightState, setHighlightState] = useState({
+    key: "",
+    index: 0,
+  });
   // Set when the user dismisses the menu with Escape; cleared on the next edit.
   const [suppressed, setSuppressed] = useState(false);
 
@@ -205,7 +208,15 @@ export function Composer({
         onError?.(`${file.name} is not supported by this environment.`);
         continue;
       }
-      await onUpload(file);
+      try {
+        await onUpload(file);
+      } catch (reason) {
+        onError?.(
+          `${file.name} could not be uploaded: ${
+            reason instanceof Error ? reason.message : "Unknown upload error"
+          }`,
+        );
+      }
     }
   };
 
@@ -256,11 +267,20 @@ export function Composer({
         ? commandOptions.length
         : 0;
   const menuOpen = menuMode !== null && !suppressed;
-
-  // Keep the highlight in range as the active list changes.
-  useEffect(() => {
-    setHighlight(0);
-  }, [mention?.query, command?.query, optionCount]);
+  const highlightKey =
+    menuMode === "mention"
+      ? `mention:${mention?.query ?? ""}:${agentOptions.map((agent) => agent.name).join(",")}`
+      : menuMode === "command"
+        ? `command:${command?.query ?? ""}:${commandOptions.map((item) => item.name).join(",")}`
+        : "";
+  const highlight =
+    highlightState.key === highlightKey ? highlightState.index : 0;
+  const updateHighlight = (update: (index: number) => number) => {
+    setHighlightState((current) => ({
+      key: highlightKey,
+      index: update(current.key === highlightKey ? current.index : 0),
+    }));
+  };
 
   // Restore the caret after an insertion changed the value programmatically.
   useLayoutEffect(() => {
@@ -346,12 +366,12 @@ export function Composer({
     if (menuOpen) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setHighlight((h) => (h + 1) % optionCount);
+        updateHighlight((index) => (index + 1) % optionCount);
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
-        setHighlight((h) => (h - 1 + optionCount) % optionCount);
+        updateHighlight((index) => (index - 1 + optionCount) % optionCount);
         return;
       }
       if (e.key === "Enter" || e.key === "Tab") {
@@ -582,7 +602,9 @@ export function Composer({
                       e.preventDefault();
                       acceptAgent(a);
                     }}
-                    onMouseEnter={() => setHighlight(i)}
+                    onMouseEnter={() =>
+                      setHighlightState({ key: highlightKey, index: i })
+                    }
                     style={{
                       padding: "8px 10px",
                       borderRadius: 8,
@@ -615,7 +637,9 @@ export function Composer({
                       e.preventDefault();
                       acceptCommand(c);
                     }}
-                    onMouseEnter={() => setHighlight(i)}
+                    onMouseEnter={() =>
+                      setHighlightState({ key: highlightKey, index: i })
+                    }
                     style={{
                       padding: "8px 10px",
                       borderRadius: 8,

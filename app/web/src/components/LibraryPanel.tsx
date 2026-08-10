@@ -19,6 +19,7 @@ import type {
   LibraryDocument,
   ShareVisibility,
 } from "@/lib/library";
+import { keepMonotonicLibraryDocument } from "@/lib/library";
 import { MediaPlayer } from "./MediaPlayer";
 import AnnotationsPanel from "./AnnotationsPanel";
 import SharePanel from "./SharePanel";
@@ -70,6 +71,9 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
   const [analyzerId, setAnalyzerId] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [uploadErrors, setUploadErrors] = useState<
+    { filename: string; message: string }[]
+  >([]);
   const [error, setError] = useState<string | null>(null);
   const [memorySaves, setMemorySaves] = useState<Record<string, MemorySave>>(
     {},
@@ -83,18 +87,39 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
   const [sharedWithMe, setSharedWithMe] = useState<LibraryDocument[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
+  const refreshGenerationRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGenerationRef.current;
     try {
       const list = await listLibraryDocuments();
-      if (mountedRef.current) setDocs(list);
+      if (
+        mountedRef.current &&
+        generation === refreshGenerationRef.current
+      ) {
+        setDocs((current) => {
+          const currentById = new Map(current.map((document) => [document.id, document]));
+          return list.map((incoming) => {
+            const previous = currentById.get(incoming.id);
+            return previous
+              ? keepMonotonicLibraryDocument(previous, incoming)
+              : incoming;
+          });
+        });
+      }
     } catch (e) {
-      if (mountedRef.current) setError((e as Error).message);
+      if (
+        mountedRef.current &&
+        generation === refreshGenerationRef.current
+      ) {
+        setError((e as Error).message);
+      }
     }
   }, []);
 
   useEffect(() => {
     mountedRef.current = true;
+    const generation = ++refreshGenerationRef.current;
     (async () => {
       try {
         const [list, analyzerList, shared] = await Promise.all([
@@ -103,7 +128,17 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
           listSharedWithMe().catch(() => [] as LibraryDocument[]),
         ]);
         if (!mountedRef.current) return;
-        setDocs(list);
+        if (generation === refreshGenerationRef.current) {
+          setDocs((current) => {
+            const currentById = new Map(current.map((document) => [document.id, document]));
+            return list.map((incoming) => {
+              const previous = currentById.get(incoming.id);
+              return previous
+                ? keepMonotonicLibraryDocument(previous, incoming)
+                : incoming;
+            });
+          });
+        }
         setAnalyzers(analyzerList);
         setSharedWithMe(shared);
       } catch (e) {
@@ -114,13 +149,23 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
     })();
     return () => {
       mountedRef.current = false;
+      refreshGenerationRef.current += 1;
     };
   }, []);
 
   // Poll while any document is still being ingested.
   useEffect(() => {
     if (!docs.some((d) => IN_FLIGHT.has(d.status))) return;
-    const t = setInterval(refresh, 3000);
+    let polling = false;
+    const t = setInterval(async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        await refresh();
+      } finally {
+        polling = false;
+      }
+    }, 3000);
     return () => clearInterval(t);
   }, [docs, refresh]);
 
@@ -128,13 +173,27 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
     if (!files || files.length === 0) return;
     setUploading(true);
     setError(null);
+    setUploadErrors([]);
+    const failures: { filename: string; message: string }[] = [];
     try {
       for (const file of Array.from(files)) {
-        await uploadLibraryDocument(file, analyzerId || null);
+        try {
+          const document = await uploadLibraryDocument(file, analyzerId || null);
+          refreshGenerationRef.current += 1;
+          if (mountedRef.current) {
+            setDocs((current) => [
+              ...current.filter((item) => item.id !== document.id),
+              document,
+            ]);
+          }
+        } catch (reason) {
+          failures.push({
+            filename: file.name,
+            message: (reason as Error).message,
+          });
+        }
       }
-      await refresh();
-    } catch (e) {
-      setError((e as Error).message);
+      if (mountedRef.current) setUploadErrors(failures);
     } finally {
       if (mountedRef.current) setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -151,6 +210,7 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
     setError(null);
     try {
       await deleteLibraryDocument(doc.id);
+      refreshGenerationRef.current += 1;
       setDocs((prev) => prev.filter((d) => d.id !== doc.id));
     } catch (e) {
       setError((e as Error).message);
@@ -287,6 +347,7 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
             </label>
           )}
           <input
+            id="library-file-upload"
             ref={fileRef}
             type="file"
             multiple
@@ -294,6 +355,9 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
             onChange={(e) => onFiles(e.target.files)}
             style={{ fontSize: "0.85em" }}
           />
+          <label className="visually-hidden" htmlFor="library-file-upload">
+            Upload library documents
+          </label>
           {uploading && (
             <span style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}>
               Uploading…
@@ -313,6 +377,20 @@ export function LibraryPanel({ onClose }: { onClose: () => void }) {
             }}
           >
             {error}
+          </div>
+        )}
+        {uploadErrors.length > 0 && (
+          <div role="alert" style={{ fontSize: "0.8em", color: "var(--danger)" }}>
+            <p style={{ margin: "0 0 4px" }}>
+              Some documents could not be uploaded:
+            </p>
+            <ul style={{ margin: 0, paddingLeft: 20 }}>
+              {uploadErrors.map((failure) => (
+                <li key={`${failure.filename}:${failure.message}`}>
+                  {failure.filename}: {failure.message}
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 

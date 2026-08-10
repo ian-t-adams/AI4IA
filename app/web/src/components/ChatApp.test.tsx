@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   deleteMemory: vi.fn(),
   useInlineVoiceLive: vi.fn(),
   appendVoiceTurns: vi.fn(),
+  logout: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => mocks);
@@ -58,7 +59,22 @@ vi.mock("./CustomToolsProvider", () => ({
   useCustomToolsConfig: () => ({ enabled: false }),
 }));
 vi.mock("./AdminLink", () => ({ AdminLink: () => null }));
-vi.mock("./UserMenu", () => ({ UserMenu: () => null }));
+vi.mock("./UserMenu", () => ({
+  UserMenu: ({
+    onBeforeSignOut,
+  }: {
+    onBeforeSignOut?: () => boolean | void;
+  }) => (
+    <button
+      type="button"
+      onClick={() => {
+        if (onBeforeSignOut?.() !== false) mocks.logout();
+      }}
+    >
+      Sign out
+    </button>
+  ),
+}));
 vi.mock("./Composer", () => ({
   Composer: ({
     onSend,
@@ -356,6 +372,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.documentElement.style.removeProperty("--font-scale");
 });
@@ -390,6 +407,361 @@ describe("ChatApp landmarks", () => {
       ),
     );
   });
+});
+
+describe("ChatApp session state reliability", () => {
+  it("signs out normally without warning when no local work is in flight", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm");
+    const user = userEvent.setup();
+    render(<ChatApp />);
+
+    await user.click(await screen.findByRole("button", { name: "Sign out" }));
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(mocks.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps sign-out available while streaming and aborts before logout", async () => {
+    const abort = vi.fn();
+    mocks.streamChat.mockReturnValue(abort);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+    const signOut = screen.getByRole("button", { name: "Sign out" });
+    expect(signOut).toBeEnabled();
+    await user.click(signOut);
+
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/sign out now.*stop the current response/i),
+    );
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(mocks.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it("prevents a pending text-session creation from streaming after sign-out", async () => {
+    let resolveCreate!: (value: Session) => void;
+    mocks.listSessions.mockResolvedValue([]);
+    mocks.createSession.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(mocks.logout).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveCreate(session("LATE"));
+      await Promise.resolve();
+    });
+
+    expect(mocks.streamChat).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Session LATE" })).not.toBeInTheDocument();
+  });
+
+  it("normally starts streaming when pending text-session creation resolves", async () => {
+    let resolveCreate!: (value: Session) => void;
+    mocks.listSessions.mockResolvedValue([]);
+    mocks.createSession.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      resolveCreate(session("LIVE"));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps sign-out available while voice persistence is locked and discards before logout", async () => {
+    const discardPersistence = vi.fn();
+    mocks.useInlineVoiceLive.mockReturnValue({
+      messages: [],
+      enabled: true,
+      supported: true,
+      active: false,
+      saving: true,
+      phase: "idle",
+      statusLabel: "Saving voice transcript…",
+      agentLabel: "",
+      error: null,
+      persistenceError: null,
+      hasUnsavedTurns: true,
+      exitLocked: true,
+      boundSessionId: "A",
+      start: vi.fn(),
+      stop: vi.fn(),
+      retryPersistence: vi.fn(),
+      discardPersistence,
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+
+    const signOut = await screen.findByRole("button", { name: "Sign out" });
+    expect(signOut).toBeEnabled();
+    await user.click(signOut);
+
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/sign out now.*unsaved voice transcript/i),
+    );
+    expect(discardPersistence).toHaveBeenCalledTimes(1);
+    expect(mocks.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires confirmation before deleting a conversation", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+
+    await user.click(await screen.findByRole("button", { name: "Delete Session A" }));
+
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/permanently delete "Session A".*can't be undone/i),
+    );
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Session A" })).toBeInTheDocument();
+  });
+
+  it("removes a deleted active row locally and reports a separate refresh failure", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await screen.findByText("Session A", {
+      selector: ".chat-header .editable-session-title-text",
+    });
+    mocks.listSessions.mockRejectedValueOnce(new Error("refresh unavailable"));
+
+    await user.click(screen.getByRole("button", { name: "Delete Session A" }));
+
+    await waitFor(() => expect(mocks.deleteSession).toHaveBeenCalledWith("A"));
+    expect(
+      await screen.findByText("New conversation", { selector: "strong" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Session A" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /conversation deleted.*couldn't refresh.*refresh unavailable/i,
+    );
+  });
+
+  it("restores the previous model and surfaces a failed persistence PATCH", async () => {
+    mocks.listModels.mockResolvedValue({
+      models: [
+        {
+          id: "gpt-5.2",
+          displayName: "GPT-5.2",
+          category: "chat",
+          format: "openai",
+          conversational: true,
+          contextWindow: 128000,
+          maxOutputTokens: 32000,
+          options: [],
+        },
+        {
+          id: "gpt-alt",
+          displayName: "GPT Alt",
+          category: "chat",
+          format: "openai",
+          conversational: true,
+          contextWindow: 64000,
+          maxOutputTokens: 16000,
+          options: [],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    const model = await screen.findByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(model).toBeEnabled());
+    mocks.updateSession.mockRejectedValueOnce(new Error("patch unavailable"));
+
+    await user.selectOptions(model, "gpt-alt");
+
+    await waitFor(() =>
+      expect(mocks.updateSession).toHaveBeenCalledWith("A", {
+        model: "gpt-alt",
+      }),
+    );
+    await waitFor(() => expect(model).toHaveValue("gpt-5.2"));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /couldn't save the model change.*patch unavailable/i,
+    );
+  });
+
+  it("rolls rapid failed model changes back to the last persisted model", async () => {
+    const model = (id: string, displayName: string) => ({
+      id,
+      displayName,
+      category: "chat",
+      format: "openai",
+      conversational: true,
+      contextWindow: 128000,
+      maxOutputTokens: 32000,
+      options: [],
+    });
+
+    mocks.listModels.mockResolvedValue({
+      models: [
+        model("gpt-5.2", "GPT-5.2"),
+        model("gpt-b", "GPT B"),
+        model("gpt-c", "GPT C"),
+      ],
+    });
+    let rejectB!: (reason: Error) => void;
+    let rejectC!: (reason: Error) => void;
+    mocks.updateSession
+      .mockImplementationOnce(
+        () =>
+          new Promise((_, reject) => {
+            rejectB = reject;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((_, reject) => {
+            rejectC = reject;
+          }),
+      );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    const picker = await screen.findByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(picker).toBeEnabled());
+
+    await user.selectOptions(picker, "gpt-b");
+    await waitFor(() => expect(mocks.updateSession).toHaveBeenCalledTimes(1));
+    await user.selectOptions(picker, "gpt-c");
+    expect(mocks.updateSession).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      rejectB(new Error("B failed"));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mocks.updateSession).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      rejectC(new Error("C failed"));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(picker).toHaveValue("gpt-5.2"));
+    expect(screen.getByRole("alert")).toHaveTextContent(/C failed/);
+  });
+
+  it("does not let a hung model PATCH in one session block another session", async () => {
+    const model = (id: string, displayName: string) => ({
+      id,
+      displayName,
+      category: "chat",
+      format: "openai",
+      conversational: true,
+      contextWindow: 128000,
+      maxOutputTokens: 32000,
+      options: [],
+    });
+    mocks.listModels.mockResolvedValue({
+      models: [model("gpt-5.2", "GPT-5.2"), model("gpt-b", "GPT B")],
+    });
+    mocks.updateSession
+      .mockImplementationOnce(() => new Promise(() => {}))
+      .mockResolvedValueOnce({ ...session("B"), model: "gpt-b" });
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    let picker = await screen.findByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(picker).toBeEnabled());
+    await user.selectOptions(picker, "gpt-b");
+    await waitFor(() => expect(mocks.updateSession).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: "Session B" }));
+    picker = await screen.findByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(picker).toBeEnabled());
+    await user.selectOptions(picker, "gpt-b");
+
+    await waitFor(() => expect(mocks.updateSession).toHaveBeenCalledTimes(2));
+    expect(mocks.updateSession).toHaveBeenLastCalledWith("B", { model: "gpt-b" });
+    await waitFor(() => expect(picker).toHaveValue("gpt-b"));
+  });
+
+  it("shows a persisted model when its PATCH completes after navigating away and back", async () => {
+    const model = (id: string, displayName: string) => ({
+      id,
+      displayName,
+      category: "chat",
+      format: "openai",
+      conversational: true,
+      contextWindow: 128000,
+      maxOutputTokens: 32000,
+      options: [],
+    });
+    mocks.listModels.mockResolvedValue({
+      models: [
+        model("gpt-5.2", "GPT-5.2"),
+        model("gpt-b", "GPT B"),
+      ],
+    });
+    let resolvePatch!: (value: Session) => void;
+    let resolveStaleHydration!: (value: Session[]) => void;
+    mocks.updateSession.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvePatch = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    let picker = await screen.findByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(picker).toBeEnabled());
+    await user.selectOptions(picker, "gpt-b");
+    await waitFor(() => expect(mocks.updateSession).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: "Session B" }));
+    await screen.findByText("Session B", {
+      selector: ".chat-header .editable-session-title-text",
+    });
+    mocks.listSessions.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveStaleHydration = resolve;
+        }),
+    );
+    await user.click(screen.getByRole("button", { name: "Session A" }));
+    await screen.findByText("Session A", {
+      selector: ".chat-header .editable-session-title-text",
+    });
+
+    await act(async () => {
+      resolvePatch({ ...session("A"), model: "gpt-b" });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      resolveStaleHydration([session("A"), session("B")]);
+      await Promise.resolve();
+    });
+
+    picker = await screen.findByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(picker).toHaveValue("gpt-b"));
+  });
+
 });
 describe("ChatApp citations", () => {
   it("opens shared media directly by the attested document id", async () => {

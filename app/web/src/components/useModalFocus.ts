@@ -5,6 +5,22 @@ import { useCallback, useEffect, useRef, type KeyboardEvent, type RefObject } fr
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+function focusableChildren(node: HTMLElement): HTMLElement[] {
+  return [...node.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+    (element) => {
+      const style = window.getComputedStyle(element);
+      return (
+        element.tabIndex >= 0 &&
+        !element.matches(":disabled") &&
+        !element.hidden &&
+        !element.closest("[hidden], [inert]") &&
+        style.display !== "none" &&
+        style.visibility !== "hidden"
+      );
+    },
+  );
+}
+
 /**
  * Traps focus within a modal/drawer/panel while it is open: auto-focuses its
  * first focusable child and restores focus to the previously-focused element
@@ -35,7 +51,7 @@ export function useModalFocus<T extends HTMLElement = HTMLDivElement>(
       openerRef?.current ??
       (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const frame = requestAnimationFrame(() => {
-      node.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+      focusableChildren(node)[0]?.focus();
     });
 
     return () => {
@@ -79,7 +95,7 @@ export function useModalKeyDown<T extends HTMLElement = HTMLDivElement>(
       }
       if (event.key !== "Tab") return;
       const node = event.currentTarget;
-      const focusable = [...node.querySelectorAll<HTMLElement>(FOCUSABLE)];
+      const focusable = focusableChildren(node);
       if (focusable.length === 0) {
         event.preventDefault();
         return;
