@@ -27,7 +27,9 @@ from ai4ia_api.workflows.durable import (
     _TRACE_BUDGET_BYTES,
     _TRUNCATION_MARKER,
     DurableRunStatus,
+    DurableScheduleAcceptanceUnknownError,
     DurableWorkflowService,
+    DurableWorkflowsUnavailableError,
     _merge_usage,
     _step_from_dict,
     _truncate_for_payload,
@@ -138,9 +140,9 @@ class _StubDurable:
     def __init__(self):
         self.scheduled: list[tuple[dict, str]] = []
 
-    async def schedule(self, payload, *, user_id):
+    async def schedule(self, payload, *, user_id, run_id=None):
         self.scheduled.append((payload, user_id))
-        return f"{user_id}{_RUN_ID_SEPARATOR}deadbeef"
+        return run_id or f"{user_id}{_RUN_ID_SEPARATOR}deadbeef"
 
     async def get_status(self, run_id, *, user_id):
         owner, _, remainder = run_id.partition(_RUN_ID_SEPARATOR)
@@ -223,10 +225,78 @@ def test_durable_run_returns_202_and_does_not_run_in_request(client):
     # The run id is derived from the id the ROUTER resolved, never from input.
     assert body["runId"].startswith(f"{user_id}{_RUN_ID_SEPARATOR}")
 
-    # The user turn is persisted immediately so the caller sees their input;
-    # the assistant reply is the orchestration's job, not this request's.
+    # The user turn and deterministic pending assistant are persisted before the
+    # scheduler call, so a retry can reuse both without duplicating either.
     messages = client.get(f"/api/sessions/{sid}/messages").json()
-    assert [m["role"] for m in messages] == ["user"]
+    assert [m["role"] for m in messages] == ["user", "assistant"]
+    assert messages[1]["status"] == "streaming"
+    assert messages[1]["workflowRunStatus"] == "pending"
+
+
+class _DefiniteFailureDurable(_StubDurable):
+    async def schedule(self, payload, *, user_id, run_id=None):
+        self.scheduled.append((payload, user_id))
+        raise DurableWorkflowsUnavailableError("not running")
+
+
+class _AmbiguousThenAcceptedDurable(_StubDurable):
+    async def schedule(self, payload, *, user_id, run_id=None):
+        self.scheduled.append((payload, user_id))
+        if len(self.scheduled) == 1:
+            raise DurableScheduleAcceptanceUnknownError("transport unknown")
+        return run_id
+
+
+def test_definite_schedule_failure_persists_one_terminal_failed_run(client):
+    sid = _seed(client)
+    stub = _DefiniteFailureDurable()
+    client.app.state.durable_workflows = stub
+    body = {
+        "sessionId": sid,
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "definite-failure-1",
+    }
+
+    first = client.post("/api/workflows/summarize/run", json=body)
+    second = client.post("/api/workflows/summarize/run", json=body)
+    assert first.status_code == second.status_code == 503
+    assert len(stub.scheduled) == 1
+    messages = client.get(f"/api/sessions/{sid}/messages").json()
+    assert len(messages) == 2
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[1]["status"] == "error"
+    assert messages[1]["workflowRunStatus"] == "failed"
+
+
+def test_ambiguous_schedule_retry_reuses_messages_and_run(client):
+    sid = _seed(client)
+    stub = _AmbiguousThenAcceptedDurable()
+    client.app.state.durable_workflows = stub
+    body = {
+        "sessionId": sid,
+        "input": "otters",
+        "durable": True,
+        "idempotencyKey": "ambiguous-retry-1",
+    }
+
+    first = client.post("/api/workflows/summarize/run", json=body)
+    assert first.status_code == 202
+    assert first.json()["status"] == "acceptance_unknown"
+    second = client.post("/api/workflows/summarize/run", json=body)
+    assert second.status_code == 202
+    assert second.json()["status"] == "accepted"
+    assert second.json()["runId"] == first.json()["runId"]
+    third = client.post("/api/workflows/summarize/run", json=body)
+    assert third.status_code == 202
+    assert len(stub.scheduled) == 3
+    assert len(
+        {scheduled_payload["context"]["runId"] for scheduled_payload, _ in stub.scheduled}
+    ) == 1
+    messages = client.get(f"/api/sessions/{sid}/messages").json()
+    assert len(messages) == 2
+    assert len({message["id"] for message in messages}) == 2
+    assert messages[1]["workflowRunStatus"] == "pending"
 
 
 def test_non_durable_run_still_executes_synchronously(client):
@@ -285,6 +355,17 @@ class _CapturingClient:
         return instance_id
 
 
+class _AmbiguousClient:
+    def __init__(self, state=None):
+        self.state = state
+
+    async def schedule_new_orchestration(self, _name, *, input=None, instance_id=None):
+        raise TimeoutError("response lost")
+
+    async def get_orchestration_state(self, _run_id):
+        return self.state
+
+
 @pytest.mark.anyio
 async def test_schedule_generates_the_run_id_from_the_caller_id():
     """The run id must be minted here, never accepted from the request.
@@ -306,6 +387,26 @@ async def test_schedule_generates_the_run_id_from_the_caller_id():
     # Two runs for the same user must not collide.
     second = await svc.schedule({"steps": []}, user_id="alice")
     assert second != run_id
+
+
+@pytest.mark.anyio
+async def test_schedule_recovers_when_point_read_proves_ambiguous_acceptance():
+    svc = DurableWorkflowService(endpoint="e", task_hub="h", app_state=object())
+    svc._client = _AmbiguousClient(state=object())
+    run_id = f"alice{_RUN_ID_SEPARATOR}stable"
+    assert (
+        await svc.schedule({"steps": []}, user_id="alice", run_id=run_id)
+        == run_id
+    )
+
+
+@pytest.mark.anyio
+async def test_schedule_preserves_unknown_acceptance_for_same_id_retry():
+    svc = DurableWorkflowService(endpoint="e", task_hub="h", app_state=object())
+    svc._client = _AmbiguousClient()
+    run_id = f"alice{_RUN_ID_SEPARATOR}stable"
+    with pytest.raises(DurableScheduleAcceptanceUnknownError):
+        await svc.schedule({"steps": []}, user_id="alice", run_id=run_id)
 
 
 @pytest.mark.anyio
@@ -584,7 +685,7 @@ class _RecordingRepo:
         self.messages: list[Any] = []
         self.touched: list[tuple[str, str]] = []
 
-    async def add_message(self, uid: str, message: Any) -> None:
+    async def upsert_message(self, uid: str, message: Any) -> None:
         self.messages.append(message)
 
     async def touch_session(self, uid: str, session_id: str) -> None:

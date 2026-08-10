@@ -73,6 +73,9 @@ param appInsightsConnectionString string
 ])
 param appEnvironment string = 'dev'
 
+@description('Expose FastAPI OpenAPI, Swagger UI, and ReDoc. Default OFF; when omitted, the app still exposes them in local/dev and hides them in prod.')
+param apiOpenapiEnabled bool = false
+
 @description('Auth provider the api enforces (dev|entra).')
 @allowed([
   'dev'
@@ -683,6 +686,13 @@ var officialMcpEnv = officialMcpEnabled ? concat([
   }
 ] : []) : []
 
+var openapiEnv = apiOpenapiEnabled ? [
+  {
+    name: 'AI4IA_OPENAPI_ENABLED'
+    value: 'true'
+  }
+] : []
+
 var apiEnv = concat([
   {
     name: 'PORT'
@@ -732,7 +742,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], openapiEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, inlineComputeEnv, imageEnv, videoEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName

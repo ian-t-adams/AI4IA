@@ -11,6 +11,7 @@ import logging
 import pytest
 
 from ai4ia_api import logging_setup
+from ai4ia_api.chat_timing import ChatTiming
 from ai4ia_api.catalog import DeploymentOption
 from ai4ia_api.usage.memory_repo import InMemoryUsageRepository
 from ai4ia_api.usage.models import TokenUsage, UsageTarget
@@ -43,6 +44,56 @@ def test_configure_telemetry_noop_without_connection_string(monkeypatch):
     assert logging_setup.configure_telemetry(None) is False
     assert logging_setup.configure_telemetry("") is False
     assert logging_setup._telemetry_configured is False
+
+
+def test_logging_keeps_application_info_and_warnings_but_drops_sdk_success_chatter():
+    root = logging.getLogger()
+    original_level = root.level
+    original_handlers = list(root.handlers)
+    records: list[logging.LogRecord] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    try:
+        logging_setup.configure_logging("INFO")
+        root.handlers.clear()
+        root.addHandler(Capture())
+        logging.getLogger("ai4ia_api.test").info("application info")
+        sdk = logging.getLogger("azure.core.pipeline.policies.http_logging_policy")
+        sdk.info("wire success")
+        sdk.warning("sdk warning")
+    finally:
+        root.setLevel(original_level)
+        root.handlers.clear()
+        root.handlers.extend(original_handlers)
+
+    assert [record.getMessage() for record in records] == [
+        "application info",
+        "sdk warning",
+    ]
+
+
+def test_access_filter_suppresses_only_successful_health_probes():
+    access_filter = logging_setup.SuccessfulHealthAccessFilter()
+
+    def allowed(path: str, status_code: int) -> bool:
+        record = logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            __file__,
+            1,
+            '%s - "%s %s HTTP/%s" %d',
+            ("127.0.0.1", "GET", path, "1.1", status_code),
+            None,
+        )
+        return access_filter.filter(record)
+
+    assert allowed("/health/live", 200) is False
+    assert allowed("/health/ready?probe=1", 204) is False
+    assert allowed("/health/ready", 503) is True
+    assert allowed("/api/models", 200) is True
 
 
 def test_emit_custom_event_noop_when_disabled(monkeypatch):
@@ -214,6 +265,52 @@ async def test_record_completion_emits_chat_completion_event(monkeypatch):
     assert attrs["billable"] is True
     assert attrs["estCostUsd"] == pytest.approx(0.006)
     assert attrs["correlationId"] == "cid-9"
+    assert "turnTotalMs" not in attrs
+
+
+async def test_record_completion_adds_privacy_safe_lifecycle_timing(monkeypatch):
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "ai4ia_api.usage.service.emit_custom_event",
+        lambda name, attrs: captured.append((name, attrs)),
+    )
+    now = [0.0]
+    timing = ChatTiming(stream=True, monotonic=lambda: now[0])
+    timing.mark_tool_loop()
+    gateway_started = timing.gateway_started()
+    now[0] = 0.2
+    timing.gateway_finished(gateway_started)
+    now[0] = 0.3
+    timing.mark_first_content()
+
+    async def persist():
+        now[0] = 0.5
+
+    now[0] = 0.4
+    await timing.measure_persistence(persist())
+    now[0] = 0.8
+    await _service().record_completion(
+        user_id="u1",
+        session_id="s1",
+        model_id="gpt-x",
+        deployment=_deployment(),
+        usage=_known_usage(),
+        timing=timing,
+    )
+    attrs = captured[0][1]
+    assert attrs["timingCoverage"] == "chat-v1"
+    assert attrs["turnTotalMs"] == 800
+    assert attrs["firstContentMs"] == 300
+    assert attrs["gatewayMs"] == 200
+    assert attrs["gatewayCalls"] == 1
+    assert attrs["persistenceMs"] == 100
+    assert attrs["finalizationMs"] == 600
+    assert attrs["stream"] is True
+    assert attrs["toolLoop"] is True
+    assert not any(
+        key.lower() in {"prompt", "output", "url", "filename", "error"}
+        for key in attrs
+    )
 
 
 async def test_record_completion_emits_provider_and_managed_target(monkeypatch):

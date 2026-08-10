@@ -16,6 +16,7 @@ from ..agents.approvals import (
 from ..agents.runtime import AgentRunFailed, AgentRunResult, AgentStep
 from ..auth.base import AuthenticatedUser
 from ..catalog import DeploymentOption
+from ..chat_timing import current_chat_timing
 from ..citations import RetrievedSource, attest_message
 from ..gateway.client import ModelGatewayClient, ModelGatewayError
 from ..memory.service import MemoryServiceProtocol
@@ -97,7 +98,11 @@ async def _persist_terminal_assistant(
     # than each remembering to attest. Idempotent and a no-op on an unattested
     # turn (see ai4ia_api.citations).
     attest_message(assistant)
-    write = asyncio.create_task(repo.upsert_message(user_id, assistant))
+    timing = current_chat_timing()
+    operation = repo.upsert_message(user_id, assistant)
+    if timing is not None:
+        operation = timing.measure_persistence(operation)
+    write = asyncio.create_task(operation)
     try:
         await asyncio.shield(write)
         return True
@@ -142,7 +147,9 @@ async def _persist_nonstream_failure(
         sources=sources,
     )
     attest_message(assistant)
-    await repo.add_message(user.internal_user_id, assistant)
+    timing = current_chat_timing()
+    operation = repo.add_message(user.internal_user_id, assistant)
+    await (timing.measure_persistence(operation) if timing is not None else operation)
     await metering.record_completion(
         user_id=user.internal_user_id,
         session_id=session_id,
@@ -152,6 +159,7 @@ async def _persist_nonstream_failure(
         status="error",
         agent=agent_name,
         correlation_id=correlation_id,
+        timing=timing,
     )
     return assistant
 
@@ -166,7 +174,11 @@ async def _stream_with_placeholder(
     """Own placeholder persistence within the response iterator lifecycle."""
     placeholder_persisted = False
     try:
-        write = asyncio.create_task(repo.add_message(user_id, assistant))
+        timing = current_chat_timing()
+        operation = repo.add_message(user_id, assistant)
+        if timing is not None:
+            operation = timing.measure_persistence(operation)
+        write = asyncio.create_task(operation)
         try:
             await asyncio.shield(write)
             placeholder_persisted = True
@@ -303,6 +315,9 @@ async def _agentic_stream(
                 # the finally block persists.
                 streamed_text += payload
                 content = streamed_text
+                timing = current_chat_timing()
+                if timing is not None:
+                    timing.mark_first_content()
                 yield f"data: {json.dumps({'choices': [{'delta': {'content': payload}}]})}\n\n"
             elif kind == "result":
                 result = payload
@@ -390,6 +405,9 @@ async def _agentic_stream(
             else []
         )
         if pending_delta:
+            timing = current_chat_timing()
+            if timing is not None:
+                timing.mark_first_content()
             yield f"data: {json.dumps({'choices': [{'delta': {'content': pending_delta}}]})}\n\n"
         terminal_persisted = await _persist_terminal_assistant(
             repo, user.internal_user_id, assistant
@@ -473,6 +491,7 @@ async def _agentic_stream(
                     ),  # pyright: ignore[reportArgumentType]
                     agent=agent_name,
                     correlation_id=correlation_id,
+                    timing=current_chat_timing(),
                 )
             )
         except Exception:  # noqa: BLE001 - metering must never break a turn
@@ -549,6 +568,9 @@ async def _plain_gateway_stream(
                 return
             if chunk.delta:
                 parts.append(chunk.delta)
+                timing = current_chat_timing()
+                if timing is not None:
+                    timing.mark_first_content()
             if chunk.done:
                 saw_done = True
                 break
@@ -628,6 +650,7 @@ async def _plain_gateway_stream(
                     ),  # pyright: ignore[reportArgumentType]
                     agent=agent_name,
                     correlation_id=correlation_id,
+                    timing=current_chat_timing(),
                 )
             )
         except Exception:  # noqa: BLE001 - metering must never break a turn

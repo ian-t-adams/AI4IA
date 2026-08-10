@@ -24,9 +24,11 @@ The run path mirrors the chat endpoint's hard invariants, in order:
 """
 from __future__ import annotations
 
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
@@ -40,8 +42,11 @@ from ..sessions.models import Message, MessageRole, MessageStatus
 from ..sessions.repository import SessionNotFoundError, SessionRepository
 from ..usage.service import UsageService
 from ..workflows.durable import (
+    DurableScheduleAcceptanceUnknownError,
     DurableWorkflowsUnavailableError,
     build_orchestration_payload,
+    durable_message_ids,
+    durable_run_id,
 )
 from ..workflows.models import (
     MAX_RUN_INPUT_LEN,
@@ -79,6 +84,7 @@ class WorkflowRunRequest(BaseModel):
     # silently downgraded when the feature is off, so a caller that needs
     # durability is never told "done" by a run that cannot survive a restart.
     durable: bool = False
+    idempotencyKey: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 class WorkflowRunAcceptedResponse(BaseModel):
@@ -87,6 +93,7 @@ class WorkflowRunAcceptedResponse(BaseModel):
     sessionId: str
     runId: str
     status: str = "accepted"
+    idempotencyKey: str
 
 
 class WorkflowRunStatusResponse(BaseModel):
@@ -282,22 +289,69 @@ async def run_workflow_endpoint(
                 ),
             )
 
-    await repo.add_message(
-        uid,
-        Message(
+    if durable_service is not None:
+        idempotency_key = body.idempotencyKey or uuid4().hex
+        run_id = durable_run_id(uid, idempotency_key)
+        user_message_id, assistant_message_id = durable_message_ids(run_id)
+        prior = await repo.list_messages(uid, body.sessionId)
+        existing = [message for message in prior if message.workflowRunId == run_id]
+        existing_user = next(
+            (message for message in existing if message.role is MessageRole.user), None
+        )
+        existing_assistant = next(
+            (message for message in existing if message.role is MessageRole.assistant),
+            None,
+        )
+        if existing_user is not None and (
+            existing_user.content != run_input or existing_user.agent != agent_attr
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Idempotency key was already used for a different workflow run.",
+            )
+        if existing_assistant is not None:
+            if existing_assistant.workflowRunStatus == "failed":
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Durable workflow scheduling previously failed.",
+                )
+            if existing_assistant.workflowRunStatus in {"accepted", "completed"}:
+                return JSONResponse(
+                    status_code=status.HTTP_202_ACCEPTED,
+                    content=WorkflowRunAcceptedResponse(
+                        sessionId=body.sessionId,
+                        runId=run_id,
+                        idempotencyKey=idempotency_key,
+                        status="accepted",
+                    ).model_dump(),
+                )
+
+        user_message = Message(
+            id=user_message_id,
             sessionId=body.sessionId,
             userId=uid,
             role=MessageRole.user,
             content=run_input,
             status=MessageStatus.complete,
             agent=agent_attr,
-        ),
-    )
+            workflowRunId=run_id,
+            workflowRunStatus="accepted",
+        )
+        pending_assistant = Message(
+            id=assistant_message_id,
+            sessionId=body.sessionId,
+            userId=uid,
+            role=MessageRole.assistant,
+            content="",
+            status=MessageStatus.streaming,
+            model=deployment.deploymentName,
+            agent=agent_attr,
+            workflowRunId=run_id,
+            workflowRunStatus="pending",
+        )
+        await repo.upsert_message(uid, user_message)
+        await repo.upsert_message(uid, pending_assistant)
 
-    if durable_service is not None:
-        # The user turn is already persisted above, so the caller sees their
-        # input immediately; the orchestration writes the assistant reply when
-        # it finishes, on whichever replica gets there.
         payload = build_orchestration_payload(
             workflow,
             user_id=uid,
@@ -312,21 +366,56 @@ async def run_workflow_endpoint(
                 if session.libraryDocumentIds is not None
                 else None
             ),
+            run_id=run_id,
+            assistant_message_id=assistant_message_id,
         )
         try:
-            run_id = await durable_service.schedule(payload, user_id=uid)
+            await durable_service.schedule(payload, user_id=uid, run_id=run_id)
         except DurableWorkflowsUnavailableError as exc:
+            pending_assistant.status = MessageStatus.error
+            pending_assistant.content = (
+                "The durable workflow could not be scheduled. Retry with a new "
+                "idempotency key after the service recovers."
+            )
+            pending_assistant.workflowRunStatus = "failed"
+            await repo.upsert_message(uid, pending_assistant)
+            await repo.touch_session(uid, session.id)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Durable workflow execution is temporarily unavailable.",
             ) from exc
+        except DurableScheduleAcceptanceUnknownError:
+            await repo.touch_session(uid, session.id)
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content=WorkflowRunAcceptedResponse(
+                    sessionId=body.sessionId,
+                    runId=run_id,
+                    idempotencyKey=idempotency_key,
+                    status="acceptance_unknown",
+                ).model_dump(),
+            )
         await repo.touch_session(uid, session.id)
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
             content=WorkflowRunAcceptedResponse(
-                sessionId=body.sessionId, runId=run_id
+                sessionId=body.sessionId,
+                runId=run_id,
+                idempotencyKey=idempotency_key,
             ).model_dump(),
         )
+
+    await repo.add_message(
+        uid,
+        Message(
+            sessionId=body.sessionId,
+            userId=uid,
+            role=MessageRole.user,
+            content=run_input,
+            status=MessageStatus.complete,
+            agent=agent_attr,
+        ),
+    )
 
     # Compose the caller's user agents over the curated catalog so a step can
     # reference either. The runner is total: it never raises, returning ok=False

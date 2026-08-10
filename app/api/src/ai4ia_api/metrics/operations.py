@@ -104,6 +104,32 @@ AppEvents
 | top 100 by requests desc
 """
 
+CHAT_LATENCY_KQL = """
+AppEvents
+| where Name == "chat_completion"
+| extend turnTotalMs=tolong(Properties["turnTotalMs"]),
+    firstContentMs=tolong(Properties["firstContentMs"]),
+    gatewayMs=tolong(Properties["gatewayMs"]),
+    persistenceMs=tolong(Properties["persistenceMs"]),
+    finalizationMs=tolong(Properties["finalizationMs"]),
+    stream=tobool(Properties["stream"]), toolLoop=tobool(Properties["toolLoop"])
+| summarize requests=count(), timingCovered=countif(isnotnull(turnTotalMs)),
+    ttftCovered=countif(isnotnull(firstContentMs)),
+    p50TurnMs=percentileif(turnTotalMs, 50, isnotnull(turnTotalMs)),
+    p95TurnMs=percentileif(turnTotalMs, 95, isnotnull(turnTotalMs)),
+    p50FirstContentMs=percentileif(firstContentMs, 50, isnotnull(firstContentMs)),
+    p95FirstContentMs=percentileif(firstContentMs, 95, isnotnull(firstContentMs)),
+    p95GatewayMs=percentileif(gatewayMs, 95, isnotnull(gatewayMs)),
+    p95PersistenceMs=percentileif(persistenceMs, 95, isnotnull(persistenceMs)),
+    p95FinalizationMs=percentileif(finalizationMs, 95, isnotnull(finalizationMs)),
+    sourceTimestamp=max(TimeGenerated)
+  by stream, toolLoop
+| extend timingStatus=iff(timingCovered == 0, "unavailable",
+    iff(timingCovered < requests, "partial", "available")),
+    ttftStatus=iff(stream == false, "not_applicable",
+      iff(ttftCovered == 0, "unavailable", iff(ttftCovered < requests, "partial", "available")))
+"""
+
 SECURITY_KQL = """
 AppEvents
 | where Name == "security_block"
@@ -129,6 +155,12 @@ OPERATION_SPECS = (
         "operation",
     ),
     QuerySpec("usage", "Model usage coverage", "AI4IA usage events", USAGE_KQL),
+    QuerySpec(
+        "chat_latency",
+        "Chat lifecycle latency",
+        "AI4IA chat completion timing events",
+        CHAT_LATENCY_KQL,
+    ),
 )
 SECURITY_SPECS = (
     QuerySpec(

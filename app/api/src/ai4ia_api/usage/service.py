@@ -20,6 +20,7 @@ import logging
 from datetime import datetime
 
 from ..catalog import DeploymentOption
+from ..chat_timing import ChatTiming
 from ..logging_setup import emit_custom_event
 from .models import (
     TokenUsage,
@@ -137,6 +138,7 @@ class UsageService:
         provider_completed: bool | None = None,
         agent: str | None = None,
         correlation_id: str | None = None,
+        timing: ChatTiming | None = None,
     ) -> None:
         """Meter one turn. Never raises: ledger/log failures are swallowed."""
         if not self._enabled:
@@ -158,7 +160,8 @@ class UsageService:
             logger.warning("usage record build failed", exc_info=True)
             return
 
-        self._emit_log_safe(rec)
+        timing_attributes = timing.terminal_attributes() if timing is not None else None
+        self._emit_log_safe(rec, timing_attributes)
         try:
             await asyncio.shield(self._repo.record(rec))
         except asyncio.CancelledError:
@@ -168,49 +171,55 @@ class UsageService:
                 "usage ledger write failed (correlation_id=%s)", rec.correlationId, exc_info=True
             )
 
-    def _emit_log_safe(self, rec: UsageRecord) -> None:
+    def _emit_log_safe(
+        self, rec: UsageRecord, timing_attributes: dict[str, object] | None = None
+    ) -> None:
         try:
-            self._emit_log(rec)
+            self._emit_log(rec, timing_attributes)
         except Exception:  # noqa: BLE001 - telemetry must never break a turn
             logger.warning("usage telemetry emit failed", exc_info=True)
         try:
-            self._emit_event(rec)
+            self._emit_event(rec, timing_attributes)
         except Exception:  # noqa: BLE001 - telemetry must never break a turn
             logger.warning("usage custom event emit failed", exc_info=True)
 
-    def _emit_event(self, rec: UsageRecord) -> None:
+    def _emit_event(
+        self, rec: UsageRecord, timing_attributes: dict[str, object] | None = None
+    ) -> None:
         """Emit a ``chat_completion`` Application Insights customEvent so per-model
         / per-user token + cost analytics are queryable in App Insights/KQL
         alongside the stdout signal. No-op unless telemetry is configured (i.e.
         an Application Insights connection string is set); best-effort."""
-        emit_custom_event(
-            "chat_completion",
-            {
-                "userId": rec.userId,
-                "sessionId": rec.sessionId,
-                "provider": rec.provider,
-                "model": rec.model,
-                "deployment": rec.deployment,
-                "target": rec.target,
-                "region": rec.region,
-                "agent": rec.agent,
-                "status": rec.status,
-                "providerCompleted": rec.providerCompleted,
-                "billable": rec.billable,
-                "usageKnown": rec.usageKnown,
-                "usageComplete": rec.usageComplete,
-                "calls": rec.calls,
-                "promptTokens": rec.promptTokens,
-                "completionTokens": rec.completionTokens,
-                "totalTokens": rec.totalTokens,
-                "costKnown": rec.costKnown,
-                "estCostUsd": rec.estCostUsd,
-                "currency": rec.currency,
-                "correlationId": rec.correlationId,
-            },
-        )
+        attributes: dict[str, object] = {
+            "userId": rec.userId,
+            "sessionId": rec.sessionId,
+            "provider": rec.provider,
+            "model": rec.model,
+            "deployment": rec.deployment,
+            "target": rec.target,
+            "region": rec.region,
+            "agent": rec.agent,
+            "status": rec.status,
+            "providerCompleted": rec.providerCompleted,
+            "billable": rec.billable,
+            "usageKnown": rec.usageKnown,
+            "usageComplete": rec.usageComplete,
+            "calls": rec.calls,
+            "promptTokens": rec.promptTokens,
+            "completionTokens": rec.completionTokens,
+            "totalTokens": rec.totalTokens,
+            "costKnown": rec.costKnown,
+            "estCostUsd": rec.estCostUsd,
+            "currency": rec.currency,
+            "correlationId": rec.correlationId,
+        }
+        if timing_attributes is not None:
+            attributes.update(timing_attributes)
+        emit_custom_event("chat_completion", attributes)
 
-    def _emit_log(self, rec: UsageRecord) -> None:
+    def _emit_log(
+        self, rec: UsageRecord, timing_attributes: dict[str, object] | None = None
+    ) -> None:
         """Structured JSON telemetry line (no prompt content). Container stdout is
         shipped to Log Analytics/App Insights, so this is the queryable cost/traffic
         signal without adding an App Insights SDK dependency."""
@@ -238,6 +247,8 @@ class UsageService:
             "currency": rec.currency,
             "correlationId": rec.correlationId,
         }
+        if timing_attributes is not None:
+            payload.update(timing_attributes)
         try:
             logger.info(json.dumps(payload, separators=(",", ":")))
         except Exception:  # noqa: BLE001

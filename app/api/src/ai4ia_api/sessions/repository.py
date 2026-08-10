@@ -21,6 +21,10 @@ class SessionConflictError(Exception):
 
 @runtime_checkable
 class SessionRepository(Protocol):
+    async def check_ready(self) -> None:
+        """Prove the backing store is reachable without reading user data."""
+        ...
+
     async def create_session(self, session: Session) -> Session: ...
 
     async def get_session(self, user_id: str, session_id: str) -> Session: ...

@@ -25,6 +25,9 @@ class InMemorySessionRepository:
         self._documents: dict[str, list[Document]] = {}
         self._lock = asyncio.Lock()
 
+    async def check_ready(self) -> None:
+        return None
+
     async def _owned_session(self, user_id: str, session_id: str) -> Session:
         session = self._sessions.get(session_id)
         if session is None or session.userId != user_id:

@@ -45,6 +45,12 @@ class CosmosSessionRepository:
         await self._client.close()
         await self._credential.close()
 
+    async def check_ready(self) -> None:
+        # Container metadata is the cheapest SDK operation that proves identity,
+        # account/database routing, and the canonical sessions container without
+        # reading or mutating any user's data.
+        await self._sessions.read()
+
     @staticmethod
     def _to_doc(model: Session | Message | Document) -> dict[str, Any]:
         return model.model_dump(mode="json")

@@ -989,6 +989,7 @@ def run_canary(
     auth = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     json_headers = {**auth, "Content-Type": "application/json"}
     started = clock()
+    result = CanaryResult(ok=False)
 
     models, _ = probe(
         f"{api_base}/api/models",
@@ -1067,38 +1068,41 @@ def run_canary(
         )
         elapsed_ms = int((clock() - started) * 1000)
         if not chat.ok:
-            return CanaryResult(
+            result = CanaryResult(
                 ok=False,
                 model=model,
                 elapsed_ms=elapsed_ms,
                 detail=_http_detail("POST /api/chat", chat),
             )
+            return result
         answer = chat.json()
         message = answer.get("message") if isinstance(answer, dict) else None
         content = message.get("content") if isinstance(message, dict) else None
         status = message.get("status") if isinstance(message, dict) else None
         if not isinstance(content, str) or not content.strip():
-            return CanaryResult(
+            result = CanaryResult(
                 ok=False,
                 model=model,
                 elapsed_ms=elapsed_ms,
                 detail="the model returned an empty reply",
             )
+            return result
         if status not in (None, "complete"):
-            return CanaryResult(
+            result = CanaryResult(
                 ok=False,
                 model=model,
                 elapsed_ms=elapsed_ms,
                 reply_chars=len(content),
                 detail=f"the assistant message status is {status}",
             )
-        return CanaryResult(
+            return result
+        result = CanaryResult(
             ok=True, model=model, elapsed_ms=elapsed_ms, reply_chars=len(content)
         )
+        return result
     finally:
-        # The canary owns this session, so it cleans it up. A failed cleanup is
-        # reported but never fails the deploy: one stray session is a smaller
-        # problem than rolling back a healthy release.
+        # Cleanup is part of the canary contract: a command intended for recurring
+        # use must fail rather than silently leak one session per run.
         deleted = do_request(
             "DELETE",
             f"{api_base}/api/sessions/{session_id}",
@@ -1107,10 +1111,16 @@ def run_canary(
             timeout=min(timeout, 60.0),
         )
         if deleted.status not in (200, 202, 204, 404):
-            emit(
-                "canary_cleanup_failed",
-                status=deleted.status,
-                error=deleted.error,
+            result.ok = False
+            cleanup_detail = (
+                f"DELETE /api/sessions cleanup returned HTTP {deleted.status}"
+                if deleted.status is not None
+                else "DELETE /api/sessions cleanup did not complete"
+            )
+            result.detail = (
+                f"{result.detail}; {cleanup_detail}"
+                if result.detail
+                else cleanup_detail
             )
 
 
@@ -1480,6 +1490,33 @@ def _canary_failures(
     ]
 
 
+def cmd_canary(args: argparse.Namespace) -> int:
+    if not _ENV_NAME_RE.fullmatch(args.token_env):
+        raise VerifyInputError("--token-env is not a valid environment variable name")
+    token = os.environ.get(args.token_env, "").strip()
+    if not token:
+        raise VerifyInputError(f"{args.token_env} is empty")
+    api_base = validate_https_base(args.api_url, label="--api-url")
+    result = run_canary(
+        api_base=api_base,
+        token=token,
+        catalog_doc=load_model_catalog(args.models),
+        model_override=args.canary_model,
+        attempts=args.attempts,
+        delay=args.delay,
+        timeout=args.timeout,
+    )
+    emit(
+        "canary",
+        outcome="passed" if result.ok else "failed",
+        model=result.model,
+        replyChars=result.reply_chars,
+        elapsedMs=result.elapsed_ms,
+        detail=result.detail,
+    )
+    return 0 if result.ok else 3
+
+
 def confirm_restored(
     *,
     resource_group: str,
@@ -1720,6 +1757,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to infra/models.json.",
     )
     verify.set_defaults(func=cmd_verify)
+
+    canary = sub.add_parser(
+        "canary",
+        help="Run only the authenticated models/session/chat/delete path proof.",
+    )
+    canary.add_argument("--api-url", required=True, help="API base URL.")
+    canary.add_argument(
+        "--token-env",
+        default=DEFAULT_TOKEN_ENV,
+        help=f"Env var holding the bearer token (default: {DEFAULT_TOKEN_ENV}).",
+    )
+    canary.add_argument("--canary-model", default="", help="Pin the canary model id.")
+    canary.add_argument("--attempts", type=int, default=3, help="Retry budget.")
+    canary.add_argument("--delay", type=float, default=10.0, help="Retry delay seconds.")
+    canary.add_argument("--timeout", type=float, default=90.0, help="Per-request timeout.")
+    canary.add_argument(
+        "--models",
+        type=Path,
+        default=Path(__file__).resolve().parents[1] / "infra" / "models.json",
+        help="Path to infra/models.json.",
+    )
+    canary.set_defaults(func=cmd_canary)
 
     rollback = sub.add_parser("rollback", help="Restore the captured revisions.")
     rollback.add_argument("--state", required=True, help="Path to the capture JSON.")

@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from ..config import GatewayAuthMode, GatewayProviderStyle, Settings
+from ..chat_timing import current_chat_timing
 from ..http_retry import request_with_retry
 from ..model_traits import is_reasoning_deployment
 from ..safety import MessageSafety, parse_safety
@@ -773,6 +774,8 @@ class ModelGatewayClient:
                 correlation_id=correlation_id,
             )
         client, owned = self._client()
+        timing = current_chat_timing()
+        timing_started = timing.gateway_started() if timing is not None else None
         try:
             try:
                 resp = await client.post(req.url, headers=req.headers, json=req.json)
@@ -793,6 +796,8 @@ class ModelGatewayClient:
                 return _responses_json_to_chat(data)
             return data
         finally:
+            if timing is not None and timing_started is not None:
+                timing.gateway_finished(timing_started)
             if owned:
                 await client.aclose()
 
@@ -831,17 +836,21 @@ class ModelGatewayClient:
         correlation_id: str | None = None,
         api: str = "chat",
     ) -> AsyncIterator[ChatChunk]:
-        if api == "responses":
-            async for chunk in self._stream_responses(
-                deployment=deployment,
-                messages=messages,
-                params=params,
-                correlation_id=correlation_id,
-            ):
-                yield chunk
-            return
-        client, owned = self._client()
+        timing = current_chat_timing()
+        timing_started = timing.gateway_started() if timing is not None else None
+        client: httpx.AsyncClient | None = None
+        owned = False
         try:
+            if api == "responses":
+                async for chunk in self._stream_responses(
+                    deployment=deployment,
+                    messages=messages,
+                    params=params,
+                    correlation_id=correlation_id,
+                ):
+                    yield chunk
+                return
+            client, owned = self._client()
             # Request token usage in the stream when enabled, but never let an
             # unsupported ``stream_options`` break streaming: if the FIRST attempt
             # is rejected with 400 (before any bytes are yielded), retry once
@@ -878,7 +887,9 @@ class ModelGatewayClient:
         except httpx.HTTPError as exc:
             raise ModelGatewayError(502, _STREAM_FAILED) from exc
         finally:
-            if owned:
+            if timing is not None and timing_started is not None:
+                timing.gateway_finished(timing_started)
+            if owned and client is not None:
                 await client.aclose()
 
     async def _stream_responses(
